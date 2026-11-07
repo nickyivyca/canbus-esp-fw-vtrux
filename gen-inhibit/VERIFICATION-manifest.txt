@@ -1,7 +1,7 @@
 # The hash manifest of gen-inhibit/VERIFICATION.md: every SeaDrive file or folder it cites, by path under
 # $REVERSE_IT_DIR. Written by gen-inhibit/tools/verification_manifest.py; do not edit.
-# document sha256 ccd76844a8b4448aca18e1959df9cdab1ff34f5fd8ee2b754acc3e1e7a5218c0
-# 678 rows: 501 file, 122 tree, 2 root, 8 living, 38 absent, 2 missing, 5 pattern
+# document sha256 1113f2016858a8233f9973368be455d76cdadf71ff28d8b77e185db45666cb34
+# 680 rows: 501 file, 124 tree, 2 root, 8 living, 38 absent, 2 missing, 5 pattern
 a439dc8bff895f2384a3a7a6fd73ed6295f8036513fe110db0a2b57aa47c6ad6  file     android-app/notes/artifacts/vtrux_bench_replay_captures/README.md  L2026
 -  living   firmware/bench-holder.md  L23
 -  living   firmware/bench-log.jsonl  L6497
@@ -303,6 +303,7 @@ a944128c0521f66e5c825eb07938c9609e9a74cbe7e39bade72bad661fa538ea  file     proje
 0cb75a2493082de6ae5c9a1b73054481cb37b80334249c6293345a5a57ffe1e1  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/inert_63eb50f_autoarm_20261013.txt  L4520
 85ad9e10f5d984298548347a5bbe12d22b7079c7e41723dca61aacaa7375211c  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/inert_63eb50f_flight_ota_20261013.txt  L4520
 0f1806dfca5f73892b446136675ae716ddaa73e5dfaf27044f554524678f400e  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/keyon_drivetrainoverheat_70s.log  L4328
+fdff49660c6936a2757a258972df3fdd78b5fb802397745455eca165cc281c0a  tree     projects/vtrux/notes/artifacts/gen-inhibit/runs/lf_4de33c9/  L8278
 e7f7586b072fc7b6e3bda83588d116b5532e72c55444ad072c6427a8f0b7480b  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/live_jam_arm_20261007T234117.json  L762
 54f9cb83da4e02e742afc4b9f93b68db542c44849a19e9fbec70bb383449381d  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/mode_entry_analysis_20261010T182419.jsonl  L544
 ee81a64a10eb66ab77731a9120770172810e32875e49e26dcccbe8788593629e  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/move0d_fw_60d52f3.console.txt  L3172
@@ -380,6 +381,7 @@ e996780c0e3223fac146f7fa88450704bd48db7e2a47d663e08f13eb9482c224  file     proje
 3396d1c1447841ded0064ecbef2ddae129391f957a18a01934355620396fd5c6  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/reply_golive_respond3_e998385_20261014T0758_arm4.json  L4313
 272a62e95a48d4dbe562cf9df387c2e062a49e078c027a17fdce099babaced3d  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/reply_golive_respond3_e998385_20261014T0758_arm5.json  L4313
 96fcf553f9650de0df439cfcb29ee3bdd6d49b1ca2b5c5b8bca1ad5a41961df7  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/reply_golive_respond3_e998385_20261014T0758_arm6.json  L4313
+492d430d89678b68ec5e7c1355ce082a5ec24e56ed1b274be00a434adcddbaa3  tree     projects/vtrux/notes/artifacts/gen-inhibit/runs/repro_a24de99/  L8174
 5e04d98a76ea6268e00c79f57d98baf96b13fba20e6a8285303381ee09917c42  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/reset_matrix_baseline_20261009T000120.json  L1210
 ee204c2e3ddad7f396efba410ff29de378419f53e7c8409c8e9494044df8476a  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/reset_matrix_baseline_20261009T040315.json  L1271
 ca08d4918a76e6b05792f7282d8ad748cd8b3786a0bc27accc1733c2a7bd5dde  file     projects/vtrux/notes/artifacts/gen-inhibit/runs/reset_matrix_baseline_20261009T092717.json  L1427

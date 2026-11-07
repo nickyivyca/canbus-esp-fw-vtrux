@@ -8098,3 +8098,185 @@ no bench; nothing in the runs read was changed.
   `SHA256SUMS` `3fa3ad81...9502` hashes every other file: `by_folder.txt`,
   `all_runs.txt`, the tool's test and mutant outputs).
 
+## 13 Known not to be implemented
+
+**What a cross-host IDF 5.4.1 build differs in, for the code-identical
+clause -- tester, 2026-10-23, on `a24de99` `_man`. Result: same-host pairs
+byte-identical, .bin and ELF; across hosts the .bin differs only in the
+descriptor's ELF hash, the trailing checksum and the trailing SHA-256 (65
+bytes), nothing "elsewhere".** Spec 13, "Mode 3 is bench-only ...", *What
+carries over*: "Code-identical means the images differ only in version,
+project name, build-time, hash (including `git_version`) and checksum bytes".
+Asked for by the reviewer as the validation basis for the shared build
+tooling's code hash (its requirement 2), on gen-inhibit's own IDF 5.4.1
+build. Build only; no device was touched.
+- **Source:** gen-inhibit/main `a24de99`, a fresh clone of a git bundle per
+  build, detached; `managed_components/` from a tar of the verified
+  `wican-prod-e3d9437` copy (`dependencies.lock` the same at `a24de99`),
+  sha256 `2b7af917...`. The checked-out tree hashes to `3765962a...` over 685
+  files on every clean build on both hosts (`tree_hash.py`: path and bytes as
+  on disk, so line endings included).
+- **Config, without editing the tracked tree:** the committed `sdkconfig` is
+  copied beside the tree, its one line `# CONFIG_APP_REPRODUCIBLE_BUILD is not
+  set` replaced by `CONFIG_APP_REPRODUCIBLE_BUILD=y`, and the build run as
+  `idf.py -D SDKCONFIG=<copy> build`. Each build records, after building, `=y`
+  in the copy, `#define CONFIG_APP_REPRODUCIBLE_BUILD 1` in
+  `build/config/sdkconfig.h`, `git status` clean and the committed `sdkconfig`
+  unchanged.
+- **Builds:**
+  - madhouse-debian (`repro_build.sh`; ESP-IDF v5.4.1, gcc esp-14.2.0_20241119,
+    CMake 3.31.6, ninja 1.12.1, Python 3.13.5): `m1` at
+    `<madhouse-debian home>/gi_repro_a24de99/a`, `m2` at `<madhouse-debian home>/gi_repro_a24de99/path_b_longer/deeper`,
+    06:38-06:40 and again 06:45-06:47 (madhouse clock), the same sha256s both
+    times.
+  - NICKY-XPS (`repro_build.ps1`; the same IDF, gcc and ninja, CMake 3.30.2,
+    Python 3.11.9): `x1` at `%TEMP%\gen-inhibit-repro\x1\a` 17:05-17:11, `x2`
+    at `%TEMP%\gen-inhibit-repro\x2\path_b_longer\deeper` 17:11-17:17, after
+    the interposer's bench run released NICKY-XPS for builds at 17:04.
+  - Control, madhouse-debian: `mctl`, `main/main.c` line 187
+    (`ESP_LOGI(TAG, "----------");`) duplicated, uncommitted.
+- **Images:**
+
+  | Build | .bin length | .bin sha256 | ELF length | ELF sha256 |
+  |---|---|---|---|---|
+  | m1, m2 | 1113360 | `a49ca791800b7ae3ca4370aec4125bc197e1a96d326d58d7bfb2295f7079acca` | 11008900 | `8004ed31280dd161e9e4ba9e564d8238f5954fa7dd02c308f20d953509290b3d` |
+  | x1, x2 | 1113360 | `336b8415c2293b3256c50be2fe0c0c67b1b28ddf5b2c7908c715cf16014c36e7` | 11008780 | `a8915e6221fc16f019599fcebd824e427f79799a25df78840dfb3cbcc5e7a355` |
+  | mctl | 1113392 | `fe72aab420676779fb3a5fef5498744fb0083b149d958ae3eb35254f7fb14512` | 11009080 | `37facd350b6c48a4eac605489240bff1b12a7ae709423871f7bcab07a9917a4a` |
+
+- **Same host, different paths:** m1:m2 and x1:x2 byte-identical, .bin and
+  ELF, no ELF section differing.
+- **Across hosts** (m1:x1, m2:x2, m1:x2, m2:x1, all four alike): the same
+  length, and the same six segments at the same load addresses and lengths.
+  Three runs of differing bytes:
+  - `0x0000b0` len 32, the descriptor's `app_elf_sha256` (descriptor ELF hash);
+  - `0x10fcef` len 1, the trailing checksum;
+  - `0x10fcf0` len 32, the trailing SHA-256.
+
+  Version and project name are equal (`a24de99`, `wican-fw_obd_a24de99_man`),
+  and the time and date fields are all zero bytes in every build, control
+  included. Nothing differs "elsewhere". The ELFs differ in `.debug_info` (same length), `.debug_line`
+  (2234734 / 2234697 bytes) and `.debug_line_str` (11228 / 11143) only. In
+  `.debug_line_str` the madhouse-debian ELF has one string the NICKY-XPS ELF
+  lacks, `/builds/idf/crosstool-NG/.build/riscv32-esp-elf/build/build-cc-gcc-final/gcc/include`,
+  and none the other way round; x1:x2 has none either way.
+- **Control** (m1:mctl): the .bin grows by 32 bytes, segment 3 (`0x42000020`,
+  flash text) from 746368 to 746400; 738195 differing bytes "elsewhere", 698214
+  of them in segment 3 data, across 15189 runs; `.flash.text` among the ELF
+  sections differing. The descriptor's version (6 bytes) and project name (10)
+  differ too: `a24de99-dirty` and `wican-fw_obd_a24de99-dirty_man`.
+- **The comparison tool:** `repro_compare.py` reads the image layout (header,
+  segments, `esp_app_desc_t` at `0x20`, checksum, appended SHA-256) and places
+  every differing byte in its field. Tested by `test_repro_compare.py` on a
+  real `e3d9437` image with bytes changed at known fields: 12 checks PASS, 8 of
+  8 mutants killed by a check (field offsets shifted, date/time merged into
+  version, checksum at the last byte, runs not split, runs merged,
+  identity by length only, the descriptor ignored, `hash_appended` ignored).
+- **Run files:** `runs/repro_a24de99/` (README): the scripts; `m1/`, `m2/`,
+  `mctl/`, `x1/`, `x2/` (each the .bin, `info.txt`, `build.log`,
+  `sdkconfig.repro`); `compare_madhouse.txt`/`.json`,
+  `compare_cross_host.txt`/`.json`, `debug_line_str_diff.txt`. The ELFs are
+  kept outside SeaDrive, in `%TEMP%/gen-inhibit-repro/builds/`, their sha256
+  above.
+
+**x1 and x2 again with ccache off -- tester, 2026-10-23 23:31-23:39, on
+`a24de99` `_man`. Result: x1:x2 byte-identical, .bin and ELF, with ccache
+shown off in both builds; both are also byte-identical to the first x1 and
+x2, so the cross-host result above stands as written.** Asked for by the
+reviewer: the first x1 and x2 (entry above) ran with ccache on
+(`-DCCACHE_ENABLE=1` on idf.py's cmake line, the ESP-IDF export's
+`IDF_CCACHE_ENABLE=1` on NICKY-XPS), so their identity could have been one
+compile served twice from the cache. m1, m2 and mctl ran with
+`-DCCACHE_ENABLE=0`. Build only; no device was touched.
+- **Builds:** `repro_build.ps1 -NoCcache` (the switch added for this rerun:
+  `IDF_CCACHE_ENABLE=0` after the export and `idf.py --no-ccache`; the steps
+  otherwise as for the first x1 and x2), the same bundle, components tar and
+  paths: `x1nc` at `%TEMP%\gen-inhibit-repro\x1\a` 23:31-23:35, `x2nc` at
+  `%TEMP%\gen-inhibit-repro\x2\path_b_longer\deeper` 23:35-23:39, each
+  clean (the script deletes the folder first). Unthrottled: `bench-holder.md`
+  free, no simulator and no other build running (checked 23:30). `info.txt`
+  of each: head `a24de99`, `git status` clean before and after, tree
+  `3765962a...` (685 files), components tar `2b7af917...`, the same tool
+  versions as the first x1 and x2, `=y` in the copy and in `sdkconfig.h`.
+- **ccache off, by its effect** (`ccache_check.py`, written for this rerun;
+  it reads what the build left): idf.py's `cmake -G Ninja` line in
+  `build.log`; `CCACHE_ENABLE` in every `CMakeCache.txt` under `build/`; every
+  `command =` line of every `CMakeFiles/rules.ninja` (idf puts ccache there as
+  `command = ccache ${LAUNCHER}...`); and every non-empty `LAUNCHER =`
+  binding in every `build.ninja`, where a launcher from the environment
+  (`CMAKE_<LANG>_COMPILER_LAUNCHER`) lands per edge with `CCACHE_ENABLE`
+  still 0 (the implementor's configure probes, relayed by the reviewer). The
+  app's folder and every other folder with a `CMakeCache.txt` (the
+  bootloader's) must each have all three files.
+  - `x1nc`, `x2nc`: PASS each: cmake line `-DCCACHE_ENABLE=0`; app
+    `CCACHE_ENABLE` 0, the bootloader's cache has no such entry; 0
+    `command =` lines naming ccache and 0 non-empty `LAUNCHER` bindings, app
+    and bootloader (`ccache_check_x1nc.txt`, `ccache_check_x2nc.txt`, run
+    after the builds with the final version; the run inside each build is
+    in its `info.txt`).
+  - The first x2's tree (still on disk at 23:33): FAIL: cmake line `=1`, app
+    `CCACHE_ENABLE` 1, 94 `command =` lines in the app's `rules.ninja`
+    starting `ccache`; 0 in the bootloader's, and 0 `LAUNCHER` bindings in
+    either `build.ninja` (`ccache_check_x2_orig.txt`). The first x1's tree
+    gave the same FAIL before the `LAUNCHER` item was added and was rebuilt
+    before it could be re-read (`ccache_check_x1_orig.txt`). So in the first
+    builds the bootloader was not compiled through ccache either way; only
+    the app was.
+  - Its test, `test_ccache_check.py`: 20 checks PASS, a fake build folder
+    that passes and each fault planted alone (each of the four items in the
+    app and in the bootloader, ccache by full path, an empty `LAUNCHER`
+    binding that passes, each of the three files missing from one folder
+    while the other folder has it) (`test_ccache_check.txt`).
+- **Images** (`repro_compare.py`, `compare_noccache.txt`/`.json`):
+  `x1nc` and `x2nc` both .bin 1113360 bytes, sha256
+  `336b8415c2293b3256c50be2fe0c0c67b1b28ddf5b2c7908c715cf16014c36e7`, ELF
+  11008780 bytes, sha256
+  `a8915e6221fc16f019599fcebd824e427f79799a25df78840dfb3cbcc5e7a355`: the
+  first x1's and x2's.
+  - x1nc:x2nc, x1nc:x1 and x2nc:x2: byte-identical, .bin and ELF.
+  - x1nc:m1, x2nc:m2, x1nc:m2, x2nc:m1: the three runs of the entry above
+    and nothing else (`0x0000b0` len 32 descriptor ELF hash, `0x10fcef` len
+    1 checksum, `0x10fcf0` len 32 trailing SHA-256), the same six segments;
+    ELF sections differing `.debug_info`, `.debug_line`, `.debug_line_str`
+    only, as above.
+- **Run files:** `runs/repro_a24de99/` (README): `x1_noccache/`,
+  `x2_noccache/` (each the .bin, `info.txt`, `build.log` (UTF-16 LE),
+  `sdkconfig.repro`); `ccache_check.py`, `test_ccache_check.py` and their
+  outputs; `compare_noccache.txt`/`.json`. The ELFs are in
+  `%TEMP%/gen-inhibit-repro/builds/x1nc`, `x2nc`, their sha256 above.
+
+**LF line endings pinned, `4de33c9` -- tester, 2026-10-23 23:42-23:45. Result:
+PASS. With `core.autocrlf=true` every tracked file checks out as its committed
+bytes except `minify.bat`, which checks out CRLF; `main/homepage.html` checks
+out LF. Under `core.autocrlf=input`, `41e1ec2` and `4de33c9` differ only in
+`.gitattributes` and `minify.bat`.** The implementor's `1a4a67a`
+(".gitattributes: pin LF line endings (eol=lf)", branch
+`gen-inhibit/implementor/lf-eol`, merged into gen-inhibit/main as `4de33c9`),
+on the user's ruling of 2026-10-23, option A. The root `.gitattributes` at
+`4de33c9`: upstream's comment line, `* text=auto eol=lf`, `*.bat` and `*.cmd`
+`text eol=crlf`, `*.pdf`, `*.png`, `*.bin`, `*.elf` `binary`. Checked as the
+reviewer asked: no firmware build, the tester's own script.
+- **How:** `lf_check.py` (written for this check): a fresh clone of the local
+  anchor with `core.autocrlf` set at clone time (so it overrides the
+  machine's `input` from Git for Windows' system gitconfig), checked out
+  detached; then per tracked file the working-tree bytes against the blob's
+  (`git cat-file`), with CRLF and lone-LF counts in each, or the sha256 of
+  every tracked file. Four clones, each `git status` clean: `4de33c9` and
+  `41e1ec2` with `autocrlf=true`, the same two with `autocrlf=input`. 697
+  tracked files in each, no symlinks or submodules.
+- **`4de33c9`, `autocrlf=true`:** 696 files byte-identical to their blobs.
+  `minify.bat` is the one that differs: 3 CRLF in the working tree, 3 LF in
+  the blob. `main/homepage.html`: 202 LF, no CRLF, identical to its blob;
+  `.gitattributes` the same (8 LF). The other 29 files with a CRLF byte pair
+  in the working tree are 28 `.png` and `sch/wican_obd_pro_sch_v151.pdf`,
+  each identical to its blob. So no text file has a CRLF in its blob.
+- **Control, `41e1ec2`, `autocrlf=true`:** 665 files differ from their
+  blobs, every LF written as CRLF, `main/homepage.html` among them (202
+  CRLF) and `.gitattributes` (2 CRLF). The check sees the conversion when
+  there is one.
+- **`41e1ec2` vs `4de33c9`, `autocrlf=input`:** 697 files each side; sha256
+  differs for 2: `.gitattributes` and `minify.bat`.
+- **Run files:** `runs/lf_4de33c9/`: `lf_check.py`, `clones.txt`,
+  `eol_t_new.txt`/`.json` (`4de33c9`), `eol_t_old.txt`/`.json` (`41e1ec2`),
+  `hashes_i_new.json`, `hashes_i_old.json`,
+  `diff_input_41e1ec2_4de33c9.txt`. The clones are in the tester worktree's
+  `scratch/gen-inhibit-lf/`.
