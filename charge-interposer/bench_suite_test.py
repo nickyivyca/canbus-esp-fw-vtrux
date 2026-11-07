@@ -216,10 +216,32 @@ def _code_tree(tests):
     return d
 
 
+_HB_DIR = B._host_bridge_dir
+
+
+def _hb_at(code):
+    """Point the judge's own-checkout folder at the fixture `code`."""
+    B._host_bridge_dir = lambda: os.path.join(code, "fw_harness", "host_bridge")
+
+
 def test_host_bridge_judge():
+    try:
+        _test_host_bridge_judge()
+    finally:
+        B._host_bridge_dir = _HB_DIR
+
+
+def _test_host_bridge_judge():
     j = B.host_bridge_judge
+    # the real folder is the one beside bench_suite.py, at this checkout's
+    # commit, and the detail names both (run 2a 0d0d: no settings key)
+    real = os.path.join(HERE, "fw_harness", "host_bridge")
+    assert os.path.normcase(_HB_DIR()) == os.path.normcase(real), _HB_DIR()
+    head = B._checkout_commit(real)
+    assert re.match(r"^[0-9a-f]{40}, (clean|\d+ file\(s\) changed here)$", head), head
     code = _code_tree(["test_l2_bridge", "test_conformance", "test_event_layout",
                        "test_canport_contract"])
+    _hb_at(code)
     l2 = ["--- l2: c%d ---\ntest_l2_bridge[c%d]: all checks OK" % (i, i)
           for i in range(33)]
     log = "\n".join([
@@ -233,7 +255,15 @@ def test_host_bridge_judge():
         "1 failure(s) in bad",
         "--- l2: hung ---",
         "  ok  setup"]) + "\n"
-    rs = _by(j(_run(log, 1, ctx={"interposer_code": code})))
+    # no settings key at all, as a [[check]] judge gets it (0d0d's KeyError)
+    out = j(_run(log, 1, ctx={}))
+    rs = _by(out)
+    tl = [x for x in out if x.sub == "test-list"]
+    assert len(tl) == 1 and tl[0].verdict == Verdict.PASS, tl
+    hb = os.path.join(code, "fw_harness", "host_bridge")
+    assert ("4 test(s) listed from %s at not a git checkout: " % hb) in tl[0].detail \
+        and tl[0].detail.endswith("test_canport_contract test_conformance "
+                                  "test_event_layout test_l2_bridge"), tl[0].detail
     assert rs["capture-pin"] == Verdict.PASS
     assert rs["l2.c0"] == rs["l2.c32"] == Verdict.PASS
     assert rs["l2.bad"] == Verdict.FAIL
@@ -243,13 +273,46 @@ def test_host_bridge_judge():
     assert rs["test_event_layout"] == Verdict.ERROR
     assert "test_l2_bridge" not in rs
     assert "l2.population" not in rs, "35 cases opened: no population FAIL"
-    # a test with no line at all, a missing pin, too few L2 cases
+    assert set(rs) == {"test-list", "capture-pin", "test_conformance",
+                       "test_canport_contract", "test_event_layout", "l2.bad",
+                       "l2.hung"} | {"l2.c%d" % i for i in range(33)}, sorted(rs)
+    # a settings key naming another tree is not read: the list is still the
+    # judge's own folder's
+    other = os.path.join(TMP, "other")
+    scratch_dir.remove(other)
+    os.makedirs(os.path.join(other, "fw_harness", "host_bridge"))
+    open(os.path.join(other, "fw_harness", "host_bridge", "test_elsewhere.cpp"),
+         "w").close()
+    rs = _by(j(_run(log, 1, ctx={"interposer_code": other})))
+    assert "test_elsewhere" not in rs and rs["test_conformance"] == Verdict.PASS, rs
+    # a test with no line at all (a failing test prints no named line):
+    # FAIL; a missing pin, too few L2 cases
     code = _code_tree(["test_l2_bridge", "test_conformance", "test_new"])
     log2 = "test_conformance: all checks OK\n" + "\n".join(l2[:5]) + "\n"
-    rs = _by(j(_run(log2, 1, ctx={"interposer_code": code})))
+    rs = _by(j(_run(log2, 1)))
     assert rs["test_new"] == Verdict.FAIL, "silent test: FAIL"
     assert rs["capture-pin"] == Verdict.FAIL
     assert rs["l2.population"] == Verdict.FAIL
+    assert rs["test-list"] == Verdict.PASS
+    # a result line for a test the checkout does not list: ERROR, each form
+    code = _code_tree(["test_conformance"])
+    log3 = ("capture pin: l3_stimulus.txt matches its pin\n"
+            "test_conformance: all checks OK\ntest_gone: all checks OK\n"
+            "test_older DID NOT BUILD\n--- l2: c0 ---\ntest_l2_bridge[c0]: all checks OK\n")
+    out = j(_run(log3, 0))
+    rs = _by(out)
+    for t in ("test_gone", "test_older", "test_l2_bridge"):
+        assert rs.get(t) == Verdict.ERROR, (t, rs)
+        assert [x for x in out if x.sub == t][0].detail.startswith("not listed: "), t
+    assert rs["test_conformance"] == Verdict.PASS and "l2.population" not in rs, rs
+    # no test in the checkout: ERROR, whatever the log says
+    code = _code_tree([])
+    out = j(_run(log, 0))
+    rs = _by(out)
+    assert rs["test-list"] == Verdict.ERROR, rs
+    assert [x for x in out if x.sub == "test-list"][0].detail.startswith(
+        "no test_*.cpp: nothing to judge"), out
+    assert rs["test_conformance"] == Verdict.ERROR, "unlisted once the list is empty"
 
 
 # ---- suites -------------------------------------------------------------
@@ -1489,6 +1552,32 @@ def _hb_unreported_pass(run):
             if x.verdict == Verdict.ERROR else x for x in out]
 
 
+def _hb_from_settings(run):
+    """The pre-0d0d judge: its list from the settings' interposer_code."""
+    saved = B._host_bridge_dir
+    B._host_bridge_dir = lambda: os.path.join(run.ctx["interposer_code"],
+                                              "fw_harness", "host_bridge")
+    try:
+        return _ORIG["host_bridge_judge"](run)
+    finally:
+        B._host_bridge_dir = saved
+
+
+def _hb_empty_taken(run):
+    return [Result(Verdict.PASS, x.sub, detail=x.detail) if x.sub == "test-list" else x
+            for x in _ORIG["host_bridge_judge"](run)]
+
+
+def _hb_unlisted_ignored(run):
+    return [x for x in _ORIG["host_bridge_judge"](run)
+            if not x.detail.startswith("not listed: ")]
+
+
+def _hb_no_commit(run):
+    return [Result(x.verdict, x.sub, detail=re.sub(r" at [^:]*:", ":", x.detail))
+            if x.sub == "test-list" else x for x in _ORIG["host_bridge_judge"](run)]
+
+
 def _scen_ignores_rc(run):
     r = _ORIG["scenario_judge"](run)
     if r.verdict == Verdict.FAIL and "-> PASS" in r.detail:
@@ -1917,7 +2006,14 @@ MUTANTS = {
         ("c12_judge", _c12_counts_c9, "fails on C9's DATASHEET line")],
     "test_host_bridge_judge": [
         ("host_bridge_judge", _hb_unreported_pass,
-         "an unreported L2 case passes")],
+         "an unreported L2 case passes"),
+        ("host_bridge_judge", _hb_from_settings,
+         "the test list from the settings' interposer_code (run 2a 0d0d)"),
+        ("host_bridge_judge", _hb_empty_taken, "an empty test list taken"),
+        ("host_bridge_judge", _hb_unlisted_ignored,
+         "a result line for an unlisted test ignored"),
+        ("host_bridge_judge", _hb_no_commit,
+         "the test-list detail names no checkout commit")],
     "test_suites": [
         ("bench", _wrap_suite("bench", _drop_requires), "bench drops requires"),
         ("harness", _wrap_suite("harness", _sim_into_harness),

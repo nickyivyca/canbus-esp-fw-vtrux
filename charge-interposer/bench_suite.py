@@ -369,11 +369,60 @@ def c12_judge(run):
                          "DATASHEET line outside C9" % m.group(1))
 
 
+def _host_bridge_dir():
+    """The host_bridge folder of the judge's own checkout: the tests it
+    expects a result for are its test_*.cpp. Never a settings key: run 2a
+    0d0d's [[check]] judges got no interposer_code (the acceptance runner
+    gives tree settings to suite runs only), and the smokes before it had
+    one naming the tester's worktree, not the tree that ran. The acceptance
+    runner loads its adapter, and so this judge, from a clone at the LIST's
+    commit, and the check may have run in another tree on another host
+    (madhouse), so the detail names this folder and its commit, and the
+    list's commit must hold the same host_bridge files as the tree that ran
+    (the charge-interposer reviewer, 2026-11-07: 2a's re-run list checks
+    that; run.sh printing its own list is a follow-up after 2a)."""
+    return os.path.join(HERE, "fw_harness", "host_bridge")
+
+
+def _checkout_commit(d):
+    """'<commit>, clean' or '<commit>, N file(s) changed here' for the git
+    checkout holding folder d, or why there is none."""
+    import subprocess
+    try:
+        head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=60)
+        if head.returncode != 0:
+            return "not a git checkout"
+        st = subprocess.run(["git", "-C", d, "status", "--porcelain", "--", "."],
+                            capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        return "git not run: %s" % e
+    n = len([ln for ln in st.stdout.splitlines() if ln.strip()])
+    return "%s, %s" % (head.stdout.strip(),
+                       "clean" if n == 0 else "%d file(s) changed here" % n)
+
+
 def host_bridge_judge(run):
     """host_bridge/run.sh: one sub-result per test, and per test_l2_bridge
-    case. A case that opened (--- l2: X ---) but never closed is an ERROR."""
+    case. A case that opened (--- l2: X ---) but never closed is an ERROR.
+    The tests come from the judge's own checkout (_host_bridge_dir), named
+    with its commit in the test-list sub-result. ERROR: no test there; a
+    result line for a test not in that list."""
     text = run.log_text()
     out = []
+    hb = _host_bridge_dir()
+    tests = sorted(os.path.basename(p)[:-4]
+                   for p in glob.glob(os.path.join(hb, "test_*.cpp")))
+    where = "listed from %s at %s" % (hb, _checkout_commit(hb))
+    out.append(Result(Verdict.PASS if tests else Verdict.ERROR, "test-list",
+                      detail="%d test(s) %s: %s" % (len(tests), where, " ".join(tests))
+                      if tests else "no test_*.cpp: nothing to judge (%s)" % where))
+    named = set(re.findall(r"^(test_\w+)(?:: all checks OK| DID NOT BUILD)", text, re.M))
+    if re.search(r"^test_l2_bridge\[", text, re.M):
+        named.add("test_l2_bridge")
+    for t in sorted(named - set(tests)):
+        out.append(Result(Verdict.ERROR, t, detail="not listed: a result line for a "
+                          "test the judge's checkout does not have (%s)" % where))
     pin = "capture pin: l3_stimulus.txt matches its pin" in text
     out.append(Result(Verdict.PASS if pin else Verdict.FAIL, "capture-pin",
                       detail="pin line %s" % ("present" if pin else "MISSING")))
@@ -392,9 +441,6 @@ def host_bridge_judge(run):
         else:
             out.append(Result(Verdict.ERROR, "l2." + c,
                               detail="case opened but never reported"))
-    tests = sorted(os.path.basename(p)[:-4] for p in glob.glob(
-        os.path.join(run.ctx["interposer_code"], "fw_harness",
-                     "host_bridge", "test_*.cpp")))
     for t in tests:
         if t == "test_l2_bridge":
             continue
