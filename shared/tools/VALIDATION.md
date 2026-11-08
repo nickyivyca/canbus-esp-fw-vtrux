@@ -128,6 +128,20 @@ same folder.
   of one clone only; across clones, the code hash. Step 0b's two-path
   rebuild (two worktrees of one clone, gen-inhibit tracker, 2026-10-25) is
   within the narrowed bullet.
+- **Narrowed again 2026-11-07 (user, in the gen-inhibit reviewer's
+  session):** the first bullet promised the image hash across worktrees of
+  one clone. The clone's growth changes it too. The interposer's release
+  stand-in of `cf1b911`, built in one clone on 2026-11-03 and 2026-11-05,
+  gave image hashes `640a94ea...` and `da2d2d41...`. The two images differ
+  only in the version string (`cf1b911` against `cf1b9113`) and the fields
+  that follow from it; the clone had passed 2^14 objects between the two
+  builds; both records give one code hash (`745231a6...`). The interposer
+  tester's finding (interposer test evidence, section 9, "Port step 2a
+  acceptance", item (g)) is cited only as what exposed this. The user chose to say so in R5 and R19, not to fix the
+  abbreviation length in the tooling or to have the tooling set the
+  version (the other two of three options). The bullet now promises the
+  code hash for one commit in any clone, and says when the image hash can
+  differ.
 - **Status:** validated.
 
 ### R6. Identity never rests on the version string or the file name
@@ -536,6 +550,11 @@ same folder.
   - **Once per project** (user, 2026-10-24, raised by the interposer
     reviewer): causes in a project's own source, like the date above, show
     only on that project.
+  - **One clone at one time** (user, 2026-11-07, in the gen-inhibit
+    reviewer's session, under R5's second narrowing): the test's two builds
+    share the clone, so it cannot show a version-string change from the
+    clone's growth or a new tag. R5 no longer promises the image hash
+    across either; builds compared across them are compared by code hash.
 - **Status:** validated.
 
 ### R20. Build switches

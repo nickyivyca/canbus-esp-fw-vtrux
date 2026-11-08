@@ -70,13 +70,14 @@ unless the image changes, which the reproducible test (R19) shows.
   for each build configuration, and carries no commit; each project's spec
   lists its variants.
 - **R5. Identity does not depend on branch, clone path or host OS:**
-  - the same commit built on the same host OS, on any branch, in any
-    worktree of one clone, gives the same image hash. The image hash
-    includes the version string (R4), so two commits with identical files
-    give two image hashes, and two clones of one commit can too, since the
-    version string depends on the clone (how far git abbreviates the
-    commit, and which tags it holds). The code hash is what stays the same
-    (R2, R3);
+  - the same commit built on any branch and in any clone gives the same
+    code hash (R2, R3). Its image hash can differ: it includes the version
+    string (R4), which git derives from the clone. Git lengthens its
+    abbreviation of the commit as the clone's object count grows, or to
+    keep it unique, and names any tag reachable from the commit. So two
+    commits with identical files give two image hashes, and one commit can
+    give two image hashes in two clones, or in one clone before and after
+    it grows or gains a tag;
   - the same files built on either host OS give the same code hash. The
     image hash may differ between host OSes.
 - **R6. Identity never rests on the version string or the file name.** Both
@@ -202,7 +203,10 @@ unless the image changes, which the reproducible test (R19) shows.
   Bench and dev builds are not checked.
 - **R19. Reproducible.** One clean commit, built twice on the same machine
   in two different folders, each time by the release build script, gives
-  the same image hash both times. This is a test of the tooling, not a check
+  the same image hash both times. Its two builds share one clone at one
+  time, so their version strings match (R5). Builds of one commit in two
+  clones, or at two times, are compared by code hash. This is a test of
+  the tooling, not a check
   on each release build. It is rerun whenever something that can reach the
   image changes: the build script or the record writer, the image-reading
   library, the ESP-IDF version or its Python environment (esptool, which
