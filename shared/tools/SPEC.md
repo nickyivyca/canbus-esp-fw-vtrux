@@ -70,11 +70,11 @@ unless the image changes, which the reproducible test (R19) shows.
   for each build configuration, and carries no commit; each project's spec
   lists its variants.
 - **R5. Identity does not depend on branch, clone path or host OS:**
-  - the same commit built on the same host OS, on any branch and in any
-    clone, gives the same code hash (R2, R3). Its image hash can differ:
-    it includes the version string (R4), which git derives from the clone.
-    Git lengthens its abbreviation of the commit as the clone's object
-    count grows, and names any tag reachable from the commit. So two
+  - the same commit built on any branch and in any clone gives the same
+    code hash (R2, R3). Its image hash can differ: it includes the version
+    string (R4), which git derives from the clone. Git lengthens its
+    abbreviation of the commit as the clone's object count grows, or to
+    keep it unique, and names any tag reachable from the commit. So two
     commits with identical files give two image hashes, and one commit can
     give two image hashes in two clones, or in one clone before and after
     it grows or gains a tag;

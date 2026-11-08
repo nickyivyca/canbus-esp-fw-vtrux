@@ -135,8 +135,9 @@ same folder.
   gave image hashes `640a94ea...` and `da2d2d41...`. The two images differ
   only in the version string (`cf1b911` against `cf1b9113`) and the fields
   that follow from it; the clone had passed 2^14 objects between the two
-  builds. The interposer tester's finding is cited only as what exposed
-  this. The user chose to say so in R5 and R19, not to fix the
+  builds; both records give one code hash (`745231a6...`). The interposer
+  tester's finding (interposer test evidence, section 9, "Port step 2a
+  acceptance", item (g)) is cited only as what exposed this. The user chose to say so in R5 and R19, not to fix the
   abbreviation length in the tooling or to have the tooling set the
   version (the other two of three options). The bullet now promises the
   code hash for one commit in any clone, and says when the image hash can
