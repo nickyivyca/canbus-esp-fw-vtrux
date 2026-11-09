@@ -263,12 +263,12 @@ HARNESS_LOCAL = [
     # rules, its own can-fail and its control
     ("no-led-self-test", ["{interposer_code}/fw_harness/no_led.py", "--self-test"]),
     ("board-reset-test", ["{interposer_code}/board_reset_test.py"]),
-    # the forced-order premise, and the scope of its range against c15f8c05
-    # (port step 2a's re-run): it reads that commit from git, so it runs in
-    # the local clone, not madhouse's shipped copy
-    ("scenario-scope-test", ["{interposer_code}/scenario_scope_test.py"]),
-    ("scenario-scope-test-canfail",
-     ["{interposer_code}/scenario_scope_test.py", "--can-fail"]),
+    # the forced-order cases' premise and phase option (0041572d); until
+    # 2026-11-08 scenario_scope_test.py, whose scope check against c15f8c05
+    # was for port step 2a's re-run only
+    ("forced-order-test", ["{interposer_code}/forced_order_test.py"]),
+    ("forced-order-test-canfail",
+     ["{interposer_code}/forced_order_test.py", "--can-fail"]),
     ("bench-suite-test", ["{interposer_code}/bench_suite_test.py"]),
     ("bench-suite-test-canfail",
      ["{interposer_code}/bench_suite_test.py", "--can-fail"]),

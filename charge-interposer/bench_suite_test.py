@@ -489,7 +489,8 @@ def test_suites():
     #      (2a acceptance (j), reviewer 2026-11-04)
     # 248: the two forced-order cases at phases 130 and 270 ms on the board
     #      (4), and scenario-scope-test with its -canfail (run 2a 0d0d's
-    #      item 4, reviewer 2026-11-07)
+    #      item 4, reviewer 2026-11-07); since 2026-11-08 forced-order-test
+    #      and its -canfail in their place (2a accepted)
     assert len(seen) == 248, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
