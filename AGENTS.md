@@ -233,7 +233,9 @@ user, even to recommend an option: the user has one place to argue it (user,
 2026-10-10).
 
 Specs not yet moved into this repo are in reverse-it; the file map gives
-their path under `$REVERSE_IT_DIR`.
+their path under `$REVERSE_IT_DIR`. gen-inhibit's moved on 2026-11-07:
+`gen-inhibit/SPEC.md`, `VALIDATION.md` and `VERIFICATION.md` on
+`gen-inhibit/main`.
 
 **Project layout** (user, 2026-10-26). A project folder holds its file map,
 `<project>/README.md`; its firmware build root, `<project>/firmware/`; and
@@ -346,9 +348,13 @@ Rules for `VALIDATION.md`:
 - **A measurement made on a different toolchain, board or code base is not
   the basis for a requirement on this one.** At most it is supporting
   context, labelled as such.
-- **Incomplete validation is allowed, but it must be visible.** A requirement
-  without a basis is marked "basis pending", with what is missing. A
-  requirement that rests on a user ruling cites the ruling and its date.
+- **Each entry's status is "validated" or "basis pending"** (user,
+  2026-11-07). Validated means its basis is recorded and cited. Basis
+  pending means incomplete validation, which is allowed but must be
+  visible: the entry says what is missing. A requirement that rests on a
+  user ruling cites the ruling and its date. Neither status says whether
+  the code meets the requirement; only `VERIFICATION.md` does. Don't write
+  "complete", which reads as "implemented".
 
 ## Pushing
 
@@ -406,6 +412,8 @@ accepted (user, 2026-10-23). So are WiCAN firmware defaults such as its
 hotspot addresses `192.168.80.1` (device) and `192.168.80.2` (laptop), which
 are not home-network details (user, 2026-10-20). So is `~/.espressif`,
 ESP-IDF's default tools folder, as the whole path only (user, 2026-11-03).
+So is bare `madhouse`, in prose and in file names, though it is also a
+bench WiFi SSID (user, 2026-11-07).
 
 **The scan script is an aid to this review, not a replacement for it.**
 Run it first:
@@ -464,10 +472,14 @@ project is `charge-interposer/firmware/`, on ESP-IDF v5.4.2 with
 arduino-esp32 3.2.1 as a component (user, 2026-11-03). Its build identity
 follows shared/tools, at the version
 `charge-interposer/firmware/shared_pins.json` pins (interposer spec 8.2).
-Its bench and dev builds are `idf.py` / `ninja` builds, one build folder
-per variant, made by `charge-interposer/vtrux_tools.py build <variant>`,
-and like gen-inhibit's they need not meet the release rules. The launcher
-refuses a shell not exported for the interposer's IDF. No interposer
+Its bench and dev builds are the shared tooling's dev builds (shared/tools
+R31), one build folder per variant, made by
+`charge-interposer/vtrux_tools.py build <variant>`, with the variants
+listed in `charge-interposer/firmware/vtrux_build.json`. Like
+gen-inhibit's, they need not meet the release rules. The tooling's
+environment check (R32) runs first. A bench build made with `idf.py`
+directly, such as a flash, runs
+`py -3.14 -B charge-interposer/vtrux_tools.py check-env` first. No interposer
 release build is made during the port, since no mid-port build goes on
 the truck (user, 2026-11-03).
 
@@ -520,12 +532,14 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
    `ninja -C gen-inhibit/firmware/build -j 1`; for an interposer
    bench or dev build,
    `py -3.14 -B charge-interposer/vtrux_tools.py build <variant> --jobs 1`,
-   which reconfigures `charge-interposer/firmware/build/<variant>` for its
-   variant, then runs `ninja -j 1` there. The processes the build starts
-   inherit the class. Idle lowers CPU priority only, not disk priority. It
-   also does not reach Windows Defender, which scans fresh build output in
-   its own process. If (b) still disturbs the test, the next suspect is
-   Defender, and excluding the build folders from it is the user's call.
+   the shared tooling's dev build (R31), which reconfigures
+   `charge-interposer/firmware/build/<variant>` with the variant's options
+   from `vtrux_build.json`, then runs `ninja -j 1` there. The processes
+   the build starts inherit the class. Idle lowers CPU priority only, not
+   disk priority. It also does not reach Windows Defender, which scans
+   fresh build output in its own process. If (b) still disturbs the test,
+   the next suspect is Defender, and excluding the build folders from it
+   is the user's call.
    **When a project's build command changes,** this point changes in the
    same merge (see "Docs change with the tooling").
 4. **Testers raise their simulators** to above-normal priority, never High or

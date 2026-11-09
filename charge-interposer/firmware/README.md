@@ -35,7 +35,7 @@ bench artifacts stayed there when this folder moved into
 | `main/CMakeLists.txt` | The `main` component: **each variant's sources and switches**. A variant lists exactly the `*_main.cpp` it links, so no variant can pick up another's `setup()`. The PlatformIO build excluded them instead, and `slcan_main.cpp`, added 2026-09-29 without updating the others, stopped the bridge linking at all until 2026-10-03. |
 | `main/idf_component.yml`, `dependencies.lock` | The dependencies: arduino-esp32 3.2.1 from the Component Manager, five of its own dependencies held at the baseline's versions, the board `vtrux/x2` from git at a `shared/main` tag, ESP-IDF v5.4.2 exactly. The lock records what they resolved to. |
 | `sdkconfig` | The one configuration every variant builds from (spec 9's settings, 8.3's log levels, the X2's fixed values). Committed. |
-| `shared_pins.json`, `vtrux_build.json` | The pin of the shared build tooling, and the project's name and shared components for it (`shared/tools/SPEC.md`). |
+| `shared_pins.json`, `vtrux_build.json` | The pins of the shared code, and the project's name, shared components and dev-build variants for the shared build tooling (`shared/tools/SPEC.md`; the variants are R31's, each with the `-D INTP_VARIANT` it is configured with). |
 | `main/board_ports.h` | Each port's pins from the board layer (`vtrux/x2`, shared/boards B5), never constants: CAN1 from `board_twai_pins(0)`, CAN2 from `board_spi_can(1)`. A board that does not describe a port as expected makes that port fail to start, which is spec 8.2's bridge-down path, never an abort. |
 | `main/machine.h` / `.cpp` | **The state machine.** Pure: no Arduino, no ESP-IDF, integer-only, time as a parameter. The only file whose behaviour matters. |
 | `main/can_port.h` | `CanPort` interface + a fixed-capacity `FrameRing`. Separates "queued" from "on the wire" deliberately. |
@@ -97,8 +97,12 @@ on GPIO43/44 -- pins with nothing attached on this board. Every
 **Build from PowerShell, never Git Bash** (`idf_tools.py` refuses under
 `MSYSTEM`), in a shell exported for this project's ESP-IDF. The install, its
 own `IDF_TOOLS_PATH` (so its venv and tools never touch gen-inhibit's) and
-the export lines are per machine, in the worktree's `local-paths.md`. Then,
-from `charge-interposer/firmware/`:
+the export lines are per machine, in the worktree's `local-paths.md`. A
+build made with `idf.py` directly, as below, runs the shared tooling's IDF
+environment check first, in the same shell (shared/tools R32): from the
+repo root, `py -3.14 -B charge-interposer/vtrux_tools.py check-env`. A
+dev build through `vtrux_tools.py build` (below) runs it itself. Then, from
+`charge-interposer/firmware/`:
 
 ```powershell
 idf.py -B build/bridge -D INTP_VARIANT=bridge build      # one variant
@@ -116,41 +120,55 @@ With no `-D`, the variant is `truck` (user, 2026-11-03): shared/tools'
 `release` passes no `-D`, and truck is the only image released. A dev build
 always names its variant.
 
-**`../vtrux_tools.py`, from the repo root,** does the same dev build with a
-check of the shell first, and starts the shared tooling at the pinned
-version:
+**`../vtrux_tools.py`, from the repo root,** starts the shared build
+tooling at the version `shared_pins.json` pins, from its read-only checkout
+`../shared-<tag>/` beside the worktree, and gives `release` and `build`
+this folder as the project:
 
 ```powershell
+py -3.14 -B charge-interposer/vtrux_tools.py check-env                 # the IDF environment check (R32)
 py -3.14 -B charge-interposer/vtrux_tools.py build bridge              # dev build, build/bridge
 py -3.14 -B charge-interposer/vtrux_tools.py build bridge --jobs 1     # throttled, from an Idle shell
 py -3.14 -B charge-interposer/vtrux_tools.py release --check-only      # the release refusals only
 py -3.14 -B charge-interposer/vtrux_tools.py image charge-interposer/firmware/build/bridge/interposer_bridge.bin
 ```
 
-`build <variant>` runs `idf.py -B build/<variant> -D INTP_VARIANT=<variant>
-reconfigure`, then ninja in that folder. `release` and `build` first refuse a
-shell whose `IDF_TOOLS_PATH` is unset or empty, or whose
-`IDF_PYTHON_ENV_PATH` or `ESP_ROM_ELF_DIR` is not inside it: unset, ESP-IDF
-falls back to `~/.espressif`, gen-inhibit's install. `release` is a release
-build of `truck` with its record (shared/tools section 3); none goes on the
-truck during the port, and the never-flashed stand-in the acceptance items
-use points `REVERSE_IT_DIR` at a stand-in folder for its record.
+`build <variant>` is the tooling's dev build (shared/tools R31): it runs
+`idf.py -B build/<variant> -D INTP_VARIANT=<variant> reconfigure`, then
+ninja in that folder, in the caller's environment, adding nothing. The
+variants and their `-D` options are `vtrux_build.json`'s `variants`; the
+`INTP_VARIANTS` line in `CMakeLists.txt` names the same six, and
+`../test_vtrux_tools.py` checks that the two agree. Any failure, including
+a failed `idf.py` or ninja, exits 1, and only a finished build prints
+`BUILT`. `release` and `build` first run the R32 check, and refuse a shell
+whose `IDF_PATH` or `IDF_TOOLS_PATH` is unset or empty, whose
+`IDF_TOOLS_PATH` has spaces around it, or whose `IDF_PYTHON_ENV_PATH` or
+`ESP_ROM_ELF_DIR` is not inside it: nothing is defaulted to
+`~/.espressif`, which may be another install's. A bench or dev build is not
+guarded against another ESP-IDF version (R33, R14): that ESP-IDF rewrites
+`dependencies.lock` and builds, so a changed lock in `git status` after a
+configure is the sign; never commit it. `release` is a release build of
+`truck` with its record (shared/tools section 3), refused unless the
+configure reports exactly the ESP-IDF version `main/idf_component.yml`
+names (R33); none goes on the truck during the port, and the never-flashed
+stand-in the acceptance items use points `REVERSE_IT_DIR` at a stand-in
+folder for its record.
 
 **Before any build, check for wall-clock tests** (AGENTS.md, "Builds during
 wall-clock tests"): the bench lock, the "No builds" line and running
 simulators. Until the tester's build trial on this ESP-IDF build has passed,
 an interposer build waits until none is running, throttled or not. The
-throttled form sets the shell's priority class to Idle, configures with
-`idf.py`, and builds with one job:
+throttled form sets the shell's priority class to Idle, then builds with
+one job, from the repo root:
 
 ```powershell
 (Get-Process -Id $PID).PriorityClass = 'Idle'
-idf.py -B build/bridge -D INTP_VARIANT=bridge reconfigure
-ninja -C build/bridge -j 1
+py -3.14 -B charge-interposer/vtrux_tools.py build bridge --jobs 1
 ```
 
-or, from the repo root in the same Idle shell, `py -3.14 -B
-charge-interposer/vtrux_tools.py build bridge --jobs 1`.
+which is, from `charge-interposer/firmware/` in the same Idle shell, the
+check-env above, then `idf.py -B build/bridge -D INTP_VARIANT=bridge
+reconfigure` and `ninja -C build/bridge -j 1`.
 
 **`sdkconfig` and `dependencies.lock` are committed with LF line endings.**
 On Windows ESP-IDF writes both as CRLF when it regenerates them; save them
