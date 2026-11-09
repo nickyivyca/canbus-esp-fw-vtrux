@@ -1082,6 +1082,13 @@ was read as a logger on the truck dropping frames).
 - **Diag must not delay an inhibit frame:** review A4.
 - **`0x7F3`:** schema 8, port step 0c; user, 2026-10-19 and 2026-10-25.
   `diag_fw_ver` stays until stage (b): user, 2026-10-25.
+- **Corrected 2026-11-08 (user):** the build-id paragraph read "Builds of
+  one commit give one image hash in worktrees of one clone (shared/tools
+  R5), since reproducible builds are on (port step 0b)". shared/tools R5,
+  narrowed 2026-11-07, no longer promises that once the clone grows. Builds
+  are compared by code hash, and the image hash only identifies one binary
+  (user, 2026-11-08, in the charge-interposer reviewer's session, relayed by
+  the methodology owner).
 - **Status:** validated.
 
 ## 11. Control surface
@@ -1236,6 +1243,13 @@ user-approved; the trip 6 count entry was added 2026-10-21 (user, tracker
 B6); the mode 3 clarification is the user's, 2026-10-04; the gate not
 cleared is the user's decision, 2026-09-20.
 
+- **Corrected 2026-11-08 (user):** the mode 3 clarification defined
+  code-identical as images differing "only in version, project name,
+  build-time, hash (including `git_version`) and checksum bytes". It now
+  means the same code hash (shared/tools R2), by the same ruling as
+  section 10's correction. R2 does not blank `project_name`, so a build of
+  another variant no longer counts as code-identical; the auto-arm build is
+  tested in full in any case (the same entry's "Arming").
 - **Status:** validated.
 
 ## 14. Open questions

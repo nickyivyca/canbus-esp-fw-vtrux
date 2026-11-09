@@ -1471,9 +1471,8 @@ the DBC decodes it as an unsigned 32-bit value that, printed as eight hex
 digits, reads as the hash's first four bytes in order. A build id is looked up
 in the release build records and the bench run records, which name each image
 by its full hash: a prefix that matches no record is unknown, and one that
-matches two is ambiguous, never guessed. Builds of one commit give one image
-hash in worktrees of one clone (shared/tools R5), since reproducible builds
-are on (port step 0b). `diag_fw_ver` is a behaviour/capability revision, with
+matches two is ambiguous, never guessed. The build id only names one binary:
+builds are compared by code hash (shared/tools R2, R3). `diag_fw_ver` is a behaviour/capability revision, with
 its bump rule and table in the schema doc. It stays, by hand, until stage (b)
 of the port retires it in the one diag layout both projects share.
 
@@ -1993,9 +1992,8 @@ waits on that, not on this list. *Clarified 2026-10-04 (user):*
   build (12.3 item 3).
 - **What carries over:** a build whose firmware is code-identical to a
   tested one carries that build's results. The suite may be re-run as a
-  formality, but does not have to be. Code-identical means the images
-  differ only in version, project name, build-time, hash (including
-  `git_version`) and checksum bytes.
+  formality, but does not have to be. Code-identical means the same code
+  hash (shared/tools R2).
 - **What does not:** any other change restarts the suite, per 12.3.
 - **Arming:** truck bring-up starts in manual mode, and the auto-arm
   build is fully tested before it is deployed.
