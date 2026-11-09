@@ -773,6 +773,14 @@ copy it into a run folder.
   synced notes, present it to the user and get explicit approval.
   Hypotheses may go in, framed as hypotheses, once the user has seen them.
   The commit is the gate; the conversation is the proposal space.
+- **Verified facts are not claims for this rule** (user, 2026-11-08). A
+  measurement, a command's output, a commit, a test result or an install,
+  checked in the session, is written directly, saying where it was
+  checked. A user ruling relayed by the session where it was made is
+  written once checked against that session's record (its tracker, spec
+  or evidence doc), naming that session. Only a mismatch goes back to the
+  user. Interpretations, hypotheses and assumptions still go to the user
+  first.
 - **Unreviewed findings go in a worklog in `.claude/memory/`,** which is
   gitignored and local to this worktree, so that they live in a file and
   not only in context. It is a worklog for the current plan step and must
