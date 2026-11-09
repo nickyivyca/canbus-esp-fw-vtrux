@@ -37,7 +37,7 @@ until nothing reads them. Since the move:
 
 | File | What |
 |---|---|
-| `l2_mutations.sh` | Mutation check for `test_l2_bridge`. Since port step 2b also M (frames lost at the restart after bus-off recovery left out of the RX overflow count, spec 2.4), N (the half-open bridge against `failed-start-vehicle`, now caught by the vehicle port's `tx_refused`), O and P (frames toward the vehicle, and the status frames, sent in listen-only) |
+| `l2_mutations.sh` | Mutation check for `test_l2_bridge`. Since port step 2b also M (frames lost at the restart after bus-off recovery left out of the RX overflow count, spec 2.4), N (the half-open bridge against `failed-start-vehicle`, now caught by the vehicle port's `tx_refused`), O and P (frames toward the vehicle, and the status frames, sent in listen-only); and Q-X, one mutant per line of spec 2.4's counter mapping in `port_view.h` (`rxDropped`'s three parts, `txDropped`'s two, `busErrors`, `busOff`, `busOffEvents`), each caught by `test_canport_contract`'s vehicle half on its own check (tester, 2026-11-09, the reviewer's ruling) |
 | `hold_mutations.sh` | Mutation check for `test_sameid_hold` |
 | `busoff_mutations.sh` | Mutation check for `test_mcp2515_busoff` |
 | `rx_hook_mutations.sh` | Mutation check for `Mcp2515Fake::deliverWhenFreed()` |

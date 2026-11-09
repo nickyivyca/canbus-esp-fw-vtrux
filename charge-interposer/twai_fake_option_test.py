@@ -24,7 +24,8 @@ lists and the file map name it); what it tests:
     then the fake's include/, host/ and cpp/, then twai_port's and
     can_port's include/; the fake's C++ interface and object in every
     test; the vehicle port's sources and the port objects in the two that
-    build the bridge; no file of our retired fake anywhere;
+    build the bridge and in test_canport_contract (both ports through
+    CanPort&); no file of our retired fake anywhere;
   - with no TWAI_FAKE_DIR, the pinned folders from shared_pin.py where,
     can_port's by its own where;
   - a C source that does not build: its line, rc 1, and the tests that
@@ -88,6 +89,11 @@ L2_FW = ("main.cpp", "port_mcp2515.cpp", "vehicle_port.cpp", "port_view.cpp",
          "charger_port.cpp", "machine.cpp")
 EVENT_FW = ("port_mcp2515.cpp", "vehicle_port.cpp", "port_view.cpp",
             "charger_port.cpp", "machine.cpp")
+# test_canport_contract's: both ports through CanPort& (since 2026-11-09 the
+# vehicle port's PortView too), so it links the port objects
+CONTRACT_FW = ("port_mcp2515.cpp", "vehicle_port.cpp", "port_view.cpp")
+# the tests that link the port objects
+PORT_TESTS = ("test_canport_contract", "test_event_layout", "test_l2_bridge")
 RETIRED = ("twai_fake.h", "twai_fake.cpp", "driver/twai.h")
 
 
@@ -425,6 +431,9 @@ def check_build(ctx, calls, py, outp, tmp, fd, tp, cp):
         elif name == "test_event_layout":
             assert sorted(port) == sorted(PORT_OBJS), (name, port)
             assert sorted(fw) == sorted(EVENT_FW), (name, fw)
+        elif name == "test_canport_contract":
+            assert sorted(port) == sorted(PORT_OBJS), (name, port)
+            assert sorted(fw) == sorted(CONTRACT_FW), (name, fw)
         else:
             assert not port and "vehicle_port.cpp" not in fw, (name, port, fw)
         assert not any(os.path.basename(s) == "twai_fake.cpp" and not same(s, srcs[1])
@@ -480,11 +489,10 @@ def test_c_source_fails(ctx, work):
     lines = outp.splitlines()
     assert sum(ln.startswith("can_port (C, ") and ln.endswith(" DID NOT BUILD")
                for ln in lines) == 1, outp[-400:]
-    for t in ("test_l2_bridge", "test_event_layout"):
+    for t in PORT_TESTS:
         assert "%s DID NOT BUILD (no can_port.o)" % t in lines, (t, outp[-400:])
     built = [os.path.basename(out_of(c)) for c in calls if c["tool"] == "g++"]
-    assert built == [t for t in tests_of() if t not in ("test_l2_bridge",
-                                                        "test_event_layout")], built
+    assert built == [t for t in tests_of() if t not in PORT_TESTS], built
     all_removed(ctx, tmp)
 
 
@@ -785,6 +793,10 @@ MUTANTS = [
     ("run.sh", "the event layout without the vehicle port's setup",
      'PORTS=("$SRC/port_mcp2515.cpp" "$SRC/vehicle_port.cpp" "$SRC/port_view.cpp"',
      'PORTS=("$SRC/port_mcp2515.cpp" "$SRC/port_view.cpp"'),
+    ("run.sh", "the contract test without the vehicle port",
+     '      srcs+=("$SRC/port_mcp2515.cpp" "$SRC/vehicle_port.cpp" "$SRC/port_view.cpp")\n'
+     '      objs+=("${PORT_OBJS[@]}")\n',
+     '      srcs+=("$SRC/port_mcp2515.cpp")\n'),
     ("run.sh", "a test missing an object still built", '  if [ -n "$missing" ] ||\n',
      "  if false ||\n"),
     ("run.sh", "the binaries in the system temp folder", 'bin="$W/$name"',

@@ -161,7 +161,13 @@ for name in ${tests[@]+"${tests[@]}"}; do
   # alone, and only the driver tests want the driver itself compiled in.
   defs=()
   case "$name" in
-    test_tx_failed|test_canport_contract|test_mcp2515_busoff|test_tx_throughput|test_sameid_hold) srcs+=("$SRC/port_mcp2515.cpp") ;;
+    test_tx_failed|test_mcp2515_busoff|test_tx_throughput|test_sameid_hold) srcs+=("$SRC/port_mcp2515.cpp") ;;
+    # The CanPort contract, for both ports (since port step 2b the vehicle
+    # port too: its PortView on twai_port and can_port).
+    test_canport_contract)
+      srcs+=("$SRC/port_mcp2515.cpp" "$SRC/vehicle_port.cpp" "$SRC/port_view.cpp")
+      objs+=("${PORT_OBJS[@]}")
+      ;;
     # The stall trace is the only build that defines INTP_TX_TRACE, which
     # compiles the per-pass instrumentation into the driver. No firmware
     # variant defines it, so no firmware image carries it.

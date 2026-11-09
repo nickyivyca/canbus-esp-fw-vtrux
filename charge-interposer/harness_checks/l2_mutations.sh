@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Mutation check for test_l2_bridge.
+# Mutation check for test_l2_bridge, and since port step 2b for
+# test_canport_contract's vehicle half (Q-X, spec 2.4's counter mapping).
 #
 # The L2 harness exists because the whole bridge loop had never run on a
 # host. Its coverage assertion exists because the MCP2515 RECEIVE path had
@@ -94,6 +95,27 @@ build() {
   [ -x "$WORK/run" ]
 }
 
+# test_canport_contract, as run.sh builds it (since port step 2b it checks
+# the vehicle port's PortView too, so port_view.h's counter mapping is
+# mutated against it below, Q-X): from fw/, so a mutation of fw/port_view.h
+# is the one compiled. -> 0 if it built, 1 if not; the binary is removed
+# first.
+build_contract() {
+  rm -f "$WORK/contract"
+  local srcs=(test_canport_contract.cpp "$HB_SH/cpp/twai_fake.cpp") f
+  for f in "$WORK"/*.cpp; do
+    case "$(basename "$f")" in test_*) continue ;; esac
+    srcs+=("$f")
+  done
+  srcs+=(fw/port_mcp2515.cpp fw/vehicle_port.cpp fw/port_view.cpp obj/*.o)
+  if ! g++ -std=c++11 -O2 "${INC[@]}" -o "$WORK/contract" \
+       "${srcs[@]}" > "$WORK/build.txt" 2>&1; then
+    head -5 "$WORK/build.txt"
+    return 1
+  fi
+  [ -x "$WORK/contract" ]
+}
+
 rc=0
 
 echo "=== CONTROL (unmutated) ==="
@@ -149,9 +171,21 @@ echo "control: the cases the mutations run all PASS ($NEED); $n cases listed"
 if [ -n "$failing" ]; then
   echo "  failing in the control, used by no mutation here:$failing"
 fi
+# The contract test's control: it builds and passes unmutated.
+if ! build_contract; then
+  echo "*** CONTROL test_canport_contract DID NOT BUILD -- Q-X would mean nothing ***"
+  exit 1
+fi
+if ! "$WORK/contract" > "$WORK/c_contract.txt" 2>&1; then
+  echo "*** CONTROL FAILED on test_canport_contract, which Q-X run -- fix that first ***"
+  grep -h '^FAIL' "$WORK/c_contract.txt" | head
+  exit 1
+fi
+echo "control: test_canport_contract PASSES"
 
-# $1 label, $2 file (relative to the work tree), $3 sed expr, $4 case,
-# $5 expected failure text
+# $1 label, $2 file (relative to the work tree), $3 sed expr, $4 case of
+# test_l2_bridge, or @contract for test_canport_contract, $5 expected
+# failure text
 mutate() {
   local label="$1" file="$2" expr="$3" case_name="$4" want="$5"
   echo
@@ -168,13 +202,18 @@ mutate() {
     rc=1
     return
   fi
-  if ! build; then
+  local bld=build cmd=("$WORK/run" "$case_name")
+  if [ "$case_name" = "@contract" ]; then
+    bld=build_contract
+    cmd=("$WORK/contract")
+  fi
+  if ! "$bld"; then
     echo "*** the mutated tree did not build -- meaningless, not caught"
     rc=1
     cp "PRISTINE/$file" "$file"
     return
   fi
-  if "$WORK/run" "$case_name" > "$WORK/out.txt" 2>&1; then
+  if "${cmd[@]}" > "$WORK/out.txt" 2>&1; then
     echo "*** case '$case_name' STILL PASSED. Not constrained. ***"
     rc=1
   else
@@ -328,6 +367,58 @@ mutate "P: the status frames are sent in listen-only" \
   's|  const bool quiet = vehicleListenOnly();|  const bool quiet = false;|' \
   listen-only-revert \
   'no transmit attempted'
+
+# Q-X (tester, 2026-11-09; the charge-interposer reviewer's ruling on the
+# 2b fit): spec 2.4's counter mapping, port_view.h's lines, each against
+# test_canport_contract's vehicle half (the PortView through CanPort&).
+# Q, R and S take K, L and M's edits there; T-X are the other lines.
+mutate "Q: rxDropped() leaves out the full receive queue (contract)" \
+  fw/port_view.h \
+  's|  uint32_t rxDropped() const override { return status().rx_lost; }|  uint32_t rxDropped() const override { return status().rx_lost - status().rx_lost_queue_full; }|' \
+  @contract \
+  'frames lost to the full receive queue raise rxDropped()'
+
+mutate "R: rxDropped() leaves out the FIFO overrun (contract)" \
+  fw/port_view.h \
+  's|  uint32_t rxDropped() const override { return status().rx_lost; }|  uint32_t rxDropped() const override { return status().rx_lost - status().rx_lost_overrun; }|' \
+  @contract \
+  'frames lost to a FIFO overrun raise rxDropped()'
+
+mutate "S: rxDropped() leaves out the restart after recovery (contract, D3)" \
+  fw/port_view.h \
+  's|  uint32_t rxDropped() const override { return status().rx_lost; }|  uint32_t rxDropped() const override { return status().rx_lost - status().rx_lost_restart; }|' \
+  @contract \
+  'restart after bus-off recovery raise rxDropped()'
+
+mutate "T: txDropped() leaves out the sends refused for another reason (D2)" \
+  fw/port_view.h \
+  's|    return s.tx_dropped + s.tx_refused;|    return s.tx_dropped;|' \
+  @contract \
+  'refused with the port down raises txDropped()'
+
+mutate "U: txDropped() leaves out the sends refused for a full queue (D2)" \
+  fw/port_view.h \
+  's|    return s.tx_dropped + s.tx_refused;|    return s.tx_refused;|' \
+  @contract \
+  'refused for a full queue raises txDropped()'
+
+mutate "V: busErrors() is not the driver's count (D1)" \
+  fw/port_view.h \
+  's|  uint32_t busErrors() const override { return status().bus_errors; }|  uint32_t busErrors() const override { return status().bus_off_entries; }|' \
+  @contract \
+  'busErrors() rises by one per bus error'
+
+mutate "W: busOff() is not the level (it stays set once an episode was seen)" \
+  fw/port_view.h \
+  's|  bool busOff() const override { return status().bus_off; }|  bool busOff() const override { return status().bus_off_entries > 0; }|' \
+  @contract \
+  'busOff() is clear once the controller has recovered'
+
+mutate "X: busOffEvents() is the level, not the count of episodes" \
+  fw/port_view.h \
+  's|    return status().bus_off_entries;|    return status().bus_off ? 1u : 0u;|' \
+  @contract \
+  'busOffEvents() rises by one'
 
 echo
 if [ "$rc" -eq 0 ]; then

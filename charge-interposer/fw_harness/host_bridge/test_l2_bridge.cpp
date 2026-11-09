@@ -1066,6 +1066,13 @@ void caseBusOffVehicle() {
 // first 0x7F4 after it reports bridge_ok CLEAR, then SET again on a clean
 // interval. The bus-off alone also clears bridge_ok (busoff-vehicle), so
 // the rise of the overflow count is what tells this case's loss apart.
+//
+// WHAT IT DOES NOT SHOW (the charge-interposer reviewer, 2026-11-09): the
+// case checks the MAPPING -- frames lost at the restart reach rx_ovf and
+// clear bridge_ok -- not that the board's own loop can reach a restart with
+// frames still waiting. The board reads its receive queue on every pass,
+// bus-off or not, so the test calls the port's service itself (below) to
+// make that interleaving.
 void caseRxLostAtRecovery() {
   boot();
   feed(15);
