@@ -855,8 +855,9 @@ void InterposerCore::onChargerFrame(uint32_t id, bool ext, const uint8_t* d,
   // one (reviewer, 2026-10-13: an extended remote frame with source address
   // 0xC0 must NOT switch the mode, because the frame that switches it has
   // to be forwarded and spec 2's B-8 exception does not forward RTR). Both
-  // drivers drop remote frames first -- port_twai.cpp:71 and
-  // port_mcp2515.cpp:310 -- so there is no rtr argument here to test, and
+  // drivers drop remote frames first -- vtrux/twai_port with drop_rtr set
+  // (vehicle_port.cpp, spec 2.4) and port_mcp2515.cpp:310 -- so there is
+  // no rtr argument here to test, and
   // adding one would change this interface and the trace format with it
   // for a frame that cannot arrive.
   if (ext && (id & 0xFFu) == CHG_SA) {

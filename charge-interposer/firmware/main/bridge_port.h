@@ -1,8 +1,15 @@
 // One CAN segment, as the bridge sees it.
 //
-// Two implementations: TwaiPort (the S3's built-in controller, vehicle side)
-// and Mcp2515Port (SPI, charger side). The core never sees either -- it is
-// handed frames and hands back frames, and main.cpp does the moving.
+// Two implementations: PortView (port_view.h), any port the shared
+// vtrux/can_port has a backend for -- the vehicle side's vtrux/twai_port
+// since port step 2b (spec 2.4) -- and Mcp2515Port (SPI, charger side). The
+// core never sees either -- it is handed frames and hands back frames, and
+// main.cpp does the moving.
+//
+// NOT NAMED can_port.h, which it was until port step 2b: the shared
+// component's own include/can_port.h has that name, and a quoted #include
+// looks in the including file's folder first, so this one would have been
+// taken in its place, in the IDF build and in the host build alike.
 //
 // The interface deliberately separates "queued" from "on the wire". Both of the
 // failure modes we care about come from conflating them: coryjfowler's

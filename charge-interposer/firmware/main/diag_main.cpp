@@ -31,7 +31,9 @@
 
 #include "board_ports.h"
 #include "port_mcp2515.h"
-#include "port_twai.h"
+#include "port_view.h"
+#include "twai_port.h"
+#include "vehicle_port.h"
 
 using namespace interposer;
 
@@ -44,7 +46,12 @@ static const int CAN1_RX_GPIO = VEH.rx;
 static const uint32_t BITRATE = 500000UL;
 
 static SPIClass mcp_spi(HSPI);
-static TwaiPort can1(CAN1_TX_GPIO, CAN1_RX_GPIO);
+// CAN1 is the shared vtrux/twai_port, through vtrux/can_port (spec 2.4,
+// port step 2b), installed in no-ACK self-test, the chip's loopback: each
+// frame sent is also received, and twai_port sets the self-reception flag
+// on every send (T2). It takes the same pins from the board (B5) that
+// phase 2 drives by hand once the driver is torn down.
+static PortView can1(VEHICLE_PORT);
 static Mcp2515Port can2(mcp_spi, CHG.cs, CHG.irq);
 
 static uint16_t checks_run = 0;
@@ -233,9 +240,9 @@ void setup() {
 
   // --- phase 1 ---
   Serial.println("\n### phase 1: drivers, self-reception (TWAI transmits on CAN1) ###");
-  can1.setSelfTest(true);
   can2.setLoopback(true);
-  check(can1.begin(BITRATE), "CAN1 (TWAI) began in NO_ACK self-test mode");
+  check(vehicleSetup(CAN_PORT_MODE_NO_ACK_SELF_TEST) && can1.begin(BITRATE),
+        "CAN1 (TWAI) began in NO_ACK self-test mode");
   check(can2.begin(BITRATE), "CAN2 (MCP2515) began in loopback mode");
   dumpMcpRegs("after begin, expect OPMOD=2 for loopback");
   phaseSelfLoop(can1, "TWAI (self-reception)");
@@ -244,7 +251,7 @@ void setup() {
 
   // --- phase 2 needs different modes, so tear both ports down first ---
   Serial.println("\n### phase 2: physical layer ###");
-  can1.end();
+  (void)twai_port_teardown();
   can2.end();
 
   can2.setLoopback(false);
@@ -257,15 +264,17 @@ void setup() {
   can2.end();
   can2.setListenOnly(true);
   check(can2.begin(BITRATE), "CAN2 re-began in listen-only mode");
-  can1.setSelfTest(true);
-  can1.setListenOnly(false);
-  check(can1.begin(BITRATE), "CAN1 re-began in NO_ACK mode");
+  // Still recorded in no-ACK self-test from phase 1: a teardown changes no
+  // mode (twai_port T4).
+  check(twai_port_mode() == CAN_PORT_MODE_NO_ACK_SELF_TEST &&
+            can1.begin(BITRATE),
+        "CAN1 re-began in NO_ACK mode");
   phaseOneWay();
 
   dumpMcpRegs("final");
-  Serial.printf("  TWAI TEC=%lu REC=%lu busOff=%d\n",
-                (unsigned long)can1.txErrCounter(),
-                (unsigned long)can1.rxErrCounter(), can1.busOff() ? 1 : 0);
+  const can_port_status_t s1 = can1.status();
+  Serial.printf("  TWAI TEC=%lu REC=%lu busOff=%d\n", (unsigned long)s1.tec,
+                (unsigned long)s1.rec, s1.bus_off ? 1 : 0);
 
   Serial.printf("\n=== %u checks, %u failed ===\n", checks_run, checks_failed);
   if (phase1_failed) {

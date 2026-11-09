@@ -27,7 +27,9 @@
 #include "charger_tx_failures.h"
 #include "machine.h"
 #include "port_mcp2515.h"
-#include "port_twai.h"
+#include "port_view.h"
+#include "twai_port.h"
+#include "vehicle_port.h"
 
 // --------------------------------------------------------------------------
 // Spec 8.3: builds loaded to the truck have serial output disabled.
@@ -149,8 +151,18 @@ static const uint32_t TICK_INTERVAL_MS = 10;
 static const uint32_t STATUS_INTERVAL_MS = 5000;
 
 static SPIClass mcp_spi(HSPI);
-static TwaiPort vehicle(VEH.tx, VEH.rx);
+// Spec 2.4 (port step 2b): the vehicle port is vtrux/twai_port, reached
+// through vtrux/can_port by its index (vehicle_port.h, port_view.h).
+static PortView vehicle(VEHICLE_PORT);
 static Mcp2515Port charger(mcp_spi, CHG.cs, CHG.irq);
+
+// Spec 2.3: the vehicle port's mode as the port records it. twai_port
+// records a new mode only once the teardown has succeeded (T4), so a
+// refused switch leaves this in the old mode with the controller, and a
+// caller gating transmission on it is told the truth.
+static bool vehicleListenOnly() {
+  return twai_port_mode() == CAN_PORT_MODE_LISTEN_ONLY;
+}
 
 static Config cfg;
 static InterposerCore* core = nullptr;
@@ -187,7 +199,7 @@ static uint32_t veh_bridge_fail = 0;
 // Spec 2.3: the vehicle port's mode. Three tallies, all three on the serial
 // line, because each one means something different if it is not zero:
 // switches that happened, switches the driver refused (bus-off recovery, see
-// TwaiPort::setMode), and vehicle-bound frames that arrived with the port in
+// applyVehicleMode), and vehicle-bound frames that arrived with the port in
 // listen-only -- which should be impossible and is a bug in the ordering
 // below rather than a lost frame.
 static uint32_t mode_switches = 0;
@@ -335,7 +347,7 @@ static void sendDiag(uint32_t t_ms, bool status_only) {
   // on a bring-up build (8.3)" and section 10 item 7, the charger-port
   // error counters read during a drive. The gate now covers the SEND only;
   // the content is built and the line printed either way.
-  const bool quiet = vehicle.listenOnly();
+  const bool quiet = vehicleListenOnly();
   // The immediate 0x7F4 on a state change is a frame and nothing else --
   // there is no line that goes with it -- so in listen-only it has nothing
   // left to do.
@@ -420,7 +432,7 @@ static void dispatch(const EmitList& out) {
     // first charger frame on, because applyVehicleMode() runs before this.
     // So it is counted on its own, where a non-zero reading is that
     // ordering broken rather than a frame lost.
-    if (e.port == TO_VEHICLE && vehicle.listenOnly()) {
+    if (e.port == TO_VEHICLE && vehicleListenOnly()) {
       listen_suppressed++;
       continue;
     }
@@ -450,7 +462,7 @@ static void dispatch(const EmitList& out) {
 // anything, and the dispatch below happens after this returns.
 static void applyVehicleMode(uint32_t t_ms) {
   const bool want = core->vehicleListenOnly();
-  if (vehicle.listenOnly() == want) return;
+  if (vehicleListenOnly() == want) return;
 
   // The switch tears the driver down, which discards whatever it had in RX,
   // so drain it into the core first: a frame already received must not be
@@ -458,9 +470,10 @@ static void applyVehicleMode(uint32_t t_ms) {
   // than the loop's usual 16, because the alternative to reading them here
   // is losing them. What arrives on the WIRE during the reinstall cannot be
   // saved by anything at this level. The window was measured on the bench on
-  // 2026-10-13 -- setMode() takes 234-340 us over nine switches -- and the
-  // record is the loan entry in SeaDrive firmware/bench-holder.md, not the
-  // bring-up notes this comment used to point at.
+  // 2026-10-13 -- the old TwaiPort::setMode() took 234-340 us over nine
+  // switches, before port step 2b -- and the record is the loan entry in
+  // SeaDrive firmware/bench-holder.md, not the bring-up notes this comment
+  // used to point at.
   EmitList drain;
   RxFrame f;
   for (uint16_t i = 0; i < 64 && vehicle.receive(f); i++) {
@@ -473,8 +486,26 @@ static void applyVehicleMode(uint32_t t_ms) {
   // micros() rather than millis(): the whole quantity is expected to be
   // under a millisecond, and a figure of "0 or 1 ms" would not answer how
   // many frames a 2,250 fps segment can lose across the switch.
+  // THE SWITCH IS twai_port's (spec 2.4, T4): a teardown and a reinstall,
+  // the new mode recorded only once the teardown has succeeded. Refused
+  // during bus-off recovery, which cannot be hurried: the record and the
+  // controller then stay in the old mode.
+  //
+  // WITH THE PORT DOWN, set_mode ONLY RECORDS THE MODE, so this installs
+  // it (spec D4, kept from before port step 2b). The port is down here
+  // after a reinstall that failed: the switch before this one tore the
+  // driver down, recorded its mode and then could not install. That old
+  // mode is the one this request now asks for, and without the install
+  // below the port would stay down for good, since nothing else brings it
+  // up. As before 2b, a failed install recovers on the next request
+  // instead of latching the port off.
   const uint32_t t0_us = micros();
-  const bool switched = vehicle.setMode(want);
+  const can_port_mode_t mode =
+      want ? CAN_PORT_MODE_LISTEN_ONLY : CAN_PORT_MODE_NORMAL;
+  esp_err_t err = twai_port_set_mode(mode);
+  if (err == ESP_OK && !twai_port_is_installed()) err = twai_port_install();
+  const bool switched = err == ESP_OK && twai_port_is_installed() &&
+                        twai_port_mode() == mode;
   const uint32_t dt_us = micros() - t0_us;
   if (switched) {
     switch_us_last = dt_us;
@@ -483,9 +514,10 @@ static void applyVehicleMode(uint32_t t_ms) {
     INTP_PRINTF("vehicle port -> %s (%lu us)\n",
                 want ? "LISTEN-ONLY" : "normal", (unsigned long)dt_us);
   } else {
-    // Refused, which TwaiPort::setMode documents as legitimate during
-    // bus-off recovery. The core's wish stands and the next pass tries
-    // again; until then listenOnly() reports what the hardware is doing.
+    // Refused, which twai_port documents as legitimate during bus-off
+    // recovery (T3), or the reinstall failed. The core's wish stands and the
+    // next pass tries again while the old mode is still recorded; until then
+    // vehicleListenOnly() reports the mode the port records.
     mode_switch_fail++;
   }
 }
@@ -645,7 +677,7 @@ static void status(uint32_t t_ms) {
   INTP_PRINTF("  MODE veh=%s core wants %s | switches=%lu refused=%lu "
               "suppressed=%lu | round=%u/4 in %luus | boot=%luus "
               "switch=%lu/%luus(last/max) drained=%lu\n",
-              vehicle.listenOnly() ? "listen-only" : "normal",
+              vehicleListenOnly() ? "listen-only" : "normal",
               core->vehicleListenOnly() ? "listen-only" : "normal",
               (unsigned long)mode_switches,
               (unsigned long)mode_switch_fail,
@@ -679,7 +711,7 @@ static void status(uint32_t t_ms) {
         "chg(rx=%lu tx=%lu err=%lu off=%d ring=%u/%u) bridge=%lu emit=%lu\n",
         (unsigned long)vehicle.rxDropped(), (unsigned long)vehicle.txDropped(),
         (unsigned long)vehicle.busErrors(), vehicle.busOff() ? 1 : 0,
-        (unsigned long)vehicle.rxQueuePeak(),
+        (unsigned long)vehicle.status().rx_high_water,
         (unsigned long)charger.rxDropped(), (unsigned long)charger.txDropped(),
         (unsigned long)charger.busErrors(), charger.busOff() ? 1 : 0,
         charger.rxRingUsed(), charger.txRingUsed(),
@@ -687,12 +719,13 @@ static void status(uint32_t t_ms) {
     INTP_PRINTF("       bridged frames that missed the vehicle: %lu "
                 "(clears bridge_ok for that interval)\n",
                 (unsigned long)veh_bridge_fail);
-    if (vehicle.txDiscardedBusOff()) {
+    if (vehicle.status().tx_discarded_bus_off) {
       // Frames the TWAI driver had queued when the vehicle port went
       // bus-off. `twai_initiate_recovery()` resets the TX queue (esp32s3
       // driver/twai.h), so they never reached the wire -- and they are in
       // no other figure on this line: send() accepted them, so they are
-      // not in veh tx=, and they never failed an attempt either.
+      // not in veh tx=, and they never failed an attempt either. twai_port
+      // counts them before the recovery starts (T7).
       //
       // Reported separately rather than folded into veh_bridge_fail
       // because the PORT cannot tell a bridged frame from a diagnostic
@@ -703,7 +736,7 @@ static void status(uint32_t t_ms) {
       // containing the bus-off entry.
       INTP_PRINTF("       vehicle tx discarded by bus-off recovery: %lu "
                   "(bridged and diagnostic, not separable here)\n",
-                  (unsigned long)vehicle.txDiscardedBusOff());
+                  (unsigned long)vehicle.status().tx_discarded_bus_off);
     }
     // Spec 2.2's charger counter is one byte and answers one question --
     // did frames meant for the charger fail to reach it during a session.
@@ -755,7 +788,12 @@ void setup() {
   // start (board_ports.h): the bridge-down path below, never other pins.
   if (CHG.ok) mcp_spi.begin(CHG.sck, CHG.miso, CHG.mosi, CHG.cs);
 
-  const bool v_ok = VEH.ok && vehicle.begin(BITRATE);
+  // Spec 2.4: twai_port set up with the interposer's settings and
+  // registered with can_port, then brought up in normal mode. A failure at
+  // any step of the install, the alert setup included, is reported and is a
+  // failed start (2.1, B-7d; spec D5), never a restart.
+  const bool v_ok = VEH.ok && vehicleSetup(CAN_PORT_MODE_NORMAL) &&
+                    vehicle.begin(BITRATE);
   // Spec 2.3: the boot window starts HERE, the moment the vehicle
   // controller is up in normal mode, and ends when the first switch into
   // listen-only completes at the end of setup().
@@ -836,25 +874,30 @@ void setup() {
     // Arduino.h's shim advances the virtual clock in delay() and
     // delayMicroseconds() for exactly this reason, which is how setMode()'s
     // own polling timeout is reachable in a test, and on the board they are
-    // a real delay. pollAlerts() still runs each pass so a bus-off during
-    // the wait is seen and recovered by the one alert reader.
+    // a real delay. twai_port_poll_alerts() still runs each pass, so a
+    // bus-off during the wait is seen and recovered by the one alert reader
+    // (twai_port T5), as the loop's service pass would.
     //
     // THE COUNT COMES FROM THE DRIVER'S QUEUE, NOT FROM TX_SUCCESS
     // (reviewer, 2026-10-14). The alert is a bit, so completions between
     // polls collapse into one and the count would read low -- misleading in
     // the direction that matters for "did the board think this went out",
     // and it would also keep the wait running to the deadline for nothing.
-    // msgs_to_tx counts frames queued OR awaiting completion, and a frame
-    // leaves it by succeeding or by failing, so the arithmetic below is
-    // exact however many alerts collapsed.
+    // tx_pending is the driver's msgs_to_tx, frames queued OR awaiting
+    // completion, and a frame leaves it by succeeding or by failing, so the
+    // arithmetic below is exact however many alerts collapsed.
+    //
+    // DELTAS WITHIN ONE INSTALL (spec 2.4, kept from before port step 2b):
+    // twai_port's counts carry across reinstalls (T7), and the round is
+    // inside the first install, so the counts taken before it and after it
+    // differ by this round's figures and nothing else.
     const uint32_t queued = 4 - (diag_tx_fail - dtf_before);
-    const uint32_t fail_before = vehicle.txFailedCount();
-    const uint32_t disc_before = vehicle.txDiscardedBusOff();
+    const can_port_status_t before = vehicle.status();
     const uint32_t t_round_us = micros();
-    while (vehicle.txPending() > 0 &&
+    while (vehicle.status().tx_pending > 0 &&
            micros() - t_round_us < ROUND_WAIT_US) {
       delayMicroseconds(ROUND_POLL_US);
-      vehicle.pollAlerts();
+      (void)twai_port_poll_alerts();
     }
     boot_round_wait_us = micros() - t_round_us;
     // `queued` rather than a literal 4: if a send() had been refused the
@@ -869,24 +912,26 @@ void setup() {
     // queue, clearing any messages pending transmission". A discard is in
     // neither msgs_to_tx afterwards nor tx_failed_count, so counting only
     // the first two terms booked discarded frames as SENT: the one way this
-    // figure could be wrong in the over-reporting direction. pollAlerts()
-    // can recover inside the wait, so the path is reachable -- at boot it
+    // figure could be wrong in the over-reporting direction. The alert
+    // poll can recover inside the wait, so the path is reachable -- at boot it
     // needs a wrong bit rate or a bus fault, which is exactly when a
-    // trustworthy count matters. txDiscardedBusOff() is the port's count of
-    // what recovery threw away, read before the discard happens.
-    const uint32_t gone = vehicle.txPending()
-                          + (vehicle.txFailedCount() - fail_before)
-                          + (vehicle.txDiscardedBusOff() - disc_before);
+    // trustworthy count matters. tx_discarded_bus_off is the port's count
+    // of what recovery threw away, read before the discard happens (T7).
+    const can_port_status_t after = vehicle.status();
+    const uint32_t gone = after.tx_pending
+                          + (after.tx_failed - before.tx_failed)
+                          + (after.tx_discarded_bus_off
+                             - before.tx_discarded_bus_off);
     boot_round_sent = (gone >= queued) ? 0 : (uint8_t)(queued - gone);
   }
   // ONE SERVICE PASS BEFORE ANYTHING CAN BE QUEUED TOWARD THE CHARGER
   // (reviewer, 2026-10-15). There IS such a path in setup():
   // applyVehicleMode() below drains the vehicle driver into the core and
   // dispatches what the core emits, so Mcp2515Port::send() is reachable
-  // from here -- dispatch() at :475, charger.send() at :434 -- before
-  // loop()'s first charger.service() at :951. TwaiPort::receive() reads
-  // twai_receive() directly and needs no service() call of its own, so on
-  // the truck there are frames waiting by the time we get here.
+  // from here -- dispatch() calls charger.send() -- before loop()'s first
+  // charger.service(). The vehicle port's receive (twai_port_receive)
+  // reads twai_receive() directly and needs no service() call of its own,
+  // so on the truck there are frames waiting by the time we get here.
   //
   // Spec 2.2's ageing clock is the `t_ms` the port was last given, and
   // before the first pass that is 0 -- so a frame queued here would be

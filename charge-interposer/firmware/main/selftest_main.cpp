@@ -6,8 +6,10 @@
 //
 // This exists because the two port drivers are the ONLY completely unexercised
 // code in the project. machine.cpp is verified byte-for-byte against the Python
-// reference over eight cases; port_twai.cpp and port_mcp2515.cpp have never
-// seen a transceiver. In particular the MCP2515 driver is hand-written -- bit
+// reference over eight cases; the port drivers had never seen a transceiver
+// when this was written. Since port step 2b CAN1 is the shared
+// vtrux/twai_port, through vtrux/can_port (spec 2.4, vehicle_port.h), with
+// the bridge's settings. The MCP2515 driver is hand-written -- bit
 // timing for the 16 MHz crystal, extended-ID encode/decode, IRQ-driven RX on
 // GPIO3, and a non-blocking TX path that replaced coryjfowler's blocking one.
 // Every one of those is a place to be wrong.
@@ -24,7 +26,8 @@
 
 #include "board_ports.h"
 #include "port_mcp2515.h"
-#include "port_twai.h"
+#include "port_view.h"
+#include "vehicle_port.h"
 
 using namespace interposer;
 
@@ -35,7 +38,7 @@ static const ChargerPins CHG = chargerPins();
 static const uint32_t BITRATE = 500000UL;
 
 static SPIClass mcp_spi(HSPI);
-static TwaiPort can1(VEH.tx, VEH.rx);
+static PortView can1(VEHICLE_PORT);
 static Mcp2515Port can2(mcp_spi, CHG.cs, CHG.irq);
 
 static uint16_t checks_run = 0;
@@ -235,7 +238,8 @@ void setup() {
   check(VEH.ok, "the board describes CAN1 as its TWAI port 0");
   check(CHG.ok, "the board describes CAN2 as an MCP2515 on SPI3, 16 MHz");
   if (CHG.ok) mcp_spi.begin(CHG.sck, CHG.miso, CHG.mosi, CHG.cs);
-  check(VEH.ok && can1.begin(BITRATE), "CAN1 (TWAI) came up");
+  check(VEH.ok && vehicleSetup(CAN_PORT_MODE_NORMAL) && can1.begin(BITRATE),
+        "CAN1 (TWAI) came up");
   check(CHG.ok && can2.begin(BITRATE), "CAN2 (MCP2515) came up");
 
   if (checks_failed) {
@@ -264,7 +268,7 @@ void setup() {
   Serial.printf("  MCP rings: rx=%u tx=%u (capacity 64 each)\n",
                 can2.rxRingUsed(), can2.txRingUsed());
   Serial.printf("  TWAI rx queue peak: %lu (capacity 64)\n",
-                (unsigned long)can1.rxQueuePeak());
+                (unsigned long)can1.status().rx_high_water);
 
   Serial.printf("\n=== %u checks, %u failed ===\n", checks_run, checks_failed);
   Serial.println(
