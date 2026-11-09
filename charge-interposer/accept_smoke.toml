@@ -19,6 +19,14 @@
 # built under TWAI_FAKE=shared, and only e-transcripts caught it (fixed in
 # de11c44). Since b3e2395 run.sh works in its tree's scratch/, which on
 # madhouse is inside the runner's tree there.
+#
+# Since 2026-11-08 (follow-up (B) after port step 2a, 73931df5) run.sh prints
+# its test list and a closing line per test, and the host_bridge judge reads
+# both. This list then runs every user of run.sh once on that commit: hb-own
+# and hb-shared on madhouse, at the twai_port pin port step 2a ran on
+# (2026.11.03), and the emulated suite's m-host/host-bridge on the local tree
+# ("emu-hb"), for their per-result verdicts to be compared by hand with run
+# accept_2a_20261107T170853_6976's.
 
 [step]
 id = "smoke"
@@ -29,12 +37,12 @@ spec = ["none: a smoke run of the acceptance runner"]
 verification = "none (a --dev smoke run is never evidence)"
 
 [trees.local]
-project = "b3e2395e2c3c4c107f3050908cb554627861d692"
+project = "73931df5582267f2a55a4a8ac0f044a68883f8df"
 
 [trees.madhouse]
-project = "b3e2395e2c3c4c107f3050908cb554627861d692"
+project = "73931df5582267f2a55a4a8ac0f044a68883f8df"
 host = "madhouse"
-shared = { twai_port = "40c0bccddccb8fd949df5f92db906fa302b6ae1b" }
+shared = { twai_port = "2026.11.03" }
 
 [[set]]
 id = "harness"
@@ -81,10 +89,17 @@ target = "hb-shared"
 mutants = { mode = "--can-fail" }
 expect = "mode-passes"
 
-# the trees' product digest the same as at the first smoke run's commit:
-# 9e1e62d and the harness commits since changed no product file
+# the emulated suite's own host_bridge run, judged by the same judge
+[[suite_run]]
+id = "emu-hb"
+tree = "local"
+suite = "emulated"
+checks = ["m-host/host-bridge"]
+
+# the trees' product digest the same as port step 2a's product: the commits
+# since cf1b911 changed no product file
 [[premise]]
 id = "digest"
 kind = "product_digest_same_as"
 tree = "local"
-commit = "5169ea877cca77422831196bc3ceeb8e97661e94"
+commit = "cf1b911326d62fc7a7a743be2050ff51bf37f0d6"

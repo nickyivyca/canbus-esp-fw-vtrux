@@ -62,7 +62,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `stop_all.sh` | Stops a bench run's simulator processes; Linux only | Tester |
 | `run_scenario.py` | Runs the live three-way bench through named scenarios and checks the outcome | Tester |
 | `board_reset_test.py` | Harness test: `run_scenario.py`'s `SerialTap` board reset and the start order (reviewer, 2026-10-14) | Tester |
-| `scenario_scope_test.py` | Harness test: the forced-order range's scope against `c15f8c05` (every other scenario and `scenario_judge` unchanged) and the forced-order premise; local lane, reads git. For port step 2a's re-run: once 2a is accepted it leaves the harness suite, or is re-based, since any later scenario change would fail it (reviewer, 2026-11-07) | Tester |
+| `forced_order_test.py` | Harness test: the forced-order cases' premise (run_scenario.py, 0041572d): the flow drop leading the fault flag by FORCED_ORDER_MIN_GAP_S on the witness or on the core's trace, else NOT EXERCISED, and only the two forced cases carry it; and the phase option. `--can-fail`: four mutants. The premise part of `scenario_scope_test.py`, retired after port step 2a's acceptance (reviewer, 2026-11-08) | Tester |
 | `regress.py` | Offline regression against the three real charge captures | Tester |
 | `regress_offline_test.py` | Offline test for `regress.py`'s machinery | Tester |
 | `test_signals.py` | Cross-checks `machine.py`'s bit extraction against cantools | Tester |
