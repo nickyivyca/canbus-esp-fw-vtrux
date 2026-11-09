@@ -196,7 +196,17 @@ gen-inhibit's spec is
     user, 2026-11-03). GPIO10-13 are SPI2's IO MUX pins on the S3 (ESP-IDF
     v5.4.1 `components/soc/esp32s3/include/soc/spi_pins.h`:
     `SPI2_IOMUX_PIN_NUM_CS` 10, `_MOSI` 11, `_CLK` 12, `_MISO` 13), the
-    reason for the later move to SPI2;
+    reason for the later move to SPI2. **When (user, 2026-11-08, in the
+    charge-interposer reviewer's session):** in the interposer's port stage
+    (b), with `mcp2515_port`, not at its port step 2b as first planned.
+    arduino-esp32 3.2.1's SPI driver attaches SCK, MISO, MOSI and CS
+    through the GPIO matrix on every host (`esp32-hal-spi.c`'s
+    `spiAttachSCK`, `spiAttachMISO`, `spiAttachMOSI` and `spiAttachSS`
+    call `pinMatrixOutAttach` / `pinMatrixInAttach`), so on the Arduino
+    driver SPI2 would route these pins exactly as SPI3 does. The IO MUX
+    path comes with ESP-IDF's own SPI master driver, which `mcp2515_port` is
+    to use. The MCP2515's SPI clock limit, 10 MHz, is within the GPIO
+    matrix's range either way;
   - console hardware: the interposer's first bring-up, 2026-09-10 (UART0
     pins with nothing attached);
   - the LED on GPIO2: the `aslcanx2` variant, and the board itself: a
