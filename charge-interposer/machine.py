@@ -1541,8 +1541,9 @@ class InterposerCore(object):
         # with source address 0xC0 must NOT switch the mode, since the
         # frame that switches it has to be forwarded and spec 2's B-8
         # exception does not forward RTR). Both drivers drop remote frames
-        # before the core sees them -- port_twai.cpp's receive() and
-        # port_mcp2515.cpp's -- so the core has no rtr argument to test and
+        # before the core sees them -- vtrux/twai_port with drop_rtr set
+        # (firmware/main/vehicle_port.cpp, spec 2.4) and port_mcp2515.cpp's
+        # receive() -- so the core has no rtr argument to test and
         # adding one would change the interface and the trace format for a
         # frame that cannot arrive. The tester's L2 rtr arm is where that
         # is held.

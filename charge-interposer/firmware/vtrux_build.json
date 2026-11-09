@@ -1,6 +1,6 @@
 {
   "project": "charge-interposer",
-  "shared_components": ["vtrux/x2"],
+  "shared_components": ["vtrux/x2", "vtrux/can_port", "vtrux/twai_port"],
   "variants": {
     "bridge": {"INTP_VARIANT": "bridge"},
     "witness": {"INTP_VARIANT": "witness"},

@@ -12,12 +12,14 @@ cmake_minimum_required(VERSION 3.16)
 # build folder keeps the variant it was configured with until it is deleted.
 #
 # THE DEFAULT IS truck (user, 2026-11-03: route (B)). shared/tools `release`
-# at 2026.11.03 passes no -D, so a release build takes this default, and
-# truck, the flight image, is the only image released (spec 8.2 and 8.3).
-# The release profile's project_name rows (shared/tools R20) refuse a
-# release named for any other variant. Dev builds pass -D INTP_VARIANT with
-# their own -B folder, as above, and never rely on the default.
-# ../vtrux_tools.py reads the INTP_VARIANTS line below; keep it on one line.
+# passes no -D, so a release build takes this default, and truck, the
+# flight image, is the only image released (spec 8.2 and 8.3). The release
+# profile's project_name rows (shared/tools R20) refuse a release named for
+# any other variant. Dev builds pass -D INTP_VARIANT with their own -B
+# folder, as above, and never rely on the default.
+# The same six are the dev-build variants of vtrux_build.json (shared/tools
+# R31), each with its -D INTP_VARIANT; ../test_vtrux_tools.py reads the
+# INTP_VARIANTS line below and checks the two agree, so keep it on one line.
 set(INTP_VARIANTS bridge witness truck selftest diag slcan)
 set(INTP_VARIANT "truck" CACHE STRING
     "the image to build: bridge, witness, truck, selftest, diag or slcan (spec 8.2)")
