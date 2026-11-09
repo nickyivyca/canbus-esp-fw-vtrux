@@ -24,6 +24,7 @@
 
 #include "board_ports.h"
 #include "bridge_health.h"
+#include "charger_port.h"
 #include "charger_tx_failures.h"
 #include "machine.h"
 #include "port_mcp2515.h"
@@ -154,7 +155,13 @@ static SPIClass mcp_spi(HSPI);
 // Spec 2.4 (port step 2b): the vehicle port is vtrux/twai_port, reached
 // through vtrux/can_port by its index (vehicle_port.h, port_view.h).
 static PortView vehicle(VEHICLE_PORT);
-static Mcp2515Port charger(mcp_spi, CHG.cs, CHG.irq);
+// Spec 2.4: the charger port is the MCP2515 driver, registered with
+// vtrux/can_port as the backend for its index (charger_port.h), and the
+// bridge reaches it through can_port as it does the vehicle port. Spec
+// 2.2's counters, and the driver's own figures on the LOSS line and in the
+// witness dump, are read from `charger_mcp` itself, never through the view.
+static Mcp2515Port charger_mcp(mcp_spi, CHG.cs, CHG.irq);
+static PortView charger(CHARGER_PORT, chargerClock);
 
 // Spec 2.3: the vehicle port's mode as the port records it. twai_port
 // records a new mode only once the teardown has succeeded (T4), so a
@@ -323,8 +330,8 @@ static uint8_t sat8(uint32_t v) { return v > 255u ? 255u : (uint8_t)v; }
 // adding one on top is the defect that put intp_tx_fail at its 255
 // ceiling before every bench run.
 static void accrueChargerTxFailures() {
-  charger_txf.accrue(charger.txDropped(), charger.txFailed(),
-                     charger.txAged(), core->vcuFlow() != 0);
+  charger_txf.accrue(charger_mcp.txDropped(), charger_mcp.txFailed(),
+                     charger_mcp.txAged(), core->vcuFlow() != 0);
 }
 
 // Send the four status frames on the VEHICLE port (never toward the charger),
@@ -613,8 +620,8 @@ static void witnessDump() {
   // is a yes/no instrument and not a rate. txFramesDeferred() is the
   // per-frame figure and is deliberately not in this dump.
   INTP_PRINTF("  HOLD: deferrals(passes)=%lu%s\n",
-              (unsigned long)charger.txHoldDeferrals(),
-              charger.txHoldDeferrals()
+              (unsigned long)charger_mcp.txHoldDeferrals(),
+              charger_mcp.txHoldDeferrals()
                   ? ""
                   : "  *** the hold never bit in this window: the order "
                     "record below does not test it ***");
@@ -714,7 +721,7 @@ static void status(uint32_t t_ms) {
         (unsigned long)vehicle.status().rx_high_water,
         (unsigned long)charger.rxDropped(), (unsigned long)charger.txDropped(),
         (unsigned long)charger.busErrors(), charger.busOff() ? 1 : 0,
-        charger.rxRingUsed(), charger.txRingUsed(),
+        charger_mcp.rxRingUsed(), charger_mcp.txRingUsed(),
         (unsigned long)bridge_drops, (unsigned long)emit_overflow);
     INTP_PRINTF("       bridged frames that missed the vehicle: %lu "
                 "(clears bridge_ok for that interval)\n",
@@ -747,17 +754,17 @@ static void status(uint32_t t_ms) {
     // acknowledged) and is deliberately not in the CAN field.
     INTP_PRINTF("       charger tx: abandoned=%lu aged=%lu queue-full=%lu "
                 "delivered-late=%lu\n",
-                (unsigned long)charger.txFailed(),
-                (unsigned long)charger.txAged(),
-                (unsigned long)charger.txDropped(),
-                (unsigned long)charger.txLate());
-    if (charger.txUnexplained()) {
+                (unsigned long)charger_mcp.txFailed(),
+                (unsigned long)charger_mcp.txAged(),
+                (unsigned long)charger_mcp.txDropped(),
+                (unsigned long)charger_mcp.txLate());
+    if (charger_mcp.txUnexplained()) {
       // p15 s3.3 says this state cannot occur. If it has, a datasheet
       // behaviour the driver is built on does not hold on this silicon.
       INTP_PRINTF("       *** charger tx UNEXPLAINED=%lu -- a buffer went "
                   "idle with TXnIF clear and no abort. DS20001801J p15 "
                   "s3.3 says that cannot happen.\n",
-                  (unsigned long)charger.txUnexplained());
+                  (unsigned long)charger_mcp.txUnexplained());
     }
   }
 }
@@ -799,7 +806,13 @@ void setup() {
   // listen-only completes at the end of setup().
   const uint32_t veh_up_us = micros();
   INTP_PRINTF("CAN1 (vehicle, TWAI)   : %s\n", v_ok ? "up" : "FAILED");
-  const bool c_ok = CHG.ok && charger.begin(BITRATE);
+  // Spec 2.4: the MCP2515 driver registered with can_port for the charger
+  // port, then brought up through it. Registered whether or not the board
+  // describes the port (registering touches no hardware), so a send to a
+  // port that never came up still reaches the driver, which counts it, as
+  // it did before the port was behind can_port.
+  const bool c_reg = chargerRegister(charger_mcp, BITRATE);
+  const bool c_ok = CHG.ok && c_reg && charger.begin(BITRATE);
   INTP_PRINTF("CAN2 (charger, MCP2515): %s\n", c_ok ? "up" : "FAILED");
 
   healthy = v_ok && c_ok;

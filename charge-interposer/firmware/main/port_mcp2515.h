@@ -120,6 +120,9 @@ class Mcp2515Port : public CanPort {
   // (vtrux/twai_port, spec 2.3).
   void setListenOnly(bool on) { listen_only_ = on; }
   void end();
+  // True between a begin() that succeeded and the next end(): what
+  // can_port's is_up asks of its backend (charger_port.cpp).
+  bool isUp() const { return ready_; }
   uint8_t reg(uint8_t addr) { return readReg(addr); }
 
  private:

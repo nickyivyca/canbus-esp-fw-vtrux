@@ -2,14 +2,24 @@
 // (bridge_port.h's CanPort), by its port index (spec 2.4, port step 2b).
 //
 // The vehicle side is board port 0, with vtrux/twai_port registered as its
-// backend (vehicle_port.h). Every call here goes through can_port by index,
-// never to the driver directly, so the bridge reaches a port the way
-// can_port says ports are reached; what is TWAI-only (the mode switch, the
-// alert poll of the power-up round) main.cpp asks of twai_port itself.
+// backend (vehicle_port.h); the charger side is board port 1, with the
+// interposer's MCP2515 driver as its backend (charger_port.h). Every call
+// here goes through can_port by index, never to the driver directly, so the
+// bridge reaches a port the way can_port says ports are reached; what is
+// TWAI-only (the mode switch, the alert poll of the power-up round) main.cpp
+// asks of twai_port itself, and spec 2.2's charger counters it reads from
+// the MCP2515 driver (spec 2.4).
+//
+// A CLOCK FOR A BACKEND THAT NEEDS ONE. can_port's service takes no time,
+// and the MCP2515 driver ages its queue against the time its service pass
+// is given (spec 2.2). A view made with a clock hook calls it with the
+// pass's t_ms just before can_port_service(), so that backend gets the
+// caller's instant.
 //
 // WHICH COUNTER FEEDS WHAT is decided here and in main.cpp, not by the port
 // (spec 2.4): the port counts every frame it loses or discards, the
-// interposer only bridged ones. From the port's status read (twai_port T7):
+// interposer only bridged ones. From the vehicle port's status read
+// (twai_port T7):
 //
 //   rxDropped()     rx_lost: the receive queue full, the FIFO overrun, and
 //                   the frames waiting when the restart after bus-off
@@ -22,7 +32,9 @@
 //                   once per episode.
 //
 // The frames a teardown discards (tx_discarded_teardown,
-// rx_discarded_teardown) feed nothing (D6, spec 12's 2.3 entry).
+// rx_discarded_teardown) feed nothing (D6, spec 12's 2.3 entry). The
+// charger port's status read gives the same fields from what its driver
+// counts (charger_port.h).
 
 #pragma once
 
@@ -35,7 +47,10 @@ namespace interposer {
 
 class PortView : public CanPort {
  public:
-  explicit PortView(int index) : index_(index), last_ms_(0) {}
+  // `clock`, if given, is called with each service pass's t_ms before the
+  // backend's service (above).
+  explicit PortView(int index, void (*clock)(uint32_t) = nullptr)
+      : index_(index), clock_(clock), last_ms_(0) {}
 
   // Brings the port up through its backend (can_port_up). The bit rate is
   // the backend's own setting, given at its setup (vehicle_port.h: 500
@@ -78,6 +93,7 @@ class PortView : public CanPort {
 
  private:
   int index_;
+  void (*clock_)(uint32_t);
   uint32_t last_ms_;
 };
 

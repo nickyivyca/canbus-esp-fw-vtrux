@@ -25,6 +25,7 @@
 #include <SPI.h>
 
 #include "board_ports.h"
+#include "charger_port.h"
 #include "port_mcp2515.h"
 #include "port_view.h"
 #include "vehicle_port.h"
@@ -39,7 +40,10 @@ static const uint32_t BITRATE = 500000UL;
 
 static SPIClass mcp_spi(HSPI);
 static PortView can1(VEHICLE_PORT);
-static Mcp2515Port can2(mcp_spi, CHG.cs, CHG.irq);
+// CAN2 is the MCP2515 driver behind vtrux/can_port (charger_port.h, spec
+// 2.4), reached as the bridge reaches it; the ring figures are the driver's.
+static Mcp2515Port can2_mcp(mcp_spi, CHG.cs, CHG.irq);
+static PortView can2(CHARGER_PORT, chargerClock);
 
 static uint16_t checks_run = 0;
 static uint16_t checks_failed = 0;
@@ -240,7 +244,8 @@ void setup() {
   if (CHG.ok) mcp_spi.begin(CHG.sck, CHG.miso, CHG.mosi, CHG.cs);
   check(VEH.ok && vehicleSetup(CAN_PORT_MODE_NORMAL) && can1.begin(BITRATE),
         "CAN1 (TWAI) came up");
-  check(CHG.ok && can2.begin(BITRATE), "CAN2 (MCP2515) came up");
+  check(CHG.ok && chargerRegister(can2_mcp, BITRATE) && can2.begin(BITRATE),
+        "CAN2 (MCP2515) came up");
 
   if (checks_failed) {
     Serial.println("\nA port failed to initialise; the rest is meaningless.");
@@ -266,7 +271,7 @@ void setup() {
   reportPort(can1);
   reportPort(can2);
   Serial.printf("  MCP rings: rx=%u tx=%u (capacity 64 each)\n",
-                can2.rxRingUsed(), can2.txRingUsed());
+                can2_mcp.rxRingUsed(), can2_mcp.txRingUsed());
   Serial.printf("  TWAI rx queue peak: %lu (capacity 64)\n",
                 (unsigned long)can1.status().rx_high_water);
 

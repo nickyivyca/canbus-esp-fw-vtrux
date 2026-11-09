@@ -8,9 +8,11 @@
 # THE VEHICLE PORT is the shared vtrux/twai_port behind vtrux/can_port (spec
 # 2.4, port step 2b), both dependencies of main (idf_component.yml):
 # vehicle_port.cpp sets it up and registers it, and port_view.cpp is how the
-# bridge reaches a port through can_port by its index.
+# bridge reaches a port through can_port by its index. THE CHARGER PORT is
+# the interposer's MCP2515 driver, port_mcp2515.cpp, registered with can_port
+# by charger_port.cpp.
 set(vehicle vehicle_port.cpp port_view.cpp)
-set(ports ${vehicle} port_mcp2515.cpp)
+set(ports ${vehicle} port_mcp2515.cpp charger_port.cpp)
 if(INTP_VARIANT STREQUAL "bridge" OR INTP_VARIANT STREQUAL "witness"
    OR INTP_VARIANT STREQUAL "truck")
     set(srcs main.cpp machine.cpp ${ports})

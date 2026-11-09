@@ -36,6 +36,7 @@ bool PortView::send(uint32_t id, bool ext, const uint8_t* data, uint8_t len) {
 
 void PortView::service(uint32_t t_ms) {
   last_ms_ = t_ms;
+  if (clock_) clock_(t_ms);
   can_port_service(index_);
 }
 

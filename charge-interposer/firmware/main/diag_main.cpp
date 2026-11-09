@@ -30,6 +30,7 @@
 #include <SPI.h>
 
 #include "board_ports.h"
+#include "charger_port.h"
 #include "port_mcp2515.h"
 #include "port_view.h"
 #include "twai_port.h"
@@ -52,7 +53,13 @@ static SPIClass mcp_spi(HSPI);
 // on every send (T2). It takes the same pins from the board (B5) that
 // phase 2 drives by hand once the driver is torn down.
 static PortView can1(VEHICLE_PORT);
-static Mcp2515Port can2(mcp_spi, CHG.cs, CHG.irq);
+// CAN2 is the MCP2515 driver behind vtrux/can_port (charger_port.h, spec
+// 2.4): frames, bring-up, teardown and listen-only go through can_port, as
+// the bridge's do. The chip's internal loopback is no can_port mode, so it
+// is set on the driver before the bring-up, and the register dump reads the
+// driver.
+static Mcp2515Port can2_mcp(mcp_spi, CHG.cs, CHG.irq);
+static PortView can2(CHARGER_PORT, chargerClock);
 
 static uint16_t checks_run = 0;
 static uint16_t checks_failed = 0;
@@ -119,14 +126,14 @@ static void dumpMcpRegs(const char* when) {
   // Addresses duplicated from port_mcp2515.h, which keeps them private.
   Serial.printf("  MCP2515 regs (%s):\n", when);
   Serial.printf("    CANSTAT=%02X CANCTRL=%02X  (REQOP=%u, OPMOD=%u)\n",
-                can2.reg(0x0E), can2.reg(0x0F), can2.reg(0x0F) >> 5,
-                can2.reg(0x0E) >> 5);
+                can2_mcp.reg(0x0E), can2_mcp.reg(0x0F), can2_mcp.reg(0x0F) >> 5,
+                can2_mcp.reg(0x0E) >> 5);
   Serial.printf("    CNF1=%02X CNF2=%02X CNF3=%02X  (want 00 F0 86 @500k/16MHz)\n",
-                can2.reg(0x2A), can2.reg(0x29), can2.reg(0x28));
-  Serial.printf("    TEC=%u REC=%u EFLG=%02X CANINTF=%02X\n", can2.reg(0x1C),
-                can2.reg(0x1D), can2.reg(0x2D), can2.reg(0x2C));
+                can2_mcp.reg(0x2A), can2_mcp.reg(0x29), can2_mcp.reg(0x28));
+  Serial.printf("    TEC=%u REC=%u EFLG=%02X CANINTF=%02X\n", can2_mcp.reg(0x1C),
+                can2_mcp.reg(0x1D), can2_mcp.reg(0x2D), can2_mcp.reg(0x2C));
   Serial.printf("    TXB0CTRL=%02X RXB0CTRL=%02X RXB1CTRL=%02X\n",
-                can2.reg(0x30), can2.reg(0x60), can2.reg(0x70));
+                can2_mcp.reg(0x30), can2_mcp.reg(0x60), can2_mcp.reg(0x70));
 }
 
 // --- phase 2: the physical layer -----------------------------------------
@@ -240,10 +247,11 @@ void setup() {
 
   // --- phase 1 ---
   Serial.println("\n### phase 1: drivers, self-reception (TWAI transmits on CAN1) ###");
-  can2.setLoopback(true);
+  can2_mcp.setLoopback(true);
   check(vehicleSetup(CAN_PORT_MODE_NO_ACK_SELF_TEST) && can1.begin(BITRATE),
         "CAN1 (TWAI) began in NO_ACK self-test mode");
-  check(can2.begin(BITRATE), "CAN2 (MCP2515) began in loopback mode");
+  check(chargerRegister(can2_mcp, BITRATE) && can2.begin(BITRATE),
+        "CAN2 (MCP2515) began in loopback mode");
   dumpMcpRegs("after begin, expect OPMOD=2 for loopback");
   phaseSelfLoop(can1, "TWAI (self-reception)");
   phaseSelfLoop(can2, "MCP2515 (internal loopback)");
@@ -252,18 +260,22 @@ void setup() {
   // --- phase 2 needs different modes, so tear both ports down first ---
   Serial.println("\n### phase 2: physical layer ###");
   (void)twai_port_teardown();
-  can2.end();
+  (void)can_port_down(CHARGER_PORT);
 
-  can2.setLoopback(false);
-  can2.setListenOnly(false);
-  check(can2.begin(BITRATE), "CAN2 re-began in normal mode");
+  // Normal mode: the loopback off on the driver, and can_port's mode is
+  // still the normal it was registered with.
+  can2_mcp.setLoopback(false);
+  check(can_port_set_mode(CHARGER_PORT, CAN_PORT_MODE_NORMAL) == ESP_OK &&
+            can2.begin(BITRATE),
+        "CAN2 re-began in normal mode");
 
   phaseTransceiverEcho();
   phaseBusActivityFromCan2();
 
-  can2.end();
-  can2.setListenOnly(true);
-  check(can2.begin(BITRATE), "CAN2 re-began in listen-only mode");
+  (void)can_port_down(CHARGER_PORT);
+  check(can_port_set_mode(CHARGER_PORT, CAN_PORT_MODE_LISTEN_ONLY) == ESP_OK &&
+            can2.begin(BITRATE),
+        "CAN2 re-began in listen-only mode");
   // Still recorded in no-ACK self-test from phase 1: a teardown changes no
   // mode (twai_port T4).
   check(twai_port_mode() == CAN_PORT_MODE_NO_ACK_SELF_TEST &&
