@@ -35,10 +35,10 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `firmware/CMakeLists.txt` | The ESP-IDF project and its variant option `INTP_VARIANT` (port step 2a) | Implementor |
 | `firmware/dependencies.lock` | The resolved components | Implementor |
 | `firmware/sdkconfig` | The committed configuration every variant builds from | Implementor |
-| `firmware/vtrux_build.json` | The project's file for the shared build tooling | Implementor |
+| `firmware/vtrux_build.json` | The project's file for the shared build tooling: its name, shared components and dev-build variants (shared/tools R31) | Implementor |
 | `firmware/shared_pins.json` | The shared-code pins (shared/tools R23), owned per entry: `shared/tools` the implementor's, the harness's shared entries the tester's; moved only on a reviewer batch (reviewer, 2026-11-03) | Per entry |
 | `firmware/README.md` | The firmware's README | Implementor |
-| `vtrux_tools.py` | The launcher: starts the pinned shared/tools (`release`, `image`, `digest`) and makes dev builds (`build <variant>`); refuses a shell exported against another `IDF_TOOLS_PATH` (release route B, user 2026-11-03) | Implementor |
+| `vtrux_tools.py` | The launcher: starts the pinned shared/tools: `check-env` (R32), `release`, `build <variant>` (R31), `image`, `digest`. Its `check_idf_env()` wrapper stays only while the harness imports it (reviewer, 2026-11-08) | Implementor |
 | `test_vtrux_tools.py` | Its self-test, with `--can-fail`; not evidence | Implementor |
 | `host_unit/` | Unit tests of the core's internals, with its `README.md` (moved from `firmware/test/` at port step 2a) | Implementor |
 | `.gitattributes`, `.gitignore` | Line endings and ignores for the folder | Implementor |

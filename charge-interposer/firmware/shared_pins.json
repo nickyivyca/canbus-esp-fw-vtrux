@@ -1,8 +1,8 @@
 {
   "shared/tools": {
-    "tag": "2026.11.03",
-    "commit": "f4e7578209f7c10b66cd6164b4c77ed74d7f693f",
-    "digest": "4c04b286c35ddfe594edd0183dba61bb0efe53b2e0cbb8d12f62cd25854de2c9"
+    "tag": "2026.11.08",
+    "commit": "5b03505f515cff8fbdd8826aa97fd2626028578a",
+    "digest": "beddb9f59c25f3f9978ebb9b3488894c944098055f6cbb5a69528dc00893783d"
   },
   "shared/bench": {
     "tag": "2026.11.04.4",
