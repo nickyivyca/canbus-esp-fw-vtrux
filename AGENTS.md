@@ -373,7 +373,13 @@ without a push (user, 2026-10-23).
 
 This rule is the user's standing approval for routine pushes, so the
 reviewer doesn't ask per push. It does ask before a force push, a branch
-delete, or any push the check stops.
+delete, or any push the check stops on something real.
+
+**A false positive doesn't stop a push** (user, 2026-11-08). A hit the
+manual read clears as a false positive, such as a common word, a version
+string or an accepted name, is pushed past. The session tells the
+methodology owner, who fixes the scan, and every session treats the same
+hit the same way until the fix lands, without asking again.
 
 - **On a merge conflict,** the reviewer aborts the merge and sends it back.
   The requester merges `<project>/main` into its topic branch in its own
