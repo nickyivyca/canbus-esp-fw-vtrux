@@ -213,64 +213,48 @@ def test_c12_judge():
     assert _v(r) == [Verdict.FAIL], "no differ block: the exit code decides"
 
 
-def _code_tree(tests):
-    d = os.path.join(TMP, "code")
-    hb = os.path.join(d, "fw_harness", "host_bridge")
-    scratch_dir.remove(d)
-    os.makedirs(hb)
-    for t in tests:
-        open(os.path.join(hb, t + ".cpp"), "w").close()
-    return d
+def _hb_listline(names, n=None):
+    """run.sh's test-list line for `names` (n: the count it prints)."""
+    return "host_bridge tests (%d): %s" % (len(names) if n is None else n,
+                                           " ".join(names))
 
 
-_HB_DIR = B._host_bridge_dir
-
-
-def _hb_at(code):
-    """Point the judge's own-checkout folder at the fixture `code`."""
-    B._host_bridge_dir = lambda: os.path.join(code, "fw_harness", "host_bridge")
+def _hb_close(t, rc):
+    """run.sh's closing line for test t, after a blank line as it prints it."""
+    return "\nrun.sh: %s exit %d" % (t, rc)
 
 
 def test_host_bridge_judge():
-    try:
-        _test_host_bridge_judge()
-    finally:
-        B._host_bridge_dir = _HB_DIR
-
-
-def _test_host_bridge_judge():
+    """host_bridge_judge on run.sh's own output (follow-up (B), tester,
+    2026-11-08): the tests are the list run.sh printed; each listed test
+    needs its closing line; the strict reading is ERROR for a missing,
+    empty, doubled or miscounted list, an unlisted result and a missing
+    result."""
     j = B.host_bridge_judge
-    # the real folder is the one beside bench_suite.py, at this checkout's
-    # commit, and the detail names both (run 2a 0d0d: no settings key)
-    real = os.path.join(HERE, "fw_harness", "host_bridge")
-    assert os.path.normcase(_HB_DIR()) == os.path.normcase(real), _HB_DIR()
-    head = B._checkout_commit(real)
-    assert re.match(r"^[0-9a-f]{40}, (clean|\d+ file\(s\) changed here)$", head), head
-    code = _code_tree(["test_l2_bridge", "test_conformance", "test_event_layout",
-                       "test_canport_contract"])
-    _hb_at(code)
+    four = ["test_canport_contract", "test_conformance", "test_event_layout",
+            "test_l2_bridge"]
     l2 = ["--- l2: c%d ---\ntest_l2_bridge[c%d]: all checks OK" % (i, i)
           for i in range(33)]
     log = "\n".join([
+        _hb_listline(four),
         "capture pin: l3_stimulus.txt matches its pin",
-        "test_canport_contract: all checks OK",
-        "test_conformance: all checks OK",
+        "\ntest_canport_contract: all checks OK", _hb_close("test_canport_contract", 0),
+        "\ntest_conformance: all checks OK", _hb_close("test_conformance", 0),
         "test_event_layout DID NOT BUILD"] + l2 + [
         "--- l2: bad ---",
         "  ok  setup",
         "FAIL  it clears bridge_ok (spec 8.2)",
         "1 failure(s) in bad",
         "--- l2: hung ---",
-        "  ok  setup"]) + "\n"
-    # no settings key at all, as a [[check]] judge gets it (0d0d's KeyError)
+        "  ok  setup", _hb_close("test_l2_bridge", 1)]) + "\n"
+    # no settings key at all, as a [[check]] judge gets it (0d0d's
+    # KeyError): the list is the run's own, so none is needed
     out = j(_run(log, 1, ctx={}))
     rs = _by(out)
     tl = [x for x in out if x.sub == "test-list"]
     assert len(tl) == 1 and tl[0].verdict == Verdict.PASS, tl
-    hb = os.path.join(code, "fw_harness", "host_bridge")
-    assert ("4 test(s) listed from %s at not a git checkout: " % hb) in tl[0].detail \
-        and tl[0].detail.endswith("test_canport_contract test_conformance "
-                                  "test_event_layout test_l2_bridge"), tl[0].detail
+    assert tl[0].detail == ("4 test(s) listed by run.sh: test_canport_contract "
+                            "test_conformance test_event_layout test_l2_bridge"), tl[0].detail
     assert rs["capture-pin"] == Verdict.PASS
     assert rs["l2.c0"] == rs["l2.c32"] == Verdict.PASS
     assert rs["l2.bad"] == Verdict.FAIL
@@ -278,48 +262,89 @@ def _test_host_bridge_judge():
     assert rs["test_conformance"] == Verdict.PASS
     assert rs["test_canport_contract"] == Verdict.PASS
     assert rs["test_event_layout"] == Verdict.ERROR
-    assert "test_l2_bridge" not in rs
+    assert "test_l2_bridge" not in rs, "its cases speak for it"
     assert "l2.population" not in rs, "35 cases opened: no population FAIL"
     assert set(rs) == {"test-list", "capture-pin", "test_conformance",
                        "test_canport_contract", "test_event_layout", "l2.bad",
                        "l2.hung"} | {"l2.c%d" % i for i in range(33)}, sorted(rs)
-    # a settings key naming another tree is not read: the list is still the
-    # judge's own folder's
-    other = os.path.join(TMP, "other")
-    scratch_dir.remove(other)
-    os.makedirs(os.path.join(other, "fw_harness", "host_bridge"))
-    open(os.path.join(other, "fw_harness", "host_bridge", "test_elsewhere.cpp"),
-         "w").close()
-    rs = _by(j(_run(log, 1, ctx={"interposer_code": other})))
-    assert "test_elsewhere" not in rs and rs["test_conformance"] == Verdict.PASS, rs
-    # a test with no line at all (a failing test prints no named line):
-    # FAIL; a missing pin, too few L2 cases
-    code = _code_tree(["test_l2_bridge", "test_conformance", "test_new"])
-    log2 = "test_conformance: all checks OK\n" + "\n".join(l2[:5]) + "\n"
-    rs = _by(j(_run(log2, 1)))
-    assert rs["test_new"] == Verdict.FAIL, "silent test: FAIL"
+    # a settings key naming another tree changes nothing
+    assert _by(j(_run(log, 1, ctx={"interposer_code": "elsewhere"}))) == rs
+    # each listed test's closing line decides; a listed test with none is
+    # ERROR (a failing test prints no line of its own name, so without the
+    # closing line it cannot be told from one that never ran)
+    six = ["test_l2_bridge", "test_conformance", "test_new", "test_bad",
+           "test_quiet", "test_twice"]
+    log2 = "\n".join([
+        _hb_listline(six),
+        "\ntest_conformance: all checks OK", _hb_close("test_conformance", 0),
+        "\n3 failure(s)", _hb_close("test_bad", 1),
+        "", _hb_close("test_quiet", 0),
+        "\ntest_twice: all checks OK", _hb_close("test_twice", 0),
+        _hb_close("test_twice", 0)] + l2[:5] + [_hb_close("test_l2_bridge", 1)]) + "\n"
+    out = j(_run(log2, 1))
+    rs, det = _by(out), {x.sub: x.detail for x in out}
+    assert rs["test_new"] == Verdict.ERROR and det["test_new"].startswith("no result"), out
+    assert rs["test_bad"] == Verdict.FAIL and det["test_bad"] == \
+        "exit 1, no 'all checks OK' line", det["test_bad"]
+    assert rs["test_quiet"] == Verdict.FAIL, "exit 0 without its OK line: FAIL"
+    assert rs["test_twice"] == Verdict.ERROR and "2 closing lines" in det["test_twice"]
+    assert rs["test_l2_bridge"] == Verdict.FAIL, "exit 1 with every case OK: FAIL"
+    assert rs["test_conformance"] == Verdict.PASS
     assert rs["capture-pin"] == Verdict.FAIL
     assert rs["l2.population"] == Verdict.FAIL
     assert rs["test-list"] == Verdict.PASS
-    # a result line for a test the checkout does not list: ERROR, each form
-    code = _code_tree(["test_conformance"])
-    log3 = ("capture pin: l3_stimulus.txt matches its pin\n"
-            "test_conformance: all checks OK\ntest_gone: all checks OK\n"
-            "test_older DID NOT BUILD\n--- l2: c0 ---\ntest_l2_bridge[c0]: all checks OK\n")
+    # exit non-zero with its OK line: FAIL
+    log2b = "\n".join([_hb_listline(["test_conformance"]),
+                       "test_conformance: all checks OK",
+                       _hb_close("test_conformance", 2)]) + "\n"
+    out = j(_run(log2b, 1))
+    assert _by(out)["test_conformance"] == Verdict.FAIL and \
+        [x for x in out if x.sub == "test_conformance"][0].detail == \
+        "exit 2, its 'all checks OK' line too", out
+    # a result line for a test the list does not name: ERROR, each form
+    log3 = "\n".join([_hb_listline(["test_conformance"]),
+                      "capture pin: l3_stimulus.txt matches its pin",
+                      "test_conformance: all checks OK", _hb_close("test_conformance", 0),
+                      "test_gone: all checks OK", "test_older DID NOT BUILD",
+                      _hb_close("test_other", 0),
+                      "--- l2: c0 ---", "test_l2_bridge[c0]: all checks OK"]) + "\n"
     out = j(_run(log3, 0))
     rs = _by(out)
-    for t in ("test_gone", "test_older", "test_l2_bridge"):
+    for t in ("test_gone", "test_older", "test_other", "test_l2_bridge"):
         assert rs.get(t) == Verdict.ERROR, (t, rs)
         assert [x for x in out if x.sub == t][0].detail.startswith("not listed: "), t
     assert rs["test_conformance"] == Verdict.PASS and "l2.population" not in rs, rs
-    # no test in the checkout: ERROR, whatever the log says
-    code = _code_tree([])
-    out = j(_run(log, 0))
-    rs = _by(out)
-    assert rs["test-list"] == Verdict.ERROR, rs
-    assert [x for x in out if x.sub == "test-list"][0].detail.startswith(
-        "no test_*.cpp: nothing to judge"), out
-    assert rs["test_conformance"] == Verdict.ERROR, "unlisted once the list is empty"
+    # the list itself: missing, twice, empty, a name twice, miscounted, not
+    # a test name -- each an ERROR, and every result then unlisted
+    body = "\n".join(["test_conformance: all checks OK",
+                      _hb_close("test_conformance", 0)]) + "\n"
+    bad_lists = [
+        ("", "no test list: "),
+        (_hb_listline(["test_conformance"]) + "\n" + _hb_listline(["test_conformance"]),
+         "2 test lists"),
+        (_hb_listline([]), "an empty test list"),
+        (_hb_listline(["test_conformance", "test_conformance"]), "listed twice: "
+         "test_conformance"),
+        (_hb_listline(["test_conformance"], n=2), "the list counts 2 but names 1"),
+        (_hb_listline(["test_conformance", "*.cpp"]), "not a test name"),
+    ]
+    for head, why in bad_lists:
+        out = j(_run((head + "\n" if head else "") + body, 0))
+        rs = _by(out)
+        tl = [x for x in out if x.sub == "test-list"][0]
+        assert tl.verdict == Verdict.ERROR and tl.detail.startswith(why), (head, tl)
+        assert rs["test_conformance"] == Verdict.ERROR, (head, rs)
+    # run.sh's own form, as it prints it with no test: the list empty
+    assert B._hb_list("host_bridge tests (0): \n")[1].startswith("an empty test list")
+    # and run.sh prints the two forms this judge reads (what it prints is
+    # twai_fake_option_test's test_list_and_closing, on madhouse)
+    with open(os.path.join(HERE, "fw_harness", "host_bridge", "run.sh"),
+              encoding="utf-8") as f:
+        src = f.read()
+    assert src.count('echo "host_bridge tests (${#tests[@]}): ${tests[*]+${tests[*]}}"') == 1
+    assert src.count("printf '\\nrun.sh: %s exit %s\\n' \"$name\" \"$rc\"") == 1
+    assert B.HB_LIST_RE.match("host_bridge tests (2): test_a test_b") and \
+        B.HB_CLOSE_RE.match("run.sh: test_a exit 0")
 
 
 # ---- suites -------------------------------------------------------------
@@ -1569,18 +1594,8 @@ def _hb_unreported_pass(run):
             if x.verdict == Verdict.ERROR else x for x in out]
 
 
-def _hb_from_settings(run):
-    """The pre-0d0d judge: its list from the settings' interposer_code."""
-    saved = B._host_bridge_dir
-    B._host_bridge_dir = lambda: os.path.join(run.ctx["interposer_code"],
-                                              "fw_harness", "host_bridge")
-    try:
-        return _ORIG["host_bridge_judge"](run)
-    finally:
-        B._host_bridge_dir = saved
-
-
-def _hb_empty_taken(run):
+def _hb_list_taken(run):
+    """Any test-list ERROR taken as a list."""
     return [Result(Verdict.PASS, x.sub, detail=x.detail) if x.sub == "test-list" else x
             for x in _ORIG["host_bridge_judge"](run)]
 
@@ -1590,9 +1605,52 @@ def _hb_unlisted_ignored(run):
             if not x.detail.startswith("not listed: ")]
 
 
-def _hb_no_commit(run):
-    return [Result(x.verdict, x.sub, detail=re.sub(r" at [^:]*:", ":", x.detail))
-            if x.sub == "test-list" else x for x in _ORIG["host_bridge_judge"](run)]
+def _hb_missing_as_fail(run):
+    """The reading before (B): a listed test with no result line is FAIL."""
+    return [Result(Verdict.FAIL, x.sub, detail=x.detail)
+            if x.detail.startswith("no result") else x
+            for x in _ORIG["host_bridge_judge"](run)]
+
+
+def _hb_exit_ignored(run):
+    """The closing line's exit ignored: the OK line alone passes."""
+    return [Result(Verdict.PASS, x.sub, detail=x.detail)
+            if x.detail.endswith("its 'all checks OK' line too") else x
+            for x in _ORIG["host_bridge_judge"](run)]
+
+
+def _hb_list_from_results(text):
+    """No list printed: the tests taken from the result lines (a list that
+    can only agree with the run)."""
+    names, why = _ORIG["_hb_list"](text)
+    if why and why.startswith("no test list"):
+        return sorted(set(re.findall(r"^(test_\w+): all checks OK", text, re.M))), None
+    return names, why
+
+
+def _hb_list_deduped(text):
+    found = B.HB_LIST_RE.findall(text)
+    if len(found) == 1:
+        names = list(dict.fromkeys(found[0][1].split()))
+        if names and len(names) != len(found[0][1].split()):
+            return names, None
+    return _ORIG["_hb_list"](text)
+
+
+def _hb_list_first(text):
+    """Two lists: the first taken."""
+    found = B.HB_LIST_RE.findall(text)
+    if len(found) > 1:
+        return _ORIG["_hb_list"](text.split("\n", 1)[0] + "\n")
+    return _ORIG["_hb_list"](text)
+
+
+def _hb_list_count_ignored(text):
+    found = B.HB_LIST_RE.findall(text)
+    if len(found) == 1 and found[0][1].split():
+        return _ORIG["_hb_list"]("host_bridge tests (%d): %s\n" % (
+            len(found[0][1].split()), found[0][1]))
+    return _ORIG["_hb_list"](text)
 
 
 def _scen_not_exercised_fail(run):
@@ -1698,6 +1756,7 @@ _ORIG = {n: getattr(B, n) for n in ("script_judge", "recorded_judge",
                                     "corrupt_pin_judge",
                                     "host_bridge_judge", "emulated", "bench",
                                     "harness", "product_files")}
+_ORIG["_hb_list"] = B._hb_list
 _ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
 _ORIG["bench_identify.identify"] = B.bench_identify.identify
 _ORIG["self._PYCACHE_DROP"] = _PYCACHE_DROP
@@ -2030,13 +2089,18 @@ MUTANTS = {
     "test_host_bridge_judge": [
         ("host_bridge_judge", _hb_unreported_pass,
          "an unreported L2 case passes"),
-        ("host_bridge_judge", _hb_from_settings,
-         "the test list from the settings' interposer_code (run 2a 0d0d)"),
-        ("host_bridge_judge", _hb_empty_taken, "an empty test list taken"),
+        ("host_bridge_judge", _hb_list_taken, "a bad test list taken"),
         ("host_bridge_judge", _hb_unlisted_ignored,
          "a result line for an unlisted test ignored"),
-        ("host_bridge_judge", _hb_no_commit,
-         "the test-list detail names no checkout commit")],
+        ("host_bridge_judge", _hb_missing_as_fail,
+         "a listed test with no result FAIL, not ERROR"),
+        ("host_bridge_judge", _hb_exit_ignored,
+         "a closing exit 2 ignored when the OK line is there"),
+        ("_hb_list", _hb_list_from_results,
+         "no list: the tests taken from the result lines"),
+        ("_hb_list", _hb_list_deduped, "a name listed twice taken once"),
+        ("_hb_list", _hb_list_first, "two lists: the first taken"),
+        ("_hb_list", _hb_list_count_ignored, "a miscounted list taken")],
     "test_suites": [
         ("bench", _wrap_suite("bench", _drop_requires), "bench drops requires"),
         ("harness", _wrap_suite("harness", _sim_into_harness),

@@ -78,7 +78,6 @@ run records the pin, its folder and the clone it came from.
 """
 
 import atexit
-import glob
 import hashlib
 import json
 import os
@@ -384,60 +383,63 @@ def c12_judge(run):
                          "DATASHEET line outside C9" % m.group(1))
 
 
-def _host_bridge_dir():
-    """The host_bridge folder of the judge's own checkout: the tests it
-    expects a result for are its test_*.cpp. Never a settings key: run 2a
-    0d0d's [[check]] judges got no interposer_code (the acceptance runner
-    gives tree settings to suite runs only), and the smokes before it had
-    one naming the tester's worktree, not the tree that ran. The acceptance
-    runner loads its adapter, and so this judge, from a clone at the LIST's
-    commit, and the check may have run in another tree on another host
-    (madhouse), so the detail names this folder and its commit, and the
-    list's commit must hold the same host_bridge files as the tree that ran
-    (the charge-interposer reviewer, 2026-11-07: 2a's re-run list checks
-    that; run.sh printing its own list is a follow-up after 2a)."""
-    return os.path.join(HERE, "fw_harness", "host_bridge")
+HB_LIST_RE = re.compile(r"^host_bridge tests \((\d+)\): ?(.*)$", re.M)
+HB_CLOSE_RE = re.compile(r"^run\.sh: (\S+) exit (\d+)$", re.M)
 
 
-def _checkout_commit(d):
-    """'<commit>, clean' or '<commit>, N file(s) changed here' for the git
-    checkout holding folder d, or why there is none."""
-    import subprocess
-    try:
-        head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
-                              capture_output=True, text=True, timeout=60)
-        if head.returncode != 0:
-            return "not a git checkout"
-        st = subprocess.run(["git", "-C", d, "status", "--porcelain", "--", "."],
-                            capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.SubprocessError) as e:
-        return "git not run: %s" % e
-    n = len([ln for ln in st.stdout.splitlines() if ln.strip()])
-    return "%s, %s" % (head.stdout.strip(),
-                       "clean" if n == 0 else "%d file(s) changed here" % n)
+def _hb_list(text):
+    """run.sh's own test list, read from its output: (tests, None), or
+    ([], why) when the list is missing, printed more than once, empty, has
+    a name that is not a test, a name twice, or a count that is not its
+    number of names."""
+    found = HB_LIST_RE.findall(text)
+    if not found:
+        return [], "no test list: run.sh printed no 'host_bridge tests (N): ...' line"
+    if len(found) > 1:
+        return [], "%d test lists: run.sh prints one" % len(found)
+    n, names = int(found[0][0]), found[0][1].split()
+    if not names:
+        return [], "an empty test list: nothing to judge"
+    bad = [x for x in names if not re.match(r"^test_\w+$", x)]
+    if bad:
+        return [], "not a test name in the list: %s" % " ".join(bad)
+    dup = sorted(set(x for x in names if names.count(x) > 1))
+    if dup:
+        return [], "listed twice: %s" % " ".join(dup)
+    if n != len(names):
+        return [], "the list counts %d but names %d" % (n, len(names))
+    return names, None
 
 
 def host_bridge_judge(run):
     """host_bridge/run.sh: one sub-result per test, and per test_l2_bridge
-    case. A case that opened (--- l2: X ---) but never closed is an ERROR.
-    The tests come from the judge's own checkout (_host_bridge_dir), named
-    with its commit in the test-list sub-result. ERROR: no test there; a
-    result line for a test not in that list."""
+    case. The tests are the list run.sh printed (tester, 2026-11-08, the
+    charge-interposer reviewer's follow-up (B) after port step 2a; until
+    then the judge's own checkout's test_*.cpp). ERROR, the test-list
+    sub-result: no list, more than one, an empty one, a name twice, a count
+    that is not its number of names (and then every result is unlisted). ERROR:
+    a result line for a test not in the list; a listed test with no closing
+    line ("run.sh: <test> exit <rc>" or "<test> DID NOT BUILD"), or with
+    more than one; a test that did not build; an L2 case that opened (---
+    l2: X ---) but never closed. A listed test that closed: PASS on exit 0
+    with its "all checks OK" line, otherwise FAIL."""
     text = run.log_text()
     out = []
-    hb = _host_bridge_dir()
-    tests = sorted(os.path.basename(p)[:-4]
-                   for p in glob.glob(os.path.join(hb, "test_*.cpp")))
-    where = "listed from %s at %s" % (hb, _checkout_commit(hb))
-    out.append(Result(Verdict.PASS if tests else Verdict.ERROR, "test-list",
-                      detail="%d test(s) %s: %s" % (len(tests), where, " ".join(tests))
-                      if tests else "no test_*.cpp: nothing to judge (%s)" % where))
-    named = set(re.findall(r"^(test_\w+)(?:: all checks OK| DID NOT BUILD)", text, re.M))
+    tests, why = _hb_list(text)
+    out.append(Result(Verdict.ERROR, "test-list", detail=why) if why else
+               Result(Verdict.PASS, "test-list", detail="%d test(s) listed by run.sh: %s"
+                      % (len(tests), " ".join(tests))))
+    closes = {}
+    for t, rc in HB_CLOSE_RE.findall(text):
+        closes.setdefault(t, []).append(int(rc))
+    built_not = set(re.findall(r"^(test_\w+) DID NOT BUILD$", text, re.M))
+    named = set(re.findall(r"^(test_\w+): all checks OK", text, re.M)) | built_not \
+        | set(closes)
     if re.search(r"^test_l2_bridge\[", text, re.M):
         named.add("test_l2_bridge")
     for t in sorted(named - set(tests)):
         out.append(Result(Verdict.ERROR, t, detail="not listed: a result line for a "
-                          "test the judge's checkout does not have (%s)" % where))
+                          "test run.sh's list does not name"))
     pin = "capture pin: l3_stimulus.txt matches its pin" in text
     out.append(Result(Verdict.PASS if pin else Verdict.FAIL, "capture-pin",
                       detail="pin line %s" % ("present" if pin else "MISSING")))
@@ -457,14 +459,27 @@ def host_bridge_judge(run):
             out.append(Result(Verdict.ERROR, "l2." + c,
                               detail="case opened but never reported"))
     for t in tests:
-        if t == "test_l2_bridge":
-            continue
-        if re.search(r"^%s DID NOT BUILD" % t, text, re.M):
+        rcs = closes.get(t, [])
+        if t in built_not:
             out.append(Result(Verdict.ERROR, t, detail="did not build"))
-        elif re.search(r"^%s: all checks OK" % t, text, re.M):
+        elif not rcs:
+            out.append(Result(Verdict.ERROR, t, detail="no result: listed, but run.sh "
+                              "printed no closing line for it"))
+        elif len(rcs) > 1:
+            out.append(Result(Verdict.ERROR, t, detail="%d closing lines: run.sh "
+                              "prints one" % len(rcs)))
+        elif t == "test_l2_bridge":
+            if rcs[0] != 0 and not failed and all(c in passed for c in opened):
+                # every case reported OK, yet the test exited non-zero
+                out.append(Result(Verdict.FAIL, t, detail="exit %d with every "
+                                  "case OK" % rcs[0]))
+        elif rcs[0] == 0 and re.search(r"^%s: all checks OK" % t, text, re.M):
             out.append(Result(Verdict.PASS, t, detail="all checks OK"))
         else:
-            out.append(Result(Verdict.FAIL, t, detail="no 'all checks OK' line"))
+            ok = bool(re.search(r"^%s: all checks OK" % t, text, re.M))
+            out.append(Result(Verdict.FAIL, t, detail="exit %d, %s" % (
+                rcs[0], "its 'all checks OK' line too" if ok else
+                "no 'all checks OK' line")))
     if "test_l2_bridge" in tests and len(opened) < 35:
         out.append(Result(Verdict.FAIL, "l2.population",
                           detail="only %d L2 cases ran; 35 at the baseline"

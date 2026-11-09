@@ -20,8 +20,9 @@ own depth beside a copy of `main/` at `firmware/main` (so `test_event_layout`'s 
 "../../firmware/main/main.cpp"` still reaches it), without those three files (a quoted `#include` looks in the including file's folder
 first, so they would win over any `-I`), each test given the shared
 `twai_fake.c` and `cpp/twai_fake.cpp`, and `-I <fake>/include -I <fake>/host
--I <fake>/cpp` after this folder and `main/`. It prints nothing extra, so the
-two transcripts compare line for line. Anything else, or `shared` without
+-I <fake>/cpp` after this folder and `main/`. It prints nothing extra (its
+test list and closing lines, below, are the same in both), so the two
+transcripts compare line for line. Anything else, or `shared` without
 the fake's sources, is refused (exit 2) before anything builds. `run.sh
 --can-fail` runs the shared fake's can-fail,
 `../../harness_checks/shared_fake_canfail.py`. Both are tested by
@@ -39,6 +40,19 @@ prints any folder it cannot remove. Another run's cleanup can remove those
 tool folders while this run is making its own in them, so it is made with
 up to three tries, after waits of 0.1 s and 0.4 s, as `scratch_dir.make`'s.
 Tested by the same `twai_fake_option_test.py`.
+
+**What it prints for the judge** (tester, 2026-11-08, the reviewer's
+follow-up (B) after port step 2a). Before any build, its test list on one
+line, `host_bridge tests (N): test_a test_b ...`: every `test_*.cpp` of the
+folder it builds from, in the order it then builds and runs them. After
+each test, one closing line, `run.sh: <test> exit <rc>` (rc 0 only if the
+test, or every case of a case-based one, exited 0), or `<test> DID NOT
+BUILD` instead. No test at all is a failure (exit 1). `bench_suite.py`'s
+`host_bridge_judge` reads its tests from that list and each one's end from
+its closing line, so a failing test, which prints no line of its own name,
+is told from one that never ran. Both transcripts, own and shared fake,
+carry the same lines. Tested by `twai_fake_option_test.py`
+(`test_list_and_closing`).
 
 | file | what |
 |---|---|

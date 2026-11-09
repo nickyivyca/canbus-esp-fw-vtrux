@@ -22,7 +22,8 @@
 #           -I), every test given the shared twai_fake.c and
 #           cpp/twai_fake.cpp, and -I <fake>/include -I <fake>/host
 #           -I <fake>/cpp after this folder and main/. Nothing else changes,
-#           and nothing extra is printed: the two transcripts are compared
+#           and nothing extra is printed (the test list and closing lines,
+#           below, are the same in both): the two transcripts are compared
 #           line for line.
 # run.sh --can-fail is the shared fake's can-fail
 # (../../harness_checks/shared_fake_canfail.py).
@@ -129,8 +130,24 @@ fail=0
 if ! python3 "$HERE/../../capture_pins.py" --file "$L3_STIMULUS"; then
   fail=1
 fi
+# THE TEST LIST, printed once before any build (tester, 2026-11-08; the
+# charge-interposer reviewer's follow-up (B) after port step 2a): every
+# test_*.cpp of the folder the tests are built from, in glob order, on one
+# line, "host_bridge tests (N): test_a test_b ...". The loop below runs
+# exactly this list, and after each test prints its closing line,
+# "run.sh: <test> exit <rc>" (rc 0 only if the test, or every case of a
+# case-based one, exited 0), or "<test> DID NOT BUILD". So the judge
+# (bench_suite.host_bridge_judge) reads from the run itself which tests it
+# should find, and whether each one ended, even one that prints no line of
+# its own name when it fails. No test at all is a failure (rc 1).
+tests=()
 for t in "$B"/test_*.cpp; do
-  name="$(basename "$t" .cpp)"
+  [ -e "$t" ] && tests+=("$(basename "$t" .cpp)")
+done
+echo "host_bridge tests (${#tests[@]}): ${tests[*]+${tests[*]}}"
+[ "${#tests[@]}" -gt 0 ] || fail=1
+for name in ${tests[@]+"${tests[@]}"}; do
+  t="$B/$name.cpp"
   bin="$W/$name"
   # Glob the fakes rather than list them: a hand-kept source list going
   # stale is how the gen-inhibit session built against old headers three
@@ -206,13 +223,17 @@ for t in "$B"/test_*.cpp; do
     *) cased=0 ;;
   esac
 
+  rc=0
   if [ "$cased" -eq 1 ]; then
     for c in $("$bin"); do
-      "$bin" "$c" || fail=1
+      "$bin" "$c" || rc=1
     done
   else
-    "$bin" || fail=1
+    "$bin" || rc=$?
   fi
+  [ "$rc" -eq 0 ] || fail=1
+  # on a line of its own, even after a test that died mid-line
+  printf '\nrun.sh: %s exit %s\n' "$name" "$rc"
   rm -f "$bin"
 done
 exit $fail

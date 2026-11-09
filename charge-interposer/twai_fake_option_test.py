@@ -370,6 +370,61 @@ def test_removed_on_fail(ctx, work):
         all_removed(ctx, tmp)
 
 
+LIST_RE = r"^host_bridge tests \((\d+)\): ?(.*)$"
+CLOSE_RE = r"^run\.sh: (\S+) exit (\d+)$"
+
+
+def test_list_and_closing(ctx, work):
+    """run.sh prints its test list once, before any build: every test_*.cpp
+    of the folder it builds from, its count, in the order it then builds
+    them; and after each test one closing line, "run.sh: <test> exit
+    <rc>" (the stand-in binaries exit 0), or "<test> DID NOT BUILD" and no
+    closing line. On our own fake and on the shared one. With no test in
+    the folder: an empty list, and rc 1 (follow-up (B), tester,
+    2026-11-08; bench_suite.host_bridge_judge reads these two forms)."""
+    import re
+    fd = fwd(fake_dir(work))
+    tests = sorted(n[:-4] for n in os.listdir(HB) if n.startswith("test_") and n.endswith(".cpp"))
+    for i, (env, fail) in enumerate((({}, False), ({"TWAI_FAKE": "shared", "TWAI_FAKE_DIR": fd}, False),
+                                     ({}, True), ({"TWAI_FAKE": "shared", "TWAI_FAKE_DIR": fd}, True))):
+        w = os.path.join(work, "l%d" % i)
+        os.makedirs(w)
+        e = dict(env, STUB_GPP_FAIL="1") if fail else env
+        rc, outp, calls, _py, tmp = run_sh(ctx, w, e)
+        lists = re.findall(LIST_RE, outp, re.M)
+        assert len(lists) == 1, (env, lists)
+        names = lists[0][1].split()
+        assert int(lists[0][0]) == len(names) and sorted(names) == tests, (env, lists)
+        built = [os.path.basename(argv[argv.index("-o") + 2])[:-4] for argv, _h in calls]
+        assert built == names, (env, built, names)
+        before = outp.split(re.search(LIST_RE, outp, re.M).group(0), 1)[0]
+        assert "DID NOT BUILD" not in before and "run.sh: test_" not in before, before
+        closes = re.findall(CLOSE_RE, outp, re.M)
+        if fail:
+            assert rc == 1 and closes == [], (env, rc, closes)
+            assert [ln for ln in outp.splitlines() if ln.endswith(" DID NOT BUILD")] == \
+                ["%s DID NOT BUILD" % t for t in names], outp[-300:]
+        else:
+            assert rc == 0 and closes == [(t, "0") for t in names], (env, rc, closes)
+        all_removed(ctx, tmp)
+    # no test in the folder: the list printed empty, and the run fails
+    hb = os.path.dirname(ctx["run_sh"])
+    gone = os.path.join(work, "gone")
+    os.makedirs(gone)
+    for t in tests:
+        shutil.move(os.path.join(hb, t + ".cpp"), gone)
+    try:
+        w = os.path.join(work, "empty")
+        os.makedirs(w)
+        rc, outp, calls, _py, tmp = run_sh(ctx, w, {})
+        assert rc == 1 and not calls, (rc, len(calls))
+        assert re.findall(LIST_RE, outp, re.M) == [("0", "")], outp[-300:]
+        all_removed(ctx, tmp)
+    finally:
+        for t in tests:
+            shutil.move(os.path.join(gone, t + ".cpp"), hb)
+
+
 def test_leftover_reported(ctx, work):
     """A run folder run.sh cannot remove is printed with its path, the run's
     exit code unchanged, and the tool folders above it stay (rmdir only
@@ -557,7 +612,7 @@ def env_set(**kw):
 
 
 TESTS = [test_refusals, test_own_default, test_shared_build, test_removed_on_fail,
-         test_leftover_reported, test_race_retried, test_race_bounded,
+         test_list_and_closing, test_leftover_reported, test_race_retried, test_race_bounded,
          test_canfail_mode, test_canfail_judges, test_canfail_refusals]
 
 # run.sh mutants: each is the run.sh of the tree copy (tree_copy) the tests
@@ -607,8 +662,21 @@ RUN_SH_MUTANTS = [
      '    cp -R "$SRC/." "$T/firmware/main/" || exit 2\n',
      '    mkdir -p "$B" "$T/main" || exit 2\n'
      '    cp -R "$SRC/." "$T/main/" || exit 2\n'),
-    ("built from host_bridge itself", 'for t in "$B"/test_*.cpp; do',
-     'for t in "$HERE"/test_*.cpp; do'),
+    ("built from host_bridge itself", '  t="$B/$name.cpp"\n', '  t="$HERE/$name.cpp"\n'),
+    # the test list and the closing lines (follow-up (B), 2026-11-08)
+    ("no test list printed",
+     '\necho "host_bridge tests (${#tests[@]}): ${tests[*]+${tests[*]}}"\n', "\n"),
+    ("the list's count wrong",
+     'echo "host_bridge tests (${#tests[@]}): ', 'echo "host_bridge tests (99): '),
+    ("one test left out of the run", 'for name in ${tests[@]+"${tests[@]}"}; do',
+     'for name in ${tests[@]:1}; do'),
+    ("an empty list not a failure", '[ "${#tests[@]}" -gt 0 ] || fail=1\n', ""),
+    ("no closing line", "  printf '\\nrun.sh: %s exit %s\\n' \"$name\" \"$rc\"\n", ""),
+    ("the closing line before the test runs",
+     "  rc=0\n", "  printf '\\nrun.sh: %s exit %s\\n' \"$name\" 0\n  rc=0\n"),
+    ("a closing line after a failed build too",
+     '    echo "$name DID NOT BUILD"\n',
+     '    echo "$name DID NOT BUILD"\n    echo "run.sh: $name exit 1"\n'),
     ("the mode not the can-fail", '  --can-fail) exec python3 "$HERE/../../harness_checks/'
      'shared_fake_canfail.py" ;;', '  --can-fail) ;;'),
 ]
