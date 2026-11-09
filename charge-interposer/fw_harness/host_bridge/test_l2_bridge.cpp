@@ -42,6 +42,7 @@
 #include "mcp2515_fake_chip.h"
 #include "machine.h"
 #include "twai_fake.h"
+#include "twai_port.h"   // the shared vehicle port's own counters (T7)
 
 // main.cpp's entry points. Declared rather than #included: it has no
 // header, and declaring them is what a hosted firmware test does.
@@ -105,6 +106,41 @@ const twaifake::Frame* lastFrom(uint32_t id) {
   for (size_t i = s.size(); i > 0; i--)
     if (s[i - 1].id == id) return &s[i - 1];
   return nullptr;
+}
+
+// The vehicle port's own count of sends refused for any reason but a full
+// queue: the port down, listen-only, bus-off or an invalid frame (twai_port
+// T6/T7 tx_refused; spec 2.4). Since port step 2b the board sends through
+// twai_port, which may refuse a send before it reaches twai_transmit, so
+// the fake's call counts alone cannot show that the board did not TRY
+// (the charge-interposer reviewer's 2b ruling (c), 2026-11-08). Read with
+// twai_port_status(), which works whether or not the driver is installed.
+// UINT32_MAX if the read fails, which no comparison below takes as a pass.
+uint32_t vehTxRefused() {
+  can_port_status_t s;
+  std::memset(&s, 0, sizeof(s));
+  if (twai_port_status(&s) != ESP_OK) return UINT32_MAX;
+  return s.tx_refused;
+}
+
+// The self-check that makes "no rise in tx_refused" a reading: one frame
+// sent straight to the port in the state the case is in (down, or
+// listen-only) must be refused AND counted. Run after a case's judged
+// checks, since it is itself an attempt.
+void checkTxRefusedCounts(const char* state) {
+  twai_message_t m;
+  std::memset(&m, 0, sizeof(m));
+  m.identifier = 0x18FF00E5;
+  m.extd = 1;
+  m.data_length_code = 8;
+  const uint32_t r0 = vehTxRefused();
+  const esp_err_t e = twai_port_send(&m, 0);
+  const uint32_t r1 = vehTxRefused();
+  std::printf("  --  self-check, %s: twai_port_send -> %d, tx_refused %u -> "
+              "%u\n", state, (int)e, r0, r1);
+  std::string what = std::string("counter self-check: a send refused while ") +
+                     state + " is counted in the port's tx_refused";
+  check(e != ESP_OK && r0 != UINT32_MAX && r1 == r0 + 1, what.c_str());
 }
 
 uint32_t countFrom(uint32_t id, size_t from) {
@@ -386,9 +422,12 @@ void bridgeOkVehTx(bool refuse) {
         refuse ? "a bridged frame refused toward the vehicle clears it "
                  "(spec 8.2)"
                : "a bridged frame accepted and then failed toward the "
-                 "vehicle clears it (spec 8.2) [KNOWN FAIL on src "
-                 "36edf3e55552, recorded 2026-10-16 and assigned to the "
-                 "port's first change: the ported image must pass it]");
+                 "vehicle clears it (spec 8.2) [KNOWN FAIL: spec 12's 8.2 "
+                 "(bridge_ok) entry, specified 2026-11-07 for port stage "
+                 "(b): the port counts the failure (twai_port T7 "
+                 "tx_failed) but cannot tell a bridged frame from the "
+                 "board's own; first recorded on src 36edf3e55552, "
+                 "2026-10-16]");
   check(!after.empty() && after[after.size() - 1] == '1',
         "...and it is SET again once frames reach the vehicle");
   assertPathsExercised();
@@ -876,8 +915,10 @@ void caseRtrNotForwarded() {
 // recovers automatically and resumes bridging. While a controller is
 // bus-off the status frame's bridge_ok flag is clear (8.2)", where
 // bridge_ok covers the interval "since the previous status frame".
-// Port-level bus-off is in test_mcp2515_busoff / test_twai_port; these
-// two check the bridge's own behaviour around it. (Tester, 2026-10-09.)
+// Port-level bus-off is in test_mcp2515_busoff (and, until port step 2b,
+// test_twai_port; since then the vehicle port is shared/twai_port, with its
+// own tests); these two check the bridge's own behaviour around it.
+// (Tester, 2026-10-09.)
 
 // Tagged frames each way after recovery; -> (to charger, to vehicle).
 static std::pair<uint32_t, uint32_t> bridgesBothWays(uint8_t tag) {
@@ -1014,6 +1055,83 @@ void caseBusOffVehicle() {
   assertPathsExercised();
 }
 
+// Spec 2.4 (D3; the charge-interposer reviewer's 2b ruling (c),
+// 2026-11-08): "the RX overflow count (8.2) includes frames lost when
+// automatic bus-off recovery restarts the controller". Vehicle frames are
+// put in the port's receive queue and the controller goes bus-off before
+// the board's next pass; the port's own count of frames lost at the restart
+// (twai_port T7, rx_lost_restart) is read only as the premise that the loss
+// happened, and with nothing lost any other way. Judged on the wire: the
+// rx overflow count of 0x7F6 (byte 6, intp_rx_overflow) rises, and the
+// first 0x7F4 after it reports bridge_ok CLEAR, then SET again on a clean
+// interval. The bus-off alone also clears bridge_ok (busoff-vehicle), so
+// the rise of the overflow count is what tells this case's loss apart.
+void caseRxLostAtRecovery() {
+  boot();
+  feed(15);
+  const twaifake::Frame* st = lastFrom(DIAG_STATUS);
+  check(st && (st->data[4] & FLAG_BRIDGE_OK),
+        "precondition: bridge_ok is set on the healthy bridge");
+  const twaifake::Frame* c6a = lastFrom(DIAG_COUNTERS);
+  const int ovf0 = c6a ? (int)c6a->data[6] : -1;
+  can_port_status_t s0, s1;
+  std::memset(&s0, 0, sizeof(s0));
+  std::memset(&s1, 0, sizeof(s1));
+  const bool read0 = twai_port_status(&s0) == ESP_OK;
+  const size_t mark = vehSent().size();
+  // Frames waiting in the receive queue (well under its depth, so none is
+  // lost to a full queue), then bus-off before the board's next pass.
+  const uint8_t d[8] = {0xD3, 0, 0, 0, 0, 0, 0, 0};
+  const uint32_t n = 16;
+  for (uint32_t i = 0; i < n; i++) fake().deliver(0x18FF4BE5, true, d, 8);
+  const uint32_t waiting = fake().rxQueueLen();
+  // The board reads its receive queue on every pass, bus-off or not, so on
+  // its own loop nothing is left waiting by the restart. The interleaving
+  // this case needs is the one where the port's service runs before the
+  // board's next read: the test calls the port's service itself, at that
+  // one point (it sees the bus-off and starts the recovery; after the
+  // recovery, it restarts the controller), and only then lets the loop run.
+  fake().enterBusOff();
+  twai_port_service();              // the port sees bus-off, starts recovery
+  fake().completeRecovery();        // the 128 bus-free occurrences
+  twai_port_service();              // ...and restarts the controller
+  runBridge(50);
+  const bool read1 = twai_port_status(&s1) == ESP_OK;
+  const bool running = fake().state() == TWAI_STATE_RUNNING;
+  feed(15);
+  feed(25);
+  const twaifake::Frame* c6b = lastFrom(DIAG_COUNTERS);
+  const int ovf1 = c6b ? (int)c6b->data[6] : -1;
+  const std::vector<int> ok = bridgeOkFrom(mark);
+  const uint32_t lost_restart = s1.rx_lost_restart - s0.rx_lost_restart;
+  std::printf("  --  frames waiting at the bus-off %u; the port's "
+              "rx_lost_restart +%u, rx_lost_queue_full +%u, rx_lost_overrun "
+              "+%u; running again %d; 0x7F6 rx_ovf %d -> %d; bridge_ok of "
+              "the 0x7F4s after it: %s\n",
+              waiting, lost_restart,
+              s1.rx_lost_queue_full - s0.rx_lost_queue_full,
+              s1.rx_lost_overrun - s0.rx_lost_overrun, running ? 1 : 0, ovf0,
+              ovf1, okList(ok).c_str());
+  check(read0 && read1 && waiting == n && lost_restart >= 1 &&
+            s1.rx_lost_queue_full == s0.rx_lost_queue_full &&
+            s1.rx_lost_overrun == s0.rx_lost_overrun,
+        "setup: frames were waiting in the vehicle port's receive queue when "
+        "the restart after recovery reset it (the port counted them, "
+        "rx_lost_restart), and none was lost any other way");
+  check(running, "setup: the vehicle controller is RUNNING again");
+  check(ovf0 >= 0 && ovf1 > ovf0,
+        "spec 2.4 / 8.2: frames lost when automatic bus-off recovery "
+        "restarts the controller are counted as RX overflow (0x7F6 rx_ovf "
+        "rises)");
+  check(!ok.empty() && ok[0] == 0,
+        "spec 8.2: ...and the first status frame after it reports bridge_ok "
+        "CLEAR");
+  bool set_later = false;
+  for (size_t i = 1; i < ok.size(); i++) if (ok[i]) set_later = true;
+  check(set_later, "...and a later one reports it SET again");
+  assertPathsExercised();
+}
+
 // Spec 2.1 / 8.2, B-7d. Needs a boot where the charger controller does
 // not start, which is why one process per case is not a convenience.
 void caseFailedStart() {
@@ -1112,8 +1230,17 @@ void caseFailedStart() {
 // before the driver API. So this guards only against the board
 // transmitting of its own accord, or a future path that reaches the
 // driver, and is not counted as coverage of B-7d. (2026-10-09.)
+//
+// PORT STEP 2b (the charge-interposer reviewer's ruling (c), 2026-11-08):
+// the board now sends through twai_port, which refuses a send while it is
+// down before any twai_transmit, so zero twai_transmit calls no longer
+// shows the board did not try. The port counts that refusal (twai_port
+// T6/T7, tx_refused), so the case also judges that tx_refused did not
+// rise, and a self-check at the end shows a send refused while down is
+// counted there.
 void caseFailedStartVehicle() {
   boot(/*charger_starts=*/true, /*vehicle_starts=*/false);
+  const uint32_t refused0 = vehTxRefused();
   check(!fake().installed() || fake().state() != TWAI_STATE_RUNNING,
         "setup: the vehicle controller did NOT come up");
   check((g_chip->reg(mcpfake::R_CANSTAT) & mcpfake::MODE_MASK) !=
@@ -1143,15 +1270,21 @@ void caseFailedStartVehicle() {
   // traffic above and be refused, which no wire shows.
   const uint32_t attempts = fake().transmitCalls();
   std::printf("  --  twai_transmit calls toward the vehicle: %u\n", attempts);
-  check(attempts == 0,
+  const uint32_t refused1 = vehTxRefused();
+  std::printf("  --  the vehicle port's tx_refused: %u -> %u\n", refused0,
+              refused1);
+  check(attempts == 0 && refused0 != UINT32_MAX && refused1 == refused0,
         "spec 2.1: the board does not even TRY to bridge -- zero "
-        "twai_transmit calls, accepted or refused");
+        "twai_transmit calls, accepted or refused, and no send refused by "
+        "the vehicle port (its tx_refused did not rise, twai_port T7)");
   // The counter counts a refused call, so the zero above is a reading.
   twai_message_t m;
   std::memset(&m, 0, sizeof(m));
   const esp_err_t e = twai_transmit(&m, 0);
   check(fake().transmitCalls() == attempts + 1 && e != ESP_OK,
         "counter self-check: a refused twai_transmit is counted");
+  // ...and so does the port's, so the no-rise above is a reading too.
+  checkTxRefusedCounts("the vehicle port is down");
 }
 
 // Spec 2.2: failed transmissions TOWARD THE CHARGER, counted only while
@@ -2116,9 +2249,11 @@ void bridgeOkSwitchDiscard(bool bridged) {
     check(!after.empty() && after[0] == '0',
           "spec 2.3 / 8.2: bridged frames discarded at the switch to "
           "listen-only are counted -- the first 0x7F4 after the return "
-          "reports bridge_ok CLEAR [KNOWN FAIL expected on src "
-          "36edf3e55552, reviewer 2026-10-16: the ported image must pass "
-          "it]");
+          "reports bridge_ok CLEAR [KNOWN FAIL: spec 12's 2.3 entry (a "
+          "switch to listen-only discards, uncounted, the frames still "
+          "queued toward the vehicle, 2026-10-16) and spec 2.4 (the frames "
+          "a switch's teardown discards are not reported, 2026-11-07); "
+          "first recorded on src 36edf3e55552, reviewer 2026-10-16]");
   } else {
     check(n_bridged == 0 && n_own >= 1,
           "setup: only the board's own frames were discarded at the switch");
@@ -2133,9 +2268,16 @@ void bridgeOkSwitchDiscard(bool bridged) {
 void caseBridgeOkSwitchDiscard() { bridgeOkSwitchDiscard(true); }
 void caseBridgeOkSwitchDiscardDiagOnly() { bridgeOkSwitchDiscard(false); }
 
+// The "no transmit attempted" checks of the two cases below judge both the
+// fake's count of twai_transmit calls in listen-only and the vehicle port's
+// tx_refused (port step 2b, the charge-interposer reviewer's ruling (c),
+// 2026-11-08: twai_port may refuse a listen-only send before
+// twai_transmit), and each case ends with the self-check that a send
+// refused in listen-only is counted there.
 void caseListenOnlySwitch() {
   boot();
   vehicleOnly(1000);
+  const uint32_t refused0 = vehTxRefused();
   const size_t v0 = vehSent().size();
   // none of these is a valid charger frame (2.3: "Bus errors and anything
   // else on that segment do not count"; an RTR is not forwarded, so it
@@ -2167,13 +2309,26 @@ void caseListenOnlySwitch() {
   check(vehSentHas(CHG_FRAME_ID, 0x5C, v1),
         "2.3: ...and THAT frame reaches the vehicle side (switch first, then "
         "forward)");
-  check(fake().listenOnlyTxAttempts() == 0,
-        "2.3: no transmit was attempted while the driver was listen-only");
+  const uint32_t refused1 = vehTxRefused();
+  std::printf("  --  listen-only tx attempts %u; the vehicle port's "
+              "tx_refused %u -> %u\n", fake().listenOnlyTxAttempts(),
+              refused0, refused1);
+  check(fake().listenOnlyTxAttempts() == 0 && refused0 != UINT32_MAX &&
+            refused1 == refused0,
+        "2.3: no transmit was attempted while the driver was listen-only -- "
+        "no twai_transmit call there, and no send refused by the vehicle "
+        "port (its tx_refused did not rise, twai_port T7)");
   const size_t v2 = vehSent().size();
   feed(13);
   check(countFrom(DIAG_OBSERVED, v2) >= 1,
         "8.2: status frames resume in normal mode");
   assertPathsExercised();
+  // back to listen-only for the self-check (2.1 s of a silent charger)
+  vehicleOnly(2100);
+  runBridge(20);
+  check(fake().mode() == TWAI_MODE_LISTEN_ONLY,
+        "self-check premise: listen-only again 2.1 s after the charger");
+  checkTxRefusedCounts("listen-only");
 }
 
 void caseListenOnlyRevert() {
@@ -2197,16 +2352,25 @@ void caseListenOnlyRevert() {
         "2.3: listen-only 2.1 s after the last charger frame");
   const size_t v0 = vehSent().size();
   const size_t w0 = g_chip->wire().size();
+  const uint32_t refused0 = vehTxRefused();
   vehicleOnly(5000);
+  const uint32_t refused1 = vehTxRefused();
   std::printf("  --  5 s after the fall-back: vehicle side +%u, listen-only "
-              "tx attempts %u, frames toward the charger %u\n",
-              vehSince(v0), fake().listenOnlyTxAttempts(),
+              "tx attempts %u, the vehicle port's tx_refused %u -> %u, "
+              "frames toward the charger %u\n",
+              vehSince(v0), fake().listenOnlyTxAttempts(), refused0, refused1,
               chargerWireCount(0x18FF4AE5, w0));
-  check(vehSince(v0) == 0 && fake().listenOnlyTxAttempts() == 0,
+  check(vehSince(v0) == 0 && fake().listenOnlyTxAttempts() == 0 &&
+            refused0 != UINT32_MAX && refused1 == refused0,
         "2.3 / 8.2: nothing on the vehicle side in listen-only -- no status "
-        "frame, no forwarded frame -- and no transmit attempted");
+        "frame, no forwarded frame -- and no transmit attempted: no "
+        "twai_transmit call there, and no send refused by the vehicle port "
+        "(its tx_refused did not rise, twai_port T7)");
   check(chargerWireCount(0x18FF4AE5, w0) >= 45,
         "2.3: frames still cross toward the charger");
+  // the self-check, while still listen-only (its own attempt comes after
+  // the judged checks above)
+  checkTxRefusedCounts("listen-only");
   const size_t v1 = vehSent().size();
   chargerFrame(CHG_FRAME_ID, true, false, 0x6D);
   runBridge(20);
@@ -2612,6 +2776,7 @@ const Case kCases[] = {
     {"rtr-not-forwarded", caseRtrNotForwarded},
     {"busoff-charger", caseBusOffCharger},
     {"busoff-vehicle", caseBusOffVehicle},
+    {"rx-lost-at-recovery", caseRxLostAtRecovery},
     {"failed-start-vehicle", caseFailedStartVehicle},
     {"listen-only-boot", caseListenOnlyBoot},
     {"listen-only-boot-noack", caseListenOnlyBootNoAck},

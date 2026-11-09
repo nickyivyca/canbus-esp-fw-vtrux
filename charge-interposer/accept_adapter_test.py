@@ -139,8 +139,8 @@ def test_tree_names(A, work):
     assert A.tree_env(t) == {"INTERPOSER_CODE": want}, A.tree_env(t)
     assert A.tree_settings(t) == {"interposer_code": want}, A.tree_settings(t)
     # a tree the list gives a twai_port checkout is also told the shared TWAI
-    # fake in it, which host_bridge's run.sh builds against under
-    # TWAI_FAKE=shared (port step 1b's acceptance E, by the runner)
+    # fake in it, which host_bridge's run.sh builds on (since port step 2b
+    # its only fake, with that checkout's twai_port and can_port)
     sd = os.path.join(work, "tree-x", "s-twai_port")
     t["shared_dirs"] = {"twai_port": sd}
     assert A.tree_env(t) == {"INTERPOSER_CODE": want, "TWAI_FAKE_DIR": os.path.join(
@@ -417,13 +417,18 @@ def test_madhouse_entries(A, work):
     for i in ("host-bridge", "host-unit", "host-diff", "check-port", "regress-all"):
         assert i in mad, i
     assert mad["host-bridge"]["judge"] == "host-bridge" and mad["host-bridge"]["shell"] == "git-bash"
-    assert "TWAI_FAKE" not in mad["host-bridge"]["env"], mad["host-bridge"]
-    # the same suite on the shared TWAI fake: the same file and judge, with
-    # TWAI_FAKE=shared (its fake folder comes from tree_env)
-    sf = mad["host-bridge-shared-fake"]
-    assert sf["path"] == mad["host-bridge"]["path"] and sf["args"] == [] \
-        and sf["judge"] == "host-bridge" and sf["shell"] == "git-bash", sf
-    assert sf["env"].get("TWAI_FAKE") == "shared", sf
+    assert mad["host-bridge"]["args"] == [] and \
+        not any(k.startswith("TWAI_FAKE") for k in mad["host-bridge"]["env"]), \
+        mad["host-bridge"]
+    # port step 2b: no TWAI_FAKE option, so no host-bridge-shared-fake; the
+    # shared fake's can-fail is run.sh's own --can-fail (its fake folder
+    # comes from tree_env)
+    assert "host-bridge-shared-fake" not in by, sorted(by)
+    cf = mad["host-bridge-canfail"]
+    assert cf["path"] == mad["host-bridge"]["path"] and cf["args"] == ["--can-fail"] \
+        and cf["shell"] == "git-bash" and cf["judge"] == "script" \
+        and cf["timeout_s"] >= 4 * 3600, cf
+    assert "charge-interposer/harness_checks/shared_fake_canfail.py" in cf["covers"], cf
     assert mad["regress-all"]["args"] == ["--all"], mad["regress-all"]
     for cid, _argv in BS.MADHOUSE_MUTANTS:
         assert cid in mad, cid
@@ -774,7 +779,12 @@ MUTANTS = [
     ("the shared fake's folder on a remote tree in local form",
      '        return posixpath.join(d, "shared", "twai_port", "test")',
      '        return os.path.join(d, "shared", "twai_port", "test")'),
-    ("the shared-fake entry on our own fake", '    e["env"]["TWAI_FAKE"] = "shared"\n', ""),
+    ("host_bridge's can-fail without --can-fail",
+     '             ["--can-fail"], shell="git-bash", timeout_s=4 * 3600)',
+     '             [], shell="git-bash", timeout_s=4 * 3600)'),
+    ("host_bridge's can-fail under the default timeout",
+     '             ["--can-fail"], shell="git-bash", timeout_s=4 * 3600)',
+     '             ["--can-fail"], shell="git-bash")'),
     ("interposer_code not the tree's", 'return {"interposer_code": _code(tree)}',
      'return {"interposer_code": HERE}'),
     ("a bare bash", '        raise AdapterError("the settings name no bash',

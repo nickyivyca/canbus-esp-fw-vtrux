@@ -49,8 +49,10 @@ The writers (WRITERS below):
      writer sources scratch_run.sh and takes a run folder under its own
      tool name. The scan is shown to find a planted line.
  10. Each writer is run, with stand-in g++ and python3 (no hardware, no
-     real build) and an empty system temp folder: one run folder made, for
-     its tool, every g++ output inside it, nothing in the temp folder,
+     real build; gcc too, and a stand-in TWAI_FAKE_DIR for the host_bridge
+     builders since port step 2b) and an empty system temp folder: one run
+     folder made, for its tool, every g++ and gcc output inside it, nothing
+     in the temp folder,
      nothing left once it exits. stop_all.sh runs (--self-test) only on
      Linux; elsewhere it refuses before making anything, which is checked.
 
@@ -105,7 +107,6 @@ WIN = os.name == "nt"
 # path under charge-interposer/ -> (tool, args)
 WRITERS = {
     "harness_checks/busoff_mutations.sh": ("busoff-mutations", []),
-    "harness_checks/twai_mutations.sh": ("twai-mutations", []),
     "harness_checks/conformance_mutations.sh": ("conformance-mutations", []),
     "harness_checks/hold_cadence_gate_mutation.sh": ("hold-cadence-gate-mutation", []),
     "harness_checks/hold_mutations.sh": ("hold-mutations", []),
@@ -293,7 +294,9 @@ class Run:
         self.log = os.path.join(work, "stub.log")
         self.bindir = os.path.join(work, "bin")
         os.makedirs(self.bindir)
-        for name, text in (("g++", GPP), ("python3", PY3)):
+        # gcc too: since port step 2b the host_bridge builds compile C
+        # sources (fw_harness/host_bridge/l2_build.sh), logged as g++'s are
+        for name, text in (("g++", GPP), ("gcc", GPP), ("python3", PY3)):
             p = os.path.join(self.bindir, name)
             with open(p, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
@@ -680,10 +683,20 @@ def case_writers(base):
                              "interposer-firmware"))
     trace = os.path.join(base, "empty.trace")
     open(trace, "w").close()
+    # the shared folders the host_bridge builders find by TWAI_FAKE_DIR
+    # (port step 2b, l2_build.sh): stand-ins of the files it checks for
+    fake = os.path.join(base, "co", "shared", "twai_port", "test")
+    for rel in ("twai_fake.c", "cpp/twai_fake.cpp", "../twai_port.c",
+                "../twai_port_ll_unsupported.c", "../include/twai_port.h",
+                "../../can_port/can_port.c", "../../can_port/include/can_port.h"):
+        p = os.path.normpath(os.path.join(fake, rel))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "w").close()
     for n, (rel, (tool, args)) in enumerate(sorted(WRITERS.items())):
         r = Run(os.path.join(base, "w%02d" % n))
         linux_only = rel == "stop_all.sh"
-        env = r.env({"REVERSE_IT_DIR": fwd(rid), "L3_STIMULUS": "unused"},
+        env = r.env({"REVERSE_IT_DIR": fwd(rid), "L3_STIMULUS": "unused",
+                     "TWAI_FAKE_DIR": fwd(fake)},
                     stubs=not linux_only)
         argv = [bash(), fwd(os.path.join(ci, rel))] + [
             fwd(trace) if a == "{trace}" else a for a in args]

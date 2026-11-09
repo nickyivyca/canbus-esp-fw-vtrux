@@ -44,24 +44,21 @@ export L3_STIMULUS
 # The work folder is this run's own under the tree's scratch/, never the
 # system temp folder, removed when the script exits (scratch_run.sh).
 . "$CODE/scratch_run.sh" || exit 2
+# The shared folders, as host_bridge/run.sh finds them (port step 2b).
+. "$HB/l2_build.sh"
+hb_shared || exit 2
 scratch_run rx-order-prefix-control || exit 2
 WORK="$SCRATCH_RUN"
-mkdir -p "$WORK/driver" "$WORK/fw"
+mkdir -p "$WORK/fw"
 cp "$HB"/*.cpp "$HB"/*.h "$WORK"/
-cp "$HB"/driver/*.h "$WORK/driver"/ 2>/dev/null || true
 cp "$SRC"/*.cpp "$SRC"/*.h "$WORK/fw"/
 cd "$WORK" || exit 2
 
+# test_l2_bridge from the copy, as run.sh builds it (l2_build.sh).
 build() {
   rm -f "$WORK/run"
-  local srcs=(test_l2_bridge.cpp)
-  for f in "$WORK"/*.cpp; do
-    case "$(basename "$f")" in test_*) continue ;; esac
-    srcs+=("$f")
-  done
-  srcs+=(fw/main.cpp fw/port_mcp2515.cpp fw/port_twai.cpp fw/machine.cpp)
-  if ! g++ -std=c++11 -O2 -I . -I fw -DINTP_NO_SERIAL=1 -o "$WORK/run" \
-       "${srcs[@]}" > "$WORK/build.txt" 2>&1; then
+  if ! bash "$HB/l2_build.sh" "$WORK/run" "$WORK" "$WORK/fw" \
+       > "$WORK/build.txt" 2>&1; then
     head -5 "$WORK/build.txt"
     return 1
   fi

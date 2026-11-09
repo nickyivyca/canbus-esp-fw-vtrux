@@ -8,23 +8,32 @@
 # On Windows run under WSL:
 #   wsl bash "/mnt/c/.../charge-interposer/fw_harness/host_bridge/run.sh"
 #
-# WHICH TWAI DRIVER FAKE the tests build against, TWAI_FAKE (tester,
-# 2026-11-02, the reviewer's order: an option of committed harness, so that
-# port step 1b's acceptance E can be re-run by the acceptance runner):
-#   own     the default, as before the option: this folder's twai_fake.h /
-#           .cpp and driver/twai.h.
-#   shared  the shared fake (shared/twai_port/test, twai_port T10), from the
-#           folder TWAI_FAKE_DIR names, built exactly as acceptance E built
-#           it (2026-10-31): a copy of this folder, at the same depth beside
-#           a copy of firmware/main/, without our twai_fake.h,
-#           twai_fake.cpp and driver/twai.h (a quoted #include looks in the
-#           including file's own folder first, so they would win over any
-#           -I), every test given the shared twai_fake.c and
-#           cpp/twai_fake.cpp, and -I <fake>/include -I <fake>/host
-#           -I <fake>/cpp after this folder and main/. Nothing else changes,
-#           and nothing extra is printed (the test list and closing lines,
-#           below, are the same in both): the two transcripts are compared
-#           line for line.
+# THE VEHICLE PORT IS THE REAL ONE, ON THE ONE HOST FAKE (port step 2b,
+# spec 2.4; twai_port T10; tester, 2026-11-08, the charge-interposer
+# reviewer's rulings for 2b). Since 2b the firmware's vehicle port is the
+# shared vtrux/twai_port behind vtrux/can_port, so the tests compile them as
+# they ship: twai_port.c with the S3's register file,
+# twai_port_ll_unsupported.c, and can_port.c, as C (gcc -std=c11), on the
+# shared TWAI driver fake (twai_fake.c, as C, with the interposer's C++
+# interface cpp/twai_fake.cpp). This folder's own fake and driver/twai.h,
+# and the TWAI_FAKE=own|shared option, are retired. The shared folders
+# (found by l2_build.sh's hb_shared, which the harness checks that build
+# test_l2_bridge from a copy use too) are those of ONE shared/main
+# checkout, at the tag
+# charge-interposer/firmware/shared_pins.json pins for shared/twai_port
+# (shared/can_port is pinned at the same tag, and
+# ../../shared_pin_test.py checks both against main/idf_component.yml):
+#   TWAI_FAKE_DIR  the fake's folder, <checkout>/shared/twai_port/test, if
+#                  set (the madhouse lane ships the pinned folders and sets
+#                  it); twai_port is its parent, can_port ../../can_port
+#   otherwise      `python3 ../../shared_pin.py where shared/twai_port`,
+#                  the pinned read-only checkout ../shared-<tag>/
+# Our own host stand-ins come first on the include path (board.h, with
+# board_fake.cpp's answers from shared/boards SPEC section 3; esp_log.h;
+# idf_host.cpp: the log, error-check and tick calls twai_port makes), then
+# firmware/main, then the fake's include/, host/ and cpp/, then
+# twai_port's and can_port's include/. The fake's host_platform.c is not
+# built: its board answers are not the X2's.
 # run.sh --can-fail is the shared fake's can-fail
 # (../../harness_checks/shared_fake_canfail.py).
 #
@@ -32,13 +41,12 @@
 # scratch/cih/host-bridge/run_XXXXXX, never the system
 # temp folder (AGENTS.md "Files and folders"; the charge-interposer
 # reviewer, 2026-11-02; cih/, scratch_dir.py's short root, since
-# 2026-11-05). Every test binary is built there, and so is
-# TWAI_FAKE=shared's copy. It is removed when run.sh ends, pass, fail or
-# refusal, with the two tool folders above it if that leaves them empty; a
-# folder it cannot remove is printed with its path. The run folder is made
-# with up to three tries, a moment apart, since another run's cleanup can
-# remove the tool folders between making them and making the run folder in
-# them.
+# 2026-11-05). Every object and test binary is built there. It is removed
+# when run.sh ends, pass, fail or refusal, with the two tool folders above
+# it if that leaves them empty; a folder it cannot remove is printed with
+# its path. The run folder is made with up to three tries, a moment apart,
+# since another run's cleanup can remove the tool folders between making
+# them and making the run folder in them.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # The firmware's sources: the IDF project's main/ component (port step 2a
@@ -51,6 +59,12 @@ case "${1:-}" in
   --can-fail) exec python3 "$HERE/../../harness_checks/shared_fake_canfail.py" ;;
   *) echo "usage: run.sh [--can-fail]" >&2; exit 2 ;;
 esac
+# The shared folders (l2_build.sh, which the harness checks that build
+# test_l2_bridge from a copy share with this script): refused before
+# anything is made if they are not there.
+. "$HERE/l2_build.sh"
+hb_shared || exit 2
+SH="$HB_SH"
 # the tree's root
 ROOT="$(cd "$HERE/../../.." && pwd)"
 WT="$ROOT/scratch/cih"
@@ -81,39 +95,9 @@ cleanup() {
   rmdir "$WT/host-bridge" "$WT" 2>/dev/null || true
 }
 trap cleanup EXIT
-# B: the folder the tests and our fakes are built from
+# B: the folder the tests and our stand-ins are built from
 B="$HERE"
-FAKE_SRCS=()
-FAKE_INC=()
-case "${TWAI_FAKE:-own}" in
-  own) ;;
-  shared)
-    SH="${TWAI_FAKE_DIR:-}"
-    if [ -z "$SH" ] || [ ! -f "$SH/twai_fake.c" ] || [ ! -f "$SH/cpp/twai_fake.cpp" ]; then
-      echo "TWAI_FAKE=shared needs TWAI_FAKE_DIR: the shared fake's folder" \
-           "(shared/twai_port/test), with twai_fake.c and cpp/twai_fake.cpp" >&2
-      exit 2
-    fi
-    # The copy sits at host_bridge's own depth, fw_harness/host_bridge
-    # under a folder T in this run's W, with a copy of main/ at
-    # firmware/main beside fw_harness/, so a test's relative #include
-    # "../../firmware/main/main.cpp" (test_event_layout) reaches main.cpp
-    # as it does from host_bridge itself.
-    T="$W/shared"
-    B="$T/fw_harness/host_bridge"
-    mkdir -p "$B" "$T/firmware/main" || exit 2
-    cp -R "$SRC/." "$T/firmware/main/" || exit 2
-    cp -R "$HERE/." "$B/" || exit 2
-    rm "$B/twai_fake.h" "$B/twai_fake.cpp" "$B/driver/twai.h"
-    rmdir "$B/driver" 2>/dev/null || true
-    FAKE_SRCS=("$SH/twai_fake.c" "$SH/cpp/twai_fake.cpp")
-    FAKE_INC=(-I "$SH/include" -I "$SH/host" -I "$SH/cpp")
-    ;;
-  *)
-    echo "TWAI_FAKE=$TWAI_FAKE: own (the default) or shared" >&2
-    exit 2
-    ;;
-esac
+INC=(-I "$B" -I "$SRC" "${HB_INC_SHARED[@]}")
 # test_l2_bridge replays l3_stimulus.txt, which stays in SeaDrive; its
 # relative candidates in l3_replay.cpp no longer reach it from this repo,
 # so the runner hands it over through L3_STIMULUS (an explicit setting
@@ -130,6 +114,20 @@ fail=0
 if ! python3 "$HERE/../../capture_pins.py" --file "$L3_STIMULUS"; then
   fail=1
 fi
+# THE C SOURCES, compiled once per run as C, as they ship: the fake (every
+# test links it, as every test linked our own fake before 2b), and the
+# vehicle port's two components (the tests that build the bridge link
+# them). A source that does not compile fails the run, and the tests that
+# need it then do not build.
+hb_c_objs "$W" "$B" "$SRC" || fail=1
+FAKE_OBJS=("$W/twai_fake.o")
+PORT_OBJS=("$W/twai_port.o" "$W/twai_port_ll.o" "$W/can_port.o")
+# The vehicle port's firmware side (port step 2b): vehicle_port.cpp sets
+# twai_port up and registers it with can_port, port_view.cpp is how the
+# bridge reaches a port by its index, and charger_port.cpp registers the
+# MCP2515 driver with can_port (main/CMakeLists.txt).
+PORTS=("$SRC/port_mcp2515.cpp" "$SRC/vehicle_port.cpp" "$SRC/port_view.cpp"
+       "$SRC/charger_port.cpp")
 # THE TEST LIST, printed once before any build (tester, 2026-11-08; the
 # charge-interposer reviewer's follow-up (B) after port step 2a): every
 # test_*.cpp of the folder the tests are built from, in glob order, on one
@@ -149,10 +147,11 @@ echo "host_bridge tests (${#tests[@]}): ${tests[*]+${tests[*]}}"
 for name in ${tests[@]+"${tests[@]}"}; do
   t="$B/$name.cpp"
   bin="$W/$name"
-  # Glob the fakes rather than list them: a hand-kept source list going
+  # Glob our stand-ins rather than list them: a hand-kept source list going
   # stale is how the gen-inhibit session built against old headers three
   # times without noticing.
-  srcs=("$t" ${FAKE_SRCS[@]+"${FAKE_SRCS[@]}"})
+  srcs=("$t" "$SH/cpp/twai_fake.cpp")
+  objs=(${FAKE_OBJS[@]+"${FAKE_OBJS[@]}"})
   for f in "$B"/*.cpp; do
     [ "$f" = "$t" ] && continue
     case "$(basename "$f")" in test_*) continue ;; esac
@@ -178,13 +177,13 @@ for name in ${tests[@]+"${tests[@]}"}; do
       srcs+=("$SRC/port_mcp2515.cpp")
       defs+=(-DINTP_ORDER_WITNESS=1)
       ;;
-    test_twai_port) srcs+=("$SRC/port_twai.cpp") ;;
     # Spec 8.3's event-line form. The test #includes main.cpp itself (to
     # reach its static reportEvents() and core without a src change), so
     # main.cpp is NOT listed; built WITH serial, into the capturing Serial
     # of Arduino.h, which only HOST_SERIAL_CAPTURE compiles in.
     test_event_layout)
-      srcs+=("$SRC/port_mcp2515.cpp" "$SRC/port_twai.cpp" "$SRC/machine.cpp")
+      srcs+=("${PORTS[@]}" "$SRC/machine.cpp")
+      objs+=("${PORT_OBJS[@]}")
       defs+=(-DHOST_SERIAL_CAPTURE=1)
       ;;
     # L2 is the whole bridge: main.cpp itself, both ports and the core.
@@ -192,15 +191,22 @@ for name in ${tests[@]+"${tests[@]}"}; do
     # the one that actually goes in the vehicle, and the one whose
     # `intp_serial` bit reads 0 on the wire.
     test_l2_bridge)
-      srcs+=("$SRC/main.cpp" "$SRC/port_mcp2515.cpp" "$SRC/port_twai.cpp"              "$SRC/machine.cpp")
+      for f in "${HB_FW_L2[@]}"; do srcs+=("$SRC/$f"); done
+      objs+=("${PORT_OBJS[@]}")
       defs+=(-DINTP_NO_SERIAL=1)
       ;;
   esac
+  # A test that needs an object that did not build does not build either.
+  missing=""
+  for o in ${objs[@]+"${objs[@]}"}; do
+    [ -f "$o" ] || missing="$missing $(basename "$o")"
+  done
   # ${defs[@]+...} so an EMPTY array is not an unbound-variable error
   # under `set -u`, which is how most of these tests build.
-  if ! g++ -std=c++11 -O2 -Wall -Wextra -I "$B" -I "$SRC" ${FAKE_INC[@]+"${FAKE_INC[@]}"} \
-       ${defs[@]+"${defs[@]}"} -o "$bin" "${srcs[@]}"; then
-    echo "$name DID NOT BUILD"
+  if [ -n "$missing" ] ||
+     ! g++ -std=c++11 -O2 -Wall -Wextra "${INC[@]}" \
+       ${defs[@]+"${defs[@]}"} -o "$bin" "${srcs[@]}" ${objs[@]+"${objs[@]}"}; then
+    echo "$name DID NOT BUILD${missing:+ (no$missing)}"
     fail=1
     continue
   fi

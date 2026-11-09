@@ -30,8 +30,16 @@ taken by anything but the checkout's own module gives another value.
   5. entry(): gives the values folder() then accepts; a checkout whose HEAD
      is not the tag is refused.
   6. main(): check/where exit 0 on the pin, 1 refused, 2 on a bad call.
-  7. The real pin file: once it has the tester's entries, both pass
-     folder() on this host; until then reported as not checked.
+  7. The real pin file: once it has the tester's entries, each passes
+     folder() on this host; until then reported as not checked. And the
+     real twai_port and can_port pins pass idf-match against the real
+     firmware/main/idf_component.yml.
+  8. idf-match (port step 2b): each dependency's own version read from a
+     manifest laid out as the firmware's (comments, other dependencies,
+     a trailing comment); pins at those versions pass; refused are
+     twai_port or can_port at another version, no can_port in the
+     manifest, can_port's block without a version (the next block's is
+     not taken), and the two pins at different tags; main() exits 0 and 1.
 
     py -3.14 -B charge-interposer/shared_pin_test.py
     py -3.14 -B charge-interposer/shared_pin_test.py --can-fail
@@ -130,7 +138,8 @@ def fixture(base):
                 "shared/bench/vtrux_bench/__init__.py": "MARK = 'T1'\n",
                 "shared/bench/tests/test_x.py": "X = 1\n",
                 "shared/bench/README.md": "readme\n",
-                "shared/twai_port/test/twai_fake.c": "int fake;\n"})
+                "shared/twai_port/test/twai_fake.c": "int fake;\n",
+                "shared/can_port/can_port.c": "int port;\n"})
     git(src, "add", "-A")
     git(src, "commit", "-q", "-m", "a")
     git(src, "tag", "-a", "T1", "-m", "T1")
@@ -351,6 +360,49 @@ def checks():
         check("6 a refusal exits 1", r.returncode == 1 and "REFUSED" in r.stderr, r.stderr[-300:])
         r = child(fx, "sys.exit(P.main(['frob']))")
         check("6 a bad call exits 2", r.returncode == 2, str(r.returncode))
+
+        # 8. idf-match: the twai_port and can_port pins against the
+        # firmware's idf_component.yml (port step 2b)
+        ydir = os.path.join(base, "yml")
+        good_yml = YML % {"can": "T1", "twai": "T1"}
+        write(ydir, {"good.yml": good_yml})
+        yml = os.path.join(ydir, "good.yml")
+        got = P.idf_versions(yml)
+        check("8 idf_versions reads each dependency's own version",
+              got == {"vtrux/can_port": "T1", "vtrux/twai_port": "T1"}, repr(got))
+        try:
+            check("8 pins at the versions the manifest takes pass",
+                  P.idf_match(fx["pins"], yml) == "T1")
+        except P.SharedPinError as e:
+            check("8 pins at the versions the manifest takes pass", False, str(e))
+        for label, text, has in (
+                ("twai_port at another version", YML % {"can": "T1", "twai": "T2"},
+                 "takes vtrux/twai_port at T2"),
+                ("can_port at another version", YML % {"can": "T2", "twai": "T1"},
+                 "takes vtrux/can_port at T2"),
+                ("no can_port in the manifest", YML_NO_CAN,
+                 "names no version for vtrux/can_port"),
+                ("can_port's block without a version (the next one's not taken)",
+                 YML_CAN_NO_VERSION, "names no version for vtrux/can_port")):
+            write(ydir, {"bad.yml": text})
+            refused("8 " + label, P.idf_match, fx["pins"], os.path.join(ydir, "bad.yml"),
+                    has=has)
+        two = os.path.join(base, "shared-T2")
+        git(fx["src"], "worktree", "add", "-q", "--detach", two, "T2")
+        t2 = {"tag": "T2", "commit": fx["b"],
+              "digest": P.digest_of(two, os.path.join(two, "shared", "twai_port"))}
+        set_pins(fx, dict(good, **{"shared/twai_port": t2}))
+        write(ydir, {"split.yml": YML % {"can": "T1", "twai": "T2"}})
+        refused("8 the two pins at different tags", P.idf_match, fx["pins"],
+                os.path.join(ydir, "split.yml"), has="different tags")
+        set_pins(fx, good)
+        r = child(fx, "P.IDF_YML = %r\nsys.exit(P.main(['idf-match']))" % yml)
+        check("8 idf-match exits 0 on a match", r.returncode == 0 and
+              r.stdout.startswith("OK"), r.stdout + r.stderr[-300:])
+        r = child(fx, "P.IDF_YML = %r\nsys.exit(P.main(['idf-match']))"
+                  % os.path.join(ydir, "bad.yml"))
+        check("8 idf-match exits 1 on a refusal", r.returncode == 1 and
+              "REFUSED" in r.stderr, r.stderr[-300:])
     finally:
         scratch_dir.remove(base)
 
@@ -369,7 +421,55 @@ def checks():
                 check("7 the real %s pin passes on this host" % name, True)
             except P.SharedPinError as e:
                 check("7 the real %s pin passes on this host" % name, False, str(e))
+    # the real files by this test's own tree (under --can-fail the module is
+    # a copy elsewhere, whose own defaults name nothing)
+    try:
+        check("7 the real twai_port and can_port pins are the firmware's versions "
+              "(idf-match)", bool(P.idf_match(
+                  os.path.join(HERE, "firmware", "shared_pins.json"),
+                  os.path.join(HERE, "firmware", "main", "idf_component.yml"))))
+    except P.SharedPinError as e:
+        check("7 the real twai_port and can_port pins are the firmware's versions "
+              "(idf-match)", False, str(e))
     return FAILS
+
+
+# idf_component.yml stand-ins for 8, laid out as the firmware's: comments,
+# other dependencies before and after, a trailing comment on a version
+YML = """## the interposer's dependencies
+dependencies:
+  espressif/arduino-esp32:
+    version: "3.2.1"
+  # the board
+  vtrux/x2:
+    git: https://example.invalid/r.git
+    path: shared/boards/x2
+    version: "T9"
+  vtrux/can_port:
+    git: https://example.invalid/r.git
+    path: shared/can_port
+    version: "%(can)s"
+  vtrux/twai_port:
+    git: https://example.invalid/r.git
+    path: shared/twai_port
+    version: "%(twai)s"   # the vehicle port
+  idf:
+    version: "5.4.2"
+"""
+YML_NO_CAN = """dependencies:
+  vtrux/twai_port:
+    version: "T1"
+  idf:
+    version: "5.4.2"
+"""
+YML_CAN_NO_VERSION = """dependencies:
+  vtrux/twai_port:
+    version: "T1"
+  vtrux/can_port:
+    git: https://example.invalid/r.git
+  idf:
+    version: "T1"
+"""
 
 
 MUTANTS = [
@@ -411,6 +511,19 @@ MUTANTS = [
      "os.path.join(top, os.pardir, \"shared-\" + tag)",
      "os.path.join(top, os.pardir, os.pardir, \"shared-\" + tag)"),
     ("a refusal exits 0 in main", "        return 1\n    print(__doc__", "        return 0\n    print(__doc__"),
+    # idf-match (port step 2b)
+    ("a pin not compared with its version", "        if tag != vers[dep]:",
+     "        if False:"),
+    ("only twai_port compared", "    for name, dep in IDF_DEPS:\n        tag = read",
+     "    for name, dep in IDF_DEPS[:1]:\n        tag = read"),
+    ("pins at different tags accepted", "    if len(tags) != 1:", "    if False:"),
+    ("a missing version not refused", "        if dep not in vers:", "        if False:"),
+    ("a version from past the dependency's block",
+     "        if cur is not None and indent <= cur_indent:\n            cur = None\n", ""),
+    ("comments not stripped", '        s = ln.split("#", 1)[0].rstrip()',
+     "        s = ln.rstrip()"),
+    ("idf-match not a command", '        if argv == ["idf-match"]:',
+     '        if argv == ["idf_match"]:'),
 ]
 
 

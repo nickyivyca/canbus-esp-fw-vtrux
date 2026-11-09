@@ -17,16 +17,24 @@ the charger stops, and 2 s later the port falls back to listen-only.
 The board's serial status block (every 5 s) gives, before and after each
 phase: c2v (frames forwarded toward the vehicle), the LOSS line's vehicle
 tx drops and bridge drops, and the MODE line's suppressed count, switch
-count and drained count. Every field on the LOSS line is a loss, and
-`veh tx=` is the vehicle port's txDropped (firmware/README.md); `bridge=`
-counts the subset refused at send, so it is reported, not subtracted.
+count and drained count. Every field on the LOSS line is a loss. `veh tx=`
+is the vehicle send-failure count: sends refused with the queue full plus
+sends refused for any other reason, the port down included (spec 2.4,
+since port step 2b; before it, the old port's txDropped); `bridge=` counts
+the subset refused at send, so it is reported, not subtracted. The frames
+a switch's teardown discards are not reported (spec 2.4; spec 12's 2.3
+entry), so in NOACK they are what is left unaccounted.
 Accounting (account(), pure; --self-test):
     unaccounted = c2v delta - delivered - veh tx delta - suppressed delta
                   - drained delta
 where delivered is the bridged frames the PCAN saw complete. (The first
 version also subtracted bridge= and double-counted; corrected 2026-10-15.) A positive
 unaccounted count in NOACK with 0 in ACK supports the hypothesis; 0 in both
-refutes it.
+refutes it. This script reports and exits 0; the bench suite judges its out
+file (bench_suite.switch_pending_judge, port step 2b): FAIL unless the
+RESULT line is there, ACK's count is 0, NOACK's is within 0..33 (the TX
+queue of 32 plus the frame in the buffer), and in each phase bridge= rose
+no more than veh tx=.
 
     py -3.14 bench_switch_pending.py --self-test
     py -3.14 bench_switch_pending.py --port COM3 --out <file.txt>

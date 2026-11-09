@@ -61,18 +61,34 @@ MANIFESTS = os.path.join(paths.fixtures(), "flash-manifests")
 
 # path -> the spec 10 item it is a mechanic for.
 WHOLE_FILES = {
-    "main/port_twai.cpp": "the CAN controllers' own behaviour (TWAI bus-off "
-                          "recovery); the real transceivers",
-    "main/port_twai.h": "same",
+    # Port step 2b: the vehicle port is the shared vtrux/twai_port behind
+    # vtrux/can_port (spec 2.4). Their code is a dependency at the version
+    # idf_component.yml names (below); what the interposer sets for it is
+    # vehicle_port.cpp/.h, and port_view is how the bridge reaches a port.
+    # Before 2b these were port_twai.cpp/.h and can_port.h.
+    "main/vehicle_port.cpp": "the CAN controllers' own behaviour (the "
+                             "vehicle port's settings: mode, bus-off "
+                             "recovery, RTR, filter, queue depths); the "
+                             "real transceivers",
+    "main/vehicle_port.h": "same",
+    "main/port_view.cpp": "the port contract the bridge reads both ports "
+                          "through (sends, receives, counters)",
+    "main/port_view.h": "same",
+    "main/charger_port.cpp": "the CAN controllers' own behaviour (the charger "
+                             "port's registration with can_port, its bring-up "
+                             "and clock)",
+    "main/charger_port.h": "same",
     "main/port_mcp2515.cpp": "the CAN controllers' own behaviour (MCP2515 "
                              "transmit-buffer abort, retry and ordering)",
     "main/port_mcp2515.h": "same",
-    "main/can_port.h": "the port contract both drivers implement",
+    "main/bridge_port.h": "the port contract both drivers implement",
     "main/board_ports.h": "pin assignment: which board port each side "
                           "takes, and the checks on the board's answer",
     "main/idf_component.yml": "pin assignment and flashing and boot: the "
                               "board component's version, the Arduino core, "
-                              "ESP-IDF",
+                              "ESP-IDF; and the CAN controllers' own "
+                              "behaviour: the twai_port and can_port "
+                              "versions (port step 2b)",
     "dependencies.lock": "same, as resolved",
     "CMakeLists.txt": "flashing and boot; the build configuration",
     "main/CMakeLists.txt": "same: each variant's sources and switches",

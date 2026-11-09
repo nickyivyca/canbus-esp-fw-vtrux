@@ -14,16 +14,31 @@ own pin (shared/tools R23), and is owned per entry:
      "shared/bench":     {"tag": "2026.11.03",
                           "commit": "<40 hex: the commit the tag marks>",
                           "digest": "<64 hex: R7 of shared/bench at it>"},
-     "shared/twai_port": {...}}     host_bridge's TWAI_FAKE=shared fake
+     "shared/twai_port": {...},     host_bridge's vehicle port and fake
+     "shared/can_port":  {...}}     host_bridge's port interface
 
 The tester's entries are "shared/bench" (the chain runner, the acceptance
-runner, the bench lock and the decode helper) and "shared/twai_port" (the
-one host fake of the TWAI driver, test/). A pin moves only on a batch from
-the reviewer, since moving it is also the decision to re-test (goal 12).
+runner, the bench lock and the decode helper), "shared/twai_port" (the one
+host fake of the TWAI driver, test/, and since port step 2b the real port
+host_bridge compiles on it) and "shared/can_port" (since port step 2b: the
+port interface host_bridge compiles twai_port behind). A pin moves only on
+a batch from the reviewer, since moving it is also the decision to re-test
+(goal 12).
 
     py -3.14 -B charge-interposer/shared_pin.py check shared/bench
     py -3.14 -B charge-interposer/shared_pin.py where shared/bench
     py -3.14 -B charge-interposer/shared_pin.py entry <tag> shared/bench
+    py -3.14 -B charge-interposer/shared_pin.py idf-match
+
+THE HOST BUILD IS ON THE PRODUCT'S VERSIONS (idf-match; port step 2b,
+the charge-interposer reviewer's rulings for 2b, 2026-11-08). The
+firmware takes vtrux/twai_port and vtrux/can_port from git at the versions
+firmware/main/idf_component.yml names, and host_bridge compiles the same
+two components from the pinned checkout. idf-match passes only if the
+"shared/twai_port" and "shared/can_port" pins name one tag, and it is the
+version idf_component.yml gives each; it reads the two files and nothing
+else (no git), so it runs on any host. host_bridge/run.sh runs it before
+any build.
 
 `entry` prints, for a pin move, the entry the checkout ../shared-<tag>/
 would give (it writes nothing); `where` prints the component's folder once
@@ -55,8 +70,12 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PIN_FILE = os.path.join(HERE, "firmware", "shared_pins.json")
+IDF_YML = os.path.join(HERE, "firmware", "main", "idf_component.yml")
 START = HERE            # where worktree() starts looking; tests move it
-OURS = ("shared/bench", "shared/twai_port")
+OURS = ("shared/bench", "shared/twai_port", "shared/can_port")
+# the pins idf-match compares, and each one's dependency in IDF_YML
+IDF_DEPS = (("shared/twai_port", "vtrux/twai_port"),
+            ("shared/can_port", "vtrux/can_port"))
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _LOOKS_LIKE_COMMIT = re.compile(r"^[0-9a-fA-F]{7,40}$")
@@ -251,8 +270,69 @@ def entry(tag, name, start=None):
     return {"tag": tag, "commit": head, "digest": digest_of(checkout, d)}
 
 
+def idf_versions(path=None):
+    """{dependency: version} for each IDF_DEPS dependency, from the
+    manifest's top-level `dependencies:` map: the `version:` line inside
+    that dependency's own block (indented under it, before the next key at
+    its level). A dependency with no block, or a block with no version, is
+    missing from the result."""
+    path = path or IDF_YML
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError as e:
+        raise SharedPinError("cannot read %s (%s)" % (path, e))
+    out = {}
+    want = {dep for _n, dep in IDF_DEPS}
+    cur, cur_indent = None, None
+    for ln in lines:
+        s = ln.split("#", 1)[0].rstrip()
+        if not s.strip():
+            continue
+        indent = len(s) - len(s.lstrip(" "))
+        key = s.strip()
+        if cur is not None and indent <= cur_indent:
+            cur = None
+        if cur is None:
+            if key.endswith(":") and key[:-1] in want:
+                cur, cur_indent = key[:-1], indent
+            continue
+        m = re.match(r'^version:\s*"?([^"\s]+)"?$', key)
+        if m and cur not in out:
+            out[cur] = m.group(1)
+    return out
+
+
+def idf_match(path=None, yml=None):
+    """The idf-match check (module docstring). The tag, or SharedPinError."""
+    vers = idf_versions(yml)
+    tags = set()
+    for name, dep in IDF_DEPS:
+        tag = read(name, path)["tag"]
+        if dep not in vers:
+            raise SharedPinError("%s names no version for %s, so the %r pin "
+                                 "cannot be compared with it"
+                                 % (yml or IDF_YML, dep, name))
+        if tag != vers[dep]:
+            raise SharedPinError("the %r pin is at %s, and %s takes %s at %s: "
+                                 "host_bridge would build another version than "
+                                 "the firmware's" % (name, tag, yml or IDF_YML,
+                                                     dep, vers[dep]))
+        tags.add(tag)
+    if len(tags) != 1:
+        raise SharedPinError("the %s pins name different tags (%s): twai_port is "
+                             "taken with can_port at the same shared/main tag"
+                             % (" and ".join(n for n, _d in IDF_DEPS),
+                                ", ".join(sorted(tags))))
+    return tags.pop()
+
+
 def main(argv):
     try:
+        if argv == ["idf-match"]:
+            print("OK: %s and %s pinned at %s, as idf_component.yml takes them"
+                  % (IDF_DEPS[0][0], IDF_DEPS[1][0], idf_match()))
+            return 0
         if len(argv) == 2 and argv[0] in ("check", "where"):
             d = folder(argv[1])
             print(d if argv[0] == "where" else "OK: %s is the pinned %s" % (d, argv[1]))
@@ -264,8 +344,8 @@ def main(argv):
         print("REFUSED: %s" % e, file=sys.stderr)
         return 1
     print(__doc__.split("\n\n")[0], file=sys.stderr)
-    print("usage: shared_pin.py check|where <component> | entry <tag> <component>",
-          file=sys.stderr)
+    print("usage: shared_pin.py check|where <component> | entry <tag> <component>"
+          " | idf-match", file=sys.stderr)
     return 2
 
 
