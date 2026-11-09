@@ -71,12 +71,16 @@
 #include <Arduino.h>
 
 #include "board_ports.h"
-#include "port_twai.h"
+#include "port_view.h"
+#include "twai_port.h"
+#include "vehicle_port.h"
 
+using interposer::PortView;
 using interposer::RxFrame;
-using interposer::TwaiPort;
+using interposer::VEHICLE_PORT;
 using interposer::VehiclePins;
 using interposer::vehiclePins;
+using interposer::vehicleSetup;
 
 // CAN1, the vehicle segment: the board's TWAI port, as main.cpp takes it
 // (board_ports.h).
@@ -86,10 +90,15 @@ static const uint32_t BITRATE = 500000UL;
 
 // A filler run offers frames as fast as the host can write them and lets
 // arbitration place them, so the transmit queue is the thing under pressure. 32
-// is the TwaiPort default; 64 costs nothing here and absorbs a USB burst without
-// reporting a drop that is really just a burst.
-static TwaiPort can1(VEH.tx, VEH.rx, 16, 64);
+// is the bridge's depth (spec 2.4); 64 costs nothing here and absorbs a USB
+// burst without reporting a drop that is really just a burst. The port is the
+// shared vtrux/twai_port through vtrux/can_port, with the bridge's settings
+// otherwise (vehicle_port.h, port step 2b).
+static const uint32_t SLCAN_RX_QUEUE = 16;
+static const uint32_t SLCAN_TX_QUEUE = 64;
+static PortView can1(VEHICLE_PORT);
 
+static bool g_setup = false;     // twai_port set up and registered, at boot
 static bool g_open = false;      // controller up and allowed to transmit
 static bool g_listen_only = false;
 
@@ -167,13 +176,21 @@ static void handleLine(char *s, uint8_t n)
     case 'L':
         if (g_open) { ok(); break; }
         g_listen_only = (s[0] == 'L');
-        can1.setListenOnly(g_listen_only);
-        if (VEH.ok && can1.begin(BITRATE)) { g_open = true; ok(); }
+        // The port is down here, so this only records the mode for the
+        // install below (twai_port T4).
+        if (VEH.ok && g_setup &&
+            twai_port_set_mode(g_listen_only ? CAN_PORT_MODE_LISTEN_ONLY
+                                             : CAN_PORT_MODE_NORMAL) == ESP_OK &&
+            can1.begin(BITRATE)) { g_open = true; ok(); }
         else                     { err(); }
         break;
 
     case 'C':
-        if (g_open) { can1.end(); g_open = false; g_listen_only = false; }
+        if (g_open) {
+            (void)twai_port_teardown();
+            g_open = false;
+            g_listen_only = false;
+        }
         ok();
         break;
 
@@ -219,7 +236,10 @@ void setup()
     // returns. The full reasoning is at INTP_CDC_TX_TIMEOUT_MS in main.cpp.
     Serial.setTxTimeoutMs(1);
     // No wait for a host: this board must reach its silent, not-transmitting
-    // state whether or not anyone is listening.
+    // state whether or not anyone is listening. The port is set up and
+    // registered, never installed, until an `O` or an `L`.
+    g_setup = VEH.ok && vehicleSetup(CAN_PORT_MODE_NORMAL, SLCAN_RX_QUEUE,
+                                     SLCAN_TX_QUEUE);
     g_open = false;
 }
 

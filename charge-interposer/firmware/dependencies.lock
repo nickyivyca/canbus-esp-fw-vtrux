@@ -439,6 +439,29 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.20.0
+  vtrux/can_port:
+    component_hash: bd1f765fa6ba8f6aff64632d1750e2d7f5e3369fb8b83f7c0959d06c0cafdf0c
+    dependencies:
+    - name: idf
+      version: '>=5.4'
+    source:
+      git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+      path: shared/can_port
+      type: git
+    version: 5b03505f515cff8fbdd8826aa97fd2626028578a
+  vtrux/twai_port:
+    component_hash: ca63b1023762c56eb91c278e74ae9488cf432a0251358268ee4ac8c35dc31e9d
+    dependencies:
+    - name: idf
+      version: '>=5.4'
+    source:
+      git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+      path: shared/twai_port
+      type: git
+    targets:
+    - esp32c3
+    - esp32s3
+    version: 5b03505f515cff8fbdd8826aa97fd2626028578a
   vtrux/x2:
     component_hash: addd71bce143d762264756b264e28c18391382be939d1e1c10bc824913b9e0b6
     dependencies:
@@ -450,7 +473,7 @@ dependencies:
       type: git
     targets:
     - esp32s3
-    version: f4e7578209f7c10b66cd6164b4c77ed74d7f693f
+    version: 5b03505f515cff8fbdd8826aa97fd2626028578a
 direct_dependencies:
 - espressif/arduino-esp32
 - espressif/esp_modem
@@ -459,7 +482,9 @@ direct_dependencies:
 - espressif/mdns
 - idf
 - joltwallet/littlefs
+- vtrux/can_port
+- vtrux/twai_port
 - vtrux/x2
-manifest_hash: a7b5efc4700341a0b9df3b406201520ba8168c07a6107b5fe544c9d2abedc072
+manifest_hash: 1e0808e78e47c7c7da97175801432c788efa6c8c4377626ac924417943fdb9a8
 target: esp32s3
 version: 2.0.0

@@ -681,8 +681,9 @@ bool Mcp2515Port::send(uint32_t id, bool ext, const uint8_t* data,
   // over the bound the instant the clock catches up. THAT PATH IS REAL AND
   // main.cpp CLOSES IT: applyVehicleMode(), called from setup(), drains the
   // vehicle driver and dispatches what the core emits, which reaches this
-  // function before loop() has serviced anything -- and TwaiPort::receive()
-  // reads twai_receive() directly, so there are frames waiting on a live
+  // function before loop() has serviced anything -- and the vehicle port's
+  // receive (twai_port_receive) reads twai_receive() directly, needing no
+  // service pass of its own, so there are frames waiting on a live
   // segment. setup() therefore takes one service pass immediately before
   // that drain (reviewer, 2026-10-15). A test rig that constructs the port
   // and sends without servicing sees the same thing, and there the stamp
@@ -802,7 +803,7 @@ void Mcp2515Port::service(uint32_t t_ms) {
   // into rx_dropped_, for two reasons -- both of which were defects until
   // 2026-10-04.
   //
-  // 1. `can_port.h` defines rxDropped() as "controller overrun, frames
+  // 1. `bridge_port.h` defines rxDropped() as "controller overrun, frames
   //    lost". These were going into bus_errors_, which means something
   //    else entirely: a malformed frame or an unhealthy bus, not a frame
   //    we were too slow for. main.cpp was written to the contract, so
@@ -839,7 +840,7 @@ void Mcp2515Port::service(uint32_t t_ms) {
   bus_off_ = off;
 }
 
-// can_port.h: "controller overrun, frames lost". BOTH kinds of loss
+// bridge_port.h: "controller overrun, frames lost". BOTH kinds of loss
 // count -- our ring overflowing and the chip's receive buffers
 // overrunning. Returning only the ring's count was what kept a frame
 // lost at the chip out of spec 8.2's bridge_ok.

@@ -22,10 +22,10 @@ first, for port step 2a). This first cut gives:
   tree_settings      (paths.code_dir() refuses any other) and a suite run's
                      interposer_code; and TWAI_FAKE_DIR, the tree's checkout
                      of the shared TWAI fake when the list gives the tree a
-                     twai_port, which host_bridge builds against in the
-                     catalogue's host-bridge-shared-fake (TWAI_FAKE=shared:
-                     port step 1b's acceptance E by the runner; its can-fail
-                     is run.sh's own --can-fail, reviewer 2026-11-02)
+                     twai_port, which host_bridge builds on, with the real
+                     twai_port and can_port of the same checkout (port step
+                     2b: run.sh has no other fake; its can-fail is run.sh's
+                     own --can-fail, the catalogue's host-bridge-canfail)
   SHELLS, shell_argv python (the host's python from the settings), git-bash
                      (the settings' bash by its full path: a bare "bash" on
                      Windows is WSL's), powershell
@@ -159,8 +159,11 @@ def product_files(root):
 
 PIN_FILE = "charge-interposer/firmware/shared_pins.json"
 # the shared components a tree checks out, each at its pin: the harness's
-# shared/bench (shared_pin.use_bench) and shared/twai_port (host_bridge's
-# TWAI_FAKE=shared fake), and the build tooling's shared/tools
+# shared/bench (shared_pin.use_bench) and shared/twai_port (the fake and
+# the vehicle port host_bridge builds on; its checkout also holds the
+# shared/can_port host_bridge compiles, which shared_pin.py idf-match keeps
+# at the same tag, so it needs no checkout of its own), and the build
+# tooling's shared/tools
 # (vtrux_tools.py); each pinned tag's checkout is shared-<tag>/ (tree_paths)
 TREE_SHARED = {"bench": "shared/bench", "tools": "shared/tools",
                "twai_port": "shared/twai_port"}
@@ -240,8 +243,8 @@ def _shared_fake(tree):
 
 def tree_env(tree):
     """INTERPOSER_CODE, and TWAI_FAKE_DIR when the tree has a twai_port
-    checkout: the fake host_bridge's run.sh builds against under
-    TWAI_FAKE=shared (only an entry that sets that uses it)."""
+    checkout: the fake host_bridge's run.sh builds on (since port step 2b
+    its only one), with that checkout's twai_port and can_port."""
     env = {"INTERPOSER_CODE": _code(tree)}
     fake = _shared_fake(tree)
     if fake:
@@ -486,19 +489,24 @@ def catalogue(repo, commit):
         path = argv[0].replace("{interposer_code}/", "charge-interposer/")
         out.append(_entry(cid, path, argv[1:], ["harness", "harness-local"]))
     # what bench_suite runs on madhouse only (Linux: bash scripts, the sims)
-    out.append(_mad("host-bridge", "charge-interposer/fw_harness/host_bridge/run.sh", [],
-                    shell="git-bash", judge="host-bridge"))
-    # the same suite on the shared TWAI fake (port step 1b's acceptance E,
-    # re-run by the runner): its tree needs a twai_port checkout, which
-    # tree_env names in TWAI_FAKE_DIR; its can-fail is run.sh's own
-    # --can-fail mode (harness_checks/shared_fake_canfail.py), which runs
-    # the suite five times, under this entry's timeout
-    e = _mad("host-bridge-shared-fake", "charge-interposer/fw_harness/host_bridge/run.sh",
-             [], shell="git-bash", judge="host-bridge", timeout_s=4 * 3600)
-    e["env"]["TWAI_FAKE"] = "shared"
-    e["covers"] += ["charge-interposer/harness_checks/shared_fake_canfail.py",
+    # host_bridge on the shared TWAI fake, with the real twai_port and
+    # can_port (port step 2b; until then a TWAI_FAKE option chose our own
+    # fake or the shared one, host-bridge-shared-fake): its tree needs a
+    # twai_port checkout, which tree_env names in TWAI_FAKE_DIR
+    e = _mad("host-bridge", "charge-interposer/fw_harness/host_bridge/run.sh", [],
+             shell="git-bash", judge="host-bridge")
+    e["covers"] += ["charge-interposer/fw_harness/host_bridge/l2_build.sh",
+                    "shared/twai_port/twai_port.c", "shared/can_port/can_port.c",
                     "shared/twai_port/test/twai_fake.c",
                     "shared/twai_port/test/cpp/twai_fake.cpp"]
+    out.append(e)
+    # its can-fail, run.sh's own --can-fail mode
+    # (harness_checks/shared_fake_canfail.py), which runs the suite five
+    # times, under this entry's timeout
+    e = _mad("host-bridge-canfail", "charge-interposer/fw_harness/host_bridge/run.sh",
+             ["--can-fail"], shell="git-bash", timeout_s=4 * 3600)
+    e["covers"] += ["charge-interposer/harness_checks/shared_fake_canfail.py",
+                    "shared/twai_port/test/twai_fake.c"]
     out.append(e)
     out.append(_mad("host-unit", "charge-interposer/host_unit/run.sh", [],
                     shell="git-bash", timeout_s=1800))

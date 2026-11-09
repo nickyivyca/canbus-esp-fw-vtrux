@@ -8,13 +8,15 @@
  * supply itself: esp_err_t, gpio_num_t and spi_host_device_t, which the real
  * header takes from ESP-IDF's esp_err.h, hal/gpio_types.h and
  * hal/spi_types.h. They are plain ints and an enum with ESP-IDF's values, the
- * same types this folder's driver/twai.h and the shared fake's host headers
- * give (shared/twai_port/test/host), so a test that includes both builds.
- * The answers are in board_fake.cpp, from shared/boards SPEC section 3.
+ * same types the shared fake's driver/twai.h and host headers give
+ * (shared/twai_port/test/include and host), so a test that includes both
+ * builds. The answers are in board_fake.cpp, from shared/boards SPEC
+ * section 3; since port step 2b twai_port.c asks them for the vehicle
+ * port's pins and standby line too.
  *
- * It is found ahead of any other board.h: run.sh puts this folder first on
- * the include path, and with TWAI_FAKE=shared the shared fake's own host
- * board.h (for its host_platform.c, which run.sh does not build) comes after.
+ * It is found ahead of any other board.h: l2_build.sh puts this folder first
+ * on the include path, and the shared fake's own host board.h (for its
+ * host_platform.c, which is not built here) comes after.
  */
 #ifndef BOARD_H
 #define BOARD_H

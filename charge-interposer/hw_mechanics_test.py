@@ -12,7 +12,9 @@ against the tree and each of its three kinds of entry on a copy:
 
   - on this tree, every mapped file, function and setting is found, and
     board_ports.h, idf_component.yml and dependencies.lock are among the
-    whole files (the pins and the board's version since 2a);
+    whole files (the pins and the board's version since 2a), and since
+    port step 2b vehicle_port, port_view, charger_port and bridge_port.h,
+    with 2a's port_twai and can_port.h no longer named;
   - on a copy of the mapped files the state is the same as on the tree
     (the control), and then: each whole file removed is a problem naming
     it; one byte changed in it changes its key and no other; each setting's
@@ -45,11 +47,19 @@ import scratch_dir                                    # noqa: E402
 
 SRC = os.path.join(HERE, "fw_harness", "hw_mechanics.py")
 FW = os.path.join(HERE, "firmware")
-# what 2a's map must watch for the pins and the board (the rest of the map
-# is checked entry by entry below, whatever it holds)
+# what the map must watch for the pins and the board (2a), and for the
+# ports since port step 2b: the vehicle port's settings, the port view, the
+# charger port's registration and the renamed port contract (the rest of
+# the map is checked entry by entry below, whatever it holds)
 MUST_WATCH = ("main/board_ports.h", "main/idf_component.yml",
-              "dependencies.lock", "main/port_twai.cpp",
-              "main/port_mcp2515.cpp", "main/can_port.h", "sdkconfig")
+              "dependencies.lock", "main/vehicle_port.cpp", "main/vehicle_port.h",
+              "main/port_view.cpp", "main/port_view.h", "main/charger_port.cpp",
+              "main/charger_port.h", "main/port_mcp2515.cpp", "main/bridge_port.h",
+              "sdkconfig")
+# the files port step 2b retired, which the map must no longer name (a
+# missing mapped file is a problem, so the tree test fails on them anyway;
+# this says why)
+RETIRED = ("main/port_twai.cpp", "main/port_twai.h", "main/can_port.h")
 
 
 def load(text=None):
@@ -99,6 +109,8 @@ def test_tree(H, work):
     for rel in MUST_WATCH:
         assert rel in H.WHOLE_FILES, rel
         assert "file:" + rel in state, rel
+    for rel in RETIRED:
+        assert rel not in H.WHOLE_FILES, rel
     assert os.path.normpath(H.FW) == os.path.normpath(FW), (H.FW, FW)
     for rel, fn, _w in H.FUNCTIONS:
         assert "fn:%s:%s" % (rel, fn) in state, (rel, fn)
@@ -254,6 +266,18 @@ MUTANTS = [
      'FW = os.path.normpath(os.path.join(_HERE, ".."))\n'),
     ("a change never reported", "    if not changed:\n", "    if True:\n"),
     ("a manifest overwritten", "        if os.path.exists(path):\n", "        if False:\n"),
+    # port step 2b's map
+    ("the vehicle port's settings not watched",
+     '    "main/vehicle_port.h": "same",\n', ""),
+    ("the port view not watched", '    "main/port_view.cpp": "the port contract the '
+     'bridge reads both ports "\n', '    "main/port_view.cpp.x": "the port contract '
+     'the bridge reads both ports "\n'),
+    ("the charger port's registration not watched",
+     '    "main/charger_port.h": "same",\n', ""),
+    ("the retired port_twai still mapped",
+     '    "main/bridge_port.h": "the port contract both drivers implement",\n',
+     '    "main/bridge_port.h": "the port contract both drivers implement",\n'
+     '    "main/can_port.h": "the retired name",\n'),
 ]
 
 

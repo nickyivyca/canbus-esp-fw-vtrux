@@ -188,7 +188,6 @@ MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 # shipped code (cwd {work}/code; each finds the code from its own place).
 MADHOUSE_MUTANTS = [
     ("l2-mutations", ["bash", "harness_checks/l2_mutations.sh"]),
-    ("twai-mutations", ["bash", "harness_checks/twai_mutations.sh"]),
     ("hold-mutations", ["bash", "harness_checks/hold_mutations.sh"]),
     ("busoff-mutations", ["bash", "harness_checks/busoff_mutations.sh"]),
     ("rx-hook-mutations", ["bash", "harness_checks/rx_hook_mutations.sh"]),
@@ -298,12 +297,17 @@ RETIRED_2A = (
 EMULATED_KNOWN_FAILS = [
     KnownFail("m-host/host-bridge/l2.bridge-ok-veh-failed",
               "spec 8.2: a bridged frame that failed toward the vehicle must "
-              "clear bridge_ok; labelled KNOWN FAIL on src 36edf3e55552 "
-              "(2026-10-16), the ported image must pass it"),
+              "clear bridge_ok; spec 12's 8.2 (bridge_ok) entry, for port "
+              "stage (b) (2026-11-07): the port counts the failure "
+              "(twai_port T7 tx_failed) but cannot tell a bridged frame "
+              "from the board's own; first recorded on src 36edf3e55552 "
+              "(2026-10-16)"),
     KnownFail("m-host/host-bridge/l2.bridge-ok-switch-discard",
               "spec 2.3 / 8.2: bridged frames discarded at the switch to "
-              "listen-only must be counted; KNOWN FAIL on src 36edf3e55552 "
-              "(reviewer 2026-10-16), the ported image must pass it"),
+              "listen-only must be counted; spec 12's 2.3 entry "
+              "(2026-10-16) and spec 2.4 (a switch's teardown discards "
+              "are not reported, 2026-11-07); first recorded on src "
+              "36edf3e55552 (reviewer 2026-10-16)"),
 ]
 BENCH_KNOWN_FAILS = [
     KnownFail("b-vport/vport-listen-wrong-rate",
@@ -381,6 +385,78 @@ def c12_judge(run):
     return Result(Verdict.PASS, figures=figs,
                   detail="recorded; %s line(s) differ from the fake, no "
                          "DATASHEET line outside C9" % m.group(1))
+
+
+# bench_switch_pending (spec 2.3 / 2.4; the charge-interposer reviewer's
+# ruling for port step 2b, 2026-11-08): the frames still queued toward the
+# vehicle at a switch to listen-only are discarded by the teardown and not
+# reported (spec 2.4; spec 12's 2.3 entry), so in NOACK they show as
+# unaccounted, at most the transmit queue the interposer configures (32,
+# spec 2.4) plus the frame in the transmit buffer.
+SWITCH_PENDING_NOACK_MAX = 32 + 1
+SP_RESULT_RE = re.compile(r"^RESULT: unaccounted NOACK (-?\d+), ACK (-?\d+)\s*$", re.M)
+SP_PHASE_RE = re.compile(r"^phase (NOACK|ACK): \d+ charger frames sent")
+SP_DELTAS_RE = re.compile(r"^\s*deltas (\{.*\})\s*$")
+SP_FIGURES = ("veh_tx", "bridge", "drained", "switches")
+
+
+def switch_pending_judge(run):
+    """bench_switch_pending's out file, judged (it exits 0 whenever it ran):
+    FAIL if the RESULT line is missing, if ACK's unaccounted count is not 0,
+    if NOACK's is outside 0..SWITCH_PENDING_NOACK_MAX, or if in either phase
+    the bridge= delta exceeds the veh tx= delta (bridge= counts a subset of
+    the vehicle send failures, spec 2.4), or a phase's deltas are missing.
+    Figures, for the run-records comparer: both unaccounted counts and each
+    phase's veh_tx, bridge, drained and switches deltas."""
+    import ast
+    if run.rc is None:
+        return Result(Verdict.ERROR, detail="no exit code (killed)")
+    out = os.path.join(run.outdir, "%s.txt" % run.check.id)
+    if not os.path.exists(out):
+        return Result(Verdict.ERROR, detail="no out file %s (rc=%s)"
+                      % (os.path.basename(out), run.rc))
+    text = open(out, encoding="utf-8", errors="replace").read()
+    deltas, cur = {}, None
+    for ln in text.splitlines():
+        m = SP_PHASE_RE.match(ln)
+        if m:
+            cur = m.group(1)
+            continue
+        m = SP_DELTAS_RE.match(ln)
+        if m and cur and cur not in deltas:
+            try:
+                deltas[cur] = ast.literal_eval(m.group(1))
+            except (ValueError, SyntaxError):
+                pass
+    figs, bad = {}, []
+    res = SP_RESULT_RE.findall(text)
+    if len(res) != 1:
+        bad.append("%d RESULT line(s), not 1" % len(res))
+    else:
+        noack, ack = int(res[0][0]), int(res[0][1])
+        figs["unaccounted_noack"] = Figure(noack, "")
+        figs["unaccounted_ack"] = Figure(ack, "")
+        if ack != 0:
+            bad.append("ACK: %d unaccounted, not 0" % ack)
+        if not 0 <= noack <= SWITCH_PENDING_NOACK_MAX:
+            bad.append("NOACK: %d unaccounted, outside 0..%d"
+                       % (noack, SWITCH_PENDING_NOACK_MAX))
+    for ph in ("NOACK", "ACK"):
+        d = deltas.get(ph)
+        if not isinstance(d, dict) or not all(isinstance(d.get(k), int)
+                                              for k in SP_FIGURES):
+            bad.append("%s: no deltas line with %s" % (ph, ", ".join(SP_FIGURES)))
+            continue
+        for k in SP_FIGURES:
+            figs["%s_%s" % (ph.lower(), k)] = Figure(d[k], "")
+        if d["bridge"] > d["veh_tx"]:
+            bad.append("%s: bridge= rose %d, more than veh tx= (%d)"
+                       % (ph, d["bridge"], d["veh_tx"]))
+    if bad:
+        return Result(Verdict.FAIL, figures=figs, detail="; ".join(bad)[:300])
+    return Result(Verdict.PASS, figures=figs,
+                  detail="unaccounted NOACK %d (0..%d), ACK 0"
+                  % (figs["unaccounted_noack"].value, SWITCH_PENDING_NOACK_MAX))
 
 
 HB_LIST_RE = re.compile(r"^host_bridge tests \((\d+)\): ?(.*)$", re.M)
@@ -731,9 +807,23 @@ class _Build:
         # same checks run there before any import).
         canre = canre_pin.folder()
         canre_pin.verify(canre)
-        self.ship = {"code": self.code, "canre": canre}
+        # and the shared/ of the pinned twai_port's checkout (port step 2b):
+        # host_bridge builds on its twai_port/test fake, with its twai_port
+        # and can_port, so both pins are checked here (shared_pin.folder,
+        # the R7 digest) and are the firmware's versions (idf-match); madhouse
+        # has no checkout, so TWAI_FAKE_DIR names the shipped copy's fake
+        shared_pin.idf_match()
+        twai_port = shared_pin.folder("shared/twai_port")
+        can_port = shared_pin.folder("shared/can_port")
+        shared = os.path.dirname(twai_port)
+        if os.path.normcase(os.path.dirname(can_port)) != os.path.normcase(shared):
+            raise shared_pin.SharedPinError(
+                "the pinned shared/twai_port (%s) and shared/can_port (%s) are not one "
+                "checkout's" % (twai_port, can_port))
+        self.ship = {"code": self.code, "canre": canre, "shared": shared}
         self.mad_env = {"INTERPOSER_CODE": "{work}/code",
                         "CANRE_DIR": "{work}/canre",
+                        "TWAI_FAKE_DIR": "{work}/shared/twai_port/test",
                         "L3_STIMULUS": "{madhouse_artifacts}/l3_stimulus.txt"}
 
     def mpy(self, cid, argv, **kw):
@@ -887,7 +977,8 @@ def bench(settings):
             "spec 2.2, the form with the Innomaker physically unplugged: needs "
             "hands (no-hands sheet, DEFERRED until the user is back)")),
         bpy("switch-pending", "bench_switch_pending.py",
-            ["--port", "{serial_port}", "--out", "{outdir}"]),
+            ["--port", "{serial_port}", "--out", "{outdir}"],
+            judge=switch_pending_judge),
         bpy("switch-errors", "bench_switch_errors.py",
             ["--port", "{serial_port}", "--out", "{outdir}"]),
         bpy("rx-order", "bench_rx_order.py",

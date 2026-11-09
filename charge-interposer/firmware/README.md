@@ -33,14 +33,16 @@ bench artifacts stayed there when this folder moved into
 |------|------|
 | `CMakeLists.txt` | The ESP-IDF project (port step 2a). Defines the variant option `INTP_VARIANT` (bridge, witness, truck, selftest, diag, slcan; spec 8.2), names the project `interposer_<variant>`, and sets the two fixed USB lines on the Arduino component. |
 | `main/CMakeLists.txt` | The `main` component: **each variant's sources and switches**. A variant lists exactly the `*_main.cpp` it links, so no variant can pick up another's `setup()`. The PlatformIO build excluded them instead, and `slcan_main.cpp`, added 2026-09-29 without updating the others, stopped the bridge linking at all until 2026-10-03. |
-| `main/idf_component.yml`, `dependencies.lock` | The dependencies: arduino-esp32 3.2.1 from the Component Manager, five of its own dependencies held at the baseline's versions, the board `vtrux/x2` from git at a `shared/main` tag, ESP-IDF v5.4.2 exactly. The lock records what they resolved to. |
+| `main/idf_component.yml`, `dependencies.lock` | The dependencies: arduino-esp32 3.2.1 from the Component Manager, five of its own dependencies held at the baseline's versions, the three shared components from git at one `shared/main` tag (2026.11.08 since port step 2b: the board `vtrux/x2`, the CAN port interface `vtrux/can_port` and the vehicle port's driver `vtrux/twai_port`; spec 2.4), ESP-IDF v5.4.2 exactly. The lock records what they resolved to. |
 | `sdkconfig` | The one configuration every variant builds from (spec 9's settings, 8.3's log levels, the X2's fixed values). Committed. |
 | `shared_pins.json`, `vtrux_build.json` | The pins of the shared code, and the project's name, shared components and dev-build variants for the shared build tooling (`shared/tools/SPEC.md`; the variants are R31's, each with the `-D INTP_VARIANT` it is configured with). |
 | `main/board_ports.h` | Each port's pins from the board layer (`vtrux/x2`, shared/boards B5), never constants: CAN1 from `board_twai_pins(0)`, CAN2 from `board_spi_can(1)`. A board that does not describe a port as expected makes that port fail to start, which is spec 8.2's bridge-down path, never an abort. |
 | `main/machine.h` / `.cpp` | **The state machine.** Pure: no Arduino, no ESP-IDF, integer-only, time as a parameter. The only file whose behaviour matters. |
-| `main/can_port.h` | `CanPort` interface + a fixed-capacity `FrameRing`. Separates "queued" from "on the wire" deliberately. |
-| `main/port_twai.h` / `.cpp` | CAN1, the vehicle segment, on the S3's built-in controller. `setMode()` is spec 2.3's listen-only switch, and it is a driver teardown and reinstall because TWAI fixes the mode at install: it can be refused, and it discards the driver's queues. |
+| `main/bridge_port.h` | `CanPort` interface + a fixed-capacity `FrameRing`. Separates "queued" from "on the wire" deliberately. Named `can_port.h` until port step 2b, when the shared `vtrux/can_port`'s own `include/can_port.h` arrived and a quoted `#include` would have taken this one in its place. |
+| `main/vehicle_port.h` / `.cpp` | CAN1, the vehicle segment: the shared `vtrux/twai_port` on board port 0, set up with the interposer's settings (spec 2.4: installed in normal mode, bus-off recovery automatic, RTR dropped, accept-all, 500 kbit/s, queues 64/32, an install failure reported and a failed start, no hooks) and registered with `vtrux/can_port` for that index. Port step 2b; it replaced `port_twai.h` / `.cpp`. Spec 2.3's listen-only switch is `twai_port_set_mode()`, a teardown and a reinstall (twai_port T4): it can be refused, and it discards the driver's queues; with the port down it only records the mode, so `main.cpp` then installs it. |
+| `main/port_view.h` / `.cpp` | `PortView`, a `CanPort` over a `can_port` port index: how the bridge reaches both ports through `can_port`. Says which of the port's counters (twai_port T7) feeds which figure: `rx_lost` (with `rx_lost_restart`), `tx_dropped` + `tx_refused`, the driver's `bus_errors`, the bus-off level and entries; the teardown discards feed nothing (spec 2.4). An optional clock hook hands each service pass's time to a backend that needs it, the MCP2515's age-out (spec 2.2). |
 | `main/port_mcp2515.h` / `.cpp` | CAN2, the charger segment. Hand-written; see below for why. |
+| `main/charger_port.h` / `.cpp` | The MCP2515 driver registered with `vtrux/can_port` as the backend for board port 1 (spec 2.4, can_port C1; port step 2b), until it becomes the shared `mcp2515_port` in stage (b): the operations, and a status read from what the driver counts. Normal and listen-only modes; the chip's internal loopback is the driver's own bench mode. Spec 2.2's counters are read from the driver, never through `can_port`. |
 | `main/bridge_health.h` | Spec 8.2's `bridge_ok`: health **since the previous status frame**, not since boot. `sample()` answers and moves the baselines, for a frame; `peek()` answers without moving them, for 8.3's serial line in listen-only where no frame goes out. Pure and header-only, kept out of `main.cpp` so `../host_unit/` can compile it. |
 | `main/charger_tx_failures.h` | Spec 2.2's `0x7F6` B7 counter: the sum of the charger port's three disjoint tallies (queue full, controller failure, the 100 ms age-out), accrued only while the VCU's flow bit is 1, with a delta that arrives outside a session DISCARDED rather than banked for the next one. Lifted out of `main.cpp` on 2026-10-13 for the same reason as `bridge_health.h`: the rule is the whole of it, and nothing could test it where it was. |
 | `main/main.cpp` | Wiring only. Moves frames, reports losses. Owns spec 2.3's two caller duties: the one round of status frames at power-up, and applying the core's `vehicleListenOnly()` to the port BEFORE dispatching that pass's frames. |
@@ -1391,7 +1393,7 @@ record the answer in the flash record -- "touches X", or "touches none".
 | # | spec 10 item | touched when the change involves |
 |---|---|---|
 | 1 | flashing and boot | the build files (`CMakeLists.txt`, `main/CMakeLists.txt`, `main/idf_component.yml`, `dependencies.lock`), the board component's pin, `sdkconfig` or partition settings, anything in `setup()` |
-| 2 | the real transceivers and the controllers' own behaviour | either port driver, `can_port.h`, bitrate, filters, bus-off or recovery handling |
+| 2 | the real transceivers and the controllers' own behaviour | either port driver (the vehicle side's is the shared `vtrux/twai_port`, so its pin and its settings in `vehicle_port.cpp` count), `bridge_port.h`, `port_view.cpp`, `charger_port.cpp`, the `vtrux/can_port` pin, bitrate, filters, bus-off or recovery handling |
 | 3 | throughput at real bus load | the bridge loop's drain bounds, the tick or diagnostic cadence, anything that adds work per frame |
 | 4 | reset and brownout | persistence, boot-time state, power handling |
 | 5 | the board offline (item 6 in spec 10) | anything that changes what a stalled or crashed board leaves on the bus |
@@ -1412,12 +1414,19 @@ assumed-versus-measured list (spec 9.1).
 `../fw_harness/hw_mechanics.py`, the tester's, watches what is a hardware
 mechanic **by construction**, in three ways (paths from this folder):
 
-- **whole files**: both port drivers (`main/port_twai.cpp` and `.h`,
-  `main/port_mcp2515.cpp` and `.h`), `main/can_port.h`, `main/board_ports.h`
-  (the pins come from the board component through it),
-  `main/idf_component.yml` and `dependencies.lock` (the board component's,
-  the Arduino core's and ESP-IDF's versions), and the build's
-  `CMakeLists.txt`, `main/CMakeLists.txt` and `sdkconfig`;
+- **whole files**: the ports as this project sets them up and reaches them
+  (port step 2b): `main/vehicle_port.cpp` and `.h` (the vehicle port's
+  settings: mode, bus-off recovery, RTR, filter, queue depths),
+  `main/port_view.cpp` and `.h` (the port contract the bridge reads both
+  ports through), `main/charger_port.cpp` and `.h` (the charger port's
+  registration with `can_port`, its bring-up and clock), the charger
+  driver `main/port_mcp2515.cpp` and `.h`, and `main/bridge_port.h`;
+  `main/board_ports.h` (the pins come from the board component through
+  it); `main/idf_component.yml` and `dependencies.lock` (the versions of
+  the board component, `vtrux/twai_port`, `vtrux/can_port`, the Arduino
+  core and ESP-IDF: the shared port code itself is watched by its version
+  there); and the build's `CMakeLists.txt`, `main/CMakeLists.txt` and
+  `sdkconfig`;
 - **`setup()`'s body** in `main/main.cpp`, extracted by brace matching and
   hashed with the `INTP_PRINT*` lines removed. The boot path is a mechanic
   entire -- init order, the controller begin calls, the B-7d failed-start
@@ -1425,8 +1434,9 @@ mechanic **by construction**, in three ways (paths from this folder):
   not;
 - **named settings by value**, not by file hash, in `main/main.cpp`:
   `BITRATE`, `TICK_INTERVAL_MS`, `DIAG_INTERVAL_MS`, `STATUS_INTERVAL_MS`
-  and the vehicle and charger drain bounds. The pins are no longer constants
-  there (port step 2a, item 6a).
+  and the vehicle and charger drain bounds (the vehicle one is both
+  `applyVehicleMode()`'s drain of 64 and the loop's 16). The pins are no
+  longer constants there (port step 2a, item 6a).
 
 ```
 py -3.14 -B charge-interposer/fw_harness/hw_mechanics.py

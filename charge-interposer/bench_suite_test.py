@@ -213,6 +213,91 @@ def test_c12_judge():
     assert _v(r) == [Verdict.FAIL], "no differ block: the exit code decides"
 
 
+def _sp_text(noack=32, ack=0, deltas=None, result=True):
+    """bench_switch_pending's out file, as run_bench and phase() write it."""
+    d = {"NOACK": {"c2v": 118, "veh_tx": 85, "bridge": 57, "suppressed": 0,
+                   "drained": 0, "switches": 2, "veh_err": 24600},
+         "ACK": {"c2v": 120, "veh_tx": 0, "bridge": 0, "suppressed": 0,
+                 "drained": 0, "switches": 2, "veh_err": 0}}
+    for ph, ch in (deltas or {}).items():
+        d[ph] = dict(d[ph], **ch) if ch is not None else None
+    out = ["run at 2026-11-09T00:00:00; charger frames 0x18FF50C0 at 20 fps"]
+    for ph in ("NOACK", "ACK"):
+        out.append("phase %s: waiting for a status block (baseline)" % ph)
+        out.append("phase %s: 120 charger frames sent; PCAN (passive) saw 1 of them "
+                   "complete on the vehicle wire and 0 error frames" % ph)
+        out.append("  board counters before {'c2v': 1}")
+        out.append("  board counters after  {'c2v': 2}")
+        if d[ph] is not None:
+            out.append("  deltas %r" % (d[ph],))
+        out.append("  UNACCOUNTED (c2v - delivered - veh tx - suppressed - drained; "
+                   "bridge= is a subset of tx=): %d" % (noack if ph == "NOACK" else ack))
+    if result:
+        out.append("RESULT: unaccounted NOACK %d, ACK %d" % (noack, ack))
+    return "\n".join(out) + "\n"
+
+
+def test_switch_pending_judge():
+    """switch_pending_judge (port step 2b; the charge-interposer reviewer,
+    2026-11-08): PASS with ACK 0 and NOACK in 0..33, each phase's bridge=
+    within its veh tx=; FAIL for each of: no RESULT line, ACK not 0, NOACK
+    above 33 or below 0, bridge= above veh tx= in a phase, a phase's deltas
+    missing; ERROR with no out file or no exit code. The figures carry both
+    counts and each phase's four deltas."""
+    j = B.switch_pending_judge
+
+    def run(text, rc=0):
+        return j(_run("", rc, cid="switch-pending",
+                      files={"switch-pending.txt": text} if text is not None else None))
+    for noack in (0, 32, 33):
+        r = run(_sp_text(noack=noack))
+        assert _v(r) == [Verdict.PASS], (noack, r.detail)
+    r = run(_sp_text(noack=17))
+    assert r.figures["unaccounted_noack"].value == 17
+    assert r.figures["unaccounted_ack"].value == 0
+    assert r.figures["noack_veh_tx"].value == 85 and r.figures["noack_bridge"].value == 57
+    assert r.figures["ack_switches"].value == 2 and r.figures["noack_drained"].value == 0
+    for label, text, has in (
+            ("no RESULT line", _sp_text(result=False), "RESULT"),
+            ("ACK not 0", _sp_text(ack=1), "ACK: 1"),
+            ("NOACK above 33", _sp_text(noack=34), "outside 0..33"),
+            ("NOACK below 0", _sp_text(noack=-1), "outside 0..33"),
+            ("bridge above veh tx in NOACK",
+             _sp_text(deltas={"NOACK": {"bridge": 86}}), "NOACK: bridge="),
+            ("bridge above veh tx in ACK",
+             _sp_text(deltas={"ACK": {"bridge": 1}}), "ACK: bridge="),
+            ("a phase's deltas missing", _sp_text(deltas={"ACK": None}),
+             "ACK: no deltas")):
+        r = run(text)
+        assert _v(r) == [Verdict.FAIL] and has in r.detail, (label, r.detail)
+    r = run(_sp_text() + "RESULT: unaccounted NOACK 1, ACK 0\n")
+    assert _v(r) == [Verdict.FAIL], "two RESULT lines: FAIL"
+    assert _v(run(None)) == [Verdict.ERROR], "no out file: ERROR"
+    assert _v(run(_sp_text(), rc=None)) == [Verdict.ERROR], "killed: ERROR"
+    b = B.bench(_settings())
+    sp = [c for g in b.groups for c in g.checks if c.id == "switch-pending"]
+    assert len(sp) == 1 and sp[0].judge is B.switch_pending_judge, sp
+
+
+def _sp_no_result(run):
+    """A missing RESULT line taken as 0 and 0."""
+    out = os.path.join(run.outdir, "%s.txt" % run.check.id)
+    if os.path.exists(out) and "RESULT:" not in open(out, encoding="utf-8").read():
+        with open(out, "a", encoding="utf-8") as f:
+            f.write("RESULT: unaccounted NOACK 0, ACK 0\n")
+    return _ORIG["switch_pending_judge"](run)
+
+
+def _sp_flip(cond):
+    """The judge with one FAIL condition dropped (its detail's marker)."""
+    def judge(run):
+        r = _ORIG["switch_pending_judge"](run)
+        if r.verdict == Verdict.FAIL and all(cond in part for part in r.detail.split("; ")):
+            r.verdict = Verdict.PASS
+        return r
+    return judge
+
+
 def _hb_listline(names, n=None):
     """run.sh's test-list line for `names` (n: the count it prints)."""
     return "host_bridge tests (%d): %s" % (len(names) if n is None else n,
@@ -516,7 +601,9 @@ def test_suites():
     #      (4), and scenario-scope-test with its -canfail (run 2a 0d0d's
     #      item 4, reviewer 2026-11-07); since 2026-11-08 forced-order-test
     #      and its -canfail in their place (2a accepted)
-    assert len(seen) == 248, "checks across the suites: %d" % len(seen)
+    # 247: twai-mutations retired with port_twai.cpp and test_twai_port
+    #      (port step 2b; the vehicle port is the shared twai_port)
+    assert len(seen) == 247, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -530,10 +617,20 @@ def test_suites():
             if g.host == "madhouse":
                 mad += 1
                 assert g.ship.get("canre") and os.path.isdir(g.ship["canre"]),                     "%s/%s ships no canre: %s" % (name, g.name, g.ship)
+                # and the pinned twai_port's checkout's shared/, its fake
+                # named by TWAI_FAKE_DIR (port step 2b: host_bridge builds on
+                # the shared fake, twai_port and can_port)
+                sh = g.ship.get("shared")
+                assert sh and os.path.normcase(sh) == os.path.normcase(
+                    os.path.dirname(B.shared_pin.folder("shared/twai_port"))) and \
+                    os.path.isdir(os.path.join(sh, "can_port")), \
+                    "%s/%s ships no pinned shared/: %s" % (name, g.name, g.ship)
                 for c in g.checks:
                     if c.skip:
                         continue        # never runs (the 2a retirements)
                     assert c.env.get("CANRE_DIR") == "{work}/canre",                         "%s/%s has CANRE_DIR %r" % (g.name, c.id, c.env.get("CANRE_DIR"))
+                    assert c.env.get("TWAI_FAKE_DIR") == "{work}/shared/twai_port/test", \
+                        "%s/%s has TWAI_FAKE_DIR %r" % (g.name, c.id, c.env.get("TWAI_FAKE_DIR"))
     # m-build is no longer a madhouse group: its checks retired at 2a
     assert mad == 4, "madhouse groups seen: %d" % mad
     # retired at port step 2a (Part B): listed with the reason, never run,
@@ -1572,7 +1669,8 @@ def test_runner_stage():
 
 
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
-         test_corrupt_pin_judge, test_c12_judge, test_host_bridge_judge,
+         test_corrupt_pin_judge, test_c12_judge, test_switch_pending_judge,
+         test_host_bridge_judge,
          test_suites, test_interposer_images, test_list_build_images, test_idf_log_checks,
          test_mutant_wiring,
          test_identify, test_pycache_ignored,
@@ -1688,6 +1786,19 @@ def _drop_requires(s):
     s.requires = None
 
 
+def _no_shared_ship(s):
+    for g in s.groups:
+        if g.ship:
+            g.ship = {k: v for k, v in g.ship.items() if k != "shared"}
+
+
+def _no_fake_dir(s):
+    for g in s.groups:
+        for c in g.checks:
+            if c.id == "host-bridge":
+                c.env = {k: v for k, v in c.env.items() if k != "TWAI_FAKE_DIR"}
+
+
 def _harness_files(root):
     return B.product_files(root) + ["charge-interposer/run_scenario.py"]
 
@@ -1753,7 +1864,7 @@ def _target(attr):
 
 _ORIG = {n: getattr(B, n) for n in ("script_judge", "recorded_judge",
                                     "scenario_judge", "c12_judge",
-                                    "corrupt_pin_judge",
+                                    "switch_pending_judge", "corrupt_pin_judge",
                                     "host_bridge_judge", "emulated", "bench",
                                     "harness", "product_files")}
 _ORIG["_hb_list"] = B._hb_list
@@ -2086,6 +2197,16 @@ MUTANTS = {
     "test_c12_judge": [
         ("c12_judge", _pass_all, "passes everything"),
         ("c12_judge", _c12_counts_c9, "fails on C9's DATASHEET line")],
+    "test_switch_pending_judge": [
+        ("switch_pending_judge", _pass_all, "passes everything"),
+        ("switch_pending_judge", _sp_no_result, "a missing RESULT line read as 0 and 0"),
+        ("switch_pending_judge", _sp_flip("unaccounted, not 0"),
+         "ACK's unaccounted count not judged"),
+        ("switch_pending_judge", _sp_flip("outside 0.."), "NOACK's range not judged"),
+        ("switch_pending_judge", _sp_flip("bridge= rose"),
+         "bridge= above veh tx= not judged"),
+        ("switch_pending_judge", _sp_flip("no deltas line"),
+         "a phase's missing deltas not judged")],
     "test_host_bridge_judge": [
         ("host_bridge_judge", _hb_unreported_pass,
          "an unreported L2 case passes"),
@@ -2116,7 +2237,11 @@ MUTANTS = {
         ("product_files", _harness_files, "run_scenario.py counted as product"),
         ("product_files", _no_machine, "machine.py left out of the product"),
         ("harness", _wrap_suite("harness", _product_in_harness),
-         "the harness suite gated on the product digest")],
+         "the harness suite gated on the product digest"),
+        ("emulated", _wrap_suite("emulated", _no_shared_ship),
+         "madhouse gets no shared/ (port step 2b)"),
+        ("emulated", _wrap_suite("emulated", _no_fake_dir),
+         "host-bridge without TWAI_FAKE_DIR (port step 2b)")],
     "test_idf_log_checks": [
         ("bench", _wrap_suite("bench", _drop_witness_idf_log), "no idf-log on the witness"),
         ("bench", _wrap_suite("bench", _idf_log_flag_dropped),

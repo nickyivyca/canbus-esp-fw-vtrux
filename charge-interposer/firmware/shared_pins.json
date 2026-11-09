@@ -10,8 +10,13 @@
     "digest": "57ffd14dd86f85be1198c8c96bf0536d4e9f260a45195e4da8e6837ca43822b1"
   },
   "shared/twai_port": {
-    "tag": "2026.11.03",
-    "commit": "f4e7578209f7c10b66cd6164b4c77ed74d7f693f",
-    "digest": "a638dc06a77c5d14f83efee9f7b037947b76889392065b392af1beb48ddcd4f2"
+    "tag": "2026.11.08",
+    "commit": "5b03505f515cff8fbdd8826aa97fd2626028578a",
+    "digest": "f9d2311fca036f29eb78a069a88a50336a8187c7f8f506f982c9cb053586dc80"
+  },
+  "shared/can_port": {
+    "tag": "2026.11.08",
+    "commit": "5b03505f515cff8fbdd8826aa97fd2626028578a",
+    "digest": "1fc65f35a3cc4d803f86e8b1e5051096504722554eda5d59e8f200ff76e46a4e"
   }
 }

@@ -26,7 +26,6 @@ clone's charge-interposer/) and L3_STIMULUS set:
   python3 -B charge-interposer/harness_checks/switch_discard_witness.py
 """
 
-import glob
 import os
 import shutil
 import subprocess
@@ -44,44 +43,52 @@ WORK = None            # this run's scratch_dir folder, made by main()
 CASES = ("bridge-ok-switch-discard", "bridge-ok-switch-discard-diag-only")
 SPEC_CHECK = "bridged frames discarded at the switch to listen-only are counted"
 
+# Port step 2b: the vehicle port is the shared twai_port, read through its
+# own status (twai_port T7: tx_pending, the frames to transmit, the one in
+# flight included), and the switch is twai_port_set_mode(); the witness's
+# anchors moved with it.
 EDITS = [
     ("static uint32_t veh_bridge_fail = 0;\n",
      "static uint32_t veh_bridge_fail = 0;\n"
-     "static uint32_t veh_bridged_queued = 0;   // PASS WITNESS (tester)\n"),
+     "static uint32_t veh_bridged_queued = 0;   // PASS WITNESS (tester)\n"
+     "static uint32_t witnessVehPending() {    // PASS WITNESS (tester)\n"
+     "  can_port_status_t s = {};\n"
+     "  return twai_port_status(&s) == ESP_OK ? s.tx_pending : 0;\n"
+     "}\n"),
     ("    const bool ok = (e.port == TO_CHARGER)\n",
-     "    if (vehicle.txPending() < veh_bridged_queued)\n"
-     "      veh_bridged_queued = vehicle.txPending();\n"
+     "    if (witnessVehPending() < veh_bridged_queued)\n"
+     "      veh_bridged_queued = witnessVehPending();\n"
      "    const bool ok = (e.port == TO_CHARGER)\n"),
     ("    if (!ok) {\n      bridge_drops++;\n",
      "    if (ok && e.port == TO_VEHICLE &&\n"
      "        !(e.ext && (e.id & 0xFFu) == DIAG_SA))\n"
      "      veh_bridged_queued++;\n"
      "    if (!ok) {\n      bridge_drops++;\n"),
-    ("  const uint32_t t0_us = micros();\n"
-     "  const bool switched = vehicle.setMode(want);\n",
-     "  if (vehicle.txPending() < veh_bridged_queued)\n"
-     "    veh_bridged_queued = vehicle.txPending();\n"
+    ("  const uint32_t t0_us = micros();\n",
+     "  if (witnessVehPending() < veh_bridged_queued)\n"
+     "    veh_bridged_queued = witnessVehPending();\n"
      "  if (want) veh_bridge_fail += veh_bridged_queued;\n"
      "  veh_bridged_queued = 0;\n"
-     "  const uint32_t t0_us = micros();\n"
-     "  const bool switched = vehicle.setMode(want);\n"),
+     "  const uint32_t t0_us = micros();\n"),
 ]
+
+# test_l2_bridge as host_bridge/run.sh builds it, by its l2_build.sh (port
+# step 2b: on the shared vehicle port and TWAI driver fake, which it finds
+# from TWAI_FAKE_DIR or the pinned checkout).
+L2_BUILD = os.path.join(HB, "l2_build.sh")
 
 
 def build(src_dir, out):
-    srcs = [os.path.join(HB, "test_l2_bridge.cpp")]
-    srcs += [f for f in sorted(glob.glob(os.path.join(HB, "*.cpp")))
-             if not os.path.basename(f).startswith("test_")]
-    srcs += [os.path.join(src_dir, n) for n in
-             ("main.cpp", "port_mcp2515.cpp", "port_twai.cpp", "machine.cpp")]
     if os.path.exists(out):
         os.remove(out)
-    r = subprocess.run(["g++", "-std=c++11", "-O2", "-I", HB, "-I", src_dir,
-                        "-DINTP_NO_SERIAL=1", "-o", out] + srcs,
+    r = subprocess.run(["bash", L2_BUILD, out, HB, src_dir],
                        capture_output=True, text=True)
+    if r.returncode == 2:
+        print("refused, nothing built: %s" % (r.stdout + r.stderr).strip())
+        raise SystemExit(2)
     if r.returncode != 0 or not os.path.exists(out):
-        raise SystemExit("build from %s failed:\n%s" % (src_dir,
-                                                        r.stderr[-2000:]))
+        raise SystemExit("build from %s failed:\n%s" % (
+            src_dir, (r.stdout + r.stderr)[-2000:]))
 
 
 def run(binary, case):

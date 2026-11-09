@@ -20,14 +20,31 @@ dependencies:
     version: "1.8.2"
   joltwallet/littlefs:
     version: "1.20.0"
+  # THE SHARED COMPONENTS, ALL THREE AT ONE shared/main TAG (spec 2.4, port
+  # step 2b): the board, the CAN port interface and the vehicle port's
+  # driver. vtrux/twai_port is taken "with vtrux/can_port and its board at
+  # the same shared/main tag" (its CMakeLists.txt), and both find the board
+  # by its include/board_pins.h. From git, never through override_path.
+  #
   # The board (shared/boards SPEC B1 and B2): the one shared/boards/*
-  # component, at the shared/main tag this project pins, from git, never
-  # through override_path. sdkconfig names its partition table by this
-  # dependency's managed_components/ folder, vtrux__x2.
+  # component. sdkconfig names its partition table by this dependency's
+  # managed_components/ folder, vtrux__x2. At 2026.11.08 since port step 2b;
+  # shared/boards/x2 has no file changed from 2026.11.03, its pin at 2a.
   vtrux/x2:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/boards/x2
-    version: "2026.11.03"
+    version: "2026.11.08"
+  # The CAN port interface both ports present (can_port C1), with a backend
+  # registered per port index.
+  vtrux/can_port:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/can_port
+    version: "2026.11.08"
+  # The vehicle port (twai_port T1), the S3's TWAI controller on board port 0.
+  vtrux/twai_port:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/twai_port
+    version: "2026.11.08"
   # ESP-IDF v5.4.2 exactly (user, 2026-11-03): arduino-esp32 3.2.1 does not
   # compile on 5.4.1, gen-inhibit's IDF, and the baseline's prebuilt Arduino
   # libraries were built on 5.4.2. Exact, so a shell exported for the wrong

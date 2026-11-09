@@ -34,18 +34,18 @@ FW="$(cd "$CODE/firmware" && pwd)"
 scratch_run tx-fail-banking-mutation || exit 2
 WORK="$SCRATCH_RUN"
 
+# test_l2_bridge as host_bridge/run.sh builds it (port step 2b: on the
+# shared vehicle port and TWAI driver fake), by its l2_build.sh, which
+# finds the shared folders (refused here, before anything is built, if
+# they are not there).
+L2_BUILD="$CODE/fw_harness/host_bridge/l2_build.sh"
+. "$L2_BUILD"
+hb_shared || exit 2
+
 build_and_run() {   # $1 = tree; prints the case's output; returns its status
   local T="$1" HB="$1/test/host_bridge" SRC="$1/main" bin="$1/l2"
-  local srcs=("$HB/test_l2_bridge.cpp")
-  for f in "$HB"/*.cpp; do
-    case "$(basename "$f")" in test_*) continue ;; esac
-    srcs+=("$f")
-  done
-  srcs+=("$SRC/main.cpp" "$SRC/port_mcp2515.cpp" "$SRC/port_twai.cpp"
-         "$SRC/machine.cpp")
   rm -f "$bin"
-  if ! g++ -std=c++11 -O2 -I "$HB" -I "$SRC" -DINTP_NO_SERIAL=1 \
-       -o "$bin" "${srcs[@]}" 2>"$T/build.err"; then
+  if ! bash "$L2_BUILD" "$bin" "$HB" "$SRC" > "$T/build.err" 2>&1; then
     echo "BUILD FAILED:"; head -5 "$T/build.err"; return 2
   fi
   "$bin" tx-fail

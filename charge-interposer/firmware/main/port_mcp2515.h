@@ -23,7 +23,7 @@
 
 #include <SPI.h>
 
-#include "can_port.h"
+#include "bridge_port.h"
 
 namespace interposer {
 
@@ -115,10 +115,14 @@ class Mcp2515Port : public CanPort {
   // the ID encode/decode from the wire, the transceiver, and every other node.
   // Call before begin().
   void setLoopback(bool on) { loopback_ = on; }
-  // Listen-only (CANCTRL REQOP=011): receives without ACKing. See the matching
-  // comment on TwaiPort::setListenOnly().
+  // Listen-only (CANCTRL REQOP=011): receives without ACKing, the
+  // MCP2515's form of the vehicle port's CAN_PORT_MODE_LISTEN_ONLY
+  // (vtrux/twai_port, spec 2.3).
   void setListenOnly(bool on) { listen_only_ = on; }
   void end();
+  // True between a begin() that succeeded and the next end(): what
+  // can_port's is_up asks of its backend (charger_port.cpp).
+  bool isUp() const { return ready_; }
   uint8_t reg(uint8_t addr) { return readReg(addr); }
 
  private:
@@ -239,7 +243,7 @@ class Mcp2515Port : public CanPort {
     return false;
   }
   // Frames lost at the CONTROLLER, as against our software ring.
-  // Both are 'frames lost' under can_port.h's definition of
+  // Both are 'frames lost' under bridge_port.h's definition of
   // rxDropped(), so that returns the sum; kept apart because on the
   // bench they mean different things -- the ring overflowing is the
   // bridge falling behind, the chip overrunning is the host not

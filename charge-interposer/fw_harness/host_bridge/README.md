@@ -10,31 +10,48 @@ Linux). Builds with `g++ -std=c++11`, globbing the sources rather than
 listing them — a hand-kept source list going stale is how the
 generator-inhibit session built against old headers three times.
 
-**Which TWAI fake: `TWAI_FAKE`** (tester, 2026-11-02, the reviewer's order;
-an option of committed harness so the acceptance runner can re-run port step
-1b's acceptance E). Unset or `own`, the default and the behaviour before the
-option: this folder's `twai_fake.h` / `.cpp` and `driver/twai.h`. `shared`:
-the shared fake (`shared/twai_port/test`, twai_port T10) in the folder
-`TWAI_FAKE_DIR` names, built as E built it -- a copy of this folder, at its
-own depth beside a copy of `main/` at `firmware/main` (so `test_event_layout`'s `#include
-"../../firmware/main/main.cpp"` still reaches it), without those three files (a quoted `#include` looks in the including file's folder
-first, so they would win over any `-I`), each test given the shared
-`twai_fake.c` and `cpp/twai_fake.cpp`, and `-I <fake>/include -I <fake>/host
--I <fake>/cpp` after this folder and `main/`. It prints nothing extra (its
-test list and closing lines, below, are the same in both), so the two
-transcripts compare line for line. Anything else, or `shared` without
-the fake's sources, is refused (exit 2) before anything builds. `run.sh
---can-fail` runs the shared fake's can-fail,
+**On the shared vehicle port and TWAI fake** (port step 2b; tester,
+2026-11-08, the reviewer's ruling). Since 2b the firmware's vehicle port is
+`vtrux/twai_port` behind `vtrux/can_port` (spec 2.4), so there is one way to
+build: on the shared TWAI driver fake (`shared/twai_port/test`, twai_port
+T10), with the real `twai_port` and `can_port` sources, all from one shared
+checkout. That is `TWAI_FAKE_DIR`'s checkout if it is set (it names the
+fake's folder), else the pinned one (`../../shared_pin.py where
+shared/twai_port` and `where shared/can_port`). First `shared_pin.py
+idf-match` must pass: the two pins are one tag, the versions
+`firmware/main/idf_component.yml` takes. Otherwise, or with a shared file
+missing, `run.sh` is refused (exit 2) before anything builds.
+`l2_build.sh` holds how: the include path (`-I` this folder, `main/`, then
+the fake's `include`, `host` and `cpp`, `twai_port`'s and `can_port`'s
+`include`), the C sources (the fake's `twai_fake.c`, `twai_port.c`, the
+S3's register file `twai_port_ll_unsupported.c`, `can_port.c`), each
+compiled once as C (`gcc -std=c11`), and `test_l2_bridge`'s firmware
+sources. `run.sh` and the harness checks that build `test_l2_bridge` from a
+copy (`../../harness_checks/`) all source it. Every test gets the fake's
+`twai_fake.o` and its C++ interface `cpp/twai_fake.cpp`; `test_l2_bridge`
+and `test_event_layout` get the port objects too. A test missing one of its
+objects prints `<test> DID NOT BUILD (no <object>)`. This folder's
+`esp_log.h` and `board.h` come first on the include path, so the shared
+sources log through `idf_host.cpp`'s `host_log()` and ask `board_fake.cpp`
+for their pins; the fake's own `host_platform.c` is not built.
+
+Until 2b, an option `TWAI_FAKE` chose between this folder's own fake
+(`twai_fake.h` / `.cpp`, `driver/twai.h`, the default) and the shared one
+(`shared`, port step 1b's acceptance E, 2026-11-02). Both retired with the
+firmware's own `port_twai.cpp`, and so did `test_twai_port.cpp`, which
+tested it.
+
+`run.sh --can-fail` runs the shared fake's can-fail,
 `../../harness_checks/shared_fake_canfail.py`. Both are tested by
 `../../twai_fake_option_test.py` (with `--can-fail`); the acceptance
-adapter's catalogue entry is `host-bridge-shared-fake`.
+adapter's catalogue entries are `host-bridge` and `host-bridge-canfail`.
 
 **Where it works** (tester, 2026-11-02, the reviewer's order; AGENTS.md
 "Files and folders"): one folder per run under the tree's own `scratch/`,
 `scratch/cih/host-bridge/run_XXXXXX` (`cih/`, `scratch_dir.py`'s short root,
 since 2026-11-05), never the
-system temp folder. Every test binary is built there, and so is
-`TWAI_FAKE=shared`'s copy. `run.sh` removes it when it ends, pass, fail or
+system temp folder. Every test binary and C object is built there.
+`run.sh` removes it when it ends, pass, fail or
 refusal, with the two tool folders above it if that leaves them empty, and
 prints any folder it cannot remove. Another run's cleanup can remove those
 tool folders while this run is making its own in them, so it is made with
@@ -50,8 +67,7 @@ test, or every case of a case-based one, exited 0), or `<test> DID NOT
 BUILD` instead. No test at all is a failure (exit 1). `bench_suite.py`'s
 `host_bridge_judge` reads its tests from that list and each one's end from
 its closing line, so a failing test, which prints no line of its own name,
-is told from one that never ran. Both transcripts, own and shared fake,
-carry the same lines. Tested by `twai_fake_option_test.py`
+is told from one that never ran. Tested by `twai_fake_option_test.py`
 (`test_list_and_closing`).
 
 | file | what |
@@ -61,13 +77,14 @@ carry the same lines. Tested by `twai_fake_option_test.py`
 | `test_mcp2515_fake.cpp` | The model checked against the datasheet behaviours it claims |
 | `conformance.h` / `.cpp` | **The conformance sequence: one script, two subjects.** Thirteen steps (C1-C13) driven entirely over raw SPI, emitting a diffable transcript |
 | `test_conformance.cpp` | Runs the sequence against the fake, prints the transcript, and asserts the DATASHEET-grade lines |
-| `driver/twai.h` | The ESP-IDF TWAI API, host side, so `port_twai.cpp` compiles unmodified. Types and documented return values taken from the toolchain's own header |
-| `twai_fake.h` / `.cpp` | The TWAI driver model: four states, `ESP_ERR_INVALID_STATE` on every wrong-state call, config-sized RX queue, injectable FIFO overruns, bus errors and bus-off |
-| `test_twai_port.cpp` | `TwaiPort` against that model -- the first executed test of `rxDropped()` and `busOffEvents()` |
+| `l2_build.sh` | How the tests are built on the shared fake, `twai_port` and `can_port` (above): sourced by `run.sh` and by the harness checks that build `test_l2_bridge` from a copy; run on its own (`bash l2_build.sh OUT HB FW [g++ args]`) it builds `test_l2_bridge` (exit 0 built, 1 build failed, 2 refused) (port step 2b) |
+| `idf_host.cpp` | The few ESP-IDF calls the shared sources make, on the host: `esp_err_to_name`, `ESP_ERROR_CHECK`'s failure handler (counted and printed), `host_log` and `xTaskGetTickCount`, both on the virtual clock (port step 2b) |
+| `esp_log.h` | `esp_log_level_set`, which `main.cpp` calls, and `ESP_LOGE/W/I` (`ESP_LOGD` prints nothing) for the shared sources, through `host_log`; C and C++ (port step 2b) |
 | `test_mcp2515_busoff.cpp` | Bus-off on the charger port: the error-mode walk against the chip, and `Mcp2515Port::busOffEvents()` through the driver |
+| `test_canport_contract.cpp` | The `CanPort` contract (`main/bridge_port.h`), through the interface: the MCP2515 port's overruns in `rxDropped()`, not `busErrors()`; and since port step 2b (tester, 2026-11-09, the reviewer's ruling) the vehicle port's `PortView` on `twai_port` and `can_port`, against spec 2.4's mapping: `rxDropped()` rises by the frames lost to a full receive queue, a FIFO overrun and the restart after bus-off recovery (D3); `txDropped()` by the sends refused for a full queue and with the port down (D2); `busErrors()` by one per bus error (D1); `busOff()` the level, `busOffEvents()` one per episode. Judged on what the test did (frames delivered and taken, sends refused, errors injected); the port's T7 parts are premises. Mutants Q-X in `../../harness_checks/l2_mutations.sh` |
 | `provenance.h` / `.cpp` | The status scale, shared by both fakes so they cannot drift apart |
-| `driver/twai.h`, `esp_app_desc.h` / `.cpp` | Shims that let `main.cpp` itself compile on the host |
-| `board.h` / `board_fake.cpp` | The board layer for the host (port step 2a: `main.cpp` asks the board for its CAN ports through `main/board_ports.h`). `board.h` is the x2 component's interface at shared tag 2026.11.03, with ESP-IDF's `esp_err_t`, `gpio_num_t` and `spi_host_device_t` as plain C types of the same values, so it builds beside `driver/twai.h` and the shared fake's host headers. `board_fake.cpp` answers as shared/boards SPEC section 3 gives the X2: port 0 the S3's TWAI on TX GPIO7 / RX GPIO6; port 1 an MCP2515 on `SPI3_HOST`, CS 10, SCK 12, MISO 13, MOSI 11, INT 3, 16 MHz; no standby line on either |
+| `esp_app_desc.h` / `.cpp` | Shims that let `main.cpp` itself compile on the host (until port step 2b also this folder's own `driver/twai.h`; now the shared fake's) |
+| `board.h` / `board_fake.cpp` | The board layer for the host (port step 2a: `main.cpp` asks the board for its CAN ports through `main/board_ports.h`). `board.h` is the x2 component's interface at shared tag 2026.11.03, with ESP-IDF's `esp_err_t`, `gpio_num_t` and `spi_host_device_t` as plain C types of the same values, so it builds beside the shared fake's `driver/twai.h` and host headers. Since port step 2b `twai_port.c` asks it for the vehicle port's pins too. `board_fake.cpp` answers as shared/boards SPEC section 3 gives the X2: port 0 the S3's TWAI on TX GPIO7 / RX GPIO6; port 1 an MCP2515 on `SPI3_HOST`, CS 10, SCK 12, MISO 13, MOSI 11, INT 3, 16 MHz; no standby line on either |
 | `test_l2_bridge.cpp` | **The real bridge loop**: `main/main.cpp`'s `setup()`/`loop()` driven against both fakes |
 | `test_event_layout.cpp` | **Spec 8.3's event-line form**, `[t] STATE event a= b= c=` (reviewer-approved scope, 2026-10-15): every state x every event code `EV_ARMED`..`EV_VEHICLE_MODE` (132 lines, extreme t and field values) prints exactly one line in the form with that t, `stateName()`, `eventName()` and the three values; an all-zero event still prints all three fields; several events in one pass print one line each, in order; the code after `EV_VEHICLE_MODE` must have no name, so an appended event fails until the test names it. Reaches main.cpp's static `reportEvents()` and `core` by **#including `main/main.cpp`** (not listed as a source in `run.sh`) and opens the core's private `log()` with a test-side `#define private public` -- **no firmware edit**. Built **with serial**, into the capturing `Serial` that `Arduino.h` compiles in only under `HOST_SERIAL_CAPTURE`. Can-fails: the judge refuses a field-less line, a missing field, a different name, the wrong STATE, a non-integer field and an unbracketed t; and the whole test FAILS against main.cpp copies mutated to suppress all-zero fields or to print t+1 (run 2026-10-15, SeaDrive `event_layout_mutations.txt`) |
 
@@ -222,7 +239,17 @@ which landed after the ~11 ms entry-and-recovery cycle had finished and
 read `TEC=0` as though nothing had happened. It now watches for the event
 instead of predicting when it occurs.
 
-## The TWAI fake
+## The TWAI fake (retired at port step 2b)
+
+**History.** This section describes this folder's own TWAI fake and
+`test_twai_port`, which retired at port step 2b with the firmware's
+`port_twai.cpp` (2026-11-08): the vehicle port is now `vtrux/twai_port`,
+built here on the shared fake (top of this file). Its results were about
+`port_twai.cpp` and carry no weight for the new port. Of
+`twai_mutations.sh`'s sites, the loss-figure terms and the recovery mode
+moved into `../../harness_checks/l2_mutations.sh` (D, H, K, L), and the
+frames lost at the restart after recovery are its M, against
+`test_l2_bridge`'s `rx-lost-at-recovery` (spec 2.4 D3).
 
 Written 2026-10-04, and it existed to answer a specific embarrassment:
 **`TwaiPort::rxDropped()` and `busOffEvents()` had no executed test at

@@ -4,7 +4,15 @@
 # Each variant has exactly one *_main.cpp: two would each define setup() and
 # loop(), and the link fails. The bridge's three images, bridge, witness and
 # truck, are the same sources, differing only by one switch each.
-set(ports port_twai.cpp port_mcp2515.cpp)
+#
+# THE VEHICLE PORT is the shared vtrux/twai_port behind vtrux/can_port (spec
+# 2.4, port step 2b), both dependencies of main (idf_component.yml):
+# vehicle_port.cpp sets it up and registers it, and port_view.cpp is how the
+# bridge reaches a port through can_port by its index. THE CHARGER PORT is
+# the interposer's MCP2515 driver, port_mcp2515.cpp, registered with can_port
+# by charger_port.cpp.
+set(vehicle vehicle_port.cpp port_view.cpp)
+set(ports ${vehicle} port_mcp2515.cpp charger_port.cpp)
 if(INTP_VARIANT STREQUAL "bridge" OR INTP_VARIANT STREQUAL "witness"
    OR INTP_VARIANT STREQUAL "truck")
     set(srcs main.cpp machine.cpp ${ports})
@@ -15,7 +23,7 @@ elseif(INTP_VARIANT STREQUAL "diag")
 elseif(INTP_VARIANT STREQUAL "slcan")
     # The generator-inhibit bench's SLCAN transmitter, on CAN1 only: it never
     # touches the charger segment, so no MCP2515.
-    set(srcs slcan_main.cpp port_twai.cpp)
+    set(srcs slcan_main.cpp ${vehicle})
 endif()
 
 idf_component_register(SRCS ${srcs}

@@ -2,7 +2,10 @@
 // layer (shared/boards SPEC B5, section 3) rather than spelled out as pin
 // constants. Every *_main.cpp takes its pins from here.
 //
-//   vehicle side: board port 0, the S3's TWAI          -> TwaiPort
+//   vehicle side: board port 0, the S3's TWAI          -> vtrux/twai_port
+//                 (vtrux/twai_port takes these pins from the board itself,
+//                 B5; vehiclePins() is the firmware's check that the board
+//                 has the port)
 //   charger side: board port 1, the MCP2515 on SPI3    -> Mcp2515Port
 //
 // The values are the board's, and today the same as the constants they
