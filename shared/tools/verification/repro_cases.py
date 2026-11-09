@@ -14,9 +14,12 @@ for each project when it first builds with the tooling. The driver log records e
 Each case takes one commit and clones it into two new folders, --root/r19/<key>/a and
 --root/r19/<key>/b_longer/deeper (paths of another length and depth), then runs the release
 build script in each, one after the other, each with its own stand-in record folder. Each
-build's image hash is read three ways: from the record the script wrote, by the tooling's
-image-reading library (vtrux_build.image) and by the tester's own reader (independent.py).
-The three must agree within a build. R19 is met when the two builds give the same image hash.
+build's code hash (R2) and image hash (R1) are read three ways: from the record the script
+wrote, by the tooling's image-reading library (vtrux_build.image) and by the tester's own reader
+(independent.py). The three must agree within a build, for each hash. R19 is met when the two
+builds give the same code hash (R2, R5). The image hashes, and whether the two .bin files are
+the same bytes, are printed as information only: an image-hash difference on its own is not a
+finding (R5; user, 2026-11-08). Until 2026-11-08 R19 compared image hashes.
 
 A case is VOID unless both clones are clean at the same commit in different folders, with no
 build folder before the build, and its trigger shows in each build: the reproducible-build
@@ -24,13 +27,16 @@ setting in config/sdkconfig.h, and for time_macro and build_path the case's mark
 the .bin.
 
     fixture     release_cases.py's fixture commit (reproducible build on): R19 met
-    repro_off   the fixture with CONFIG_APP_REPRODUCIBLE_BUILD off: R19 not met, since without
+    repro_off   the fixture with CONFIG_APP_REPRODUCIBLE_BUILD off: R19 met. Without
                 reproducible build the absolute paths compiled in give the same code two image
-                hashes (R5's basis in shared/tools VALIDATION.md). Until 2026-11-04 this case
-                wanted R19 met, as gen-inhibit's own R19 run while gen-inhibit built with
-                reproducible build off (until its port step 0b); since 0b gen-inhibit builds
-                with it on, and its own R19 run is a clone-pair run of its release build (its
-                port step 1d, item 1a) (gen-inhibit reviewer, 2026-11-04)
+                hashes (R5's basis in shared/tools VALIDATION.md), but its two .bin files
+                differed only in the descriptor's elf_sha256, which R2 blanks, so the code
+                hashes match (shared/tools VALIDATION R19, "The code hash, not the image hash";
+                user, 2026-11-08). Its history: it wanted R19 met as gen-inhibit's own R19 run
+                while gen-inhibit built with reproducible build off (until its port step 0b);
+                from 2026-11-04 it wanted R19 not met, a second can-fail beside build_path, as
+                R19 then compared image hashes (gen-inhibit reviewer, 2026-11-04); since
+                2026-11-08 it wants R19 met again, and is not a can-fail
     mini        the minimal project (hello_world, esp32c3, reproducible build on): R19 met
     time_macro  the minimal project printing __DATE__ and __TIME__: R19 met, since the release
                 build sets one fixed SOURCE_DATE_EPOCH (R9)
@@ -38,7 +44,7 @@ the .bin.
                 differs between the two folders: R19 not met
 
 The case verdict is PASS when R19's result is the one the case wants (WANT_MET), so
-build_path and repro_off passing show the test can fail.
+build_path passing shows the test can fail.
 
 Before each case it checks the bench lock, the "No builds" line and running simulators, as
 release_cases.py does.
@@ -65,9 +71,10 @@ PATH_MARK = "r19 build_path in"
 PATH_LINE = '    printf("%s %%s\\n", R19_BUILD_DIR);\n' % PATH_MARK
 PATH_DEFINE = '\ntarget_compile_definitions(${COMPONENT_LIB} PRIVATE "R19_BUILD_DIR=\\"${CMAKE_BINARY_DIR}\\"")\n'
 
-# Whether each case wants R19 met. The two False rows are the can-fails; repro_off was True until
-# 2026-11-04 (see the module docstring).
-WANT_MET = {"fixture": True, "repro_off": False, "mini": True, "time_macro": True, "build_path": False}
+# Whether each case wants R19 met. The False row is the can-fail; repro_off was False from
+# 2026-11-04 to 2026-11-08, while R19 compared image hashes (see the module docstring).
+WANT_MET = {"fixture": True, "repro_off": True, "mini": True, "time_macro": True, "build_path": False}
+HASHES = ("code", "image")      # each read three ways; R19 compares "code" (R2)
 
 
 # ---------- judges (pure; --self-test runs them on fakes) ----------
@@ -95,17 +102,22 @@ def premise(a, b):
 
 
 def judge(want_met, a, b):
-    """a, b: {"record", "library", "independent", "bin_sha256"} from each build. (verdict, detail)."""
+    """a, b: {"code": {"record", "library", "independent"}, "image": {the same}, "bin_sha256"}
+    from each build. R19 is judged on the code hashes (R2); the image hashes and the .bin bytes
+    are information (R5). (verdict, detail)."""
     for side, x in (("a", a), ("b", b)):
-        got = (x["record"], x["library"], x["independent"])
-        if None in got or len(set(got)) != 1:
-            return "FAIL", "build %s: the record, the library and the tester's reader give %s" % (
-                side, ", ".join(str(g)[:16] for g in got))
-    met = a["independent"] == b["independent"]
-    detail = "R19 %s: image hash %s, %s" % ("met" if met else "not met", a["independent"][:16],
-                                            b["independent"][:16])
-    if met and a["bin_sha256"] != b["bin_sha256"]:
-        return "FINDING", detail + "; the same image hash but the .bin bytes differ"
+        for kind in HASHES:
+            h = x[kind]
+            got = (h["record"], h["library"], h["independent"])
+            if None in got or len(set(got)) != 1:
+                return "FAIL", "build %s: for the %s hash, the record, the library and the tester's reader give %s" % (
+                    side, kind, ", ".join(str(g)[:16] for g in got))
+    met = a["code"]["independent"] == b["code"]["independent"]
+    detail = "R19 %s: code hash %s, %s; information: image hash %s, %s (%s), the .bin files %s" % (
+        "met" if met else "not met", str(a["code"]["independent"])[:16], str(b["code"]["independent"])[:16],
+        str(a["image"]["independent"])[:16], str(b["image"]["independent"])[:16],
+        "the same" if a["image"]["independent"] == b["image"]["independent"] else "they differ",
+        "are the same bytes" if a["bin_sha256"] == b["bin_sha256"] else "differ")
     if met != want_met:
         return "FAIL", detail + "; the case wants R19 %s" % ("met" if want_met else "not met")
     return "PASS", detail
@@ -113,23 +125,38 @@ def judge(want_met, a, b):
 
 def self_test():
     ok = True
-    h1, h2 = "1" * 64, "2" * 64
+    c1, c2, i1, i2 = "c1" * 32, "c2" * 32, "e1" * 32, "e2" * 32
 
-    def side(h, rec=None, lib=None, ind=None, b="b1"):
-        return {"record": h if rec is None else rec, "library": h if lib is None else lib,
-                "independent": h if ind is None else ind, "bin_sha256": b}
+    def three(h, over):
+        """over: {"rec"|"lib"|"ind": value} overriding one reader; False stands for None (absent)."""
+        got = {"record": h, "library": h, "independent": h}
+        for k, v in (over or {}).items():
+            got[{"rec": "record", "lib": "library", "ind": "independent"}[k]] = None if v is False else v
+        return got
+
+    def side(c, i, b="b1", code=None, image=None):
+        return {"code": three(c, code), "image": three(i, image), "bin_sha256": b}
     for label, args, want in (
-            ("met, wanted met", (True, side(h1), side(h1)), "PASS"),
-            ("not met, wanted not met", (False, side(h1), side(h2, b="b2")), "PASS"),
-            ("not met, wanted met", (True, side(h1), side(h2, b="b2")), "FAIL"),
-            ("met, wanted not met", (False, side(h1), side(h1)), "FAIL"),
-            ("a's record disagrees", (True, side(h1, rec=h2), side(h1)), "FAIL"),
-            ("b's library disagrees", (True, side(h1), side(h1, lib=h2)), "FAIL"),
-            ("b's own reader disagrees", (False, side(h1), side(h2, ind=h1, b="b2")), "FAIL"),
-            ("a has no record", (True, side(h1, rec=False), side(h1)), "FAIL"),
-            ("same hash, other bytes", (True, side(h1), side(h1, b="b2")), "FINDING")):
-        if args[1]["record"] is False:
-            args[1]["record"] = None
+            ("met, wanted met", (True, side(c1, i1), side(c1, i1)), "PASS"),
+            # repro_off's shape: only elf_sha256 differs, so the image hashes and bytes differ
+            ("code same, image differs, wanted met", (True, side(c1, i1), side(c1, i2, b="b2")), "PASS"),
+            ("code same, image differs, wanted not met", (False, side(c1, i1), side(c1, i2, b="b2")), "FAIL"),
+            ("code differs, image same, wanted met", (True, side(c1, i1), side(c2, i1, b="b2")), "FAIL"),
+            ("code differs, image same, wanted not met", (False, side(c1, i1), side(c2, i1, b="b2")), "PASS"),
+            ("not met, wanted not met", (False, side(c1, i1), side(c2, i2, b="b2")), "PASS"),
+            ("not met, wanted met", (True, side(c1, i1), side(c2, i2, b="b2")), "FAIL"),
+            ("met, wanted not met", (False, side(c1, i1), side(c1, i1)), "FAIL"),
+            ("a's record code hash disagrees", (True, side(c1, i1, code={"rec": c2}), side(c1, i1)), "FAIL"),
+            ("b's library code hash disagrees", (True, side(c1, i1), side(c1, i1, code={"lib": c2})), "FAIL"),
+            ("b's own reader's code hash disagrees",
+             (False, side(c1, i1), side(c2, i2, b="b2", code={"ind": c1})), "FAIL"),
+            ("a has no record code hash", (True, side(c1, i1, code={"rec": False}), side(c1, i1)), "FAIL"),
+            ("a's record image hash disagrees", (True, side(c1, i1, image={"rec": i2}), side(c1, i1)), "FAIL"),
+            ("b's library image hash disagrees", (True, side(c1, i1), side(c1, i1, image={"lib": i2})), "FAIL"),
+            ("a's own reader's image hash disagrees", (True, side(c1, i1, image={"ind": i2}), side(c1, i1)), "FAIL"),
+            ("b has no record image hash", (True, side(c1, i1), side(c1, i1, image={"rec": False})), "FAIL"),
+            # no reader gives a code hash, in either build: None == None must not meet R19
+            ("no code hash read at all", (True, side(None, i1), side(None, i1)), "FAIL")):
         v = judge(*args)[0]
         print("  %s judge(), %s: %s" % ("ok  " if v == want else "FAIL", label, v))
         ok &= v == want
@@ -155,34 +182,61 @@ def self_test():
         print("  %s premise(), %s: %s" % ("ok  " if got == want else "FAIL", label, "ok" if got else "VOID"))
         ok &= got == want
 
-    # every case has a want; the can-fails are build_path and repro_off (repro_off since 2026-11-04)
+    # every case has a want; the one can-fail is build_path (repro_off was one from 2026-11-04 to
+    # 2026-11-08)
     names = [n for n, _ in CASES]
     good = sorted(WANT_MET) == sorted(names)
     print("  %s WANT_MET names every case and no other: %s" % ("ok  " if good else "FAIL", sorted(WANT_MET)))
     ok &= good
     nots = sorted(n for n, w in WANT_MET.items() if w is False)
-    good = nots == ["build_path", "repro_off"] and all(isinstance(w, bool) for w in WANT_MET.values())
+    good = nots == ["build_path"] and all(isinstance(w, bool) for w in WANT_MET.values())
     print("  %s the cases wanting R19 not met: %s" % ("ok  " if good else "FAIL", nots))
     ok &= good
 
-    # the readers on a synthetic image: the library and the tester's own give its embedded hash
+    # the readers on a synthetic image: the library and the tester's own agree on both hashes
     import vtrux_build.image as LIB
     d = I.scratch("repro-cases-selftest")
     img = I.build()
     p = os.path.join(d, "x.bin")
-    with open(p, "wb") as f:
-        f.write(img)
-    r = hashes(p, None)
-    want = I.field(img, "elf_sha256").hex()
-    good = r["library"] == r["independent"] == want and r["record"] is None
-    print("  %s hashes() on a synthetic image: %s" % ("ok  " if good else "FAIL", r["independent"][:16]))
+
+    def read(data, rec_dir=None):
+        with open(p, "wb") as f:
+            f.write(data)
+        return hashes(p, rec_dir)
+    r = read(img)
+    want_img, want_code = I.field(img, "elf_sha256").hex(), I.code_hash(img)
+    good = (r["image"]["library"] == r["image"]["independent"] == want_img and
+            r["code"]["library"] == r["code"]["independent"] == want_code and want_code != want_img and
+            r["image"]["record"] is None and r["code"]["record"] is None and
+            r["bin_sha256"] == hashlib.sha256(img).hexdigest())
+    print("  %s hashes() on a synthetic image: code %s, image %s" % (
+        "ok  " if good else "FAIL", r["code"]["independent"][:16], r["image"]["independent"][:16]))
     ok &= good
-    other = I.with_field(img, "elf_sha256", bytes(32))
-    with open(p, "wb") as f:
-        f.write(other)
-    r2 = hashes(p, None)
-    good = r2["independent"] != want and r2["library"] == r2["independent"] and LIB.image_hash(p) == r2["library"]
-    print("  %s hashes() follows the embedded hash: %s" % ("ok  " if good else "FAIL", r2["independent"][:16]))
+    # elf_sha256 changed (repro_off's difference): the image hash follows, the code hash does not
+    r2 = read(I.with_field(img, "elf_sha256", bytes(32)))
+    good = (r2["image"]["independent"] != want_img and r2["image"]["library"] == r2["image"]["independent"] and
+            r2["code"]["independent"] == want_code and r2["code"]["library"] == want_code and
+            r2["bin_sha256"] != r["bin_sha256"])
+    print("  %s hashes(), elf_sha256 changed: image hash follows, code hash stays: %s" % (
+        "ok  " if good else "FAIL", r2["code"]["independent"][:16]))
+    ok &= good
+    # one code byte changed (the first data byte of the second segment): the code hash follows
+    segs, _cks, _sha = I.layout(img)
+    r3 = read(I.with_byte(img, segs[1][0], img[segs[1][0]] ^ 0xFF))
+    good = (r3["code"]["independent"] != want_code and r3["code"]["library"] == r3["code"]["independent"] and
+            r3["image"]["independent"] == want_img)
+    print("  %s hashes(), a code byte changed: code hash follows: %s" % (
+        "ok  " if good else "FAIL", r3["code"]["independent"][:16]))
+    ok &= good
+    # the record's two hashes are read from its own fields, each by its name
+    rd = os.path.join(d, "rec")
+    os.makedirs(rd)
+    with open(os.path.join(rd, "r.json"), "w") as f:
+        json.dump({"image_hash": "e3" * 32, "code_hash": "c3" * 32}, f)
+    r4 = read(img, rd)
+    good = r4["image"]["record"] == "e3" * 32 and r4["code"]["record"] == "c3" * 32
+    print("  %s hashes() reads the record's code_hash and image_hash: %s, %s" % (
+        "ok  " if good else "FAIL", str(r4["code"]["record"])[:16], str(r4["image"]["record"])[:16]))
     ok &= good
     print("\nself-test: %s" % ("every broken input caught" if ok else "FAILED"))
     return 0 if ok else 1
@@ -191,16 +245,19 @@ def self_test():
 # ---------- plumbing ----------
 
 def hashes(bin_path, record_dir):
-    """The image hash three ways, and the .bin's own sha256. record_dir: the stand-in folder the
-    build wrote its record to (None: no record expected)."""
+    """The code hash (R2) and the image hash (R1) three ways each, and the .bin's own sha256.
+    record_dir: the stand-in folder the build wrote its record to (None: no record expected)."""
     import vtrux_build.image as LIB
     data = open(bin_path, "rb").read()
-    rec = None
+    rec = {}
     if record_dir and os.path.isdir(record_dir):
         js = [n for n in os.listdir(record_dir) if n.endswith(".json")]
         if len(js) == 1:
-            rec = json.load(open(os.path.join(record_dir, js[0]))).get("image_hash")
-    return {"record": rec, "library": LIB.image_hash(bin_path), "independent": I.image_hash(data),
+            rec = json.load(open(os.path.join(record_dir, js[0])))
+    return {"code": {"record": rec.get("code_hash"), "library": LIB.code_hash(bin_path),
+                     "independent": I.code_hash(data)},
+            "image": {"record": rec.get("image_hash"), "library": LIB.image_hash(bin_path),
+                      "independent": I.image_hash(data)},
             "bin_sha256": RC.sha256_file(bin_path)}
 
 
@@ -271,8 +328,11 @@ def build_one(ctx, key, side, repo, commit, log, want_repro, marker, sub=""):
     project = json.load(open(os.path.join(path, "vtrux_build.json")))["project"]
     h = hashes(b, os.path.join(ri, "firmware", "builds", project))
     with open(log, "a") as f:
-        f.write("build %s: %s at %s; image hash record %s library %s own %s; .bin sha256 %s\n\n" % (
-            side, path, info["commit"][:12], h["record"], h["library"], h["independent"], h["bin_sha256"]))
+        f.write("build %s: %s at %s; code hash record %s library %s own %s; image hash record %s library %s "
+                "own %s; .bin sha256 %s\n\n" % (
+                    side, path, info["commit"][:12], h["code"]["record"], h["code"]["library"],
+                    h["code"]["independent"], h["image"]["record"], h["image"]["library"],
+                    h["image"]["independent"], h["bin_sha256"]))
     return info, h
 
 
@@ -290,7 +350,7 @@ def run_case(ctx, key, name, log, repo, commit, want_met, want_repro, marker=Non
         RC.report(name, "VOID", why, ctx.log)
         return
     v, d = judge(want_met, ha, hb)
-    if v != "PASS" or not want_met:
+    if v != "PASS" or not want_met or ha["bin_sha256"] != hb["bin_sha256"]:
         d += "; " + RC.differing(open(app_bin(ia["path"]), "rb").read(), open(app_bin(ib["path"]), "rb").read())
     RC.report(name, v, d, ctx.log)
     if not ctx.keep:
