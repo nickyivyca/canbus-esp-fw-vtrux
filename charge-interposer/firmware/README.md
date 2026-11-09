@@ -1414,12 +1414,19 @@ assumed-versus-measured list (spec 9.1).
 `../fw_harness/hw_mechanics.py`, the tester's, watches what is a hardware
 mechanic **by construction**, in three ways (paths from this folder):
 
-- **whole files**: both port drivers (`main/port_twai.cpp` and `.h`,
-  `main/port_mcp2515.cpp` and `.h`), `main/can_port.h`, `main/board_ports.h`
-  (the pins come from the board component through it),
-  `main/idf_component.yml` and `dependencies.lock` (the board component's,
-  the Arduino core's and ESP-IDF's versions), and the build's
-  `CMakeLists.txt`, `main/CMakeLists.txt` and `sdkconfig`;
+- **whole files**: the ports as this project sets them up and reaches them
+  (port step 2b): `main/vehicle_port.cpp` and `.h` (the vehicle port's
+  settings: mode, bus-off recovery, RTR, filter, queue depths),
+  `main/port_view.cpp` and `.h` (the port contract the bridge reads both
+  ports through), `main/charger_port.cpp` and `.h` (the charger port's
+  registration with `can_port`, its bring-up and clock), the charger
+  driver `main/port_mcp2515.cpp` and `.h`, and `main/bridge_port.h`;
+  `main/board_ports.h` (the pins come from the board component through
+  it); `main/idf_component.yml` and `dependencies.lock` (the versions of
+  the board component, `vtrux/twai_port`, `vtrux/can_port`, the Arduino
+  core and ESP-IDF: the shared port code itself is watched by its version
+  there); and the build's `CMakeLists.txt`, `main/CMakeLists.txt` and
+  `sdkconfig`;
 - **`setup()`'s body** in `main/main.cpp`, extracted by brace matching and
   hashed with the `INTP_PRINT*` lines removed. The boot path is a mechanic
   entire -- init order, the controller begin calls, the B-7d failed-start
@@ -1427,8 +1434,9 @@ mechanic **by construction**, in three ways (paths from this folder):
   not;
 - **named settings by value**, not by file hash, in `main/main.cpp`:
   `BITRATE`, `TICK_INTERVAL_MS`, `DIAG_INTERVAL_MS`, `STATUS_INTERVAL_MS`
-  and the vehicle and charger drain bounds. The pins are no longer constants
-  there (port step 2a, item 6a).
+  and the vehicle and charger drain bounds (the vehicle one is both
+  `applyVehicleMode()`'s drain of 64 and the loop's 16). The pins are no
+  longer constants there (port step 2a, item 6a).
 
 ```
 py -3.14 -B charge-interposer/fw_harness/hw_mechanics.py
