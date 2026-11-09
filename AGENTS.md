@@ -290,9 +290,11 @@ invoked, and a compaction re-attaches that same text (user, 2026-10-16).
 **Docs change with the tooling.** A change to tooling or a workflow that
 this file or a role skill describes is not finished until the text says the
 same thing. The session making the change sends the methodology owner the
-text change with it. The reviewer merges the tooling change and the
-methodology commit's cherry-pick together, and does not push one without
-the other.
+text change with it. The reviewer doesn't hold the tooling push for it: it
+pushes the tooling change when it is ready, and cherry-picks the
+methodology commit when it comes, and the change stays open in its tracker
+until then (user, 2026-11-08: push as much as possible, since origin is
+this repo's only copy off the disk).
 
 **Plans, handoffs and working logs** belong to the role session that writes
 them, named on an `**Owner:**` line at the top. A file without one gets an
@@ -364,12 +366,13 @@ Rules for `VALIDATION.md`:
 implementor and the tester commit on their topic branches in their own
 worktrees and never push. When work is ready, they tell the reviewer the
 branch and the commit range. In its own worktree, the reviewer merges the
-topic branch into `<project>/main`, runs the pre-push check, and pushes. It pushes the topic
-branches too, after the same check, unless the work isn't worth keeping: a
-disk failure loses everything that is neither pushed nor regenerable (user,
-2026-10-23). All of a project's role sessions run on one machine, in
-worktrees of the same anchor clone, so the reviewer sees every topic branch
-without a push (user, 2026-10-23).
+topic branch into `<project>/main`, runs the pre-push check, and pushes. It
+pushes the topic branches too, after the same check, as often as it can,
+unless the work isn't worth keeping: origin is this repo's only copy off
+the disk, and a disk failure loses everything that is neither pushed nor
+regenerable (user, 2026-10-23 and 2026-11-08). All of a project's role
+sessions run on one machine, in worktrees of the same anchor clone, so the
+reviewer sees every topic branch without a push (user, 2026-10-23).
 
 This rule is the user's standing approval for routine pushes, so the
 reviewer doesn't ask per push. It does ask before a force push, a branch
@@ -548,8 +551,8 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
    fresh build output in its own process. If (b) still disturbs the test,
    the next suspect is Defender, and excluding the build folders from it
    is the user's call.
-   **When a project's build command changes,** this point changes in the
-   same merge (see "Docs change with the tooling").
+   **When a project's build command changes,** this point changes with
+   it, as soon as it can (see "Docs change with the tooling").
 4. **Testers raise their simulators** to above-normal priority, never High or
    Realtime, which can starve the USB stack the CAN adapters need.
 5. **The tester's own timing checks** still decide whether a run counts. A
