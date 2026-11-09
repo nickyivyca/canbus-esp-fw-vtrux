@@ -233,7 +233,9 @@ user, even to recommend an option: the user has one place to argue it (user,
 2026-10-10).
 
 Specs not yet moved into this repo are in reverse-it; the file map gives
-their path under `$REVERSE_IT_DIR`.
+their path under `$REVERSE_IT_DIR`. gen-inhibit's moved on 2026-11-07:
+`gen-inhibit/SPEC.md`, `VALIDATION.md` and `VERIFICATION.md` on
+`gen-inhibit/main`.
 
 **Project layout** (user, 2026-10-26). A project folder holds its file map,
 `<project>/README.md`; its firmware build root, `<project>/firmware/`; and
