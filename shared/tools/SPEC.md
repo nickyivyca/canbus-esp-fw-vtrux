@@ -49,7 +49,7 @@ It covers:
   not written yet (section 8).
 
 It sits outside the layer table of goal 6: a change to it voids no evidence
-unless the image changes, which the reproducible test (R19) shows.
+unless the code hash changes, which the reproducible test (R19) shows.
 
 ## 2. Identity
 
@@ -80,6 +80,10 @@ unless the image changes, which the reproducible test (R19) shows.
     it grows or gains a tag;
   - the same files built on either host OS give the same code hash. The
     image hash may differ between host OSes.
+
+  So builds are compared by code hash. The image hash only identifies one
+  binary, and an image-hash difference on its own is not a finding (user,
+  2026-11-08).
 - **R6. Identity never rests on the version string or the file name.** Both
   are labels. No check compares a name against the tree.
 - **R7. Component digest.** A component's digest covers the content of every
@@ -203,11 +207,8 @@ unless the image changes, which the reproducible test (R19) shows.
   Bench and dev builds are not checked.
 - **R19. Reproducible.** One clean commit, built twice on the same machine
   in two different folders, each time by the release build script, gives
-  the same image hash both times. Its two builds share one clone at one
-  time, so their version strings match (R5). Builds of one commit in two
-  clones, or at two times, are compared by code hash. This is a test of
-  the tooling, not a check
-  on each release build. It is rerun whenever something that can reach the
+  the same code hash both times (R2, R5). This is a test of the tooling,
+  not a check on each release build. It is rerun whenever something that can reach the
   image changes: the build script or the record writer, the image-reading
   library, the ESP-IDF version or its Python environment (esptool, which
   writes the `.bin`, included), or the compiler, CMake or Ninja version.
