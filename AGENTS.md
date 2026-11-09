@@ -470,10 +470,14 @@ project is `charge-interposer/firmware/`, on ESP-IDF v5.4.2 with
 arduino-esp32 3.2.1 as a component (user, 2026-11-03). Its build identity
 follows shared/tools, at the version
 `charge-interposer/firmware/shared_pins.json` pins (interposer spec 8.2).
-Its bench and dev builds are `idf.py` / `ninja` builds, one build folder
-per variant, made by `charge-interposer/vtrux_tools.py build <variant>`,
-and like gen-inhibit's they need not meet the release rules. The launcher
-refuses a shell not exported for the interposer's IDF. No interposer
+Its bench and dev builds are the shared tooling's dev builds (shared/tools
+R31), one build folder per variant, made by
+`charge-interposer/vtrux_tools.py build <variant>`, with the variants
+listed in `charge-interposer/firmware/vtrux_build.json`. Like
+gen-inhibit's, they need not meet the release rules. The tooling's
+environment check (R32) runs first. A bench build made with `idf.py`
+directly, such as a flash, runs
+`py -3.14 -B charge-interposer/vtrux_tools.py check-env` first. No interposer
 release build is made during the port, since no mid-port build goes on
 the truck (user, 2026-11-03).
 
@@ -526,12 +530,14 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
    `ninja -C gen-inhibit/firmware/build -j 1`; for an interposer
    bench or dev build,
    `py -3.14 -B charge-interposer/vtrux_tools.py build <variant> --jobs 1`,
-   which reconfigures `charge-interposer/firmware/build/<variant>` for its
-   variant, then runs `ninja -j 1` there. The processes the build starts
-   inherit the class. Idle lowers CPU priority only, not disk priority. It
-   also does not reach Windows Defender, which scans fresh build output in
-   its own process. If (b) still disturbs the test, the next suspect is
-   Defender, and excluding the build folders from it is the user's call.
+   the shared tooling's dev build (R31), which reconfigures
+   `charge-interposer/firmware/build/<variant>` with the variant's options
+   from `vtrux_build.json`, then runs `ninja -j 1` there. The processes
+   the build starts inherit the class. Idle lowers CPU priority only, not
+   disk priority. It also does not reach Windows Defender, which scans
+   fresh build output in its own process. If (b) still disturbs the test,
+   the next suspect is Defender, and excluding the build folders from it
+   is the user's call.
    **When a project's build command changes,** this point changes in the
    same merge (see "Docs change with the tooling").
 4. **Testers raise their simulators** to above-normal priority, never High or
