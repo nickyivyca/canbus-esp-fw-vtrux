@@ -1,4 +1,12 @@
 {
   "project": "charge-interposer",
-  "shared_components": ["vtrux/x2"]
+  "shared_components": ["vtrux/x2"],
+  "variants": {
+    "bridge": {"INTP_VARIANT": "bridge"},
+    "witness": {"INTP_VARIANT": "witness"},
+    "truck": {"INTP_VARIANT": "truck"},
+    "selftest": {"INTP_VARIANT": "selftest"},
+    "diag": {"INTP_VARIANT": "diag"},
+    "slcan": {"INTP_VARIANT": "slcan"}
+  }
 }
