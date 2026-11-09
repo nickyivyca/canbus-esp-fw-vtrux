@@ -327,7 +327,9 @@ questions.
   measurements, readings, corrections and user rulings behind each
   requirement.
 - **`VERIFICATION.md`: test evidence that a specific commit meets the spec.**
-  A pass verifies the commit it ran on and nothing else. When code is ported
+  A pass verifies the code it ran on: it carries to any build with the same
+  code hash (shared/tools R3), and to nothing else (user, 2026-11-08), so a
+  commit that changes no code keeps its passes. When code is ported
   or rewritten, the old code's pass entries carry no weight for the new code:
   they are not copied across, and they are not cited as validation. Their
   tests can be pointed at the new code to make new entries.
