@@ -559,9 +559,14 @@ same folder.
     charge-interposer reviewer's session): the test compares the two
     builds' code hashes. Builds are compared by code hash everywhere (R5's
     closing line, R3, R6); the image hash only identifies one binary. What
-    the change gives up is a check that the version and date fields
-    reproduce, which no identity rests on (R6). A pair with equal image
-    hashes also has equal code hashes, so earlier passing runs stand.
+    the change gives up is a check that the version and date fields, and
+    the ELF's content outside the image, such as its debug information,
+    reproduce; no identity rests on either (R6). Its `repro_off` case,
+    whose two `.bin` files differed only in the descriptor's `elf_sha256`,
+    then meets R19 and is no longer a can-fail; `build_path` still is
+    (accepted by the user, 2026-11-08, in the gen-inhibit reviewer's
+    session). A pair with equal image hashes also has equal code hashes,
+    so earlier passing runs stand.
     Exposed by the interposer's shared/tools pin move (2026-11-08), whose
     acceptance had predicted two dev builds byte-identical; they differed
     by the Arduino core's compile time, which only release builds fix (R9,
