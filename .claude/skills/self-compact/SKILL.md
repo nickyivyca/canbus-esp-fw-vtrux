@@ -57,7 +57,8 @@ waiting", both halves must hold.
 ## The two messages must be clean
 
 They restate what the user, or your project's reviewer, has already decided
-and add nothing.
+and add nothing. Each is one line of printable ASCII, at most 600
+characters, so draft the compact message to fit the first time.
 
 - **The compact message** says what the summary must keep:
   - the task in progress, with its plan file and step;
@@ -123,8 +124,10 @@ by yourself, resume.
      and `--timeout`. If auto mode blocks it, carry on without compacting,
      per step 5; don't switch to a resume message to get past the block.
    - Nothing else goes in that Bash call: no `cd`, no `&&`, `;` or pipe, no
-     heredoc, no second command. A compound command doesn't fit the rule,
-     and auto mode refuses it as self-typing.
+     redirection (no `2>&1`, `>`, `| tail` or `| head`: the output is a few
+     lines of JSON), no heredoc, no second command. This holds for the
+     `--check` call too. A compound command doesn't fit the rule, and auto
+     mode refuses it as self-typing.
 3. Run the same command without `--check`, the same way: a Bash call with
    only this command, sent on its own and not alongside another tool call,
    as the last action of the turn.
