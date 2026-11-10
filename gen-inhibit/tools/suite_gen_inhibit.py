@@ -55,8 +55,17 @@ Settings this suite reads, besides the core's (shared/bench/README.md):
     gi_host_ssh      the ssh host part H and B15host run on (madhouse-debian, user, 2026-10-22)
     gi_host_root     the reverse-it root on that host (H's RROOT; a leading ~/ is that host's home)
     interposer_code  a charge-interposer/ clone (for x2_flash_custody and the X2's identify)
-    x2_images        {"x2_app": {"files": [[off, path]...], "md5": {...}, "expect": ...},
-                      "x2_slcan": {...}}: the X2 images the charge-interposer tester names
+    x2_pin_dir       the folder holding the X2's pinned images (x2_pin.py): only where the
+                     files are. Their files and identities are x2_pin.json's, committed
+                     beside this file (user ruling 2026-11-10, through the gen-inhibit
+                     reviewer), and the suite refuses files that are not the pinned bytes.
+                     The old setting x2_images, which named them, is refused.
+The X2 can start a run on any image (the charge-interposer's runs leave it on theirs). The
+start step puts it on the first image the run needs. Before the hold and the jammer, the
+suite's own flashers first put it on x2_app (written from the pin and read back), unless
+identify last read it there. So the custody dump carries x2_app's ELF, and a hold is a
+hold of x2_app. The SLCAN answers name the protocol, not the build, so identify takes
+x2_slcan's identity only when esptool verify-flash finds the pinned slcan app at its offset.
 The WiCAN's SSID is read from firmware/bench-holder.md (its only home) when the suite
 is loaded, passed to the checks in their environment, and redacted from every
 declared output. It is never put in the settings, which the record keeps.
@@ -75,6 +84,11 @@ from vtrux_bench.run.model import Check, Figure, Group, Image, Result, Suite
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import suite_judges as SJ   # noqa: E402
+import x2_pin as X2P        # noqa: E402
+
+X2_PIN_FILE = X2P.PIN_FILE  # the committed pin; never a setting
+X2_IMAGES = ("x2_app", "x2_slcan")
+VERIFY_OK = "Verification successful (digest matched)"   # esptool 5's verify-flash, once per file
 
 ROLE = "tester (gen-inhibit)"
 HOST = "192.168.80.1"
@@ -185,6 +199,35 @@ def _run(argv, logpath, env_extra, cwd, timeout):
             return None
 
 
+def _x2_write(image, params, settings, logdir):
+    """The core's own esptool flasher (vtrux_bench.run.flash): md5s, the chip-id and MAC check,
+    verified writes, the auto-reset check after. The hold and jammer flashers write x2_app
+    through it first."""
+    from vtrux_bench.run.flash import esptool_flash
+    return esptool_flash(image, params, settings, logdir)
+
+
+def x2_verify(settings, files, logpath):
+    """esptool verify-flash of [[offset, path], ...] on the X2's port: True when esptool exits 0
+    and says the digest matched once per file, False when it read a different flash. Raises
+    IdentifyError when it could not look (no esptool settings, a port that would not open, a
+    timeout). Writes nothing."""
+    et = settings.get("esptool") or {}
+    argv0, port = list(et.get("argv") or []), et.get("port")
+    if not argv0 or not port:
+        raise IdentifyError("settings.esptool needs argv and port to verify the X2's flash")
+    cmd = argv0 + ["--port", port, "--baud", str(et.get("baud") or 921600), "verify-flash"]
+    for off, path in files:
+        cmd += [str(off), path]
+    rc = _run(cmd, logpath, {}, None, 300)
+    t = _text(logpath)
+    if rc is None:
+        raise IdentifyError("esptool verify-flash timed out (see %s)" % os.path.basename(logpath))
+    if PORT_RX.search(t) or "Failed to connect" in t:
+        raise IdentifyError("esptool verify-flash could not reach the X2 (rc %s)" % rc)
+    return rc == 0 and t.count(VERIFY_OK) == len(files)
+
+
 def wican_page():
     with urllib.request.urlopen("http://%s/gen_inhibit" % HOST, timeout=8) as r:
         return json.load(r)
@@ -273,26 +316,62 @@ def make_hooks(settings, ssid, images=None):
         return dict(ok=ok, phase="ota" if ok else "ota-twice", detail="%s; %s; %s" % (d1, d2, d3),
                     recoverable=True)
 
+    x2_last = {}     # what identify last read off the X2 in this process ("read"), or nothing
+
+    def x2_app_first(settings_, logdir):
+        """Puts the X2 on x2_app unless identify last read it there: the pinned files through the
+        core's esptool flasher, then identify must read x2_app's identity. Returns None when the
+        X2 is on x2_app (detail in x2_last["first"]), else the flasher's failure dict."""
+        app = images["x2_app"]
+        read = x2_last.get("read")
+        if read == app.expect:
+            x2_last["first"] = "on x2_app already (read %s)" % read
+            return None
+        sub = os.path.join(logdir, "x2_app_first")
+        os.makedirs(sub, exist_ok=True)
+        res = _x2_write(app, app.params, settings_, sub)
+        if not res.get("ok"):
+            return dict(ok=False, phase="x2-app-first:%s" % res.get("phase"), recoverable=res.get("recoverable"),
+                        detail="writing x2_app first (the X2 read %s) failed: %s" % (read, res.get("detail")))
+        try:
+            got = identify(app, None, sub)
+        except Exception as e:      # could not look: the core would not flash on that either
+            return dict(ok=False, phase="x2-app-first:identify", recoverable=True,
+                        detail="wrote x2_app first (the X2 read %s), then identify failed: %r" % (read, e))
+        if got != app.expect:
+            return dict(ok=False, phase="x2-app-first:identify", recoverable=True,
+                        detail="wrote x2_app first (the X2 read %s), but identify read %s" % (read, got))
+        x2_last["first"] = "x2_app written first (the X2 read %s): %s; read %s" % (read, res.get("detail"), got)
+        return None
+
     def x2_hold(image, params, settings_, logdir):
+        """x2_app first (so a hold is a hold of x2_app), then x2_hold.py hold."""
+        bad = x2_app_first(settings_, logdir)
+        if bad:
+            return bad
+        first = x2_last.get("first")
         txt = os.path.join(logdir, "x2_hold_hold_%s.txt" % time.strftime("%Y%m%dT%H%M%S"))
         rc = run(_py(settings_) + [os.path.join(harness, "x2_hold.py"), "hold"], txt,
                  dict(base_env, GI_RUNS_DIR=logdir), 180)
         t = _text(txt)
         ok = rc == 0 and "TX (GPIO7) not driven" in t
         line = [ln for ln in t.splitlines() if "TX (GPIO7)" in ln]
-        return dict(ok=ok, phase="hold", detail="%s (rc %s)" % (line[-1] if line else "no pin line", rc),
+        return dict(ok=ok, phase="hold", detail="%s; %s (rc %s)" % (first, line[-1] if line else "no pin line", rc),
                     recoverable=True)
 
     def x2_jammer(image, params, settings_, logdir):
-        """Custody first (x2_flash_custody: the dump, twice, must carry the X2's own image),
-        then the jammer from its manifest row. The X2's own image comes back through
-        x2_app's flasher at the restore."""
+        """x2_app first, then custody (x2_flash_custody: the dump, twice, must carry x2_app's
+        pinned ELF), then the jammer from its manifest row. x2_app comes back through its
+        flasher at the restore."""
+        bad = x2_app_first(settings_, logdir)
+        if bad:
+            return bad
         env = dict(base_env, GI_RUNS_DIR=logdir)
         py = _py(settings_)
         dump = os.path.join(logdir, "custody_dump.txt")
         before = set(glob.glob(os.path.join(logdir, "x2_flash_custody_dump_*.json")))
         rc = run(py + [os.path.join(harness, "x2_flash_custody.py"), "dump", "--expect-elf",
-                       params.get("expect_elf", "756d6714")], dump, env, 900)
+                       params["expect_elf"]], dump, env, 900)
         recs = new_records(logdir, "x2_flash_custody_dump_*.json", before)
         verdict = None
         if len(recs) == 1:
@@ -306,9 +385,8 @@ def make_hooks(settings, ssid, images=None):
                        "--build", params.get("build", JAMMER_MD5)], fl, env, 900)
         if rc != 0:
             return dict(ok=False, phase="flash-jammer", detail="flash-jammer rc %s" % rc, recoverable=False)
-        return dict(ok=True, phase="done", detail="custody dump %s; jammer %s" % (os.path.basename(recs[-1]),
-                                                                                   params.get("build", JAMMER_MD5)),
-                    recoverable=True)
+        return dict(ok=True, phase="done", detail="%s; custody dump %s; jammer %s" % (
+            x2_last.get("first"), os.path.basename(recs[-1]), params.get("build", JAMMER_MD5)), recoverable=True)
 
     def wican_sha():
         """The WiCAN's elf_sha256 off its page, or IdentifyError (could not look)."""
@@ -334,10 +412,24 @@ def make_hooks(settings, ssid, images=None):
     def identify(image, ctx, logdir):
         """What the board is on, whatever image is wanted: the engine compares it with
         image.expect. None means "on none of these"; a tool that could not look RAISES,
-        and the engine then stops the bench without flashing (core df5d2ec on)."""
-        stamp = time.strftime("%Y%m%dT%H%M%S")
+        and the engine then stops the bench without flashing (core df5d2ec on). Each X2
+        read is kept for the hold and jammer flashers (x2_app_first); a failed one clears it."""
         if image.board == "wican":
             return wican_sha()
+        x2_last.pop("read", None)
+        got = x2_identify(image, ctx, logdir)
+        x2_last["read"] = got
+        return got
+
+    def x2_slcan_pinned(logdir, stamp):
+        """True when the X2's flash holds x2_slcan's pinned app at its offset (verify-flash)."""
+        sl = images.get("x2_slcan")
+        if sl is None or not sl.params.get("app"):
+            return False
+        return x2_verify(settings, [sl.params["app"]], os.path.join(logdir, "x2_slcan_verify_%s.txt" % stamp))
+
+    def x2_identify(image, ctx, logdir):
+        stamp = time.strftime("%Y%m%dT%H%M%S")
         # The X2, in an order that cannot disturb what it finds. 1: the pins, read
         # without a reset, find a hold (on a running image esptool cannot sync).
         txt = os.path.join(logdir, "x2_hold_pins_%s.txt" % stamp)
@@ -355,6 +447,9 @@ def make_hooks(settings, ssid, images=None):
         # 2: the charge-interposer tester's identify (resets the board): its own image, slcan.
         import bench_identify as BI
         got = BI.identify(image, ctx, logdir, settings)
+        if got and got.startswith("slcan:"):
+            # any SLCAN build gives the same answers: the pinned app must be on the flash too
+            return got if x2_slcan_pinned(logdir, stamp) else got + ":unpinned"
         if got:
             return got
         # 3: the jammer answers ID with its banner. Sent only to a board 1 and 2 do not know.
@@ -415,6 +510,22 @@ def make_hooks(settings, ssid, images=None):
 
 # ---------------------------------------------------------------- the suite
 
+def x2_pinned(settings):
+    """The X2's pinned images (x2_pin.load) from settings.x2_pin_dir, or ValueError. The old
+    setting x2_images is refused: it named the files and identities, which are the pin's now."""
+    if "x2_images" in settings:
+        raise ValueError("settings.x2_images is retired (2026-11-10): the X2's images are pinned in "
+                         "gen-inhibit/tools/x2_pin.json; give only x2_pin_dir, the folder holding their files")
+    try:
+        pin = X2P.load(need(settings, "x2_pin_dir"), X2_PIN_FILE)
+    except (X2P.Refused, X2P.Mismatch) as e:
+        raise ValueError("the X2's pinned images: %s" % e)
+    missing = [n for n in X2_IMAGES if n not in pin["images"]]
+    if missing:
+        raise ValueError("the X2's pin has no %s" % ", ".join(missing))
+    return pin
+
+
 def suite(settings):
     root = need(settings, "reverse_it")
     commit = need(settings, "gi_commit")
@@ -434,17 +545,16 @@ def suite(settings):
     b = image_bin(prod_dir)
     images["wican_prod"] = Image("wican_prod", "ota", {"bin": b}, elf_sha256_of_bin(b), board="wican")
     desc["wican_prod"] = "image %s prod (elf %s)" % (commit, images["wican_prod"].expect[:8])
-    x2 = settings.get("x2_images") or {}
-    for name in ("x2_app", "x2_slcan"):
-        if name not in x2:
-            raise ValueError("settings.x2_images.%s is not set" % name)
-        images[name] = Image(name, "esptool", {"files": x2[name]["files"], "md5": x2[name].get("md5") or {},
-                                               "port": x2[name].get("port", "COM3")},
-                             x2[name]["expect"], board="x2")
+    pin = x2_pinned(settings)
+    for name in X2_IMAGES:
+        p = pin["images"][name]
+        images[name] = Image(name, "esptool", {"files": p["files"], "md5": p["md5"], "app": p["app"]},
+                             p["expect"], board="x2", note="pin %s (x2_pin.json)" % pin["pin"])
     images["x2_held"] = Image("x2_held", "x2-hold", {}, "held:not driven", board="x2",
-                              note="in ROM download mode, CAN1 TX not driven (x2_hold.py)")
-    images["x2_jammer"] = Image("x2_jammer", "x2-jammer", {"build": JAMMER_MD5, "expect_elf": x2["x2_app"]["expect"]},
-                                "jammer:banner", board="x2", note="x2_flash_custody: dump, then the jammer")
+                              note="x2_app, then in ROM download mode, CAN1 TX not driven (x2_hold.py)")
+    images["x2_jammer"] = Image("x2_jammer", "x2-jammer",
+                                {"build": JAMMER_MD5, "expect_elf": pin["images"]["x2_app"]["app_elf_sha256"]},
+                                "jammer:banner", board="x2", note="x2_app, then x2_flash_custody: dump, then the jammer")
 
     env0 = {"GI_OUT": "{outdir}", "GI_RUNS_DIR": "{outdir}", "GI_COMMIT": commit, "REVERSE_IT_DIR": "{reverse_it}",
             "GI_IMAGES": "{gi_images}", "GI_WICAN_SSID": ssid, "INTERPOSER_CODE": "{interposer_code}"}
@@ -538,7 +648,7 @@ def suite(settings):
     ]
 
     return Suite(
-        name="gen-inhibit-bench", role=ROLE, groups=groups, images=images, code_info=code_info_for(settings, images),
+        name="gen-inhibit-bench", role=ROLE, groups=groups, images=images, code_info=code_info_for(settings, images, pin),
         requires="gen-inhibit-emulated",   # user, 2026-10-17: the emulated run on this code first
         standing_images={"wican": "wican_man", "x2": "x2_app"},
         flashers={"ota": hooks["ota"], "x2-hold": hooks["x2_hold"], "x2-jammer": hooks["x2_jammer"]},
@@ -587,12 +697,14 @@ def tree_at(path, commit):
     return st
 
 
-def code_info_for(settings, images):
+def code_info_for(settings, images, pin=None):
     """What the record keeps about the code (user, 2026-10-17), and what the core's
     Suite.requires compares: commit and dirty. Until the code-hash tool exists the
     code is the commit, and only from a clean tree; so dirty is False only when the
     image worktree and the prod tree are both clean at gi_commit and every WiCAN
-    image's descriptor names that commit. Read off the trees, never from settings."""
+    image's descriptor names that commit. Read off the trees, never from settings.
+    The X2's pinned images (pin: x2_pin.load's) record the pin, its sha256 and each
+    file's sha256; they are the harness's tools, not the code under test."""
     commit = settings.get("gi_commit")
 
     def code_info(ctx):
@@ -602,8 +714,10 @@ def code_info_for(settings, images):
         for n, im in images.items():
             b = im.params.get("bin")
             if not b:
-                per[n] = {"board": im.board, "expect": im.expect, "code_hash": None,
-                          "note": "an X2 state named by the charge-interposer tester's settings"}
+                per[n] = {"board": im.board, "expect": im.expect, "code_hash": None, "note": im.note}
+                if pin and n in pin["images"]:
+                    per[n].update(pin=pin["pin"], pin_sha256=pin["pin_sha256"],
+                                  sha256=dict(pin["images"][n]["sha256"]))
                 continue
             tree = trees["gi_prod_dir" if n == "wican_prod" else "gi_images"]
             v = app_version(b)

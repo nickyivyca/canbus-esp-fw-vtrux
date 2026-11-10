@@ -28,20 +28,7 @@
   "gi_host_root": "<reverse-it root on that host>",
   "interposer_code": "<interposer clone>/charge-interposer",
 
-  "x2_images": {
-    "x2_app": {
-      "files": [["0x0", "<dir>/bootloader.bin"], ["0x8000", "<dir>/partitions.bin"],
-                ["0xe000", "<dir>/boot_app0.bin"], ["0x10000", "<dir>/firmware.bin"]],
-      "md5": {"<dir>/firmware.bin": "<md5 from the interposer manifest>"},
-      "expect": "756d6714"
-    },
-    "x2_slcan": {
-      "files": [["0x0", "<dir>/bootloader.bin"], ["0x8000", "<dir>/partitions.bin"],
-                ["0xe000", "<dir>/boot_app0.bin"], ["0x10000", "<dir>/interposer_36edf3e55552_slcan.bin"]],
-      "md5": {"<dir>/interposer_36edf3e55552_slcan.bin": "cee1bd8ca22fdc57eb223abbef53c085"},
-      "expect": "slcan:V0101:NF001"
-    }
-  },
+  "x2_pin_dir": "<folder holding <pin>/<image>/<file> for x2_pin.json, e.g. <reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit/x2_pin; filled by x2_pin.py install. Only where the files are: their bytes and the X2's identities are the committed pin's, and the old x2_images setting is refused>",
 
   "interposer_artifacts": "<as bench_identify.py reads it>",
   "interposer_dbc": "<reverse-it>/projects/vtrux/vtrux-interposer-diag.dbc",
