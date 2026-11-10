@@ -213,9 +213,11 @@ def test_suites(settings, shas):
           [o for o, _p in xa.params["files"]] == ["0x0", "0x8000", "0xe000", "0x10000"]
           and all(p.startswith(os.path.join(pdir, "x2_app")) for _o, p in xa.params["files"])
           and sorted(xa.params["md5"]) == sorted(p for _o, p in xa.params["files"])
-          and xa.params["app"] == xa.params["files"][3], xa.params)
-    check("bench: x2_slcan writes its own folder's files", all(
-        p.startswith(os.path.join(pdir, "x2_slcan")) for _o, p in bench.images["x2_slcan"].params["files"]))
+          and xa.params.get("app") == xa.params["files"][3], xa.params)
+    xsl = bench.images["x2_slcan"]
+    check("bench: x2_slcan writes its own folder's files, the app named", all(
+        p.startswith(os.path.join(pdir, "x2_slcan")) for _o, p in xsl.params["files"])
+        and xsl.params.get("app") == xsl.params["files"][3], xsl.params)
     check("bench: the jammer's custody wants the pin's whole x2_app ELF sha256",
           bench.images["x2_jammer"].params["expect_elf"] == X2_APP_ELF, bench.images["x2_jammer"].params)
     old = {"x2_app": {"files": [["0x0", "x.bin"]], "md5": {}, "expect": "deadbeef"}}
@@ -668,7 +670,7 @@ def test_identify(settings, bench):
     check("identify X2: SLCAN answers with the pinned slcan app verified on the flash is x2_slcan",
           got == "slcan:V0101:NF001" and len(ver) == 1, (got, ver))
     check("identify X2: the verify reads the pinned slcan app at its offset, and only it",
-          ver and ver[0][2][-3:] == ["verify-flash"] + list(xs.params["app"]) and "write-flash" not in ver[0][2],
+          ver and ver[0][2][-3:] == ["verify-flash"] + list(xs.params.get("app") or ["<no app>"]) and "write-flash" not in ver[0][2],
           ver and ver[0][2])
     got, _ = slcan("Verifying ...\nVerification failed (digest mismatch).\n", 2)
     check("identify X2: SLCAN answers from another build (verify mismatch) are not x2_slcan",

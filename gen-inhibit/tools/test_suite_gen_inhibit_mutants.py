@@ -174,7 +174,7 @@ MUTANTS = [
      'pin = X2P.load(need(settings, "x2_pin_dir"), settings.get("x2_pin_file") or X2_PIN_FILE)'),
     ("the jammer's custody wants only 8 digits of x2_app's ELF",
      '"expect_elf": pin["images"]["x2_app"]["app_elf_sha256"]}', '"expect_elf": pin["images"]["x2_app"]["app_elf_sha256"][:8]}'),
-    ("x2_slcan's app is not named for the verify", '{"files": p["files"], "md5": p["md5"], "app": p["app"]}',
+    ("the X2 images' app is not named (x2_slcan's verify has none)",'{"files": p["files"], "md5": p["md5"], "app": p["app"]}',
      '{"files": p["files"], "md5": p["md5"]}'),
     ("x2_hold: no x2_app first", '"""x2_app first (so a hold is a hold of x2_app), then x2_hold.py hold."""\n'
      '        bad = x2_app_first(settings_, logdir)', '"""x2_app first (so a hold is a hold of x2_app), then x2_hold.py hold."""\n'
