@@ -121,7 +121,10 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   `test_bench_compare*` files (reviewer, 2026-10-23); the evidence doc's
   move checker `verification_move.py` with `verification_move_subs.json`,
   and the manifest tool `verification_manifest.py`, with their `test_` and
-  `_mutants` files (reviewer, 2026-11-07).
+  `_mutants` files (reviewer, 2026-11-07); the X2's pinned images,
+  `x2_pin.json` and `x2_pin.py`, with `test_x2_pin.py` and
+  `test_x2_pin_mutants.py`: a tool of the harness, not product code (user
+  ruling 2026-11-10; reviewer, 2026-11-10).
 - `gen-inhibit/tools/bench/`: the bench harnesses, judges, runners and rig
   scripts with their tests and mutant runners, moved in from reverse-it by
   `ad0cab3` (port plan goal 20; reviewer, 2026-10-22). This includes the X2
