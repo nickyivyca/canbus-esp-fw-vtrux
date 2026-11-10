@@ -102,6 +102,40 @@ def fake_bin(path, version, fill):
     return bytes([fill]).hex() * 32
 
 
+X2_APP_ELF = "756d6714" + "75" * 28   # made up, but 0x7F7 identity 756d6714, which the stand-ins below answer
+X2_SLCAN_ELF = "e5" * 32
+
+
+def fake_pin(folder, app_elf=X2_APP_ELF):
+    """A made-up X2 pin (x2_pin.json's form) with its files under folder/files/testpin/<image>/.
+    Returns the pin file's path. The suite reads the pin from SG.X2_PIN_FILE, never from a setting."""
+    import hashlib
+    images = {}
+    for iname, elf, ident in (("x2_app", app_elf, app_elf[:8]), ("x2_slcan", X2_SLCAN_ELF, "slcan:V0101:NF001")):
+        app = bytearray(0x200)
+        app[0] = 0xE9
+        app[0x20:0x24] = b"\x32\x54\xcd\xab"
+        app[0xB0:0xD0] = bytes.fromhex(elf)
+        files = []
+        for off, name, data in (("0x0", "bootloader.bin", b"B" * 64), ("0x8000", "partitions.bin", b"P" * 32),
+                                ("0xe000", "boot_app0.bin", b"\xff" * 32), ("0x10000", iname + ".bin", bytes(app))):
+            p = os.path.join(folder, "files", "testpin", iname, name)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "wb") as f:
+                f.write(data)
+            e = {"offset": off, "name": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                 "md5": hashlib.md5(data).hexdigest()}
+            if off == "0x10000":
+                e["app"] = True
+            files.append(e)
+        images[iname] = {"env": iname, "identity": ident, "identity_read": "test", "app_elf_sha256": elf,
+                         "files": files}
+    path = os.path.join(folder, "x2_pin.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"_comment": "test", "pin": "testpin", "source": {"project": "test"}, "images": images}, f)
+    return path
+
+
 def fixture():
     rmtree(BASE)
     os.makedirs(BASE)
@@ -114,13 +148,15 @@ def fixture():
     with open(bh, "w", encoding="utf-8") as f:
         f.write("# Bench holder\n\n## WiCAN\nSoftAP `%s`, page at 192.168.80.1\n\n"
                 "## Lock\n\n**Holder:** -- (free)\n" % SSID)
-    x2 = {"x2_app": {"files": [["0x0", os.path.join(BASE, "x2", "app.bin")]], "md5": {}, "expect": "756d6714"},
-          "x2_slcan": {"files": [["0x0", os.path.join(BASE, "x2", "slcan.bin")]], "md5": {},
-                       "expect": "slcan:V0101:NF001"}}
+    # the test's pin, patched in here only (the core's CLI loads the suite file again, and that
+    # copy takes x2_pin.PIN_FILE from the x2_pin module already imported)
+    import x2_pin as X2P
+    SG.X2_PIN_FILE = X2P.PIN_FILE = fake_pin(os.path.join(BASE, "x2pin"))
     settings = {
         "reverse_it": BASE.replace("\\", "/"), "gi_tools": HERE.replace("\\", "/"), "gi_commit": "e3d9437",
         "gi_images": os.path.join(BASE, "images"), "gi_prod_dir": os.path.join(BASE, "prod"),
-        "interposer_code": os.path.join(BASE, "ic"), "x2_images": x2, "gi_fw": HERE, "gi_components": "x", "gi_checks_clone": HERE,
+        "interposer_code": os.path.join(BASE, "ic"), "x2_pin_dir": os.path.join(BASE, "x2pin", "files"),
+        "gi_fw": HERE, "gi_components": "x", "gi_checks_clone": HERE,
         "gi_host_ssh": "hosttest", "gi_host_root": "~/rt", "bash": shutil.which("bash"),
         "gi_can1_termination": "fixed passive resistors (test)",
         "bench_holder": bh, "runs_root": os.path.join(BASE, "runs"),
@@ -169,8 +205,44 @@ def test_suites(settings, shas):
     want = dict(shas)
     got = {n: im.expect for n, im in bench.images.items() if im.board == "wican"}
     check("bench: each WiCAN image expects its own bin's ELF sha", got == want, (got, want))
-    check("bench: the X2 images expect what the settings name",
+    check("bench: the X2 images expect what the pin names",
           bench.images["x2_app"].expect == "756d6714" and bench.images["x2_slcan"].expect == "slcan:V0101:NF001")
+    pdir = os.path.join(settings["x2_pin_dir"], "testpin")
+    xa = bench.images["x2_app"]
+    check("bench: x2_app writes the pin's four files from x2_pin_dir, md5s from the pin, the app named",
+          [o for o, _p in xa.params["files"]] == ["0x0", "0x8000", "0xe000", "0x10000"]
+          and all(p.startswith(os.path.join(pdir, "x2_app")) for _o, p in xa.params["files"])
+          and sorted(xa.params["md5"]) == sorted(p for _o, p in xa.params["files"])
+          and xa.params.get("app") == xa.params["files"][3], xa.params)
+    xsl = bench.images["x2_slcan"]
+    check("bench: x2_slcan writes its own folder's files, the app named", all(
+        p.startswith(os.path.join(pdir, "x2_slcan")) for _o, p in xsl.params["files"])
+        and xsl.params.get("app") == xsl.params["files"][3], xsl.params)
+    check("bench: the jammer's custody wants the pin's whole x2_app ELF sha256",
+          bench.images["x2_jammer"].params["expect_elf"] == X2_APP_ELF, bench.images["x2_jammer"].params)
+    old = {"x2_app": {"files": [["0x0", "x.bin"]], "md5": {}, "expect": "deadbeef"}}
+    e = raises(lambda: SG.bench(dict(settings, x2_images=old)))
+    check("bench: the retired x2_images setting refuses the suite (no setting names an X2 identity)",
+          e is not None and "x2_images" in str(e), e)
+    s4 = {k: v for k, v in settings.items() if k != "x2_pin_dir"}
+    check("bench: no x2_pin_dir refuses the suite", raises(lambda: SG.bench(s4)) is not None)
+    # a second, well-formed pin with another identity, beside its own files: no setting reaches it
+    other = fake_pin(os.path.join(BASE, "x2pin_other"), app_elf="deadbeef" + "dd" * 28)
+    s5 = dict(settings, x2_pin_file=other, x2_pin=other, pin_file=other)
+    b5 = raises(lambda: SG.bench(s5)) or SG.bench(s5)
+    check("bench: a setting naming another pin file is not read (the X2's identity stays the committed pin's)",
+          not isinstance(b5, Exception) and b5.images["x2_app"].expect == "756d6714", b5)
+    victim = xa.params["files"][1][1]
+    with open(victim, "rb") as f:
+        keep = f.read()
+    with open(victim, "wb") as f:
+        f.write(b"Q" * len(keep))
+    e = raises(lambda: SG.bench(settings))
+    with open(victim, "wb") as f:
+        f.write(keep)
+    check("bench: a pinned file with other bytes refuses the suite",
+          e is not None and "is not the pinned file" in str(e), e)
+    check("emulated: loads without x2_pin_dir (no X2)", raises(lambda: SG.emulated(s4)) is None)
     for g in bench.groups:
         for c in g.checks:
             if not c.skip:
@@ -433,7 +505,7 @@ def logdir():
 
 
 def test_identify(settings, bench):
-    hooks = SG.make_hooks(settings, SSID)
+    hooks = SG.make_hooks(settings, SSID, bench.images)
     ident = hooks["identify"]
     wm, xa, xj, xh = (bench.images[n] for n in ("wican_man", "x2_app", "x2_jammer", "x2_held"))
     joined = []
@@ -577,9 +649,82 @@ def test_identify(settings, bench):
         return all(SSID not in open(os.path.join(d, n), encoding="utf-8").read() for n in os.listdir(d))
     check("identify X2: the SSID is redacted from the tool's log and its new records", with_tools(t13))
 
+    # SLCAN answers name the protocol, not the build: x2_slcan only with the pinned app on the flash
+    sv = dict(settings, esptool={"argv": [sys.executable, "esptool.py"], "port": "COM3", "baud": 921600})
+    hv = SG.make_hooks(sv, SSID, bench.images)
+    xs = bench.images["x2_slcan"]
+    VER = "Verifying 0x... bytes at 0x00010000 in flash against 'x2_slcan.bin'...\n" + SG.VERIFY_OK + ".\n"
+
+    def slcan(out, rc):
+        def t(tt):
+            bi("slcan:V0101:NF001")
+            tt.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
+            tt.do[("esptool.py", "--port")] = lambda a, e: (out, rc, {})
+            try:
+                got = hv["identify"](xs, {}, logdir())
+            except Exception as e:
+                got = e
+            return got, tt.named("esptool.py")
+        return with_tools(t)
+    got, ver = slcan(VER, 0)
+    check("identify X2: SLCAN answers with the pinned slcan app verified on the flash is x2_slcan",
+          got == "slcan:V0101:NF001" and len(ver) == 1, (got, ver))
+    check("identify X2: the verify reads the pinned slcan app at its offset, and only it",
+          ver and ver[0][2][-3:] == ["verify-flash"] + list(xs.params.get("app") or ["<no app>"]) and "write-flash" not in ver[0][2],
+          ver and ver[0][2])
+    got, _ = slcan("Verifying ...\nVerification failed (digest mismatch).\n", 2)
+    check("identify X2: SLCAN answers from another build (verify mismatch) are not x2_slcan",
+          got == "slcan:V0101:NF001:unpinned", got)
+    got, _ = slcan(VER, 2)
+    check("identify X2: a verify that exits non-zero is not x2_slcan", got == "slcan:V0101:NF001:unpinned", got)
+    got, _ = slcan("Verifying ...\n", 0)
+    check("identify X2: a verify that never says the digest matched is not x2_slcan",
+          got == "slcan:V0101:NF001:unpinned", got)
+    got, _ = slcan("A fatal error occurred: Failed to connect to ESP32-S3\n", 2)
+    check("identify X2: a verify that could not reach the board RAISES (could not look)",
+          isinstance(got, SG.IdentifyError), got)
+    got, _ = slcan("could not open port 'COM3': PermissionError\n", 2)
+    check("identify X2: a verify whose port would not open RAISES", isinstance(got, SG.IdentifyError), got)
+
+    def t_bridge(t):
+        bi("70df3a43")       # a foreign bridge's 0x7F7 build id: not verified, just read
+        t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
+        return hv["identify"](xs, {}, logdir()), t.named("esptool.py")
+    got, ver = with_tools(t_bridge)
+    check("identify X2: a foreign bridge's build id is read as it is, with no verify",
+          got == "70df3a43" and ver == [], (got, ver))
+
+
+def x2_reads(tt, *reads):
+    """Stands in for the X2 identify: the pins see no hold, and bench_identify answers each of
+    reads in turn (the last one again after that)."""
+    seq = list(reads)
+
+    def identify(image, ctx, logdir_, settings_):
+        r = seq.pop(0) if len(seq) > 1 else seq[0]
+        if isinstance(r, Exception):
+            raise r
+        return r
+    fake_module("bench_identify", identify=identify)
+    tt.do[("x2_hold.py", "pins")] = lambda a, e: ("pins: TX (GPIO7) unknown\n", 1, {"x2_hold_pins_T%d.json" % len(a): "{}"})
+    tt.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T%d.json" % len(a): {"banner_ok": False}})
+    # an SLCAN answer is verified against the pinned slcan app: here it is some other build
+    tt.do[("esptool.py", "--port")] = lambda a, e: ("Verification failed (digest mismatch).\n", 2, {})
+
+
+def x2_writes(result):
+    """Stands in for SG._x2_write (the core's esptool flasher): records each write, returns result."""
+    calls = []
+
+    def write(image, params, settings_, logdir_):
+        calls.append((image.name, [o for o, _p in params["files"]]))
+        return dict(result)
+    return calls, write
+
 
 def test_flashers(settings, bench):
-    hooks = SG.make_hooks(settings, SSID)
+    settings = dict(settings, esptool={"argv": [sys.executable, "esptool.py"], "port": "COM3"})
+    hooks = SG.make_hooks(settings, SSID, bench.images)
     wm, xh, xj = (bench.images[n] for n in ("wican_man", "x2_held", "x2_jammer"))
 
     m2 = bench.images["wican_rxq"]     # an image other than _man (wican_man2 until 2026-10-25)
@@ -632,23 +777,114 @@ def test_flashers(settings, bench):
     check("ota: the board already on the image after a failure: that image restored, then tried again",
           r["ok"] and bins == [target, target, target], (r, bins))
 
-    def hold(out, rc):
+    xa = bench.images["x2_app"]
+    saved_write = SG._x2_write
+    WROTE = {"ok": True, "phase": "done", "detail": "4 writes verified", "recoverable": True}
+
+    def on(tt, read):
+        """identify reads the X2 as read first, as the core does just before it calls a flasher."""
+        x2_reads(tt, read)
+        hooks["identify"](xa, {}, logdir())
+
+    def hold(out, rc, read="756d6714"):
         def t(tt):
+            on(tt, read)
             tt.do[("x2_hold.py", "hold")] = lambda a, e: (out, rc, {})
             return hooks["x2_hold"](xh, xh.params, settings, logdir())
         return with_tools(t)
-    check("x2_hold: not driven, exit 0 is ok", hold("hold: TX (GPIO7) not driven, level unreadable\n", 0)["ok"])
-    check("x2_hold: driven is not ok", not hold("hold: TX (GPIO7) driven -- out_sel 1\n", 0)["ok"])
-    check("x2_hold: unknown, exit 1 is not ok", not hold("hold: TX (GPIO7) unknown\n", 1)["ok"])
+    SG._x2_write = lambda *a: {"ok": False, "detail": "MUST NOT WRITE"}
+    try:
+        check("x2_hold: not driven, exit 0 is ok", hold("hold: TX (GPIO7) not driven, level unreadable\n", 0)["ok"])
+        check("x2_hold: driven is not ok", not hold("hold: TX (GPIO7) driven -- out_sel 1\n", 0)["ok"])
+        check("x2_hold: unknown, exit 1 is not ok", not hold("hold: TX (GPIO7) unknown\n", 1)["ok"])
+    finally:
+        SG._x2_write = saved_write
 
-    def jam(dump_verdict, dump_rc=0, flash_rc=0, records=1):
+    def jam(dump_verdict, dump_rc=0, flash_rc=0, records=1, read="756d6714"):
         def t(tt):
+            on(tt, read)
             files = {("x2_flash_custody_dump_T%d.json" % k): {"verdict": dump_verdict} for k in range(records)}
             tt.do[("x2_flash_custody.py", "dump")] = lambda a, e: ("", dump_rc, files)
             tt.do[("x2_flash_custody.py", "flash-jammer")] = lambda a, e: ("", flash_rc, {})
             r = hooks["x2_jammer"](xj, xj.params, settings, logdir())
             return r, tt.named("x2_flash_custody.py", "flash-jammer")
         return with_tools(t)
+    SG._x2_write = lambda *a: {"ok": False, "detail": "MUST NOT WRITE"}
+    try:
+        _jam_checks(jam)
+    finally:
+        SG._x2_write = saved_write
+
+    # the X2 on another image (a charge-interposer run's, held, slcan): x2_app first
+    def first(flasher, read, write_result=WROTE, after=("756d6714",)):
+        calls, write = x2_writes(write_result)
+
+        def t(tt):
+            on(tt, read)
+            x2_reads(tt, *after)
+            tt.do[("x2_hold.py", "hold")] = lambda a, e: ("hold: TX (GPIO7) not driven\n", 0, {})
+            tt.do[("x2_flash_custody.py", "dump")] = lambda a, e: ("", 0, {"x2_flash_custody_dump_T.json":
+                                                                             {"verdict": "PASS"}})
+            tt.do[("x2_flash_custody.py", "flash-jammer")] = lambda a, e: ("", 0, {})
+            im = xh if flasher == "x2_hold" else xj
+            r = hooks[flasher](im, im.params, settings, logdir())
+            return r, tt.named("x2_hold.py", "hold"), tt.named("x2_flash_custody.py", "dump")
+        SG._x2_write = write
+        try:
+            return with_tools(t) + (calls,)
+        finally:
+            SG._x2_write = saved_write
+    for fl in ("x2_hold", "x2_jammer"):
+        for read in ("70df3a43", "held:not driven", "slcan:V0101:NF001", None):
+            r, holds, dumps, calls = first(fl, read)
+            step = holds if fl == "x2_hold" else dumps
+            check("%s: the X2 read %s, so x2_app is written first (all four pinned files), read back, then the %s"
+                  % (fl, read, "hold" if fl == "x2_hold" else "custody dump"),
+                  r["ok"] and calls == [("x2_app", ["0x0", "0x8000", "0xe000", "0x10000"])] and len(step) == 1
+                  and "x2_app written first" in r["detail"], (r, calls, len(step)))
+        r, holds, dumps, calls = first(fl, "756d6714")
+        check("%s: the X2 read on x2_app writes nothing first" % fl,
+              r["ok"] and calls == [] and "on x2_app already" in r["detail"], (r, calls))
+        r, holds, dumps, calls = first(fl, "70df3a43", write_result={"ok": False, "phase": "autoreset-before",
+                                                                      "detail": "rc 2", "recoverable": False})
+        check("%s: a failed x2_app write goes no further, and passes the flash gate's recoverable on" % fl,
+              not r["ok"] and r["recoverable"] is False and holds == [] and dumps == [] and len(calls) == 1, r)
+        r, holds, dumps, calls = first(fl, "70df3a43", after=("70df3a43",))
+        check("%s: x2_app written but read back as something else goes no further" % fl,
+              not r["ok"] and holds == [] and dumps == [] and "identify read 70df3a43" in r["detail"], r)
+        r, holds, dumps, calls = first(fl, "70df3a43", after=(SG.IdentifyError("port"),))
+        check("%s: x2_app written but identify could not look goes no further" % fl,
+              not r["ok"] and holds == [] and dumps == [], r)
+
+    # a failed identify leaves no read behind for the flashers to trust
+    calls, write = x2_writes(WROTE)
+
+    def t_cleared(tt):
+        on(tt, "756d6714")
+        x2_reads(tt, SG.IdentifyError("port"))
+        raises(lambda: hooks["identify"](xa, {}, logdir()))
+        x2_reads(tt, "756d6714")
+        tt.do[("x2_hold.py", "hold")] = lambda a, e: ("hold: TX (GPIO7) not driven\n", 0, {})
+        return hooks["x2_hold"](xh, xh.params, settings, logdir())
+    SG._x2_write = write
+    try:
+        r = with_tools(t_cleared)
+    finally:
+        SG._x2_write = saved_write
+    check("x2_hold: after a failed identify, x2_app is written first (the older read is not trusted)",
+          r["ok"] and len(calls) == 1, (r, calls))
+
+    def t_elf(tt):
+        on(tt, "756d6714")
+        tt.do[("x2_flash_custody.py", "dump")] = lambda a, e: ("", 1, {})
+        hooks["x2_jammer"](xj, xj.params, settings, logdir())
+        return tt.named("x2_flash_custody.py", "dump")
+    d = with_tools(t_elf)
+    check("x2_jammer: the custody dump wants the pin's whole x2_app ELF sha256",
+          d and d[0][2][d[0][2].index("--expect-elf") + 1] == X2_APP_ELF, d and d[0][2])
+
+
+def _jam_checks(jam):
     r, fl = jam("PASS")
     check("x2_jammer: a PASS dump, then the jammer, from that dump's record",
           r["ok"] and len(fl) == 1 and "x2_flash_custody_dump_T0.json" in fl[0][2][fl[0][2].index("--dump-record") + 1]
@@ -862,6 +1098,16 @@ def test_code_info(settings):
     check("code: trees that are not git repos are dirty (no code identity)", ci["dirty"] is True, ci["trees"])
     check("code: the bench suite requires the emulated suite on the same code",
           bench0.requires == "gen-inhibit-emulated", bench0.requires)
+    import x2_pin as X2P
+    pin = X2P.load(settings["x2_pin_dir"], SG.X2_PIN_FILE)
+    xi = ci["images"]["x2_app"]
+    check("code: x2_app records the pin, its sha256 and each pinned file's sha256",
+          xi.get("pin") == "testpin" and xi.get("pin_sha256") == pin["pin_sha256"]
+          and xi.get("sha256") == pin["images"]["x2_app"]["sha256"] and xi.get("expect") == "756d6714", xi)
+    check("code: x2_slcan records its own files' sha256",
+          ci["images"]["x2_slcan"].get("sha256") == pin["images"]["x2_slcan"]["sha256"], ci["images"]["x2_slcan"])
+    check("code: the X2's pinned images do not make the code dirty or identify it (they are tools)",
+          "x2_app" not in json.dumps(ci["trees"]), ci["trees"])
 
     repo = os.path.join(BASE, "repo")
     os.makedirs(repo)
@@ -1150,9 +1396,11 @@ def test_example(bench, emu):
             for c in g.checks:
                 for a in list(c.argv) + list(c.env.values()) + [c.cwd or ""]:
                     needed |= set(re.findall(r"\{(\w+)\}", a)) - run_keys
-    needed |= {"x2_images", "hosts", "esptool", "runs_root", "bench_holder", "bench_lock_log"}
+    needed |= {"hosts", "esptool", "runs_root", "bench_holder", "bench_lock_log"}
     check("the settings example has every key the suites need: %s" % ",".join(sorted(needed)),
           needed <= set(ex), sorted(needed - set(ex)))
+    check("the settings example names x2_pin_dir and not the retired x2_images",
+          "x2_pin_dir" in ex and "x2_images" not in ex, sorted(ex))
     check("the settings example has no WiCAN SSID", not re.search(r"WiCAN_[0-9a-fA-F]{4}", json.dumps(ex)))
 
 

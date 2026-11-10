@@ -9,8 +9,9 @@ The mutants run in a shared clone of this repo at HEAD, made in the worktree's s
 so the copy sits where the suite does (gen-inhibit/tools/ since port step 0d) and
 gi_diag finds the DBC's
 git history from bench/ (B15host exports it; in a bare folder it found no history, and
-every mutant failed the same six B15host checks). This folder's test, settings example
-and bench/ (the suite's HARNESS, 2026-10-22) are copied over the clone's; each mutant
+every mutant failed the same six B15host checks). This folder's test, settings example,
+x2_pin.py and x2_pin.json, and bench/ (the suite's HARNESS, 2026-10-22) are copied over
+the clone's; each mutant
 writes suite_gen_inhibit.py there with one edit. The unmutated copy runs first, as the
 control: if it fails a check, no kill counts. Gen-inhibit tester, 2026-10-19.
 """
@@ -167,6 +168,39 @@ MUTANTS = [
     ("B15host does not set REVERSE_IT_DIR", 'REVERSE_IT_DIR=\\"$PWD\\" python3 -B', 'python3 -B'),
     ("B15host's copy failing is not seen", '"set -o pipefail; (%s', '"(%s'),
     ("B15host runs the check after a failed copy", "tar xf - -C ~/gi_bench_%s' && \"", "tar xf - -C ~/gi_bench_%s'; \""),
+    # the X2's pinned images (user ruling 2026-11-10): the pin, x2_app first, the SLCAN verify
+    ("the retired x2_images setting is accepted", 'if "x2_images" in settings:', 'if False:'),
+    ("a setting names the pin file", 'pin = X2P.load(need(settings, "x2_pin_dir"), X2_PIN_FILE)',
+     'pin = X2P.load(need(settings, "x2_pin_dir"), settings.get("x2_pin_file") or X2_PIN_FILE)'),
+    ("the jammer's custody wants only 8 digits of x2_app's ELF",
+     '"expect_elf": pin["images"]["x2_app"]["app_elf_sha256"]}', '"expect_elf": pin["images"]["x2_app"]["app_elf_sha256"][:8]}'),
+    ("the X2 images' app is not named (x2_slcan's verify has none)",'{"files": p["files"], "md5": p["md5"], "app": p["app"]}',
+     '{"files": p["files"], "md5": p["md5"]}'),
+    ("x2_hold: no x2_app first", '"""x2_app first (so a hold is a hold of x2_app), then x2_hold.py hold."""\n'
+     '        bad = x2_app_first(settings_, logdir)', '"""x2_app first (so a hold is a hold of x2_app), then x2_hold.py hold."""\n'
+     '        bad = None'),
+    ("x2_jammer: no x2_app first", 'flasher at the restore."""\n        bad = x2_app_first(settings_, logdir)',
+     'flasher at the restore."""\n        bad = None'),
+    ("x2_app first: any read is taken as x2_app", '        if read == app.expect:\n', '        if read:\n'),
+    ("x2_app first: a failed write goes on", 'if not res.get("ok"):\n            return dict(ok=False, phase="x2-app-first:%s"',
+     'if False:\n            return dict(ok=False, phase="x2-app-first:%s"'),
+    ("x2_app first: a failed write's recoverable is dropped", 'recoverable=res.get("recoverable"),', 'recoverable=True,'),
+    ("x2_app first: not read back", '        if got != app.expect:\n            return dict(ok=False, phase="x2-app-first:identify"',
+     '        if False:\n            return dict(ok=False, phase="x2-app-first:identify"'),
+    ("x2_app first: an identify that could not look counts as x2_app",
+     '            return dict(ok=False, phase="x2-app-first:identify", recoverable=True,\n'
+     '                        detail="wrote x2_app first (the X2 read %s), then identify failed: %r" % (read, e))',
+     '            got = app.expect'),
+    ("identify: a failed X2 read leaves the older one", '        x2_last.pop("read", None)\n', '        pass\n'),
+    ("identify: the X2 read is not kept", '        x2_last["read"] = got\n', '        pass\n'),
+    ("identify: SLCAN answers need no verify", 'return got if x2_slcan_pinned(logdir, stamp) else got + ":unpinned"', 'return got'),
+    ("identify: the verify checks every slcan file, not the app", 'x2_verify(settings, [sl.params["app"]],',
+     'x2_verify(settings, sl.params["files"],'),
+    ("verify: esptool's exit is not looked at", 'return rc == 0 and t.count(VERIFY_OK) == len(files)',
+     'return t.count(VERIFY_OK) == len(files)'),
+    ("verify: the digest line is not looked at", 'return rc == 0 and t.count(VERIFY_OK) == len(files)', 'return rc == 0'),
+    ("verify: a board it could not reach is a mismatch", 'if PORT_RX.search(t) or "Failed to connect" in t:', 'if False:'),
+    ("code: the X2 files' sha256 are not kept", 'sha256=dict(pin["images"][n]["sha256"]))', 'sha256={})'),
 ]
 
 
@@ -223,7 +257,7 @@ def clone(base):
     subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", wt, repo], check=True)
     subprocess.run(["git", "-C", repo, "-c", "advice.detachedHead=false", "checkout", "-q", head], check=True)
     d = os.path.join(repo, os.path.relpath(HERE, wt))
-    for f in (TEST, EXAMPLE):
+    for f in (TEST, EXAMPLE, "x2_pin.py", "x2_pin.json"):     # the X2's pin, which the suite imports (2026-11-10)
         shutil.copy(os.path.join(HERE, f), d)
     # The suite's HARNESS is bench/ beside it (2026-10-22); the e2e board-hook check
     # runs wican_reboot.py from there.

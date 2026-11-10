@@ -1,0 +1,46 @@
+{
+  "_comment": "The X2's images for gen-inhibit's bench chain, pinned as a tool of its harness (gen-inhibit reviewer's tracker row 'The X2's image is a pinned tool of gen-inhibit's harness', user ruling 2026-11-10). x2_pin.py reads it. The files are not in git: each sits at <x2_pin_dir>/<pin>/<image>/<name>, x2_pin_dir from the local settings, and must have the size, sha256 and md5 given here. No setting can change an image's files or identity. A re-pin is a new pin here, with its premises checked against the new image.",
+  "pin": "36edf3e55552",
+  "source": {
+    "project": "charge-interposer",
+    "commit": "4a596478860469ba8dbd207217a55c55e81caf88",
+    "src_digest": "36edf3e55552",
+    "manifest": "charge-interposer/firmware/builds/manifest.json at 2bf01df: the rows for env esp32-can-x2 and env slcan, src_digest 36edf3e55552, git_dirty false",
+    "built": "PlatformIO, all six environments, in a detached worktree at 4a59647, by the charge-interposer tester on 2026-11-02 (reverse-it artifacts/interposer-firmware/images/README.md); each app's md5 and ELF sha256 equal its manifest row",
+    "boot_app0": "boot_app0.bin is the PlatformIO Arduino framework's tools/partitions/boot_app0.bin, which the interposer's builds flash at 0xe000"
+  },
+  "images": {
+    "x2_app": {
+      "env": "esp32-can-x2",
+      "identity": "756d6714",
+      "identity_read": "0x7F7 intp_build_id, read by the interposer's bench_identify from an ACKed boot: the app ELF sha256's first 8 hex digits",
+      "app_elf_sha256": "756d671428d41f2374833550bb9e9acc83301c5c1b9ad42460bb8668711a283b",
+      "files": [
+        {"offset": "0x0", "name": "bootloader.bin", "size": 20112,
+         "sha256": "e9d6ccf43eef52d63abd2a8d5657548555d649dc704630da1808e9fcd1271100", "md5": "120ea00b035393656671e3561eee9eaf"},
+        {"offset": "0x8000", "name": "partitions.bin", "size": 3072,
+         "sha256": "1d9cca96de0fe07ad7fc0648b9878ddecd9ce565e38b589ad20fea698ed4c80c", "md5": "801ba71678a964614657a6d8fbc6baca"},
+        {"offset": "0xe000", "name": "boot_app0.bin", "size": 8192,
+         "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0", "md5": "e6327541e2dc394ca2c3b3280ac0f39f"},
+        {"offset": "0x10000", "name": "interposer_36edf3e55552_bridge.bin", "size": 356880, "app": true,
+         "sha256": "82cb287f28fb3d745a5f0c714131adb5005b16964e090e3390f07e2d5a90603f", "md5": "de6f5c98a30604f58fc3f878f0c9f410"}
+      ]
+    },
+    "x2_slcan": {
+      "env": "slcan",
+      "identity": "slcan:V0101:NF001",
+      "identity_read": "the SLCAN answers to V and N, which name the protocol, not the build; the suite takes the identity only when esptool verify-flash finds this app at its offset",
+      "app_elf_sha256": "e52e2f7896ea49a02079002480c24e4d82406e9ffab4c1cebf0f6c12e4bbdaf3",
+      "files": [
+        {"offset": "0x0", "name": "bootloader.bin", "size": 20112,
+         "sha256": "e9d6ccf43eef52d63abd2a8d5657548555d649dc704630da1808e9fcd1271100", "md5": "120ea00b035393656671e3561eee9eaf"},
+        {"offset": "0x8000", "name": "partitions.bin", "size": 3072,
+         "sha256": "1d9cca96de0fe07ad7fc0648b9878ddecd9ce565e38b589ad20fea698ed4c80c", "md5": "801ba71678a964614657a6d8fbc6baca"},
+        {"offset": "0xe000", "name": "boot_app0.bin", "size": 8192,
+         "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0", "md5": "e6327541e2dc394ca2c3b3280ac0f39f"},
+        {"offset": "0x10000", "name": "interposer_36edf3e55552_slcan.bin", "size": 337536, "app": true,
+         "sha256": "c795e1d0b4576ed1b02886775f991b7982f3e8b67a953e4b4cdcc4d9968284e6", "md5": "cee1bd8ca22fdc57eb223abbef53c085"}
+      ]
+    }
+  }
+}
