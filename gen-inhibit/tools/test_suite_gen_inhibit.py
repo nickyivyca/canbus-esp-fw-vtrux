@@ -106,12 +106,12 @@ X2_APP_ELF = "756d6714" + "75" * 28   # made up, but 0x7F7 identity 756d6714, wh
 X2_SLCAN_ELF = "e5" * 32
 
 
-def fake_pin(folder):
+def fake_pin(folder, app_elf=X2_APP_ELF):
     """A made-up X2 pin (x2_pin.json's form) with its files under folder/files/testpin/<image>/.
     Returns the pin file's path. The suite reads the pin from SG.X2_PIN_FILE, never from a setting."""
     import hashlib
     images = {}
-    for iname, elf, ident in (("x2_app", X2_APP_ELF, X2_APP_ELF[:8]), ("x2_slcan", X2_SLCAN_ELF, "slcan:V0101:NF001")):
+    for iname, elf, ident in (("x2_app", app_elf, app_elf[:8]), ("x2_slcan", X2_SLCAN_ELF, "slcan:V0101:NF001")):
         app = bytearray(0x200)
         app[0] = 0xE9
         app[0x20:0x24] = b"\x32\x54\xcd\xab"
@@ -225,10 +225,7 @@ def test_suites(settings, shas):
     s4 = {k: v for k, v in settings.items() if k != "x2_pin_dir"}
     check("bench: no x2_pin_dir refuses the suite", raises(lambda: SG.bench(s4)) is not None)
     # a second, well-formed pin with another identity, beside its own files: no setting reaches it
-    global X2_APP_ELF
-    keep_elf, X2_APP_ELF = X2_APP_ELF, "deadbeef" + "dd" * 28
-    other = fake_pin(os.path.join(BASE, "x2pin_other"))
-    X2_APP_ELF = keep_elf
+    other = fake_pin(os.path.join(BASE, "x2pin_other"), app_elf="deadbeef" + "dd" * 28)
     s5 = dict(settings, x2_pin_file=other, x2_pin=other, pin_file=other)
     b5 = raises(lambda: SG.bench(s5)) or SG.bench(s5)
     check("bench: a setting naming another pin file is not read (the X2's identity stays the committed pin's)",
