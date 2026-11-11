@@ -246,7 +246,8 @@ way, the Holder is not its own.
   no `run`. So `free_paused` and `lost`, which are a runner's, never come
   from them. A take, a release, a request and a withdraw work as for any
   role.
-- **CAN1's second Innomaker** is the one the Android tests use, named by
+- **CAN1's second Innomaker** is the one added to CAN1 for the Android
+  tests (they may also pass other bench Innomakers through), named by
   its `canctl` role, `canmain2`, once `canctl`'s redesign is installed;
   its serial is in `$REVERSE_IT_DIR/firmware/bench-holder.md`, not here.
   Down means its link is down, or the device unbound if a down link turns
