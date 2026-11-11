@@ -128,10 +128,11 @@ a WiCAN worktree, would change or block WiCAN builds. An interposer run
 flashes the WiCAN only with a gen-inhibit image built elsewhere and pinned
 as a tool of the interposer's harness, as gen-inhibit pins its X2 images
 (`gen-inhibit/tools/x2_pin.json`): the pin file names the gen-inhibit
-commit and each file's offset, size and hashes. The run loads it at its
-start through the shared flasher, with the board's identity checked before
-and after, and flashes nothing built from its own tree (user, 2026-11-11,
-in the interposer reviewer's session).
+commit and the image's size and hashes. The run loads it at its start
+through the shared flasher's OTA upload (`shared/bench`) over the WiCAN's
+hotspot, with the board's identity read before and after, and flashes
+nothing built from its own tree (user, 2026-11-11, in the interposer
+reviewer's session).
 
 ## Session rules
 
