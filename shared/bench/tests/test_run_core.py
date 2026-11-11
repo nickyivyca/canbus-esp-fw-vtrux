@@ -505,6 +505,30 @@ def test_standing_refused():
     E.Engine(suite(g, images={"A": a}, identify=env.identify), env.settings())
 
 
+def test_ota_stops_bench():
+    """FLASH-SPEC O11: a flash by the "ota" flasher that is not ok stops the
+    bench, so a suite with an "ota" image and on_flash_failure
+    "skip-image-groups" is refused, saying why. The same suite with
+    "stop-bench" is accepted (the control), and "skip-image-groups" stays
+    allowed for a suite with no "ota" image."""
+    env = Env("ota_stops_bench")
+    a = env.image("A", "IMG-A")
+    w = Image("W", "ota", params={"bin": "w.bin", "retry": "none"},
+              expect="e" * 64, board="wican")
+    g = [Group("g", [chk("x", "pass")], needs_lock=True, image="A")]
+    try:
+        E.Engine(suite(g, images={"A": a, "W": w}, identify=env.identify,
+                       on_flash_failure="skip-image-groups"), env.settings())
+    except SuiteError as e:
+        assert "ota" in str(e) and "stop-bench" in str(e) and "O11" in str(e), e
+    else:
+        raise AssertionError("accepted an \"ota\" image with skip-image-groups")
+    E.Engine(suite(g, images={"A": a, "W": w}, identify=env.identify,
+                   on_flash_failure="stop-bench"), env.settings())
+    E.Engine(suite(g, images={"A": a}, identify=env.identify,
+                   on_flash_failure="skip-image-groups"), env.settings())
+
+
 def test_idle_safe_named():
     """An image marked not safe to leave idle needs its board's idle-safe
     image in Suite.idle_safe_images: one of the suite's images, of that
@@ -2492,7 +2516,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_identify_error, test_identify_after,
          test_void_resume,
          test_two_boards, test_start_identify, test_standing_refused,
-         test_idle_safe_named, test_board_hooks, test_start_hook_stops,
+         test_ota_stops_bench, test_idle_safe_named, test_board_hooks, test_start_hook_stops,
          test_release_line, test_end_hooks_crash, test_end_identify,
          test_idle_safe_end, test_idle_unsafe_line, test_idle_pause_untouched,
          test_stop_pause,
@@ -2583,6 +2607,8 @@ MUTANTS = {
     "test_start_identify": _rule("start_identify"),
     "test_standing_refused": _patch(M, "RULES", dict(M.RULES,
                                                      standing_refused=False)),
+    "test_ota_stops_bench": _patch(M, "RULES", dict(M.RULES,
+                                                    ota_stops_bench=False)),
     "test_idle_safe_named": _patch(M, "RULES", dict(M.RULES,
                                                     idle_safe_named=False)),
     "test_board_hooks": _rule("board_hooks"),
