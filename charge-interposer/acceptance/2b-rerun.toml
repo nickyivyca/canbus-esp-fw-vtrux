@@ -1,0 +1,122 @@
+# Port step 2b's re-run list (shared/bench ACCEPT-SPEC A2, A13; owned by the
+# charge-interposer reviewer). Drafted by the tester, approved by the user
+# 2026-11-11. Run b467
+# (runs/accept_2b_20261109T072806_b467, from 2b.toml at 7620ee33) closed
+# ACCEPTANCE FAIL with no product failure (the reviewer, 2026-11-11). Four of
+# its items were NOT SHOWN, from defects in the tester's 2b harness fit, now
+# fixed at 4c4e2776:
+#   - no-led-mutant: the mutant's clone had no pinned shared checkout beside
+#     it, which 2b's vtrux_tools.py requires (shared/tools R23), so the
+#     mutant was never built. no_led.py now makes the shared-<tag> checkouts
+#     beside the clone, checks them against the pins and removes them after.
+#   - m-mutants/conformance-mutations, hold-mutations, rx-hook-mutations:
+#     each control did not build (idf_host.cpp's esp_err.h, the shared
+#     include folders missing). They now take each test's sources from
+#     l2_build.sh's hb_test_inputs, as run.sh does.
+# This list re-runs those four checks and the harness suite whole, on the
+# same product, in a new acceptance record that names b467 (A13). Every
+# other b467 item stands on b467 (the reviewer, 2026-11-11). No bench: local
+# and madhouse only, so no lock, no X2 restore.
+#
+# Trees:
+#   harness   305cfda0, the reviewer's merge of the tester's fixes
+#             (7620ee33..4c4e2776) into charge-interposer/main, with the file
+#             map row for no_led.py. Since f57ca9d3 it adds the acceptance
+#             list, the fixes, the file map row and the self-compact skill
+#             (d0fc08dd), and no product file, so its product files are
+#             f57ca9d3's (premise "digest").
+#   madhouse  the same commit on madhouse, for the three mutation checks on
+#             real g++, at the 2b twai_port pin (2026.11.08), whose checkout
+#             also holds can_port (shared_pin.py idf-match)
+
+[step]
+id = "2b"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-11"
+spec = ["8", "9", "9.1"]
+verification = "the tester's VERIFICATION.md entries for port step 2b: no-led-mutant, the three mutation checks and c-harness from this re-run, the rest from run b467"
+
+[trees.harness]
+project = "305cfda090119fe3bff4f8162635d5b542cdea86"
+
+[trees.madhouse]
+project = "305cfda090119fe3bff4f8162635d5b542cdea86"
+host = "madhouse"
+shared = { twai_port = "2026.11.08" }
+
+[[premise]]
+id = "digest"
+kind = "product_digest_same_as"
+tree = "harness"
+commit = "f57ca9d38bfae50791564fe0089b337581bdcf12"
+
+# ---- spec 8, no LED: the mutant build ----------------------------------------
+# As in 2b.toml. The clone is of the harness tree's HEAD (305cfda0), whose
+# product files are f57ca9d3's (the premise above).
+[[check]]
+id = "no-led-mutant"
+tree = "harness"
+shell = "idf"
+run = ["charge-interposer/fw_harness/no_led.py", "--mutant-build", "bridge",
+       "--scratch-from", "{clone}"]
+
+# The pinned checkouts' own can-fail (4c4e2776): --self-test makes, checks
+# and removes them on a git fixture, and each of seven ways of breaking them
+# must fail it. Not a harness-suite item, so c-harness keeps its five lines.
+[[check]]
+id = "no-led-self-canfail"
+tree = "harness"
+run = ["charge-interposer/fw_harness/no_led.py", "--self-test", "--can-fail"]
+
+# ---- the three mutation checks, on madhouse ----------------------------------
+# As the harness suite runs them (bench_suite.py's m-mutants), as checks of
+# their own so the record names each one's log beside its re-run.
+[[check]]
+id = "conformance-mutations"
+tree = "madhouse"
+shell = "git-bash"
+cls = "build"
+run = ["charge-interposer/harness_checks/conformance_mutations.sh"]
+
+[[check]]
+id = "hold-mutations"
+tree = "madhouse"
+shell = "git-bash"
+cls = "build"
+run = ["charge-interposer/harness_checks/hold_mutations.sh"]
+
+[[check]]
+id = "rx-hook-mutations"
+tree = "madhouse"
+shell = "git-bash"
+cls = "build"
+run = ["charge-interposer/harness_checks/rx_hook_mutations.sh"]
+
+# ---- the harness suite, whole ------------------------------------------------
+[[suite_run]]
+id = "harness"
+tree = "harness"
+suite = "harness"
+after = ["conformance-mutations", "hold-mutations", "rx-hook-mutations"]
+
+# ---- the baseline --------------------------------------------------------------
+# The harness suite against 6976's (harness bb3a291d), with the same five
+# listed lines as 2b.toml's c-harness, for the same commits. 4c4e2776 adds
+# no harness-suite result and retires none: it changes how three of them
+# build, and no_led's self-test gains checks inside one result. So the three
+# m-mutants lines b467 did not hold on must not appear.
+[baseline]
+harness = "accept_2a_20261107T170853_6976/runs/accept_2a_20261107T170853_6976-harness"
+
+[[compare]]
+id = "c-harness"
+comparer = "run-records"
+a = "baseline:harness"
+b = "harness"
+expect = "listed"
+differences = ["MISSING in b: m-mutants/twai-mutations (was PASS)",
+               "MISSING in b: l-harness/scenario-scope-test (was PASS)",
+               "MISSING in b: l-harness/scenario-scope-test-canfail (was PASS)",
+               "NEW in b: l-harness/forced-order-test PASS",
+               "NEW in b: l-harness/forced-order-test-canfail PASS"]
