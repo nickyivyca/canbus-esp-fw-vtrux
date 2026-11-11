@@ -2270,6 +2270,44 @@ def test_resume_stop():
         kill_pid(keeper)
 
 
+def test_resume_stop_kept():
+    """Section 6's stop bullet (gen-inhibit reviewer, 2026-10-22 and
+    2026-11-11): the end pass leaves the board the resume could not put back
+    untouched, as found for the investigation -- no identify, and no
+    idle-safe load even though it was expected on an image not safe to leave
+    idle -- so the release carries the identity read at the resume. It gets
+    a LEFT ON IDLE-UNSAFE IMAGE line naming the stop. The other board (the
+    WiCAN, on w2) goes through the end pass as normal, and the end hooks
+    run for both."""
+    def change_x2(tb, eng, seen):
+        tb.set("x2", "OTHER")
+        tb.fail_flash = {"x2"}
+    env, p, tb, eng, rec, seen = _pause_scenario(
+        "resume_stop_kept", during=change_x2, image=("w2", "jammer"))
+    stop = "STOPPED: x2 is OTHER, expected jammer (JAM), cannot flash"
+    assert verdicts(rec) == {"a/first": "PASS", "a/second": "NOT-RUN"}, \
+        verdicts(rec)
+    # w2 and the jammer at the start, the failed jammer at the resume; no
+    # x2app at the end
+    assert tb.flashes == ["w2", "jammer", "jammer"], tb.flashes
+    c = tb.calls
+    last_fl = max(n for n, x in enumerate(c) if x[:2] == ("flash", "x2"))
+    assert not [x for x in c[last_fl:] if x[:2] == ("identify", "x2")], c
+    assert [x for x in c[last_fl:] if x[:2] == ("identify", "wican")], c
+    assert open(tb.path("x2")).read() == "OTHER"
+    want = ("LEFT ON IDLE-UNSAFE IMAGE: x2 on jammer, not loaded, left as "
+            "found for the investigation (%s)" % stop)
+    assert rec["idle_unsafe_left"] == [want], rec["idle_unsafe_left"]
+    idx = open(os.path.join(eng.run_dir, "index.txt")).read().splitlines()
+    assert idx[:2] == [stop, want], idx[:2]
+    assert c[-2:] == [("on_end", "wican", "w2"), ("on_end", "x2", None)], \
+        c[-2:]
+    rl = log_events(p)[-1]
+    assert rl["event"] == "release" and rl["who"] == CI and \
+        rl["note"].startswith(want), rl
+    assert rl["boards"]["x2"].startswith("OTHER, identified off the wire"), rl
+
+
 def test_stop_no_resume():
     """STOP during a pause (gen-inhibit reviewer, 2026-10-22): the runner
     takes the lock back for the end pass and the release, but runs no start
@@ -2474,7 +2512,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_remote_stop,
          test_lock_each_case, test_lost_record, test_pause_own_lock,
          test_self_pause, test_pause_hooks, test_resume_identify,
-         test_resume_stop, test_stop_no_resume,
+         test_resume_stop, test_resume_stop_kept, test_stop_no_resume,
          test_own_pid, test_take_first, test_folder_release, test_release_end,
          test_keep_lock]
 
@@ -2599,6 +2637,8 @@ MUTANTS = {
     "test_pause_hooks": _rule("pause_hooks"),
     "test_resume_identify": _rule("resume_identify"),
     "test_resume_stop": _rule("resume_stop"),
+    # the mutant gives the stopped board the end pass (identify, then load)
+    "test_resume_stop_kept": _rule("resume_stop_kept"),
     "test_stop_no_resume": _rule("stop_no_resume"),
     "test_own_pid": _rule("own_pid"),
     "test_take_first": _rule("take_first"),

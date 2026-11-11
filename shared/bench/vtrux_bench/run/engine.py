@@ -83,6 +83,14 @@ fails when the rule is switched off through RULES):
                   "STOPPED: <board> is <read>, expected <image> (<its
                   expect value>), cannot flash", and the end release
                   carries the identities read
+  resume_stop_kept  (log) the end pass leaves the board the resume could
+                  not put back untouched, as found for the investigation:
+                  no identify, no idle-safe load, so the release carries the
+                  identity read at the resume (section 6's stop bullet). If
+                  it is on a marked image, or cannot be shown off the
+                  marked image it was expected on, it gets a LEFT ON
+                  IDLE-UNSAFE IMAGE line naming the stop. The other boards
+                  go through the end pass as normal
   stop_no_resume  (log) STOP during a pause: the runner takes the lock back
                   for the end pass and the release, but runs no start hooks
                   and re-identifies or flashes nothing for cases that will
@@ -211,7 +219,7 @@ RULES = {k: True for k in (
     "take_first", "folder_release", "self_pause", "release_end",
     "keep_lock_one_step",
     "own_pid", "pause_hooks", "resume_identify", "resume_stop",
-    "stop_no_resume",
+    "resume_stop_kept", "stop_no_resume",
     "flash_gate", "image_schedule", "identify_after",
     "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
     "gate", "timeout", "skip", "base_env", "record_settings",
@@ -348,6 +356,7 @@ class Engine:
         self.lock_lost = None
         self.resume_stopped = None
         self.resume_stopped_board = None
+        self.resume_stopped_image = None    # the image it was expected on
         self.lock_release = None
         self.bench_work = []
         self.kf = {k.id: k.ref for k in suite.known_fails}
@@ -356,6 +365,10 @@ class Engine:
         # Per board (Image.board): what it is on, what it last read, whether
         # this run flashed it, and boards whose auto-reset check failed.
         self.board_image = {}
+        # the last image identify confirmed each board on in this run, kept
+        # when board_image goes to None (a failed flash, a VOID group): the
+        # end pass's fallback for a board an identify cannot place
+        self.board_last = {}
         self.board_read = {}
         self.board_read_ts = {}
         self.hook_ts = {}
@@ -717,6 +730,7 @@ class Engine:
                         % (board, read_text(self.board_read.get(board)),
                            name, im.expect))
                     self.resume_stopped_board = board
+                    self.resume_stopped_image = name
                     self.bench_stopped = "%s (%s)" % (self.resume_stopped, why)
                     self.rec.event("resume-stopped", board=board, image=name,
                                    why=why, line=self.resume_stopped)
@@ -969,6 +983,7 @@ class Engine:
             return False, why
         if got == im.expect and RULES["image_schedule"]:
             self.board_image[board] = name
+            self.board_last[board] = name
             return True, "%s already on %s (read %s)" % (board, name, got)
         self.board_image[board] = None
         if board in self.no_more_flash and RULES["flash_gate"]:
@@ -991,6 +1006,7 @@ class Engine:
             self._flash_failed(name, why)
             return False, why
         self.board_image[board] = name
+        self.board_last[board] = name
         return True, "flashed %s to %s, read %s" % (board, name, got2)
 
     def _note_image(self, im, read, flashed, md5=None):
@@ -1396,14 +1412,15 @@ class Engine:
         in this run was marked, is loaded with its board's idle-safe image
         through ensure_image, identified before and after (idle_safe_end);
         a board left on a marked image, or not shown off it, gets a LEFT ON
-        IDLE-UNSAFE IMAGE line (idle_unsafe_line). After a LOCK LOST nothing
-        touches a board. A run that never identified or flashed a board (a
+        IDLE-UNSAFE IMAGE line (idle_unsafe_line). The board a resume could
+        not put back is left untouched (resume_stop_kept). After a LOCK LOST
+        nothing touches a board. A run that never identified or flashed a board (a
         start hook stopped the bench before the start pass) has no last
         case and loaded nothing: it leaves the boards unread here too."""
         boards = self._end_boards(work)
         if not boards or not (self.board_read or self.board_touched):
             return
-        last = dict(self.board_image)       # what the run last put on each
+        last = dict(self.board_last)        # the last image confirmed on each
         if not self.lock_lost:
             ok, h = self.lock_ours()
             if not ok:
@@ -1421,8 +1438,17 @@ class Engine:
         logdir = os.path.join(self.run_dir, "_bench", "end")
         os.makedirs(logdir, exist_ok=True)
         statuses = []
+        # the board a resume could not put back stays as found for the
+        # investigation (section 6's stop bullet): no identify, no load; the
+        # release carries the identity read at the resume (resume_stop_kept)
+        kept = (self.resume_stopped_board
+                if self.resume_stopped and RULES["resume_stop_kept"] else None)
         for board, name in boards.items():
             if not RULES["end_identify"]:
+                continue
+            if board == kept:
+                statuses.append("%s: left as found for the investigation (%s)"
+                                % (board, self.resume_stopped))
                 continue
             got = self.identify(self.suite.images[name], logdir)
             on = self._image_read(board, got)
@@ -1430,6 +1456,17 @@ class Engine:
             statuses.append("%s read %s (%s)" % (board, read_text(got),
                                                  on or "no image of this suite"))
         for board, name in boards.items():
+            if board == kept:
+                got = self.board_read.get(board)
+                on = None if got == IDENTIFY_ERROR else self._image_read(board, got)
+                im = self.suite.images.get(on or "") or (
+                    None if on else self.suite.images.get(
+                        self.resume_stopped_image or ""))
+                if im is not None and not im.idle_safe:
+                    self._idle_line(board, im.name, "not loaded, left as found "
+                                    "for the investigation (%s)"
+                                    % self.resume_stopped)
+                continue
             on = self.board_image.get(board)
             got = self.board_read.get(board)
             marked = self.suite.images.get(on or "")
