@@ -2,7 +2,7 @@
 """Mutants of suite_gen_inhibit.py; test_suite_gen_inhibit.py must fail on each BY A
 CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
-    PYTHONPATH=<core b9896a0>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 2026.11.11>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
 The mutants run in a shared clone of this repo at HEAD, made in the worktree's scratch/,
@@ -103,8 +103,19 @@ MUTANTS = [
     ("a placeholder no setting fills", '"REMOTE": "{gi_host_ssh}"', '"REMOTE": "{gi_hostssh}"'),
     ("the suite's role is not the one the bench lock names", 'ROLE = "tester (gen-inhibit)"',
      'ROLE = "tester (gen-inhibit-x)"'),
-    ("the WiCAN's standing image is not _man", 'standing_images={"wican": "wican_man", "x2": "x2_app"}',
-     'standing_images={"wican": "wican_rxq", "x2": "x2_app"}'),
+    ("the suite names a standing image again (retired 2026-11-11)",
+     '        idle_safe_images=dict(IDLE_SAFE),\n',
+     '        idle_safe_images=dict(IDLE_SAFE), standing_images={"wican": "wican_man", "x2": "x2_app"},\n'),
+    ("x2_held is not marked not safe to leave idle", '        images[name].idle_safe = False\n',
+     '        images[name].idle_safe = name == "x2_held"\n'),
+    ("x2_jammer is not marked not safe to leave idle", '        images[name].idle_safe = False\n',
+     '        images[name].idle_safe = name == "x2_jammer"\n'),
+    ("the X2's idle-safe image is not x2_app", 'IDLE_SAFE = {"x2": "x2_app"}',
+     'IDLE_SAFE = {"x2": "x2_slcan"}'),
+    ("a WiCAN image is marked not safe to leave idle", 'IDLE_SAFE = {"x2": "x2_app"}',
+     'IDLE_SAFE = {"x2": "x2_app", "wican": "wican_man"}\nIDLE_UNSAFE["wican_rt"] = "made up"'),
+    ("a marked image is not marked on its Image",
+     '        images[name].idle_safe = False\n', '        pass\n'),
     ("code: an image from another commit is not dirty",
      'clean = all(t["clean"] and t["at"] for t in trees.values()) and all(',
      'clean = all(t["clean"] and t["at"] for t in trees.values()) or all('),
@@ -179,8 +190,8 @@ MUTANTS = [
     ("x2_hold: no x2_app first", '"""x2_app first (so a hold is a hold of x2_app), then x2_hold.py hold."""\n'
      '        bad = x2_app_first(settings_, logdir)', '"""x2_app first (so a hold is a hold of x2_app), then x2_hold.py hold."""\n'
      '        bad = None'),
-    ("x2_jammer: no x2_app first", 'flasher at the restore."""\n        bad = x2_app_first(settings_, logdir)',
-     'flasher at the restore."""\n        bad = None'),
+    ("x2_jammer: no x2_app first", 'not safe to leave idle)."""\n        bad = x2_app_first(settings_, logdir)',
+     'not safe to leave idle)."""\n        bad = None'),
     ("x2_app first: any read is taken as x2_app", '        if read == app.expect:\n', '        if read:\n'),
     ("x2_app first: a failed write goes on", 'if not res.get("ok"):\n            return dict(ok=False, phase="x2-app-first:%s"',
      'if False:\n            return dict(ok=False, phase="x2-app-first:%s"'),

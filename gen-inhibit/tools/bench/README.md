@@ -72,8 +72,9 @@ below that names `runs/...` names a file there.
   records the tests read), and a digest for each fixture folder. A tool that resolves a
   pinned input refuses it if it has changed. Two more sections pin what comes from git:
   `git` (the interposer's diag DBC: its `charge-interposer/main` commit and sha256) and
-  `core` (`shared/bench`'s `vtrux_bench/decode.py`: the suite's core pin `b9896a0` and
-  the file's git blob id), both checked by `gi_diag.py`.
+  `core` (`shared/bench`'s `vtrux_bench/decode.py`: the suite's core pin, shared/main tag
+  `2026.11.11` (`79e5f7c6`; `b9896a0` before, the same blob), and the file's git blob
+  id), both checked by `gi_diag.py`.
 - Python is `py -3.14 -B` on NICKY-XPS (`python-executables-reference.md` in reverse-it).
   Tests and mutant runners work in the worktree's gitignored `scratch/`, never the system
   temp folder: `gi_paths.scratch(name)` gives each run its own

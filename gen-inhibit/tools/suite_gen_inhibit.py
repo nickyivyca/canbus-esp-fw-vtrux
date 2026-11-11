@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
 """Gen-inhibit's two suites for the shared chain runner (shared/bench, vtrux_bench.run,
-pinned at b9896a0 on charge-interposer/main, which carries 5fa86c6, whose on_start /
-on_end board steps reboot the WiCAN at each run's start and release, and which refuses
-an esptool write unless settings.esptool.chip names the X2's type and MAC, the MAC living
-only in the local settings, never in a published file; plus --resume's carry rules,
-f60ebf3 / 45a67ba,
-cleared by both reviewers 2026-10-20; plus the bench lock, 0e6f633 and its follow-up
-b9896a0, cleared 2026-10-22. The settings choose the lock (shared/bench/SPEC.md
-(shared/main), sections 6 and 7). From the cutover they name bench_lock_log,
-reverse-it's firmware/bench-log.jsonl: the runner takes the lock in that log under its
-own PID and run id, at a PAUSE frees it with its board reads and takes it back once the
-file is gone, and releases it with its board reads at the end. Settings with no
-bench_lock_log keep bench_holder's Holder line, as before the cutover: the runner reads
-it before every bench case, and a PAUSE waits until the file is gone and the Holder is
-gen-inhibit's again. In both, a lost lock skips the end restore and the end hooks' board
-actions).
+pinned at shared/main tag 2026.11.11 (79e5f7c6; before it b9896a0 on
+charge-interposer/main). That core's on_start / on_end board steps reboot the WiCAN at
+each run's start and release; it refuses an esptool write unless settings.esptool.chip
+names the X2's type and MAC, the MAC living only in the local settings, never in a
+published file; it carries --resume's carry rules (cleared by both reviewers
+2026-10-20) and the bench lock (cleared 2026-10-22). The settings choose the lock
+(shared/bench/SPEC.md (shared/main), sections 6 and 7). From the cutover they name
+bench_lock_log, reverse-it's firmware/bench-log.jsonl: the runner takes the lock in
+that log under its own PID and run id, at a PAUSE frees it with its board reads and
+takes it back once the file is gone, and releases it with its board reads at the end.
+Settings with no bench_lock_log keep bench_holder's Holder line, as before the cutover.
+In both, a lost lock skips the end pass and the end hooks' board actions. From
+2026.11.11 the core restores no board at a run's end (user, 2026-11-11; SPEC section 6
+and its Ruled entries): each board stays on what its last case used, except a board on
+an image this suite marks not safe to leave idle, which gets its board's idle-safe image
+(IDLE_UNSAFE and IDLE_SAFE below).
 
 Gen-inhibit tester, 2026-10-18. Two suites on the one core (user, 2026-10-17):
     bench     part B only. Holds the bench lock from start to finish. The core runs the
               groups in order, puts each board on the images a group names (flashing
               only when it is not already there), judges each check with
-              suite_judges.py, and restores the WiCAN to _man and the X2 to its own
-              image at the end.
+              suite_judges.py, and at the end leaves each board where its last case
+              left it, an image marked not safe to leave idle replaced first.
     emulated  parts H and C: no hardware, no lock.
 The core's rules are in its engine.py; nothing here repeats them.
 
@@ -88,6 +89,23 @@ import x2_pin as X2P        # noqa: E402
 
 X2_PIN_FILE = X2P.PIN_FILE  # the committed pin; never a setting
 X2_IMAGES = ("x2_app", "x2_slcan")
+# Images not safe to leave idle on the bench (the core's Image.idle_safe=False, shared/main
+# 2026.11.11; user, 2026-11-11), each with its reason, and each board's idle-safe image
+# (Suite.idle_safe_images). The core loads it before the end release when a run would
+# end with the board on a marked image. No WiCAN image is marked: every one this suite
+# builds boots idle, mode 0 (SPEC section 7: auto-arm is build-time and defaults to
+# GEN_INHIBIT_OFF; none of WICAN_BUILDS or the prod build sets GEN_INHIBIT_AUTOARM). An
+# auto-arm image ("boots armed in the given mode", firmware/vtrux_checks.json) is marked
+# when one joins the suite.
+IDLE_UNSAFE = {
+    "x2_held": "the X2 in ROM download mode, its app and TWAI controller not running, until "
+               "a reset; the hold was approved (gen-inhibit reviewer, 2026-10-10, "
+               "bench/x2_hold.py) on condition that the X2 is back in its app at the end",
+    "x2_jammer": "test equipment, not for vehicle (bench/x2_jammer.py): it destroys frames on "
+                 "the WiCAN's segment on a console command, and is on the charge-interposer's "
+                 "board only under bench/x2_flash_custody.py's custody, which gives the board back",
+}
+IDLE_SAFE = {"x2": "x2_app"}
 VERIFY_OK = "Verification successful (digest matched)"   # esptool 5's verify-flash, once per file
 
 ROLE = "tester (gen-inhibit)"
@@ -142,7 +160,7 @@ def wican_ssid(bench_holder):
 
 
 # Cross-project dependency (gen-inhibit reviewer, 2026-10-24): the charge-interposer's
-# runner reads the WiCAN's standing identity, read-only, from gi_images in the standing
+# runner reads the WiCAN's identity, read-only, from gi_images in the standing
 # settings (chain_settings_NICKY-XPS.json), image_bin()'s choice of exactly one
 # wican-fw_obd_*.bin in build-tester-man/ (which also holds ota_data_initial.bin), and
 # the ELF SHA-256 at offset 0xB0 of that image (elf_sha256_of_bin; its own copy is
@@ -362,7 +380,8 @@ def make_hooks(settings, ssid, images=None):
     def x2_jammer(image, params, settings_, logdir):
         """x2_app first, then custody (x2_flash_custody: the dump, twice, must carry x2_app's
         pinned ELF), then the jammer from its manifest row. x2_app comes back through its
-        flasher at the restore."""
+        flasher with the next group that needs it, or at the end pass as the X2's idle-safe
+        image (the jammer is marked not safe to leave idle)."""
         bad = x2_app_first(settings_, logdir)
         if bad:
             return bad
@@ -555,6 +574,9 @@ def suite(settings):
     images["x2_jammer"] = Image("x2_jammer", "x2-jammer",
                                 {"build": JAMMER_MD5, "expect_elf": pin["images"]["x2_app"]["app_elf_sha256"]},
                                 "jammer:banner", board="x2", note="x2_app, then x2_flash_custody: dump, then the jammer")
+    for name, why in IDLE_UNSAFE.items():
+        images[name].idle_safe = False
+        images[name].note += "; not safe to leave idle: " + why
 
     env0 = {"GI_OUT": "{outdir}", "GI_RUNS_DIR": "{outdir}", "GI_COMMIT": commit, "REVERSE_IT_DIR": "{reverse_it}",
             "GI_IMAGES": "{gi_images}", "GI_WICAN_SSID": ssid, "INTERPOSER_CODE": "{interposer_code}"}
@@ -650,7 +672,7 @@ def suite(settings):
     return Suite(
         name="gen-inhibit-bench", role=ROLE, groups=groups, images=images, code_info=code_info_for(settings, images, pin),
         requires="gen-inhibit-emulated",   # user, 2026-10-17: the emulated run on this code first
-        standing_images={"wican": "wican_man", "x2": "x2_app"},
+        idle_safe_images=dict(IDLE_SAFE),
         flashers={"ota": hooks["ota"], "x2-hold": hooks["x2_hold"], "x2-jammer": hooks["x2_jammer"]},
         identify=hooks["identify"], redact=hooks["redact"],
         on_start=hooks["on_start"], on_end=hooks["on_end"])

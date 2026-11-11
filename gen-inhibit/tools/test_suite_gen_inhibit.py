@@ -6,7 +6,7 @@ tool fails, and a settings file naming bench_lock_log puts a run on that log whi
 without keeps it on the Holder line. No hardware: every tool the hooks run is stood in
 for.
 
-    PYTHONPATH=<core b9896a0>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 2026.11.11>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit.py
 
 The board steps run the real wican_reboot.py from this folder's bench/ (the suite's
@@ -200,8 +200,20 @@ def test_suites(settings, shas):
           all(sorted(bench.images[n].board for n in g.image_list) == ["wican", "x2"] for g in bench.groups))
     check("emulated: no group holds the lock or carries an image",
           not any(g.needs_lock or g.image_list for g in emu.groups) and not emu.images)
-    check("bench: standing images are _man and the X2's own",
-          bench.standings() == {"wican": "wican_man", "x2": "x2_app"}, bench.standings())
+    # no restore at a run's end from core 2026.11.11 (user, 2026-11-11): marks instead
+    check("bench: no standing image (retired 2026-11-11)",
+          getattr(bench, "standing_image", None) is None and getattr(bench, "standing_images", None) is None,
+          (getattr(bench, "standing_image", None), getattr(bench, "standing_images", None)))
+    marked = sorted(n for n, im in bench.images.items() if not im.idle_safe)
+    check("bench: x2_held and x2_jammer, and nothing else, are marked not safe to leave idle",
+          marked == ["x2_held", "x2_jammer"], marked)
+    check("bench: no WiCAN image is marked (every one boots idle)",
+          not [n for n in marked if bench.images[n].board == "wican"], marked)
+    check("bench: the X2's idle-safe image is x2_app, the only board with one",
+          bench.idle_safe_images == {"x2": "x2_app"}, bench.idle_safe_images)
+    check("bench: each mark's reason is in its image's note",
+          all("not safe to leave idle: " in bench.images[n].note and len(bench.images[n].note) > 60
+              for n in ("x2_held", "x2_jammer")), [bench.images[n].note for n in ("x2_held", "x2_jammer")])
     want = dict(shas)
     got = {n: im.expect for n, im in bench.images.items() if im.board == "wican"}
     check("bench: each WiCAN image expects its own bin's ELF sha", got == want, (got, want))
