@@ -14,7 +14,7 @@ from the gen-inhibit reviewer's conditions (user, 2026-10-21).
 ## 1. What it is
 
 One shared bench (the WiCAN, the X2 and the adapters on the bench host, today
-NICKY-XPS, and madhouse-debian from port step 3, the rig step) and one lock
+NICKY-XPS, and madhouse-debian from port plan step 3) and one lock
 on it. The lock's state is the replay of an append-only log,
 `$REVERSE_IT_DIR/firmware/bench-log.jsonl`. `shared/bench/vtrux_bench/bench_lock.py`
 is the only code that writes it, through its command line or its API (the
@@ -95,8 +95,9 @@ Board state, what is on each board, stays in
   not a restructure (user, 2026-10-21).
 - **Implemented now: native Windows Python only** (user, 2026-10-21). WSL
   and any other environment are refused until implemented.
-- **Native Linux (`linux`) is implemented for the rig step** (user,
-  2026-11-11; port plan step 3), behind the same interface. A PID counts as
+- **Native Linux (`linux`) is implemented for the bench's move to
+  madhouse-debian** (user, 2026-11-11; port plan step 3), behind the same
+  interface. A PID counts as
   running if the process exists in the host's PID namespace; as on Windows,
   access denied or unsure counts as running. The file lock is a POSIX
   advisory lock on the log, held for the whole read, check and append. WSL
@@ -251,7 +252,7 @@ way, the Holder is not its own.
   its `canctl` role, `canmain2`, once `canctl`'s redesign is installed;
   its serial is in `$REVERSE_IT_DIR/firmware/bench-holder.md`, not here.
   Down means its link is down, or the device unbound if a down link turns
-  out still to ACK; the rig step's adapter characterisation settles which.
+  out still to ACK; step 3's adapter characterisation settles which.
 - **What a hand-take role leaves at its release:** every bench adapter it
   opened is closed, back on the driver it found it on, and `canmain2` is
   down. The release note says so, and says what it transmitted on which
