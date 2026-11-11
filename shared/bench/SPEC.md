@@ -121,7 +121,7 @@ Board state, what is on each board, stays in
   `take --run <id>` under a session's PID is not the runner's lock).
 - **The runner pauses and resumes its own run** (user, 2026-10-22). A file
   named `PAUSE` in the run folder asks for a pause. At the next case boundary
-  the runner does what it does at its end release, minus the restore: it
+  the runner does what it does at its end release: it
   identifies each board it has an image for and runs the suite's end hooks
   (the WiCAN release reboot). It writes `free_paused` with each board's read,
   that identify or hook read or `not read: <why>`, then waits, opening
@@ -150,7 +150,7 @@ Board state, what is on each board, stays in
   that does not replay -- is a lost lock: the runner appends `lost` (except
   when the log does not replay, since then nothing can be appended: it writes
   `LOCK LOST` only into its own record and `index.txt`), records
-  every remaining case NOT-RUN, skips the end restore and the end hooks'
+  every remaining case NOT-RUN, skips the end hooks'
   board actions, and stops. The record and `index.txt` open with
   `LOCK LOST: <state>`.
 - **Held by its own role and run id under another PID** (a hand
@@ -161,9 +161,11 @@ Board state, what is on each board, stays in
 - The run id the runner checks is its own, the one it took the lock with
   at start (section 8).
 - **At its run's end the runner releases** (user, 2026-10-22), after its end
-  restore and end hooks. Each board's read is the one it made (the X2
-  identified after the restore, the WiCAN if an end hook read it), or
-  `not read: <why>`.
+  hooks. It restores no board (user, 2026-11-11), except that a board left
+  on an image its suite marks not safe to leave idle first gets that
+  board's idle-safe image (Ruled, below). Each board's read is the
+  one it made at the end, or `not read: <why>`: every board it has an image
+  for, identified after its last case, and the WiCAN if an end hook read it.
 - **With `--keep-lock PID`** it instead releases and takes again in one
   step, with nothing in between: the release carries the same board reads,
   and the take is a hand take for its own role, with no run, under `PID`,
@@ -264,3 +266,23 @@ way, the Holder is not its own.
   is still free, the role investigates and tries to explain why. A session's
   take of the run under its own PID (Q6 (ii)) is a lost lock with nothing
   written to the log; the lock stays with the session.
+- **Images are loaded at the start, never restored at the end** (user,
+  2026-11-11, in the gen-inhibit reviewer's session). The runner puts each
+  board on the image a case needs before that case: at run start, before
+  each group, and at each resume. It leaves every board on whatever its last
+  case used. There is no standing image to go back to. The release's board
+  reads say what each board was left on, and the next run, of either
+  project, loads what it needs from there. This supersedes the end restore
+  ruled 2026-10-20 (`README.md`, "Boards and images"). Drafted by the
+  gen-inhibit reviewer; reviewed and approved by the charge-interposer
+  reviewer and the methodology owner (user, 2026-11-11).
+- **Except images not safe to leave idle** (user, 2026-11-11, on the
+  methodology owner's review). A suite marks each image that is not safe to
+  leave idle on the bench, such as one that floods CAN when nothing ACKs it
+  or one that boots armed. It also names an idle-safe image for each board
+  it marks one on. A run that would release at its end with a board on a
+  marked image loads that board's idle-safe image first, identified before
+  and after like any load. If that load fails, the release, the record and
+  `index.txt` open with `LEFT ON IDLE-UNSAFE IMAGE: <board> on <image>,
+  <why>`. A paused run (`free_paused`) leaves its boards as they are
+  (user, 2026-11-11).
