@@ -93,8 +93,12 @@ sessions and the bench scripts they edit cannot change or bypass.
   it turns the output off and reads that back, so a crashed holder or a
   skipped step cannot leave the 12 V feed on. A run's pause (`free_paused`)
   is the exception: the output stays as it is, as a paused run leaves its
-  boards as they are (`SPEC.md`), and the resume reads it back before the
-  next case.
+  boards as they are (`SPEC.md`). Another role's take during the pause
+  turns it off like any other take (user, 2026-11-11, on the
+  charge-interposer reviewer's review). At the resume the runner reads the
+  output back; if it is not as the paused run left it (on, at its
+  setpoint), the runner cycles it as at a run's start (K8) and identifies
+  the boards again before the next case.
 - **K8b. The supply's own protection.** The service can set the KA3005P's
   built-in over-voltage and over-current protection and read each back.
   Whether it does is set in the root-owned configuration after step 3's
@@ -115,8 +119,9 @@ sessions and the bench scripts they edit cannot change or bypass.
     off and latch a fault that only a service restart clears;
   - a client that does not hold the bench cannot write;
   - the output goes off, read back, when the holder that turned it on
-    releases, is cleared or another role takes, and stays as it is at a
-    pause (K8a);
+    releases, is cleared or another role takes (during a pause too), and
+    stays as it is at a pause otherwise; a resume that finds it changed
+    cycles it and identifies the boards again (K8a);
   - how the supply's own over-voltage and over-current protection behave,
     so the user can set K8b;
   - the polling rate and settle tolerance are measured and set;
