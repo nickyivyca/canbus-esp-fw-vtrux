@@ -248,13 +248,15 @@ def test_lock_guard():
 
 def test_flash_gate():
     """Auto-reset check fails before the flash: nothing is written, the
-    group is NOT-RUN, the rest of the bench stops, and no restore flash."""
+    group is NOT-RUN, the rest of the bench stops, and no flash at the end
+    either (B is marked not safe to leave idle, A is its idle-safe image)."""
     env = Env("flashgate")
     os.environ["FAKE_ESPTOOL_MODE"] = "chipid-fail"
     a, b = env.image("A", "IMG-A"), env.image("B", "IMG-B")
+    b.idle_safe = False
     s = suite([Group("g1", [chk("x", "pass")], needs_lock=True, image="B"),
                Group("g2", [chk("y", "pass")], needs_lock=True, image="A")],
-              images={"A": a, "B": b}, standing_image="A",
+              images={"A": a, "B": b}, idle_safe_images={"board": "A"},
               identify=env.identify)
     eng, rec = run(env, s)
     calls = env.esptool_calls()
@@ -278,8 +280,8 @@ def test_flash_gate():
 
 def test_chip_mismatch():
     """A chip-id that reads another chip type or MAC than the image names
-    writes nothing, also at the restore, and the board's NOT ON STANDING
-    IMAGE line names the mismatch (methodology, 2026-10-20)."""
+    writes nothing, and the flash's record names the mismatch (methodology,
+    2026-10-20)."""
     for name, chip, mac in (("chiptype", "ESP32-C3", "02:00:00:00:00:01"),
                             ("chipmac", "ESP32-S3", "aa:bb:cc:dd:ee:ff")):
         env = Env(name)
@@ -292,20 +294,20 @@ def test_chip_mismatch():
             f.write("IMG-A")
         s = suite([Group("g1", [chk("x", "pass")], needs_lock=True, image="B"),
                    Group("g2", [chk("y", "pass")], needs_lock=True, image="A")],
-                  images={"A": a, "B": b}, standing_image="A",
-                  identify=env.identify)
+                  images={"A": a, "B": b}, identify=env.identify)
         eng, rec = run(env, s)
         calls = env.esptool_calls()
         assert not any("write-flash" in c for c in calls), (name, calls)
         assert verdicts(rec) == {"g1/x": "NOT-RUN", "g2/y": "NOT-RUN"}, verdicts(rec)
-        off = rec["not_on_standing"]
-        assert len(off) == 1 and "chip-id mismatch" in off[0], (name, off)
+        ev = [e for e in rec["events"] if e["kind"] == "flash"]
+        assert len(ev) == 1 and ev[0]["phase"] == "chip-mismatch" and \
+            "chip-id mismatch" in ev[0]["detail"], (name, ev)
     # the same check passes on the right chip (the control)
     env = Env("chipok")
     a = env.image("A", "IMG-A")
     a.params["chip"] = dict(FAKE_CHIP)
     s = suite([Group("g1", [chk("x", "pass")], needs_lock=True, image="A")],
-              images={"A": a}, standing_image="A", identify=env.identify)
+              images={"A": a}, identify=env.identify)
     eng, rec = run(env, s)
     assert verdicts(rec) == {"g1/x": "PASS"}, verdicts(rec)
     assert len([c for c in env.esptool_calls() if "write-flash" in c]) == 1
@@ -325,7 +327,7 @@ def test_chip_required():
             a.params["chip"] = chip
         s = suite([Group("g1", [chk("x", "pass")], needs_lock=True,
                          image="A")],
-                  images={"A": a}, standing_image="A", identify=env.identify)
+                  images={"A": a}, identify=env.identify)
         eng, rec = run(env, s)
         assert not env.esptool_calls(), (name, env.esptool_calls())
         assert verdicts(rec) == {"g1/x": "NOT-RUN"}, verdicts(rec)
@@ -335,8 +337,7 @@ def test_chip_required():
 
 
 def test_image_schedule():
-    """Flash only when the board is not already on the image; restore the
-    standing image at the end."""
+    """Flash only when the board is not already on the image."""
     env = Env("schedule")
     a, b = env.image("A", "IMG-A"), env.image("B", "IMG-B")
     with open(env.board, "w") as f:
@@ -344,16 +345,12 @@ def test_image_schedule():
     s = suite([Group("g1", [chk("x", "pass")], needs_lock=True, image="A"),
                Group("g2", [chk("y", "pass")], needs_lock=True, image="A"),
                Group("g3", [chk("z", "pass")], needs_lock=True, image="B")],
-              images={"A": a, "B": b}, standing_image="A",
-              identify=env.identify)
+              images={"A": a, "B": b}, identify=env.identify)
     eng, rec = run(env, s)
     writes = [c for c in env.esptool_calls() if "write-flash" in c]
-    assert len(writes) == 2, writes          # to B for g3, back to A
-    assert writes[0].endswith("B.bin") and writes[1].endswith("A.bin"), writes
-    assert open(env.board).read() == "IMG-A"
+    assert len(writes) == 1 and writes[0].endswith("B.bin"), writes   # for g3
+    assert open(env.board).read() == "IMG-B"
     assert set(verdicts(rec).values()) == {"PASS"}
-    assert any(g["name"] == "restore" and g["status"].startswith("restored")
-               for g in rec["groups"]), rec["groups"]
     used = rec["images_used"]
     assert set(used) == {"A", "B"} and used["B"]["flashed"] and         "code_hash" in used["A"] and used["A"]["reads"], used
 
@@ -418,7 +415,8 @@ class TwoBoards:
     def flasher(self, image, params, settings, logdir):
         self.flashes.append(image.name)
         ff = getattr(self, "fail_flash", False)
-        if ff is True or (ff and image.board in ff):
+        if ff is True or (ff and image.board in ff) or \
+                image.name in getattr(self, "fail_images", ()):
             return dict(ok=False, phase="write", detail="fake failure",
                         recoverable=True)
         self.set(image.board, image.expect)
@@ -430,9 +428,10 @@ class TwoBoards:
 
 
 def test_two_boards():
-    """Two boards: each flashed only when its image changes, and each put
-    back on its own standing image at the end."""
-    env = Env("twoboards")
+    """Two boards: each flashed only when its image changes, and none
+    restored at the end (user, 2026-11-11): each stays on what its last case
+    used, and the end release says so."""
+    env, p = log_env("twoboards")
     tb = TwoBoards(env)
     tb.set("x2", "X2-APP")
     tb.set("wican", "WC-1")
@@ -445,17 +444,21 @@ def test_two_boards():
                      image=["w2", "jammer"]),
                Group("c", [chk("z", "pass")], needs_lock=True, image="w2")],
               images=ims, flashers={"fake": tb.flasher}, identify=tb.identify,
-              standing_images={"x2": "x2app", "wican": "w1"})
-    eng, rec = run(env, s)
+              role=CI)
+    eng, rec = run(env, s, settings=env.settings(bench_lock_log=p))
     # at the start each board is put on its first image (x2: jammer),
-    # then flashed only on change, then restored
-    assert tb.flashes == ["jammer", "w2", "w1", "x2app"], tb.flashes
-    assert tb.identify(ims["x2app"], None, None) == "X2-APP"
-    assert tb.identify(ims["w1"], None, None) == "WC-1"
+    # then flashed only on change, and nothing at the end
+    assert tb.flashes == ["jammer", "w2"], tb.flashes
+    assert tb.identify(ims["jammer"], None, None) == "JAM"
+    assert tb.identify(ims["w2"], None, None) == "WC-2"
     assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
     bs = open(os.path.join(eng.run_dir, "board_state.txt")).read()
     assert "wican:" in bs and "x2:" in bs, bs
-    assert "NOT ON STANDING" not in bs and not rec["not_on_standing"], bs
+    assert not rec["idle_unsafe_left"], rec["idle_unsafe_left"]
+    rl = log_events(p)[-1]
+    assert rl["event"] == "release" and rl["boards"]["x2"].startswith(
+        "JAM, identified") and rl["boards"]["wican"].startswith(
+        "WC-2, identified"), rl
 
 
 def test_start_identify():
@@ -470,8 +473,7 @@ def test_start_identify():
            "w1": Image("w1", "fake", expect="WC-1", board="wican")}
     s = suite([Group("a", [chk("x", "pass")], needs_lock=True, image="x2app"),
                Group("b", [chk("y", "pass")], needs_lock=True, image="w1")],
-              images=ims, flashers={"fake": tb.flasher}, identify=tb.identify,
-              standing_images={"x2": "x2app", "wican": "w1"})
+              images=ims, flashers={"fake": tb.flasher}, identify=tb.identify)
     eng, rec = run(env, s)
     assert tb.flashes == ["w1"], tb.flashes      # x2 matched; wican did not
     prog = R.load_progress(eng.run_dir)
@@ -484,71 +486,51 @@ def test_start_identify():
     assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
 
 
-class GarbledJammer(TwoBoards):
-    """Flashing `bad` leaves the board reading something no identify
-    knows; with garble_restore the standing image reads wrong too."""
-    def __init__(self, env, bad, garble_restore=False):
-        TwoBoards.__init__(self, env)
-        self.bad = set(bad)
-        self.garble_restore = garble_restore
-        self.bad_seen = False
-
-    def flasher(self, image, params, settings, logdir):
-        self.flashes.append(image.name)
-        garble = image.name in self.bad or (
-            self.garble_restore and self.bad_seen)
-        self.bad_seen = self.bad_seen or image.name in self.bad
-        self.set(image.board, "VN-garbage" if garble else image.expect)
-        return dict(ok=True, phase="done", detail="fake", recoverable=True)
-
-
-def _jammer_suite(tb):
-    ims = {"x2app": Image("x2app", "fake", expect="X2-APP", board="x2"),
-           "jammer": Image("jammer", "fake", expect="JAM", board="x2")}
-    return suite([Group("a", [chk("x", "pass")], needs_lock=True,
-                        image="x2app"),
-                  Group("j", [chk("y", "pass")], needs_lock=True,
-                        image="jammer"),
-                  Group("k", [chk("z", "pass")], needs_lock=True,
-                        image="x2app")],
-                 images=ims, flashers={"fake": tb.flasher},
-                 identify=tb.identify, standing_images={"x2": "x2app"})
+def test_standing_refused():
+    """Standing images are retired (user, 2026-11-11: images are loaded at
+    the start of a run, never restored at its end): a suite that still names
+    Suite.standing_image or standing_images is refused, saying why. The same
+    suite without them is accepted (the control)."""
+    env = Env("standing_refused")
+    a = env.image("A", "IMG-A")
+    g = [Group("g", [chk("x", "pass")], needs_lock=True, image="A")]
+    for kw in ({"standing_image": "A"}, {"standing_images": {"board": "A"}}):
+        try:
+            E.Engine(suite(g, images={"A": a}, identify=env.identify, **kw),
+                     env.settings())
+        except SuiteError as e:
+            assert "retired" in str(e) and "idle_safe" in str(e), (kw, e)
+            continue
+        raise AssertionError("accepted a suite naming %s" % sorted(kw))
+    E.Engine(suite(g, images={"A": a}, identify=env.identify), env.settings())
 
 
-def test_restore_after_stop():
-    """An identify that reads wrong after a flash stops the bench, and the
-    end-of-run restore is still made, once; a restore that reads wrong as
-    well flashes nothing further (user 2026-10-20)."""
-    env = Env("restorestop")
-    tb = GarbledJammer(env, bad=["jammer"])
-    tb.set("x2", "X2-APP")
-    eng, rec = run(env, _jammer_suite(tb))
-    v = verdicts(rec)
-    assert v == {"a/x": "PASS", "j/y": "NOT-RUN", "k/z": "NOT-RUN"}, v
-    assert tb.flashes == ["jammer", "x2app"], tb.flashes
-    assert open(tb.path("x2")).read() == "X2-APP"
-    assert not rec["not_on_standing"], rec["not_on_standing"]
-    env = Env("restorestop2")
-    tb = GarbledJammer(env, bad=["jammer"], garble_restore=True)
-    tb.set("x2", "X2-APP")
-    eng, rec = run(env, _jammer_suite(tb))
-    assert tb.flashes == ["jammer", "x2app"], tb.flashes   # one restore
-    assert open(tb.path("x2")).read() == "VN-garbage"
+def test_idle_safe_named():
+    """An image marked not safe to leave idle needs its board's idle-safe
+    image in Suite.idle_safe_images: one of the suite's images, of that
+    board, itself idle-safe (user, 2026-11-11). Anything else is refused;
+    the right declaration is accepted (the control)."""
+    env = Env("idle_safe_named")
 
-
-def test_standing_line():
-    """A board left off its standing image opens board_state.txt, index.txt
-    and the record with NOT ON STANDING IMAGE, with the board and reason."""
-    env = Env("standingline")
-    tb = GarbledJammer(env, bad=["jammer"], garble_restore=True)
-    tb.set("x2", "X2-APP")
-    eng, rec = run(env, _jammer_suite(tb))
-    first = open(os.path.join(eng.run_dir, "board_state.txt")).readline()
-    assert first.startswith("NOT ON STANDING IMAGE: x2 on unknown"), first
-    assert "RESTORE FAILED" in first and "VN-garbage" in first, first
-    idx = open(os.path.join(eng.run_dir, "index.txt")).readline()
-    assert idx == first, (idx, first)
-    assert rec["not_on_standing"] == [first.rstrip("\n")], rec["not_on_standing"]
+    def ims():
+        return {"x2app": Image("x2app", "fake", expect="X2-APP", board="x2"),
+                "jammer": Image("jammer", "fake", expect="JAM", board="x2",
+                                idle_safe=False),
+                "w1": Image("w1", "fake", expect="WC-1", board="wican")}
+    g = [Group("g", [chk("x", "pass")], needs_lock=True, image="jammer")]
+    fl = {"fake": lambda *a: dict(ok=True)}
+    for name, idle in (("none", {}), ("unknown", {"x2": "nope"}),
+                       ("other board", {"x2": "w1"}),
+                       ("itself marked", {"x2": "jammer"})):
+        try:
+            E.Engine(suite(g, images=ims(), flashers=fl, identify=env.identify,
+                           idle_safe_images=idle), env.settings())
+        except SuiteError as e:
+            assert "idle" in str(e), (name, e)
+            continue
+        raise AssertionError("accepted idle_safe_images %s (%s)" % (idle, name))
+    E.Engine(suite(g, images=ims(), flashers=fl, identify=env.identify,
+                   idle_safe_images={"x2": "x2app"}), env.settings())
 
 
 class Hooked(TwoBoards):
@@ -578,7 +560,11 @@ class Hooked(TwoBoards):
         return h
 
     def suite(self, groups=None, **kw):
+        # jammer: marked not safe to leave idle, x2app its board's idle-safe
+        # image (user, 2026-11-11)
         ims = {"x2app": Image("x2app", "fake", expect="X2-APP", board="x2"),
+               "jammer": Image("jammer", "fake", expect="JAM", board="x2",
+                               idle_safe=False),
                "w1": Image("w1", "fake", expect="WC-1", board="wican"),
                "w2": Image("w2", "fake", expect="WC-2", board="wican")}
         groups = groups or [
@@ -587,13 +573,13 @@ class Hooked(TwoBoards):
         return suite(groups, images=ims, flashers={"fake": self.flasher},
                      identify=self.identify, on_start=self.hook("on_start"),
                      on_end=self.hook("on_end"),
-                     standing_images={"x2": "x2app", "wican": "w1"}, **kw)
+                     idle_safe_images={"x2": "x2app"}, **kw)
 
 
 def test_board_hooks():
     """on_start runs for every board before the start pass touches it,
     with the first image the run needs there; on_end runs for every board
-    after the restore, with the image the run believes it is on; both are
+    after the end pass, with the image the run believes it is on; both are
     in the record and board_state.txt. on_end runs after a STOP too, and
     after a failed start hook (user 2026-10-20)."""
     env = Env("boardhooks")
@@ -636,12 +622,17 @@ def test_board_hooks():
     eng.start_identify = stop_then_identify
     rec = eng.run()
     assert set(verdicts(rec).values()) == {"NOT-RUN"}, verdicts(rec)
-    # the start pass put the WiCAN on w2, the restore put it back on w1,
-    # and the end hook sees w1
+    # the start pass put the WiCAN on w2 and group b's start put it on w1
+    # (a group loads its images before its first case sees the STOP); no
+    # flash at the end (no restore, user 2026-11-11), and the end hook sees
+    # w1, after the end pass read it
+    assert tb.flashes == ["w2", "w1"], tb.flashes
     assert [x for x in tb.calls if x[0] == "on_end"] == [
         ("on_end", "wican", "w1"), ("on_end", "x2", "x2app")], tb.calls
-    assert tb.calls.index(("flash", "wican", "w1")) < tb.calls.index(
-        ("on_end", "wican", "w1")), tb.calls
+    last_id = max(n for n, x in enumerate(tb.calls)
+                  if x[:2] == ("identify", "wican"))
+    assert tb.calls.index(("flash", "wican", "w1")) < last_id < \
+        tb.calls.index(("on_end", "wican", "w1")), tb.calls
 
 
 def test_start_hook_stops():
@@ -730,6 +721,142 @@ def test_end_hooks_crash():
                for v in oe.values()), oe
     lines = rec["release_not_confirmed"]
     assert any(ln.startswith("RELEASE NOT CONFIRMED: third: ") for ln in lines), lines
+
+
+def test_end_identify():
+    """SPEC section 6 (user, 2026-11-11): after the last case every board
+    the run has an image for is identified, and the end release carries
+    those reads. Here the last group uses only the WiCAN, and its check
+    changes the X2 under it; the release must say what the X2 reads after
+    the last case, not what it read when its own group ended."""
+    env, p = log_env("end_identify")
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    chg = chk("chg", "open(%r, 'w').write('X2-OTHER')" % tb.path("x2"))
+    s = tb.suite([Group("a", [chk("x", "pass")], needs_lock=True,
+                        image=["w1", "x2app"]),
+                  Group("b", [chg], needs_lock=True, image="w1")], role=CI)
+    eng, rec = run(env, s, settings=env.settings(bench_lock_log=p))
+    assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
+    assert not tb.flashes, tb.flashes
+    rl = log_events(p)[-1]
+    assert rl["event"] == "release" and rl["boards"]["x2"].startswith(
+        "X2-OTHER, identified off the wire"), rl
+    ep = [e for e in rec["events"] if e["kind"] == "end-pass"]
+    assert ep and ep[0]["identities"] == {"wican": "WC-1", "x2": "X2-OTHER"}, ep
+    # the end hook is told the X2 is on no image of the suite
+    assert ("on_end", "x2", None) in tb.calls, tb.calls
+
+
+def test_idle_safe_end():
+    """The Ruled exception (user, 2026-11-11): a run that would release at
+    its end with a board on an image marked not safe to leave idle loads
+    that board's idle-safe image first, identified before and after, then
+    runs the end hooks and releases with the read made after the load.
+    Boards on idle-safe images are left as they are."""
+    env, p = log_env("idle_safe_end")
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    s = tb.suite([Group("a", [chk("x", "pass")], needs_lock=True,
+                        image=["w1", "x2app"]),
+                  Group("j", [chk("y", "pass")], needs_lock=True,
+                        image=["w2", "jammer"])], role=CI)
+    eng, rec = run(env, s, settings=env.settings(bench_lock_log=p))
+    assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
+    # w2 and the jammer for group j; at the end x2app only (w2 is idle-safe)
+    assert tb.flashes == ["w2", "jammer", "x2app"], tb.flashes
+    c = tb.calls
+    fl = c.index(("flash", "x2", "x2app"))
+    assert c[fl - 1][:2] == ("identify", "x2") and \
+        c[fl + 1][:2] == ("identify", "x2"), c[fl - 2:fl + 3]
+    assert c.index(("on_end", "x2", "x2app")) > fl, c
+    assert ("on_end", "wican", "w2") in c, c
+    assert open(tb.path("x2")).read() == "X2-APP"
+    assert open(tb.path("wican")).read() == "WC-2"
+    rl = log_events(p)[-1]
+    assert rl["event"] == "release" and rl["boards"]["x2"].startswith(
+        "X2-APP, identified"), rl
+    assert not rec["idle_unsafe_left"], rec["idle_unsafe_left"]
+
+
+def test_idle_unsafe_line():
+    """If the idle-safe load fails, the release (its note), board_state.txt,
+    index.txt and the record open with "LEFT ON IDLE-UNSAFE IMAGE: <board>
+    on <image>, <why>" (user, 2026-11-11). After a lost lock nothing is
+    loaded, and the record and index.txt say the board was left on it."""
+    env, p = log_env("idle_unsafe_line")
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    tb.fail_images = {"x2app"}       # x2 starts on it, so only the end load
+    s = tb.suite([Group("j", [chk("y", "pass")], needs_lock=True,
+                        image=["w1", "jammer"])], role=CI)
+    eng, rec = run(env, s, settings=env.settings(bench_lock_log=p))
+    want = "LEFT ON IDLE-UNSAFE IMAGE: x2 on jammer, loading the idle-safe " \
+        "image x2app failed: "
+    assert tb.flashes == ["jammer", "x2app"], tb.flashes
+    lines = rec["idle_unsafe_left"]
+    assert len(lines) == 1 and lines[0].startswith(want), lines
+    for name in ("board_state.txt", "index.txt"):
+        assert first_line(eng, name) == lines[0], (name, first_line(eng, name))
+    rl = log_events(p)[-1]
+    assert rl["event"] == "release" and rl["note"].startswith(lines[0]), rl
+    assert rl["boards"]["x2"].startswith("JAM, identified"), rl
+    # the lock lost during the jammer's group: no load, the line says why
+    env, p = log_env("idle_unsafe_lost")
+    tb = Hooked(env)
+    tb.set("x2", "X2-APP")
+    tb.set("wican", "WC-1")
+    s = tb.suite([Group("j", [_steal("log", env, p), chk("n", "pass")],
+                        needs_lock=True, image=["w1", "jammer"])], role=CI)
+    eng, rec = run(env, s, settings=env.settings(bench_lock_log=p))
+    assert tb.flashes == ["jammer"], tb.flashes
+    lines = rec["idle_unsafe_left"]
+    assert len(lines) == 1 and lines[0].startswith(
+        "LEFT ON IDLE-UNSAFE IMAGE: x2 on jammer, not loaded: LOCK LOST"), lines
+    idx = open(os.path.join(eng.run_dir, "index.txt")).read().splitlines()
+    assert idx[0].startswith("LOCK LOST") and idx[1] == lines[0], idx[:2]
+
+
+_REAL_PAUSE_READS = E.Engine.pause_reads
+_REAL_END_PASS = E.Engine.end_pass
+
+
+def _pause_loads_idle_safe(self):
+    """Mutant: a pause that loads the idle-safe image, as the end does."""
+    logdir = os.path.join(self.run_dir, "_bench", "pause")
+    os.makedirs(logdir, exist_ok=True)
+    for board in list(self.board_image):
+        im = self.suite.images.get(self.board_image.get(board) or "")
+        if im is not None and not im.idle_safe:
+            self.ensure_image(self.suite.idle_safe_images[board], logdir)
+    return _REAL_PAUSE_READS(self)
+
+
+def _end_pass_restores(self, work):
+    """Mutant: the old end restore, each board back on its first image."""
+    _REAL_END_PASS(self, work)
+    logdir = os.path.join(self.run_dir, "_bench", "end")
+    for board, name in self._first_images(work).items():
+        self.ensure_image(name, logdir)
+
+
+def test_idle_pause_untouched():
+    """A paused run leaves its boards as they are (user, 2026-11-11): at a
+    free_paused nothing is loaded, even on an image not safe to leave idle;
+    the idle-safe load is made only at the end release."""
+    env, p, tb, eng, rec, seen = _pause_scenario("idle_pause",
+                                                 image=("w1", "jammer"))
+    assert verdicts(rec) == {"a/first": "PASS", "a/second": "PASS"}, \
+        verdicts(rec)
+    fp = [e for e in log_events(p) if e["event"] == "free_paused"][0]
+    assert fp["boards"]["x2"].startswith("JAM, identified"), fp
+    assert tb.flashes == ["jammer", "x2app"], tb.flashes   # start, end
+    rl = log_events(p)[-1]
+    assert rl["event"] == "release" and rl["boards"]["x2"].startswith(
+        "X2-APP, identified"), rl
 
 
 def test_stop_pause():
@@ -1604,8 +1731,7 @@ class Killed:
                              Check("multi3", bump("multi3"), python=True, judge=two)],
                    needs_lock=True, image="w1", after=["free"])],
             images={"w1": Image("w1", "fake", expect="WC-1", board="wican")},
-            flashers={"fake": self.tb.flasher}, identify=self.tb.identify,
-            standing_images={"wican": "w1"})
+            flashers={"fake": self.tb.flasher}, identify=self.tb.identify)
         self.eng, rec = run(self.env, self.s)
         assert set(verdicts(rec).values()) == {"PASS"}, verdicts(rec)
         assert self.ran() == {k: 1 for k in ids}, self.ran()
@@ -1883,7 +2009,7 @@ def test_lock_each_case():
 def test_lost_record():
     """Section 6: a lost lock opens the record and index.txt with "LOCK
     LOST: <state>"; the log gets `lost` (not when it does not replay);
-    every remaining case is NOT-RUN; the end restore, the end hooks' board
+    every remaining case is NOT-RUN; the end pass, the end hooks' board
     actions and the release are skipped."""
     env, p = log_env("lost_holder")
     env.set_holder(CI)
@@ -1904,7 +2030,7 @@ def test_lost_record():
     assert idx.startswith("LOCK LOST: the bench log does not replay"), idx
     with open(p) as f:
         assert f.read().endswith("garbage\n"), "appended to a broken log"
-    # with boards: lost after a flash -> no restore, no end hooks, no release
+    # with boards: lost after a flash -> no end pass, no end hooks, no release
     env, p = log_env("lost_boards")
     tb = Hooked(env)
     tb.set("x2", "X2-APP")
@@ -2072,15 +2198,15 @@ def test_self_pause():
 
 def test_pause_hooks():
     """Section 6: at a free_paused the runner does what it does at its end
-    release, minus the restore: the end hooks run (the WiCAN release
-    reboot), and each board's read is that hook or identify read."""
+    release: the end hooks run (the WiCAN release reboot), and each board's
+    read is that hook or identify read."""
     env, p, tb, eng, rec, seen = _pause_scenario("pausehooks")
     fp = [e for e in log_events(p) if e["event"] == "free_paused"][0]
     ends = [c for c in tb.calls if c[0] == "on_end"]
     assert len(ends) == 4, ends          # two at the pause, two at the end
     for b in ("wican", "x2"):
         assert "end hook" in fp["boards"][b] and "fine" in fp["boards"][b], fp
-    assert not tb.flashes, "no restore at a pause: %s" % tb.flashes
+    assert not tb.flashes, "flashed at a pause: %s" % tb.flashes
 
 
 def test_resume_identify():
@@ -2144,45 +2270,9 @@ def test_resume_stop():
         kill_pid(keeper)
 
 
-def test_resume_stop_kept():
-    """Section 6 (reviewer, 2026-10-22): after a resume STOP the end
-    restore skips the board the resume could not put back, so it is left as
-    found; its restore note is "restore skipped: <STOPPED line>". The other
-    board (here the WiCAN, on w2 for the group) is restored as normal, and
-    the end hooks still run for both."""
-    def change_x2(tb, eng, seen):
-        tb.set("x2", "OTHER")
-        tb.fail_flash = {"x2"}
-    env, p, tb, eng, rec, seen = _pause_scenario(
-        "resume_stop_kept", during=change_x2, image=("w2", "x2app"))
-    line = "STOPPED: x2 is OTHER, expected x2app (X2-APP), cannot flash"
-    assert verdicts(rec) == {"a/first": "PASS", "a/second": "NOT-RUN"}, \
-        verdicts(rec)
-    # w2 at the start, the failed x2app at the resume, w1 at the restore;
-    # no second x2app at the restore
-    assert tb.flashes == ["w2", "x2app", "w1"], tb.flashes
-    assert open(tb.path("x2")).read() == "OTHER"
-    assert open(tb.path("wican")).read() == "WC-1"
-    assert eng.restore_note["x2"] == "restore skipped: " + line, \
-        eng.restore_note
-    assert eng.restore_note["wican"].startswith("restored: "), \
-        eng.restore_note
-    off = rec["not_on_standing"]
-    assert len(off) == 1 and off[0].startswith(
-        "NOT ON STANDING IMAGE: x2 ") and off[0].endswith(
-        "reason: restore skipped: " + line), off
-    assert tb.calls[-2:] == [("on_end", "wican", "w1"),
-                             ("on_end", "x2", None)], tb.calls[-2:]
-    assert sorted(rec["board_hooks"]["on_end"]) == ["wican", "x2"], \
-        rec["board_hooks"]
-    rl = log_events(p)[-1]
-    assert rl["event"] == "release" and rl["who"] == CI, rl
-    assert rl["boards"]["x2"].startswith("OTHER, identified off the wire"), rl
-
-
 def test_stop_no_resume():
     """STOP during a pause (gen-inhibit reviewer, 2026-10-22): the runner
-    takes the lock back for the restore and the release, but runs no start
+    takes the lock back for the end pass and the release, but runs no start
     hooks and identifies or flashes nothing for cases that will not run."""
     def stop(tb, eng, seen):
         tb.set("x2", "OTHER")
@@ -2274,7 +2364,7 @@ def test_folder_release():
 
 
 def test_release_end():
-    """Section 6: at its run's end, after the restore and the end hooks,
+    """Section 6: at its run's end, after the end pass and the end hooks,
     the runner releases, each board's read the one it made or "not read:
     <why>"."""
     env, p = log_env("release_end")
@@ -2363,9 +2453,11 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_chip_mismatch, test_chip_required, test_image_schedule,
          test_identify_error, test_identify_after,
          test_void_resume,
-         test_two_boards, test_start_identify, test_restore_after_stop,
-         test_standing_line, test_board_hooks, test_start_hook_stops,
-         test_release_line, test_end_hooks_crash, test_stop_pause,
+         test_two_boards, test_start_identify, test_standing_refused,
+         test_idle_safe_named, test_board_hooks, test_start_hook_stops,
+         test_release_line, test_end_hooks_crash, test_end_identify,
+         test_idle_safe_end, test_idle_unsafe_line, test_idle_pause_untouched,
+         test_stop_pause,
          test_throttle, test_after, test_wallclock_guard, test_requires,
          test_requires_whole, test_subset_mark, test_subset_not_whole,
          test_product_digest, test_digest_bridge,
@@ -2382,7 +2474,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_remote_stop,
          test_lock_each_case, test_lost_record, test_pause_own_lock,
          test_self_pause, test_pause_hooks, test_resume_identify,
-         test_resume_stop, test_resume_stop_kept, test_stop_no_resume,
+         test_resume_stop, test_stop_no_resume,
          test_own_pid, test_take_first, test_folder_release, test_release_end,
          test_keep_lock]
 
@@ -2431,7 +2523,7 @@ def _write_over(path, text):
 
 MUTANTS = {
     "test_validate": _patch(E, "validate", lambda *a, **k: None),
-    "test_bare_shell": _patch(M, "RULES", {"bare_shell": False}),
+    "test_bare_shell": _patch(M, "RULES", dict(M.RULES, bare_shell=False)),
     "test_basic_verdicts": _rule("no_verdict"),
     "test_never_overwrite": _both(_patch(E, "new_run_dir", _reusing_run_dir),
                                   _patch(R, "write_new", _write_over)),
@@ -2448,14 +2540,23 @@ MUTANTS = {
     "test_identify_error": _rule("identify_error"),
     "test_identify_after": _rule("identify_after"),
     "test_void_resume": _patch(R.Recorder, "amend", lambda self, r: None),
-    "test_two_boards": _rule("restore"),
+    # no restore: the mutant puts the old end restore back
+    "test_two_boards": _patch(E.Engine, "end_pass", _end_pass_restores),
     "test_start_identify": _rule("start_identify"),
-    "test_restore_after_stop": _rule("restore_after_stop"),
-    "test_standing_line": _rule("standing_line"),
+    "test_standing_refused": _patch(M, "RULES", dict(M.RULES,
+                                                     standing_refused=False)),
+    "test_idle_safe_named": _patch(M, "RULES", dict(M.RULES,
+                                                    idle_safe_named=False)),
     "test_board_hooks": _rule("board_hooks"),
     "test_start_hook_stops": _rule("start_hook_stops"),
     "test_release_line": _rule("release_line"),
     "test_end_hooks_crash": _rule("end_crash_boards"),
+    "test_end_identify": _rule("end_identify"),
+    "test_idle_safe_end": _rule("idle_safe_end"),
+    "test_idle_unsafe_line": _rule("idle_unsafe_line"),
+    # a paused run leaves its boards: the mutant loads idle-safe at a pause
+    "test_idle_pause_untouched": _patch(E.Engine, "pause_reads",
+                                        _pause_loads_idle_safe),
     "test_stop_pause": _rule("stop_pause"),
     "test_throttle": _rule("throttle"),
     "test_after": _rule("after"),
@@ -2498,7 +2599,6 @@ MUTANTS = {
     "test_pause_hooks": _rule("pause_hooks"),
     "test_resume_identify": _rule("resume_identify"),
     "test_resume_stop": _rule("resume_stop"),
-    "test_resume_stop_kept": _rule("resume_stop_kept"),
     "test_stop_no_resume": _rule("stop_no_resume"),
     "test_own_pid": _rule("own_pid"),
     "test_take_first": _rule("take_first"),

@@ -17,7 +17,8 @@ or run it from a checkout with `PYTHONPATH=shared/bench`.
 ## The chain runner (`vtrux_bench.run`)
 
 One command runs a project's whole bench suite, chained: flash, identify,
-every group of checks, restore, record. The same command runs part of it.
+every group of checks, the end pass, record. The same command runs part of
+it.
 
     python -m vtrux_bench.run plan    --suite <file.py>:<NAME> --settings <json>
     python -m vtrux_bench.run run     --suite ... --settings ... [--group G]...
@@ -27,7 +28,7 @@ every group of checks, restore, record. The same command runs part of it.
 | File | What |
 |---|---|
 | `vtrux_bench/run/model.py` | The suite schema: `Suite`, `Group`, `Check`, `Image`, `KnownFail`, `Result`, `Figure`, `Tol`, the eight verdicts, and `validate`. Start here to write a suite. |
-| `vtrux_bench/run/engine.py` | Executes a suite. Lanes: "bench" (groups that need the bench, in order, then the restore) in parallel with one "logic:<host>" lane per host. Enforces the rules listed in its docstring. |
+| `vtrux_bench/run/engine.py` | Executes a suite. Lanes: "bench" (groups that need the bench, in order, then the end pass) in parallel with one "logic:<host>" lane per host. Enforces the rules listed in its docstring. |
 | `vtrux_bench/run/flash.py` | The built-in `esptool` flasher: md5 against expectations, the auto-reset check (`chip-id`) before (no flash if it fails), verified write, the check again after; no retry; a failed check forbids any further flash in the run. Ported from the charge-interposer tester's `flash_custody*.sh`. |
 | `vtrux_bench/run/lock.py` | Reads the bench lock in reverse-it `firmware/bench-holder.md`, the lock before the cutover (settings with no `bench_lock_log`). The runner never edits it (rule 2: a chained run holds the lock from start to finish; the tester takes it, messages, and releases it). With `bench_lock_log` set the runner uses `bench_lock.py` instead (spec section 6). |
 | `vtrux_bench/run/procs.py` | Commands with timeouts that kill the whole tree; the remote (ssh) line with coreutils `timeout`; the build throttle (idle priority, one job) and the process-list scan for wall-clock tests. |
@@ -65,7 +66,7 @@ every group of checks, restore, record. The same command runs part of it.
 | `tests/test_bench_lock.py` | Its tests (29), each naming the spec sections it checks. `--can-fail` runs each under each of its mutants (130), source edits that must each make it fail. Native Windows only. |
 | `tests/test_decode.py` | Its tests (7), with `data/golden_layout.dbc` and its hand-written canonical text `data/golden_layout.txt`. `--can-fail` runs each test under each of its mutants (33); every one must fail. |
 | `tests/layout_hash_crosscheck.py` | The gen-inhibit tester's independent `layout_hash`, written from the agreed line format without reading `decode.py` (moved from reverse-it, 2026-10-22). `test_decode.py`'s `test_crosscheck` requires it to agree with `decode.py` and the golden text on every edit the other tests use. Also a CLI: `DBC [GOLDEN_TXT]`. |
-| `tests/test_run_core.py` | The runner's own tests (65, the bench-lock ones on a scratch `bench_lock` log), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. `test_base_env` (2026-11-01, for ACCEPT-SPEC A7): a local check with `Check.base_env` starts from that environment, not the runner's own. `test_record_settings` (2026-11-01, for A6): with `Engine(record_settings=...)`, or `run --record-settings JSON`, the record holds that masked copy in place of the settings the run used; off by default. Five of them check the digest bridge's extraction folder. Two digests of one commit at once get folders of their own, and the folder is gone after the call, when it succeeds and when it fails (2026-10-24; `engine.DIGEST_ROOT` points it at the test's folder). By default it is in the repo's worktree's `scratch/vtrux-bench/digest/`, never the system temp folder. It is removed even when it holds a read-only file in a read-only folder or, on Windows, a path past 260 characters, and a folder that cannot be removed is printed with the reason (2026-11-01, AGENTS.md "Removing scratch"; `engine.remove_tree`). **`test_pause_own_lock`'s mode "holder" failure, fixed in the test (2026-11-05).** It failed with `AssertionError: ('holder', {'a/first': 'PASS', 'a/second': 'NOT-RUN'})`: once in a full run on NICKY-XPS on 2026-11-01, then 3 times out of 3 for the charge-interposer tester at `a3b0f250` (it passed for them once at `4c4047c1`). The fault was in the test, not the runner. In mode "holder" (the lock before the cutover), the test's other role took the bench as soon as the PAUSE file existed, then removed the file. When the runner reached its next case boundary more than about 0.1 s after check 1 wrote the file, as on a loaded machine, it saw no pause under way and another role's Holder: a lost lock, which is what SPEC section 7 says it should do. Now the role waits for the run's record to show its pause, as a person would; under the log it already waited for `free_paused`. Each mode also runs with the runner made 0.5 s slow to reach each case gate (`_pause_scenario(gate_delay=)`); with the old wait, that run fails in mode "holder" every time (gen-inhibit tester, for the gen-inhibit reviewer). |
+| `tests/test_run_core.py` | The runner's own tests (68, the bench-lock ones on a scratch `bench_lock` log), with a fake suite, a fake two-board bench, `fake_esptool.py` and `fake_ssh.py`. `--can-fail` runs each with its rule switched off; every one must then fail. `test_base_env` (2026-11-01, for ACCEPT-SPEC A7): a local check with `Check.base_env` starts from that environment, not the runner's own. `test_record_settings` (2026-11-01, for A6): with `Engine(record_settings=...)`, or `run --record-settings JSON`, the record holds that masked copy in place of the settings the run used; off by default. Five of them check the digest bridge's extraction folder. Two digests of one commit at once get folders of their own, and the folder is gone after the call, when it succeeds and when it fails (2026-10-24; `engine.DIGEST_ROOT` points it at the test's folder). By default it is in the repo's worktree's `scratch/vtrux-bench/digest/`, never the system temp folder. It is removed even when it holds a read-only file in a read-only folder or, on Windows, a path past 260 characters, and a folder that cannot be removed is printed with the reason (2026-11-01, AGENTS.md "Removing scratch"; `engine.remove_tree`). **`test_pause_own_lock`'s mode "holder" failure, fixed in the test (2026-11-05).** It failed with `AssertionError: ('holder', {'a/first': 'PASS', 'a/second': 'NOT-RUN'})`: once in a full run on NICKY-XPS on 2026-11-01, then 3 times out of 3 for the charge-interposer tester at `a3b0f250` (it passed for them once at `4c4047c1`). The fault was in the test, not the runner. In mode "holder" (the lock before the cutover), the test's other role took the bench as soon as the PAUSE file existed, then removed the file. When the runner reached its next case boundary more than about 0.1 s after check 1 wrote the file, as on a loaded machine, it saw no pause under way and another role's Holder: a lost lock, which is what SPEC section 7 says it should do. Now the role waits for the run's record to show its pause, as a person would; under the log it already waited for `free_paused`. Each mode also runs with the runner made 0.5 s slow to reach each case gate (`_pause_scenario(gate_delay=)`); with the old wait, that run fails in mode "holder" every time (gen-inhibit tester, for the gen-inhibit reviewer). |
 | `vtrux_bench/scratch.py` | The one shared scratch helper (ACCEPT-SPEC A14; AGENTS.md "Removing scratch"), merged from the charge-interposer's `scratch_dir.py` and gen-inhibit's `gi_paths.py` (charge-interposer tester, 2026-11-01). `make(parent, name)` makes `<parent>/<name>-<pid>-<hex6>/` with its owner file beside it (`<folder>.owner.json`: pid, process start time, host, platform), so a folder holding a git clone stays clean; it first removes the finished folders beside it. `run()` removes its folder in a finally; `Made()` holds a run's folders, removed by `remove_all()` in the run's finally and by an exit handler on any other way out. `remove(path)` clears read-only flags and retries, tries the whole folder again after waits of 0.05 s doubling to 1.6 s (about 3 s, for a Windows hold on a fresh folder, as `tests/_scratch.py` does), uses `\\?\` paths on Windows, removes a link or junction as a link, never uses `ignore_errors`, and returns and prints what it cannot remove as LEFTOVER lines. `scratch_root(start)` is the worktree's `scratch/`, refused outside a worktree. `Made.add_remote(ssh, host, path, workroot)` holds a folder on a remote host too, listed once however often it is added, removed over ssh (`remove_remote`: `rm -rf`, then a look that it is gone; a LEFTOVER line if not). **`remove_remote` refuses, running nothing**, a LEFTOVER with the reason, unless the path is absolute and normal (no `..`, no `~`), strictly under the host's workroot (itself absolute, normal and not `/`), and its first part below the workroot is one the runner makes: `accept-<record id>` or a chain run's work folder `<suite>_<YYYYmmddTHHMMSS>_<hex4>` (the charge-interposer reviewer, 2026-11-02: an empty setting, `/`, `~` or a mistyped workroot never becomes `rm -rf` on a host). `keep(path, why)` marks a folder kept (a failed run kept for inspection) in its owner file: it is never pruned and `Made` leaves it, listed in `.kept`; taking it out is a person's call (gen-inhibit's reviewer, 2026-11-01). The acceptance runner uses it; each project moves its own harness onto it as its own harness work. |
 | `tests/test_scratch_helper.py` | Its tests (12), each naming A14. `--can-fail` runs them first on the unmutated module (the control, which must pass), then under each of its 19 mutants; every one must make a test fail. "One try only" (no whole-tree retry) must fail `test_held_briefly`, a file held open for 1.2 s; it is applied on Windows only, where an open file stops a removal. Two of them remove a kept folder, by pruning it or in `Made`. Two of them keep owner files: none may be left beside a removed folder, and an owner file whose folder is gone is pruned once its run has finished. The long-path mutant is not applied where it changes nothing (off Windows, or with `LongPathsEnabled` = 1, as on NICKY-XPS), and says so. It counts on native Windows; on POSIX it needs a file system that enforces folder permissions (not WSL's `/mnt/c`), not as root. |
 | `tests/_scratch.py` | Where these tests put their files: each run's own folder, `<worktree>/scratch/vtrux-bench-tests/<name>/<time>_<pid>`, the worktree found by walking up to the nearest `.git`, so a pinned export inside a project worktree's `scratch/` lands there. No worktree above is a refusal, never the system temp folder (AGENTS.md "Files and folders"; 2026-10-24: before, every run used one fixed folder under the system temp folder, and `test_decode` and `test_run_core` shared it). The folder is removed when the process that made it exits, pass or fail: read-only files made writable and retried, the whole tree tried again for about 3 s while another process holds part of it open, `\\?\` paths on Windows, and a folder that will not go printed with the reason (AGENTS.md "Removing scratch"; 2026-11-01: before, nothing removed them, and a day's runs left 3,359 files; one try alone then left an empty run folder). Once it is gone, its `<name>/` and `vtrux-bench-tests/` go too if nothing else is in them, and another run's exit taking them while a run makes its own costs a retry, three tries in all, 0.1 s and then 0.4 s apart, on the folder gone or, on Windows, still delete-pending (`PermissionError`) (the charge-interposer reviewer, 2026-11-02: 21 empty tool folders were left; gen-inhibit's reviewer, the same day, for the delete-pending case). A killed process's folder stays, under its own name. |
@@ -76,31 +77,53 @@ every group of checks, restore, record. The same command runs part of it.
 A bench may hold several boards. Each `Image` names its `board` (default
 "board"); a group's `image` is one image name or a list, one per board.
 The runner flashes a board only when it is not already on the image the
-group needs, identifies every board the group needs before and after it
-(the group is VOID if one changed under it), and at the end puts every
-board it flashed back on that board's standing image
-(`Suite.standing_images = {board: image}`, or `standing_image` for one
-board). A board state that is not a flashed image, such as an X2 held in
-ROM, can be an `Image` with its own flasher and expected identify value.
+group needs, and identifies every board the group needs before and after it
+(the group is VOID if one changed under it). A board state that is not a
+flashed image, such as an X2 held in ROM, can be an `Image` with its own
+flasher and expected identify value.
 
-Board images (user, 2026-10-20). At the start of the bench lane, before the
+Images are loaded at the start, never restored at the end (user,
+2026-11-11; `SPEC.md` section 6 and its Ruled entries; this supersedes the
+end restore of 2026-10-20). At the start of the bench lane, before the
 first group, every board the run uses (test gear included) is identified
 against the first image the run needs on it, flashed if it reads anything
 else, and identified again: correctness rests on that, not on what the last
-run left. At the end, one best-effort restore per board to its standing
-image, also after a flash or identify failure stopped the bench; only a
-failed auto-reset check or a chip-id mismatch (no further flash on that
-board), a lost lock or STOP `norestore` prevent it, and there is never a
-second attempt. Every esptool image must name its chip (`params["chip"] =
-{"type": "ESP32-S3", "mac": "..."}`, both keys) or nothing is written; if
-the auto-reset check reads another chip type or MAC, the port reached
-another board, and nothing is written. The repo is public: the MAC comes
-from a suite's local, unpublished settings at run time, never from a
-literal in a file (the tests use a made-up, locally administered MAC). A board the run used that
-ends off its standing image opens `board_state.txt`, `index.txt` and
-`record.json` (`not_on_standing`) with `NOT ON STANDING IMAGE: <board> on
-<image>, reason ...`; the tester copies that line into the release message
-and the board's section of bench-holder.md.
+run left. Before each later group, and at each resume, the same is done for
+the images that group needs. At the end the runner restores no board: each
+stays on whatever its last case used, and the next run, of either project,
+loads what it needs from there. There is no standing image: a suite that
+still names `Suite.standing_image` or `standing_images` is refused.
+
+The end pass, after the last case on every run however it ended (but not
+after a lost lock), identifies every board the run has an image for, and the
+end release carries those reads (and the WiCAN's, if an end hook read it).
+**Images not safe to leave idle** are the one exception: a suite marks each
+image that is not safe to leave idle on the bench, such as one that floods
+CAN when nothing ACKs it or one that boots armed, with `Image(...,
+idle_safe=False)`, and names an idle-safe image for each board it marks one
+on, `Suite.idle_safe_images = {board: image}` (an image of that board, not
+itself marked). A suite that marks an image on a board with no idle-safe
+image, or names one that is not such an image, is refused. A board the end
+pass finds on a marked image -- or, after an identify that recognised
+nothing, last loaded with one in this run -- is loaded with its board's
+idle-safe image, identified before and after like any load: one attempt,
+also after a flash or identify failure stopped the bench. If that load
+fails, or cannot be made (no further flash allowed on the board, an
+identify that failed, a lost lock), the release's note, `board_state.txt`,
+`index.txt` and `record.json` (`idle_unsafe_left`) open with `LEFT ON
+IDLE-UNSAFE IMAGE: <board> on <image>, <why>` (after a lost lock there is
+no release, so the record and `index.txt` only). The tester copies that
+line into the release message and the board's section of bench-holder.md.
+A paused run (`free_paused`) leaves its boards as they are. A run that
+never identified or flashed a board (a start hook stopped the bench before
+the start pass) has no end reads.
+
+Every esptool image must name its chip (`params["chip"] = {"type":
+"ESP32-S3", "mac": "..."}`, both keys) or nothing is written; if the
+auto-reset check reads another chip type or MAC, the port reached another
+board, and nothing is written. The repo is public: the MAC comes from a
+suite's local, unpublished settings at run time, never from a literal in a
+file (the tests use a made-up, locally administered MAC).
 
 An identify hook that raises (could not look) stops the bench; the runner
 never flashes a board whose state nobody read.
@@ -112,10 +135,12 @@ returning `{"ok": bool, "detail": str, ...}`; a hook that raises or returns
 anything else has failed. `on_start` runs before the start pass identifies
 the board (image: the first one the run needs there); a failure stops the
 bench, so nothing is identified or flashed and every bench group is
-NOT-RUN. `on_end` runs after the restore (straight after a lane crash, which
-skips the restore) on every run however it ended
-(image: the one the run believes the board is on, or None), but not once
-the lock is no longer ours; a failure, or not running, opens
+NOT-RUN. `on_end` runs after the last case and the end pass (the boards
+identified, an idle-unsafe image replaced by its board's idle-safe one), on
+every run however it ended, a lane crash included (image: the one the end
+pass found the board on, or None if it is on no image of the suite), but
+not once the lock is no longer ours, when the end hooks' board actions are
+skipped as before; a failure, or not running, opens
 `board_state.txt`, `index.txt` and `record.json`
 (`release_not_confirmed`) with `RELEASE NOT CONFIRMED: <board>: ...`. Both
 results are in `record.json` (`board_hooks`) and `board_state.txt`. `on_end`
@@ -268,20 +293,20 @@ the lock stays under the exited runner's PID until someone runs `clear`
 case, so a momentary read failure (SeaDrive mid-sync) ends the run as LOCK
 LOST at any case boundary; that also fails closed (spec section 7), and the
 run is re-run. A STOP during a pause still takes the lock back, for the
-restore and the release, but runs no start hooks and flashes nothing. A
+end pass and the release, but runs no start hooks and flashes nothing for
+cases that will not run. A
 board the resume cannot put back stops the run without losing the lock: the
 rest is NOT-RUN, the record and `index.txt` open with `STOPPED: <board> is
 <read>, expected <image> (<its expect value>), cannot flash`, and the
-release carries what was read. The end restore leaves that board as found
-(its note: `restore skipped: <STOPPED line>`); the other boards are
-restored, and the end hooks still run on every board, the stopped one
-included. With `--keep-lock PID` the run still hands the lock to that
+release carries what was read. The end pass leaves that board as found,
+like every other (unless it reads as an image not safe to leave idle), and
+the end hooks still run on every board, the stopped one included. With `--keep-lock PID` the run still hands the lock to that
 session at the end, so a resume stop leaves the bench held by the session,
 not free. If the bench is still free when you read that (or your session
 holds it), investigate the board before any other run, try to explain why
 it could not be put back, and tell your reviewer. A session's own `take --run <id>` of the run is a lost lock:
 `LOCK LOST` in the record, nothing written to the log, nothing released.
-`STOP` ends the run (the board is still restored unless the file says
-`norestore`; `now` also kills the check in progress -- on a remote host
+`STOP` ends the run (the end pass still runs; `now` also kills the check
+in progress -- on a remote host
 too: the remote line records `timeout`'s pid in the check's outdir, and
 the runner kills that process group once the local ssh is gone).
