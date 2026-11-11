@@ -262,7 +262,10 @@ way, the Holder is not its own.
   binding it was on before the passthrough. If an adapter cannot be put
   back (the Innomaker's probe sometimes times out), the release still
   happens, and its note opens with
-  `ADAPTER NOT RESTORED: <adapter> on <driver>, <why>`.
+  `ADAPTER NOT RESTORED: <adapter> on <driver>, <why>`. Its board reads
+  are required as for any release; a board it did not read is
+  `not read: <why>`, which leaves BOARD STATE UNKNOWN until the next run
+  identifies it at its start.
 - **Transmitting while a run is paused** is allowed, as for any role's
   take between a pause and its resume (section 6). The release note's
   account of what was transmitted lets the paused run's role weigh it; the
@@ -276,10 +279,7 @@ way, the Holder is not its own.
   first, it refuses unless `canmain2` is down, so a hand
   release that went wrong, or a crash, cannot leave a second ACKing node on
   CAN1 under checks that need none. Whether the runner or each suite's
-  start hook makes the check is the testers' to settle. Its board reads are
-  required as for any release; a board it did not read is
-  `not read: <why>`, which leaves BOARD STATE UNKNOWN until the next run
-  identifies it at its start.
+  start hook makes the check is the testers' to settle.
 - **A hand-take role does not flash a board.** When the Android bench
   tests need a board on a given image (the X2 jammer, or the X2's slcan
   dongle variant), this section gains how that image is loaded and put
