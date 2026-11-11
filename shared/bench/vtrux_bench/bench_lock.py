@@ -89,6 +89,13 @@ init named, the date of the retire line). Every later write to the retired
 log refuses. If the rename fails, the log stays where it was, retired, and
 retire run again finishes the rename, appending nothing. A rename here never
 replaces a file (rename_new): on Linux os.rename would.
+
+init at a move (section 4; check_predecessor): the new bench host makes its
+log only once the old host's retired log has synced beside it. init refuses
+unless the newest retired log there (bench-log.<host>.<YYYYMMDD>.jsonl that
+replays and ends in a retire) names this host as `to`. The first log ever,
+with no bench-log.*.jsonl beside it at all, is the one exception; a damaged
+log is never a retired copy.
 """
 
 import argparse
@@ -135,6 +142,7 @@ REQUIRED = {
 }
 SHA_RE = re.compile(r"[0-9a-f]{64}\Z")
 DAMAGED_RE = re.compile(r"bench-log\.\d{8}T\d{6}\.damaged\.jsonl\Z")
+RETIRED_RE = re.compile(r"bench-log\.[A-Za-z0-9][A-Za-z0-9.-]*\.\d{8}\.jsonl\Z")
 LOG_NAME = os.path.join("firmware", "bench-log.jsonl")
 REPAIR_TMP = ".repair-tmp"      # the new log while a repair writes it
 LOCK_WAIT_S = 10.0
@@ -704,6 +712,7 @@ def init(path, who):
                       % (path + REPAIR_TMP))
     if not os.path.isdir(os.path.dirname(os.path.abspath(path))):
         raise Refused("no folder for %s" % path)
+    check_predecessor(path, this_host())
     ev = {"ts": now(), "who": who, "event": "init", "host": this_host(),
           "env": env}
     apply(new_state(), ev)
@@ -713,6 +722,59 @@ def init(path, who):
         f.flush()
         os.fsync(f.fileno())
     return line
+
+
+def check_predecessor(path, host):
+    """init's condition at a move (section 4; gen-inhibit reviewer,
+    2026-11-11): the new bench host runs init only once the retired log has
+    synced there. Refused unless the newest retired log beside the path
+    (RETIRED_RE: bench-log.<host>.<YYYYMMDD>.jsonl, a log that replays and
+    ends in a retire) names this host as `to`. The one exception is the
+    first log ever: no bench-log.*.jsonl at all beside it. A damaged log
+    (repair's aside) is never a retired copy, but it is a bench-log.*.jsonl,
+    so it alone refuses; so does a retired-named file that does not
+    replay."""
+    folder = os.path.dirname(os.path.abspath(path))
+    base = os.path.basename(path)
+    logs = sorted(n for n in os.listdir(folder) if n != base
+                  and n.startswith("bench-log.") and n.endswith(".jsonl"))
+    if not logs:
+        return None
+    copies = []
+    for n in logs:
+        if not RETIRED_RE.match(n):
+            continue
+        try:
+            with open(os.path.join(folder, n), "rb") as f:
+                st = replay(split_lines(f.read()))
+        except (Refused, UnicodeDecodeError) as e:
+            raise Refused("%s is named as a retired log but does not replay "
+                          "(%s): init refuses until it is sorted out" % (n, e))
+        if st["retired"] is None:
+            raise Refused("%s is named as a retired log but does not end in a "
+                          "retire: init refuses until it is sorted out" % n)
+        copies.append((st["retired"]["ts"], n, st["retired"]))
+    if not copies:
+        raise Refused("beside %s are %s, but no retired log "
+                      "(bench-log.<host>.<YYYYMMDD>.jsonl): init makes the "
+                      "first log only where no bench-log.*.jsonl exists, and "
+                      "otherwise waits for the old host's retired log to sync"
+                      % (base, ", ".join(logs)))
+    ts, n, r = max(copies, key=lambda c: _ts_key(c[0]))
+    if r["to"].upper() != host.upper():
+        raise Refused("the newest retired log here, %s (retired %s), moved "
+                      "the bench to %s, not to this host %s: the retired log "
+                      "naming this host has not synced yet, or this is the "
+                      "wrong host" % (n, ts, r["to"], host))
+    return n
+
+
+def _ts_key(ts):
+    """A retire line's ts as an aware datetime, for ordering copies."""
+    try:
+        return datetime.datetime.fromisoformat(ts)
+    except ValueError:
+        raise Refused("a retired log's retire ts %r is not ISO 8601" % ts)
 
 
 def take(path, who, pid, run=None, note=None):

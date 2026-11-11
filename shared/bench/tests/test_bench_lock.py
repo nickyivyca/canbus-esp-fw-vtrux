@@ -1065,9 +1065,85 @@ def test_retire():
     rc, out, _e = cli("--log", aside, "status")
     check(rc == 0 and "RETIRED" in out and "madhouse-debian" in out,
           "status of the retired log: %s" % out)
-    B.init(p, GI)
-    check(B.read_state(p)["holder"] is None and file_bytes(aside) == got,
-          "a new log beside the retired one")
+    msg = refused(B.init, p, GI)
+    check("madhouse-debian" in msg and not os.path.exists(p) and
+          file_bytes(aside) == got,
+          "no init here: the retired log moved the bench elsewhere: %s" % msg)
+
+
+def retired_log(folder_path, name, to, ts="2026-11-11T12:00:00-08:00",
+                host=None):
+    """A retired log by hand: init, take, release, retire to `to`."""
+    gone = 4194000
+    ls = [init_line(host=host), jl("take", CI, pid=gone),
+          jl("release", CI, boards=BD),
+          json.dumps({"ts": ts, "who": GI, "event": "retire", "to": to,
+                      "reason": "move"}, separators=(",", ":"))]
+    p = os.path.join(os.path.dirname(folder_path), name)
+    with open(p, "w", encoding="utf-8", newline="\n") as f:
+        f.write("".join(l + "\n" for l in ls))
+    return p
+
+
+def test_init_predecessor():
+    """SPEC 4 the new bench host runs init only once the renamed copy is
+    present there through the sync (gen-inhibit reviewer, 2026-11-11: in
+    code): init refuses unless the newest retired log beside the path names
+    this host as `to`; the first log ever (no bench-log.*.jsonl at all) is
+    the one exception; a damaged log is never a retired copy; a
+    retired-named file that does not replay refuses."""
+    me = socket.gethostname()
+    p = folder("pred_first")
+    B.init(p, CI)
+    check(os.path.exists(p), "the first log ever: init")
+    p = folder("pred_missing")
+    with open(os.path.join(os.path.dirname(p),
+                           "bench-log.20261022T010101.damaged.jsonl"), "w",
+              encoding="utf-8", newline="\n") as f:
+        f.write("{x\n")
+    msg = refused(B.init, p, CI)
+    check("no retired log" in msg and not os.path.exists(p),
+          "a damaged log only (the copy not synced): %s" % msg)
+    p = folder("pred_damaged_named")
+    q = retired_log(p, "bench-log.OLD-HOST.20261111.jsonl", me)
+    os.rename(q, os.path.join(os.path.dirname(p),
+                              "bench-log.20261111T120000.damaged.jsonl"))
+    msg = refused(B.init, p, CI)
+    check("no retired log" in msg and not os.path.exists(p),
+          "a damaged log's name is never a retired copy, whatever it holds: "
+          "%s" % msg)
+    p = folder("pred_other")
+    retired_log(p, "bench-log.OLD-HOST.20261111.jsonl", "SOME-OTHER-HOST")
+    msg = refused(B.init, p, CI)
+    check("SOME-OTHER-HOST" in msg and not os.path.exists(p),
+          "the copy names another host: %s" % msg)
+    p = folder("pred_newest")
+    retired_log(p, "bench-log.OLD-HOST.20261101.jsonl", me,
+                ts="2026-11-01T12:00:00-08:00")
+    retired_log(p, "bench-log.MIDDLE-HOST.20261111.jsonl", "SOME-OTHER-HOST",
+                ts="2026-11-11T12:00:00-08:00")
+    msg = refused(B.init, p, CI)
+    check("SOME-OTHER-HOST" in msg and not os.path.exists(p),
+          "an older move here does not stand in for the newest: %s" % msg)
+    p = folder("pred_bad_copy")
+    q = retired_log(p, "bench-log.OLD-HOST.20261111.jsonl", me)
+    with open(q, "a", encoding="utf-8", newline="\n") as f:
+        f.write("{garbage\n")
+    msg = refused(B.init, p, CI)
+    check("does not replay" in msg and not os.path.exists(p),
+          "a retired-named file that does not replay: %s" % msg)
+    p = folder("pred_ok")
+    retired_log(p, "bench-log.OLD-HOST.20261101.jsonl", "SOME-OTHER-HOST",
+                ts="2026-11-01T12:00:00-08:00")
+    retired_log(p, "bench-log.OTHER-HOST.20261111.jsonl", me.swapcase())
+    B.init(p, CI)
+    check(B.read_state(p)["holder"] is None,
+          "the newest retired log names this host: init")
+    p = fresh("pred_end_to_end")
+    _st, _line, aside, _a = B.retire(p, GI, me, "a move to this host")
+    B.init(p, GIM)
+    check(B.read_state(p)["bench"]["host"] == me and os.path.exists(aside),
+          "retire to this host, then init beside the retired log")
 
 
 def test_retire_finish():
@@ -1233,7 +1309,7 @@ TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_repair_where, test_repair_replay, test_repair_changed,
          test_repair_leftovers, test_repair_finish, test_repair_cli,
          test_retire, test_retire_finish, test_retire_where,
-         test_retire_replay, test_hand_roles]
+         test_retire_replay, test_init_predecessor, test_hand_roles]
 
 
 # ---- mutants ------------------------------------------------------------
@@ -1749,6 +1825,8 @@ MUTANTS = {
         ("status hides the retire",
          _edit("        out.append(\"RETIRED: by %s at %s",
                "        out.append(\"retired: by %s at %s")),
+        ("init beside a retired log to elsewhere",
+         _edit("    check_predecessor(path, this_host())\n", "")),
     ],
     "test_retire_finish": [
         ("a second retire appends",
@@ -1781,6 +1859,26 @@ MUTANTS = {
         ("retire with a run paused",
          _edit("        if state[\"paused\"]:\n            raise Refused(\"retire, but run",
                "        if False:\n            raise Refused(\"retire, but run")),
+    ],
+    "test_init_predecessor": [
+        ("init never checks for the retired log",
+         _edit("    check_predecessor(path, this_host())\n", "")),
+        ("a damaged log counts as a retired copy",
+         _edit("RETIRED_RE = re.compile(r\"bench-log\\.[A-Za-z0-9][A-Za-z0-9.-]*\\.\\d{8}\\.jsonl\\Z\")",
+               "RETIRED_RE = re.compile(r\"bench-log\\..+\\.jsonl\\Z\")")),
+        ("the first-log exception wherever no copy is",
+         _edit("    if not copies:\n        raise Refused(\"beside %s are %s, but no retired log",
+               "    if not copies:\n        return None\n        raise Refused(\"beside %s are %s, but no retired log")),
+        ("a copy to any host",
+         _edit("    if r[\"to\"].upper() != host.upper():", "    if False:")),
+        ("the oldest copy decides",
+         _edit("    ts, n, r = max(copies, key=lambda c: _ts_key(c[0]))",
+               "    ts, n, r = min(copies, key=lambda c: _ts_key(c[0]))")),
+        ("a copy that does not replay is skipped",
+         _edit("        except (Refused, UnicodeDecodeError) as e:\n            raise Refused(\"%s is named as a retired log",
+               "        except (Refused, UnicodeDecodeError) as e:\n            continue\n            raise Refused(\"%s is named as a retired log")),
+        ("the host compared case-sensitively",
+         _edit("    if r[\"to\"].upper() != host.upper():", "    if r[\"to\"] != host:")),
     ],
     "test_hand_roles": [
         ("android not a role",
