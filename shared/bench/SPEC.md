@@ -240,7 +240,18 @@ way, the Holder is not its own.
   role.
 - **What a hand-take role leaves at its release:** every bench adapter it
   opened is closed, back on the driver it found it on, and the second
-  Innomaker on CAN1 is down. The release note says so. Its board reads are
+  Innomaker on CAN1 is down. The release note says so. Closed means a
+  SocketCAN interface is down, so the next opener sets its own bit rate and
+  mode, listen-only included, and a vendor-stack or libusb channel is
+  closed. Back on its driver covers a USB passthrough to the Android
+  emulator: the device is bound again to the driver or libusb binding it
+  was on before the passthrough.
+- **A run checks CAN1 at its start, and does not trust the note**
+  (charge-interposer reviewer's review, 2026-11-11): beside listening
+  first, it refuses unless CAN1's second Innomaker is down, so a hand
+  release that went wrong, or a crash, cannot leave a second ACKing node on
+  CAN1 under checks that need none. Whether the runner or each suite's
+  start hook makes the check is the testers' to settle. Its board reads are
   required as for any release; a board it did not read is
   `not read: <why>`, which leaves BOARD STATE UNKNOWN until the next run
   identifies it at its start.
