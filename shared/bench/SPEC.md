@@ -161,7 +161,9 @@ Board state, what is on each board, stays in
 - The run id the runner checks is its own, the one it took the lock with
   at start (section 8).
 - **At its run's end the runner releases** (user, 2026-10-22), after its end
-  hooks. It restores no board (user, 2026-11-11). Each board's read is the
+  hooks. It restores no board (user, 2026-11-11), except that a board left
+  on an image its suite marks not safe to leave idle first gets that
+  board's idle-safe image (Ruled, below). Each board's read is the
   one it made at the end, or `not read: <why>`: every board it has an image
   for, identified after its last case, and the WiCAN if an end hook read it.
 - **With `--keep-lock PID`** it instead releases and takes again in one
@@ -274,3 +276,13 @@ way, the Holder is not its own.
   ruled 2026-10-20 (`README.md`, "Boards and images"). Drafted by the
   gen-inhibit reviewer; reviewed and approved by the charge-interposer
   reviewer and the methodology owner (user, 2026-11-11).
+- **Except images not safe to leave idle** (user, 2026-11-11, on the
+  methodology owner's review). A suite marks each image that is not safe to
+  leave idle on the bench, such as one that floods CAN when nothing ACKs it
+  or one that boots armed. It also names an idle-safe image for each board
+  it marks one on. A run that would release at its end with a board on a
+  marked image loads that board's idle-safe image first, identified before
+  and after like any load. If that load fails, the release, the record and
+  `index.txt` open with `LEFT ON IDLE-UNSAFE IMAGE: <board> on <image>,
+  <why>`. A paused run (`free_paused`) leaves its boards as they are
+  (user, 2026-11-11).
