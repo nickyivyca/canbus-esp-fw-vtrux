@@ -80,15 +80,9 @@ fi
 # build can never leave the previous one behind to be run.
 build() {
   rm -f "$WORK/run"
-  local srcs=(test_l2_bridge.cpp "$HB_SH/cpp/twai_fake.cpp") f
-  for f in "$WORK"/*.cpp; do
-    case "$(basename "$f")" in test_*) continue ;; esac
-    srcs+=("$f")
-  done
-  for f in "${HB_FW_L2[@]}"; do srcs+=("fw/$f"); done
-  srcs+=(obj/*.o)
-  if ! g++ -std=c++11 -O2 "${INC[@]}" -DINTP_NO_SERIAL=1 -o "$WORK/run" \
-       "${srcs[@]}" > "$WORK/build.txt" 2>&1; then
+  hb_test_inputs test_l2_bridge "$WORK" "$WORK/fw" "$WORK/obj"
+  if ! g++ -std=c++11 -O2 "${INC[@]}" "${HB_T_DEFS[@]}" -o "$WORK/run" \
+       "${HB_T_SRCS[@]}" "${HB_T_OBJS[@]}" > "$WORK/build.txt" 2>&1; then
     head -5 "$WORK/build.txt"
     return 1
   fi
@@ -102,14 +96,10 @@ build() {
 # first.
 build_contract() {
   rm -f "$WORK/contract"
-  local srcs=(test_canport_contract.cpp "$HB_SH/cpp/twai_fake.cpp") f
-  for f in "$WORK"/*.cpp; do
-    case "$(basename "$f")" in test_*) continue ;; esac
-    srcs+=("$f")
-  done
-  srcs+=(fw/port_mcp2515.cpp fw/vehicle_port.cpp fw/port_view.cpp obj/*.o)
-  if ! g++ -std=c++11 -O2 "${INC[@]}" -o "$WORK/contract" \
-       "${srcs[@]}" > "$WORK/build.txt" 2>&1; then
+  hb_test_inputs test_canport_contract "$WORK" "$WORK/fw" "$WORK/obj"
+  if ! g++ -std=c++11 -O2 "${INC[@]}" ${HB_T_DEFS[@]+"${HB_T_DEFS[@]}"} \
+       -o "$WORK/contract" "${HB_T_SRCS[@]}" "${HB_T_OBJS[@]}" \
+       > "$WORK/build.txt" 2>&1; then
     head -5 "$WORK/build.txt"
     return 1
   fi

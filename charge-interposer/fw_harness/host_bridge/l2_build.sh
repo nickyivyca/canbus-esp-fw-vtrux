@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # How the host_bridge tests are built on the shared vehicle port (port step
 # 2b; tester, 2026-11-08), in one place, for run.sh and for the harness
-# checks that build test_l2_bridge from a copy (l2_mutations.sh,
+# checks that build a host_bridge test from a copy (l2_mutations.sh,
+# conformance_mutations.sh, hold_mutations.sh, rx_hook_mutations.sh,
 # rx_order_prefix_control.sh, tx_fail_banking_mutation.sh,
 # switch_discard_witness.py): a second hand-kept source or include list is
 # how a check ends up building something other than what run.sh builds.
+# (Acceptance run accept_2b_..._b467, 2026-11-10: conformance, hold and
+# rx-hook mutations kept their own lists, missed the shared include folders
+# idf_host.cpp needs, and their controls did not build. Since then each
+# test's sources come from hb_test_inputs, which run.sh uses too.)
 #
 # Sourced:
 #   . l2_build.sh
@@ -31,6 +36,15 @@
 #   HB_FW_L2                main/'s sources of the whole bridge, as
 #                           test_l2_bridge links them (main/CMakeLists.txt's
 #                           bridge variant)
+#   hb_test_inputs NAME B FW OBJ
+#                           what host_bridge test NAME is built from, B the
+#                           folder the tests and stand-ins are built from, FW
+#                           the main/ folder, OBJ hb_c_objs's folder; sets
+#                           HB_T_SRCS (the test, the fake's C++ interface,
+#                           every non-test .cpp in B, and the test's main/
+#                           sources), HB_T_OBJS (the C objects it links) and
+#                           HB_T_DEFS (its -D flags). Compile them with
+#                           -I B -I FW "${HB_INC_SHARED[@]}".
 #
 # Run:
 #   bash l2_build.sh OUT HB FW [g++ args]
@@ -100,6 +114,76 @@ hb_c_objs() {
   return $rc
 }
 
+hb_test_inputs() {
+  local name="$1" b="$2" fw="$3" obj="$4" f
+  # Glob our stand-ins rather than list them: a hand-kept source list going
+  # stale is how the gen-inhibit session built against old headers three
+  # times without noticing. Every test links the fake (as every test linked
+  # our own fake before 2b), its C object and its C++ interface.
+  HB_T_SRCS=("$b/$name.cpp" "$HB_SH/cpp/twai_fake.cpp")
+  HB_T_OBJS=("$obj/twai_fake.o")
+  HB_T_DEFS=()
+  for f in "$b"/*.cpp; do
+    case "$(basename "$f")" in test_*) continue ;; esac
+    HB_T_SRCS+=("$f")
+  done
+  # The vehicle port's C components, which the tests that build the bridge
+  # link.
+  local port_objs=("$obj/twai_port.o" "$obj/twai_port_ll.o" "$obj/can_port.o")
+  # The vehicle port's firmware side (port step 2b): vehicle_port.cpp sets
+  # twai_port up and registers it with can_port, port_view.cpp is how the
+  # bridge reaches a port by its index, and charger_port.cpp registers the
+  # MCP2515 driver with can_port (main/CMakeLists.txt).
+  local ports=("$fw/port_mcp2515.cpp" "$fw/vehicle_port.cpp" "$fw/port_view.cpp"
+               "$fw/charger_port.cpp")
+  # Firmware sources are listed per test: most tests want the chip model
+  # alone, and only the driver tests want the driver itself compiled in.
+  case "$name" in
+    test_tx_failed|test_mcp2515_busoff|test_tx_throughput|test_sameid_hold)
+      HB_T_SRCS+=("$fw/port_mcp2515.cpp") ;;
+    # The CanPort contract, for both ports (since port step 2b the vehicle
+    # port too: its PortView on twai_port and can_port).
+    test_canport_contract)
+      HB_T_SRCS+=("$fw/port_mcp2515.cpp" "$fw/vehicle_port.cpp" "$fw/port_view.cpp")
+      HB_T_OBJS+=("${port_objs[@]}")
+      ;;
+    # The stall trace is the only build that defines INTP_TX_TRACE, which
+    # compiles the per-pass instrumentation into the driver. No firmware
+    # variant defines it, so no firmware image carries it.
+    test_tx_stall_trace)
+      HB_T_SRCS+=("$fw/port_mcp2515.cpp")
+      HB_T_DEFS+=(-DINTP_TX_TRACE=1)
+      ;;
+    # Likewise the only host build that defines INTP_ORDER_WITNESS. One
+    # firmware variant defines it, witness (the bench's order-witness
+    # image); the project's build-switch rows (shared/tools R20,
+    # firmware/vtrux_checks.json) refuse it in a release image.
+    test_order_witness)
+      HB_T_SRCS+=("$fw/port_mcp2515.cpp")
+      HB_T_DEFS+=(-DINTP_ORDER_WITNESS=1)
+      ;;
+    # Spec 8.3's event-line form. The test #includes main.cpp itself (to
+    # reach its static reportEvents() and core without a src change), so
+    # main.cpp is NOT listed; built WITH serial, into the capturing Serial
+    # of Arduino.h, which only HOST_SERIAL_CAPTURE compiles in.
+    test_event_layout)
+      HB_T_SRCS+=("${ports[@]}" "$fw/machine.cpp")
+      HB_T_OBJS+=("${port_objs[@]}")
+      HB_T_DEFS+=(-DHOST_SERIAL_CAPTURE=1)
+      ;;
+    # L2 is the whole bridge: main.cpp itself, both ports and the core.
+    # Built with INTP_NO_SERIAL so it is the TRUCK image's code path --
+    # the one that actually goes in the vehicle, and the one whose
+    # `intp_serial` bit reads 0 on the wire.
+    test_l2_bridge)
+      for f in "${HB_FW_L2[@]}"; do HB_T_SRCS+=("$fw/$f"); done
+      HB_T_OBJS+=("${port_objs[@]}")
+      HB_T_DEFS+=(-DINTP_NO_SERIAL=1)
+      ;;
+  esac
+  return 0
+}
+
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -u
   if [ "$#" -lt 3 ]; then
@@ -111,14 +195,9 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   hb_shared || exit 2
   rm -f "$out"
   hb_c_objs "$out.obj" "$hb" "$fw" || exit 1
-  srcs=("$hb/test_l2_bridge.cpp" "$HB_SH/cpp/twai_fake.cpp")
-  for f in "$hb"/*.cpp; do
-    case "$(basename "$f")" in test_*) continue ;; esac
-    srcs+=("$f")
-  done
-  for f in "${HB_FW_L2[@]}"; do srcs+=("$fw/$f"); done
+  hb_test_inputs test_l2_bridge "$hb" "$fw" "$out.obj"
   g++ -std=c++11 -O2 -Wall -Wextra -I "$hb" -I "$fw" "${HB_INC_SHARED[@]}" \
-      -DINTP_NO_SERIAL=1 "$@" -o "$out" "${srcs[@]}" "$out.obj"/*.o || exit 1
+      "${HB_T_DEFS[@]}" "$@" -o "$out" "${HB_T_SRCS[@]}" "${HB_T_OBJS[@]}" || exit 1
   [ -x "$out" ] || exit 1
   exit 0
 fi

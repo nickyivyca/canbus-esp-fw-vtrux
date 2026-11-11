@@ -94,6 +94,14 @@ EVENT_FW = ("port_mcp2515.cpp", "vehicle_port.cpp", "port_view.cpp",
 CONTRACT_FW = ("port_mcp2515.cpp", "vehicle_port.cpp", "port_view.cpp")
 # the tests that link the port objects
 PORT_TESTS = ("test_canport_contract", "test_event_layout", "test_l2_bridge")
+# the tests that compile the MCP2515 driver and no other main/ source
+DRIVER_TESTS = ("test_tx_failed", "test_mcp2515_busoff", "test_tx_throughput",
+                "test_sameid_hold", "test_tx_stall_trace", "test_order_witness")
+# each test's -D flags (none for the rest)
+TEST_DEFS = {"test_l2_bridge": ("-DINTP_NO_SERIAL=1",),
+             "test_event_layout": ("-DHOST_SERIAL_CAPTURE=1",),
+             "test_tx_stall_trace": ("-DINTP_TX_TRACE=1",),
+             "test_order_witness": ("-DINTP_ORDER_WITNESS=1",)}
 RETIRED = ("twai_fake.h", "twai_fake.cpp", "driver/twai.h")
 
 
@@ -434,8 +442,12 @@ def check_build(ctx, calls, py, outp, tmp, fd, tp, cp):
         elif name == "test_canport_contract":
             assert sorted(port) == sorted(PORT_OBJS), (name, port)
             assert sorted(fw) == sorted(CONTRACT_FW), (name, fw)
+        elif name in DRIVER_TESTS:
+            assert not port and fw == ["port_mcp2515.cpp"], (name, port, fw)
         else:
-            assert not port and "vehicle_port.cpp" not in fw, (name, port, fw)
+            assert not port and not fw, (name, port, fw)
+        defs = sorted(x for x in a if x.startswith("-D"))
+        assert defs == sorted(TEST_DEFS.get(name, ())), (name, defs)
         assert not any(os.path.basename(s) == "twai_fake.cpp" and not same(s, srcs[1])
                        for s in srcs), (name, srcs)
         for f in RETIRED:
@@ -782,21 +794,17 @@ MUTANTS = [
     # by some test (the fake's by all of them), so a C source that does not
     # build always leaves a test unbuilt, which fails the run by itself: the
     # mutant is equivalent (the can-fail of 2026-11-09 found it surviving).
-    ("run.sh", "the fake not linked", 'objs=(${FAKE_OBJS[@]+"${FAKE_OBJS[@]}"})',
-     "objs=()"),
-    ("run.sh", "the fake's C++ interface not built", 'srcs=("$t" "$SH/cpp/twai_fake.cpp")',
-     'srcs=("$t")'),
-    ("run.sh", "the bridge without the port objects",
-     '      for f in "${HB_FW_L2[@]}"; do srcs+=("$SRC/$f"); done\n'
-     '      objs+=("${PORT_OBJS[@]}")\n',
-     '      for f in "${HB_FW_L2[@]}"; do srcs+=("$SRC/$f"); done\n'),
-    ("run.sh", "the event layout without the vehicle port's setup",
-     'PORTS=("$SRC/port_mcp2515.cpp" "$SRC/vehicle_port.cpp" "$SRC/port_view.cpp"',
-     'PORTS=("$SRC/port_mcp2515.cpp" "$SRC/port_view.cpp"'),
-    ("run.sh", "the contract test without the vehicle port",
-     '      srcs+=("$SRC/port_mcp2515.cpp" "$SRC/vehicle_port.cpp" "$SRC/port_view.cpp")\n'
-     '      objs+=("${PORT_OBJS[@]}")\n',
-     '      srcs+=("$SRC/port_mcp2515.cpp")\n'),
+    # Since 2026-11-11 each test's sources come from l2_build.sh's
+    # hb_test_inputs (below); run.sh takes them from it.
+    ("run.sh", "the test's own sources not taken", '  srcs=("${HB_T_SRCS[@]}")\n',
+     '  srcs=("${HB_T_SRCS[0]}")\n'),
+    ("run.sh", "the test's objects not taken",
+     '  objs=(${HB_T_OBJS[@]+"${HB_T_OBJS[@]}"})\n', "  objs=()\n"),
+    ("run.sh", "the test's defines not taken",
+     '  defs=(${HB_T_DEFS[@]+"${HB_T_DEFS[@]}"})\n', "  defs=()\n"),
+    ("run.sh", "every test built as test_l2_bridge",
+     '  hb_test_inputs "$name" "$B" "$SRC" "$W"\n',
+     '  hb_test_inputs test_l2_bridge "$B" "$SRC" "$W"\n'),
     ("run.sh", "a test missing an object still built", '  if [ -n "$missing" ] ||\n',
      "  if false ||\n"),
     ("run.sh", "the binaries in the system temp folder", 'bin="$W/$name"',
@@ -874,6 +882,37 @@ MUTANTS = [
     ("l2_build.sh", "the bridge without port_view",
      "HB_FW_L2=(main.cpp port_mcp2515.cpp vehicle_port.cpp port_view.cpp",
      "HB_FW_L2=(main.cpp port_mcp2515.cpp vehicle_port.cpp"),
+    # hb_test_inputs (moved here from run.sh, 2026-11-11)
+    ("l2_build.sh", "the fake not linked", '  HB_T_OBJS=("$obj/twai_fake.o")\n',
+     "  HB_T_OBJS=()\n"),
+    ("l2_build.sh", "the fake's C++ interface not built",
+     '  HB_T_SRCS=("$b/$name.cpp" "$HB_SH/cpp/twai_fake.cpp")\n',
+     '  HB_T_SRCS=("$b/$name.cpp")\n'),
+    ("l2_build.sh", "a stand-in left out",
+     "    case \"$(basename \"$f\")\" in test_*) continue ;; esac\n    HB_T_SRCS+=",
+     "    case \"$(basename \"$f\")\" in test_*|idf_host.cpp) continue ;; esac\n    HB_T_SRCS+="),
+    ("l2_build.sh", "the bridge without the port objects",
+     '      for f in "${HB_FW_L2[@]}"; do HB_T_SRCS+=("$fw/$f"); done\n'
+     '      HB_T_OBJS+=("${port_objs[@]}")\n',
+     '      for f in "${HB_FW_L2[@]}"; do HB_T_SRCS+=("$fw/$f"); done\n'),
+    ("l2_build.sh", "the bridge with serial",
+     '      HB_T_OBJS+=("${port_objs[@]}")\n      HB_T_DEFS+=(-DINTP_NO_SERIAL=1)\n',
+     '      HB_T_OBJS+=("${port_objs[@]}")\n'),
+    ("l2_build.sh", "the event layout without the vehicle port's setup",
+     'local ports=("$fw/port_mcp2515.cpp" "$fw/vehicle_port.cpp" "$fw/port_view.cpp"',
+     'local ports=("$fw/port_mcp2515.cpp" "$fw/port_view.cpp"'),
+    ("l2_build.sh", "the contract test without the vehicle port",
+     '      HB_T_SRCS+=("$fw/port_mcp2515.cpp" "$fw/vehicle_port.cpp" "$fw/port_view.cpp")\n'
+     '      HB_T_OBJS+=("${port_objs[@]}")\n',
+     '      HB_T_SRCS+=("$fw/port_mcp2515.cpp")\n'),
+    ("l2_build.sh", "the driver tests without the driver",
+     '    test_tx_failed|test_mcp2515_busoff|test_tx_throughput|test_sameid_hold)\n'
+     '      HB_T_SRCS+=("$fw/port_mcp2515.cpp") ;;\n',
+     '    test_tx_failed|test_mcp2515_busoff|test_tx_throughput|test_sameid_hold) ;;\n'),
+    ("l2_build.sh", "the stall trace without its switch",
+     "      HB_T_DEFS+=(-DINTP_TX_TRACE=1)\n", ""),
+    ("l2_build.sh", "the event layout without the capturing Serial",
+     "      HB_T_DEFS+=(-DHOST_SERIAL_CAPTURE=1)\n", ""),
 ]
 
 

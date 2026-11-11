@@ -26,29 +26,37 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
 fi
 HB="$(cd "$CODE/fw_harness/host_bridge" && pwd)"
 SRC="$(cd "$CODE/firmware/main" && pwd)"
+# How run.sh builds a host_bridge test (l2_build.sh): the shared folders
+# (port step 2b), their C objects, and hb_test_inputs's source set. Since
+# 2026-11-11: this script's own list missed the shared include folders that
+# idf_host.cpp (added at 2b) needs, so its control did not build in the 2b
+# acceptance run (accept_2b_..._b467).
+. "$HB/l2_build.sh"
+hb_shared || exit 2
 # The work folder is this run's own under the tree's scratch/, never the
 # system temp folder, removed when the script exits (scratch_run.sh).
 . "$CODE/scratch_run.sh" || exit 2
 scratch_run hold-mutations || exit 2
 WORK="$SCRATCH_RUN"
-mkdir -p "$WORK/driver" "$WORK/fw"
+mkdir -p "$WORK/fw" "$WORK/obj"
 cp "$HB"/*.cpp "$HB"/*.h "$WORK"/
-cp "$HB"/driver/*.h "$WORK/driver"/ 2>/dev/null || true
 cp "$SRC"/*.cpp "$SRC"/*.h "$WORK/fw"/
 cd "$WORK" || exit 2
+if ! hb_c_objs "$WORK/obj" "$WORK" "$WORK/fw" > "$WORK/build.txt" 2>&1; then
+  head -5 "$WORK/build.txt"
+  echo "*** the C sources DID NOT BUILD ***"
+  exit 1
+fi
 
-# test_sameid_hold as host_bridge/run.sh builds it: every non-test .cpp in
-# host_bridge plus the driver, from fw/ so a mutated fw/ file is compiled.
+# test_sameid_hold as host_bridge/run.sh builds it (hb_test_inputs: every
+# non-test .cpp in host_bridge plus the driver), from fw/ so a mutated fw/
+# file is compiled. -> 0 built, 1 not. The binary is removed first.
 build() {
   rm -f "$WORK/run"
-  local srcs=(test_sameid_hold.cpp)
-  for f in "$WORK"/*.cpp; do
-    case "$(basename "$f")" in test_*) continue ;; esac
-    srcs+=("$f")
-  done
-  srcs+=(fw/port_mcp2515.cpp)
-  if ! g++ -std=c++11 -O2 -I . -I fw -o "$WORK/run" "${srcs[@]}" \
-       > "$WORK/build.txt" 2>&1; then
+  hb_test_inputs test_sameid_hold "$WORK" "$WORK/fw" "$WORK/obj"
+  if ! g++ -std=c++11 -O2 -I "$WORK" -I "$WORK/fw" "${HB_INC_SHARED[@]}" \
+       ${HB_T_DEFS[@]+"${HB_T_DEFS[@]}"} -o "$WORK/run" "${HB_T_SRCS[@]}" \
+       "${HB_T_OBJS[@]}" > "$WORK/build.txt" 2>&1; then
     head -5 "$WORK/build.txt"
     return 1
   fi

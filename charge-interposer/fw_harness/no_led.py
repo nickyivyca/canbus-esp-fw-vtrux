@@ -10,6 +10,7 @@ and one mutant build.
     py -3.14 -B no_led.py --can-fail --build <build folder>
     py -3.14 -B no_led.py --mutant-build <variant> [--jobs N]
     py -3.14 -B no_led.py --self-test
+    py -3.14 -B no_led.py --self-test --can-fail
 
 A build folder is an ESP-IDF build's (firmware/build/<variant>/). Its
 project_description.json names the app ELF, the components and their
@@ -64,7 +65,11 @@ comment and a string, must still PASS (the stripping is not what passes).
 --mutant-build makes the one mutant build: run from a git checkout of this
 repo (the list's tree), in a shell exported for the interposer's ESP-IDF
 (the runner's "idf" shell), it clones the checkout's HEAD into this run's
-scratch folder, adds to firmware/main/main.cpp a global object whose
+scratch folder with, beside it, a read-only checkout shared-<tag> for each
+tag firmware/shared_pins.json pins (detached at the tag, fetched from the
+checkout, its commit checked against the pin; the clone's vtrux_tools.py
+runs shared/tools from it, R23; removed with git worktree remove after the
+build), adds to firmware/main/main.cpp a global object whose
 constructor calls board_led(BOARD_LED_LED1, true) (kept by the linker: the
 constructor table is never collected), builds <variant> there with
 charge-interposer/vtrux_tools.py build, and requires main.cpp in the build's
@@ -507,6 +512,70 @@ def _git(args, cwd):
     return r.stdout.strip()
 
 
+PINS_FILE = ("charge-interposer", "firmware", "shared_pins.json")
+
+
+def pinned_checkouts(pins_text, repo):
+    """[(tag, path, commit)]: the read-only checkouts the clone at repo needs
+    beside it, one shared-<tag> for each distinct tag shared_pins.json pins
+    (vtrux_tools.py runs shared/tools from ../shared-<tag>/ beside the
+    worktree's root, shared/tools R23), each to be detached at its tag,
+    whose commit is the pins'. Refused if the pins are unreadable, or one
+    tag is pinned at two commits."""
+    try:
+        pins = json.loads(pins_text)
+        by_tag = {}
+        for comp, p in sorted(pins.items()):
+            tag, commit = p["tag"], p["commit"]
+            if not (isinstance(tag, str) and tag and isinstance(commit, str) and commit):
+                raise ValueError("%s: no tag or commit" % comp)
+            if by_tag.setdefault(tag, commit) != commit:
+                raise Refused("shared_pins.json pins tag %s at two commits (%s, %s)"
+                              % (tag, by_tag[tag][:12], commit[:12]))
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        raise Refused("shared_pins.json unreadable: %s" % e)
+    parent = os.path.dirname(os.path.abspath(repo))
+    return [(t, os.path.join(parent, "shared-" + t), by_tag[t]) for t in sorted(by_tag)]
+
+
+def make_checkouts(repo, source, wanted):
+    """Each (tag, path, commit) of wanted as a worktree of the clone at
+    repo, detached at the tag, whose ref is fetched from source (the
+    checkout cloned) first, as pin.py requires refs/tags/<tag> in the
+    checkout. Checked: HEAD and the tag both the pin's commit. Returns the
+    paths made, in order, for the caller to remove (remove_checkouts); if
+    this refuses, it removes what it made first."""
+    made = []
+    try:
+        for tag, path, commit in wanted:
+            _git(["fetch", "-q", "--no-tags", source,
+                  "refs/tags/%s:refs/tags/%s" % (tag, tag)], repo)
+            _git(["worktree", "add", "-q", "--detach", path, tag], repo)
+            made.append(path)
+            head = _git(["rev-parse", "HEAD"], path)
+            tagged = _git(["rev-parse", "--verify", "refs/tags/%s^{commit}" % tag], path)
+            if head != commit or tagged != commit:
+                raise Refused("the checkout %s is at %s (tag %s at %s), not the pin's %s"
+                              % (path, head[:12], tag, tagged[:12], commit[:12]))
+    except Refused:
+        remove_checkouts(repo, made)
+        raise
+    return made
+
+
+def remove_checkouts(repo, paths):
+    """git worktree remove --force each; a path still there is printed as a
+    LEFTOVER (scratch_dir then removes the run folder that holds it)."""
+    for p in paths:
+        try:
+            _git(["worktree", "remove", "--force", p], repo)
+        except Refused as e:
+            print("no_led: %s" % e, flush=True)
+        if os.path.exists(p):
+            print("no_led: LEFTOVER checkout %s" % p, flush=True)
+    paths[:] = []
+
+
 # Windows: a process's working folder must be shorter than MAX_PATH (260),
 # and idf.py runs cmake in the build folder, whose own files nest about 60
 # characters deeper (WinError 267 inside a runner's tree, the build smoke
@@ -544,13 +613,29 @@ def mutant_build(variant, jobs, scratch_from=None):
         target = os.path.join(repo, *MUTANT_FILE)
         if not os.path.isfile(target):
             raise Refused("%s: not in %s" % ("/".join(MUTANT_FILE), head))
-        with open(target, "a", encoding="utf-8", newline="\n") as f:
-            f.write(MUTANT)
-        print("no_led: the mutant: %s at %s, plus a board_led(BOARD_LED_LED1, true) call; "
-              "building %s in %s" % ("/".join(MUTANT_FILE), head[:12], variant, repo), flush=True)
-        cmd = [sys.executable, "-B", os.path.join(repo, "charge-interposer", "vtrux_tools.py"),
-               "build", variant] + (["--jobs", str(jobs)] if jobs else [])
-        rc = subprocess.run(cmd, cwd=repo).returncode
+        try:
+            with open(os.path.join(repo, *PINS_FILE), encoding="utf-8") as f:
+                pins_text = f.read()
+        except OSError as e:
+            raise Refused("%s: %s" % ("/".join(PINS_FILE), e))
+        # The pinned checkouts the clone's vtrux_tools.py needs beside it
+        # (since port step 2b's launcher, shared/tools R23; the 2b acceptance
+        # run accept_2b_..._b467 found this clone without them), removed
+        # before the clone is.
+        made = make_checkouts(repo, here, pinned_checkouts(pins_text, repo))
+        try:
+            print("no_led: the pinned checkouts beside the clone: %s"
+                  % ", ".join(os.path.basename(p) for p in made), flush=True)
+            with open(target, "a", encoding="utf-8", newline="\n") as f:
+                f.write(MUTANT)
+            print("no_led: the mutant: %s at %s, plus a board_led(BOARD_LED_LED1, true) call; "
+                  "building %s in %s" % ("/".join(MUTANT_FILE), head[:12], variant, repo),
+                  flush=True)
+            cmd = [sys.executable, "-B", os.path.join(repo, "charge-interposer", "vtrux_tools.py"),
+                   "build", variant] + (["--jobs", str(jobs)] if jobs else [])
+            rc = subprocess.run(cmd, cwd=repo).returncode
+        finally:
+            remove_checkouts(repo, made)
         if rc:
             raise Refused("the mutant did not build (vtrux_tools.py build %s: exit %d)"
                           % (variant, rc))
@@ -728,6 +813,72 @@ def self_test():
                  lambda: write_elf(inp["elf"], list(STANDIN_SYMS) + ["board_led"]), True)):
             fn()
             expect(label, mutant_caught(inp["elf"])[0], want)
+    # The pinned checkouts beside the mutant's clone (since 2026-11-11).
+    two = json.dumps({"shared/tools": {"tag": "T2", "commit": "b" * 40},
+                      "shared/bench": {"tag": "T1", "commit": "a" * 40},
+                      "shared/twai_port": {"tag": "T2", "commit": "b" * 40}})
+    got = pinned_checkouts(two, os.path.join("W", "repo"))
+    expect("one checkout per distinct tag, shared-<tag> beside the clone",
+           [(t, os.path.relpath(p, "W"), c[:1]) for t, p, c in got],
+           [("T1", "shared-T1", "a"), ("T2", "shared-T2", "b")])
+    for label, text in (
+            ("a tag pinned at two commits is refused",
+             json.dumps({"a": {"tag": "T", "commit": "a" * 40},
+                         "b": {"tag": "T", "commit": "b" * 40}})),
+            ("a pin without a commit is refused", json.dumps({"a": {"tag": "T"}})),
+            ("unreadable pins are refused", "{not json")):
+        try:
+            pinned_checkouts(text, "repo")
+            got = "accepted"
+        except Refused:
+            got = "refused"
+        expect(label, got, "refused")
+    with scratch_dir.run("no-led-self-checkouts") as work:
+        src = os.path.join(work, "src")
+        os.makedirs(src)
+        _git(["init", "-q"], src)
+        with open(os.path.join(src, "f.txt"), "w", encoding="utf-8") as f:
+            f.write("one\n")
+        ident = ["-c", "user.name=t", "-c", "user.email=t@t"]
+        _git(ident + ["add", "f.txt"], src)
+        _git(ident + ["commit", "-q", "-m", "one"], src)
+        c1 = _git(["rev-parse", "HEAD"], src)
+        _git(["tag", "T1"], src)
+        with open(os.path.join(src, "f.txt"), "w", encoding="utf-8") as f:
+            f.write("two\n")
+        _git(ident + ["commit", "-q", "-a", "-m", "two"], src)
+        c2 = _git(["rev-parse", "HEAD"], src)
+        repo = os.path.join(work, "repo")
+        # as mutant_build clones: --shared, no tags fetched until asked
+        _git(["clone", "--shared", "-q", "--no-checkout", "--no-tags", src, repo], work)
+        _git(["checkout", "-q", "--detach", c2], repo)
+        want = pinned_checkouts(json.dumps({"x": {"tag": "T1", "commit": c1}}), repo)
+        try:
+            made = make_checkouts(repo, src, want)
+        except Refused as e:
+            made = []
+            expect("the checkout is made (%s)" % e, "refused", "made")
+        p = os.path.join(work, "shared-T1")
+        expect("the checkout is made beside the clone", made == [p] and os.path.isdir(p), True)
+        if made:
+            expect("the checkout is at the tag's commit", _git(["rev-parse", "HEAD"], p), c1)
+            expect("the tag is in the checkout",
+                   _git(["rev-parse", "--verify", "refs/tags/T1^{commit}"], p), c1)
+        remove_checkouts(repo, made)
+        expect("the checkout is removed", os.path.exists(p), False)
+        expect("and its worktree entry", "shared-T1" in _git(["worktree", "list"], repo), False)
+        for label, pin in (("a pin whose commit is not the tag's is refused", c2),
+                           ("a tag the source does not have is refused", None)):
+            w = pinned_checkouts(json.dumps({"x": {"tag": "T1" if pin else "T9",
+                                                   "commit": pin or c1}}), repo)
+            try:
+                make_checkouts(repo, src, w)
+                got = "made"
+            except Refused:
+                got = "refused"
+            expect(label, got, "refused")
+            expect("...and leaves no checkout", [d for d in os.listdir(work)
+                                                 if d.startswith("shared-")], [])
     for depth, want in ((10, "ok"), (100, "ok"), (180, "refused")):
         d = mutant_build_dir(os.path.join("C:\\", *(["d" * 9] * (depth // 10)), "repo"), "bridge")
         try:
@@ -737,6 +888,71 @@ def self_test():
             got = "refused"
         expect("a mutant build folder %d characters long is %s" % (len(d), want), got, want)
     print("\nno_led --self-test: %s" % ("all checks OK" if not bad else "%d FAILED" % bad))
+    return 1 if bad else 0
+
+
+# --self-test --can-fail: each breaks the pinned checkouts one way (the
+# tester, 2026-11-11), and --self-test on a copy of this file so broken
+# must FAIL. (old, new): old must occur exactly once.
+SELF_MUTANTS = [
+    ("the tag not fetched",
+     '            _git(["fetch", "-q", "--no-tags", source,\n'
+     '                  "refs/tags/%s:refs/tags/%s" % (tag, tag)], repo)\n', ""),
+    ("the checkout's commit not checked",
+     "            if head != commit or tagged != commit:", "            if False:"),
+    ("the checkouts not removed",
+     '            _git(["worktree", "remove", "--force", p], repo)\n', "            pass\n"),
+    ("a refused make leaves its checkouts",
+     "    except Refused:\n        remove_checkouts(repo, made)\n        raise\n",
+     "    except Refused:\n        raise\n"),
+    ("one checkout for every tag",
+     '    return [(t, os.path.join(parent, "shared-" + t), by_tag[t]) for t in sorted(by_tag)]',
+     '    return [(t, os.path.join(parent, "shared-" + t), by_tag[t]) for t in sorted(by_tag)][:1]'),
+    ("a tag at two commits accepted",
+     "            if by_tag.setdefault(tag, commit) != commit:",
+     "            if by_tag.setdefault(tag, commit) != commit and False:"),
+    ("the checkout inside the clone, not beside it",
+     "    parent = os.path.dirname(os.path.abspath(repo))", "    parent = os.path.abspath(repo)"),
+]
+
+
+def self_can_fail():
+    """--self-test on this file unchanged (must PASS), then on a copy with
+    each SELF_MUTANTS edit (each must FAIL). 0 if so, 1 if not."""
+    import scratch_dir
+    with open(os.path.abspath(__file__), encoding="utf-8", newline="") as f:
+        text = f.read()
+    # the edits apply above this list only, where the code they break is
+    # (the list itself holds each old text too)
+    cut = text.index("# --self-test --can-fail: each breaks")
+    head, tail = text[:cut], text[cut:]
+    env = dict(os.environ, PYTHONPATH=CODE + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    bad = 0
+    with scratch_dir.run("no-led-self-canfail-code") as work:
+        def run(src, label):
+            p = os.path.join(work, "no_led_%d.py" % run.n)
+            run.n += 1
+            with open(p, "w", encoding="utf-8", newline="") as f:
+                f.write(src)
+            r = subprocess.run([sys.executable, "-B", p, "--self-test"], env=env,
+                               capture_output=True, text=True)
+            return r.returncode
+        run.n = 0
+        rc = run(text, "control")
+        print("%s control: --self-test on an unchanged copy exits %d" % (
+            "ok   " if rc == 0 else "WRONG", rc), flush=True)
+        bad += rc != 0
+        for label, old, new in SELF_MUTANTS:
+            if head.count(old) != 1:
+                print("WRONG %s: its text occurs %d times" % (label, head.count(old)), flush=True)
+                bad += 1
+                continue
+            rc = run(head.replace(old, new) + tail, label)
+            print("%s %s: %s" % ("ok   " if rc == 1 else "WRONG", label,
+                                 "fails" if rc == 1 else "exit %d" % rc), flush=True)
+            bad += rc != 1
+    print("no_led --self-test --can-fail: %s" % ("every mutant caught, the control passes"
+                                                 if not bad else "%d WRONG" % bad))
     return 1 if bad else 0
 
 
@@ -752,7 +968,7 @@ def main(argv):
     a = ap.parse_args(argv)
     try:
         if a.self_test:
-            return self_test()
+            return self_can_fail() if a.can_fail else self_test()
         if a.mutant_build:
             return mutant_build(a.mutant_build, a.jobs, a.scratch_from)
         if not a.build:

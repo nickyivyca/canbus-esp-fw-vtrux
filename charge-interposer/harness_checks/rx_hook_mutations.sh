@@ -27,24 +27,37 @@ if [ -n "${INTERPOSER_CODE:-}" ] && \
   exit 2
 fi
 SRC="$(cd "$CODE/fw_harness/host_bridge" && pwd)"
+FW="$(cd "$CODE/firmware/main" && pwd)"
+# How run.sh builds a host_bridge test (l2_build.sh): the shared folders
+# (port step 2b), their C objects, and hb_test_inputs's source set. Since
+# 2026-11-11: this script's own list missed the shared include folders that
+# idf_host.cpp (added at 2b) needs, so its control did not build in the 2b
+# acceptance run (accept_2b_..._b467).
+. "$SRC/l2_build.sh"
+hb_shared || exit 2
 # The work folder is this run's own under the tree's scratch/, never the
 # system temp folder, removed when the script exits (scratch_run.sh).
 . "$CODE/scratch_run.sh" || exit 2
 scratch_run rx-hook-mutations || exit 2
 WORK="$SCRATCH_RUN"
-mkdir -p "$WORK/driver"
+mkdir -p "$WORK/obj"
 cp "$SRC"/*.cpp "$SRC"/*.h "$WORK"/
-cp "$SRC"/driver/*.h "$WORK/driver"/ 2>/dev/null || true
 cd "$WORK" || exit 2
+if ! hb_c_objs "$WORK/obj" "$WORK" "$FW" > "$WORK/build.txt" 2>&1; then
+  head -5 "$WORK/build.txt"
+  echo "*** the C sources DID NOT BUILD ***"
+  exit 1
+fi
 
+# test_mcp2515_fake as run.sh builds it (hb_test_inputs), from the work
+# copy, so a mutated copy is the one compiled. -> 0 built, 1 not. The
+# binary is removed first.
 build() {
   rm -f "$WORK/run"
-  local srcs=(test_mcp2515_fake.cpp)
-  for f in "$WORK"/*.cpp; do
-    case "$(basename "$f")" in test_*) continue ;; esac
-    srcs+=("$f")
-  done
-  if ! g++ -std=c++11 -O2 -I . -o "$WORK/run" "${srcs[@]}" > "$WORK/build.txt" 2>&1; then
+  hb_test_inputs test_mcp2515_fake "$WORK" "$FW" "$WORK/obj"
+  if ! g++ -std=c++11 -O2 -I "$WORK" -I "$FW" "${HB_INC_SHARED[@]}" \
+       ${HB_T_DEFS[@]+"${HB_T_DEFS[@]}"} -o "$WORK/run" "${HB_T_SRCS[@]}" \
+       "${HB_T_OBJS[@]}" > "$WORK/build.txt" 2>&1; then
     head -5 "$WORK/build.txt"
     return 1
   fi
