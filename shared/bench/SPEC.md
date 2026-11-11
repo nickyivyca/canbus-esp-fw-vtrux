@@ -14,7 +14,8 @@ from the gen-inhibit reviewer's conditions (user, 2026-10-21).
 ## 1. What it is
 
 One shared bench (the WiCAN, the X2 and the adapters on the bench host, today
-NICKY-XPS) and one lock on it. The lock's state is the replay of an append-only log,
+NICKY-XPS, and madhouse-debian from port step 3, the rig step) and one lock
+on it. The lock's state is the replay of an append-only log,
 `$REVERSE_IT_DIR/firmware/bench-log.jsonl`. `shared/bench/vtrux_bench/bench_lock.py`
 is the only code that writes it, through its command line or its API (the
 runner uses the API). Nothing edits or deletes a line, by hand or by code; a
@@ -50,6 +51,7 @@ Board state, what is on each board, stays in
 | `withdraw` | `who` has a request queued | -- | its request leaves the queue |
 | `clear` | held, and the holder's `pid` is not running in the bench environment | `reason` (required) | free; board state unknown |
 | `lost` | written only by a runner whose run lost the lock | `run` | records the stop; board state unknown |
+| `retire` | the lock is free and no run is paused; on the bench host only, by a role that may take | `to` (the new bench host), `reason` (required) | the log is closed: every later write refuses; the command then renames the file aside (section 4) |
 | `repair` | the log does not replay, and no holder it can find is alive (below) | `damaged` (the old file's new name and sha256, each bad line's number and error), `dropped_runs`, `reason` (required) | see below |
 
 - `take` after `free_paused` with the same `run` resumes that run. A `take` of a
@@ -64,7 +66,7 @@ Board state, what is on each board, stays in
   past, so a state built on an illegal step is never replayed), then the
   `repair` event. After it the lock is free, the board state unknown (as
   after `clear`), and any held or paused run is ended. A repair is messaged
-  to both testers, like a clear.
+  to every role that may take (section 8), like a clear.
 - **If line 1 (the `init`) is the bad line**, there is nothing to keep:
   `repair` writes a fresh `init` for the bench host and environment it runs
   in, then the `repair` event. No hand edit or rename is ever needed.
@@ -93,6 +95,25 @@ Board state, what is on each board, stays in
   not a restructure (user, 2026-10-21).
 - **Implemented now: native Windows Python only** (user, 2026-10-21). WSL
   and any other environment are refused until implemented.
+- **Native Linux (`linux`) is implemented for the rig step** (user,
+  2026-11-11; port plan step 3), behind the same interface. A PID counts as
+  running if the process exists in the host's PID namespace; as on Windows,
+  access denied or unsure counts as running. The file lock is a POSIX
+  advisory lock on the log, held for the whole read, check and append. WSL
+  stays refused.
+- **Moving the bench to a new host** (user, 2026-11-11):
+  - On the old host, a role that may take runs `retire` (section 3) while
+    the lock is free with no paused run. It appends the `retire` event,
+    then renames the log aside, whole, as
+    `bench-log.<old host>.<date>.jsonl` beside it. No line is edited and
+    no rename is made by hand.
+  - The new bench host runs `init` at the default path only once the
+    renamed copy is present there through the sync and no
+    `bench-log.jsonl` is, so a sync cannot leave two logs side by side.
+    `init` already refuses a file that exists.
+  - The retired log is kept and never written again. Every command on the
+    old host then refuses, since the default path holds no log, and a
+    retired log refuses every write.
 - `pid` is the process that holds the bench for the holder: the runner's PID
   for a run, otherwise the session's long-lived process given explicitly
   (`--pid`). The command's own PID is never accepted, since it exits at once.
@@ -101,7 +122,7 @@ Board state, what is on each board, stays in
 
 ## 5. Command line
 
-`bench_lock.py init | status | take | release | request | withdraw | clear | repair`
+`bench_lock.py init | status | take | release | request | withdraw | clear | repair | retire`
 
 `free_paused`, like `lost`, is the runner's and is written only through the API.
 
@@ -211,7 +232,58 @@ way, the Holder is not its own.
 - **PID checks fail safe:** unsure, or access denied, counts as alive, so PID
   reuse can only make `clear` refuse, never wrongly allow it.
 - **Who may write:** the tester or implementor of gen-inhibit or
-  charge-interposer. Reviewers and other sessions cannot take.
+  charge-interposer, and the two hand-take roles below. Reviewers and
+  other sessions cannot take.
+- **Hand-take roles** (user, 2026-11-11), with these `who` values:
+  - `android`: the Git based CANBus Android development session, for its
+    runs that touch the bench's adapters or boards, such as passing a
+    bench Innomaker through to the Android emulator or replaying onto
+    CAN1. Its work on adapters that are not the bench's needs no take.
+  - `can-tools`: the CAN replay tooling session, for its can-tools work on
+    the bench.
+
+  They take by hand only, under their session's long-lived process, with
+  no `run`. So `free_paused` and `lost`, which are a runner's, never come
+  from them. A take, a release, a request and a withdraw work as for any
+  role.
+- **CAN1's second Innomaker** is the one added to CAN1 for the Android
+  tests (they may also pass other bench Innomakers through), named by
+  its `canctl` role, `canmain2`, once `canctl`'s redesign is installed;
+  its serial is in `$REVERSE_IT_DIR/firmware/bench-holder.md`, not here.
+  Down means its link is down, or the device unbound if a down link turns
+  out still to ACK; the rig step's adapter characterisation settles which.
+- **What a hand-take role leaves at its release:** every bench adapter it
+  opened is closed, back on the driver it found it on, and `canmain2` is
+  down. The release note says so, and says what it transmitted on which
+  bus. Closed means a SocketCAN interface is down, so the next opener sets
+  its own bit rate and mode, listen-only included, and a vendor-stack or
+  libusb channel is closed. Back on its driver covers a USB passthrough to
+  the Android emulator: the device is bound again to the driver or libusb
+  binding it was on before the passthrough. If an adapter cannot be put
+  back (the Innomaker's probe sometimes times out), the release still
+  happens, and its note opens with
+  `ADAPTER NOT RESTORED: <adapter> on <driver>, <why>`. Its board reads
+  are required as for any release; a board it did not read is
+  `not read: <why>`, which leaves BOARD STATE UNKNOWN until the next run
+  identifies it at its start.
+- **Transmitting while a run is paused** is allowed, as for any role's
+  take between a pause and its resume (section 6). The release note's
+  account of what was transmitted lets the paused run's role weigh it; the
+  resume runs the start hooks again in any case.
+- **Clearing an `android` hold:** the emulator is started detached, so it
+  can outlive the session whose process the take named. Before using the
+  bench after such a `clear`, the clearer checks `canctl status` for
+  unbound bench Innomakers, and stops any emulator that holds one.
+- **A run checks CAN1 at its start, and does not trust the note**
+  (charge-interposer reviewer's review, 2026-11-11): beside listening
+  first, it refuses unless `canmain2` is down, so a hand
+  release that went wrong, or a crash, cannot leave a second ACKing node on
+  CAN1 under checks that need none. Whether the runner or each suite's
+  start hook makes the check is the testers' to settle.
+- **A hand-take role does not flash a board.** When the Android bench
+  tests need a board on a given image (the X2 jammer, or the X2's slcan
+  dongle variant), this section gains how that image is loaded and put
+  back, under the idle-safe rule (Ruled, below).
 - **request:** one queued request per role; the holder cannot request.
 - **lost:** only by the role that took that run, never for the current
   holder's run; it also ends that run's paused state.
@@ -286,3 +358,19 @@ way, the Holder is not its own.
   `index.txt` open with `LEFT ON IDLE-UNSAFE IMAGE: <board> on <image>,
   <why>`. A paused run (`free_paused`) leaves its boards as they are
   (user, 2026-11-11).
+- **Linux, the move, and two hand-take roles** (user, 2026-11-11, in the
+  methodology owner's session; port plan step 3). The lock gains a native
+  Linux implementation for the bench's move to madhouse-debian, and a
+  `retire` event and command that close the old log and rename it aside at
+  a move, with the new host's `init` waiting until the sync shows the
+  renamed copy (sections 3 and 4, from the gen-inhibit reviewer's review). It gains the hand-take
+  roles `android` and `can-tools`: hand takes only, no runs, adapters
+  closed and `canmain2` down at release with what was transmitted noted,
+  `ADAPTER NOT RESTORED` when an adapter cannot be put back, a clearer's
+  check for a detached emulator, and no board flashing until the Android
+  bench tests need it (section 8, with the Android and CAN replay tooling
+  sessions' reviews). A run checks `canmain2` itself at its start (the
+  charge-interposer reviewer's review). The user ruled that
+  the methodology owner drafts this change, and that all of the lock's
+  consumers review it: both project reviewers, the CAN replay tooling
+  session and the Git based CANBus Android development session.
