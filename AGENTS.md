@@ -605,8 +605,12 @@ t0=$(cat /sys/class/net/eno1/statistics/tx_packets); sleep 5
 t1=$(cat /sys/class/net/eno1/statistics/tx_packets); echo $(( (t1-t0)/5 )) pps
 ```
 
-Idle on `madhouse-debian` is single-digit pps. Anything in the thousands while a
-sim runs means it is on the wire.
+On `madhouse-debian` the box's own traffic sets the baseline, a few tens of
+pps (25-29 before any sim ran and 13-27 with the interposer's emulated sims
+running, measured by the interposer tester on 2026-11-11; 29 the same day
+by the methodology owner). So compare against a reading taken before the
+sim starts. Anything in the thousands while a sim runs means it is on the
+wire.
 
 ### Killing background processes
 
