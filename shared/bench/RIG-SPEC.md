@@ -66,18 +66,25 @@ sessions and the bench scripts they edit cannot change or bypass.
   request carries its role and process ID. The service accepts a write only
   when the bench lock (`SPEC.md`) shows that role and process holding the
   bench. Reads are open to every client.
-- **K8. Sequencing** (user, 2026-11-11).
-  - A run never assumes the output is off: its first supply action is
-    output off, read back.
-  - Entering a test case: output off, then the case's setpoint and current
-    limit, each read back, then output on. The measured voltage must settle
-    within tolerance before the case starts.
+- **K8. Sequencing** (user, 2026-11-11, with the charge-interposer
+  reviewer's review).
+  - A run never assumes the output is off. At its start it turns the output
+    off, read back, then sets its setpoint and current limit, each read
+    back, then turns it on, before it identifies any board. The measured
+    voltage must settle within tolerance.
+  - A case that needs a power cycle (a power-up or cold-boot test) or a
+    setpoint other than the one in force gets the same: off, its setpoint
+    and current limit, on, each read back and settled. Every other case
+    keeps the output on at the setpoint in force, read back at the case's
+    entry. Which cases need a cycle or their own setpoint is each suite's,
+    in committed code.
   - Within a case a test may step the setpoint with the output on (for
     example a brownout), each step read back and within the limits.
   - At a run's end, and at a hand release, the output is turned off and
-    read back. Off is the supply's idle state, so the boards are unpowered
-    while nobody holds the bench, and each run powers them before it
-    identifies them.
+    read back. Off is the supply's idle state: the 12 V feed is off while
+    nobody holds the bench. A board may stay powered another way (an X2 with
+    its USB cable in), so a run never assumes a board was reset because the
+    supply went off.
 - **K9. Recorded.** Every command, readback and measurement goes into the
   service's log and into the record of the run or hand take, with the time
   it was read.
@@ -90,7 +97,11 @@ sessions and the bench scripts they edit cannot change or bypass.
   - a forced readback mismatch, and a garbled answer, each turn the output
     off and latch a fault that only a service restart clears;
   - a client that does not hold the bench cannot write;
-  - the polling rate and settle tolerance are measured and set.
+  - the polling rate and settle tolerance are measured and set;
+  - the 200 mA limit is shown to cover both boards together at their
+    peaks (the WiCAN's Wi-Fi transmitting, as in an OTA upload over its
+    hotspot, and an X2 booting), before a current-limit trip can be read as
+    a board fault (charge-interposer reviewer's review, user 2026-11-11).
 
 ## Ruled
 
