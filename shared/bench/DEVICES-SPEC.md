@@ -1,12 +1,13 @@
-# Bench rig devices: specification
+# Bench devices: specification
 
 Approved by the user 2026-11-11, in the gen-inhibit reviewer's session,
 which drafted it; read by the charge-interposer reviewer before merge
 (shared code rules, AGENTS.md "Shared code"). It covers bench devices other
 than the lock (`SPEC.md`) and the flasher (`FLASH-SPEC.md`): how serial
 devices are found, and the bench's programmable 12 V supply. Both are for
-port plan step 3, the rig step, when the bench moves to madhouse-debian
+port plan step 3, when the bench moves to madhouse-debian
 (`$REVERSE_IT_DIR/projects/vtrux/notes/plans/esp-shared-code-port.md`).
+Named `RIG-SPEC.md` until 2026-11-11 (renamed by the user's ruling).
 
 ## 1. Serial devices are found by device ID
 
@@ -53,7 +54,7 @@ sessions and the bench scripts they edit cannot change or bypass.
   1 mA), a garbled or missing answer, or a timeout makes the service turn
   the output off, read that back, and latch a fault (K6).
 - **K5. The output is watched.** While the output is on, the service polls
-  the measured voltage and current at the rate the rig step's
+  the measured voltage and current at the rate step 3's
   characterisation sets. A measured voltage above the commanded voltage
   plus a tolerance, or above the absolute limit, is taken as a fault in the
   supply or on its line: output off, read back, and a latched fault (K6).
@@ -88,7 +89,7 @@ sessions and the bench scripts they edit cannot change or bypass.
 - **K9. Recorded.** Every command, readback and measurement goes into the
   service's log and into the record of the run or hand take, with the time
   it was read.
-- **K10. Bring-up acceptance,** part of the rig step's characterisation,
+- **K10. Bring-up acceptance,** part of step 3's characterisation,
   each item recorded:
   - a request above the absolute limit (20 V against 14.5 V) is rejected
     and never reaches the supply;
