@@ -38,7 +38,7 @@ the branch and the range. If the reviewer sends back a conflict, merge
 check that cannot fail is not a check.
 
 **The bench** is shared with the other component's tester: one lock on the
-whole rig, the log `$REVERSE_IT_DIR/firmware/bench-log.jsonl`, written only
+whole setup, the log `$REVERSE_IT_DIR/firmware/bench-log.jsonl`, written only
 by `bench_lock.py`. The rules for taking, loaning and handing it back are in
 `$REVERSE_IT_DIR/firmware/bench-holder.md`. Take it when you have hardware
 work; release it when you are not actively running. You may loan it to your

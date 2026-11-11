@@ -457,7 +457,7 @@ because its patterns and values name what it looks for; its README
 
 ### The shared bench
 
-**The bench is shared by the per-component testers.** It is the whole rig
+**The bench is shared by the per-component testers.** It is the whole setup
 -- both boards, the PC, the USB adapters and the CAN segments -- and one
 hardware test runs at a time. **The lock is
 `$REVERSE_IT_DIR/firmware/bench-log.jsonl`,** an append-only log written
