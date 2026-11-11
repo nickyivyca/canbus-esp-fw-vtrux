@@ -128,10 +128,11 @@ a WiCAN worktree, would change or block WiCAN builds. An interposer run
 flashes the WiCAN only with a gen-inhibit image built elsewhere and pinned
 as a tool of the interposer's harness, as gen-inhibit pins its X2 images
 (`gen-inhibit/tools/x2_pin.json`): the pin file names the gen-inhibit
-commit and each file's offset, size and hashes. The run loads it at its
-start through the shared flasher, with the board's identity checked before
-and after, and flashes nothing built from its own tree (user, 2026-11-11,
-in the interposer reviewer's session).
+commit and the image's size and hashes. The run loads it at its start
+through the shared flasher's OTA upload (`shared/bench`) over the WiCAN's
+hotspot, with the board's identity read before and after, and flashes
+nothing built from its own tree (user, 2026-11-11, in the interposer
+reviewer's session).
 
 ## Session rules
 
@@ -456,7 +457,7 @@ because its patterns and values name what it looks for; its README
 
 ### The shared bench
 
-**The bench is shared by the per-component testers.** It is the whole rig
+**The bench is shared by the per-component testers.** It is the whole setup
 -- both boards, the PC, the USB adapters and the CAN segments -- and one
 hardware test runs at a time. **The lock is
 `$REVERSE_IT_DIR/firmware/bench-log.jsonl`,** an append-only log written
@@ -604,8 +605,12 @@ t0=$(cat /sys/class/net/eno1/statistics/tx_packets); sleep 5
 t1=$(cat /sys/class/net/eno1/statistics/tx_packets); echo $(( (t1-t0)/5 )) pps
 ```
 
-Idle on `madhouse-debian` is single-digit pps. Anything in the thousands while a
-sim runs means it is on the wire.
+On `madhouse-debian` the box's own traffic sets the baseline, a few tens of
+pps (25-29 before any sim ran and 13-27 with the interposer's emulated sims
+running, measured by the interposer tester on 2026-11-11; 29 the same day
+by the methodology owner). So compare against a reading taken before the
+sim starts. Anything in the thousands while a sim runs means it is on the
+wire.
 
 ### Killing background processes
 

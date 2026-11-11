@@ -27,7 +27,7 @@ Once you have told the reviewer, the question is the reviewer's. Do not put it
 to the user or restate the reviewer's options; the user rules on it in the
 reviewer's session. Your part resumes when the spec changes.
 
-**The bench belongs to the testers.** It is one rig shared by both projects,
+**The bench belongs to the testers.** It is one setup shared by both projects,
 with one lock on all of it, the log `$REVERSE_IT_DIR/firmware/bench-log.jsonl`,
 so the other project's tester may be running on it. Answer any question about
 whether the bench is clear from `bench_lock.py status` and a process list,
