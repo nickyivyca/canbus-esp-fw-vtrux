@@ -86,6 +86,26 @@ sessions and the bench scripts they edit cannot change or bypass.
     nobody holds the bench. A board may stay powered another way (an X2 with
     its USB cable in), so a run never assumes a board was reset because the
     supply went off.
+- **K8a. The service turns the output off itself** (user, 2026-11-11, on
+  the gen-inhibit tester's question). It watches the bench lock, and when
+  the lock no longer shows the holder that turned the output on (a
+  release, a `clear` of a dead holder, a `lost`, or another role's take),
+  it turns the output off and reads that back, so a crashed holder or a
+  skipped step cannot leave the 12 V feed on. A run's pause (`free_paused`)
+  is the exception: the output stays as it is, as a paused run leaves its
+  boards as they are (`SPEC.md`). Another role's take during the pause
+  turns it off like any other take (user, 2026-11-11, on the
+  charge-interposer reviewer's review). At the resume the runner reads the
+  output back; if it is not as the paused run left it (on, at its
+  setpoint), the runner cycles it as at a run's start (K8) and identifies
+  the boards again before the next case.
+- **K8b. The supply's own protection.** The service can set the KA3005P's
+  built-in over-voltage and over-current protection and read each back.
+  Whether it does is set in the root-owned configuration after step 3's
+  characterisation shows how this unit's protection behaves, for example
+  whether over-current cuts the output instead of limiting the current
+  (user, 2026-11-11). The software limits (K3), readback (K4) and watch
+  (K5) apply either way.
 - **K9. Recorded.** Every command, readback and measurement goes into the
   service's log and into the record of the run or hand take, with the time
   it was read.
@@ -98,6 +118,12 @@ sessions and the bench scripts they edit cannot change or bypass.
   - a forced readback mismatch, and a garbled answer, each turn the output
     off and latch a fault that only a service restart clears;
   - a client that does not hold the bench cannot write;
+  - the output goes off, read back, when the holder that turned it on
+    releases, is cleared or another role takes (during a pause too), and
+    stays as it is at a pause otherwise; a resume that finds it changed
+    cycles it and identifies the boards again (K8a);
+  - how the supply's own over-voltage and over-current protection behave,
+    so the user can set K8b;
   - the polling rate and settle tolerance are measured and set;
   - the 200 mA limit is shown to cover both boards together at their
     peaks (the WiCAN's Wi-Fi transmitting, as in an OTA upload over its
