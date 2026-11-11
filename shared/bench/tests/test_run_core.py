@@ -35,8 +35,30 @@ from vtrux_bench.run.lock import LockError         # noqa: E402
 from vtrux_bench.run.model import (Check, Figure, Group, Image, KnownFail,  # noqa: E402
                                    Result, Suite, SuiteError, Tol, Verdict)
 
+from vtrux_bench.run import canmain as CM         # noqa: E402
+
 PY = sys.executable
 SCRATCH = _scratch.run_dir("run_core")  # this run's own folder in the worktree's scratch/ (_scratch.py)
+
+# The canmain check (SPEC section 8) runs for real in every bench run here,
+# on made-up inputs: a sysfs tree with one USB root hub and no canmain, and
+# a Plug and Play listing with one root hub, so its probe "absent" passes in
+# either environment until a test plants canmain.
+CM_ROOT = os.path.join(SCRATCH, "_canmain_sys")
+CM_SERIAL = "TESTCANMAIN01"
+CM_FILE = os.path.join(SCRATCH, "_canmain_serial.md")
+os.makedirs(os.path.join(CM_ROOT, "bus", "usb", "devices", "usb1"))
+os.makedirs(os.path.join(CM_ROOT, "class", "net"))
+with open(os.path.join(CM_ROOT, "bus", "usb", "devices", "usb1", "serial"),
+          "w") as _f:
+    _f.write("0000:00:14.0\n")
+with open(CM_FILE, "w") as _f:
+    _f.write("# made up\n\n- canmain serial: `%s`\n" % CM_SERIAL)
+CM_IDS = ["USB\\ROOT_HUB30\\4&2D0A1B&0&0"]
+CM.SYS_ROOT = CM_ROOT
+CM.pnp_ids = lambda: list(CM_IDS)
+CM_SETTING = {"probe": "absent", "reason": "made-up bench, no canmain",
+              "iface": "canmain", "serial_file": CM_FILE}
 ROLE = "tester (test-suite)"
 # fake_esptool's chip: a locally administered MAC, no real board's
 FAKE_CHIP = {"type": "ESP32-S3", "mac": "02:00:00:00:00:01"}
@@ -84,7 +106,8 @@ class Env:
                  hosts={"local": {"python": [PY]}},
                  esptool={"argv": [PY, os.path.join(HERE, "fake_esptool.py")],
                           "port": "FAKE0", "baud": 115200},
-                 pause_poll_s=0.2, scratch=self.root)
+                 pause_poll_s=0.2, scratch=self.root,
+                 canmain_check=dict(CM_SETTING))
         s.update(kw)
         return s
 
@@ -2486,6 +2509,65 @@ def dead_child():
     return c.pid
 
 
+def test_canmain_check():
+    """SPEC section 8: a run checks CAN1 at its start, beside listening
+    first, and refuses unless canmain is down. The setting names the probe;
+    no setting refuses; "absent" checks that no adapter answering to
+    canmain is present; the reason is printed in the start line. A refusal
+    comes before the take: nothing in the log, no run folder. A run with
+    no bench group needs no setting."""
+    env, p = log_env("canmain")
+    s = suite([Group("g", [chk("a", "pass")], needs_lock=True)], role=CI)
+    base = env.settings(bench_lock_log=p)
+    n0 = len(log_events(p))
+
+    def refused(st, want):
+        try:
+            E.Engine(s, st, out=lambda *a: None).run()
+        except LockError as e:
+            msg = str(e)
+        else:
+            raise AssertionError("ran without a canmain check: %s" % want)
+        assert "canmain check" in msg and want in msg, (want, msg)
+        assert len(log_events(p)) == n0, "the refusal wrote to the log"
+        assert not os.path.exists(env.runs) or not os.listdir(env.runs), \
+            "the refusal made a run folder"
+
+    refused({k: v for k, v in base.items() if k != "canmain_check"},
+            "no canmain_check")
+    refused(dict(base, canmain_check=dict(CM_SETTING, probe="down")),
+            "is not one of")
+    refused(dict(base, canmain_check=dict(CM_SETTING, reason="")),
+            "needs reason")
+    dev = os.path.join(CM_ROOT, "bus", "usb", "devices", "1-4")
+    os.makedirs(dev)
+    with open(os.path.join(dev, "serial"), "w") as f:
+        f.write(CM_SERIAL + "\n")
+    CM_IDS.append("USB\\VID_1D50&PID_606F\\" + CM_SERIAL)
+    try:
+        refused(base, "is present" if E.BL.this_env() == "linux"
+                else "carry canmain's serial")
+    finally:
+        shutil.rmtree(dev)
+        CM_IDS.pop()
+    out = []
+    eng = E.Engine(s, base, out=out.append)
+    rec = eng.run()
+    assert verdicts(rec) == {"g/a": "PASS"}, verdicts(rec)
+    line = out[0] if out else ""
+    assert line.startswith("canmain check: probe absent (made-up bench, no "
+                           "canmain): canmain is down"), out
+    assert CM_SERIAL not in line, "the serial is printed: %s" % line
+    assert rec["canmain_check"] == line, rec.get("canmain_check")
+    plan = E.Engine(s, base).plan_lines()
+    assert any("canmain check, probe absent" in ln for ln in plan), plan
+    free = suite([Group("h", [chk("b", "pass")])], role=CI)
+    eng, rec = run(env, free, settings={k: v for k, v in base.items()
+                                        if k != "canmain_check"})
+    assert verdicts(rec) == {"h/b": "PASS"} and rec["canmain_check"] is None, \
+        rec.get("canmain_check")
+
+
 TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwrite,
          test_known_fail, test_lock_guard, test_flash_gate,
          test_chip_mismatch, test_chip_required, test_image_schedule,
@@ -2514,7 +2596,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_self_pause, test_pause_hooks, test_resume_identify,
          test_resume_stop, test_resume_stop_kept, test_stop_no_resume,
          test_own_pid, test_take_first, test_folder_release, test_release_end,
-         test_keep_lock]
+         test_keep_lock, test_canmain_check]
 
 
 # ---- mutants: each test's rule switched off -----------------------------
@@ -2645,6 +2727,7 @@ MUTANTS = {
     "test_folder_release": _rule("folder_release"),
     "test_release_end": _rule("release_end"),
     "test_keep_lock": _rule("keep_lock_one_step"),
+    "test_canmain_check": _rule("canmain_check"),
 }
 
 

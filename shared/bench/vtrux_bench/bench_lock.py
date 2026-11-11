@@ -14,6 +14,7 @@ name it (bench_lock_log); without it, it reads the Holder line.
     python -m vtrux_bench.bench_lock [--log PATH] withdraw --who W
     python -m vtrux_bench.bench_lock [--log PATH] clear --who W --reason TEXT
     python -m vtrux_bench.bench_lock [--log PATH] repair --who W --reason TEXT
+    python -m vtrux_bench.bench_lock [--log PATH] retire --who W --to HOST --reason TEXT
 
 `lost` and `free_paused` have no command: only a runner writes them,
 through lost() and free_paused() (sections 3, 5 and 6; the event was named
@@ -28,17 +29,23 @@ The bench host and environment (section 4). `init` writes the log's first
 line, recording this host and its execution environment (detect_env). Every
 later command, the runner's API calls included, refuses unless it runs on
 that host in that environment. Nothing else here names a host or an OS: the
-PID check and the file lock belong to the environment (ENVS), and only
-native Windows is implemented; WSL and anything else are refused.
+PID check and the file lock belong to the environment (ENVS). Native
+Windows (kernel32 for PIDs, msvcrt's byte lock) and native Linux in the
+host's PID namespace (kill(pid, 0) for PIDs, an open file description lock
+from fcntl for the file lock; user, 2026-11-11) are implemented; WSL, a
+Linux process in a nested PID namespace (its PIDs are not the host's) and
+anything else are refused. Unsure counts as running in both.
 
 The log (section 2). One compact ASCII JSON object per line, written only
 here. Every line has ts (local time with its UTC offset, to the second),
-who (a tester or implementor role, ROLE_RE) and event; any line may carry
-run and note. The other fields, per event (FIELDS):
+who (ROLE_RE: a tester or implementor role, or one of the hand-take roles
+android and can-tools, section 8) and event; any line may carry run and
+note. The other fields, per event (FIELDS):
 
     init      host, env
     take      pid (required, running in the bench environment), run
-              (optional)
+              (optional; never for a hand-take role, which takes by hand
+              only, so free_paused and lost never come from one)
     release   boards: {board: TEXT} for each of BOARDS, TEXT the image read
     free_paused  off the wire and when, or "not read: <why>"; free_paused
               also run
@@ -47,6 +54,11 @@ run and note. The other fields, per event (FIELDS):
     lost      run (required)
     repair    damaged: {name, sha256, kept, bad: [{line, error}]};
               dropped_runs: [run id]; reason (required)
+    retire    to (the new bench host), reason (both required)
+
+A release by a hand-take role needs a note: what it leaves (adapters closed,
+canmain down, or ADAPTER NOT RESTORED: ...) and what it transmitted on
+which bus (section 8).
 
 The state is the replay of the whole log, every event checked again against
 the rules (sections 3 and 8), unknown fields included. A line that does not
@@ -68,6 +80,15 @@ when line 1 is the bad one, a fresh init for this host and environment),
 then the repair event. Its replay frees the lock, ends any held or paused
 run, leaves the boards unknown and counts dropped_runs as used. init and
 repair are never appended by write().
+
+retire (sections 3 and 4, moving the bench to a new host) closes the log:
+on the bench host and environment, by a role that may take, while the lock
+is free with no run paused. It appends the retire event, then renames the
+log aside, whole, as bench-log.<old host>.<date>.jsonl beside it (the host
+init named, the date of the retire line). Every later write to the retired
+log refuses. If the rename fails, the log stays where it was, retired, and
+retire run again finishes the rename, appending nothing. A rename here never
+replaces a file (rename_new): on Linux os.rename would.
 """
 
 import argparse
@@ -79,8 +100,11 @@ import os
 import re
 import socket
 import sys
+import time
 
-ROLE_RE = re.compile(r"(tester|implementor) \((gen-inhibit|charge-interposer)\)\Z")
+ROLE_RE = re.compile(r"((tester|implementor) \((gen-inhibit|charge-interposer)\)"
+                     r"|android|can-tools)\Z")
+HAND_ROLES = ("android", "can-tools")     # hand takes only, no run (section 8)
 RUN_RE = re.compile(r"[A-Za-z0-9._-]{1,80}\Z")
 BOARDS = ("wican", "x2")
 NOT_READ = "not read"
@@ -95,6 +119,7 @@ FIELDS = {
     "clear": ("reason",),
     "lost": (),
     "repair": ("damaged", "dropped_runs", "reason"),
+    "retire": ("to", "reason"),
 }
 REQUIRED = {
     "init": ("host", "env"),
@@ -106,6 +131,7 @@ REQUIRED = {
     "clear": ("reason",),
     "lost": ("run",),
     "repair": ("damaged", "dropped_runs", "reason"),
+    "retire": ("to", "reason"),
 }
 SHA_RE = re.compile(r"[0-9a-f]{64}\Z")
 DAMAGED_RE = re.compile(r"bench-log\.\d{8}T\d{6}\.damaged\.jsonl\Z")
@@ -143,21 +169,20 @@ class WindowsEnv:
 
     @staticmethod
     def lock(f, wait_s):
-        """Wait up to wait_s for the lock; Refused if another writer keeps
-        it (msvcrt's own LK_LOCK would raise OSError after ~10 s)."""
+        """Wait up to wait_s for the lock, a byte lock on this handle (two
+        handles in one process exclude each other); Refused if another
+        writer keeps it (msvcrt's own LK_LOCK would raise OSError after
+        ~10 s)."""
         import msvcrt
-        import time
-        deadline = time.monotonic() + wait_s
-        while True:
+
+        def once():
             f.seek(0)
             try:
                 msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
-                return
+                return True
             except OSError:
-                if time.monotonic() >= deadline:
-                    raise Refused("the log is locked by another writer (waited "
-                                  "%g s); try again" % wait_s)
-                time.sleep(0.1)
+                return False
+        wait_lock(once, wait_s)
 
     @staticmethod
     def unlock(f):
@@ -166,12 +191,86 @@ class WindowsEnv:
         msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
 
 
-ENVS = {"windows": WindowsEnv}
+class LinuxEnv:
+    """Native Linux in the host's PID namespace (detect_env): kill(pid, 0)
+    for PIDs, and for the file lock a POSIX advisory lock on the whole log
+    held by its open file description (fcntl F_OFD_SETLK), not by the
+    process. A process-wide record lock (F_SETLK, lockf) would let a second
+    open of the log in the same process, such as another of the runner's
+    threads, take it while the first holds it, and closing either open
+    would drop it; on Windows two handles exclude each other, and so do two
+    open file descriptions here."""
+
+    @staticmethod
+    def pid_alive(pid):
+        """True unless the process is certainly gone (ESRCH). Access denied
+        (EPERM: it exists, another user's) or any other error counts as
+        alive, so `clear` refuses (section 8)."""
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+        return True
+
+    @staticmethod
+    def _ofd(f, kind):
+        import fcntl
+        import struct
+        cmd = getattr(fcntl, "F_OFD_SETLK", None)
+        if cmd is None or struct.calcsize("P") != 8:
+            raise Refused("this Python has no 64-bit F_OFD_SETLK: the log "
+                          "cannot be locked here")
+        # struct flock on 64-bit Linux: l_type and l_whence (short), l_start
+        # and l_len (off_t), l_pid (pid_t, 0 for an OFD lock), 32 bytes in
+        # all; l_whence SEEK_SET with l_start 0 and l_len 0 is the whole file
+        fcntl.fcntl(f.fileno(), cmd, struct.pack("=hh4xqqi4x", kind, 0, 0, 0, 0))
+
+    @classmethod
+    def lock(cls, f, wait_s):
+        """Wait up to wait_s for the lock; Refused if another writer keeps
+        it, or if the lock call itself fails (never written unlocked)."""
+        import errno
+        import fcntl
+
+        def once():
+            try:
+                cls._ofd(f, fcntl.F_WRLCK)
+                return True
+            except OSError as e:
+                if e.errno in (errno.EAGAIN, errno.EACCES):
+                    return False
+                raise Refused("the file lock on the log failed: %s" % e)
+        wait_lock(once, wait_s)
+
+    @classmethod
+    def unlock(cls, f):
+        import fcntl
+        cls._ofd(f, fcntl.F_UNLCK)
 
 
-def detect_env(os_name=None, platform=None, proc_version=None, environ=None):
+def wait_lock(once, wait_s):
+    """Call once() until it takes the lock (True), for up to wait_s;
+    Refused if another writer keeps it that long."""
+    deadline = time.monotonic() + wait_s
+    while not once():
+        if time.monotonic() >= deadline:
+            raise Refused("the log is locked by another writer (waited %g s); "
+                          "try again" % wait_s)
+        time.sleep(0.1)
+
+
+ENVS = {"windows": WindowsEnv, "linux": LinuxEnv}
+
+
+def detect_env(os_name=None, platform=None, proc_version=None, environ=None,
+               nspid=None):
     """The execution environment, detected explicitly: never from the host
-    name, which inside WSL is the Windows one."""
+    name, which inside WSL is the Windows one. nspid is the number of PID
+    namespaces this process is in (the NSpid line of /proc/self/status):
+    only 1, the host's, is "linux"; a nested namespace, or one that cannot
+    be read, is "linux-pidns", whose PIDs are not the host's (section 4)."""
     os_name = os.name if os_name is None else os_name
     platform = sys.platform if platform is None else platform
     environ = os.environ if environ is None else environ
@@ -188,8 +287,25 @@ def detect_env(os_name=None, platform=None, proc_version=None, environ=None):
         if ("microsoft" in proc_version.lower() or "WSL_DISTRO_NAME" in environ
                 or "WSL_INTEROP" in environ):
             return "wsl"
+        if nspid is None:
+            nspid = pid_namespaces()
+        if nspid != 1:
+            return "linux-pidns"
         return "linux"
     return platform
+
+
+def pid_namespaces():
+    """How many PID namespaces this process is in, from /proc/self/status's
+    NSpid line (one PID per namespace, the host's first); None if unread."""
+    try:
+        with open("/proc/self/status", encoding="ascii", errors="replace") as f:
+            for ln in f:
+                if ln.startswith("NSpid:"):
+                    return len(ln.split()[1:]) or None
+    except OSError:
+        pass
+    return None
 
 
 def this_env():
@@ -232,6 +348,7 @@ def new_state():
         "runs": set(),          # every run id the log has named
         "takers": {},           # run id -> the role that took it
         "boards": {"known": False, "why": "no release recorded yet"},
+        "retired": None,        # {who, to, reason, ts} from retire
         "events": 0,
     }
 
@@ -254,7 +371,8 @@ def check_fields(ev):
     who = ev.get("who")
     if not isinstance(who, str) or not ROLE_RE.match(who):
         raise Refused("who %r is not a tester or implementor role like "
-                      "'tester (charge-interposer)'" % (who,))
+                      "'tester (charge-interposer)', nor android or can-tools"
+                      % (who,))
     if not _text(ev, "ts"):
         raise Refused("%s without ts" % kind)
     for key in REQUIRED[kind]:
@@ -336,10 +454,16 @@ def apply(state, ev):
         state["bench"] = {"host": ev["host"], "env": ev["env"]}
         state["events"] += 1
         return state
+    r = state["retired"]
+    if r is not None:
+        raise Refused("the log was retired by %s at %s (the bench moved to %s): "
+                      "every write refuses" % (r["who"], r["ts"], r["to"]))
     h = state["holder"]
     if kind == "take":
         if h is not None:
             raise Refused("the lock is not free")
+        if who in HAND_ROLES and run is not None:
+            raise Refused("%s takes by hand only, with no run (section 8)" % who)
         mine = state["paused"].get(who)
         if mine is not None and run != mine["run"]:
             raise Refused("%s has run %s paused: resume it (take --run %s), "
@@ -360,6 +484,11 @@ def apply(state, ev):
     elif kind in ("release", "free_paused"):
         if h is None or h["who"] != who:
             raise Refused("%s by %s, who does not hold the lock" % (kind, who))
+        if who in HAND_ROLES and not _text(ev, "note"):
+            raise Refused("a release by %s needs a note: the adapters it "
+                          "leaves closed and canmain down (or ADAPTER NOT "
+                          "RESTORED: ...), and what it transmitted on which "
+                          "bus (section 8)" % who)
         if kind == "free_paused":
             if run != h["run"]:
                 raise Refused("free_paused names run %s, but the lock is held "
@@ -413,6 +542,16 @@ def apply(state, ev):
                            "(%s, %d line(s) kept, first bad line %d): %s" % (
                                who, ev["ts"], d["name"], d["kept"],
                                d["bad"][0]["line"], ev["reason"])}
+    elif kind == "retire":
+        if h is not None:
+            raise Refused("retire, but the lock is not free")
+        if state["paused"]:
+            raise Refused("retire, but run %s is paused: resume and finish it, "
+                          "or take and release it, first" % ", ".join(
+                              "%s of %s" % (p["run"], w)
+                              for w, p in sorted(state["paused"].items())))
+        state["retired"] = {"who": who, "to": ev["to"], "reason": ev["reason"],
+                            "ts": ev["ts"]}
     state["events"] += 1
     return state
 
@@ -745,17 +884,17 @@ def repair(path, who, reason):
     # unlock and the renames; Windows cannot rename a file held open. Between
     # the two renames the log does not exist; init refuses while tmp does.
     try:
-        os.rename(path, aside)
+        rename_new(path, aside)
     except FileExistsError:
         os.remove(tmp)
         raise Refused("%s exists already (two repairs in the same second?): "
                       "wait a second and repair again; nothing was moved"
                       % aside)
     if sha256_file(aside) != ev["damaged"]["sha256"]:
-        os.rename(aside, path)
+        rename_new(aside, path)
         os.remove(tmp)
         raise Refused("the log changed during the repair; nothing replaced")
-    os.rename(tmp, path)
+    rename_new(tmp, path)
     return after, line, aside
 
 
@@ -790,7 +929,7 @@ def finish_repair(path):
     if sha256_file(aside) != last["damaged"]["sha256"]:
         raise Refused("%s: %s's sha256 is not the one its repair event "
                       "records; nothing moved" % (why, aside))
-    os.rename(tmp, path)
+    rename_new(tmp, path)
     return state, ls[-1], aside
 
 
@@ -798,6 +937,65 @@ def aside_name():
     """The damaged log's new name, to the second."""
     return "bench-log.%s.damaged.jsonl" % datetime.datetime.now().strftime(
         "%Y%m%dT%H%M%S")
+
+
+def rename_new(src, dst):
+    """Rename src to dst, never over an existing file: FileExistsError if
+    dst exists. Windows' os.rename already refuses; Linux's would replace
+    it, and with it a kept damaged or retired log."""
+    if os.path.lexists(dst):
+        raise FileExistsError(dst)
+    os.rename(src, dst)
+
+
+def retired_name(state):
+    """The retired log's new name (section 4): bench-log.<old host>.<date>
+    .jsonl, the host init named and the date of the retire line."""
+    return "bench-log.%s.%s.jsonl" % (state["bench"]["host"],
+                                      state["retired"]["ts"][:10].replace("-", ""))
+
+
+def retire(path, who, to, reason, note=None):
+    """Close the log at a move to a new bench host (sections 3 and 4):
+    append the retire event under the lock, then rename the log aside as
+    retired_name(). On a log already retired (an earlier retire whose
+    rename failed) only the rename is made. Returns (state, the retire
+    line, the retired log's path, True if this call appended the line)."""
+    folder = os.path.dirname(os.path.abspath(path))
+    with locked(path) as f:
+        state = _read(f)
+        appended = state["retired"] is None
+        if appended:
+            ev = {k: v for k, v in {"ts": now(), "who": who, "event": "retire",
+                                     "to": to, "reason": reason,
+                                     "note": note}.items() if v is not None}
+            try:
+                apply(state, ev)
+            except Refused as e:
+                raise Refused("%s (%s)" % (e, holder_text(state)))
+            aside = os.path.join(folder, retired_name(state))
+            if os.path.lexists(aside):
+                raise Refused("%s exists already: nothing appended" % aside)
+            line = line_of(ev)
+            f.seek(0, os.SEEK_END)
+            f.write((line + "\n").encode("ascii"))
+            f.flush()
+            os.fsync(f.fileno())
+        else:
+            f.seek(0)
+            line = split_lines(f.read())[-1]
+            aside = os.path.join(folder, retired_name(state))
+            if os.path.normcase(os.path.abspath(path)) == os.path.normcase(aside):
+                raise Refused("%s is the retired log: it is closed, and "
+                              "nothing is left to do" % path)
+    # every write refuses the retired log, so nothing appends between the
+    # unlock and the rename; Windows cannot rename a file held open
+    try:
+        rename_new(path, aside)
+    except OSError as e:
+        raise Refused("the log is retired, but renaming it to %s failed (%s): "
+                      "run retire again to finish the rename" % (aside, e))
+    return state, line, aside, appended
 
 
 def sha256_file(path):
@@ -816,8 +1014,12 @@ def held_by_run(state, who, run):
 
 def status_lines(state):
     b0 = state["bench"]
-    out = ["bench: host %s, %s environment" % (b0["host"], b0["env"]),
-           "holder: %s" % holder_text(state)]
+    out = ["bench: host %s, %s environment" % (b0["host"], b0["env"])]
+    r = state["retired"]
+    if r is not None:
+        out.append("RETIRED: by %s at %s, the bench moved to %s: %s; every "
+                   "write refuses" % (r["who"], r["ts"], r["to"], r["reason"]))
+    out.append("holder: %s" % holder_text(state))
     h = state["holder"]
     if h is not None and not bench_impl(state).pid_alive(h["pid"]):
         out.append("  its pid %d is NOT RUNNING in the bench environment"
@@ -894,11 +1096,30 @@ def main(argv=None):
     s = sub.add_parser("repair", help="replace a log that does not replay")
     s.add_argument("--who", required=True)
     s.add_argument("--reason", required=True)
+    s = sub.add_parser("retire", help="close the log at a move to a new "
+                       "bench host, and rename it aside")
+    s.add_argument("--who", required=True)
+    s.add_argument("--to", required=True, help="the new bench host")
+    s.add_argument("--reason", required=True)
+    s.add_argument("--note")
     a = p.parse_args(argv)
     try:
         path = a.log or default_log()
         if a.cmd == "init":
             print(init(path, a.who))
+            return 0
+        if a.cmd == "retire":
+            st, line, aside, appended = retire(path, a.who, a.to, a.reason,
+                                               note=a.note)
+            if appended:
+                print(line)
+            else:
+                print("the log was already retired (%s); the rename is "
+                      "finished" % line)
+            print("the retired log is now %s; every write to it refuses, "
+                  "and the new bench host runs init once the sync shows this "
+                  "file and no %s" % (aside, os.path.basename(path)))
+            print("\n".join(status_lines(st)))
             return 0
         if a.cmd == "repair":
             finishing = (not os.path.exists(path)

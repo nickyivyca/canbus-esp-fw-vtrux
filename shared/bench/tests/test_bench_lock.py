@@ -10,10 +10,13 @@ Written from the specification, reverse-it firmware/bench-lock-spec.md
 (user, 2026-10-21). Each test names the spec sections it checks (SPEC), and
 each mutant breaks one rule of those sections.
 
-Runs in native Windows Python only, the one environment bench_lock
-implements (section 4); the logs it makes name this host as the bench.
-Other hosts and environments are simulated by patching this_host and
-this_env, or by writing an init line by hand.
+Runs in the environments bench_lock implements (section 4): native Windows
+and native Linux in the host's PID namespace; the logs it makes name this
+host and environment as the bench's. Other hosts and environments are
+simulated by patching this_host and this_env, or by writing an init line by
+hand. A test or mutant that only means something in the other environment
+(its PID check or its file lock) prints "NOT RUN (other env)" and is not
+counted: the verdict needs a run in each.
 
 A mutant is a text edit of bench_lock.py's source, executed into the module
 in place of the original; an edit whose text is not found exactly once is
@@ -50,6 +53,19 @@ BD = {"wican": "_man 25f50ac0, read over HTTP 02:00",
       "x2": "756d6714, read off the wire 02:02"}
 WSL_VERSION = ("Linux version 5.15.153.1-microsoft-standard-WSL2 "
                "(root@1234) (gcc 11.2.0) #1 SMP")
+ENV = B.detect_env()                  # this test run's own environment
+OTHER_ENV = "linux" if ENV == "windows" else "windows"
+AND = "android"
+CT = "can-tools"
+HAND_NOTE = ("adapters closed, canmain down; transmitted nothing")
+
+
+def only(env):
+    """Mark a test as meaningful in one environment only."""
+    def mark(t):
+        t.env = env
+        return t
+    return mark
 
 
 class Fail(Exception):
@@ -89,10 +105,10 @@ def hand_log(name, lines_):
     return p
 
 
-def init_line(host=None, env="windows"):
+def init_line(host=None, env=None):
     return json.dumps({"ts": "2026-10-21T03:00:00-07:00", "who": CI,
                        "event": "init", "host": host or socket.gethostname(),
-                       "env": env})
+                       "env": env or ENV})
 
 
 def dead_pid():
@@ -102,7 +118,7 @@ def dead_pid():
 
 
 def alive(pid):
-    return B.ENVS["windows"].pid_alive(pid)
+    return B.ENVS[ENV].pid_alive(pid)
 
 
 class Live:
@@ -382,7 +398,7 @@ def test_pid_wrong_env():
                                "pid": dead_pid(), "run": "r1"})])
     msg = refused(B.check_holder_gone, st)
     check("environment" in msg, "refused for the environment: %s" % msg)
-    st["bench"]["env"] = "windows"
+    st["bench"]["env"] = ENV
     B.check_holder_gone(st)
 
 
@@ -450,10 +466,10 @@ def test_init():
     B.init(p, CI)
     first = json.loads(lines(p)[0])
     check(first["event"] == "init" and first["who"] == CI
-          and first["host"] == socket.gethostname() and first["env"] == "windows",
+          and first["host"] == socket.gethostname() and first["env"] == ENV,
           "init names the host and environment: %s" % first)
     st = B.read_state(p)
-    check(st["holder"] is None and st["bench"]["env"] == "windows",
+    check(st["holder"] is None and st["bench"]["env"] == ENV,
           "a new log is free")
     refused(B.init, p, CI)
     check(len(lines(p)) == 1, "a second init wrote nothing")
@@ -464,19 +480,32 @@ def test_init():
 
 
 def test_detect_env():
-    """SPEC 4 the environment is detected explicitly; WSL and anything not
-    implemented are refused."""
+    """SPEC 4 the environment is detected explicitly; native Windows and
+    native Linux (in the host's PID namespace) are implemented; WSL, a
+    nested PID namespace and anything else are refused."""
+    lv = "Linux version 6.12.73-amd64"
     check(B.detect_env("nt", "win32", "", {}) == "windows", "windows")
-    check(B.detect_env("posix", "linux", WSL_VERSION, {}) == "wsl",
+    check(B.detect_env("posix", "linux", WSL_VERSION, {}, nspid=1) == "wsl",
           "WSL by /proc/version")
-    check(B.detect_env("posix", "linux", "Linux version 6.1.0-26-amd64", {
-        "WSL_DISTRO_NAME": "Debian"}) == "wsl", "WSL by its environment")
-    check(B.detect_env("posix", "linux", "Linux version 6.1.0-26-amd64", {})
-          == "linux", "native Linux")
+    check(B.detect_env("posix", "linux", lv, {"WSL_DISTRO_NAME": "Debian"},
+                       nspid=1) == "wsl", "WSL by WSL_DISTRO_NAME")
+    check(B.detect_env("posix", "linux", lv, {"WSL_INTEROP": "/run/x"},
+                       nspid=1) == "wsl", "WSL by WSL_INTEROP")
+    check(B.detect_env("posix", "linux", lv, {}, nspid=1) == "linux",
+          "native Linux in the host's PID namespace")
+    for n in (2, 3, None):
+        check(B.detect_env("posix", "linux", lv, {}, nspid=n) == "linux-pidns",
+              "%s PID namespace(s) is not the host's" % n)
     check(B.detect_env("posix", "darwin", "", {}) == "darwin", "other")
-    for env in ("wsl", "linux", "darwin"):
-        refused(B.env_impl, env)
+    for env in ("wsl", "linux-pidns", "darwin"):
+        msg = refused(B.env_impl, env)
+        check("not implemented" in msg, "%s refused: %s" % (env, msg))
     check(B.env_impl("windows") is B.WindowsEnv, "windows implemented")
+    check(B.env_impl("linux") is B.LinuxEnv, "linux implemented")
+    if ENV == "linux":
+        check(B.pid_namespaces() == 1, "this Linux run is in the host's PID "
+              "namespace (NSpid has one PID)")
+        check(B.detect_env() == "linux", "this run detects linux")
 
 
 def test_env_refusal():
@@ -506,7 +535,7 @@ def test_env_refusal():
 def test_env_mismatch():
     """SPEC 4 a log whose init names another environment or host refuses
     every command, whatever this environment is."""
-    for name, il in (("mismatch_env", init_line(env="linux")),
+    for name, il in (("mismatch_env", init_line(env=OTHER_ENV)),
                      ("mismatch_host", init_line(host="MADHOUSE-DEBIAN"))):
         p = hand_log(name, [il])
         refused(B.read_state, p)
@@ -710,7 +739,7 @@ def test_repair_init_bad():
         new = [json.loads(x) for x in lines(p)]
         check(len(new) == 2 and new[0]["event"] == "init" and
               new[0]["host"] == socket.gethostname() and
-              new[0]["env"] == "windows" and new[0]["who"] == GIM,
+              new[0]["env"] == ENV and new[0]["who"] == GIM,
               "%s: a fresh init for this host and environment" % what)
         rep = new[1]
         check(rep["event"] == "repair" and rep["damaged"]["kept"] == 0 and
@@ -929,14 +958,282 @@ def test_repair_cli():
         "no newline"), "the torn last line is the bad one")
 
 
+@only("linux")
+def test_pid_unsure():
+    """SPEC 4 (Linux) a PID counts as running if the process exists in the
+    host's PID namespace; access denied counts as running (8: PID checks
+    fail safe). PID 1 is root's: signal 0 to it is EPERM for any other
+    user, so clear refuses a holder under it."""
+    try:
+        os.kill(1, 0)
+    except PermissionError:
+        pass
+    else:
+        raise Fail("signal 0 to pid 1 was allowed: running as root, so EPERM "
+                   "cannot be shown here")
+    check(alive(1), "pid 1, another user's (EPERM), counts as running")
+    p = fresh("pid_unsure")
+    w(p, "take", CI, pid=1, run="r1")
+    msg = refused(B.write, p, ev("clear", GI, reason="gone?"))
+    check("still running" in msg and len(lines(p)) == 2,
+          "clear refuses a holder whose pid is access denied: %s" % msg)
+
+
+def test_file_lock_process():
+    """SPEC 2 the OS file lock held by another process keeps a writer out
+    for the whole read, check and append; 4 the environment's file lock."""
+    p = fresh("file_lock_process")
+    code = ("import sys, time; sys.path.insert(0, %r)\n"
+            "from vtrux_bench import bench_lock as B\n"
+            "with B.locked(%r):\n"
+            "    print('held', flush=True)\n"
+            "    time.sleep(3)\n" % (os.path.dirname(HERE), p))
+    child = subprocess.Popen([sys.executable, "-B", "-c", code],
+                             stdout=subprocess.PIPE, text=True)
+    try:
+        check(child.stdout.readline().strip() == "held",
+              "the other process took the lock")
+        with patched(LOCK_WAIT_S=0.5):
+            msg = refused(B.write, p, ev("take", CI, pid=ME, run="r1"))
+        check("locked by another writer" in msg,
+              "refused while another process held the lock: %s" % msg)
+    finally:
+        child.stdout.close()
+        child.wait(30)
+    check(len(lines(p)) == 1, "nothing written while it was held")
+    w(p, "take", CI, pid=ME, run="r1")
+    check(len(lines(p)) == 2, "written once the other process let go")
+
+
+def retired_files(p):
+    d = os.path.dirname(p)
+    return sorted(n for n in os.listdir(d)
+                  if re.match(r"bench-log\.[^.]+\.\d{8}\.jsonl\Z", n))
+
+
+FIXED_NOW = "2026-11-11T12:00:00-08:00"
+
+
+def test_retire():
+    """SPEC 3 retire: legal only when the lock is free and no run is
+    paused, by a role that may take, with to and reason; 4 it appends the
+    retire event, then renames the log aside, whole, as
+    bench-log.<old host>.<date>.jsonl beside it; the retired log refuses
+    every write; the default path then holds no log, so every command
+    there refuses, and init may make a new one; 5 status shows it."""
+    p = fresh("retire")
+    w(p, "take", CI, pid=ME, run="r1")
+    msg = refused(B.retire, p, GI, "madhouse-debian", "move")
+    check("not free" in msg and CI in msg, "held: refused, naming the holder: "
+          "%s" % msg)
+    w(p, "free_paused", CI, run="r1", boards=BD)
+    msg = refused(B.retire, p, GI, "madhouse-debian", "move")
+    check("paused" in msg and "r1" in msg, "a paused run: refused: %s" % msg)
+    w(p, "take", CI, pid=ME, run="r1")
+    w(p, "release", CI, boards=BD)
+    for who, to, reason in (("reviewer (gen-inhibit)", "m", "x"), (GI, "", "x"),
+                            (GI, "m", " "), (GI, None, "x"), (GI, "m", None)):
+        refused(B.retire, p, who, to, reason)
+    check(not retired_files(p) and os.path.exists(p), "refusals moved nothing")
+    before = file_bytes(p)
+    st, line, aside, appended = B.retire(p, GI, "madhouse-debian",
+                                         "port plan step 3")
+    e = json.loads(line)
+    check(appended and e["event"] == "retire" and e["who"] == GI and
+          e["to"] == "madhouse-debian" and e["reason"] == "port plan step 3",
+          "the retire line: %s" % line)
+    want = "bench-log.%s.%s.jsonl" % (socket.gethostname(),
+                                      e["ts"][:10].replace("-", ""))
+    check(os.path.basename(aside) == want and
+          os.path.dirname(aside) == os.path.dirname(os.path.abspath(p)),
+          "renamed beside it as %s: %s" % (want, aside))
+    check(not os.path.exists(p), "no log left at the default path")
+    got = file_bytes(aside)
+    check(got == before + (line + "\n").encode("ascii"),
+          "renamed whole: every old line unchanged, the retire line after")
+    check(st["retired"]["to"] == "madhouse-debian" and st["holder"] is None,
+          "the state says retired")
+    msg = refused(B.read_state, p)
+    check("no bench log" in msg, "the default path refuses: %s" % msg)
+    refused(B.write, p, ev("take", GI, pid=ME))
+    for e2 in (ev("take", GI, pid=ME), ev("request", GIM, note="x"),
+               ev("withdraw", GIM)):
+        msg = refused(B.write, aside, e2)
+        check("retired" in msg, "the retired log refuses %s: %s"
+              % (e2["event"], msg))
+    check(file_bytes(aside) == got, "nothing appended to the retired log")
+    rc, out, _e = cli("--log", aside, "status")
+    check(rc == 0 and "RETIRED" in out and "madhouse-debian" in out,
+          "status of the retired log: %s" % out)
+    B.init(p, GI)
+    check(B.read_state(p)["holder"] is None and file_bytes(aside) == got,
+          "a new log beside the retired one")
+
+
+def test_retire_finish():
+    """SPEC 4 no rename is made by hand: a retire whose rename fails leaves
+    the log retired where it was (every write refuses), and retire run
+    again finishes the rename, appending nothing; a taken name refuses
+    before anything is appended; the retired copy cannot be retired."""
+    p = fresh("retire_taken")
+    host = socket.gethostname()
+    taken = os.path.join(os.path.dirname(p), "bench-log.%s.20261111.jsonl"
+                         % host)
+    with open(taken, "wb") as f:
+        f.write(b"an older retired log\n")
+    before = file_bytes(p)
+    with patched(now=lambda: FIXED_NOW):
+        msg = refused(B.retire, p, GI, "madhouse-debian", "move")
+    check(taken in msg and file_bytes(p) == before and
+          file_bytes(taken) == b"an older retired log\n",
+          "a taken name: refused, nothing appended or moved: %s" % msg)
+    p = fresh("retire_finish")
+    tried = []
+
+    def held(src, dst):
+        tried.append(dst)
+        raise PermissionError("held open by the sync client")
+    with patched(rename_new=held):
+        msg = refused(B.retire, p, GI, "madhouse-debian", "move")
+    ls = lines(p)
+    check("run retire again" in msg and tried and os.path.exists(p) and
+          json.loads(ls[-1])["event"] == "retire",
+          "the rename failed: retired in place, says what to do: %s" % msg)
+    msg = refused(B.write, p, ev("take", GI, pid=ME))
+    check("retired" in msg, "the log left in place refuses writes: %s" % msg)
+    rc, out, _e = cli("--log", p, "status")
+    check(rc == 0 and "RETIRED" in out, "status: %s" % out)
+    rc, out, e = cli("--log", p, "retire", "--who", CI, "--to", "x",
+                     "--reason", "finish")
+    check(rc == 0 and "already retired" in out and not os.path.exists(p) and
+          lines(tried[0]) == ls,
+          "retire again finishes the rename, appending nothing: %d %s %s"
+          % (rc, out, e))
+    msg = refused(B.retire, tried[0], GI, "x", "again")
+    check("is the retired log" in msg and lines(tried[0]) == ls,
+          "the retired copy: refused: %s" % msg)
+
+
+def test_retire_where():
+    """SPEC 3 retire on the bench host only, by a role that may take; 4
+    never in another environment; 5 the command line, exit 2 refused."""
+    p = fresh("retire_where")
+    before = file_bytes(p)
+    with patched(this_host=lambda: "SOME-OTHER-HOST"):
+        msg = refused(B.retire, p, GI, "madhouse-debian", "move")
+    check("SOME-OTHER-HOST" in msg, "off the bench host: %s" % msg)
+    with patched(this_env=lambda: "wsl"):
+        msg = refused(B.retire, p, GI, "madhouse-debian", "move")
+    check("wsl" in msg, "under WSL: %s" % msg)
+    check(file_bytes(p) == before and not retired_files(p), "nothing moved")
+    rc, _o, e = cli("--log", p, "retire", "--who", "reviewer (gen-inhibit)",
+                    "--to", "madhouse-debian", "--reason", "move")
+    check(rc == 2 and "REFUSED" in e and file_bytes(p) == before,
+          "a reviewer: exit 2: %s" % e)
+    rc, out, e = cli("--log", p, "retire", "--who", GIM, "--to",
+                     "madhouse-debian", "--reason", "move", "--note", "n")
+    check(rc == 0 and "retired log is now" in out and "RETIRED" in out and
+          not os.path.exists(p) and len(retired_files(p)) == 1,
+          "the command retires and renames: %d %s %s" % (rc, out, e))
+
+
+def test_retire_replay():
+    """SPEC 2 unlisted fields are illegal, an illegal line fails closed; 3
+    retire's fields and when it is legal; nothing is legal after it."""
+    gone = dead_pid()
+    base = [init_line(), jl("take", CI, pid=gone, run="a1"),
+            jl("release", CI, boards=BD)]
+    rt = jl("retire", GI, to="madhouse-debian", reason="move")
+    st = B.replay(base + [rt])
+    check(st["retired"]["to"] == "madhouse-debian", "a retired log replays")
+    for what, ls in {
+            "a take after it": base + [rt, jl("take", GI, pid=gone)],
+            "a request after it": base + [rt, jl("request", GIM, note="x")],
+            "a second retire": base + [rt, rt],
+            "retire while held": base[:2] + [rt],
+            "retire with a run paused": base[:2] + [
+                jl("free_paused", CI, run="a1", boards=BD), rt],
+            "retire without to": base + [jl("retire", GI, reason="move")],
+            "retire without reason": base + [jl("retire", GI, to="m")],
+            "retire with an unknown field": base + [
+                jl("retire", GI, to="m", reason="r", host="X")],
+            "retire by a reviewer": base + [
+                jl("retire", "reviewer (gen-inhibit)", to="m", reason="r")]}.items():
+        msg = refused(B.replay, ls)
+        check("line" in msg, "%s: refused: %s" % (what, msg))
+    p = hand_log("retire_repair", base + [rt])
+    msg = refused(B.repair, p, CI, "x")
+    check("replays" in msg, "a retired log is not repaired: %s" % msg)
+
+
+def test_hand_roles():
+    """SPEC 8 who may write: the hand-take roles android and can-tools,
+    taking by hand only under their session's process, with no run, so
+    free_paused and lost never come from them; take, release, request and
+    withdraw work as for any role; their release note says what they leave
+    and what they transmitted; like any role that may take, they may clear
+    and retire."""
+    p = fresh("hand_roles")
+    for who in (AND, CT):
+        msg = refused(B.write, p, ev("take", who, pid=ME, run="h1"))
+        check("by hand only" in msg, "%s take for a run: %s" % (who, msg))
+        st = w(p, "take", who, pid=ME)
+        check(st["holder"]["who"] == who and st["holder"]["run"] is None,
+              "%s takes by hand" % who)
+        refused(B.free_paused, p, who, "h1", BD)
+        refused(B.lost, p, who, "h1")
+        msg = refused(B.write, p, ev("release", who, boards=BD))
+        check("needs a note" in msg, "%s release without a note: %s"
+              % (who, msg))
+        st = w(p, "release", who, boards=BD, note=HAND_NOTE)
+        check(st["holder"] is None and
+              json.loads(lines(p)[-1])["note"] == HAND_NOTE,
+              "%s releases with its note" % who)
+        w(p, "request", who, note="replay onto CAN1, 20 min")
+        st = w(p, "withdraw", who)
+        check(st["queue"] == [], "%s requests and withdraws" % who)
+    w(p, "take", GI, pid=ME, run="g1")
+    st = w(p, "release", GI, boards=BD)
+    check(st["holder"] is None, "a run's role still takes for a run and "
+          "releases without a note")
+    for bad in ("Android", "android (x)", "can_tools", "cantools",
+                "tester (android)"):
+        refused(B.write, p, ev("request", bad, note="x"))
+    gone = dead_pid()
+    for what, ls in {
+            "android's take for a run": [
+                init_line(), jl("take", AND, pid=gone, run="a1")],
+            "can-tools' free_paused": [
+                init_line(), jl("take", CT, pid=gone, run="c1"),
+                jl("free_paused", CT, run="c1", boards=BD)],
+            "android's lost": [
+                init_line(), jl("take", AND, pid=gone, run="a1"),
+                jl("release", AND, boards=BD, note="n"),
+                jl("lost", AND, run="a1")],
+            "android's release without a note": [
+                init_line(), jl("take", AND, pid=gone),
+                jl("release", AND, boards=BD)]}.items():
+        refused(B.replay, ls)
+    h = Live()
+    w(p, "take", GI, pid=h.pid, run="g2")
+    h.stop()
+    st = w(p, "clear", CT, reason="the session crashed")
+    check(st["holder"] is None, "can-tools clears")
+    _st, line, _aside, _a = B.retire(p, AND, "madhouse-debian", "move")
+    check(json.loads(line)["who"] == AND, "android retires")
+
+
 TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_runner_api, test_held_by_run, test_queue, test_clear, test_take_alive,
-         test_lock_timeout, test_pid_wrong_env,
+         test_lock_timeout, test_pid_wrong_env, test_pid_unsure,
          test_lost, test_replay_fails_closed, test_init, test_detect_env,
-         test_env_refusal, test_env_mismatch, test_file_lock, test_lines,
+         test_env_refusal, test_env_mismatch, test_file_lock,
+         test_file_lock_process, test_lines,
          test_cli, test_repair, test_repair_init_bad, test_repair_holders,
          test_repair_where, test_repair_replay, test_repair_changed,
-         test_repair_leftovers, test_repair_finish, test_repair_cli]
+         test_repair_leftovers, test_repair_finish, test_repair_cli,
+         test_retire, test_retire_finish, test_retire_where,
+         test_retire_replay, test_hand_roles]
 
 
 # ---- mutants ------------------------------------------------------------
@@ -1079,10 +1376,16 @@ MUTANTS = {
                "")),
         ("pid_alive always False",
          _edit("        k = ctypes.WinDLL(\"kernel32\", use_last_error=True)\n",
-               "        return False\n")),
+               "        return False\n"), "windows"),
         ("pid_alive always True",
          _edit("        k = ctypes.WinDLL(\"kernel32\", use_last_error=True)\n",
-               "        return True\n")),
+               "        return True\n"), "windows"),
+        ("pid_alive always False",
+         _edit("            os.kill(pid, 0)\n", "            return False\n"),
+         "linux"),
+        ("pid_alive always True",
+         _edit("            os.kill(pid, 0)\n", "            return True\n"),
+         "linux"),
         ("clear without reason",
          _edit("    \"clear\": (\"reason\",),\n    \"lost\": (\"run\",),",
                "    \"clear\": (),\n    \"lost\": (\"run\",),")),
@@ -1102,15 +1405,27 @@ MUTANTS = {
     ],
     "test_lock_timeout": [
         ("lock timeout is a traceback",
-         _edit("                    raise Refused(\"the log is locked by another writer",
-               "                    raise OSError(\"the log is locked by another writer")),
+         _edit("            raise Refused(\"the log is locked by another writer",
+               "            raise OSError(\"the log is locked by another writer")),
         ("lock wait not bounded",
          _edit("        impl.lock(f, LOCK_WAIT_S)", "        impl.lock(f, 10.0)")),
+        ("a process-wide lock (F_SETLK)",
+         _edit("        cmd = getattr(fcntl, \"F_OFD_SETLK\", None)",
+               "        cmd = getattr(fcntl, \"F_SETLK\", None)"), "linux"),
     ],
     "test_pid_wrong_env": [
         ("PID checked in this environment",
          _edit("    if bench_impl(state).pid_alive(h[\"pid\"]):",
                "    if env_impl(this_env()).pid_alive(h[\"pid\"]):")),
+    ],
+    "test_pid_unsure": [
+        ("EPERM counts as gone",
+         _edit("        except OSError:\n            return True\n        return True",
+               "        except OSError:\n            return False\n        return True"),
+         "linux"),
+        ("any error counts as gone",
+         _edit("        except ProcessLookupError:\n            return False\n",
+               "        except OSError:\n            return False\n"), "linux"),
     ],
     "test_lost": [
         ("lost by any role",
@@ -1177,11 +1492,18 @@ MUTANTS = {
          _edit("            return \"wsl\"\n", "            return \"windows\"\n")),
         ("every environment implemented",
          _edit("    impl = ENVS.get(env)\n", "    impl = ENVS.get(env, WindowsEnv)\n")),
+        ("a nested PID namespace taken as the host's",
+         _edit("        if nspid != 1:\n", "        if False:\n")),
+        ("an unread NSpid taken as the host's",
+         _edit("        if nspid != 1:\n", "        if nspid is not None and nspid != 1:\n")),
+        ("linux not implemented",
+         _edit("ENVS = {\"windows\": WindowsEnv, \"linux\": LinuxEnv}",
+               "ENVS = {\"windows\": WindowsEnv}")),
     ],
     "test_env_refusal": [
         ("WSL refusal skipped",
          _edit("    impl = env_impl(this_env())\n    if not os.path.isfile(path):",
-               "    impl = env_impl(\"windows\")\n    if not os.path.isfile(path):")),
+               "    impl = env_impl(detect_env())\n    if not os.path.isfile(path):")),
         ("init in any environment",
          _edit("    env = this_env()\n    env_impl(env)\n", "    env = this_env()\n")),
         ("host not compared",
@@ -1201,8 +1523,25 @@ MUTANTS = {
     ],
     "test_file_lock": [
         ("no OS lock",
-         _edit("                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)\n                return",
-               "                return")),
+         _edit("                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)\n                return True",
+               "                return True"), "windows"),
+        ("no OS lock",
+         _edit("                cls._ofd(f, fcntl.F_WRLCK)\n                return True",
+               "                return True"), "linux"),
+        ("a process-wide lock (F_SETLK)",
+         _edit("        cmd = getattr(fcntl, \"F_OFD_SETLK\", None)",
+               "        cmd = getattr(fcntl, \"F_SETLK\", None)"), "linux"),
+    ],
+    "test_file_lock_process": [
+        ("no OS lock",
+         _edit("                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)\n                return True",
+               "                return True"), "windows"),
+        ("no OS lock",
+         _edit("                cls._ofd(f, fcntl.F_WRLCK)\n                return True",
+               "                return True"), "linux"),
+        ("busy taken as locked",
+         _edit("        if time.monotonic() >= deadline:\n            raise Refused(",
+               "        if True:\n            return\n            raise Refused(")),
     ],
     "test_lines": [
         ("spaced JSON",
@@ -1255,8 +1594,8 @@ MUTANTS = {
         ("dropped runs not collected",
          _edit("            runs.add(r)\n", "            pass\n")),
         ("the damaged log deleted",
-         _edit("    os.rename(tmp, path)\n    return after, line, aside",
-               "    os.rename(tmp, path)\n    os.remove(aside)\n    return after, line, aside")),
+         _edit("    rename_new(tmp, path)\n    return after, line, aside",
+               "    rename_new(tmp, path)\n    os.remove(aside)\n    return after, line, aside")),
         ("sha256 of nothing",
          _edit("\"sha256\": hashlib.sha256(data).hexdigest(),",
                "\"sha256\": hashlib.sha256(b\"\").hexdigest(),")),
@@ -1323,19 +1662,19 @@ MUTANTS = {
          _edit("                    isinstance(r, str) and RUN_RE.match(r) for r in d):",
                "                    isinstance(r, str) for r in d):")),
         ("repair without reason",
-         _edit("    \"repair\": (\"damaged\", \"dropped_runs\", \"reason\"),\n}\nSHA_RE",
-               "    \"repair\": (\"damaged\", \"dropped_runs\"),\n}\nSHA_RE")),
+         _edit("    \"repair\": (\"damaged\", \"dropped_runs\", \"reason\"),\n    \"retire\": (\"to\", \"reason\"),\n}\nSHA_RE",
+               "    \"repair\": (\"damaged\", \"dropped_runs\"),\n    \"retire\": (\"to\", \"reason\"),\n}\nSHA_RE")),
     ],
     "test_repair_changed": [
         ("no check after the rename",
          _edit("    if sha256_file(aside) != ev[\"damaged\"][\"sha256\"]:",
                "    if False:")),
         ("changed log not put back",
-         _edit("        os.rename(aside, path)\n        os.remove(tmp)\n",
+         _edit("        rename_new(aside, path)\n        os.remove(tmp)\n",
                "        os.remove(tmp)\n")),
         ("tmp left behind",
-         _edit("        os.rename(aside, path)\n        os.remove(tmp)\n",
-               "        os.rename(aside, path)\n")),
+         _edit("        rename_new(aside, path)\n        os.remove(tmp)\n",
+               "        rename_new(aside, path)\n")),
     ],
     "test_repair_leftovers": [
         ("init in the rename window",
@@ -1350,6 +1689,9 @@ MUTANTS = {
         ("tmp left after a taken aside name",
          _edit("    except FileExistsError:\n        os.remove(tmp)\n",
                "    except FileExistsError:\n")),
+        ("a rename replaces a file",
+         _edit("    if os.path.lexists(dst):\n        raise FileExistsError(dst)\n    os.rename(src, dst)",
+               "    os.rename(src, dst)"), "linux"),
     ],
     "test_repair_finish": [
         ("repair never finishes",
@@ -1382,6 +1724,81 @@ MUTANTS = {
         ("torn line kept",
          _edit("        if err is None and torn and n == len(raw):", "        if False:")),
     ],
+    "test_retire": [
+        ("retire while held",
+         _edit("        if h is not None:\n            raise Refused(\"retire, but the lock is not free\")",
+               "        if False:\n            raise Refused(\"retire, but the lock is not free\")")),
+        ("retire with a run paused",
+         _edit("        if state[\"paused\"]:\n            raise Refused(\"retire, but run",
+               "        if False:\n            raise Refused(\"retire, but run")),
+        ("a retired log takes writes",
+         _edit("    if r is not None:\n        raise Refused(\"the log was retired",
+               "    if False:\n        raise Refused(\"the log was retired")),
+        ("retired but not renamed",
+         _edit("        rename_new(path, aside)\n    except OSError as e:",
+               "        pass\n    except OSError as e:")),
+        ("the name without the old host",
+         _edit("    return \"bench-log.%s.%s.jsonl\" % (state[\"bench\"][\"host\"],",
+               "    return \"bench-log.%s.%s.jsonl\" % (\"old\",")),
+        ("retire without to",
+         _edit("    \"retire\": (\"to\", \"reason\"),\n}\nSHA_RE",
+               "    \"retire\": (\"reason\",),\n}\nSHA_RE")),
+        ("retire without reason",
+         _edit("    \"retire\": (\"to\", \"reason\"),\n}\nSHA_RE",
+               "    \"retire\": (\"to\",),\n}\nSHA_RE")),
+        ("status hides the retire",
+         _edit("        out.append(\"RETIRED: by %s at %s",
+               "        out.append(\"retired: by %s at %s")),
+    ],
+    "test_retire_finish": [
+        ("a second retire appends",
+         _edit("        appended = state[\"retired\"] is None\n",
+               "        appended = True\n")),
+        ("a taken name checked after the append",
+         _edit("            if os.path.lexists(aside):\n                raise Refused(\"%s exists already: nothing appended\" % aside)\n",
+               "")),
+        ("the retired copy retired again",
+         _edit("            if os.path.normcase(os.path.abspath(path)) == os.path.normcase(aside):\n",
+               "            if False:\n")),
+        ("a failed rename is a traceback",
+         _edit("    except OSError as e:\n        raise Refused(\"the log is retired, but renaming",
+               "    except ZeroDivisionError as e:\n        raise Refused(\"the log is retired, but renaming")),
+    ],
+    "test_retire_where": [
+        ("retire on any host",
+         _edit("        state = _read(f)\n        appended =",
+               "        f.seek(0)\n        state = replay(split_lines(f.read()))\n        appended =")),
+        ("no retire command",
+         _edit("        if a.cmd == \"retire\":\n", "        if a.cmd == \"retire-x\":\n")),
+    ],
+    "test_retire_replay": [
+        ("events after retire legal",
+         _edit("    if r is not None:\n        raise Refused(\"the log was retired",
+               "    if False:\n        raise Refused(\"the log was retired")),
+        ("retire takes any field",
+         _edit("    \"retire\": (\"to\", \"reason\"),\n}\nREQUIRED",
+               "    \"retire\": (\"to\", \"reason\", \"host\"),\n}\nREQUIRED")),
+        ("retire with a run paused",
+         _edit("        if state[\"paused\"]:\n            raise Refused(\"retire, but run",
+               "        if False:\n            raise Refused(\"retire, but run")),
+    ],
+    "test_hand_roles": [
+        ("android not a role",
+         _edit("                     r\"|android|can-tools)\\Z\")",
+               "                     r\"|can-tools)\\Z\")")),
+        ("can-tools not a role",
+         _edit("                     r\"|android|can-tools)\\Z\")",
+               "                     r\"|android)\\Z\")")),
+        ("a hand role takes for a run",
+         _edit("        if who in HAND_ROLES and run is not None:\n",
+               "        if False:\n")),
+        ("a hand release without a note",
+         _edit("        if who in HAND_ROLES and not _text(ev, \"note\"):\n",
+               "        if False:\n")),
+        ("every role a hand role",
+         _edit("HAND_ROLES = (\"android\", \"can-tools\")",
+               "HAND_ROLES = (\"android\", \"can-tools\", \"tester (gen-inhibit)\")")),
+    ],
 }
 
 
@@ -1394,14 +1811,20 @@ def _run(t):
 
 
 def main(argv):
-    if B.detect_env() != "windows":
-        print("these tests run in native Windows Python only (section 4)")
+    if ENV not in B.ENVS:
+        print("these tests run where bench_lock is implemented (section 4: "
+              "%s); this is %s" % (", ".join(sorted(B.ENVS)), ENV))
         return 1
+    print("environment: %s" % ENV)
     can_fail = "--can-fail" in argv
     names = [a for a in argv if not a.startswith("--")]
     tests = [t for t in TESTS if not names or t.__name__ in names]
-    bad = total = 0
+    bad = total = other = 0
     for t in tests:
+        if getattr(t, "env", ENV) != ENV:
+            print("NOT RUN (other env)  %-26s %s only" % (t.__name__, t.env))
+            other += 1
+            continue
         if not can_fail:
             total += 1
             outcome = _run(t)
@@ -1409,7 +1832,13 @@ def main(argv):
                                     t.__name__, outcome or ""))
             bad += outcome is not None
             continue
-        for label, (on, off) in MUTANTS[t.__name__]:
+        for m in MUTANTS[t.__name__]:
+            label, (on, off) = m[0], m[1]
+            if len(m) > 2 and m[2] != ENV:
+                print("NOT RUN (other env)  %-26s %-30s %s only"
+                      % (t.__name__, label, m[2]))
+                other += 1
+                continue
             total += 1
             try:
                 on()
@@ -1428,8 +1857,9 @@ def main(argv):
                 ("fails (" + outcome[:70] + ")") if ok else
                 "STILL PASSES -- the test checks nothing"))
             bad += not ok
-    print("\n%d of %d %s" % (total - bad, total,
-                             "mutants caught" if can_fail else "passed"))
+    print("\n%d of %d %s; %d NOT RUN (other env)"
+          % (total - bad, total, "mutants caught" if can_fail else "passed",
+             other))
     return 1 if bad else 0
 
 

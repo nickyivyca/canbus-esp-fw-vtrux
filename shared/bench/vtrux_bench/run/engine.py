@@ -46,6 +46,11 @@ record.json, board_state.txt).
 
 Rules the engine enforces (each has a test in tests/test_run_core.py that
 fails when the rule is switched off through RULES):
+  canmain_check   a run that needs the bench refuses to start, before it
+                  takes the lock or makes a folder, unless the settings'
+                  canmain_check shows canmain down (SPEC.md section 8;
+                  canmain.py); no setting refuses too. Its line is printed
+                  at the start, and is in record.json (canmain_check)
   lock_guard      no bench group runs unless the suite's role holds the
                   lock: refused at the start, checked at each group's start
   lock_each_case  the lock is checked again before every bench case, not
@@ -207,6 +212,7 @@ import time
 import traceback
 
 from .. import bench_lock as BL
+from . import canmain
 from . import lock as lockmod
 from . import procs
 from .flash import BUILTIN as BUILTIN_FLASHERS
@@ -215,7 +221,7 @@ from .record import (Recorder, compare, load_progress, make_run_id,
                      new_run_dir, stamp, write_record, write_new)
 
 RULES = {k: True for k in (
-    "lock_guard", "lock_each_case", "pause_own_lock", "lost_record",
+    "canmain_check", "lock_guard", "lock_each_case", "pause_own_lock", "lost_record",
     "take_first", "folder_release", "self_pause", "release_end",
     "keep_lock_one_step",
     "own_pid", "pause_hooks", "resume_identify", "resume_stop",
@@ -358,6 +364,7 @@ class Engine:
         self.resume_stopped_board = None
         self.resume_stopped_image = None    # the image it was expected on
         self.lock_release = None
+        self.canmain_line = None
         self.bench_work = []
         self.kf = {k.id: k.ref for k in suite.known_fails}
         self._wc_lock = threading.Lock()
@@ -1883,6 +1890,8 @@ class Engine:
                         c.cls, g.name, c.id, "[python] " if c.python else "",
                         " ".join(c.argv)))
             if lane == "bench":
+                lines.insert(lines.index("lane %s:" % lane) + 1,
+                             "  " + canmain.plan_line(self.settings))
                 unsafe = sorted((im.board, n) for n, im in self.suite.images.items()
                                 if not im.idle_safe)
                 lines.append("  then no restore: each board stays on what its "
@@ -1913,6 +1922,15 @@ class Engine:
                                   "the settings name no bench_lock_log: "
                                   "before the cutover the Holder line is "
                                   "edited by hand"))
+        if self.needs_bench() and RULES["canmain_check"]:
+            # SPEC section 8: before the take, so a refusal writes nothing
+            # to the log and makes no folder
+            try:
+                self.canmain_line = canmain.check(self.settings)
+            except canmain.Refused as e:
+                raise lockmod.LockError("refusing to start: canmain check: %s"
+                                        % e)
+            self.out(self.canmain_line)
         if self.needs_bench() and self.lock_log:
             self._take_at_start()
         elif self.needs_bench():
@@ -1945,6 +1963,7 @@ class Engine:
         code.setdefault("code_hash", None)   # pending a user ruling
         header["code"] = code
         header["requires_met"] = self.requires_note
+        header["canmain_check"] = self.canmain_line
         clocks = {"local": time.time()}
         for host in sorted({g.host for g, _ in sel if g.host != "local"}):
             try:
