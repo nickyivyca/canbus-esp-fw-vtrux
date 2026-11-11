@@ -34,6 +34,16 @@ until nothing reads them. Since the move:
   pinned checkout. They mutate only the interposer's own code.
   `twai_mutations.sh` retired with `port_twai.cpp` and `test_twai_port`;
   its mutants' sites moved into `l2_mutations.sh` (D, H, K, L).
+- Since 2026-11-11 (tester; the 2b acceptance run `accept_2b_..._b467`)
+  every script here that builds a host_bridge test from a copy takes the
+  test's sources, objects and `-D` flags from `l2_build.sh`'s
+  `hb_test_inputs`, which `run.sh` uses too: `l2_mutations.sh`,
+  `conformance_mutations.sh`, `hold_mutations.sh` and
+  `rx_hook_mutations.sh`. The last three kept their own lists until then,
+  missed the shared include folders `idf_host.cpp` (added at 2b) needs, and
+  their controls did not build in that run. `busoff_mutations.sh` still
+  names its sources (no glob, so no `idf_host.cpp`), and
+  `hold_cadence_gate_mutation.sh` builds the core's host runner alone.
 
 | File | What |
 |---|---|

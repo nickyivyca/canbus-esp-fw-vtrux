@@ -64,7 +64,6 @@ esac
 # anything is made if they are not there.
 . "$HERE/l2_build.sh"
 hb_shared || exit 2
-SH="$HB_SH"
 # the tree's root
 ROOT="$(cd "$HERE/../../.." && pwd)"
 WT="$ROOT/scratch/cih"
@@ -120,14 +119,6 @@ fi
 # them). A source that does not compile fails the run, and the tests that
 # need it then do not build.
 hb_c_objs "$W" "$B" "$SRC" || fail=1
-FAKE_OBJS=("$W/twai_fake.o")
-PORT_OBJS=("$W/twai_port.o" "$W/twai_port_ll.o" "$W/can_port.o")
-# The vehicle port's firmware side (port step 2b): vehicle_port.cpp sets
-# twai_port up and registers it with can_port, port_view.cpp is how the
-# bridge reaches a port by its index, and charger_port.cpp registers the
-# MCP2515 driver with can_port (main/CMakeLists.txt).
-PORTS=("$SRC/port_mcp2515.cpp" "$SRC/vehicle_port.cpp" "$SRC/port_view.cpp"
-       "$SRC/charger_port.cpp")
 # THE TEST LIST, printed once before any build (tester, 2026-11-08; the
 # charge-interposer reviewer's follow-up (B) after port step 2a): every
 # test_*.cpp of the folder the tests are built from, in glob order, on one
@@ -145,63 +136,15 @@ done
 echo "host_bridge tests (${#tests[@]}): ${tests[*]+${tests[*]}}"
 [ "${#tests[@]}" -gt 0 ] || fail=1
 for name in ${tests[@]+"${tests[@]}"}; do
-  t="$B/$name.cpp"
   bin="$W/$name"
-  # Glob our stand-ins rather than list them: a hand-kept source list going
-  # stale is how the gen-inhibit session built against old headers three
-  # times without noticing.
-  srcs=("$t" "$SH/cpp/twai_fake.cpp")
-  objs=(${FAKE_OBJS[@]+"${FAKE_OBJS[@]}"})
-  for f in "$B"/*.cpp; do
-    [ "$f" = "$t" ] && continue
-    case "$(basename "$f")" in test_*) continue ;; esac
-    srcs+=("$f")
-  done
-  # Firmware sources are listed per test: most tests want the chip model
-  # alone, and only the driver tests want the driver itself compiled in.
-  defs=()
-  case "$name" in
-    test_tx_failed|test_mcp2515_busoff|test_tx_throughput|test_sameid_hold) srcs+=("$SRC/port_mcp2515.cpp") ;;
-    # The CanPort contract, for both ports (since port step 2b the vehicle
-    # port too: its PortView on twai_port and can_port).
-    test_canport_contract)
-      srcs+=("$SRC/port_mcp2515.cpp" "$SRC/vehicle_port.cpp" "$SRC/port_view.cpp")
-      objs+=("${PORT_OBJS[@]}")
-      ;;
-    # The stall trace is the only build that defines INTP_TX_TRACE, which
-    # compiles the per-pass instrumentation into the driver. No firmware
-    # variant defines it, so no firmware image carries it.
-    test_tx_stall_trace)
-      srcs+=("$SRC/port_mcp2515.cpp")
-      defs+=(-DINTP_TX_TRACE=1)
-      ;;
-    # Likewise the only host build that defines INTP_ORDER_WITNESS. One
-    # firmware variant defines it, witness (the bench's order-witness
-    # image); the project's build-switch rows (shared/tools R20,
-    # firmware/vtrux_checks.json) refuse it in a release image.
-    test_order_witness)
-      srcs+=("$SRC/port_mcp2515.cpp")
-      defs+=(-DINTP_ORDER_WITNESS=1)
-      ;;
-    # Spec 8.3's event-line form. The test #includes main.cpp itself (to
-    # reach its static reportEvents() and core without a src change), so
-    # main.cpp is NOT listed; built WITH serial, into the capturing Serial
-    # of Arduino.h, which only HOST_SERIAL_CAPTURE compiles in.
-    test_event_layout)
-      srcs+=("${PORTS[@]}" "$SRC/machine.cpp")
-      objs+=("${PORT_OBJS[@]}")
-      defs+=(-DHOST_SERIAL_CAPTURE=1)
-      ;;
-    # L2 is the whole bridge: main.cpp itself, both ports and the core.
-    # Built with INTP_NO_SERIAL so it is the TRUCK image's code path --
-    # the one that actually goes in the vehicle, and the one whose
-    # `intp_serial` bit reads 0 on the wire.
-    test_l2_bridge)
-      for f in "${HB_FW_L2[@]}"; do srcs+=("$SRC/$f"); done
-      objs+=("${PORT_OBJS[@]}")
-      defs+=(-DINTP_NO_SERIAL=1)
-      ;;
-  esac
+  # What the test is built from (l2_build.sh's hb_test_inputs, which the
+  # harness checks that build a test from a copy use too): the test, the
+  # fake's C++ interface and C object, every non-test .cpp in B (globbed),
+  # and the test's own main/ sources, objects and -D flags.
+  hb_test_inputs "$name" "$B" "$SRC" "$W"
+  srcs=("${HB_T_SRCS[@]}")
+  objs=(${HB_T_OBJS[@]+"${HB_T_OBJS[@]}"})
+  defs=(${HB_T_DEFS[@]+"${HB_T_DEFS[@]}"})
   # A test that needs an object that did not build does not build either.
   missing=""
   for o in ${objs[@]+"${objs[@]}"}; do

@@ -25,9 +25,10 @@ missing, `run.sh` is refused (exit 2) before anything builds.
 the fake's `include`, `host` and `cpp`, `twai_port`'s and `can_port`'s
 `include`), the C sources (the fake's `twai_fake.c`, `twai_port.c`, the
 S3's register file `twai_port_ll_unsupported.c`, `can_port.c`), each
-compiled once as C (`gcc -std=c11`), and `test_l2_bridge`'s firmware
-sources. `run.sh` and the harness checks that build `test_l2_bridge` from a
-copy (`../../harness_checks/`) all source it. Every test gets the fake's
+compiled once as C (`gcc -std=c11`), and each test's sources, objects and
+`-D` flags (`hb_test_inputs`, since 2026-11-11). `run.sh` and the harness
+checks that build a test from a copy (`../../harness_checks/`) all source
+it, so they build what `run.sh` builds. Every test gets the fake's
 `twai_fake.o` and its C++ interface `cpp/twai_fake.cpp`; `test_l2_bridge`
 and `test_event_layout` get the port objects too. A test missing one of its
 objects prints `<test> DID NOT BUILD (no <object>)`. This folder's
@@ -77,7 +78,7 @@ is told from one that never ran. Tested by `twai_fake_option_test.py`
 | `test_mcp2515_fake.cpp` | The model checked against the datasheet behaviours it claims |
 | `conformance.h` / `.cpp` | **The conformance sequence: one script, two subjects.** Thirteen steps (C1-C13) driven entirely over raw SPI, emitting a diffable transcript |
 | `test_conformance.cpp` | Runs the sequence against the fake, prints the transcript, and asserts the DATASHEET-grade lines |
-| `l2_build.sh` | How the tests are built on the shared fake, `twai_port` and `can_port` (above): sourced by `run.sh` and by the harness checks that build `test_l2_bridge` from a copy; run on its own (`bash l2_build.sh OUT HB FW [g++ args]`) it builds `test_l2_bridge` (exit 0 built, 1 build failed, 2 refused) (port step 2b) |
+| `l2_build.sh` | How the tests are built on the shared fake, `twai_port` and `can_port` (above), each test's inputs included (`hb_test_inputs`, 2026-11-11): sourced by `run.sh` and by the harness checks that build a test from a copy; run on its own (`bash l2_build.sh OUT HB FW [g++ args]`) it builds `test_l2_bridge` (exit 0 built, 1 build failed, 2 refused) (port step 2b) |
 | `idf_host.cpp` | The few ESP-IDF calls the shared sources make, on the host: `esp_err_to_name`, `ESP_ERROR_CHECK`'s failure handler (counted and printed), `host_log` and `xTaskGetTickCount`, both on the virtual clock (port step 2b) |
 | `esp_log.h` | `esp_log_level_set`, which `main.cpp` calls, and `ESP_LOGE/W/I` (`ESP_LOGD` prints nothing) for the shared sources, through `host_log`; C and C++ (port step 2b) |
 | `test_mcp2515_busoff.cpp` | Bus-off on the charger port: the error-mode walk against the chip, and `Mcp2515Port::busOffEvents()` through the driver |
