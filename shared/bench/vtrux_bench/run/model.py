@@ -54,7 +54,13 @@ ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 # there; give the full path, e.g. from settings ("{bash}").
 WINDOWS = sys.platform == "win32"
 BARE_SHELLS = ("bash", "bash.exe", "sh", "sh.exe")
-RULES = {"bare_shell": True}
+# standing_refused: a suite that still names Suite.standing_image(s) is
+# refused (user, 2026-11-11: images are loaded at the start of a run and
+# never restored at its end; SPEC.md section 6 and its Ruled entries).
+# idle_safe_named: an image marked idle_safe=False needs an idle-safe image
+# for its board in Suite.idle_safe_images, an image of that board that is
+# itself idle-safe (user, 2026-11-11, the same Ruled entries).
+RULES = {"bare_shell": True, "standing_refused": True, "idle_safe_named": True}
 
 
 @dataclasses.dataclass
@@ -163,6 +169,11 @@ class Image:
              on one image at a time (e.g. "x2", "wican"). A state that is
              not a flashed image (an X2 held in ROM) can be an Image too,
              with its own flasher and expect.
+    idle_safe  False marks an image not safe to leave idle on the bench,
+             such as one that floods CAN when nothing ACKs it or one that
+             boots armed (user, 2026-11-11). A run that would release at its
+             end with a board on it loads that board's idle-safe image
+             (Suite.idle_safe_images) first. Default True.
     """
     name: str
     flasher: str
@@ -170,6 +181,7 @@ class Image:
     expect: str = ""
     board: str = "board"
     note: str = ""
+    idle_safe: bool = True
 
 
 @dataclasses.dataclass
@@ -213,8 +225,15 @@ class Suite:
     role: str                     # bench-holder holder string
     groups: List[Group]
     images: Dict[str, Image] = dataclasses.field(default_factory=dict)
-    standing_image: Optional[str] = None   # single-board shorthand
-    standing_images: Dict[str, str] = dataclasses.field(default_factory=dict)
+    # {board: image}: the image a board on an image marked idle_safe=False
+    # is loaded with before the end release (user, 2026-11-11). Required for
+    # every board that has a marked image; itself idle-safe.
+    idle_safe_images: Dict[str, str] = dataclasses.field(default_factory=dict)
+    # Retired 2026-11-11 (user: images are loaded at the start of a run,
+    # never restored at its end). Kept only so that a suite still naming
+    # either is refused by validate() with that reason; never read.
+    standing_image: Any = None
+    standing_images: Any = None
     known_fails: List[KnownFail] = dataclasses.field(default_factory=list)
     flashers: Dict[str, Callable] = dataclasses.field(default_factory=dict)
     # identify(image_name_expected, ctx, logdir) -> str or None
@@ -227,10 +246,12 @@ class Suite:
     #   on_start  before the start pass identifies the board; image is the
     #             first image the run needs on it. A failure stops the bench:
     #             no group that needs the lock runs, and nothing is flashed.
-    #   on_end    after the end-of-run restore, on every run however it
-    #             ended, unless the lock is no longer ours; image is the one
-    #             the run believes the board is on, or None if it does not
-    #             know. A failure is a "RELEASE NOT CONFIRMED" line.
+    #   on_end    after the last case and the end pass (each board
+    #             identified, and an idle-unsafe image replaced by its
+    #             board's idle-safe one), on every run however it ended,
+    #             unless the lock is no longer ours; image is the one the
+    #             run believes the board is on, or None if it does not know.
+    #             A failure is a "RELEASE NOT CONFIRMED" line.
     on_start: Optional[Callable] = None
     on_end: Optional[Callable] = None
     # redact(list_of_paths) -> None; sees only declared outputs
@@ -246,17 +267,6 @@ class Suite:
     # matched its reference before this suite may start (the bench suite
     # requires the emulated one)
     requires: Optional[str] = None
-
-    def standings(self):
-        """{board: standing image name}."""
-        out = dict(self.standing_images)
-        if self.standing_image and self.standing_image in self.images:
-            out.setdefault(self.images[self.standing_image].board,
-                           self.standing_image)
-        return out
-
-    def standing_for(self, board):
-        return self.standings().get(board)
 
 
 class SuiteError(Exception):
@@ -276,14 +286,32 @@ def validate(suite: Suite, settings: Dict[str, Any], builtin_flashers=()):
             errs.append("image key %r != name %r" % (name, im.name))
         if im.flasher not in flashers:
             errs.append("image %s: unknown flasher %r" % (name, im.flasher))
-    if suite.standing_image and suite.standing_image not in suite.images:
-        errs.append("standing_image %r is not an image" % suite.standing_image)
-    for board, name in suite.standing_images.items():
-        if name not in suite.images:
-            errs.append("standing image %r is not an image" % name)
-        elif suite.images[name].board != board:
-            errs.append("standing image %s is for board %s, not %s" % (
-                name, suite.images[name].board, board))
+    if RULES["standing_refused"]:
+        for key in ("standing_image", "standing_images"):
+            if getattr(suite, key, None) is not None:
+                errs.append("%s is retired (user, 2026-11-11): the runner "
+                            "restores no board at a run's end; mark an image "
+                            "not safe to leave idle with Image.idle_safe=False "
+                            "and name its board's idle-safe image in "
+                            "Suite.idle_safe_images" % key)
+    if RULES["idle_safe_named"]:
+        idle = suite.idle_safe_images or {}
+        for board, name in sorted(idle.items()):
+            im = suite.images.get(name)
+            if im is None:
+                errs.append("idle-safe image %r for board %s is not an image"
+                            % (name, board))
+            elif im.board != board:
+                errs.append("idle-safe image %s is for board %s, not %s"
+                            % (name, im.board, board))
+            elif not im.idle_safe:
+                errs.append("idle-safe image %s for board %s is itself marked "
+                            "not safe to leave idle" % (name, board))
+        for name, im in sorted(suite.images.items()):
+            if not im.idle_safe and im.board not in idle:
+                errs.append("image %s is marked not safe to leave idle, and "
+                            "board %s has no idle-safe image "
+                            "(Suite.idle_safe_images)" % (name, im.board))
     hosts = set((settings.get("hosts") or {}).keys()) | {"local"}
     seen_groups = set()
     seen = set()

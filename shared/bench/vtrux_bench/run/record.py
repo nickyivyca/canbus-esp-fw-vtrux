@@ -136,8 +136,8 @@ def index_text(record):
     """Every check with its verdict; known FAILs and changes called out."""
     res = record["results"]
     lines = list(record.get("lock_lines") or []) + list(
-        record.get("release_not_confirmed") or []) + list(
-        record.get("not_on_standing") or []) + [
+        record.get("idle_unsafe_left") or []) + list(
+        record.get("release_not_confirmed") or []) + [
              "Run %s -- suite %s" % (record["run_id"], record["suite"]),
              "started %s, ended %s" % (record["started"], record["ended"]),
              "code: %s" % json.dumps(record.get("code", {}), sort_keys=True)]
