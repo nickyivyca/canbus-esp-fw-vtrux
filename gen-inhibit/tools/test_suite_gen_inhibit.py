@@ -606,23 +606,28 @@ def test_identify(settings, bench):
     def t5(t):
         calls = bi("756d6714")
         t.do[("x2_hold.py", "pins")] = pins("unknown -- a register was not read", rc=1)
-        t.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T1.json": {"banner_ok": False}})
+        t.do[("x2_jammer.py", "id")] = lambda a, e: (
+            "", 0, {"x2_jammer_id_T1.json": {"banner_ok": False, "reset_since_open": False}})
         return ident(xa, {}, logdir()), calls, t.named("x2_jammer.py")
     got, calls, jam = with_tools(t5)
     check("identify X2: a running image goes to bench_identify, and no ID is sent",
           got == "756d6714" and calls == ["x2_app"] and jam == [], (got, calls, jam))
 
+    # x2_jammer id always writes reset_since_open (False when the uptime shows no reset), so the
+    # fake records carry it too; without it suite mutant m12 crashed here instead of failing t7n.
     def t6(t):
         bi(None)
         t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
-        t.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T1.json": {"banner_ok": True}})
+        t.do[("x2_jammer.py", "id")] = lambda a, e: (
+            "", 0, {"x2_jammer_id_T1.json": {"banner_ok": True, "reset_since_open": False}})
         return ident(xa, {}, logdir())
     check("identify X2: the jammer's banner when bench_identify knows nothing", with_tools(t6) == "jammer:banner")
 
     def t7(t):
         bi(None)
         t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
-        t.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T1.json": {"banner_ok": False}})
+        t.do[("x2_jammer.py", "id")] = lambda a, e: (
+            "", 0, {"x2_jammer_id_T1.json": {"banner_ok": False, "reset_since_open": False}})
         return ident(xj, {}, logdir())
     check("identify X2: no banner either is None (on none of the images)", with_tools(t7) is None)
 
@@ -835,7 +840,8 @@ def x2_reads(tt, *reads):
         return r
     fake_module("bench_identify", identify=identify)
     tt.do[("x2_hold.py", "pins")] = lambda a, e: ("pins: TX (GPIO7) unknown\n", 1, {"x2_hold_pins_T%d.json" % len(a): "{}"})
-    tt.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T%d.json" % len(a): {"banner_ok": False}})
+    tt.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T%d.json" % len(a): {"banner_ok": False,
+                                                                                         "reset_since_open": False}})
     # an SLCAN answer is verified against the pinned slcan app: here it is some other build
     tt.do[("esptool", "--port")] = lambda a, e: ("-- verify FAILED: digest mismatch\n", 2, {})
 
