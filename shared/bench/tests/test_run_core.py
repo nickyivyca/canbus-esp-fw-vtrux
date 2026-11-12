@@ -65,6 +65,30 @@ ROLE = "tester (test-suite)"
 # fake_esptool's chip: a locally administered MAC, no real board's
 FAKE_CHIP = {"type": "ESP32-S3", "mac": "02:00:00:00:00:01"}
 
+# The esptool flasher finds its port by the board's USB IDs (DEVICES-SPEC
+# S1-S3, flash.device_port): a made-up /dev/serial/by-id/ and sysfs
+# (_serial_fixture.py) with one X2-like board, the flasher told it is on
+# Linux. Where symbolic links cannot be made (Windows without the right),
+# the flasher is told it is on Windows and keeps its port setting, and the
+# three device tests fail, saying why.
+from vtrux_bench.run import flash as FL           # noqa: E402
+from _serial_fixture import FakeSerial            # noqa: E402
+FAKE_DEVICE = {"vid": "303a", "pid": "1001", "serial": "TESTX2SERIAL01",
+               "interface": 0}
+try:
+    SD_FS = FakeSerial(os.path.join(SCRATCH, "_serial"))
+    SD_LINK = SD_FS.add("ttyACM9", "303a", "1001", serial="TESTX2SERIAL01",
+                        interface=0, interfaces=3)
+    SD_FS.install()
+    FL.this_env = lambda: "linux"
+    ESPTOOL_PORT = {"device": FAKE_DEVICE}
+    SD_WHY = None
+except OSError as _e:
+    SD_LINK = None
+    FL.this_env = lambda: "windows"
+    ESPTOOL_PORT = {"port": "FAKE0"}
+    SD_WHY = "no made-up by-id folder (symbolic links: %s)" % _e
+
 
 # ---- fixtures -----------------------------------------------------------
 def _rmtree(path):
@@ -106,8 +130,8 @@ class Env:
     def settings(self, **kw):
         s = dict(runs_root=self.runs, bench_holder=self.holder,
                  hosts={"local": {"python": [PY]}},
-                 esptool={"argv": [PY, os.path.join(HERE, "fake_esptool.py")],
-                          "port": "FAKE0", "baud": 115200},
+                 esptool=dict({"argv": [PY, os.path.join(HERE, "fake_esptool.py")],
+                               "baud": 115200}, **json.loads(json.dumps(ESPTOOL_PORT))),
                  pause_poll_s=0.2, scratch=self.root,
                  canmain_check=dict(CM_SETTING))
         s.update(kw)
@@ -1880,6 +1904,99 @@ def test_esptool_flasher():
     assert not r["ok"] and r["recoverable"] is False, r
 
 
+def _device_env(name):
+    assert SD_LINK, SD_WHY
+    env = Env(name)
+    return env, env.image("A", "IMG-A")
+
+
+def test_esptool_device():
+    """DEVICES-SPEC S1-S3 on Linux: the flasher finds the board's port by
+    its USB IDs before any esptool call, gives esptool the by-id link, and
+    keeps the port and the IDs matched in its result and in
+    serial_device.txt; a device that matches nothing runs no esptool and
+    writes nothing, saying so."""
+    env, im = _device_env("esptool_device")
+    logd = os.path.join(env.root, "log1")
+    os.makedirs(logd)
+    r = FL.esptool_flash(im, im.params, env.settings(), logd)
+    assert r["ok"] and r["port"] == SD_LINK, r
+    assert r["device"] == {"port": SD_LINK, "vid": "303a", "pid": "1001",
+                           "serial": "TESTX2SERIAL01", "interface": 0,
+                           "usb": "1-1", "tty": "ttyACM9"}, r
+    calls = env.esptool_calls()
+    assert calls and all(("--port %s " % SD_LINK) in c for c in calls), calls
+    with open(os.path.join(logd, "serial_device.txt")) as f:
+        text = f.read()
+    assert "port: %s\n" % SD_LINK in text and \
+        "serial: TESTX2SERIAL01\n" in text and "interface: 0\n" in text, text
+    env, im = _device_env("esptool_device_none")
+    logd = os.path.join(env.root, "log2")
+    os.makedirs(logd)
+    st = env.settings()
+    st["esptool"]["device"] = dict(FAKE_DEVICE, serial="TESTX2SERIAL09")
+    r = FL.esptool_flash(im, im.params, st, logd)
+    assert not r["ok"] and r["phase"] == "device" and r["recoverable"] and \
+        "no device matches" in r["detail"] and "nothing run" in \
+        r["detail"] and not env.esptool_calls(), (r, env.esptool_calls())
+
+
+def test_esptool_port_refused():
+    """On Linux a port setting (a tty name) is refused, in the image or the
+    settings, beside a device or alone, and nothing is run (DEVICES-SPEC
+    S1: no COM or tty name in settings)."""
+    for where, extra in (("settings", {}), ("image", {"port": "/dev/ttyACM9"})):
+        for with_device in (True, False):
+            env, im = _device_env("port_refused_%s_%s" % (where, with_device))
+            logd = os.path.join(env.root, "log")
+            os.makedirs(logd)
+            st = env.settings()
+            if where == "settings":
+                st["esptool"]["port"] = SD_LINK
+            if not with_device:
+                st["esptool"].pop("device")
+            r = FL.esptool_flash(im, dict(im.params, **extra), st, logd)
+            assert not r["ok"] and r["phase"] == "device" and \
+                "a port setting" in r["detail"] and \
+                not env.esptool_calls(), (where, with_device, r)
+
+
+def test_esptool_windows_port():
+    """On Windows the flasher keeps its COM port setting (existing tooling;
+    user, 2026-11-11), and the lookup is never asked: a port is used as
+    given, with no device recorded; no port refuses; a device alone is
+    refused as Linux only."""
+    assert FL.device_port({}, {"port": "COM9"}, env="windows") == ("COM9", None)
+    assert FL.device_port({"port": "COM8"}, {"port": "COM9",
+                                             "device": dict(FAKE_DEVICE)},
+                          env="windows") == ("COM8", None)
+    for params, et, want in (({}, {}, "no port"),
+                             ({}, {"device": dict(FAKE_DEVICE)}, "Linux only")):
+        try:
+            got = FL.device_port(params, et, env="windows")
+        except FL.SD.Refused as e:
+            assert want in str(e), (et, str(e))
+        else:
+            raise AssertionError("not refused: %r -> %r" % (et, got))
+
+
+def test_record_device():
+    """The run record keeps the port resolved and the IDs matched
+    (DEVICES-SPEC S3): record.json's images_used has them under `ports`
+    for each flash, and the flash event carries them."""
+    env, a = _device_env("record_device")
+    s = suite([Group("g1", [chk("x", "pass")], needs_lock=True, image="A")],
+              images={"A": a}, identify=env.identify)
+    eng, rec = run(env, s)
+    assert verdicts(rec) == {"g1/x": "PASS"}, verdicts(rec)
+    ports = rec["images_used"]["A"].get("ports")
+    assert ports and len(ports) == 1 and ports[0]["port"] == SD_LINK and \
+        ports[0]["device"]["serial"] == "TESTX2SERIAL01" and \
+        ports[0]["device"]["interface"] == 0, rec["images_used"]["A"]
+    ev = [e for e in rec["events"] if e["kind"] == "flash"]
+    assert len(ev) == 1 and ev[0]["port"] == SD_LINK, ev
+
+
 def test_remote_command():
     """The remote line: cd, env, coreutils timeout, nice when throttled."""
     line = P.remote_command(["python3", "x.py", "a b"], "/w", {"K": "v w"},
@@ -2615,7 +2732,8 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_record_settings,
          test_timeout,
          test_resume, test_carry_finished, test_carry_check_end, test_compare,
-         test_esptool_flasher,
+         test_esptool_flasher, test_esptool_device, test_esptool_port_refused,
+         test_esptool_windows_port, test_record_device,
          test_remote_command,
          test_remote_stop,
          test_lock_each_case, test_lost_record, test_pause_own_lock,
@@ -2676,12 +2794,14 @@ MUTANTS = {
     "test_known_fail": _rule("known_fail"),
     "test_lock_guard": _rule("lock_guard"),
     "test_flash_gate": _rule("flash_gate"),
-    "test_chip_mismatch": _patch(
-        __import__("vtrux_bench.run.flash", fromlist=["RULES"]), "RULES",
-        {"chip_match": False, "chip_required": True}),
-    "test_chip_required": _patch(
-        __import__("vtrux_bench.run.flash", fromlist=["RULES"]), "RULES",
-        {"chip_match": True, "chip_required": False}),
+    "test_chip_mismatch": _patch(FL, "RULES", dict(FL.RULES, chip_match=False)),
+    "test_chip_required": _patch(FL, "RULES", dict(FL.RULES, chip_required=False)),
+    # the port taken from the settings as written, not found by the IDs
+    "test_esptool_device": _patch(FL, "RULES", dict(FL.RULES, resolve_first=False)),
+    "test_esptool_port_refused": _patch(FL, "RULES", dict(FL.RULES, port_refused=False)),
+    # Windows goes through the Linux lookup
+    "test_esptool_windows_port": _patch(FL, "RULES", dict(FL.RULES, windows_port=False)),
+    "test_record_device": _rule("record_device"),
     "test_image_schedule": _rule("image_schedule"),
     "test_identify_error": _rule("identify_error"),
     "test_identify_after": _rule("identify_after"),
