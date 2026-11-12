@@ -665,7 +665,10 @@ def test_suites():
     #      and its -canfail in their place (2a accepted)
     # 247: twai-mutations retired with port_twai.cpp and test_twai_port
     #      (port step 2b; the vehicle port is the shared twai_port)
-    assert len(seen) == 247, "checks across the suites: %d" % len(seen)
+    # 259: sb.* for shared/bench 2026.11.11.2's six new test files
+    #      (test_canmain, test_ota_outcome/policy/preflight/wire, test_wifi),
+    #      each plain and -canfail (re-pin, reviewer 2026-11-11)
+    assert len(seen) == 259, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -1007,10 +1010,12 @@ def _unretire_build_check(s):
 def test_wican_board():
     """The bench suite carries the WiCAN (bench_wican.py; reviewer,
     2026-10-23, for the bench-lock cutover): every bench group that holds
-    the lock names wican_man beside its X2 image; the WiCAN's standing
-    image is wican_man, its identity is the fake gen-inhibit build's, its
-    flasher refuses, its hooks are bench_wican's (the X2 gets no step), and
-    identify sends the WiCAN to its page, not to the X2's identify."""
+    the lock names wican_man beside its X2 image; wican_man is idle-safe
+    and the WiCAN has no idle-safe image of its own (it is never flashed,
+    so the runner's end pass must never load one), its identity is the fake
+    gen-inhibit build's, its flasher refuses, its hooks are bench_wican's
+    (the X2 gets no step), and identify sends the WiCAN to its page, not to
+    the X2's identify."""
     import bench_wican_test as WT
     s, su = _all()
     b = su["bench"]
@@ -1021,8 +1026,8 @@ def test_wican_board():
         il = g.image_list
         assert len(il) == 2 and [b.images[x].board for x in il] == [
             "x2", W.BOARD] and il[1] == W.IMAGE, (g.name, il)
-    assert b.standing_images == {"x2": "bridge", W.BOARD: W.IMAGE}, \
-        b.standing_images
+    assert b.images[W.IMAGE].idle_safe and W.BOARD not in b.idle_safe_images, \
+        (b.images[W.IMAGE].idle_safe, b.idle_safe_images)
     im = b.images[W.IMAGE]
     assert (im.board, im.flasher, im.expect) == (W.BOARD, W.FLASHER,
                                                  WT.MAN_SHA), im
@@ -1037,6 +1042,27 @@ def test_wican_board():
         out = hook(W.BOARD, im, None, d)
         a = WT.calls(os.path.dirname(os.environ["FAKE_WICAN_ARGV"]))[-1]
         assert out["ok"] is True and a[a.index(flag) + 1] == W.IMAGE, (out, a)
+
+
+def test_idle_safe():
+    """shared/bench 2026.11.11.2 (user, 2026-11-11: no end restore): the
+    bench suite names no standing image; exactly witness, c12_bench and
+    vport_bench are marked not safe to leave idle (X2_IDLE_UNSAFE), the
+    bridge, truck and WiCAN images are idle-safe, and the X2's idle-safe
+    image is the bridge (spec 2.3; X2_IDLE_SAFE). The emulated and harness
+    suites have no images to mark."""
+    s, su = _all()
+    b = su["bench"]
+    assert b.standing_image is None and b.standing_images is None, \
+        (b.standing_image, b.standing_images)
+    unsafe = {n for n, im in b.images.items() if not im.idle_safe}
+    assert unsafe == {"witness", "c12_bench", "vport_bench"} == set(B.X2_IDLE_UNSAFE), unsafe
+    assert b.idle_safe_images == {"x2": "bridge"}, b.idle_safe_images
+    for n in ("bridge", "truck", B.bench_wican.IMAGE):
+        assert b.images[n].idle_safe, n
+    validate(b, s, builtin_flashers=("esptool",))
+    for k in ("emulated", "harness"):
+        assert not su[k].images and not su[k].idle_safe_images, k
 
 
 def test_mutant_wiring():
@@ -1741,7 +1767,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
-         test_m_lanes_host]
+         test_m_lanes_host, test_idle_safe]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -2146,7 +2172,27 @@ def _no_wican_in(group):
     return fn
 
 
-def _no_wican_standing(s):
+def _wican_marked_unsafe(s):
+    s.images[B.bench_wican.IMAGE].idle_safe = False
+
+
+def _vport_left_safe(s):
+    s.images["vport_bench"].idle_safe = True
+
+
+def _bridge_marked_unsafe(s):
+    s.images["bridge"].idle_safe = False
+
+
+def _no_idle_safe_x2(s):
+    s.idle_safe_images = {}
+
+
+def _witness_idle_safe_image(s):
+    s.idle_safe_images = {"x2": "witness"}
+
+
+def _standing_back(s):
     s.standing_images = {"x2": "bridge"}
 
 
@@ -2162,6 +2208,17 @@ def _wican_identify_off(s):
 
 
 MUTANTS = {
+    "test_idle_safe": [
+        ("bench", _wrap_suite("bench", _vport_left_safe),
+         "vport_bench left idle-safe"),
+        ("bench", _wrap_suite("bench", _bridge_marked_unsafe),
+         "the bridge marked not idle-safe"),
+        ("bench", _wrap_suite("bench", _no_idle_safe_x2),
+         "no idle-safe image for the X2"),
+        ("bench", _wrap_suite("bench", _witness_idle_safe_image),
+         "the witness named the X2's idle-safe image"),
+        ("bench", _wrap_suite("bench", _standing_back),
+         "a standing image named again")],
     "test_m_lanes_host": [
         ("_Build.mgroup", _mgroup_always_madhouse,
          "m_lanes_host local ignored: the m-lanes still over ssh"),
@@ -2176,8 +2233,8 @@ MUTANTS = {
     "test_wican_board": [
         ("bench", _wrap_suite("bench", _no_wican_in("b-vport")),
          "a bench group without the WiCAN"),
-        ("bench", _wrap_suite("bench", _no_wican_standing),
-         "no standing image for the WiCAN"),
+        ("bench", _wrap_suite("bench", _wican_marked_unsafe),
+         "the never-flashed WiCAN image marked not idle-safe"),
         ("bench", _wrap_suite("bench", _no_release_hook),
          "no release hook (the WiCAN unread at every release)"),
         ("bench", _wrap_suite("bench", _wican_identify_off),

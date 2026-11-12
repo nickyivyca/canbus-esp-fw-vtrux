@@ -59,8 +59,9 @@ Where the m-* groups run, settings m_lanes_host (M_LANES_HOSTS):
             on host local, so the core runs them in one lane, one after
             another.
 
-The X2's images: bridge (the standing image), witness, truck, c12_bench,
-vport_bench. The interposer's images (port step 2a: ESP-IDF builds) are
+The X2's images: bridge (its idle-safe image, X2_IDLE_SAFE), witness,
+truck, c12_bench, vport_bench (X2_IDLE_UNSAFE marks the three not safe to
+leave idle). The interposer's images (port step 2a: ESP-IDF builds) are
 taken from images_dir/<images_src>/<variant>/, as their build's
 flasher_args.json gives them; each application's own descriptor must name
 it (interposer_<variant>, version images_src, ESP-IDF v5.4.2), and
@@ -199,6 +200,20 @@ MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 # settings m_lanes_host: where the m-* groups run (module docstring)
 M_LANES_HOSTS = ("madhouse", "local")
 
+# Images not safe to leave idle on the bench, and the X2's idle-safe image
+# (shared/bench 2026.11.11.2: no end restore; an image marked
+# idle_safe=False is replaced by its board's idle-safe image before the end
+# release; user, 2026-11-11, SPEC section 6). The bridge is idle-safe by
+# spec 2.3: while the charger is silent its vehicle port is listen-only and
+# puts nothing on the vehicle segment, and its power-up round is bounded to
+# 50 ms; the bench suite checks both on it (b-bridge powerup-round-noack,
+# charger-silent; accepted at 2b, b467). The truck image differs from the
+# bench build only by serial output (spec 9 C2b), so the same holds. The
+# witness (the witness switch), c12_bench and vport_bench (bench targets
+# outside the spec) have no such evidence, so they are marked.
+X2_IDLE_UNSAFE = ("witness", "c12_bench", "vport_bench")
+X2_IDLE_SAFE = {"x2": "bridge"}
+
 # Mutation / can-fail scripts in harness_checks/, run in the m-lanes: on
 # madhouse from the shipped code (cwd {work}/code), or locally from the
 # worktree (m_lanes_host local); each finds the code from its own place.
@@ -247,8 +262,10 @@ SHARED_BENCH_TESTS = [
     "test_accept_judge.py", "test_accept_list.py", "test_accept_record.py",
     "test_accept_remote.py", "test_accept_run.py", "test_accept_setup.py",
     "test_accept_suite_runs.py", "test_accept_trees.py", "test_bench_lock.py",
-    "test_decode.py", "test_run_core.py", "test_scratch.py",
-    "test_scratch_helper.py",
+    "test_canmain.py", "test_decode.py", "test_ota_outcome.py",
+    "test_ota_policy.py", "test_ota_preflight.py", "test_ota_wire.py",
+    "test_run_core.py", "test_scratch.py", "test_scratch_helper.py",
+    "test_wifi.py",
 ]
 
 HARNESS_LOCAL = [
@@ -992,8 +1009,9 @@ def bench(settings):
                   "gs_usb", "--diag-witness", "{pcan_channel}",
                   "--outdir", "{outdir}"]
 
-    # In image order: bridge (standing), witness, truck, c12_bench,
-    # vport_bench; then the core restores the bridge image.
+    # In image order: bridge, witness, truck, c12_bench, vport_bench. The
+    # core restores nothing at the end; it loads the bridge only if the X2
+    # is left on an image marked not idle-safe (X2_IDLE_UNSAFE).
     b_bridge = Group("b-bridge", needs_lock=True, image="bridge", checks=[
         bpy("powerup-round-ack", "bench_powerup_round.py",
             ["--port", "{serial_port}", "--mode", "ack", "--boots", "5",
@@ -1176,6 +1194,8 @@ def bench(settings):
         "c12_bench": _idf_image("c12_bench", settings),
         "vport_bench": _idf_image("vport_bench", settings),
     }
+    for name in X2_IDLE_UNSAFE:
+        images[name].idle_safe = False
     # The WiCAN is a board of every bench group (bench_wican.py), so the
     # runner identifies it, runs its start and release reboots and reads it
     # at every release and free_paused (shared/bench SPEC.md section 6).
@@ -1193,7 +1213,7 @@ def bench(settings):
         name="charge-interposer-bench", role=ROLE,
         groups=[b_bridge, b_witness, b_truck, b_c12, b_vport, truck_only],
         images=images,
-        standing_images={"x2": "bridge", bench_wican.BOARD: bench_wican.IMAGE},
+        idle_safe_images=dict(X2_IDLE_SAFE),
         flashers={bench_wican.FLASHER: wican["flasher"]},
         on_start=wican["on_start"], on_end=wican["on_end"],
         known_fails=BENCH_KNOWN_FAILS, identify=identify,

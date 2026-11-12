@@ -310,10 +310,15 @@ def _engine_run(name, wican_sha, after=None):
         "g", [Check("c", ["-c", "pass"], python=True, timeout_s=60)],
         needs_lock=True, image=["x2app", W.IMAGE])], images=ims,
         flashers={"fake": x2_flasher, W.FLASHER: w["flasher"]},
-        identify=identify, on_start=w["on_start"], on_end=w["on_end"],
-        standing_images={"x2": "x2app", W.BOARD: W.IMAGE})
+        identify=identify, on_start=w["on_start"], on_end=w["on_end"])
+    # the runner refuses a bench run with no canmain_check (shared/bench
+    # SPEC section 8, from 2026.11.11.2): the core's own hardware-free
+    # fixture, from the pinned checkout's tests, as its own tests use it
+    sys.path.insert(0, os.path.join(shared_pin.folder("shared/bench"), "tests"))
+    import _canmain_fixture
+    canmain = _canmain_fixture.install(os.path.join(root, "canmain"))
     settings = dict(s, runs_root=os.path.join(root, "runs"),
-                    bench_holder=holder, pause_poll_s=0.2)
+                    bench_holder=holder, pause_poll_s=0.2, canmain_check=canmain)
     eng = E.Engine(suite, settings, out=lambda *a: None)
     rec = eng.run()
     os.environ.pop("FAKE_WICAN_AFTER", None)
