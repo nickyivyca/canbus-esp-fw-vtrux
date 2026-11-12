@@ -1073,7 +1073,10 @@ def test_decoding():
     os.makedirs(d, exist_ok=True)
     name = next(iter(B.BY_NAME))
     with gzip.open(os.path.join(d, "w.json.gz"), "wt", encoding="ascii") as fh:
-        json.dump({"frames": base.f, "sent": [], "clock": None, "errs": []}, fh)
+        # the hardware note run_case records (2026-11-11: a file on receipt time, or with no
+        # note, is VOID and never judged, A2 (b); test_witness_clock.py covers that)
+        json.dump({"frames": base.f, "sent": [], "clock": "kvaser_hw (median receipt lag 0.0011 s)",
+                   "errs": []}, fh)
 
     def rec_with(decoder):
         p = os.path.join(d, "run_%s.json" % ("none" if decoder is None else decoder["dbc_hash"][:4]))

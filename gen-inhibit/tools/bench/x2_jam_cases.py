@@ -5,7 +5,11 @@ Gen-inhibit tester, 2026-10-08. Case plans A, B, C approved by the reviewer
 X2's CAN1, which is on the WiCAN's segment; it is driven over COM3 through
 x2_jammer.Console. Every time below is on ONE clock: host epoch (time.time()),
 with the Kvaser's hardware timestamps, which are on that clock (median receipt
-lag ~1 ms, measured each run and recorded).
+lag ~1 ms, measured each run and recorded). When they are not on that clock,
+the run is VOID and nothing more is judged: the witness never judges on receipt
+time (witness_clock.py; the gen-inhibit reviewer's A2 ruling (b), 2026-11-11).
+Witness.clocked() raises witness_clock.ReceiptClock, which main records as the
+VOID; Witness.recorded() still gives the times on either clock for the record.
 
   A  busoff     spec 11 bus-off half. WiCAN in mode 2 (RESPOND), no replay,
                 PCAN closed; its only transmissions are its diag pages. Per arm:
@@ -67,6 +71,7 @@ import x2_jammer as XJ                                          # noqa: E402
 import gi_ecc as GE                                             # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
+import witness_clock as WC  # noqa: E402  never judged on receipt time (A2 (b), 2026-11-11)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
@@ -513,16 +518,25 @@ class Witness(threading.Thread):
         self.join(timeout=2.0)
         self.bus.shutdown()
 
-    def clocked(self):
-        """(frames [(t, arb, hex)], errs [t], clock note) on the epoch clock."""
+    def recorded(self):
+        """(frames [(t, arb, hex)], errs [t], clock note): on the hardware stamps when
+        they are on the epoch clock, else on receipt time (WC.RECEIPT), or WC.NONE with
+        nothing heard. For the record and the witness file only; judging uses clocked()."""
         with self.lock:
             fr, er = list(self.frames), list(self.errs)
         lags = [rx - hw for hw, rx, _, _ in fr] + [rx - hw for hw, rx in er]
-        if lags and abs(statistics.median(lags)) < 2.0:
-            note = "kvaser_hw (median receipt lag %.4f s)" % statistics.median(lags)
+        if lags and abs(statistics.median(lags)) < WC.MAX_LAG_S:
+            note = WC.hw_note(statistics.median(lags))
             return ([(hw, a, h) for hw, _, a, h in fr], [hw for hw, _ in er], note)
-        note = "receipt (hw not epoch)" if lags else "none"
+        note = WC.RECEIPT if lags else WC.NONE
         return ([(rx, a, h) for _, rx, a, h in fr], [rx for _, rx in er], note)
+
+    def clocked(self):
+        """recorded(), for a judgement: raises WC.ReceiptClock on receipt time, so the
+        run is VOID and never judged on it (A2 (b), 2026-11-11)."""
+        fr, er, note = self.recorded()
+        WC.require(note)
+        return fr, er, note
 
 
 class Poller(threading.Thread):
@@ -1416,6 +1430,17 @@ def build_parser():
     return ap
 
 
+def run_guarded(case, a, rec, con, wit):
+    """Run one case. If the witness is on receipt time when a judgement asks for its
+    times (Witness.clocked() raises WC.ReceiptClock), the run is VOID: arms judged
+    before that keep their judge in the record, and the run's verdict is the VOID."""
+    try:
+        case(a, rec, con, wit)
+    except WC.ReceiptClock as e:
+        WC.void(rec, e.note)
+        print(rec["verdict"])
+
+
 def main():
     a = build_parser().parse_args()
     if a.case == "threshold":
@@ -1446,7 +1471,7 @@ def main():
         wit = Witness()
         wit.start()
         time.sleep(1.0)
-        CASES[a.case](a, rec, con, wit)
+        run_guarded(CASES[a.case], a, rec, con, wit)
     finally:
         try:
             con.send("STOP")
@@ -1461,7 +1486,7 @@ def main():
         con.stop_flag.set()
         con.join(timeout=2.0)
         if wit is not None:
-            frames, errs, clock = wit.clocked()
+            frames, errs, clock = wit.recorded()     # on either clock, labelled: kept, not judged
             rec["witness_clock"] = clock
             rec["witness_err_total"] = len(errs)
             rec["witness_frames_kept"] = len(frames)
