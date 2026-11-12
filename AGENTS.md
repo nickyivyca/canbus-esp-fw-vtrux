@@ -113,6 +113,13 @@ and tell the user.
   `shared/<component>/<topic>` (see "Shared code").
 - **Always merge, never rebase.** Manifests, `VERIFICATION.md` entries and run records
   name commits, and a rebase would rewrite them.
+- **Unpushed history is corrected, not patched over** (user, 2026-11-11).
+  Commits on no origin branch may be re-made, amended or rebased, for
+  example to keep a pre-push hit out of history. Re-make them on a new
+  branch name, never push the old branch, and in the same go correct
+  every note, tracker entry or record that names one of the old commits
+  to its new hash. Once a commit is on origin, the merge-only rule above
+  holds.
 
 **Skills follow the branch.** Each worktree has the role skills of the branch
 it has checked out. Each branch keeps
