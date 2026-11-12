@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Harness test: every shell runner in this folder parses, by `bash -n` with the bash the
-suite runs them with (settings "bash", Git Bash).
+suite runs them with (settings "bash": Git Bash on Windows, the system bash on Linux).
 
     GI_BASH="C:/Program Files/Git/usr/bin/bash.EXE" py -3.14 -B gen-inhibit/tools/bench/test_bench_sh_syntax.py
+    python3.13 -B gen-inhibit/tools/bench/test_bench_sh_syntax.py     # Linux: bash on PATH
+
+On Linux the host check wants GNU bash for Linux, not Git Bash (2026-11-12, the Linux
+fix-item topic: it had failed on madhouse for that alone).
 
 Written 2026-10-22: baseline_b_hand.sh had failed to parse since its NONODE step was added
 (2026-10-20). An apostrophe in a "${VAR:?message}" opened a quote that ran to the end of the
@@ -25,6 +29,17 @@ SH_DIR = os.environ.get("GI_SH_DIR") or HERE
 # WSL's bash.exe; PATH's (Git Bash) is the one these scripts are written for.
 BASH = os.environ.get("GI_BASH") or shutil.which("bash")
 FAILS = []
+# The bash the scripts run under on each host (bench_host.sh): Git Bash on Windows, the
+# system's GNU bash on Linux (user, 2026-11-11: new bench tooling is Linux only).
+GNU_LINE = "GNU bash, version 5.2.37(1)-release (x86_64-pc-linux-gnu)"
+MSYS_LINE = "GNU bash, version 5.2.37(1)-release (x86_64-pc-msys)"
+
+
+def host_bash(platform):
+    """(a fragment of `bash --version`'s first line, its name) for the bash on this host."""
+    if platform == "win32":
+        return "-pc-msys", "Git Bash"
+    return "-linux-gnu", "GNU/Linux bash"
 
 
 def check(label, ok, detail=""):
@@ -44,7 +59,14 @@ def main():
         check("a bash to run", False, "no GI_BASH and no bash on PATH")
         return 1
     v = subprocess.run([BASH, "--version"], capture_output=True, text=True, timeout=60).stdout.splitlines()
-    check("bash is Git Bash, as the suite runs the scripts", bool(v) and "-pc-msys" in v[0], v[0] if v else "no output")
+    want = host_bash(sys.platform)
+    check("bash is %s, as the suite runs the scripts on this host" % want[1], bool(v) and want[0] in v[0],
+          v[0] if v else "no output")
+    for line, plat, ok in ((GNU_LINE, "linux", True), (MSYS_LINE, "win32", True),
+                           (MSYS_LINE, "linux", False), (GNU_LINE, "win32", False)):
+        check("control: a %s bash %s on %s" % ("Git" if "msys" in line else "GNU/Linux",
+                                                "is taken" if ok else "is refused", plat),
+              (host_bash(plat)[0] in line) == ok, line)
     # The check must be able to fail: the defect's own shape fails, the same line without it parses.
     tmp = tempfile.mkdtemp(prefix="gi-sh-syntax-", dir=gi_paths.scratch("tmp", run=False))
     try:

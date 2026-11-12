@@ -85,7 +85,19 @@ def cli(folder):
     return r.returncode, r.stdout
 
 
+def have_tshark():
+    """(the tshark capture_stop_check.py runs, whether it is there): gi_paths.tshark(), as the
+    script under test finds it (2026-11-12: on a host without it every case crashed alike)."""
+    ts = gi_paths.tshark()
+    return ts, os.path.isfile(ts) or shutil.which(ts) is not None
+
+
 def tests():
+    ts, ok = have_tshark()
+    check("tshark is there to read the captures (%s)" % ts, ok, "not found: install tshark, or set GI_TSHARK")
+    if not ok:
+        print("\n%d ok, %d FAIL: nothing else can be checked without tshark" % (oks, len(fails)))
+        return 1
     tmp = gi_paths.scratch("capture-stop-check-test")
     gi_paths.remove_tree(tmp)
     os.makedirs(tmp)
@@ -183,6 +195,10 @@ MUTANTS = [
 
 
 def mutants():
+    ts, ok = have_tshark()
+    if not ok:   # every mutant would fail the tshark check and read killed
+        print("REFUSED  tshark (%s) not found: no mutant is judged; install tshark, or set GI_TSHARK" % ts)
+        return 1
     src = open(SCRIPT, encoding="utf-8", newline="").read().replace("\r\n", "\n")
     base = gi_paths.scratch("mutants-capture_stop_check")
     killed = errors = 0
