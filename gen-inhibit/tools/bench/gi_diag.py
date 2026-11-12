@@ -44,8 +44,8 @@ of the tree it came from) and SchemaSet.from_export() reads it back, checking ea
 identity and hash, and the interposer DBC's sha256, against the manifest and the pins
 again. schemas_for() and interposer_dbc() find the export when there is no git.
 
-THE CORE PIN. vtrux_bench.decode is used at shared/main tag 2026.11.11.7, a0e12584 (the
-suite's pin; 2026.11.11 (79e5f7c6) and b9896a0 before it, reviewer 2026-10-24, all with
+THE CORE PIN. vtrux_bench.decode is used at shared/main tag 2026.11.12, ee4608aa (the
+suite's pin; 2026.11.11.7 (a0e12584), 2026.11.11 (79e5f7c6) and b9896a0 before it, reviewer 2026-10-24, all with
 the same decode.py blob).
 pins.json "core" holds that commit and decode.py's git blob id;
 core() refuses a decode.py whose blob differs, wherever it was found.

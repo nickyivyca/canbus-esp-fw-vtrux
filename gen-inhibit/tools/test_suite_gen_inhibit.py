@@ -6,7 +6,7 @@ tool fails, and a settings file naming bench_lock_log puts a run on that log whi
 without keeps it on the Holder line. No hardware: every tool the hooks run is stood in
 for.
 
-    PYTHONPATH=<core 2026.11.11.7>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 2026.11.12>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit.py
 
 The board steps run the real wican_reboot.py from this folder's bench/ (the suite's
@@ -54,8 +54,9 @@ def scratch_dir(name):
 sys.path.insert(0, HERE)
 
 from vtrux_bench.run import cli as CLI                       # noqa: E402
+from vtrux_bench.run import engine as ENG                    # noqa: E402
 from vtrux_bench.run.engine import Engine, fmt               # noqa: E402
-from vtrux_bench.run.model import CheckRun, validate         # noqa: E402
+from vtrux_bench.run.model import CheckRun, SuiteError, validate   # noqa: E402
 import suite_gen_inhibit as SG                               # noqa: E402
 import _fake_serial as FS     # noqa: E402  bench/ (on sys.path above): the made-up serial devices
 
@@ -1300,7 +1301,10 @@ def test_lock_source(settings):
     clean code with a passing emulated run (Suite.requires). Every tool the hooks run is
     stood in for, and the WiCAN's start step fails, which stops the bench before
     anything is identified or flashed (the core's start_hook_stops): no case runs, and
-    bash is a path that does not exist in case one did."""
+    bash is a path that does not exist in case one did. Then the settings example's
+    placement (core 2026.11.12): a bench run refuses to start unless the runner is in
+    bench.slice, before the take; in bench.slice it starts; with no placement it starts
+    anywhere. The runner's cgroup is made up (engine.RUNNER_CGROUP)."""
     from vtrux_bench import bench_lock as BL
     from vtrux_bench.run.lock import LockError
     from vtrux_bench.run import canmain as CM
@@ -1332,11 +1336,14 @@ def test_lock_source(settings):
                 image_elf_sha256=__import__("bench_flash").image_elf_sha256)
     fake_module("bench_identify", identify=lambda image, ctx, logdir_, settings_: None)
     n = [0]
+    cg0, plat0 = ENG.RUNNER_CGROUP, ENG.PLATFORM
 
-    def run(log, holder, log_taken_by=None):
+    def run(log, holder, log_taken_by=None, placement=None, cgroup=None):
         """One run: (outcome, the log's lines before, after, the Holder file unchanged,
         record.json or None). log: name the scratch log in the settings, or not; it is
-        made in both cases."""
+        made in both cases. placement: the settings' placement, or none. cgroup: the
+        runner's /proc/self/cgroup text, made up in a file the core reads instead
+        (engine.RUNNER_CGROUP), with the core told it is on Linux; None leaves both."""
         n[0] += 1
         c = os.path.join(d, "c%d" % n[0])
         runs = os.path.join(c, "runs")
@@ -1361,6 +1368,13 @@ def test_lock_source(settings):
                  canmain_check=dict(cm_setting))
         if log:
             s["bench_lock_log"] = lp
+        if placement is not None:
+            s["placement"] = placement
+        if cgroup is not None:
+            cg = os.path.join(c, "cgroup")
+            with open(cg, "w", encoding="ascii", newline="\n") as f:
+                f.write(cgroup)
+            ENG.RUNNER_CGROUP, ENG.PLATFORM = cg, "linux"
         sp = os.path.join(c, "settings.json")
         with open(sp, "w", encoding="utf-8") as f:
             json.dump(s, f)
@@ -1377,6 +1391,8 @@ def test_lock_source(settings):
                     res = "ran"
                 except LockError as e:
                     res = "refused: %s" % e
+                except SuiteError as e:
+                    res = "refused (suite): %s" % e
                 except Exception as e:
                     res = "error: %r" % (e,)
             rec = None
@@ -1384,7 +1400,10 @@ def test_lock_source(settings):
                 with open(os.path.join(eng.run_dir, "record.json"), encoding="utf-8") as f:
                     rec = json.load(f)
             return res, rec, getattr(eng, "run_id", None)
-        res, rec, rid = with_tools(go)
+        try:
+            res, rec, rid = with_tools(go)
+        finally:
+            ENG.RUNNER_CGROUP, ENG.PLATFORM = cg0, plat0
         after = open(lp, encoding="ascii").read().splitlines()
         return res, before, after, open(bh, "rb").read() == held, rec, rid
 
@@ -1433,6 +1452,55 @@ def test_lock_source(settings):
           rec and rec.get("lock"))
     check("lock: the run on the Holder line writes nothing to the log, and leaves the Holder file alone",
           after == before and same, (after[len(before):], same))
+
+    # Placement (core 2026.11.12; gen-inhibit reviewer, 2026-11-12): with the settings
+    # example's placement, a bench run (man_app has images, so the runner flashes) refuses
+    # to start unless the runner is in bench.slice. The cgroup texts are made up; the
+    # probes the core would start per group are a command that fails, so no systemd-run
+    # runs here, and nothing reaches a group anyway (the start step fails).
+    with open(os.path.join(HERE, "suite_gen_inhibit.settings.example.json"), encoding="utf-8") as f:
+        pl = dict(json.load(f).get("placement") or {})
+    nope = [sys.executable, "-c", "raise SystemExit(1)"]
+    pl.update(systemd_run=nope, systemctl=nope)
+    app = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/test.scope\n"
+    bench_cg = "0::/user.slice/user-1000.slice/user@1000.service/bench.slice/run-test.scope\n"
+    free = "-- (free)"
+
+    def runner_ev(rec):
+        evs = [e for e in (rec or {}).get("events", []) if e.get("kind") == "placement" and e.get("runner")]
+        return evs[0] if evs else None
+
+    res, before, after, same, rec, _ = run(True, free, placement=pl, cgroup=app)
+    check("placement: with the example's placement, a bench run whose runner is in app.slice is refused (%s)"
+          % res[:80], res.startswith("refused (suite): refusing to start") and "app.slice" in res
+          and "bench.slice" in res, res)
+    # the command is the settings' systemd_run (here the stand-in) with the scope's arguments
+    check("placement: the refusal prints the command that starts it in bench.slice (a user scope)",
+          "--user --scope" in res and "--slice=bench.slice" in res and "raise SystemExit(1)" in res, res)
+    check("placement: that refusal takes nothing, writes nothing to the log and makes no run",
+          after == before and rec is None and same, (after[len(before):], rec is None))
+    # can-fail: the refusal is the core's rule runner_slice; with it off, the same run
+    # starts, so the checks above are what catch a core or settings that stop refusing
+    rule0 = ENG.RULES["runner_slice"]
+    ENG.RULES["runner_slice"] = False
+    try:
+        res, before, after, same, rec, _ = run(True, free, placement=pl, cgroup=app)
+    finally:
+        ENG.RULES["runner_slice"] = rule0
+    check("placement can-fail: with the core's runner_slice rule off, the same run in app.slice is not refused",
+          res == "ran", res)
+    res, before, after, same, rec, _ = run(True, free, placement=pl, cgroup=bench_cg)
+    ev_ = runner_ev(rec)
+    check("placement: the same run with the runner in bench.slice starts (%s)" % res[:80],
+          res == "ran" and rec is not None, res)
+    check("placement: its record names the runner's slice, bench.slice, and its board work",
+          ev_ is not None and ev_.get("slice") == "bench.slice" and ev_.get("wallclock_slice") == "bench.slice"
+          and "man_app" in str(ev_.get("board_work")), ev_)
+    res, before, after, same, rec, _ = run(True, free, placement=None, cgroup=app)
+    ev_ = runner_ev(rec)
+    check("placement: with no placement setting the run in app.slice starts, its slice recorded (%s)" % res[:80],
+          res == "ran" and ev_ is not None and ev_.get("slice") == "app.slice"
+          and ev_.get("reason") == "no placement setting", (res, ev_))
 
 
 FAKE_SSH = r"""#!/usr/bin/env bash
@@ -1539,8 +1607,11 @@ def test_host_group(settings, emu):
           [l for l in lines if "tar xf" in l] != [], (rc, lines, txt[-300:]))
 
 
-def test_example(bench, emu):
-    """The settings example names every key the suites need and every placeholder."""
+def test_example(bench, emu, settings):
+    """The settings example names every key the suites need and every placeholder, and
+    its placement (core 2026.11.12; gen-inhibit reviewer, 2026-11-12) starts every bench
+    check in bench.slice and every emulated check in build.slice, as the core reads it on
+    Linux (Engine.placement_for)."""
     import re
     with open(os.path.join(HERE, "suite_gen_inhibit.settings.example.json"), encoding="utf-8") as f:
         ex = json.load(f)
@@ -1558,13 +1629,31 @@ def test_example(bench, emu):
     check("the settings example names x2_pin_dir and not the retired x2_images",
           "x2_pin_dir" in ex and "x2_images" not in ex, sorted(ex))
     check("the settings example has no WiCAN SSID", not re.search(r"WiCAN_[0-9a-fA-F]{4}", json.dumps(ex)))
+    pl = ex.get("placement") or {}
+    check("the settings example's placement: bench.slice for lock and wallclock, build.slice for build and light",
+          pl.get("slices") == {"lock": "bench.slice", "wallclock": "bench.slice",
+                               "build": "build.slice", "light": "build.slice"}, pl)
+    plat0 = ENG.PLATFORM
+    ENG.PLATFORM = "linux"
+    try:
+        s = dict(settings, placement=pl)
+        got = {}
+        for suite, want in ((bench, "bench.slice"), (emu, "build.slice")):
+            eng = Engine(suite, s)
+            got[suite.name] = sorted({"%s/%s" % (g.name, c.id): eng.placement_for(g, c)
+                                      for g in suite.groups for c in g.checks if not c.skip}.items())
+            wrong = [(k, v) for k, v in got[suite.name] if v != want]
+            check("with the example's placement, every %s check starts in %s (%d checks)"
+                  % (suite.name, want, len(got[suite.name])), got[suite.name] and not wrong, wrong)
+    finally:
+        ENG.PLATFORM = plat0
 
 
 def main():
     try:
         settings, shas = fixture()
         bench, emu = test_suites(settings, shas)
-        test_example(bench, emu)
+        test_example(bench, emu, settings)
         test_host_group(settings, emu)
         test_code_info(settings)
         test_lock_source(settings)

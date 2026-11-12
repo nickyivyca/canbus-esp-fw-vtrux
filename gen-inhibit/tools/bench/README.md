@@ -73,7 +73,7 @@ below that names `runs/...` names a file there.
   pinned input refuses it if it has changed. Two more sections pin what comes from git:
   `git` (the interposer's diag DBC: its `charge-interposer/main` commit and sha256) and
   `core` (`shared/bench`'s `vtrux_bench/decode.py`: the suite's core pin, shared/main tag
-  `2026.11.11.7` (`a0e12584`; `2026.11.11` (`79e5f7c6`) and `b9896a0` before, the same
+  `2026.11.12` (`ee4608aa`; `2026.11.11.7` (`a0e12584`), `2026.11.11` (`79e5f7c6`) and `b9896a0` before, the same
   blob), and the file's git blob
   id), both checked by `gi_diag.py`.
 - Python is `py -3.14 -B` on NICKY-XPS (`python-executables-reference.md` in reverse-it).

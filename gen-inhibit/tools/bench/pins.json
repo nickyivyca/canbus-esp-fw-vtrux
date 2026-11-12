@@ -59,10 +59,10 @@
    "sha256": "3c14042fa5992d464bcc34e4e4ceb9d0503a2026ed42ede7c49e044b739aa286"
   }
  },
- "_comment_core": "shared/bench's vtrux_bench.decode, at the suite's core pin (shared/main tag 2026.11.11.7; 2026.11.11 (79e5f7c6) and b9896a0 before it, reviewer 2026-10-24, all with the same blob): gi_diag.core() refuses a decode.py whose git blob id is not this.",
+ "_comment_core": "shared/bench's vtrux_bench.decode, at the suite's core pin (shared/main tag 2026.11.12; 2026.11.11.7 (a0e12584), 2026.11.11 (79e5f7c6) and b9896a0 before it, reviewer 2026-10-24, all with the same blob): gi_diag.core() refuses a decode.py whose git blob id is not this.",
  "core": {
   "shared/bench/vtrux_bench/decode.py": {
-   "commit": "a0e1258462948c645b10ccc5f60eab426c3b1529",
+   "commit": "ee4608aa3f29c908acc554a0107868c1c4627823",
    "blob": "1d3a89f9b69023f01e851b149c581217f1934f79"
   }
  },

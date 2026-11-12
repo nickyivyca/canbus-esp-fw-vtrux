@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Gen-inhibit's two suites for the shared chain runner (shared/bench, vtrux_bench.run,
-pinned at shared/main tag 2026.11.11.7 (a0e12584; before it 2026.11.11 (79e5f7c6), and
+pinned at shared/main tag 2026.11.12 (ee4608aa; before it 2026.11.11.7 (a0e12584), 2026.11.11 (79e5f7c6), and
 b9896a0 on charge-interposer/main). From 2026.11.11.2 its bench lock runs on Linux, the
 bench host's system (user, 2026-11-11). That core's on_start / on_end board steps reboot the WiCAN at
 each run's start and release; it refuses an esptool write unless settings.esptool.chip
@@ -26,6 +26,14 @@ Gen-inhibit tester, 2026-10-18. Two suites on the one core (user, 2026-10-17):
               left it, an image marked not safe to leave idle replaced first.
     emulated  parts H and C: no hardware, no lock.
 The core's rules are in its engine.py; nothing here repeats them.
+
+Placement (core 2026.11.12; AGENTS.md "Parallel work on the shared machine", point 1).
+The settings example gives the core's placement setting: bench.slice for the lock and
+wallclock classes, build.slice for build and light, so every bench check starts in
+bench.slice and every emulated one in build.slice (gen-inhibit reviewer, 2026-11-12).
+With it, the core refuses a bench run, which flashes and reboots the boards in the runner
+itself, unless the runner is in bench.slice, and prints the command that starts it there:
+    systemd-run --user --scope --quiet --slice=bench.slice -- python3.13 -B -m vtrux_bench.run run ...
 
     PYTHONPATH="<core>/shared/bench;<interposer clone>/charge-interposer" \
     py -3.14 -B -m vtrux_bench.run plan --suite gen-inhibit/tools/suite_gen_inhibit.py:bench \
@@ -852,8 +860,8 @@ def emulated_code_info(settings):
 def emulated(settings):
     """Parts H and C: no hardware, no bench lock (user, 2026-10-17: two suites per
     project). H runs on the host gi_host_ssh names from a git archive of the commit
-    (baseline_host_run.sh); C's checks run idf.py here and are build-class, so the
-    core throttles them while a wall-clock test runs."""
+    (baseline_host_run.sh); C's checks run idf.py here and are build-class, so with
+    the placement setting they start in build.slice with every core (core 2026.11.12)."""
     commit = need(settings, "gi_commit")
     C = commit
     # H and B15host run this clone's harness (host-run commit, 2026-10-22), never the

@@ -2,7 +2,7 @@
 """Tests for gi_serial.py, and the scan that no harness tool names a serial port by a COM or
 tty name (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12, re-pin batch item 4).
 
-    PYTHONPATH=<core 2026.11.11.7>/shared/bench python3.13 -B test_gi_serial.py
+    PYTHONPATH=<core 2026.11.12>/shared/bench python3.13 -B test_gi_serial.py
     ... test_gi_serial.py --can-fail
 
 gi_serial: on a made-up bench of serial devices (_fake_serial.py, the core's own fixture), a

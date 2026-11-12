@@ -2,7 +2,7 @@
 """Mutants of suite_gen_inhibit.py; test_suite_gen_inhibit.py must fail on each BY A
 CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
-    PYTHONPATH=<core 2026.11.11.7>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 2026.11.12>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
 The mutants run in a shared clone of this repo at HEAD, made in the worktree's scratch/,
@@ -12,7 +12,8 @@ git history from bench/ (B15host exports it; in a bare folder it found no histor
 every mutant failed the same six B15host checks). This folder's test, settings example,
 x2_pin.py and x2_pin.json, and bench/ (the suite's HARNESS, 2026-10-22) are copied over
 the clone's; each mutant
-writes suite_gen_inhibit.py there with one edit. The unmutated copy runs first, as the
+writes suite_gen_inhibit.py there with one edit, or, for a mutant whose fourth field
+names it, the settings example (the placement mutants, core 2026.11.12). The unmutated copy runs first, as the
 control: if it fails a check, no kill counts. Gen-inhibit tester, 2026-10-19.
 """
 import os
@@ -236,6 +237,14 @@ MUTANTS = [
     ("the port's use is not written down", 'f.write("used by: %s\\nport: %s\\n" % (X2_PORT_USES[use], port))',
      'f.write("port: %s\\n" % port)'),
     ("code: the X2 files' sha256 are not kept", 'sha256=dict(pin["images"][n]["sha256"]))', 'sha256={})'),
+    # placement (core 2026.11.12; gen-inhibit reviewer, 2026-11-12): the settings example's
+    # slices (a bench group with images and no lock is the core's validate's to refuse)
+    ("example: no placement",
+     '  "placement": {"slices": {"lock": "bench.slice", "wallclock": "bench.slice",\n'
+     '                           "build": "build.slice", "light": "build.slice"}},\n', '', EXAMPLE),
+    ("example: wall-clock checks in build.slice", '"wallclock": "bench.slice"', '"wallclock": "build.slice"', EXAMPLE),
+    ("example: no lock slice", '"lock": "bench.slice", ', '', EXAMPLE),
+    ("example: light checks in bench.slice", '"light": "build.slice"', '"light": "bench.slice"', EXAMPLE),
 ]
 
 
@@ -248,10 +257,13 @@ def main():
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (env.get("PYTHONPATH"), HERE) if p)
     killed = errors = 0
-    src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read()
+    srcs = {t: open(os.path.join(HERE, t), encoding="utf-8", newline="").read() for t in (SRC, EXAMPLE)}
+    src = srcs[SRC]
 
-    def run(text):
-        open(os.path.join(d, SRC), "w", encoding="utf-8", newline="").write(text)
+    def run(text, target=SRC):
+        """The test, with target holding text and the other file unmutated."""
+        for t in (SRC, EXAMPLE):
+            open(os.path.join(d, t), "w", encoding="utf-8", newline="").write(text if t == target else srcs[t])
         r = subprocess.run([sys.executable, "-B", os.path.join(d, TEST)], cwd=d, capture_output=True, text=True,
                            env=env)
         fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
@@ -264,12 +276,13 @@ def main():
         "PASS    " if control_ok else "FAILED  ", r.returncode, len(fails), crash,
         "".join("\n           " + f[:130] for f in fails[:3])))
     sys.stdout.flush()
-    for n, (name, old, new) in enumerate(MUTANTS, 1):
-        if src.count(old) != 1:
-            print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
+    for n, (name, old, new, *tgt) in enumerate(MUTANTS, 1):
+        target = tgt[0] if tgt else SRC
+        if srcs[target].count(old) != 1:
+            print("ERROR    m%d %s: edit matched %d times in %s" % (n, name, srcs[target].count(old), target))
             errors += 1
             continue
-        r, fails, crash = run(src.replace(old, new))
+        r, fails, crash = run(srcs[target].replace(old, new), target)
         dead = bool(fails)
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL%s%s)" % (
