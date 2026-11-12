@@ -152,7 +152,11 @@ fails when the rule is switched off through RULES):
                   test runs on its host (another role's lock, a matching
                   process that is not this run's own, or another of this
                   run's wall-clock checks): one long simulation at a time
-  requires        a suite with `requires` starts only when a run of that
+  hand_roles_wallclock
+                  under bench_lock_log, a hand take (android, can-tools)
+                  is not another role's wall-clock test, for the guard and
+                  the throttle: the process scan decides
+  requires       a suite with `requires` starts only when a run of that
                   suite on the same code matched its reference
   product_digest  "the same code" (Suite.requires, --resume) is the product
                   digest over Suite.product_files when the suite gives them,
@@ -238,7 +242,8 @@ RULES = {k: True for k in (
     "idle_safe_end", "idle_unsafe_line", "product_digest", "digest_bridge",
     "board_hooks",
     "start_hook_stops", "release_line", "end_crash_boards", "carry_finished",
-    "carry_check_end", "missing_setting", "record_device")}
+    "carry_check_end", "missing_setting", "record_device",
+    "hand_roles_wallclock")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -539,6 +544,27 @@ class Engine:
         if not lockmod.is_free(h) and not lockmod.held_by(h, self.suite.role):
             return h
         return None
+
+    def _wallclock_holder(self):
+        """For the wall-clock guard (wallclock_running, other_wallclock):
+        the holder's text when another role holds the bench lock and its
+        wall-clock test may be running, else None. Raises if the lock
+        cannot be read. As _other_holder, except that under bench_lock_log
+        a hand take (bench_lock.HAND_ROLES, SPEC section 8) is not one: it
+        runs nothing on this suite's segments, and its timing-sensitive
+        tools are caught by the process scan (wallclock_patterns). The
+        legacy bench_holder path is unchanged. The hardware checks
+        (case_gate, runner_holds) still need this run's own lock, so a hand
+        take still blocks every bench case."""
+        if self.lock_log:
+            st = BL.read_state(self.lock_log)
+            h = st["holder"]
+            if h is None or h["who"] == self.suite.role:
+                return None
+            if RULES["hand_roles_wallclock"] and h["who"] in BL.HAND_ROLES:
+                return None
+            return BL.holder_text(st)
+        return self._other_holder()
 
     def _pause_path(self):
         return os.path.join(self.run_dir, "PAUSE")
@@ -900,9 +926,12 @@ class Engine:
             # Another role's lock means its wall-clock test may be running.
             # Under this suite's own role, nothing of the other project can
             # run, so this run's own wall-clock checks (above) and the
-            # process scan (below) decide.
+            # process scan (below) decide. So do they under a hand take
+            # (android, can-tools; bench_lock_log only): hand takes run
+            # nothing on our segments, and their timing-sensitive tools are
+            # caught by process pattern (_wallclock_holder).
             try:
-                h = self._other_holder()
+                h = self._wallclock_holder()
                 if h:
                     return True, "bench lock held by another role: %s" % h[:80]
             except Exception as e:
@@ -940,8 +969,10 @@ class Engine:
                 return True, ("this run already has a wall-clock check on %s"
                               % host)
         if host == "local" and (self.bench_holder or self.lock_log):
+            # as wallclock_running: a hand take falls through to the
+            # process scan (_wallclock_holder)
             try:
-                h = self._other_holder()
+                h = self._wallclock_holder()
                 if h:
                     return True, "bench lock held by another role: %s" % h[:80]
             except Exception as e:

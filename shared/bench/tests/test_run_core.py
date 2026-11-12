@@ -1072,6 +1072,51 @@ def test_wallclock_guard():
     assert verdicts(rec) == {"g/sim": "NOT-RUN"}, rec["results"]
 
 
+def test_wallclock_hand_roles():
+    """Under bench_lock_log, a hand take (bench_lock.HAND_ROLES: android,
+    can-tools; SPEC section 8) is not another role's wall-clock test, for
+    the guard (other_wallclock) or the throttle (wallclock_running): with
+    no wallclock_patterns process neither is busy and a wall-clock check
+    runs; a matching process makes both busy. A tester of the other project
+    holding the lock still reads as busy, and so does a lock that does not
+    replay (the charge-interposer reviewer's batch, 2026-11-12)."""
+    env, p = log_env("wc_hand")
+    marker = "vtrux_bench_hand_sim_%d" % os.getpid()
+    s = suite([Group("g", [Check("sim", pc("pass"), python=True,
+                                 cls="wallclock")])], role=CI)
+    st = env.settings(bench_lock_log=p, wallclock_patterns=[marker])
+
+    def guard():
+        eng = E.Engine(s, st, out=lambda *a: None)
+        return eng.other_wallclock("local"), eng.wallclock_running("local")
+
+    assert [b for b, _w in guard()] == [False, False], guard()   # lock free
+    for who in BL.HAND_ROLES:
+        BL.take(p, who, os.getpid())
+        got = guard()
+        assert [b for b, _w in got] == [False, False], (who, got)
+        eng, rec = run(env, s, settings=st)
+        assert verdicts(rec) == {"g/sim": "PASS"}, (who, rec["results"])
+        pid = spawn_foreign(marker)
+        try:
+            got = guard()
+        finally:
+            kill_pid(pid)
+        assert all(b and w.startswith("process: ") for b, w in got), (who, got)
+        BL.release(p, who, BD, note="test: nothing opened, nothing sent")
+    BL.take(p, GI, os.getpid())
+    got = guard()
+    assert all(b and "another role" in w for b, w in got), got
+    eng, rec = run(env, s, settings=st)
+    assert verdicts(rec) == {"g/sim": "NOT-RUN"}, rec["results"]
+    BL.release(p, GI, BD, note="test")
+    BL.take(p, BL.HAND_ROLES[0], os.getpid())
+    with open(p, "a", encoding="ascii") as f:
+        f.write("not a log line\n")
+    got = guard()
+    assert all(b and "unreadable" in w for b, w in got), got
+
+
 def test_requires():
     """A suite that requires another starts only after a clean run of it
     on the same, identifiable code."""
@@ -2776,7 +2821,8 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_release_line, test_end_hooks_crash, test_end_identify,
          test_idle_safe_end, test_idle_unsafe_line, test_idle_pause_untouched,
          test_stop_pause,
-         test_throttle, test_after, test_wallclock_guard, test_requires,
+         test_throttle, test_after, test_wallclock_guard,
+         test_wallclock_hand_roles, test_requires,
          test_requires_whole, test_subset_mark, test_subset_not_whole,
          test_product_digest, test_digest_bridge,
          test_digest_own_folder, test_digest_folder_removed,
@@ -2893,6 +2939,8 @@ MUTANTS = {
     "test_throttle": _rule("throttle"),
     "test_after": _rule("after"),
     "test_wallclock_guard": _rule("wallclock_guard"),
+    # the HAND_ROLES skip removed: a hand take is busy again
+    "test_wallclock_hand_roles": _rule("hand_roles_wallclock"),
     "test_requires": _rule("requires"),
     "test_requires_whole": _rule("requires_whole"),
     "test_subset_mark": _rule("subset_mark"),
