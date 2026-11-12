@@ -18,10 +18,15 @@ worktree (a folder with a .git file) in this run's own folder. Every test
 runs in a subprocess with the _scratch.py under test first on its path, so a
 mutant reaches the three tests' own imports. A mutant is an edited copy of
 _scratch.py in this run's folder; an edit whose text is not found exactly once
-counts as a failure, never a silent no-op. Two of the removal mutants fail
-only on Windows, where a read-only file stops a plain rmtree. What a mutant
-leaves (its run folders, or a folder written where it should not be) is
-removed after it.
+counts as a failure, never a silent no-op. Two of the removal mutants (no
+retry after making a path writable) fail on Windows because of a read-only
+file, and on POSIX because of a read-only folder with a file in it. Either
+one stops a plain rmtree there. They survived on Linux before that folder was
+added (shared/bench 2026.11.11.2, the charge-interposer tester). On POSIX run
+the test as a user other than root, since root's rmtree takes the folder.
+What a mutant leaves (its run folders, or a folder written where it should
+not be) is removed after it by this file's own _scratch, read-only folder
+included.
 """
 
 import json
@@ -83,13 +88,23 @@ def test_per_run(mdir):
 
 
 def test_removed_at_exit(mdir):
-    """The run's folder goes when its process exits, with a read-only file and,
-    on Windows, a path past 260 characters in it (AGENTS.md "Removing scratch")."""
+    """The run's folder goes when its process exits, with these in it (AGENTS.md
+    "Removing scratch"):
+    - a read-only file (it stops a plain rmtree on Windows);
+    - a read-only folder with a file in it (it stops one on POSIX);
+    - a path past 260 characters (Windows only)."""
+    if os.name != "nt" and os.geteuid() == 0:
+        raise AssertionError("run as a user other than root: root's rmtree takes a "
+                             "read-only folder, so nothing here could stop it")
     code = ("import json, os, stat, _scratch\n"
             "d = _scratch.run_dir('gone')\n"
             "f = os.path.join(d, 'ro.txt')\n"
             "open(f, 'w').write('x')\n"
             "os.chmod(f, stat.S_IREAD)\n"
+            "rod = os.path.join(d, 'rodir')\n"
+            "os.makedirs(rod)\n"
+            "open(os.path.join(rod, 'f.txt'), 'w').write('x')\n"
+            "os.chmod(rod, stat.S_IREAD | stat.S_IEXEC)\n"
             "deep = os.path.join(d, *(['x' * 50] * 5))\n"
             "lp = ('\\\\\\\\?\\\\' + deep) if os.name == 'nt' else deep\n"
             "os.makedirs(lp)\n"
@@ -101,6 +116,9 @@ def test_removed_at_exit(mdir):
         assert under(d, os.path.join(ROOT, "gone")), d
         assert not os.path.lexists(_scratch.long_path(d)), "left behind: %s" % d
     finally:
+        rod = os.path.join(d, "rodir")          # writable again if a mutant left it,
+        if os.path.isdir(rod):                  # though gone()'s retry would also make it so
+            os.chmod(rod, 0o700)
         gone(d)                                 # what a mutant left; this file's own _scratch
 
 
@@ -289,14 +307,14 @@ MUTANTS = [
      "    for p in (os.path.dirname(d),):"),
     ("one try only", "    for attempt in range(MAKE_TRIES):", "    for attempt in range(1):"),
     ("tries without end", "MAKE_TRIES = 3\n", "MAKE_TRIES = 50\n"),
-    ("rmtree with ignore_errors (Windows only)",
+    ("rmtree with ignore_errors",
      "        if sys.version_info >= (3, 12):\n            shutil.rmtree(lp, onexc=again)\n"
      "        else:\n"
      "            shutil.rmtree(lp, onerror=lambda func, p, ei: again(func, p, ei[1]))\n",
      "        shutil.rmtree(lp, ignore_errors=True)\n"),
     ("one try only, none while held",
      "RETRY_WAITS = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)", "RETRY_WAITS = ()"),
-    ("read-only not retried (Windows only)",
+    ("read-only not retried",
      "os.chmod(p, stat.S_IREAD | stat.S_IWRITE | (stat.S_IEXEC if os.path.isdir(p) else 0))\n"
      "            func(p)",
      "raise OSError('not retried')"),

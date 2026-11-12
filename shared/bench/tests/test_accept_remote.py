@@ -13,11 +13,24 @@ scratch folder, named the way bash names it, and what the runner does there
 -- ship a bundle, clone, check, run, remove -- really happens. Everything is
 in this run's own folder under the worktree's scratch/ (tests/_scratch.py),
 removed at the end with vtrux_bench/scratch.py.
+
+On Linux the remote forms are the local ones: posix paths, the same python,
+the same rm. So every check that tells them apart must fail on every system
+(shared/bench 2026.11.11.2, the charge-interposer tester; three mutants
+survived on Linux):
+- the remote host's python is the same interpreter, spelled differently;
+- the remote path form is checked with compile.py's os.path a Windows one;
+- a remote folder that will not go is a read-only folder on POSIX, as a held
+  file is on Windows.
+Run it as a user other than root: root's rm -rf takes a read-only folder.
 """
 
 import json
+import ntpath
 import os
+import posixpath
 import subprocess
+import types
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -41,6 +54,10 @@ N = [0]
 PY = sys.executable
 LOOP = (PY, os.path.join(HERE, "loop_ssh.py"), "-o", "BatchMode=yes")
 WINDOWS = os.name == "nt"
+# The remote host's python: this interpreter, spelled differently from PY on
+# every system (posix slashes, a "." part), so a check run with the local
+# host's command is told apart from one run with the remote host's.
+PY_FAR = posixpath.join(os.path.dirname(PY).replace("\\", "/"), ".", os.path.basename(PY))
 
 
 def bash_path(p):
@@ -143,7 +160,7 @@ class Fixture:
         self.settings = {"runs_root": os.path.join(self.dir, "unused"),
                          "hosts": {"local": {"python": [PY]},
                                    "far": {"ssh": "farhost", "workroot": bash_path(self.far),
-                                           "python": [PY.replace("\\", "/")]}}}
+                                           "python": [PY_FAR]}}}
 
     def trees(self):
         return T.make_trees(self.repo, self.alist, FA, self.work, self.made, say=self.rec.say,
@@ -209,10 +226,26 @@ def test_remote_check_runs():
         suite = C.compile_suite(f.alist, trees, FA, f.settings, C.machine_env(FA))
         g = suite.groups[0]
         assert g.host == "far" and g.checks[0].cwd == trees["far"]["project_dir"], (g.host, g.checks[0].cwd)
+        # the remote host's command, not the local one's (PY_FAR differs
+        # from PY on every system)
+        assert PY_FAR != f.settings["hosts"]["local"]["python"][0], PY_FAR
         assert g.checks[0].argv[0] == f.settings["hosts"]["far"]["python"][0], g.checks[0].argv
         # the host is posix: its paths have no backslash (Git Bash would
         # forgive one; madhouse would not)
         assert "\\" not in g.checks[0].argv[-1] and "\\" not in g.checks[0].cwd, g.checks[0].argv
+        # and the path form is posix whatever this system's is: resolve_path
+        # with compile.py's os.path a Windows one (a stand-in, put back after),
+        # where the local form has backslashes and the remote form must not
+        saved = C.os
+        C.os = types.SimpleNamespace(path=ntpath)
+        try:
+            got_far = C.resolve_path(trees["far"], "proj/envcheck.py")
+            got_local = C.resolve_path(dict(trees["far"], remote=False), "proj/envcheck.py")
+        finally:
+            C.os = saved
+        assert "\\" in got_local, "the stand-in did not reach resolve_path: %r" % got_local
+        assert got_far == posixpath.join(trees["far"]["project_dir"], "proj", "envcheck.py"), \
+            got_far
         rec = C.run_suite(suite, f.settings, f.rec, adapter=FA, made=f.made)
     v = {r["id"]: r["verdict"] for r in rec["results"]}
     log = open(os.path.join(rec["_dir"], "remote", "run", "check.log"), encoding="utf-8").read()
@@ -223,7 +256,12 @@ def test_remote_removed():
     """A14: what the run made on a remote host -- its trees, the record's
     own folder they sit in, and the chain runner's own work folder there --
     goes with the run's Made, leaving the workroot as it was; a remote
-    folder that will not go is a LEFTOVER line naming it."""
+    folder that will not go is a LEFTOVER line naming it. It will not go
+    while a file in it is held open (Windows) or while a folder in it is
+    read-only (POSIX, not as root); once let go, it goes."""
+    if not WINDOWS and os.geteuid() == 0:
+        raise AssertionError("run as a user other than root: root's rm -rf takes a "
+                             "read-only folder, so no remote folder here would stay")
     with Loop():
         f = Fixture()
         trees = f.trees()
@@ -232,19 +270,23 @@ def test_remote_removed():
         tree_dir = os.path.dirname(local_path(trees["far"]["project_dir"]))
         chain_work = os.path.join(f.far, rec["run_id"])
         assert os.path.isdir(tree_dir) and os.path.isdir(chain_work), (tree_dir, chain_work)
+        proj = os.path.join(local_path(trees["far"]["project_dir"]), "proj")
         held = None
         if WINDOWS:
-            held = open(os.path.join(local_path(trees["far"]["project_dir"]), "proj", "check.py"))
+            held = open(os.path.join(proj, "check.py"))
+        else:
+            os.chmod(proj, 0o500)                # its files cannot be unlinked
         try:
             said = []
             left = f.made.remove_all(out=said.append)
         finally:
             if held:
                 held.close()
-        if WINDOWS:
-            assert left and any("far" in p for p, _w in left), left
-            assert any("LEFTOVER" in s for s in said), said
-            left = f.made.remove_all(out=lambda s: None)
+            else:
+                os.chmod(proj, 0o700)
+        assert left and any("far" in p for p, _w in left), left
+        assert any("LEFTOVER" in s for s in said), said
+        left = f.made.remove_all(out=lambda s: None)
         assert left == [], left
         assert not os.path.exists(tree_dir) and not os.path.exists(chain_work), \
             os.listdir(f.far)
