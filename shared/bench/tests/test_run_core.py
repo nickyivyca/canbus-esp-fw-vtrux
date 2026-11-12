@@ -1,9 +1,11 @@
 """The chain runner's own tests (the harness tests the harness). No hardware.
 
     python -B shared/bench/tests/test_run_core.py            every test
-    python -B shared/bench/tests/test_run_core.py --can-fail  every test again
-        with the rule it guards switched off (a mutant), each of which must
-        FAIL -- a test that still passes with its rule removed checks nothing
+    python -B shared/bench/tests/test_run_core.py --can-fail  every test
+        unmutated first (the control, which must pass, or no mutant is
+        counted), then again with the rule it guards switched off (a
+        mutant), each of which must FAIL -- a test that still passes with
+        its rule removed checks nothing
     python -B shared/bench/tests/test_run_core.py NAME...     some tests
 
 Each test builds a small suite of fake checks (python -c one-liners), a
@@ -2762,6 +2764,24 @@ def main(argv):
     names = [a for a in argv if not a.startswith("--")]
     tests = [t for t in TESTS if not names or t.__name__ in names]
     bad = 0
+    if can_fail:
+        print("-- control: every test, unmutated", flush=True)
+        control_failed = []
+        for t in tests:
+            try:
+                t()
+                outcome = None
+            except Exception as e:
+                outcome = "%s: %s" % (type(e).__name__, str(e)[:300])
+            print("%s  %-24s %s" % ("ok  " if outcome is None else "FAIL",
+                                    t.__name__, outcome or ""), flush=True)
+            if outcome is not None:
+                control_failed.append(t.__name__)
+        if control_failed:
+            print("\nREFUSED: the control fails (%s), so a mutant's failures would "
+                  "mean nothing; no mutant is counted" % ", ".join(control_failed))
+            return 1
+        print("-- mutants", flush=True)
     for t in tests:
         if can_fail:
             on, off = MUTANTS[t.__name__]
@@ -2786,7 +2806,8 @@ def main(argv):
                                     "" if ok else outcome))
         bad += 0 if ok else 1
     print("\n%d of %d %s" % (len(tests) - bad, len(tests),
-                             "mutants caught" if can_fail else "passed"))
+                             "mutants caught; the control passes" if can_fail
+                             else "passed"))
     return 1 if bad else 0
 
 
