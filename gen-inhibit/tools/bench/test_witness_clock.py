@@ -76,6 +76,44 @@ MUTANTS = [
      "        WC.void(rec, e.note)\n        print(rec[\"verdict\"])\n", "        pass\n"),
     ("x2_jammer.py", "the witness takes any offset as hardware time",
      "if abs(off) < WC.MAX_LAG_S:", "if abs(off) < 1e12:"),
+    # A2 (a), 2026-11-11: the PCAN's own stamps
+    ("witness_clock.py", "stamps on the epoch clock are not VOID",
+     "    if abs(epoch_lag) < EPOCH_LAG_S:\n", "    if False:\n"),
+    ("witness_clock.py", "too few points are not VOID",
+     "    elif len(points) < MIN_POINTS:\n", "    elif False:\n"),
+    ("witness_clock.py", "the slope bound is not applied",
+     "    elif slope_ppm is None or abs(slope_ppm) > SLOPE_MAX_PPM:\n", "    elif False:\n"),
+    ("witness_clock.py", "the residual bound is not applied",
+     '    elif fit["residual_p99_s"] > RESIDUAL_P99_MAX_S:\n', "    elif False:\n"),
+    ("witness_clock.py", "no offset: the stamps taken as they are",
+     "    off = _median(p - ts for p, _e, ts in points)\n", "    off = 0.0\n"),
+    ("witness_clock.py", "any two gaps agree",
+     "    return a is not None and b is not None and abs(a - b) <= RESIDUAL_P99_MAX_S\n",
+     "    return True\n"),
+    ("wrong_bitrate_errors.py", "B9 judges the receipt times",
+     "    return [WC.mapped(fit, ts) for ts in wit.error_ts], fit,", "    return list(wit.errors), fit,"),
+    ("wrong_bitrate_errors.py", "B9 judges a VOID fit's receipt times as mapped",
+     '    if fit["void"]:\n        return list(wit.errors), fit,', '    if False:\n        return list(wit.errors), fit,'),
+    ("trip6_rearm_check.py", "B10 counts errors since the arm on receipt time",
+     "    wire = [t for t, d in det if d[1] != 0]\n", "    wire = [d[0] for t, d in det if d[1] != 0]\n"),
+    ("trip6_rearm_check.py", "B10 counts the device's 0x051 on receipt time",
+     "    d051 = [WC.mapped(fit, s) for s in wit.dev051_ts]\n", "    d051 = list(wit.dev051)\n"),
+    ("trip6_rearm_check.py", "B10's gap from the receipt time",
+     '            gap = round(arm["armed_at"] - (lm - t0), 3)\n',
+     '            gap = round(arm["armed_at"] - (last[0] - t0), 3)\n'),
+    ("trip6_rearm_check.py", "B10's history gap from the receipt time",
+     '            hgap = round(pre["t"] - (lm - t0), 3) if (pre and "t" in pre) else None\n',
+     '            hgap = round(pre["t"] - (last[0] - t0), 3) if (pre and "t" in pre) else None\n'),
+    ("trip6_rearm_check.py", "B10 judges a gap the receipt time disagrees with",
+     "        if last is not None and not WC.gap_agrees(gap, gap_r):\n", "        if False:\n"),
+    ("trip6_rearm_check.py", "B10 judges on a VOID fit",
+     '    if fit["void"]:\n        v = WC.pcan_void_verdict', '    if False:\n        v = WC.pcan_void_verdict'),
+    ("trip6_rearm_check.py", "B10 prints no VOID line",
+     '        print("witness clock VOID: %s" % fit["void"])\n', "        pass\n"),
+    ("trip6_rearm_check.py", "B10 judges an arm live again",
+     '        judged.append((poll_arm("A3 recent", a.arm_s), "recent", last))\n',
+     '        judged.append((poll_arm("A3 recent", a.arm_s), "recent", last))\n'
+     '        rec["arms"][-1]["verdict"] = judge_recent(rec["arms"][-1]["reads"], 1.0, 0)\n'),
 ]
 
 
@@ -262,6 +300,97 @@ def xc_errs(n, epoch_rx):
     return out
 
 
+# ----------------------------------------------- A2 (a): the PCAN's own stamps
+
+DEV0 = 5000.0          # the PCAN's device clock: perf_counter less this (an uptime base)
+LAT = 0.0005           # host delivery latency
+
+
+def pcan_points(n=200, jitter=0.0, ppm=0.0, epoch=False, start=100.0, step=0.01):
+    """[(perf_rx, epoch_rx, stamp)]: a message on the wire every step s from perf start,
+    stamped on the PCAN's device clock (drifting ppm against perf_counter) or, epoch=True,
+    on the host's epoch clock (COOKED); received LAT later, plus jitter on every other one."""
+    out = []
+    for k in range(n):
+        wire = start + k * step
+        rx = wire + LAT + (jitter if k % 2 else 0.0)
+        ts = (EPOCH + wire - start) if epoch else (wire - DEV0) / (1 + ppm * 1e-6)
+        out.append((rx, EPOCH + (rx - start), ts))
+    return out
+
+
+def stamp(wire):
+    return wire - DEV0
+
+
+def t6_witness(epoch=False):
+    """A B10 witness after a run: messages 90-150 s; floods at 100 s and 130 s; an error frame
+    stamped 114.990 s but received 115.020 s (just after A1's arm at 115 s); a device 0x051
+    stamped 131.990 s, received 132.010 s (just after A3's arm at 132 s)."""
+    w = Box()
+    w.points = pcan_points(n=1200, epoch=epoch, start=90.0, step=0.05)
+    det = []
+    for base in (100.0, 130.0):
+        for k in range(5):
+            wire = base + k * 0.001
+            det.append((wire + LAT, 2, "00", stamp(wire)))
+    det.append((115.020, 2, "00", stamp(114.990)))
+    w.error_detail = det
+    w.dev051 = [132.010]
+    w.dev051_ts = [stamp(131.990)]
+    if epoch:                   # COOKED: every stamp on the epoch clock
+        w.error_detail = [(d[0], d[1], d[2], EPOCH + d[0]) for d in det]
+        w.dev051_ts = [EPOCH + 132.010]
+    return w
+
+
+def t6_run(T6, w, a4_receipt_late=0.3, a1_receipt_late=0.02):
+    """judge_arms on three judged arms (t0 = 0): A1 expired at 115 s after the 100 s flood, whose
+    last error frame was received a1_receipt_late after its stamp; A3 recent at 132 s after the
+    130 s flood; A4 expired at 145 s, its last error received a4_receipt_late after its stamp."""
+    T = T6.TRIP6
+    last0 = (100.004 + LAT + a1_receipt_late, 2, "00", stamp(100.004))
+    last2 = (130.004 + LAT, 2, "00", stamp(130.004))
+    last2_late = (130.004 + LAT + a4_receipt_late, 2, "00", stamp(130.004))
+
+    def arm(name, at, pre, reads):
+        return {"arm": name, "armed_at": at, "_ta": at, "_t_end": at + 12.0, "pre_arm_read": pre,
+                "reads": reads}
+    a1 = arm("A1 expired", 115.0, {"t": 114.9, "err_n": 0, "err_age_ms": 14896, "err_burst": False},
+             [{"t": 116.0, "live": True, "abort": ""}])
+    a3 = arm("A3 recent", 132.0, {"t": 131.9, "err_n": 12, "err_age_ms": 1896, "err_burst": True},
+             [{"t": 132.2, "live": False, "abort": T}])
+    a4 = arm("A4 expired", 145.0, {"t": 144.9, "err_n": 0, "err_age_ms": 14896, "err_burst": False},
+             [{"t": 146.0, "live": True, "abort": ""}])
+    fit = T6.judge_arms([a1, a3, a4], [(a1, "expired", last0), (a3, "recent", last2), (a4, "expired", last2_late)],
+                        w, 0.0)
+    return fit, a1, a3, a4
+
+
+def main_body(path, name="main"):
+    """The source lines of function `name` in the file at path."""
+    import ast
+    src = open(path, encoding="utf-8").read()
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return src.splitlines()[node.lineno - 1:node.end_lineno]
+    return []
+
+
+def judge_calls_outside(path, names, inside):
+    """Lines calling any of names from anywhere but function `inside` (or their own defs)."""
+    import ast
+    tree = ast.parse(open(path, encoding="utf-8").read())
+    spans = [(n.lineno, n.end_lineno) for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == inside]
+    out = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in names:
+            if not any(a <= n.lineno <= b for a, b in spans):
+                out.append((n.lineno, n.func.id))
+    return out
+
+
 # ------------------------------------------------------------- x2_jammer stubs
 
 class FakeJamCon:
@@ -309,7 +438,8 @@ def under_test():
     import importlib
     mut = os.environ.get(MUT_ENV)
     mods = []
-    for name in ("witness_clock", "x2_jammer", "x2_jam_cases", "interlock_bench"):
+    for name in ("witness_clock", "x2_jammer", "x2_jam_cases", "interlock_bench", "wrong_bitrate_errors",
+                 "trip6_rearm_check"):
         if mut:
             sys.path.insert(0, mut)
         mods.append(importlib.import_module(name))
@@ -322,7 +452,7 @@ def under_test():
 
 
 def checks(work):
-    WC, XJ, XC, IB = under_test()
+    WC, XJ, XC, IB, WB, T6 = under_test()
     spy = ib_setup(IB, work)
     B = Box()
     out = []
@@ -442,6 +572,98 @@ def checks(work):
     add("x2_jammer noduration with an error frame on hardware time: FAIL",
         lambda: (lambda r: (r.get("verdict") == "FAIL", r.get("verdict")))(
             xj_noduration(XJ, [(_time.time(), _time.time() + 0.001)])))
+
+    # A2 (a): the PCAN's device stamps, mapped onto perf_counter
+    def fit_of(**k):
+        return WC.device_fit(pcan_points(**k))
+    add("device_fit: RAW device stamps fit, not VOID, offset DEV0 + latency, residual ~0, slope ~0",
+        lambda: (lambda f: (f["void"] is None and f["n"] == 200 and abs(f["offset_s"] - (DEV0 + LAT)) < 1e-6
+                            and f["residual_p99_s"] < 1e-6 and abs(f["slope_ppm"]) < 1.0, f))(fit_of()))
+    add("device_fit: the bounds are recorded beside the figures",
+        lambda: (lambda f: (f["bounds"] == {"residual_p99_max_s": 0.05, "slope_max_ppm": 100.0, "min_points": 20,
+                                            "epoch_lag_min_s": 2.0}, f["bounds"]))(fit_of()))
+    add("device_fit: stamps on the host's epoch clock (COOKED) -> VOID",
+        lambda: (lambda f: ("epoch clock" in str(f["void"]), f["void"]))(fit_of(epoch=True)))
+    add("device_fit: 19 messages -> VOID; 20 -> fit",
+        lambda: ("fewer than 20" in str(fit_of(n=19)["void"]) and fit_of(n=20)["void"] is None,
+                 (fit_of(n=19)["void"], fit_of(n=20)["void"])))
+    add("device_fit: a 200 ppm drift -> VOID; 50 ppm -> fit",
+        lambda: ("slope" in str(fit_of(ppm=200)["void"]) and fit_of(ppm=50)["void"] is None,
+                 (fit_of(ppm=200)["void"], fit_of(ppm=50).get("slope_ppm"))))
+    # over 200 s, so the jitter does not also tilt the fitted slope past its own bound
+    add("device_fit: residual p99 0.1 s -> VOID; 0.01 s -> fit",
+        lambda: ("residual p99" in str(fit_of(jitter=0.2, step=1.0)["void"])
+                 and fit_of(jitter=0.02, step=1.0)["void"] is None,
+                 (fit_of(jitter=0.2, step=1.0)["void"], fit_of(jitter=0.02, step=1.0).get("residual_p99_s"))))
+    add("device_fit: no message -> VOID", lambda: (WC.device_fit([])["void"] is not None, None))
+    add("mapped: a stamp plus the offset",
+        lambda: (lambda f: (abs(WC.mapped(f, stamp(120.0)) - (120.0 + LAT)) < 1e-6, None))(fit_of()))
+    add("gap_agrees: 40 ms apart agree; 60 ms do not; None never",
+        lambda: (WC.gap_agrees(10.0, 10.04) and not WC.gap_agrees(10.0, 10.06) and not WC.gap_agrees(None, 1.0),
+                 None))
+    add("fit_line: the bounds beside the figures",
+        lambda: (lambda s: ("(bound 0.05)" in s and "(bound 100)" in s and "residual" in s, s))(WC.fit_line(fit_of())))
+    add("pcan_void_verdict: VOID naming the reason",
+        lambda: (WC.pcan_void_verdict("x y").startswith("VOID: PCAN clock x y"), None))
+
+    # B9: judged_errors
+    def wb(epoch):
+        w = Box()
+        w.points = pcan_points(epoch=epoch)
+        w.error_ts = [EPOCH + 0.5] if epoch else [stamp(100.5)]
+        w.errors = [100.8]                  # received 0.3 s after the wire
+        return WB.judged_errors(w)
+    add("B9 judged_errors: the error frame at its mapped stamp, not its receipt",
+        lambda: (lambda r: (abs(r[0][0] - (100.5 + LAT)) < 1e-6 and r[1]["void"] is None
+                            and r[2].startswith("PCAN device stamps"), (r[0], r[2])))(wb(False)))
+    add("B9 judged_errors: COOKED stamps -> the receipt times, labelled not judged, the fit VOID",
+        lambda: (lambda r: (r[0] == [100.8] and r[1]["void"] and "not judged" in r[2], (r[0], r[2])))(wb(True)))
+
+    # B10: judge_arms
+    def t6(**k):
+        B.t6 = t6_run(T6, t6_witness(), **k)
+        return True
+    add("B10 judge_arms on device stamps: runs", lambda: (t6(), None))
+    add("B10 judge_arms: the fit not VOID", lambda: (B.t6[0]["void"] is None, B.t6[0]["void"]))
+    add("B10 judge_arms: A1 expired as specified, its history and prediction too",
+        lambda: ((B.t6[1]["verdict"], B.t6[1]["history_verdict"], B.t6[1]["prediction_verdict"])
+                 == ("as specified",) * 3, (B.t6[1]["verdict"], B.t6[1]["history_verdict"])))
+    add("B10 judge_arms: an error frame received after A1's arm but stamped before it is not since the arm",
+        lambda: (B.t6[1]["errors_since_arm"] == 0, B.t6[1]["errors_since_arm"]))
+    add("B10 judge_arms: A1's gaps from the mapped stamp, the receipt gap beside them",
+        lambda: (abs(B.t6[1]["armed_after_last_error_s"] - 14.996) < 0.0015
+                 and abs(B.t6[1]["armed_after_last_error_receipt_s"] - 14.976) < 0.0015
+                 and abs(B.t6[1]["pre_arm_after_last_error_s"] - 14.896) < 0.0015,
+                 (B.t6[1]["armed_after_last_error_s"], B.t6[1]["armed_after_last_error_receipt_s"],
+                  B.t6[1]["pre_arm_after_last_error_s"])))
+    add("B10 judge_arms: A3 recent as specified (the 0x051 stamped before its arm is not since it)",
+        lambda: ((B.t6[2]["verdict"], B.t6[2]["history_verdict"], B.t6[2]["device_0x051_since_arm"])
+                 == ("as specified", "as specified", 0),
+                 (B.t6[2]["verdict"], B.t6[2]["history_verdict"], B.t6[2]["device_0x051_since_arm"])))
+    add("B10 judge_arms: A4's receipt 0.3 s after its stamp -> VOID, gaps disagree",
+        lambda: (B.t6[3]["verdict"].startswith("VOID") and "differ" in B.t6[3]["verdict"]
+                 and B.t6[3]["history_verdict"] == B.t6[3]["verdict"], B.t6[3]["verdict"]))
+    add("B10 judge_arms: A4 with its receipt 0.03 s late is judged (inside the bound)",
+        lambda: (lambda r: (r[3]["verdict"] == "as specified", r[3]["verdict"]))(
+            t6_run(T6, t6_witness(), a4_receipt_late=0.03)))
+
+    def t6_cooked():
+        B.t6c = t6_run(T6, t6_witness(epoch=True))
+        return True
+    add("B10 judge_arms on COOKED stamps: runs", lambda: (t6_cooked(), None))
+    add("B10 judge_arms on COOKED stamps: the fit VOID, every arm VOID, prediction still judged",
+        lambda: (B.t6c[0]["void"] and all(x["verdict"].startswith("VOID: PCAN clock")
+                                          and x["history_verdict"] == x["verdict"]
+                                          and x["prediction_verdict"] == "as specified" for x in B.t6c[1:]),
+                 [(x["verdict"][:30], x["prediction_verdict"]) for x in B.t6c[1:]]))
+    # B10 main: nothing judged live; the fit and its VOID line printed
+    add("scan: B10 judges arms only in judge_arms, after the run",
+        lambda: (lambda o: (o == [], o))(judge_calls_outside(
+            T6.__file__, {"judge_expired", "judge_recent", "judge_history", "judge_prediction"}, "judge_arms")))
+    add("scan: B10 main calls judge_arms and prints the fit line and the VOID line",
+        lambda: (lambda b: (any("judge_arms(" in x for x in b) and any("WC.fit_line(fit)" in x for x in b)
+                            and any('print("witness clock VOID: %s" % fit["void"])' in x for x in b), len(b)))(
+            main_body(T6.__file__)))
 
     # scan: recorded() only where the times are kept, never judged
     add("scan: interlock_bench calls recorded() once (run_case's record, before the gate)",
