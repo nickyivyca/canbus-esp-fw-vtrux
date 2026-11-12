@@ -14,7 +14,11 @@
 # acceptance runner's trees): the run folder's full path plus
 # SCRATCH_RUN_DEPTH must be at most SCRATCH_RUN_LIMIT, the same numbers as
 # scratch_dir's DEPTH and LIMIT, or scratch_run refuses (exit 2) before it
-# makes anything, naming the full path and its length.
+# makes anything, naming the full path and its length. On Windows only, as
+# scratch_dir's GUARDED (the charge-interposer reviewer, 2026-11-12, B1):
+# SCRATCH_RUN_GUARDED is 1 under Git Bash (/proc/$$/winpid readable, the
+# test _sr_owner makes for win32) and 0 elsewhere, where there is no length
+# limit (on Linux the OS refuses a path past PATH_MAX anyway).
 #
 # The git ceiling, as scratch_dir's: the run folder goes first in the
 # exported GIT_CEILING_DIRECTORIES (';' between entries on Windows, where it
@@ -67,6 +71,8 @@ SCRATCH_RUN_WAITS=(0.1 0.4)
 # checks they agree)
 SCRATCH_RUN_LIMIT=240
 SCRATCH_RUN_DEPTH=12
+# the guard is git for Windows' limit, so Windows' alone (B1, above)
+if [ -r "/proc/$$/winpid" ]; then SCRATCH_RUN_GUARDED=1; else SCRATCH_RUN_GUARDED=0; fi
 
 scratch_root() {
   local d="$_SR_HOME" up
@@ -120,7 +126,7 @@ scratch_run() {
   td="$(scratch_root)/cih/$tool"
   local full="$td/$_SR_PID-XXXXXX" n
   n=$(( ${#full} + SCRATCH_RUN_DEPTH ))
-  if [ "$n" -gt "$SCRATCH_RUN_LIMIT" ]; then
+  if [ "$SCRATCH_RUN_GUARDED" = 1 ] && [ "$n" -gt "$SCRATCH_RUN_LIMIT" ]; then
     echo "scratch_run: REFUSED the run folder $full: it is ${#full} characters, and its fixtures' git goes up to $SCRATCH_RUN_DEPTH below it, $n in all, past the $SCRATCH_RUN_LIMIT that git for Windows needs (it will not make a folder past about 248, core.longpaths or not). Run from a tree with a shorter path" >&2
     return 2
   fi

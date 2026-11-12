@@ -34,7 +34,10 @@ folder (scratch_dir.run), inside a stand-in worktree there (a folder with a
      character more and make() raises PathTooLong, naming the full path
      and its length, with nothing made (no tool folder, no cih/). A
      depth= passed to make() is used in place of DEPTH, at the same
-     boundary. LIMIT is 240.
+     boundary. LIMIT is 240. The guard is Windows' only (the reviewer's
+     B1, 2026-11-12): GUARDED is os.name == "nt", the boundary cases run
+     with it set, and with it clear (as on Linux) a folder past the limit
+     is made.
  12. The git ceiling (the charge-interposer reviewer, 2026-11-05): in a
      run folder inside an enclosing real repo, git run in a subfolder with
      no .git of its own says "not a git repository"; with the variable
@@ -376,12 +379,30 @@ def case_length(base):
     check(M.LIMIT == 240, "11. LIMIT is 240 -> %s" % M.LIMIT)
     check(isinstance(M.DEPTH, int) and M.DEPTH > 0,
           "11. DEPTH is set (the measured depth) -> %s" % M.DEPTH)
+    check(getattr(M, "GUARDED", None) is (os.name == "nt"),
+          "11. the guard is on exactly on Windows (GUARDED is os.name == 'nt': %s) -> %s"
+          % (os.name == "nt", getattr(M, "GUARDED", "unset")))
     pid = "%d-%s" % (os.getpid(), "x" * M.RANDOM)
 
     def would_be(wt):
         return os.path.abspath(os.path.join(M.tool_dir("t", start=wt), pid))
-    keep = M.LIMIT
+    keep = M.LIMIT, getattr(M, "GUARDED", None)
     try:
+        # not Windows: no limit, a folder well past it is made
+        M.GUARDED = False
+        wt = fake_worktree(base, "wt-len0")
+        n = len(would_be(wt))
+        M.LIMIT = n + M.DEPTH - 50
+        try:
+            d = M.make("t", start=wt)
+        except M.PathTooLong as e:
+            d = "refused: %s" % e
+        check(os.path.isdir(d),
+              "11. guard off (not Windows): %d characters plus DEPTH, 50 past LIMIT: made -> %s"
+              % (n, d[:120]))
+        if os.path.isdir(d):
+            M.remove(d)
+        M.GUARDED = True
         wt = fake_worktree(base, "wt-len1")
         n = len(would_be(wt))
         M.LIMIT = n + M.DEPTH
@@ -424,7 +445,7 @@ def case_length(base):
             refused = True
         check(refused, "11. depth=34, one more: refused (depth= is used, not DEPTH)")
     finally:
-        M.LIMIT = keep
+        M.LIMIT, M.GUARDED = keep
 
 
 def case_ceiling(base):
@@ -715,6 +736,11 @@ MUTANTS = [
      "why = length_refusal(d,"),
     ("the guard refuses at the limit itself",
      "    if len(full) + depth <= LIMIT:", "    if len(full) + depth < LIMIT:"),
+    # one edit caught on both systems: on Linux it guards, on Windows not
+    ("the guard on the wrong systems (B1)",
+     'GUARDED = os.name == "nt"\n', 'GUARDED = os.name != "nt"\n'),
+    ("the guard refuses where it is off",
+     "    if not GUARDED:\n        return None\n", ""),
     ("the refusal without the path",
      '"scratch_dir: REFUSED the run folder %s: it is', '"scratch_dir: REFUSED the run folder %.0s: it is'),
     ("the refusal without the length",

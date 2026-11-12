@@ -33,13 +33,19 @@ still takes finished folders under the old name.
                 its start time, so a pid used again by another process is
                 not taken for the owner. Three tries, a moment apart, when
                 another run's removal takes the tool folder under it.
-                THE LENGTH GUARD comes first: the run folder's full path,
-                plus its depth (how far below it the fixture's git goes,
-                measured; DEPTH by default), must be at most LIMIT (240),
-                or make() raises
+                THE LENGTH GUARD comes first, on Windows only: the run
+                folder's full path, plus its depth (how far below it the
+                fixture's git goes, measured; DEPTH by default), must be at
+                most LIMIT (240), or make() raises
                 PathTooLong naming the full path and its length, before
                 anything is made, so before any fixture's git runs. A tool
-                whose fixtures go deeper passes depth=.
+                whose fixtures go deeper passes depth=. Elsewhere (GUARDED
+                false) there is no length limit: the limit is git for
+                Windows', and on Linux the OS refuses a path past PATH_MAX
+                anyway (the charge-interposer reviewer, 2026-11-12, B1:
+                port step 3's record accept_3_20261111T234853_563d, where
+                the guard refused scratch_dir_test and scratch_run_test in
+                the acceptance runner's deeper madhouse tree).
                 THE GIT CEILING: the new folder goes first in this
                 process's GIT_CEILING_DIRECTORIES (os.pathsep-separated),
                 so git, here and in what this process starts, never looks
@@ -123,6 +129,8 @@ OLD_HARNESS = "charge-interposer-harness"   # before 2026-11-05: swept, never ma
 # fixture that goes deeper passes depth=, with the path it measured.
 LIMIT = 240
 DEPTH = 12
+# the guard is git for Windows' limit, so Windows' alone (B1, above)
+GUARDED = os.name == "nt"
 OWNER = ".scratch-owner.json"
 NEVER = ("session-compact",)
 PIN_DIRS = {"can-tools": "can-tools", "canre": "canre"}   # scratch dir -> pins.json key
@@ -398,7 +406,10 @@ class PathTooLong(RuntimeError):
 
 def length_refusal(path, depth):
     """None if path's full form plus depth is within LIMIT; else the
-    refusal, naming the full path and its length."""
+    refusal, naming the full path and its length. Always None where the
+    guard does not apply (GUARDED false: not Windows)."""
+    if not GUARDED:
+        return None
     full = os.path.abspath(path)
     if len(full) + depth <= LIMIT:
         return None
@@ -412,7 +423,7 @@ def length_refusal(path, depth):
 def make(tool, start=None, depth=None):
     """A new run folder for tool, with its owner file, after pruning the
     tool's finished ones. Refused (PathTooLong) before anything is made when
-    its path plus depth (default DEPTH) would pass LIMIT."""
+    its path plus depth (default DEPTH) would pass LIMIT, on Windows."""
     if not tool or os.sep in tool or "/" in tool or tool.startswith("."):
         raise ValueError("tool must be one plain folder name: %r" % (tool,))
     d = tool_dir(tool, start)
