@@ -146,8 +146,14 @@ SUITES = {n: "charge-interposer/bench_suite.py:%s" % n
 SHELLS = ("python", "git-bash", "powershell", "idf")
 IDF_SHELL = os.path.join(HERE, "fw_harness", "idf_build_shell.py")
 IDF_VERSION = "v5.4.2"     # spec 8.2: the interposer builds on ESP-IDF v5.4.2 (user, 2026-11-03)
-# the machine variables a check may see (AGENTS.md, local-paths.md)
-MACHINE_VARS = ("REVERSE_IT_DIR", "CAN_TOOLS_DIR", "VTRUX_PUBLIC_REPO")
+# the machine variables a check may see (AGENTS.md, local-paths.md), and the
+# two that reach the user's systemd manager, which the chain runner's
+# placement (systemd-run --user, settings placement) needs on Linux: without
+# them a nested suite run's placement cannot take (run 2548's m-sims/placement
+# FAIL; the charge-interposer reviewer, 2026-11-12: machine plumbing like
+# HOME and USER, not an operator setting, ACCEPT-SPEC A7)
+MACHINE_VARS = ("REVERSE_IT_DIR", "CAN_TOOLS_DIR", "VTRUX_PUBLIC_REPO",
+                "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
 JUDGES = ("script", "recorded", "c12", "host-bridge", "corrupt-pin", "scenario")
 COMPARERS = ("masked-log", "sim-judged", "run-logs", "vport-windows")
 # the folder names the runner's scratch helper gives trees, builds and mutants

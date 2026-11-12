@@ -288,6 +288,50 @@ def test_settings_guard(A, work):
         A.PLATFORM = saved
 
 
+def test_machine_env_user_bus(A, work):
+    """Run 2548 (the charge-interposer reviewer, 2026-11-12): the environment
+    the acceptance runner starts a suite run from, compile.machine_env with
+    this adapter, carries XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS, and
+    nothing it was not given. On Linux with the user's bench.slice (as on
+    madhouse-debian), the real acceptance path: a process started in exactly
+    that environment, as a nested suite run is, runs the chain runner's own
+    placement probe (procs.scope_argv, systemd-run --user, then
+    procs.cgroup_slice) and reads back bench.slice; the same process
+    without the two variables does not (the control: the check can fail
+    here)."""
+    from vtrux_bench.accept import compile as CO
+    fake = {"PATH": "/usr/bin:/bin", "HOME": "/h", "XDG_RUNTIME_DIR": "/run/user/1000",
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+            "SOMETHING_ELSE": "x", "INTERPOSER_CODE": "/somewhere"}
+    env = CO.machine_env(A, environ=fake)
+    for k in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+        assert env.get(k) == fake[k], (k, env)
+    assert "SOMETHING_ELSE" not in env and "INTERPOSER_CODE" not in env, env
+    if not sys.platform.startswith("linux"):
+        return
+    r = subprocess.run(["systemctl", "--user", "show", "bench.slice", "-p", "LoadState"],
+                       capture_output=True, text=True)
+    if "LoadState=loaded" not in r.stdout:
+        return                       # no user bench.slice on this machine
+    probe = ("import subprocess, sys; sys.path.insert(0, %r); "
+             "from vtrux_bench.run import procs; "
+             "r = subprocess.run(procs.scope_argv(['systemd-run'], 'bench.slice', "
+             "['cat', '/proc/self/cgroup']), capture_output=True, text=True); "
+             "print(procs.cgroup_slice(r.stdout))" % CORE)
+
+    def read_back(environ):
+        p = subprocess.run([sys.executable, "-B", "-c", probe], env=environ,
+                           capture_output=True, text=True, timeout=120)
+        return p.stdout.strip()
+    real = CO.machine_env(A)
+    assert read_back(real) == "bench.slice", (
+        "a process in the acceptance runner's environment read back %r, not "
+        "bench.slice" % read_back(real))
+    bare = {k: v for k, v in real.items()
+            if k not in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")}
+    assert read_back(bare) != "bench.slice", "the control placed without the user bus"
+
+
 def test_idf_shell(A, work):
     """A5, A15: the "idf" shell is the host's python running
     fw_harness/idf_build_shell.py with the machine settings' ESP-IDF
@@ -885,13 +929,17 @@ def test_vport_real(A, work):
 
 
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
-         test_settings_tree_vars, test_settings_guard, test_idf_shell, test_targets, test_settings_keys, test_suite_settings,
+         test_settings_tree_vars, test_settings_guard, test_machine_env_user_bus,
+         test_idf_shell, test_targets, test_settings_keys, test_suite_settings,
          test_shared_pins,
          test_madhouse_entries, test_madhouse_refused_when_local, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
          test_sim_judged, test_run_logs, test_vport_windows, test_vport_real]
 
 MUTANTS = [
+    # run 2548: the user bus not passed to a suite run
+    ("the user bus not in the machine variables",
+     '                "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")', "                )"),
     # the re-pin to 2026.11.12's settings guard (the charge-interposer
     # reviewer, 2026-11-12)
     ("a CAN replay harness name dropped", '    "e4_rig_calibration", "h2_backends")',
