@@ -262,9 +262,10 @@ SHARED_BENCH_TESTS = [
     "test_accept_judge.py", "test_accept_list.py", "test_accept_record.py",
     "test_accept_remote.py", "test_accept_run.py", "test_accept_setup.py",
     "test_accept_suite_runs.py", "test_accept_trees.py", "test_bench_lock.py",
-    "test_canmain.py", "test_decode.py", "test_ota_outcome.py",
-    "test_ota_policy.py", "test_ota_preflight.py", "test_ota_wire.py",
-    "test_run_core.py", "test_scratch.py", "test_scratch_helper.py",
+    "test_canfail_control.py", "test_canmain.py", "test_decode.py",
+    "test_ota_outcome.py", "test_ota_policy.py", "test_ota_preflight.py",
+    "test_ota_wire.py", "test_run_core.py", "test_scratch.py",
+    "test_scratch_helper.py", "test_serial_dev.py", "test_wican_http.py",
     "test_wifi.py",
 ]
 
@@ -635,7 +636,7 @@ def scenario_judge(run):
 
 # ---- images -------------------------------------------------------------
 # The X2 the esptool flasher must find on the port before it writes
-# (methodology, 2026-10-20: a chip-id mismatch writes nothing, and an image
+# (methodology, 2026-10-20: a chip_id mismatch writes nothing, and an image
 # that names no chip is refused). The repo is public, so the MAC is never a
 # literal here: it comes from the local, unpublished settings (x2_mac); the
 # WiCAN is an ESP32-C3.
