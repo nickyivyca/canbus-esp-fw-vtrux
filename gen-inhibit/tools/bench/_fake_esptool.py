@@ -6,7 +6,10 @@ PYTHONPATH) and returns the environment to run it with. It stands in for esptool
 as the ESP-IDF v5.4.2 python env has it: only the underscore command names (a dashed
 one is refused as argparse refuses it, on stderr, exit 2), `version` printing a banner
 then the bare version, and the Python API x2_hold_inputs.py uses (esptool.__version__,
-esptool.cmds.detect_chip). Set by environment variable, per call:
+esptool.cmds.detect_chip). chip_id prints the RFC 7042 documentation MAC
+00:00:5e:00:53:01, the only kind of made-up MAC test_publish_scan allows (2026-11-12;
+it was a locally administered one, which the scan flags). Set by environment variable,
+per call:
 
   FAKE_ESPTOOL_VERSION  the version it reports (default 4.13.0)
   FAKE_ESPTOOL_LOG      a file each call appends one line to: "cli <argv>" or "api <call>"
@@ -49,7 +52,7 @@ rest = argv[k + 1:]
 regs = {int(a, 16): v for a, v in json.loads(os.environ.get("FAKE_ESPTOOL_REGS") or "{}").items()}
 if cmd == "chip_id":
     print("Chip is ESP32-S3 (QFN56) (revision v0.2)")
-    print("MAC: 02:00:00:00:00:01")
+    print("MAC: 00:00:5e:00:53:01")
 elif cmd == "read_mem":
     a = int(rest[0], 16)
     print("0x%08x = 0x%08x" % (a, regs.get(a, 0)))
