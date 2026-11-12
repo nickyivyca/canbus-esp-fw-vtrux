@@ -1330,6 +1330,14 @@ MUTANTS = [
     ("any USB serial port reported as the WiCAN",
      "    others = [p for p in ports if (p[1], p[2]) == ESP_USB_JTAG and",
      "    others = [p for p in ports if True and"),
+    # unwrap_us32 is shared since 2026-11-12 (bench_charger_silent,
+    # bench_hold12, bench_rx_order; the reviewer's E3)
+    ("unwrap: a wrap not added",
+     "            add += WRAP_S                  # a wrap\n            c += WRAP_S\n",
+     "            pass\n"),
+    ("unwrap: a late frame from before a wrap taken as a second wrap",
+     "        elif ref is not None and c > ref + WRAP_S / 2:\n",
+     "        elif False:\n"),
 ]
 
 

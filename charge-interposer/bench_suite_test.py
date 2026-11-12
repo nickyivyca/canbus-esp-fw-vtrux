@@ -678,7 +678,9 @@ def test_suites():
     #      fixes before every Kvaser and gs_usb open; reviewer 2026-11-11)
     # 271: wican-pin-test and its -canfail (the WiCAN's pinned image, the
     #      madhouse rebuild of gen-inhibit 7f2d5032 _man; reviewer 2026-11-11)
-    assert len(seen) == 271, "checks across the suites: %d" % len(seen)
+    # 273: cf.bench-charger-silent and cf.bench-rx-order (the gs_usb stamp's
+    #      32-bit wrap unwrapped, the reviewer's E3, 2026-11-12)
+    assert len(seen) == 273, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -2356,7 +2358,7 @@ MUTANTS = {
          "bench_topology's self-test unlisted (4cdb)"),
         ("CAN_FAILS", [n for n in B.CAN_FAILS if n != "bench_switch_loss"],
          "bench_switch_loss's can-fail unlisted"),
-        ("CAN_FAILS", B.CAN_FAILS + ["bench_rx_order"],
+        ("CAN_FAILS", B.CAN_FAILS + ["bench_switch_errors"],
          "a listed can-fail the script does not have"),
         ("harness", _wrap_suite("harness", _drop_harness_check(
             "cf.bench-usb-host")), "listed, but the harness never runs it")],

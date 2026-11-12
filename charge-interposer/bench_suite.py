@@ -249,6 +249,8 @@ CAN_FAILS = [
     "bench_c12", "bench_mcp_reset", "bench_powerup_round", "bench_switch_loss",
     "bench_topology", "bench_usb_host", "bench_vport", "bench_hold12",
     "bench_canbench_smoke",
+    # 2026-11-12, the reviewer's E3: the gs_usb stamp unwrapped
+    "bench_charger_silent", "bench_rx_order",
 ]
 
 # Local scripts (they want pyserial or the Windows side).
