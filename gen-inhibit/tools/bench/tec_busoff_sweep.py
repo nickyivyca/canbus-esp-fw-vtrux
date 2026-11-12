@@ -799,7 +799,8 @@ def main():
     sender = None
     try:
         # Witness up and acknowledging BEFORE the device transmits.
-        kv = can.Bus(interface="kvaser", channel=0, bitrate=NOMINAL)
+        from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+        kv = kvaser_bus(channel=0, bitrate=NOMINAL)
         time.sleep(2.0)
         while kv.recv(timeout=0.0) is not None:
             pass

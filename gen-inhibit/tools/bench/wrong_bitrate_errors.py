@@ -172,8 +172,12 @@ def burst(ms):
     and step 1a's acceptance run counted 36 and 43 witness error frames, all within 5 ms
     before that t, as "before the first burst". Returns (start, seconds the open took)."""
     import can
+    # The pinned can-tools' Linux fixes (2026-11-11), applied before t, so loading them is not
+    # counted in the open's time.
+    from kvaser_bus import kvaser_bus, fixes  # noqa: E402
+    fixes()
     t = time.perf_counter()
-    kv = can.Bus(interface="kvaser", channel=0, bitrate=250000)
+    kv = kvaser_bus(channel=0, bitrate=250000)
     opened = time.perf_counter() - t
     try:
         kv.send(can.Message(arbitration_id=SOURCE_ID, is_extended_id=False, data=bytes(8)),

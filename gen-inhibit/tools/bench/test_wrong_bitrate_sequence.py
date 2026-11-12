@@ -190,7 +190,19 @@ def fakes(log, running_after, stamps="device"):
             log.add("slice stop")
 
     S.Player = Player
-    return {"can": can, "lowid_flood_skip_bench": LF, "skip_method_bench": S}
+
+    # kvaser_bus (2026-11-11): the tool opens the Kvaser through it. The fake's fixes take
+    # 0.5 s, so fixes loaded inside the open's time show in open_s.
+    KB = types.ModuleType("kvaser_bus")
+
+    def fixes():
+        log.add("kvaser fixes")
+        time.sleep(0.5)
+        return {"kvaser": False, "gs_usb": False}
+
+    KB.fixes = fixes
+    KB.kvaser_bus = lambda **kw: Bus(interface="kvaser", **kw)
+    return {"can": can, "lowid_flood_skip_bench": LF, "skip_method_bench": S, "kvaser_bus": KB}
 
 
 OUT = {}       # the tool's stdout from the last run_main
@@ -198,7 +210,7 @@ OUT = {}       # the tool's stdout from the last run_main
 
 def run_main(W, running_after, stamps="device"):
     log = Log()
-    saved = {k: sys.modules.get(k) for k in ("can", "lowid_flood_skip_bench", "skip_method_bench")}
+    saved = {k: sys.modules.get(k) for k in ("can", "lowid_flood_skip_bench", "skip_method_bench", "kvaser_bus")}
     sys.modules.update(fakes(log, running_after, stamps))
     runs = os.path.join(SCRATCH, "runs")
     gi_paths.remove_tree(runs)
@@ -256,6 +268,10 @@ def order_cases(W):
           b[0].get("witness_error_frames") == 1 and rec.get("witness_error_frames") == 1, (b, rec.get("witness_error_frames")))
     check("main: each burst records how long the open took", isinstance(b[0].get("open_s"), float)
           and 0.015 <= b[0]["open_s"] < 1.0, b)
+    check("main: the Kvaser opens through kvaser_bus, its fixes applied before the open and outside open_s",
+          log.index(lambda e: e == ("kvaser fixes",)) is not None
+          and log.index(lambda e: e == ("kvaser fixes",)) < log.index(lambda e: e == ("bus open", "kvaser"))
+          and isinstance(b[0].get("open_s"), float) and b[0]["open_s"] < 0.4, (b, log.ev[:12]))
     check("main: live_before true with the slice playing on a running driver", rec.get("live_before") is True,
           rec.get("live_before"))
     # A2 (a), 2026-11-11: the error frames are judged on the PCAN's own stamps, mapped

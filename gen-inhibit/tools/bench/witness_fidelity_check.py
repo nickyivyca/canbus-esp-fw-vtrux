@@ -119,7 +119,8 @@ def main():
     # PCAN first, then Kvaser -- the documented open order on this bench.
     pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE,
                  auto_reset=True)
-    kv = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+    from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+    kv = kvaser_bus(channel=0, bitrate=BITRATE)
     time.sleep(2.0)
     print("drained pcan %d, kvaser %d" % (drain(pc), drain(kv)))
 

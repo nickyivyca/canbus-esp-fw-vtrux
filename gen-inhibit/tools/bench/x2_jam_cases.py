@@ -472,7 +472,8 @@ class Witness(threading.Thread):
 
     def __init__(self):
         super().__init__(daemon=True)
-        self.bus = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+        from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+        self.bus = kvaser_bus(channel=0, bitrate=BITRATE)
         self.stop_flag = threading.Event()
         self.frames = []     # (hw, rx, arb, hex)
         self.errs = []       # (hw, rx)

@@ -456,7 +456,8 @@ def main():
                 kv = can.Bus(interface="pcan", channel="PCAN_USBBUS1",
                              bitrate=BITRATE, state=can.BusState.PASSIVE)
             else:
-                kv = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE,
+                from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+                kv = kvaser_bus(channel=0, bitrate=BITRATE,
                              driver_mode=True)
             wit = Witness(kv)
             wit.start()

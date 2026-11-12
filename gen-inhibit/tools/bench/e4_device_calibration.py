@@ -800,7 +800,8 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
 
     # PCAN FIRST, then the Kvaser -- the 2026-09-22 open-order rule.
     tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
-    kv = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+    from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+    kv = kvaser_bus(channel=0, bitrate=BITRATE)
     time.sleep(2.0)
     for b in (tx, kv):
         while b.recv(timeout=0.0) is not None:

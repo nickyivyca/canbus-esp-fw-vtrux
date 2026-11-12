@@ -51,7 +51,9 @@ def phase1_enumerate():
 
 
 def open_bus(cfg, label):
-    bus = can.Bus(**cfg)
+    # kvaser_bus.bus: the Kvaser through the pinned can-tools' Linux fixes (2026-11-11)
+    from kvaser_bus import bus as kvaser_bus_open  # noqa: E402
+    bus = kvaser_bus_open(**cfg)
     print("  opened %s" % label)
     return bus
 

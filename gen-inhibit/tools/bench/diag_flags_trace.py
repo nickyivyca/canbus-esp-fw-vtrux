@@ -72,7 +72,8 @@ def main():
             found.setdefault(cfg["interface"], cfg)
     pcan = can.Bus(interface="pcan", channel=found["pcan"]["channel"],
                    bitrate=BITRATE)
-    kvaser = can.Bus(interface="kvaser", channel=found["kvaser"]["channel"],
+    from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+    kvaser = kvaser_bus(channel=found["kvaser"]["channel"],
                      bitrate=BITRATE)
 
     # Interposer session, 2026-09-22: both dongles flush a backlog in the

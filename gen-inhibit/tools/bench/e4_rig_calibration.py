@@ -153,7 +153,8 @@ def open_buses(need_tx):
     # burst. Two sessions read that as the Kvaser duplicating frames.
     pcan = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
     opened.append(("pcan", pcan))
-    kvaser = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+    from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+    kvaser = kvaser_bus(channel=0, bitrate=BITRATE)
     opened.append(("kvaser", kvaser))
     ixxat = can.Bus(interface="ixxat", channel=0,
                     unique_hardware_id="HW630227", bitrate=BITRATE)
@@ -444,7 +445,8 @@ def phase_topology(out):
     buses = {}
     # PCAN FIRST, as everywhere else in this file.
     buses["pcan"] = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
-    buses["kvaser"] = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+    from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+    buses["kvaser"] = kvaser_bus(channel=0, bitrate=BITRATE)
     buses["ixxat"] = can.Bus(interface="ixxat", channel=0,
                              unique_hardware_id="HW630227", bitrate=BITRATE)
     time.sleep(2.0)

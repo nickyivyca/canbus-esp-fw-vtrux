@@ -243,7 +243,8 @@ def main():
     # Swapping these two lines looks harmless and is not. The settle() below is
     # the belt to this braces.
     pcan = can.Bus(interface="pcan", channel=found["pcan"]["channel"], bitrate=BITRATE)
-    kvaser = can.Bus(interface="kvaser", channel=found["kvaser"]["channel"], bitrate=BITRATE)
+    from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+    kvaser = kvaser_bus(channel=found["kvaser"]["channel"], bitrate=BITRATE)
     print("settling dongles (%.1fs) ... dropped %d backlog frames"
           % (SETTLE_S, settle(pcan, kvaser)))
 

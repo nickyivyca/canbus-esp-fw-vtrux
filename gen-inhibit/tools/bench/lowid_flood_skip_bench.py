@@ -652,7 +652,8 @@ def main():
     # burst when reading starts (interposer session, 2026-09-22).
     pcan = can.Bus(interface="pcan", channel=found["pcan"]["channel"],
                    bitrate=BITRATE, auto_reset=True)
-    kv = can.Bus(interface="kvaser", channel=found["kvaser"]["channel"],
+    from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+    kv = kvaser_bus(channel=found["kvaser"]["channel"],
                  bitrate=BITRATE)
     time.sleep(SETTLE_S)
     while kv.recv(timeout=0.0) is not None:
