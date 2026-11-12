@@ -23,6 +23,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 import _ota_mutants                                  # noqa: E402
 import _scratch                                      # noqa: E402
+import _canmain_fixture                              # noqa: E402
 sys.path.insert(0, _ota_mutants.package_root())
 from vtrux_bench.run import ota as OTA               # noqa: E402
 from vtrux_bench.run import engine as E              # noqa: E402
@@ -30,6 +31,7 @@ from vtrux_bench.run.model import Check, Group, Image, Suite  # noqa: E402
 
 FAILS = []
 SCRATCH = _scratch.run_dir("ota_policy")
+CANMAIN = _canmain_fixture.install(SCRATCH)  # the runner's canmain check (SPEC 8), no hardware
 SSID = "WiCAN_test_000000"
 ROLE = "tester (gen-inhibit)"
 SSID_ENV = "OTA_POLICY_TEST_SSID"     # O2: the SSID only through an environment variable
@@ -207,7 +209,8 @@ def second_failure_stops_the_run():
         Group("g2", [Check("c2", ["-c", "pass"], python=True)], needs_lock=True, image="wican_prod")],
         images=dict(IMAGES), identify=lambda image, ctx, logdir_: board["sha"], flashers={"ota": fl})
     settings = dict(SETTINGS, runs_root=os.path.join(root, "runs"), bench_holder=holder,
-                    hosts={"local": {"python": [sys.executable]}}, pause_poll_s=0.2)
+                    hosts={"local": {"python": [sys.executable]}}, pause_poll_s=0.2,
+                    canmain_check=dict(CANMAIN))
 
     def go():
         try:
