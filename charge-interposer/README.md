@@ -93,7 +93,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `twai_fake_option_test.py` | Test of how `host_bridge` builds on the shared vehicle port and TWAI fake (`run.sh`, `l2_build.sh`; until port step 2b its `TWAI_FAKE` option), and of the shared fake's can-fail (reviewer, 2026-11-02) | Tester |
 | `shared_pin.py`, `shared_pin_test.py` | The harness's shared code from the read-only `../shared-<tag>/` checkout, checked against `firmware/shared_pins.json`, and its test (port step 2a); `idf-match`: the twai_port and can_port pins are one tag, the versions idf_component.yml takes | Tester |
 | `firmware/vtrux_checks.json` | The release profile and the build-switch table (shared/tools R12, R18, R20, R29) | Tester |
-| `bench_wican.py`, `bench_wican_test.py` | The WiCAN as a board of the bench suite, read and rebooted but never flashed, and its test (reviewer, 2026-10-24) | Tester |
+| `bench_wican.py`, `bench_wican_test.py` | The WiCAN as a board of the bench suite: identified and rebooted through gen-inhibit's tools, and loaded only with the pinned gen-inhibit image (`wican_pin.json`) over USB by the core's esptool flasher on the WiCAN's own device, never the X2's; and its test (reviewer, 2026-10-24; the USB load 2026-11-12) | Tester |
 | `bench_drivers/` | Whole directory: the bench suite's hardware drivers and helpers, `reset_check`, `keepalive_probe`, and `script_can_fail` with its test. Moved from reverse-it (port step 0, reviewer 2026-10-26); `README.md` inside | Tester |
 | `harness_checks/` | Whole directory: the harness suite's mutants, can-fails and controls. Moved from reverse-it (port step 0, reviewer 2026-10-26); `README.md` inside | Tester |
 | `fw_harness/host_diff/` | The reference-vs-port differential | Tester |
@@ -139,17 +139,16 @@ gen-inhibit reviewer before it lands (reviewer, 2026-10-08).
 
 The other way round, `bench_wican.py` reads from gen-inhibit, read-only,
 never copying anything onto this branch (both reviewers, 2026-10-23/24):
-- the key `gi_images` in gen-inhibit's local chain settings
-  (`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/chain_settings_<host>.json`),
-  and in `<gi_images>/build-tester-man/` exactly one file matching
-  `wican-fw_obd_*.bin`, the glob of gen-inhibit's `image_bin()`;
-- that image's identity through `elf_sha256_of_bin` above (the app
-  descriptor's ELF SHA-256 at 0xB0);
 - `tools/gen_inhibit/bench/wican_reboot.py`, its options `--label`, `--out`,
   `--known`, `--first`, `--want` and `--want-unknown`, and
   `page_state.read_page(timeout)`, from a detached worktree at a pinned
   `gen-inhibit/main` commit (`interposer-tester-gi-tools-<commit>`), named in
   the tester's local settings as `gi_tools`.
+
+The WiCAN's image is no longer read from gen-inhibit's chain settings (from
+2026-11-12): it is a gen-inhibit build pinned in `wican_pin.json` as a tool
+of this harness (AGENTS.md, "Never build WiCAN firmware from an interposer
+worktree"), its identity the pin's image hash.
 
 A change to any of these on either side goes to both reviewers first.
 gen-inhibit keeps the same list in `tools/gen_inhibit/README.md`, under
