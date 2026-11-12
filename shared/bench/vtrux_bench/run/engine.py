@@ -195,6 +195,9 @@ fails when the rule is switched off through RULES):
                   identify-after and its amends) is there too: a board group
                   killed mid-way carries nothing; a board-less one keeps its
                   finished checks (user 2026-10-20, option A refined)
+  record_device   a flash's serial port and the USB IDs it was found by
+                  (the flasher's result: port, device) go into record.json's
+                  images_used, as `ports` (DEVICES-SPEC S3)
 """
 
 import fnmatch
@@ -235,7 +238,7 @@ RULES = {k: True for k in (
     "idle_safe_end", "idle_unsafe_line", "product_digest", "digest_bridge",
     "board_hooks",
     "start_hook_stops", "release_line", "end_crash_boards", "carry_finished",
-    "carry_check_end", "missing_setting")}
+    "carry_check_end", "missing_setting", "record_device")}
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -1008,7 +1011,8 @@ class Engine:
         else:
             res = flasher(im, params, self.settings, logdir)
         self.rec.event("flash", image=name, **res)
-        self._note_image(im, None, flashed=True, md5=res.get("md5"))
+        self._note_image(im, None, flashed=True, md5=res.get("md5"),
+                         port=res.get("port"), device=res.get("device"))
         if not res.get("ok"):
             why = "flash of %s failed (%s): %s" % (name, res.get("phase"),
                                                   res.get("detail"))
@@ -1023,11 +1027,14 @@ class Engine:
         self.board_last[board] = name
         return True, "flashed %s to %s, read %s" % (board, name, got2)
 
-    def _note_image(self, im, read, flashed, md5=None):
+    def _note_image(self, im, read, flashed, md5=None, port=None,
+                    device=None):
         """Every image this run used, for the record (user ruling
         2026-10-17: log the code hash of each). code_hash stays null until
         the image library's code-hash tool exists; the identity read off
-        the board and the file digests stand in."""
+        the board and the file digests stand in. A flash's serial port and
+        the USB IDs it was found by (DEVICES-SPEC S3) go in `ports`, one
+        entry per flash that reached a port."""
         e = self.images_used.setdefault(im.name, dict(
             board=im.board, expect=im.expect, flasher=im.flasher, note=im.note,
             code_hash=None, md5=(im.params or {}).get("md5") or {},
@@ -1038,6 +1045,9 @@ class Engine:
             e["flashed"] = True
             if md5:
                 e["md5"] = md5
+            if (port or device) and RULES["record_device"]:
+                e.setdefault("ports", []).append(dict(port=port,
+                                                      device=device))
 
     # ---- remote ---------------------------------------------------------
     def _ship(self, g):

@@ -19,18 +19,33 @@ Ported from the charge-interposer tester's flash_custody*.sh (2026-10-14 to
   4. the auto-reset check again, first thing after the write.
 No step is retried. Every step's output is kept in the log folder.
 
+The port (DEVICES-SPEC S1-S3, `device_port`, the one place the systems
+differ): on Linux the board is named by its USB IDs, `device`, and the port
+is found when the flash starts, before any esptool call, by
+`vtrux_bench.serial_dev` (its /dev/serial/by-id/ path). A `port` there is
+refused, as is a device that matches no device or several, with nothing
+run. On Windows the flasher keeps its `port`, a COM port name, as existing
+tooling (user, 2026-11-11: the serial-device lookup needs no Windows
+support; existing tooling keeps its Windows support). The result's `port`
+and `device` (the IDs matched; None on Windows) go into the run record, and
+into `serial_device.txt` in the log folder.
+
 Image.params:
     files     [[offset, path], ...]  e.g. [["0x0", ".../bootloader.bin"], ...]
     md5       {path: md5}            optional expected digests
-    port      e.g. "COM3"; default settings["esptool"]["port"]
+    device    {"vid", "pid", "serial", "interface"} (serial_dev.config),
+              Linux; default settings["esptool"]["device"]. From local
+              settings: a serial number is a bench identifier
+    port      a COM port name, Windows only; default
+              settings["esptool"]["port"]
     baud      default settings["esptool"]["baud"] or 921600
     chip      {"type": "ESP32-S3", "mac": "<the board's MAC>"}, both
               REQUIRED; default settings["esptool"]["chip"]. The repo is
               public: a suite reads the MAC from its local, unpublished
               settings at run time, never from a literal in a file
 Settings:
-    esptool   {"argv": ["py", "-3.14", ".../esptool.py"], "port": "COM3",
-               "baud": 921600}
+    esptool   {"argv": [...esptool.py], "device": {...} (Linux) or
+               "port": <COM port> (Windows), "baud": 921600}
 """
 
 import hashlib
@@ -38,9 +53,41 @@ import os
 import re
 import subprocess
 
+from .. import bench_lock as BL
+from .. import serial_dev as SD
 from .procs import run_local
 
-RULES = {"chip_match": True, "chip_required": True}
+RULES = {"chip_match": True, "chip_required": True, "port_refused": True,
+         "resolve_first": True, "windows_port": True}
+this_env = BL.this_env      # tests set the environment here
+
+
+def device_port(params, et, env=None):
+    """(port, device): the port to give esptool and the IDs it was found by
+    (None on Windows). The one place the two systems differ. Raises
+    serial_dev.Refused when the port cannot be had: on Linux a `port`
+    setting, no `device`, or a device that is not exactly one; on Windows
+    no `port`."""
+    env = env or this_env()
+    dev = params.get("device") or et.get("device")
+    port = params.get("port") or et.get("port")
+    if env == "windows" and RULES["windows_port"]:
+        if port:
+            return port, None
+        if dev is None:
+            raise SD.Refused("esptool: no port (on windows the flasher keeps "
+                             "its COM port setting)")
+    if port and RULES["port_refused"]:
+        raise SD.Refused("esptool: a port setting (%s) is refused on %s: name "
+                         "the board by its USB IDs, device {vid, pid, serial, "
+                         "interface} (DEVICES-SPEC S1)" % (port, env))
+    if dev is None:
+        if port:
+            return port, None
+        raise SD.Refused("esptool: no device setting {vid, pid, serial, "
+                         "interface} (DEVICES-SPEC S1)")
+    d = SD.resolve(dev, what="esptool device", env=env)
+    return d["port"], d
 
 
 def chip_read(text):
@@ -94,15 +141,34 @@ def esptool_flash(image, params, settings, logdir):
     """Returns dict(ok, phase, detail, md5). Never raises for a failed
     flash; raises only for a mis-written image definition."""
     argv0, et = _esptool(settings)
-    port = params.get("port") or et.get("port")
     baud = str(params.get("baud") or et.get("baud") or 921600)
     files = params.get("files") or []
-    if not port or not files:
-        raise ValueError("image %s: port and files are required" % image.name)
+    if not files:
+        raise ValueError("image %s: files are required" % image.name)
     env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     # recoverable: may another flash be attempted in this run? False once
     # an auto-reset check has failed.
-    out = dict(ok=False, phase="files", detail="", md5={}, recoverable=True)
+    out = dict(ok=False, phase="device", detail="", md5={}, recoverable=True,
+               port=None, device=None)
+
+    # DEVICES-SPEC S1-S3: the port is found when the flash starts, before
+    # anything else, and kept in the result for the record
+    port = None
+    if RULES["resolve_first"]:
+        try:
+            port, out["device"] = device_port(params, et)
+        except SD.Refused as e:
+            out["detail"] = "%s: nothing run" % e
+            return out
+    else:
+        port = params.get("port") or et.get("port")
+    out["port"] = port
+    with open(os.path.join(logdir, "serial_device.txt"), "w",
+              encoding="utf-8") as f:
+        f.write("port: %s\n" % port)
+        for k in SD.KEYS + ("usb", "tty"):
+            f.write("%s: %s\n" % (k, (out["device"] or {}).get(k)))
+    out["phase"] = "files"
 
     for off, path in files:
         if not os.path.isfile(path):
