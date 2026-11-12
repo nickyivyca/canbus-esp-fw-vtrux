@@ -484,6 +484,32 @@ state, are in `$REVERSE_IT_DIR/firmware/bench-holder.md`. Both files stay
 out of git: they change at every hand-off, and they record home-bench
 details.
 
+**The bench host is `madhouse-debian`** from port plan step 3 (the hardware
+moved on 2026-11-11; it was `NICKY-XPS` before). Its lock is native Linux,
+in `shared/main` from tag `2026.11.11.2` (SPEC section 4); the testers'
+pinned `shared/bench` version must include it before they take the lock
+there.
+- **The move to a new host** (SPEC section 4): on the old host, a role that
+  may take runs `bench_lock.py retire --to <new host> --reason ...` while
+  the lock is free, which renames the log aside as
+  `bench-log.<old host>.<date>.jsonl`. The new host runs `init` only once
+  that renamed copy has synced there and no `bench-log.jsonl` is left;
+  `init` refuses otherwise.
+- **Besides the testers and their loans,** two roles may take the bench by
+  hand, with no run: `android`, the Android sessions' runs that touch the
+  bench adapters, and `can-tools`, the CAN replay tooling session (SPEC
+  section 8). They flash no board. At release, everything they opened is
+  closed and back on its driver, `canmain` is down, and what they
+  transmitted is noted.
+- **`canmain`, CAN1's Innomaker, is for the Android app's two-bus tests**
+  and is kept down during ESP runs. Every run that needs the bench refuses
+  to start unless its settings' `canmain_check` shows `canmain` down
+  (`shared/bench/README.md`).
+- **Root operations on the CAN adapters** (links up and down, an
+  Innomaker's driver binding) go through `canctl`, run as `sudo -n
+  /usr/local/sbin/canctl ...`. It is the CAN replay tooling session's, and
+  its README is `$REVERSE_IT_DIR/tools/bench/canctl/README.md`.
+
 ### Build tooling
 
 **Build tooling is specified.** gen-inhibit's release builds are made by
