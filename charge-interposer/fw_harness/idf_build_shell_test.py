@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Tests of idf_build_shell.py, the acceptance runner's "idf" shell for the
 interposer's builds. No ESP-IDF and no build: a stand-in IDF folder whose
-export.ps1 sets what ESP-IDF's would, a stand-in command, and a throwaway
-git checkout. Windows only, as the shell is.
+export.ps1 and export.sh set what ESP-IDF's would, a stand-in command, and
+a throwaway git checkout. Windows and Linux, as the shell is; each run
+shows only its own platform's export, and its own platform's mutants.
 
-    py -3.14 -B charge-interposer/fw_harness/idf_build_shell_test.py [--can-fail]
+    py -3.14 -B charge-interposer/fw_harness/idf_build_shell_test.py [--can-fail]     (Windows)
+    python3.13 -B charge-interposer/fw_harness/idf_build_shell_test.py [--can-fail]   (madhouse)
 
 Each case names what it checks:
   1. the command sees the export: IDF_PATH and IDF_TOOLS_PATH as given,
@@ -16,7 +18,9 @@ Each case names what it checks:
      naming it, exit 3; with the command's own failure, its code is kept
   4. an untracked file is listed, not failed
   5. a failing export, or one that leaves no IDF_PYTHON_ENV_PATH, is
-     refused, exit 2, and the command never runs
+     refused, exit 2, and the command never runs (on Linux the failing
+     export.sh sets IDF_PYTHON_ENV_PATH before it returns 1, so only its
+     exit code can refuse it)
   6. a checkout not clean before the command is refused, exit 2, and the
      command never runs; so is a folder that is not a git checkout
 --can-fail runs the cases first on the unedited copy (the control, which
@@ -47,6 +51,17 @@ if (-not $env:STANDIN_NO_PYENV) {
 }
 $env:STANDIN_EXPORTED = "yes"
 Write-Host "a line the real export prints"
+"""
+
+# Linux: sourced by bash, as ESP-IDF's export.sh is. Its failure comes after
+# IDF_PYTHON_ENV_PATH is set, so only the exit code can refuse it
+EXPORT_SH = """echo "Activating the stand-in" 1>&2
+if [ -z "$STANDIN_NO_PYENV" ]; then
+  export IDF_PYTHON_ENV_PATH="$IDF_TOOLS_PATH/python_env/standin"
+fi
+if [ -n "$STANDIN_EXPORT_FAIL" ]; then echo "the stand-in export failed" 1>&2; return 1; fi
+export STANDIN_EXPORTED=yes
+echo "a line the real export prints"
 """
 
 # the command: writes what it sees, then does what its arguments say
@@ -82,6 +97,8 @@ class World:
             os.makedirs(d)
         with open(os.path.join(self.idf, "export.ps1"), "w", encoding="utf-8") as f:
             f.write(EXPORT_PS1)
+        with open(os.path.join(self.idf, "export.sh"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(EXPORT_SH)
         self.cmd = os.path.join(base, "command.py")
         with open(self.cmd, "w", encoding="utf-8", newline="\n") as f:
             f.write(COMMAND)
@@ -191,18 +208,29 @@ def case_not_clean(w, shell):
 CASES = [case_env, case_rc, case_tracked, case_untracked, case_export_fails, case_not_clean]
 
 S = "idf_build_shell.py"
-MUTANTS = [
-    ("MSYSTEM passed down", '    env.pop("MSYSTEM", None)\n', ""),
+# each platform's own export: only the platform running the test can show them
+MUTANTS_NT = [
     ("the export under ErrorActionPreference Stop", "EXPORT = (\n",
      "EXPORT = (\n    \"$ErrorActionPreference = 'Stop'; \"\n"),
-    ("tracked changes not failed", "    if rc == 0 and changed:\n        rc = 3\n", ""),
-    ("the command's exit code dropped",
-     "    rc = subprocess.run([sys.executable, \"-B\"] + cmd, env=env, cwd=here).returncode\n",
-     "    subprocess.run([sys.executable, \"-B\"] + cmd, env=env, cwd=here)\n    rc = 0\n"),
     ("IDF_TOOLS_PATH not set", "\"$env:IDF_TOOLS_PATH = $env:_IBS_TOOLS; \"", "\"\""),
     ("the Python folder last on PATH",
      "\"$env:PATH = $env:_IBS_PY + ';' + $env:PATH; \"",
      "\"$env:PATH = $env:PATH + ';' + $env:_IBS_PY; \""),
+]
+MUTANTS_POSIX = [
+    ("IDF_TOOLS_PATH not set (export.sh)", "    'export IDF_TOOLS_PATH=\"$_IBS_TOOLS\"; '\n", ""),
+    ("the Python folder last on PATH (export.sh)", "'export PATH=\"$_IBS_PY:$PATH\"; '",
+     "'export PATH=\"$PATH:$_IBS_PY\"; '"),
+    ("a failing export.sh taken", "1>&2 || exit 1; '", "1>&2; '"),
+    ("the Windows export run on Linux", '    if os.name == "nt":\n        argv = ["powershell"',
+     '    if True:\n        argv = ["powershell"'),
+]
+MUTANTS = (MUTANTS_NT if os.name == "nt" else MUTANTS_POSIX) + [
+    ("MSYSTEM passed down", '    env.pop("MSYSTEM", None)\n', ""),
+    ("tracked changes not failed", "    if rc == 0 and changed:\n        rc = 3\n", ""),
+    ("the command's exit code dropped",
+     "    rc = subprocess.run([sys.executable, \"-B\"] + cmd, env=env, cwd=here).returncode\n",
+     "    subprocess.run([sys.executable, \"-B\"] + cmd, env=env, cwd=here)\n    rc = 0\n"),
     ("a failed export taken", "    if r.returncode != 0 or line is None:\n",
      "    if False:\n"),
     ("an export with no Python env taken", '    if not got.get("IDF_PYTHON_ENV_PATH"):\n',
@@ -229,9 +257,12 @@ def run_cases(shell, base):
 
 
 def main(argv):
-    if os.name != "nt":
-        print("REFUSED: idf_build_shell is Windows only (the ESP-IDF export is PowerShell's)")
+    if os.name != "nt" and not sys.platform.startswith("linux"):
+        print("REFUSED: idf_build_shell is Windows and Linux only, not %s" % sys.platform)
         return 2
+    print("platform: %s (its own export and its %d own mutants)"
+          % ("Windows, export.ps1" if os.name == "nt" else "Linux, export.sh",
+             len(MUTANTS_NT if os.name == "nt" else MUTANTS_POSIX)), flush=True)
     # depth: its deepest git repo, control\repo (13 below the run folder),
     # + 12 for .git\config (measured 2026-11-05; scratch_dir). The tool's
     # name is short (not idf-build-shell-test): in the acceptance runner's

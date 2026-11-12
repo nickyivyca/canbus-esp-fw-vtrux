@@ -10,21 +10,27 @@ dependencies.lock refused). accept_adapter.py's shell_argv("idf") puts
 this file, from the list's commit, in front of the target's own file (from
 the build's tree, at the product commit):
 
-    py -3.14 -B idf_build_shell.py --idf-path P --idf-tools-path T
+    py -3.14 -B idf_build_shell.py --idf-path P --idf-tools-path T      (Windows)
+    python3.13 -B idf_build_shell.py --idf-path P --idf-tools-path T    (madhouse)
         --python-dir D -- <script.py> [args...]
 
 1. The export: with MSYSTEM taken out of the environment (ESP-IDF refuses
-   MSYS, and a runner started from Git Bash passes it down), a PowerShell
-   sets IDF_TOOLS_PATH=T and IDF_PATH=P, puts D
-   (the Python the export itself calls as "python", local-paths.md) first
-   on PATH, dot-sources P/export.ps1 and hands back the environment it
-   leaves. Refused (exit 2), with the command not run, if the export fails
-   or leaves no IDF_PYTHON_ENV_PATH. The export runs without
-   $ErrorActionPreference = 'Stop', so an export that fails partway but
-   still sets IDF_PYTHON_ENV_PATH gets through this shell; the command's own
-   check refuses it then: vtrux_tools.py build checks the shell is exported
-   for the interposer's IDF before it builds (the charge-interposer
-   reviewer, 2026-11-04).
+   MSYS, and a runner started from Git Bash passes it down), a shell sets
+   IDF_TOOLS_PATH=T and IDF_PATH=P, puts D (the Python the export itself
+   calls, local-paths.md) first on PATH, sources ESP-IDF's export script
+   and hands back the environment it leaves. Refused (exit 2), with the
+   command not run, if the export fails or leaves no IDF_PYTHON_ENV_PATH.
+   - Windows: a PowerShell dot-sources P/export.ps1. The export runs
+     without $ErrorActionPreference = 'Stop', so an export that fails
+     partway but still sets IDF_PYTHON_ENV_PATH gets through this shell;
+     the command's own check refuses it then: vtrux_tools.py build checks
+     the shell is exported for the interposer's IDF before it builds (the
+     charge-interposer reviewer, 2026-11-04).
+   - Linux (madhouse-debian, port plan step 3): bash sources P/export.sh,
+     and the environment is read by this same Python. An export.sh that
+     returns non-zero is refused even if it set IDF_PYTHON_ENV_PATH first:
+     bash has no stderr trap to work round, so the export's own exit code
+     is trusted, as local-paths.md's `. export.sh` recipe is.
 2. The command: [this Python, -B, script] + args, in that environment and
    in the current folder (the runner's cwd: the tree's checkout). Its exit
    code is passed on.
@@ -36,8 +42,9 @@ the build's tree, at the product commit):
    rewrites it and exits 0 (shared/tools R33; the reviewer, 2026-11-04).
    Untracked files that git does not ignore are listed, not failed.
 
-Windows only: the export is ESP-IDF's PowerShell one. Elsewhere refused.
-Tests: idf_build_shell_test.py (with --can-fail).
+Windows and Linux. Elsewhere (macOS, or Windows without PowerShell) it is
+not tried. Tests: idf_build_shell_test.py (with --can-fail), each run
+showing only its own platform's export.
 """
 
 import argparse
@@ -61,17 +68,32 @@ EXPORT = (
     "Write-Output ('IBS-ENV ' + ($h | ConvertTo-Json -Compress))"
 )
 
+# Linux: the same, with ESP-IDF's export.sh. Its own output goes to stderr
+# (kept for a refusal), and its exit code decides; the environment it
+# leaves is read by this Python (_IBS_SELF), as one JSON line.
+EXPORT_SH = (
+    'export IDF_TOOLS_PATH="$_IBS_TOOLS"; '
+    'export IDF_PATH="$_IBS_IDF"; '
+    'export PATH="$_IBS_PY:$PATH"; '
+    '. "$IDF_PATH/export.sh" 1>&2 || exit 1; '
+    '"$_IBS_SELF" -c \'import json, os; print("IBS-ENV " + json.dumps(dict(os.environ)))\''
+)
+
 
 def export(idf_path, tools_path, python_dir):
     """The environment the export leaves; SystemExit(2) if it fails."""
-    env = dict(os.environ, _IBS_TOOLS=tools_path, _IBS_IDF=idf_path, _IBS_PY=python_dir)
+    env = dict(os.environ, _IBS_TOOLS=tools_path, _IBS_IDF=idf_path, _IBS_PY=python_dir,
+               _IBS_SELF=sys.executable)
     # ESP-IDF refuses to run under MSYS ("MSys/Mingw is not supported"), and
     # a runner started from Git Bash passes MSYSTEM down: not to the export,
     # and so not to the command either
     env.pop("MSYSTEM", None)
-    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
-                        "Bypass", "-Command", EXPORT],
-                       capture_output=True, text=True, env=env, timeout=600)
+    if os.name == "nt":
+        argv = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                "Bypass", "-Command", EXPORT]
+    else:
+        argv = ["bash", "--noprofile", "--norc", "-c", EXPORT_SH]
+    r = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=600)
     line = next((ln for ln in reversed(r.stdout.splitlines()) if ln.startswith("IBS-ENV ")),
                 None)
     if r.returncode != 0 or line is None:
@@ -79,7 +101,7 @@ def export(idf_path, tools_path, python_dir):
               % (r.returncode, (r.stderr or r.stdout).strip()[-600:]), flush=True)
         raise SystemExit(2)
     got = json.loads(line[len("IBS-ENV "):])
-    for k in ("_IBS_TOOLS", "_IBS_IDF", "_IBS_PY"):
+    for k in ("_IBS_TOOLS", "_IBS_IDF", "_IBS_PY", "_IBS_SELF"):
         got.pop(k, None)
     if not got.get("IDF_PYTHON_ENV_PATH"):
         print("idf_build_shell: REFUSED: the export left no IDF_PYTHON_ENV_PATH", flush=True)
@@ -105,9 +127,9 @@ def tracked_changes(folder):
 
 
 def main(argv):
-    if os.name != "nt":
-        print("idf_build_shell: REFUSED: the ESP-IDF export is PowerShell's; Windows only",
-              flush=True)
+    if os.name != "nt" and not sys.platform.startswith("linux"):
+        print("idf_build_shell: REFUSED: no ESP-IDF export for %s here (Windows and Linux only)"
+              % sys.platform, flush=True)
         return 2
     if "--" not in argv:
         print("idf_build_shell: REFUSED: no -- before the command", flush=True)

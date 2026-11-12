@@ -249,8 +249,9 @@ HARNESS_LOCAL = [
     ("refusal-pairs-test", ["{interposer_code}/refusal_pairs_test.py"]),
     ("refusal-pairs-test-canfail",
      ["{interposer_code}/refusal_pairs_test.py", "--can-fail"]),
-    # the acceptance runner's "idf" build shell (accept_adapter.py): the
-    # ESP-IDF export is PowerShell's, so Windows only
+    # the acceptance runner's "idf" build shell (accept_adapter.py), on the
+    # bench host's own ESP-IDF export (export.ps1 on Windows, export.sh on
+    # Linux from port plan step 3)
     ("idf-build-shell-test", ["{interposer_code}/fw_harness/idf_build_shell_test.py"]),
     ("idf-build-shell-test-canfail",
      ["{interposer_code}/fw_harness/idf_build_shell_test.py", "--can-fail"]),
