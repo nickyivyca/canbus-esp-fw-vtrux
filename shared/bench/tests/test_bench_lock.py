@@ -55,6 +55,10 @@ WSL_VERSION = ("Linux version 5.15.153.1-microsoft-standard-WSL2 "
                "(root@1234) (gcc 11.2.0) #1 SMP")
 ENV = B.detect_env()                  # this test run's own environment
 OTHER_ENV = "linux" if ENV == "windows" else "windows"
+# A host that is never this one, wherever the tests run (madhouse-debian is
+# a real bench host, so it cannot stand in for "another host").
+OTHER_HOST = "NOT-THIS-BENCH-HOST"
+assert OTHER_HOST.upper() != socket.gethostname().upper(), OTHER_HOST
 AND = "android"
 CT = "can-tools"
 HAND_NOTE = ("adapters closed, canmain down; transmitted nothing")
@@ -493,9 +497,14 @@ def test_detect_env():
                        nspid=1) == "wsl", "WSL by WSL_INTEROP")
     check(B.detect_env("posix", "linux", lv, {}, nspid=1) == "linux",
           "native Linux in the host's PID namespace")
-    for n in (2, 3, None):
+    for n in (2, 3):
         check(B.detect_env("posix", "linux", lv, {}, nspid=n) == "linux-pidns",
               "%s PID namespace(s) is not the host's" % n)
+    # An NSpid that cannot be read: nspid=None means "read it", so the read
+    # itself is made to fail (on Linux a plain None would read the real 1).
+    with patched(pid_namespaces=lambda: None):
+        check(B.detect_env("posix", "linux", lv, {}) == "linux-pidns",
+              "an NSpid that cannot be read is not the host's")
     check(B.detect_env("posix", "darwin", "", {}) == "darwin", "other")
     for env in ("wsl", "linux-pidns", "darwin"):
         msg = refused(B.env_impl, env)
@@ -536,7 +545,7 @@ def test_env_mismatch():
     """SPEC 4 a log whose init names another environment or host refuses
     every command, whatever this environment is."""
     for name, il in (("mismatch_env", init_line(env=OTHER_ENV)),
-                     ("mismatch_host", init_line(host="MADHOUSE-DEBIAN"))):
+                     ("mismatch_host", init_line(host=OTHER_HOST))):
         p = hand_log(name, [il])
         refused(B.read_state, p)
         refused(B.write, p, ev("take", CI, pid=ME))
@@ -1036,11 +1045,11 @@ def test_retire():
         refused(B.retire, p, who, to, reason)
     check(not retired_files(p) and os.path.exists(p), "refusals moved nothing")
     before = file_bytes(p)
-    st, line, aside, appended = B.retire(p, GI, "madhouse-debian",
+    st, line, aside, appended = B.retire(p, GI, OTHER_HOST,
                                          "port plan step 3")
     e = json.loads(line)
     check(appended and e["event"] == "retire" and e["who"] == GI and
-          e["to"] == "madhouse-debian" and e["reason"] == "port plan step 3",
+          e["to"] == OTHER_HOST and e["reason"] == "port plan step 3",
           "the retire line: %s" % line)
     want = "bench-log.%s.%s.jsonl" % (socket.gethostname(),
                                       e["ts"][:10].replace("-", ""))
@@ -1051,7 +1060,7 @@ def test_retire():
     got = file_bytes(aside)
     check(got == before + (line + "\n").encode("ascii"),
           "renamed whole: every old line unchanged, the retire line after")
-    check(st["retired"]["to"] == "madhouse-debian" and st["holder"] is None,
+    check(st["retired"]["to"] == OTHER_HOST and st["holder"] is None,
           "the state says retired")
     msg = refused(B.read_state, p)
     check("no bench log" in msg, "the default path refuses: %s" % msg)
@@ -1063,10 +1072,10 @@ def test_retire():
               % (e2["event"], msg))
     check(file_bytes(aside) == got, "nothing appended to the retired log")
     rc, out, _e = cli("--log", aside, "status")
-    check(rc == 0 and "RETIRED" in out and "madhouse-debian" in out,
+    check(rc == 0 and "RETIRED" in out and OTHER_HOST in out,
           "status of the retired log: %s" % out)
     msg = refused(B.init, p, GI)
-    check("madhouse-debian" in msg and not os.path.exists(p) and
+    check(OTHER_HOST in msg and not os.path.exists(p) and
           file_bytes(aside) == got,
           "no init here: the retired log moved the bench elsewhere: %s" % msg)
 
