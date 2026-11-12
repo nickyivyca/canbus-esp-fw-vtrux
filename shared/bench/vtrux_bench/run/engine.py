@@ -167,7 +167,18 @@ fails when the rule is switched off through RULES):
                   CPUWeight and MemoryHigh ("placement" event), and a
                   placement that did not take FAILs the group's setup
                   (<group>/placement), its checks NOT-RUN
-  requires      a suite with `requires` starts only when a run of that
+  runner_slice  the runner's own work (flash, OTA load, board hooks) runs
+                  in its own cgroup, with no placement code of its own (the
+                  charge-interposer reviewer, 2026-11-12). At start it reads
+                  its slice from /proc/self/cgroup and records it (a
+                  "placement" event with runner=true). With
+                  settings.placement on Linux, a run with board work (a
+                  selected group with images, or board hooks on a bench
+                  run) refuses to start unless the runner is in the
+                  wall-clock slice (placement.slices["wallclock"], else
+                  ["lock"]), printing the systemd-run command that starts
+                  it there
+  requires     a suite with `requires` starts only when a run of that
                   suite on the same code matched its reference
   product_digest  "the same code" (Suite.requires, --resume) is the product
                   digest over Suite.product_files when the suite gives them,
@@ -221,6 +232,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -248,7 +260,7 @@ RULES = {k: True for k in (
     "no_verdict", "known_fail", "stop_pause", "redact_scope",
     "gate", "timeout", "skip", "base_env", "record_settings",
     "identify_error", "after",
-    "own_wallclock_wait", "placement_readback",
+    "own_wallclock_wait", "placement_readback", "runner_slice",
     "requires", "requires_whole", "resume_code",
     "subset_mark", "subset_not_whole", "start_identify", "end_identify",
     "idle_safe_end", "idle_unsafe_line", "product_digest", "digest_bridge",
@@ -261,6 +273,8 @@ RULES = {k: True for k in (
 PLATFORM = sys.platform
 # what systemd-run --user needs from the environment to reach the user manager
 USER_BUS_ENV = ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+# where the runner reads its own slice (rule runner_slice); the tests set it
+RUNNER_CGROUP = "/proc/self/cgroup"
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -1062,6 +1076,67 @@ class Engine:
         if g.needs_lock and "lock" in slices:
             return slices["lock"]
         return slices.get(c.cls)
+
+    def board_work(self):
+        """Why this run does board work in the runner itself (flash or OTA
+        load, board hooks), or None: a selected group with images, or a
+        bench run of a suite with start or end hooks."""
+        sel = self.selected()
+        imgs = sorted(g.name for g, _ in sel if g.image_list)
+        if imgs:
+            return "groups with images: %s" % ", ".join(imgs)
+        if self.needs_bench() and (self.suite.on_start is not None
+                                   or self.suite.on_end is not None):
+            return "board hooks on a bench run"
+        return None
+
+    def runner_placement(self):
+        """The runner's own slice, read from RUNNER_CGROUP, as the start's
+        "placement" event fields: slice, cgroup, wallclock_slice,
+        board_work, and "refuse" with the refusal text when, on Linux with
+        settings.placement, a run with board work is not in the wall-clock
+        slice (rule runner_slice)."""
+        out = {"slice": None, "cgroup": None}
+        if not PLATFORM.startswith("linux"):
+            out["reason"] = "off Linux"
+            return out
+        try:
+            with open(RUNNER_CGROUP, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            out["cgroup"] = text.strip()[:300]
+            out["slice"] = procs.cgroup_slice(text)
+        except OSError as e:
+            out["cgroup"] = "unreadable: %s" % e
+        p = self.settings.get("placement") or {}
+        if not p:
+            out["reason"] = "no placement setting"
+            return out
+        slices = p.get("slices") or {}
+        want = slices.get("wallclock") or slices.get("lock")
+        work = self.board_work()
+        out["wallclock_slice"] = want
+        out["board_work"] = work
+        if work and RULES["runner_slice"] and (not want
+                                               or out["slice"] != want):
+            if not want:
+                out["refuse"] = (
+                    "refusing to start: this run does board work in the "
+                    "runner (%s), and settings.placement names no "
+                    "wall-clock slice (slices.wallclock or slices.lock)"
+                    % work)
+            else:
+                # the original command line, interpreter and -m included
+                cmd = procs.scope_argv(
+                    self._placement_cmd("systemd_run", ["systemd-run"]), want,
+                    getattr(sys, "orig_argv", None)
+                    or [sys.executable] + sys.argv)
+                out["refuse"] = (
+                    "refusing to start: this run does board work in the "
+                    "runner (%s), which runs in the runner's own cgroup, "
+                    "and the runner is in %s, not %s (read from %s). Start "
+                    "it there:\n  %s" % (work, out["slice"], want,
+                                         RUNNER_CGROUP, shlex.join(cmd)))
+        return out
 
     def _placement_cmd(self, key, default):
         return list((self.settings.get("placement") or {}).get(key) or default)
@@ -2125,6 +2200,9 @@ class Engine:
                                   "the settings name no bench_lock_log: "
                                   "before the cutover the Holder line is "
                                   "edited by hand"))
+        runner = self.runner_placement()
+        if runner.get("refuse"):
+            raise SuiteError(runner["refuse"])
         if self.needs_bench() and RULES["canmain_check"]:
             # SPEC section 8: before the take, so a refusal writes nothing
             # to the log and makes no folder
@@ -2179,6 +2257,8 @@ class Engine:
         header["host_clocks_epoch"] = clocks
         self.rec.event("start", run_id=self.run_id, suite=self.suite.name,
                        code=code, subset=subset, subset_cases=cases)
+        self.rec.event("placement", runner=True,
+                       **{k: v for k, v in runner.items() if k != "refuse"})
         lanes = {}
         for g, items in sel:
             lanes.setdefault(g.lane, []).append((g, items))

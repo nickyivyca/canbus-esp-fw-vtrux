@@ -1037,8 +1037,11 @@ def test_after():
         raise AssertionError("accepted a cycle")
 
 
-def _events(rec, kind):
-    return [e for e in rec["events"] if e["kind"] == kind]
+def _events(rec, kind, runner=False):
+    """rec's events of kind; for "placement", the groups' (runner=False)
+    or the runner's own one at start (runner=True)."""
+    return [e for e in rec["events"] if e["kind"] == kind
+            and bool(e.get("runner")) == runner]
 
 
 def test_wallclock_records():
@@ -1197,6 +1200,9 @@ def test_placement_slices():
         ev = _events(rec, "placement")
         assert len(ev) == 1 and ev[0]["slice"] is None and \
             ev[0]["reason"] == "off Linux", ev
+        ev = _events(rec, "placement", runner=True)
+        assert len(ev) == 1 and ev[0]["slice"] is None and \
+            ev[0]["reason"] == "off Linux", ev
         assert rec["results"][0]["slice"] is None, rec["results"]
     finally:
         E.PLATFORM = saved
@@ -1243,6 +1249,66 @@ def test_placement_readback():
     assert len(ev) == 1 and ev[0]["ok"] is False and \
         ev[0]["slice"] == "vtrux-test-elsewhere.slice" and \
         ev[0]["read_back"] != "vtrux-test-elsewhere.slice", ev
+
+
+def test_runner_slice():
+    """The runner's own work (flash, OTA load, board hooks) runs in its
+    own cgroup. At start it reads its slice and records it; on Linux with
+    settings.placement, a run with board work refuses to start, before the
+    take and before any flash, unless the runner is in the wall-clock
+    slice, and prints the systemd-run command. A run with no board work
+    starts anywhere, its slice recorded (the charge-interposer reviewer,
+    2026-11-12)."""
+    env, p = log_env("runnerslice")
+    cg = os.path.join(env.root, "cgroup.txt")
+    want = "vtrux-test-bench.slice"
+    pl = {"slices": {"wallclock": want}}
+    ims = {"w1": Image("w1", "fake", expect="WC-1", board="wican")}
+
+    def in_slice(name):
+        with open(cg, "w") as f:
+            f.write("0::/user.slice/user-1000.slice/user@1000.service/"
+                    "%s/vtrux-test.scope\n" % name)
+    saved = E.PLATFORM, E.RUNNER_CGROUP
+    try:
+        E.PLATFORM, E.RUNNER_CGROUP = "linux", cg
+        tb = TwoBoards(env)
+        tb.set("wican", "WC-0")
+        s = suite([Group("a", [chk("x", "pass")], needs_lock=True,
+                         image="w1")],
+                  images=ims, flashers={"fake": tb.flasher},
+                  identify=tb.identify, role=CI)
+        in_slice("app.slice")
+        try:
+            run(env, s, settings=env.settings(bench_lock_log=p, placement=pl))
+            refused = None
+        except SuiteError as e:
+            refused = str(e)
+        assert refused and "refusing to start" in refused and \
+            "app.slice, not %s" % want in refused and \
+            "systemd-run --user --scope --quiet --slice=%s --" % want \
+            in refused and "groups with images: a" in refused, refused
+        assert tb.flashes == [], tb.flashes
+        assert not [e for e in log_events(p) if e["event"] == "take"], \
+            log_events(p)
+        in_slice(want)
+        eng, rec = run(env, s, settings=env.settings(bench_lock_log=p,
+                                                     placement=pl))
+        assert verdicts(rec) == {"a/x": "PASS"}, rec["results"]
+        ev = _events(rec, "placement", runner=True)
+        assert len(ev) == 1 and ev[0]["slice"] == want and \
+            ev[0]["wallclock_slice"] == want and \
+            ev[0]["board_work"] == "groups with images: a" and \
+            want in ev[0]["cgroup"], ev
+        in_slice("app.slice")             # no board work: starts anywhere
+        s = suite([Group("g", [chk("y", "pass")])])
+        eng, rec = run(env, s, settings=env.settings(placement=pl))
+        assert verdicts(rec) == {"g/y": "PASS"}, rec["results"]
+        ev = _events(rec, "placement", runner=True)
+        assert len(ev) == 1 and ev[0]["slice"] == "app.slice" and \
+            ev[0]["board_work"] is None, ev
+    finally:
+        E.PLATFORM, E.RUNNER_CGROUP = saved
 
 
 def test_requires():
@@ -2952,7 +3018,8 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_stop_pause,
          test_build_alongside, test_after, test_wallclock_records,
          test_own_wallclock_wait, test_wallclock_hand_roles,
-         test_placement_slices, test_placement_readback, test_requires,
+         test_placement_slices, test_placement_readback, test_runner_slice,
+         test_requires,
          test_requires_whole, test_subset_mark, test_subset_not_whole,
          test_product_digest, test_digest_bridge,
          test_digest_own_folder, test_digest_folder_removed,
@@ -3097,6 +3164,8 @@ MUTANTS = {
                                     lambda self, g, c: "build.slice"),
     # the placement not read back
     "test_placement_readback": _rule("placement_readback"),
+    # the runner's start check removed: board work starts in any slice
+    "test_runner_slice": _rule("runner_slice"),
     "test_requires": _rule("requires"),
     "test_requires_whole": _rule("requires_whole"),
     "test_subset_mark": _rule("subset_mark"),
