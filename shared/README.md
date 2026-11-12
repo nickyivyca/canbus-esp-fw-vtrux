@@ -29,4 +29,5 @@ charge interposer.
 | `restart_guard/` | Takes the CAN ports off the bus at every software restart, through each port's driver and the board's standby, to `restart_guard/SPEC.md`. See `restart_guard/README.md`. |
 | `tools/` | The shared build tooling (`vtrux_build`): the image library, the release build and its record, to `tools/SPEC.md`. See `tools/README.md`. |
 | `twai_port/` | The driver for the chip's built-in CAN controller, behind `can_port`, with the one host fake of the TWAI driver, to `twai_port/SPEC.md`. See `twai_port/README.md`. |
+| `x2_test_images/` | Sources of the X2's test-equipment images (the jammer and the SLCANs), tester-owned per image, to `x2_test_images/SPEC.md`. See `x2_test_images/README.md`. |
 | `wican/` | The stock WiCAN code, as one ESP-IDF component, to `wican/SPEC.md`. See `wican/README.md`. |
