@@ -5,7 +5,7 @@ rebuilt (its spec 8.2: two clean builds give different ELFs) and no copy of
 the 7f197bfd binary survives, so the board is returned by writing back a
 full read-back of its flash, never from a rebuild or from .pio.
 
-  dump           esptool read-flash of the whole chip, TWICE; the two sha256
+  dump           esptool read_flash of the whole chip, TWICE; the two sha256
                  must match. Then the dump's own partition table and otadata
                  are parsed, every app partition is sliced out (next to the
                  dump, deleted at once) and its ELF sha256 read with
@@ -16,7 +16,7 @@ full read-back of its flash, never from a rebuild or from .pio.
                  bootloader, partition table, otadata and app from one
                  builds/<md5>/ row of x2_jammer/builds/manifest.json, after
                  checking the app's md5 and ELF sha256 against that row.
-  restore        write-flash 0x0 <dump>, then verify-flash 0x0 <dump>.
+  restore        write_flash 0x0 <dump>, then verify_flash 0x0 <dump>.
   check-dump     no board: re-checks a saved dump against its record (size and
                  sha256), then repeats dump's analysis on it. The dry run that
                  proves the ELF-hash path works before the board is touched.
@@ -31,6 +31,13 @@ used from it: elf_sha256_of_bin and APP_DESC_MAGIC
 THE DUMP IS SENSITIVE. It holds the whole flash, NVS included. Nothing here
 prints, hexdumps or quotes its contents: only its path, size and sha256 are
 recorded. Records go to runs/x2_flash_custody_<sub>_<stamp>.json.
+
+esptool (gen-inhibit reviewer, 2026-11-11; gi_esptool.py): the argv in GI_ESPTOOL_ARGV,
+[<python>, "-m", "esptool"] from settings.esptool.argv, at the pinned version, read
+before the board is touched; unset, another form or another version refuses (exit 1, a
+record with verdict REFUSED, nothing run). dump, flash-jammer and restore records hold
+esptool_argv and esptool_version; check-dump runs no esptool and records None for both.
+Command names are the underscore ones (read_flash, write_flash, verify_flash).
 
 After `dump` and after `restore`, identify the board from the wire with
 interposer-firmware/bench_identify_board.py; this script does not, because
@@ -50,14 +57,15 @@ import sys
 import time
 import zlib
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_esptool as GE  # noqa: E402  esptool from the settings, pinned (2026-11-11)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 BACKUPS = gi_paths.data_dir("board-backups")
 JAMMER = gi_paths.data_dir("x2_jammer")
-ESPTOOL = os.path.join(os.path.expanduser("~"), ".platformio", "packages",
-                       "tool-esptoolpy", "esptool.py")
+ESPTOOL_SUBS = ("dump", "flash-jammer", "restore")   # the subcommands that run esptool
+_ET = {}    # {"argv", "version"}, checked in main before a board subcommand runs
 
 
 def _load_build_lookup():
@@ -101,8 +109,9 @@ def md5_file(path):
 def esptool(port, *args):
     """Run esptool; returns (rc, tail of its output). Never given dump bytes."""
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
-    cmd = [sys.executable, ESPTOOL, "--chip", "esp32s3", "--port", port,
-           "--baud", "921600"] + list(args)
+    if not _ET.get("argv"):
+        raise GE.Refused("esptool was not checked before this call (main checks it)")
+    cmd = _ET["argv"] + ["--chip", GE.CHIP, "--port", port, "--baud", "921600"] + list(args)
     p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", env=env)
     out = (p.stdout + p.stderr).splitlines()
@@ -186,7 +195,7 @@ def sub_dump(a, rec):
     for p in paths:
         if os.path.exists(p):
             raise SystemExit("refusing to overwrite %s" % p)
-        rc, tail = esptool(a.port, "read-flash", "0", "ALL", p)
+        rc, tail = esptool(a.port, "read_flash", "0", "ALL", p)
         size = os.path.getsize(p) if os.path.exists(p) else None
         # relative to the data folder, which is what dump_path() reads it against
         # (2026-10-23: relative to HERE, the repo's bench/, it no longer resolved)
@@ -197,7 +206,7 @@ def sub_dump(a, rec):
         print("read %s rc %d size %s" % (os.path.basename(p), rc, size))
         if rc != 0:
             rec["verdict"] = "FAIL"
-            rec["why"] = "read-flash failed"
+            rec["why"] = "read_flash failed"
             return
     r0, r1 = rec["reads"]
     rec["reads_match"] = r0["sha256"] == r1["sha256"] and r0["size"] == r1["size"]
@@ -302,13 +311,13 @@ def sub_flash_jammer(a, rec):
         raise SystemExit("app ELF sha256 %s != manifest %s" % (elf, row["elf_sha256"]))
     rec["jammer"] = {"progname": row["progname"], "app_md5": row["app_md5"],
                      "elf_sha256": elf}
-    args = ["write-flash"]
+    args = ["write_flash"]
     for k in ("bootloader", "partitions", "boot_app0", "app"):
         args += [row["flash_offsets"][k], os.path.join(bdir, row["files"][k])]
     rc, tail = esptool(a.port, *args)
     rec.update({"rc": rc, "esptool_tail": tail,
                 "verdict": "FLASHED" if rc == 0 else "FAIL"})
-    print("write-flash rc %d" % rc)
+    print("write_flash rc %d" % rc)
     print("\n".join(tail))
 
 
@@ -316,15 +325,15 @@ def sub_restore(a, rec):
     d, p = _checked_dump(a)
     rec["dump_record"] = a.dump_record
     rec["dump_sha256"] = d["dump_sha256"]
-    rc, tail = esptool(a.port, "write-flash", "0x0", p)
+    rc, tail = esptool(a.port, "write_flash", "0x0", p)
     rec["write"] = {"rc": rc, "esptool_tail": tail}
-    print("write-flash rc %d" % rc)
+    print("write_flash rc %d" % rc)
     if rc != 0:
         rec["verdict"] = "FAIL"
         return
-    rc2, tail2 = esptool(a.port, "verify-flash", "0x0", p)
+    rc2, tail2 = esptool(a.port, "verify_flash", "0x0", p)
     rec["verify"] = {"rc": rc2, "esptool_tail": tail2}
-    print("verify-flash rc %d" % rc2)
+    print("verify_flash rc %d" % rc2)
     print("\n".join(tail2))
     rec["verdict"] = "VERIFIED" if rc2 == 0 else "FAIL"
 
@@ -338,8 +347,18 @@ def main():
     ap.add_argument("--build", help="jammer app md5 (its builds/ dir name)")
     a = ap.parse_args()
     rec = {"when": time.strftime("%Y%m%dT%H%M%S"), "sub": a.sub,
-           "esptool": ESPTOOL, "port": a.port, "build_lookup": BUILD_LOOKUP}
+           "esptool_argv": None, "esptool_version": None, "port": a.port,
+           "build_lookup": BUILD_LOOKUP}
     try:
+        if a.sub in ESPTOOL_SUBS:
+            _ET.clear()
+            try:
+                _ET.update(GE.checked())
+            except GE.Refused as e:
+                rec.update(verdict="REFUSED", why=str(e))
+                print("REFUSED: %s (nothing run)" % e)
+                return 1
+            rec["esptool_argv"], rec["esptool_version"] = _ET["argv"], _ET["version"]
         {"dump": sub_dump, "flash-jammer": sub_flash_jammer,
          "restore": sub_restore, "check-dump": sub_check_dump}[a.sub](a, rec)
     finally:

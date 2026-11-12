@@ -33,6 +33,17 @@ MUTANTS = [
      '    path = dump_path(a.dump_record, dr["dump"])\n', '    path = gi_paths.data_dir(dr["dump"])\n'),
     ("_checked_dump: resolves the path itself, without the refusal",
      '    p = dump_path(a.dump_record, d["dump"])\n', '    p = gi_paths.data_dir(d["dump"])\n'),
+    # esptool (gi_esptool.py; gen-inhibit reviewer, 2026-11-11)
+    ("dump: the dashed read-flash", '"read_flash", "0", "ALL", p)', '"read-flash", "0", "ALL", p)'),
+    ("restore: the dashed write-flash", '"write_flash", "0x0", p)', '"write-flash", "0x0", p)'),
+    ("restore: the dashed verify-flash", '"verify_flash", "0x0", p)', '"verify-flash", "0x0", p)'),
+    ("the version is not checked", "                _ET.update(GE.checked())\n",
+     '                _ET.update({"argv": GE.from_env(), "version": None})\n'),
+    ("the record has no esptool argv or version",
+     '            rec["esptool_argv"], rec["esptool_version"] = _ET["argv"], _ET["version"]\n', "            pass\n"),
+    ("a refusal goes on to the board",
+     '                print("REFUSED: %s (nothing run)" % e)\n                return 1\n',
+     '                print("REFUSED: %s (nothing run)" % e)\n'),
 ]
 
 

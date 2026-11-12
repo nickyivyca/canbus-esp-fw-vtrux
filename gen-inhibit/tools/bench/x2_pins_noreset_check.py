@@ -25,7 +25,7 @@ an ACK. So the Kvaser is held open in NORMAL mode (ACKing) for the whole check, 
      boot plus round is ~0.32 s; the pin read itself takes seconds, so a reset in it
      would send its round before the read ends).
   5. serial after, as in 1.
-  6. positive control: esptool chip-id with the default reset and a hard reset after
+  6. positive control: esptool chip_id with the default reset and a hard reset after
      (the auto-reset check), then --after seconds of CAN, which must carry the round.
 
     VOID          the control reset's round did not reach the Kvaser: the witness or
@@ -143,9 +143,16 @@ def main():
     if not ok:
         print("REFUSED: the bench lock is not ours: %s" % (who,))
         return 2
-    import can
     sys.path.insert(0, HERE)
     import x2_hold
+    # esptool from GI_ESPTOOL_ARGV at the pinned version (gi_esptool.py, 2026-11-11),
+    # checked before the Kvaser opens or the board is touched
+    try:
+        et = x2_hold.esptool_info()
+    except x2_hold.GE.Refused as e:
+        print("REFUSED: %s (nothing run)" % e)
+        return 2
+    import can
     stamp = time.strftime("%Y%m%dT%H%M%S")
     bus = can.Bus(interface="kvaser", channel=0, bitrate=500000)
     w = Witness(bus)
@@ -163,7 +170,7 @@ def main():
         marks["serial_after"] = time.time()
         ser_after = read_serial(a.port, a.serial)
         marks["control"] = time.time()
-        crc, ctxt = x2_hold.esptool(a.port, "default_reset", "hard_reset", "chip-id")
+        crc, ctxt = x2_hold.esptool(a.port, "default_reset", "hard_reset", "chip_id")
         marks["control_after"] = time.time()
         time.sleep(a.after)
         marks["end"] = time.time()
@@ -183,6 +190,7 @@ def main():
            "pins_rc": p.returncode, "pins_out": pins[-3:], "control_rc": crc,
            "control_tail": ctxt.strip().splitlines()[-3:],
            "marks": {k: round(v - marks["quiet"], 3) for k, v in marks.items()},
+           "esptool_argv": et["argv"], "esptool_version": et["version"],
            "args": vars(a)}
     os.makedirs(RUNS, exist_ok=True)
     path = os.path.join(RUNS, "x2_pins_noreset_%s.json" % stamp)

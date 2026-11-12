@@ -154,7 +154,7 @@ def record_path_cases():
 
     def fake_esptool(port, *args):
         calls.append(args)
-        if args[0] == "read-flash":
+        if args[0] == "read_flash":
             with open(args[-1], "wb") as fh:
                 fh.write(img)
         return 0, []
@@ -180,8 +180,10 @@ def record_path_cases():
     try:
         with fake_data():
             rec = {"when": "TEST"}
-            with contextlib.redirect_stdout(io.StringIO()):
-                C.sub_dump(argparse.Namespace(port="FAKE", expect_elf="7f197bfd"), rec)
+            got = outcome(C.sub_dump, argparse.Namespace(port="FAKE", expect_elf="7f197bfd"), rec)
+            check("dump: two reads, each by read_flash 0 ALL",
+                  got[0] == "returned" and [c[:3] for c in calls] == [("read_flash", "0", "ALL")] * 2,
+                  (got[0], calls))
             dump = os.path.join(C.BACKUPS, "canx2_s3_full_TEST_a.bin")
             check("dump: PASS, one read kept", rec.get("verdict") == "PASS"
                   and os.listdir(C.BACKUPS) == [os.path.basename(dump)], rec.get("verdict"))
@@ -202,10 +204,12 @@ def record_path_cases():
             del calls[:]
             r2 = {}
             got = outcome(C.sub_restore, ns, r2)
-            writes = [c for c in calls if c[0] == "write-flash"]
-            check("restore writes back that dump, VERIFIED",
+            writes = [c for c in calls if c[0] == "write_flash"]
+            verifies = [c for c in calls if c[0] == "verify_flash"]
+            check("restore: write_flash of that dump, then verify_flash, VERIFIED",
                   got[0] == "returned" and r2.get("verdict") == "VERIFIED" and len(writes) == 1
-                  and os.path.samefile(writes[0][-1], dump), r2.get("verdict"))
+                  and os.path.samefile(writes[0][-1], dump) and len(verifies) == 1
+                  and os.path.samefile(verifies[0][-1], dump), (r2.get("verdict"), calls))
             r3 = {}
             got = outcome(C.sub_check_dump, ns, r3)
             check("check-dump on the same record: PASS", r3.get("verdict") == "PASS", r3.get("verdict"))
@@ -222,6 +226,101 @@ def record_path_cases():
                           got[0] == "refused" and record in got[1], got[0])
     finally:
         C.esptool = saved
+    return bad
+
+
+def esptool_main_cases():
+    """main() with its own esptool() against the stand-in esptool package (_fake_esptool.py)
+    named by GI_ESPTOOL_ARGV (gen-inhibit reviewer, 2026-11-11; gi_esptool.py): the version
+    is read before the board is touched, the underscore command names, the argv and the
+    version in each record; another version, or no GI_ESPTOOL_ARGV, refuses with a REFUSED
+    record and nothing read; check-dump runs no esptool."""
+    import contextlib
+    import io
+    import json
+    import _fake_esptool as FE
+    bad = []
+    fake = os.path.join(WORK, "fake")
+    env_fake = FE.make(fake)
+    flash = os.path.join(fake, "flash.bin")
+    with open(flash, "wb") as fh:
+        fh.write(image(OTHER, GOOD, seq=2))
+    log = os.path.join(fake, "esptool.log")
+    good = [sys.executable, "-m", "esptool"]
+
+    def check(label, ok, got):
+        print("  %-4s %-48s %s" % ("ok" if ok else "FAIL", label, "" if ok else got))
+        if not ok:
+            bad.append(label)
+
+    def run(args, version="4.13.0", argv=good):
+        """(exit, record, cli lines): main() with sys.argv set, in-process."""
+        keys = ("PYTHONPATH", "FAKE_ESPTOOL_FLASH", "FAKE_ESPTOOL_LOG", "FAKE_ESPTOOL_VERSION", "GI_ESPTOOL_ARGV")
+        saved_env = {k: os.environ.get(k) for k in keys}
+        saved_argv, saved_runs = sys.argv, C.RUNS
+        if os.path.exists(log):
+            os.remove(log)
+        runs = os.path.join(WORK, "runs")
+        gi_paths.remove_tree(runs)
+        os.environ.update(env_fake, FAKE_ESPTOOL_FLASH=flash, FAKE_ESPTOOL_LOG=log, FAKE_ESPTOOL_VERSION=version)
+        os.environ.pop("GI_ESPTOOL_ARGV", None)
+        if argv is not None:
+            os.environ["GI_ESPTOOL_ARGV"] = json.dumps(argv)
+        sys.argv, C.RUNS = ["x2_flash_custody.py"] + args + ["--port", "FAKE"], runs
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = C.main()
+        except BaseException as e:      # a crash is reported, never passed
+            rc = "crash %s: %s" % (type(e).__name__, e)
+        finally:
+            sys.argv, C.RUNS = saved_argv, saved_runs
+            for k, v in saved_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        recs = sorted(os.listdir(runs)) if os.path.isdir(runs) else []
+        rec = None
+        if len(recs) == 1:
+            with open(os.path.join(runs, recs[0]), encoding="ascii") as fh:
+                rec = json.load(fh)
+            os.replace(os.path.join(runs, recs[0]), os.path.join(WORK, "last_" + recs[0]))
+        cli = [ln[4:] for ln in open(log).read().splitlines() if ln.startswith("cli ")] \
+            if os.path.exists(log) else []
+        return rc, rec, cli
+
+    with fake_data():
+        rc, rec, cli = run(["dump"])
+        reads = [c for c in cli if "read_flash" in c]
+        check("main dump: the version first, then two read_flash 0 ALL, PASS", rc == 0 and rec
+              and rec.get("verdict") == "PASS" and cli[:1] == ["version"] and len(reads) == 2
+              and all(c.startswith("--chip esp32s3 --port FAKE --baud 921600 read_flash 0 ALL ") for c in reads),
+              (rc, rec and rec.get("verdict"), cli))
+        check("main dump: the record holds esptool's argv and version",
+              rec and rec.get("esptool_argv") == good and rec.get("esptool_version") == "4.13.0",
+              rec and {k: rec.get(k) for k in ("esptool_argv", "esptool_version")})
+        record = os.path.join(WORK, "main_dump_record.json")
+        if rec:
+            with open(record, "w", encoding="ascii") as fh:
+                json.dump(rec, fh)
+        kept = sorted(os.listdir(C.BACKUPS))
+        rc, rec2, cli = run(["restore", "--dump-record", record])
+        check("main restore: write_flash 0x0, then verify_flash 0x0, VERIFIED, with the version",
+              rc == 0 and rec2 and rec2.get("verdict") == "VERIFIED" and rec2.get("esptool_version") == "4.13.0"
+              and [c.split()[6:8] for c in cli[1:]] == [["write_flash", "0x0"], ["verify_flash", "0x0"]],
+              (rc, rec2 and rec2.get("verdict"), cli))
+        for label, kw, want in (("esptool 5.0.2", {"version": "5.0.2"}, "5.0.2"),
+                                ("GI_ESPTOOL_ARGV unset", {"argv": None}, "GI_ESPTOOL_ARGV"),
+                                ("an argv of another form", {"argv": [sys.executable, "esptool.py"]}, "must be")):
+            rc, rec3, cli = run(["dump"], **kw)
+            check("main dump, %s: REFUSED record, nothing read, no dump" % label,
+                  rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and want in rec3.get("why", "")
+                  and rec3.get("esptool_version") is None and not [c for c in cli if c != "version"]
+                  and sorted(os.listdir(C.BACKUPS)) == kept, (rc, rec3, cli))
+        rc, rec4, cli = run(["check-dump", "--dump-record", record], argv=None)
+        check("main check-dump: no esptool, none needed; argv and version None in the record",
+              rc == 0 and rec4 and rec4.get("verdict") == "PASS" and not cli
+              and rec4.get("esptool_argv") is None and rec4.get("esptool_version") is None, (rc, rec4, cli))
     return bad
 
 
@@ -278,6 +377,7 @@ def main():
             bad.append("blank")
         bad += check_dump_cases()
         bad += record_path_cases()
+        bad += esptool_main_cases()
         bad += import_refusals()
     finally:
         gi_paths.remove_tree(WORK)
