@@ -22,10 +22,9 @@ import bench_charger_witness as bcw
 
 KA = 0x18FF5AC0
 lines = []
-ser = serial.Serial()
-ser.port, ser.baudrate, ser.timeout = "COM3", 115200, 0.2
-ser.dtr, ser.rts = False, False
-ser.open()
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import serial_open                                         # noqa: E402
+ser = serial_open.open_quiet("COM3", 115200, 0.2)
 stop = threading.Event()
 
 

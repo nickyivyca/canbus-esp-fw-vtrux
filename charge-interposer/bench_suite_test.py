@@ -20,8 +20,15 @@ suites (tester, 2026-10-18). No hardware, no runner, no ssh.
            refusal (a hand-edited folder, none installed, CAN_TOOLS_DIR
            unset) with the pin still named; the emulated and harness
            suites, which open no dongle, do not
+  m-lanes  settings m_lanes_host: unset (the Windows settings) keeps the
+           m-* groups on madhouse over ssh from the shipped copy, exactly
+           as before; "local" (madhouse-debian, user 2026-11-11) puts them
+           on host local from the worktree, nothing shipped and no {work}
+           path left, with the same checks, argv, class and judge; any
+           other value refused
 
-    py -3.14 charge-interposer/bench_suite_test.py [--can-fail]
+    py -3.14 charge-interposer/bench_suite_test.py [--can-fail]      (Windows)
+    python3.13 charge-interposer/bench_suite_test.py [--can-fail]    (madhouse)
 
 --can-fail runs each test against a mutant of what it tests (a judge that
 passes everything, a suite with its requires dropped, ...) and requires the
@@ -506,6 +513,61 @@ def _all():
                "harness": B.harness(s)}
 
 
+M_GROUPS = {"emulated": ("m-host", "m-sims"), "harness": ("m-harness", "m-mutants")}
+
+
+def _check_text(c):
+    return " ".join([str(c.cwd)] + [str(a) for a in c.argv]
+                    + ["%s=%s" % kv for kv in sorted((c.env or {}).items())])
+
+
+def test_m_lanes_host():
+    s = _settings()
+    s_loc = dict(s, m_lanes_host="local")
+    for k, make in (("emulated", B.emulated), ("harness", B.harness)):
+        win, loc = make(s), make(s_loc)
+        validate(loc, s_loc, builtin_flashers=("esptool",))
+        wg = {g.name: g for g in win.groups}
+        lg = {g.name: g for g in loc.groups}
+        assert set(wg) == set(lg), (k, sorted(wg), sorted(lg))
+        for n in M_GROUPS[k]:
+            w, l = wg[n], lg[n]
+            # the Windows settings (no m_lanes_host): ssh and the shipped copy
+            assert w.host == "madhouse", (n, w.host)
+            assert w.ship and set(w.ship) == {"code", "canre", "shared"}, (n, w.ship)
+            live = [c for c in w.checks if not c.skip]
+            assert live, n
+            for c in live:
+                assert c.cwd == "{work}/code", (n, c.id, c.cwd)
+                assert (c.env.get("INTERPOSER_CODE"), c.env.get("CANRE_DIR"),
+                        c.env.get("TWAI_FAKE_DIR")) == (
+                    "{work}/code", "{work}/canre", "{work}/shared/twai_port/test"), (n, c.id)
+            # local: the worktree, nothing shipped, no {work} anywhere
+            assert l.host == "local" and not l.ship, (n, l.host, l.ship)
+            for c in l.checks:
+                if c.skip:
+                    continue
+                assert "{work}" not in _check_text(c), (n, c.id, _check_text(c))
+                assert c.cwd == "{interposer_code}", (n, c.id, c.cwd)
+                assert c.env.get("INTERPOSER_CODE") == "{interposer_code}", (n, c.id)
+                assert "CANRE_DIR" not in c.env and "TWAI_FAKE_DIR" not in c.env, (n, c.id)
+                assert c.env.get("L3_STIMULUS") == "{madhouse_artifacts}/l3_stimulus.txt"
+            # the same checks either way
+            assert [(c.id, c.argv, c.cls, c.judge, c.skip, c.python, c.timeout_s)
+                    for c in w.checks] == \
+                   [(c.id, c.argv, c.cls, c.judge, c.skip, c.python, c.timeout_s)
+                    for c in l.checks], n
+        for n in set(wg) - set(M_GROUPS[k]):
+            assert (wg[n].host, [_check_text(c) for c in wg[n].checks]) == \
+                   (lg[n].host, [_check_text(c) for c in lg[n].checks]), n
+    for bad in ("ssh", "", "Local", "madhouse-debian"):
+        try:
+            B.emulated(dict(s, m_lanes_host=bad))
+        except ValueError:
+            continue
+        raise AssertionError("m_lanes_host %r taken" % bad)
+
+
 HARNESS_MARKS = ("mutation", "--can-fail", "--self-test", "canfail",
                  "--corrupt-pin")
 # A harness check that needs the board cannot run without the lock, so it
@@ -603,7 +665,12 @@ def test_suites():
     #      and its -canfail in their place (2a accepted)
     # 247: twai-mutations retired with port_twai.cpp and test_twai_port
     #      (port step 2b; the vehicle port is the shared twai_port)
-    assert len(seen) == 247, "checks across the suites: %d" % len(seen)
+    # 259: sb.* for shared/bench 2026.11.11.2's six new test files
+    #      (test_canmain, test_ota_outcome/policy/preflight/wire, test_wifi),
+    #      each plain and -canfail (re-pin, reviewer 2026-11-11)
+    # 261: serial_open-test and its -canfail (the X2 port's no-reset open on
+    #      Linux, adapter characterisation step 7; reviewer 2026-11-11)
+    assert len(seen) == 261, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -945,10 +1012,12 @@ def _unretire_build_check(s):
 def test_wican_board():
     """The bench suite carries the WiCAN (bench_wican.py; reviewer,
     2026-10-23, for the bench-lock cutover): every bench group that holds
-    the lock names wican_man beside its X2 image; the WiCAN's standing
-    image is wican_man, its identity is the fake gen-inhibit build's, its
-    flasher refuses, its hooks are bench_wican's (the X2 gets no step), and
-    identify sends the WiCAN to its page, not to the X2's identify."""
+    the lock names wican_man beside its X2 image; wican_man is idle-safe
+    and the WiCAN has no idle-safe image of its own (it is never flashed,
+    so the runner's end pass must never load one), its identity is the fake
+    gen-inhibit build's, its flasher refuses, its hooks are bench_wican's
+    (the X2 gets no step), and identify sends the WiCAN to its page, not to
+    the X2's identify."""
     import bench_wican_test as WT
     s, su = _all()
     b = su["bench"]
@@ -959,8 +1028,8 @@ def test_wican_board():
         il = g.image_list
         assert len(il) == 2 and [b.images[x].board for x in il] == [
             "x2", W.BOARD] and il[1] == W.IMAGE, (g.name, il)
-    assert b.standing_images == {"x2": "bridge", W.BOARD: W.IMAGE}, \
-        b.standing_images
+    assert b.images[W.IMAGE].idle_safe and W.BOARD not in b.idle_safe_images, \
+        (b.images[W.IMAGE].idle_safe, b.idle_safe_images)
     im = b.images[W.IMAGE]
     assert (im.board, im.flasher, im.expect) == (W.BOARD, W.FLASHER,
                                                  WT.MAN_SHA), im
@@ -975,6 +1044,27 @@ def test_wican_board():
         out = hook(W.BOARD, im, None, d)
         a = WT.calls(os.path.dirname(os.environ["FAKE_WICAN_ARGV"]))[-1]
         assert out["ok"] is True and a[a.index(flag) + 1] == W.IMAGE, (out, a)
+
+
+def test_idle_safe():
+    """shared/bench 2026.11.11.2 (user, 2026-11-11: no end restore): the
+    bench suite names no standing image; exactly witness, c12_bench and
+    vport_bench are marked not safe to leave idle (X2_IDLE_UNSAFE), the
+    bridge, truck and WiCAN images are idle-safe, and the X2's idle-safe
+    image is the bridge (spec 2.3; X2_IDLE_SAFE). The emulated and harness
+    suites have no images to mark."""
+    s, su = _all()
+    b = su["bench"]
+    assert b.standing_image is None and b.standing_images is None, \
+        (b.standing_image, b.standing_images)
+    unsafe = {n for n, im in b.images.items() if not im.idle_safe}
+    assert unsafe == {"witness", "c12_bench", "vport_bench"} == set(B.X2_IDLE_UNSAFE), unsafe
+    assert b.idle_safe_images == {"x2": "bridge"}, b.idle_safe_images
+    for n in ("bridge", "truck", B.bench_wican.IMAGE):
+        assert b.images[n].idle_safe, n
+    validate(b, s, builtin_flashers=("esptool",))
+    for k in ("emulated", "harness"):
+        assert not su[k].images and not su[k].idle_safe_images, k
 
 
 def test_mutant_wiring():
@@ -1678,7 +1768,8 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_script_coverage, test_shared_bench_tests,
          test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
-         test_scripts_in_tree, test_can_tools_record, test_runner_stage]
+         test_scripts_in_tree, test_can_tools_record, test_runner_stage,
+         test_m_lanes_host, test_idle_safe]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -1868,6 +1959,26 @@ _ORIG = {n: getattr(B, n) for n in ("script_judge", "recorded_judge",
                                     "host_bridge_judge", "emulated", "bench",
                                     "harness", "product_files")}
 _ORIG["_hb_list"] = B._hb_list
+_ORIG["_Build.mgroup"] = B._Build.mgroup
+_ORIG["_Build.mpy"] = B._Build.mpy
+_ORIG["M_LANES_HOSTS"] = B.M_LANES_HOSTS
+
+
+def _mgroup_always_madhouse(self, name, checks):
+    return B.Group(name, host="madhouse", ship=self.ship, checks=checks)
+
+
+def _mgroup_always_local(self, name, checks):
+    return B.Group(name, host="local", ship=None, checks=checks)
+
+
+def _mgroup_ships_locally(self, name, checks):
+    return B.Group(name, host=self.m_host, ship=self.ship, checks=checks)
+
+
+def _mpy_work_cwd(self, cid, argv, **kw):
+    kw.setdefault("cwd", "{work}/code")
+    return _ORIG["_Build.mpy"](self, cid, argv, **kw)
 _ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
 _ORIG["bench_identify.identify"] = B.bench_identify.identify
 _ORIG["self._PYCACHE_DROP"] = _PYCACHE_DROP
@@ -2063,7 +2174,27 @@ def _no_wican_in(group):
     return fn
 
 
-def _no_wican_standing(s):
+def _wican_marked_unsafe(s):
+    s.images[B.bench_wican.IMAGE].idle_safe = False
+
+
+def _vport_left_safe(s):
+    s.images["vport_bench"].idle_safe = True
+
+
+def _bridge_marked_unsafe(s):
+    s.images["bridge"].idle_safe = False
+
+
+def _no_idle_safe_x2(s):
+    s.idle_safe_images = {}
+
+
+def _witness_idle_safe_image(s):
+    s.idle_safe_images = {"x2": "witness"}
+
+
+def _standing_back(s):
     s.standing_images = {"x2": "bridge"}
 
 
@@ -2079,11 +2210,33 @@ def _wican_identify_off(s):
 
 
 MUTANTS = {
+    "test_idle_safe": [
+        ("bench", _wrap_suite("bench", _vport_left_safe),
+         "vport_bench left idle-safe"),
+        ("bench", _wrap_suite("bench", _bridge_marked_unsafe),
+         "the bridge marked not idle-safe"),
+        ("bench", _wrap_suite("bench", _no_idle_safe_x2),
+         "no idle-safe image for the X2"),
+        ("bench", _wrap_suite("bench", _witness_idle_safe_image),
+         "the witness named the X2's idle-safe image"),
+        ("bench", _wrap_suite("bench", _standing_back),
+         "a standing image named again")],
+    "test_m_lanes_host": [
+        ("_Build.mgroup", _mgroup_always_madhouse,
+         "m_lanes_host local ignored: the m-lanes still over ssh"),
+        ("_Build.mgroup", _mgroup_always_local,
+         "the Windows settings' m-lanes moved off the ssh route"),
+        ("_Build.mgroup", _mgroup_ships_locally,
+         "a local m-lane still ships the copy"),
+        ("_Build.mpy", _mpy_work_cwd,
+         "a local m-check left in {work}/code"),
+        ("M_LANES_HOSTS", ("madhouse", "local", "ssh", "", "Local", "madhouse-debian"),
+         "any m_lanes_host taken")],
     "test_wican_board": [
         ("bench", _wrap_suite("bench", _no_wican_in("b-vport")),
          "a bench group without the WiCAN"),
-        ("bench", _wrap_suite("bench", _no_wican_standing),
-         "no standing image for the WiCAN"),
+        ("bench", _wrap_suite("bench", _wican_marked_unsafe),
+         "the never-flashed WiCAN image marked not idle-safe"),
         ("bench", _wrap_suite("bench", _no_release_hook),
          "no release hook (the WiCAN unread at every release)"),
         ("bench", _wrap_suite("bench", _wican_identify_off),

@@ -46,8 +46,22 @@ Lanes (reviewer's ruling 3): madhouse-debian groups (m-*) and local groups
 (l-*) are separate lanes. Local checks are class "build": idle priority and
 one job while any wall-clock test runs on the host.
 
-The X2's images: bridge (the standing image), witness, truck, c12_bench,
-vport_bench. The interposer's images (port step 2a: ESP-IDF builds) are
+Where the m-* groups run, settings m_lanes_host (M_LANES_HOSTS):
+  "madhouse" (the default; the Windows bench host NICKY-XPS) over ssh to
+            hosts.madhouse, from the shipped git-less copy in its workroot
+            ({work}/code, with CANRE_DIR and TWAI_FAKE_DIR naming the
+            shipped canre and shared fake);
+  "local"   on the bench host itself (madhouse-debian from port plan step
+            3; user, 2026-11-11: "change to just run locally"), from the
+            git worktree ({interposer_code}), nothing shipped, canre and
+            the shared fake found as the l-* checks find them (the pinned
+            install and checkout beside the worktree). Every group is then
+            on host local, so the core runs them in one lane, one after
+            another.
+
+The X2's images: bridge (its idle-safe image, X2_IDLE_SAFE), witness,
+truck, c12_bench, vport_bench (X2_IDLE_UNSAFE marks the three not safe to
+leave idle). The interposer's images (port step 2a: ESP-IDF builds) are
 taken from images_dir/<images_src>/<variant>/, as their build's
 flasher_args.json gives them; each application's own descriptor must name
 it (interposer_<variant>, version images_src, ESP-IDF v5.4.2), and
@@ -173,19 +187,36 @@ HARNESS_PY_TESTS = [
     "build_lookup_offline_test.py", "paths_test.py", "diag_cadence_test.py",
     "bus_gs_usb_test.py", "canre_pin_test.py", "can_tools_pin_test.py",
     "twai_fake_option_test.py", "scratch_dir_test.py", "scratch_run_test.py",
-    "hw_mechanics_test.py",
+    "hw_mechanics_test.py", "serial_open_test.py",
 ]
 # The ones of those also run with --can-fail, as <name>-canfail. One list
 # for the harness suite and accept_adapter's catalogue, so they can't drift.
 HARNESS_PY_CANFAILS = [
     "canre_pin_test.py", "can_tools_pin_test.py", "bus_gs_usb_test.py",
     "paths_test.py", "twai_fake_option_test.py", "scratch_dir_test.py",
-    "scratch_run_test.py", "hw_mechanics_test.py",
+    "scratch_run_test.py", "hw_mechanics_test.py", "serial_open_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
+# settings m_lanes_host: where the m-* groups run (module docstring)
+M_LANES_HOSTS = ("madhouse", "local")
 
-# Mutation / can-fail scripts in harness_checks/, run on madhouse from the
-# shipped code (cwd {work}/code; each finds the code from its own place).
+# Images not safe to leave idle on the bench, and the X2's idle-safe image
+# (shared/bench 2026.11.11.2: no end restore; an image marked
+# idle_safe=False is replaced by its board's idle-safe image before the end
+# release; user, 2026-11-11, SPEC section 6). The bridge is idle-safe by
+# spec 2.3: while the charger is silent its vehicle port is listen-only and
+# puts nothing on the vehicle segment, and its power-up round is bounded to
+# 50 ms; the bench suite checks both on it (b-bridge powerup-round-noack,
+# charger-silent; accepted at 2b, b467). The truck image differs from the
+# bench build only by serial output (spec 9 C2b), so the same holds. The
+# witness (the witness switch), c12_bench and vport_bench (bench targets
+# outside the spec) have no such evidence, so they are marked.
+X2_IDLE_UNSAFE = ("witness", "c12_bench", "vport_bench")
+X2_IDLE_SAFE = {"x2": "bridge"}
+
+# Mutation / can-fail scripts in harness_checks/, run in the m-lanes: on
+# madhouse from the shipped code (cwd {work}/code), or locally from the
+# worktree (m_lanes_host local); each finds the code from its own place.
 MADHOUSE_MUTANTS = [
     ("l2-mutations", ["bash", "harness_checks/l2_mutations.sh"]),
     ("hold-mutations", ["bash", "harness_checks/hold_mutations.sh"]),
@@ -231,8 +262,10 @@ SHARED_BENCH_TESTS = [
     "test_accept_judge.py", "test_accept_list.py", "test_accept_record.py",
     "test_accept_remote.py", "test_accept_run.py", "test_accept_setup.py",
     "test_accept_suite_runs.py", "test_accept_trees.py", "test_bench_lock.py",
-    "test_decode.py", "test_run_core.py", "test_scratch.py",
-    "test_scratch_helper.py",
+    "test_canmain.py", "test_decode.py", "test_ota_outcome.py",
+    "test_ota_policy.py", "test_ota_preflight.py", "test_ota_wire.py",
+    "test_run_core.py", "test_scratch.py", "test_scratch_helper.py",
+    "test_wifi.py",
 ]
 
 HARNESS_LOCAL = [
@@ -249,8 +282,9 @@ HARNESS_LOCAL = [
     ("refusal-pairs-test", ["{interposer_code}/refusal_pairs_test.py"]),
     ("refusal-pairs-test-canfail",
      ["{interposer_code}/refusal_pairs_test.py", "--can-fail"]),
-    # the acceptance runner's "idf" build shell (accept_adapter.py): the
-    # ESP-IDF export is PowerShell's, so Windows only
+    # the acceptance runner's "idf" build shell (accept_adapter.py), on the
+    # bench host's own ESP-IDF export (export.ps1 on Windows, export.sh on
+    # Linux from port plan step 3)
     ("idf-build-shell-test", ["{interposer_code}/fw_harness/idf_build_shell_test.py"]),
     ("idf-build-shell-test-canfail",
      ["{interposer_code}/fw_harness/idf_build_shell_test.py", "--can-fail"]),
@@ -821,20 +855,37 @@ class _Build:
                 "the pinned shared/twai_port (%s) and shared/can_port (%s) are not one "
                 "checkout's" % (twai_port, can_port))
         self.ship = {"code": self.code, "canre": canre, "shared": shared}
-        self.mad_env = {"INTERPOSER_CODE": "{work}/code",
-                        "CANRE_DIR": "{work}/canre",
-                        "TWAI_FAKE_DIR": "{work}/shared/twai_port/test",
-                        "L3_STIMULUS": "{madhouse_artifacts}/l3_stimulus.txt"}
+        # where the m-* groups run (the docstring's "Where the m-* groups run")
+        self.m_host = settings.get("m_lanes_host", "madhouse")
+        if self.m_host not in M_LANES_HOSTS:
+            raise ValueError("settings m_lanes_host is %r, not one of %s"
+                             % (self.m_host, ", ".join(M_LANES_HOSTS)))
+        if self.m_host == "local":
+            self.m_ship = None
+            self.m_cwd = "{interposer_code}"
+            self.mad_env = {"INTERPOSER_CODE": "{interposer_code}",
+                            "L3_STIMULUS": "{madhouse_artifacts}/l3_stimulus.txt"}
+        else:
+            self.m_ship = self.ship
+            self.m_cwd = "{work}/code"
+            self.mad_env = {"INTERPOSER_CODE": "{work}/code",
+                            "CANRE_DIR": "{work}/canre",
+                            "TWAI_FAKE_DIR": "{work}/shared/twai_port/test",
+                            "L3_STIMULUS": "{madhouse_artifacts}/l3_stimulus.txt"}
+
+    def mgroup(self, name, checks):
+        """An m-* group, on m_lanes_host."""
+        return Group(name, host=self.m_host, ship=self.m_ship, checks=checks)
 
     def mpy(self, cid, argv, **kw):
         kw.setdefault("judge", script_judge)
-        kw.setdefault("cwd", "{work}/code")
+        kw.setdefault("cwd", self.m_cwd)
         kw.setdefault("env", dict(self.mad_env))
         return Check(cid, argv, python=True, **kw)
 
     def mbash(self, cid, argv, **kw):
         kw.setdefault("judge", script_judge)
-        kw.setdefault("cwd", "{work}/code")
+        kw.setdefault("cwd", self.m_cwd)
         kw.setdefault("env", dict(self.mad_env))
         return Check(cid, argv, **kw)
 
@@ -920,7 +971,7 @@ def emulated(settings):
     m_build = Group("m-build", checks=[
         Check(cid, ["-"], skip=RETIRED_2A) for cid in
         ("build-check", "manifest-test", "manifest-offline-test")])
-    m_host = Group("m-host", host="madhouse", ship=b.ship, checks=[
+    m_host = b.mgroup("m-host", [
         b.mbash("host-bridge", ["bash", "fw_harness/host_bridge/run.sh"],
                 cls="build", timeout_s=3600, judge=host_bridge_judge),
         b.mbash("host-unit", ["bash", "host_unit/run.sh"],
@@ -933,7 +984,7 @@ def emulated(settings):
          for t in LOGIC_PY_TESTS])
     # The sims are wall-clock: the core runs one at a time per host and
     # throttles every build there meanwhile. They come last in the lane.
-    m_sims = Group("m-sims", host="madhouse", ship=b.ship, checks=[
+    m_sims = b.mgroup("m-sims", [
         b.mpy("sim." + s, ["run_scenario.py", s, "--time-scale", "1",
                            "--keep-traces", "--outdir", "{outdir}"],
               cls="wallclock", timeout_s=4 * 3600, judge=scenario_judge)
@@ -958,8 +1009,9 @@ def bench(settings):
                   "gs_usb", "--diag-witness", "{pcan_channel}",
                   "--outdir", "{outdir}"]
 
-    # In image order: bridge (standing), witness, truck, c12_bench,
-    # vport_bench; then the core restores the bridge image.
+    # In image order: bridge, witness, truck, c12_bench, vport_bench. The
+    # core restores nothing at the end; it loads the bridge only if the X2
+    # is left on an image marked not idle-safe (X2_IDLE_UNSAFE).
     b_bridge = Group("b-bridge", needs_lock=True, image="bridge", checks=[
         bpy("powerup-round-ack", "bench_powerup_round.py",
             ["--port", "{serial_port}", "--mode", "ack", "--boots", "5",
@@ -1142,6 +1194,8 @@ def bench(settings):
         "c12_bench": _idf_image("c12_bench", settings),
         "vport_bench": _idf_image("vport_bench", settings),
     }
+    for name in X2_IDLE_UNSAFE:
+        images[name].idle_safe = False
     # The WiCAN is a board of every bench group (bench_wican.py), so the
     # runner identifies it, runs its start and release reboots and reads it
     # at every release and free_paused (shared/bench SPEC.md section 6).
@@ -1159,7 +1213,7 @@ def bench(settings):
         name="charge-interposer-bench", role=ROLE,
         groups=[b_bridge, b_witness, b_truck, b_c12, b_vport, truck_only],
         images=images,
-        standing_images={"x2": "bridge", bench_wican.BOARD: bench_wican.IMAGE},
+        idle_safe_images=dict(X2_IDLE_SAFE),
         flashers={bench_wican.FLASHER: wican["flasher"]},
         on_start=wican["on_start"], on_end=wican["on_end"],
         known_fails=BENCH_KNOWN_FAILS, identify=identify,
@@ -1172,7 +1226,7 @@ def harness(settings):
     """The tester's checks of the checks: harness tests, mutants, can-fails
     and the bench drivers' self-tests. Run when the harness changes."""
     b = _Build(settings)
-    m_harness = Group("m-harness", host="madhouse", ship=b.ship, checks=[
+    m_harness = b.mgroup("m-harness", [
         # retired with build_check / digest_recheck_check (emulated m-build)
         Check(cid, ["-"], skip=RETIRED_2A) for cid in (
             "build-check-links-test", "build-check-manifest-test",
@@ -1190,7 +1244,7 @@ def harness(settings):
         if argv[0] == "@python":
             return b.mpy(cid, argv[1:], **kw)
         return b.mbash(cid, argv, **kw)
-    m_mut = Group("m-mutants", host="madhouse", ship=b.ship, checks=[
+    m_mut = b.mgroup("m-mutants", [
         mutant(cid, argv) for cid, argv in MADHOUSE_MUTANTS])
     l_harness = Group("l-harness", checks=[
         b.lpy("st." + s.replace("_", "-"),

@@ -491,11 +491,11 @@ class HostPort(object):
 
     def __init__(self, port, path, lines_low=True, rx_size=None):
         import serial
-        s = serial.Serial()
-        s.port, s.baudrate, s.timeout = port, 115200, 0.1
         if lines_low:
-            s.dtr, s.rts = False, False
-        s.open()
+            import serial_open
+            s = serial_open.open_quiet(port, 115200, 0.1)
+        else:
+            s = serial.Serial(port, 115200, timeout=0.1)
         self.rx_note = "driver default"
         if rx_size:
             try:

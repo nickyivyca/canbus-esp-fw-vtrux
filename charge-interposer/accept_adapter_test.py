@@ -443,6 +443,67 @@ def test_madhouse_entries(A, work):
         assert e["judge"] in A.JUDGES, e
 
 
+class _Reached(Exception):
+    """The madhouse tree got past the settings check, to its first git or ssh."""
+
+
+class _MadeStub:
+    def add_remote(self, *a):
+        pass
+
+
+def test_madhouse_refused_when_local(A, work):
+    """On madhouse-debian the m-lanes run locally (bench_suite m_lanes_host
+    "local"; user, 2026-11-11) and the machine settings name no host
+    madhouse. A list naming host madhouse is then refused by the core before
+    anything runs (charge-interposer reviewer, 2026-11-11, option A: no
+    adapter or core change): a tree in make_trees, before any build or ssh
+    (trees._to_remote); a check, selection or can-fail at the Engine's
+    validate, before any check (named by its group, the item's id). Under
+    Windows-shaped settings that name hosts.madhouse neither is refused: the
+    tree reaches its first git/ssh step (stubbed here), and validate takes
+    the group, so the refusal comes from the settings, not from the host
+    name."""
+    from vtrux_bench.accept import trees as T
+    from vtrux_bench.run import model as M
+    mad = {"m_lanes_host": "local", "hosts": {"local": {"python": ["python3.13", "-B"]}}}
+    win = {"hosts": {"local": {"python": ["py", "-3.14", "-B"]},
+                     "madhouse": {"ssh": "madhouse-debian", "python": ["python3", "-B"],
+                                  "workroot": "/srv/workroot/accept"}}}
+    tree = {"host": "madhouse", "project": "0" * 40, "shared": {}}
+    local = {"project_dir": os.path.join(work, "p"), "shared_dirs": {}, "dir": work,
+             "record": {}}
+
+    def reached(*a, **k):
+        raise _Reached()
+
+    saved = (T._git, T._ssh)
+    T._git, T._ssh = reached, reached
+    try:
+        try:
+            T._to_remote("mtree", tree, local, {"project": "p"},
+                         {"settings": mad, "record_id": "r"}, _MadeStub(), print, "tree-")
+            raise AssertionError("a madhouse tree was not refused under the madhouse settings")
+        except T.TreeError as e:
+            assert "mtree" in str(e) and "madhouse" in str(e), str(e)
+        try:
+            T._to_remote("mtree", tree, local, {"project": "p"},
+                         {"settings": win, "record_id": "r"}, _MadeStub(), print, "tree-")
+            raise AssertionError("the stubbed git/ssh step was never reached")
+        except _Reached:
+            pass
+    finally:
+        T._git, T._ssh = saved
+    suite = M.Suite(name="s", role="tester (charge-interposer)", groups=[
+        M.Group(name="host-diff", host="madhouse", checks=[M.Check("c", ["true"])])])
+    try:
+        M.validate(suite, mad)
+        raise AssertionError("a madhouse group was not refused under the madhouse settings")
+    except M.SuiteError as e:
+        assert "host-diff" in str(e) and "'madhouse' not in settings" in str(e), str(e)
+    M.validate(suite, win)
+
+
 def test_tree_setup(A, work):
     """A15, the core's tree_setup (the charge-interposer reviewer,
     2026-11-02): every tree installs and then checks the pinned canre; a
@@ -760,7 +821,7 @@ def test_vport_real(A, work):
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
          test_settings_tree_vars, test_idf_shell, test_targets, test_settings_keys, test_suite_settings,
          test_shared_pins,
-         test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
+         test_madhouse_entries, test_madhouse_refused_when_local, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
          test_sim_judged, test_run_logs, test_vport_windows, test_vport_real]
 
@@ -776,9 +837,12 @@ MUTANTS = [
     ("INTERPOSER_CODE not the tree's", 'env = {"INTERPOSER_CODE": _code(tree)}',
      'env = {"INTERPOSER_CODE": HERE}'),
     ("no TWAI_FAKE_DIR", '        env["TWAI_FAKE_DIR"] = fake\n', "        pass\n"),
-    ("the shared fake's folder on a remote tree in local form",
+    # Windows' local form (ntpath) on any host: os.path.join is posixpath on
+    # Linux, where an os.path mutant changes nothing (found on madhouse,
+    # 2026-11-11: it survived there)
+    ("the shared fake's folder on a remote tree in Windows' local form",
      '        return posixpath.join(d, "shared", "twai_port", "test")',
-     '        return os.path.join(d, "shared", "twai_port", "test")'),
+     '        return __import__("ntpath").join(d, "shared", "twai_port", "test")'),
     ("host_bridge's can-fail without --can-fail",
      '             ["--can-fail"], shell="git-bash", timeout_s=4 * 3600)',
      '             [], shell="git-bash", timeout_s=4 * 3600)'),
