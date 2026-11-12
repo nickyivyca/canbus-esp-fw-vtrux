@@ -24,6 +24,15 @@ in place of the original; an edit whose text is not found exactly once is
 reported NOT APPLIED and counts as a failure, never a silent no-op. Logs go
 to this run's own folder, <worktree>/scratch/vtrux-bench-tests/bench_lock/<time>_<pid>/
 (_scratch.py), never the real firmware/bench-log.jsonl.
+
+Each test's log folder in it is made fresh by folder(), which first removes
+what an earlier test left there with _scratch.remove_tree (AGENTS.md
+"Removing scratch"): read-only files made writable and tried again, and a
+folder that will not go printed with the reason. Then folder() stops the
+whole run (ScratchLeft), never counting it as a test failure, which under
+--can-fail would count a mutant caught. Before 2026-11-11 it used
+shutil.rmtree(ignore_errors=True). test_folder_readonly and test_folder_left
+test folder() itself, with that old version as their mutant.
 """
 
 import io
@@ -32,6 +41,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -90,11 +100,22 @@ def refused(fn, *a, **k):
     raise Fail("%s%r was not refused" % (fn.__name__, a[1:2]))
 
 
-def folder(name):
-    d = os.path.join(SCRATCH, name)
-    shutil.rmtree(d, ignore_errors=True)
+class ScratchLeft(BaseException):
+    """A test's folder that will not go. A BaseException, so _run does not catch
+    it: it stops the whole run, where a test failure would count a mutant caught."""
+
+
+def folder(name, base=None):
+    """A fresh, empty folder `name` in this run's folder (or in `base`), with
+    whatever an earlier test left there removed; the path of a log in it."""
+    d = os.path.join(base or SCRATCH, name)
+    if not _scratch.remove_tree(d):
+        raise ScratchLeft("could not remove %s, so the test cannot start fresh" % d)
     os.makedirs(d)
     return os.path.join(d, "bench-log.jsonl")
+
+
+_new_folder = folder
 
 
 def fresh(name):
@@ -1324,6 +1345,66 @@ def test_hand_roles():
     check(json.loads(line)["who"] == AND, "android retires")
 
 
+def test_folder_readonly():
+    """AGENTS.md "Removing scratch", for this file's own folder(): what an
+    earlier test left in a test's folder is removed, a read-only file in a
+    read-only folder among it, and the folder is made again, empty, with
+    nothing printed. shutil.rmtree alone cannot remove a read-only file on
+    Windows (Git for Windows' objects are read-only), nor on Linux a file in
+    a folder without write permission."""
+    p = folder("ro")
+    d = os.path.dirname(p)
+    sub = os.path.join(d, "sub")
+    f = os.path.join(sub, "ro.txt")
+    os.makedirs(sub)
+    with open(f, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("left by an earlier test\n")
+    os.chmod(f, stat.S_IREAD)
+    os.chmod(sub, stat.S_IREAD | stat.S_IEXEC)
+    try:
+        err = io.StringIO()
+        with redirect_stderr(err):
+            again = folder("ro")
+        check(again == p, "folder() gave %s, not %s" % (again, p))
+        check(os.listdir(d) == [], "folder() left %r in %s" % (os.listdir(d), d))
+        check(err.getvalue() == "", "folder() printed %r" % err.getvalue())
+    finally:
+        if os.path.isdir(sub):
+            os.chmod(sub, stat.S_IRWXU)
+        if os.path.exists(f):
+            os.chmod(f, stat.S_IREAD | stat.S_IWRITE)
+
+
+@only("linux")
+def test_folder_left():
+    """AGENTS.md "Removing scratch", for this file's own folder(): a folder it
+    cannot remove is printed with the reason, never ignored, and stops the run
+    (ScratchLeft) instead of failing one test. On Linux a folder whose parent
+    has no write permission cannot be removed; root ignores that, so the test
+    refuses to run as root. About 3 s: the removal is tried again before it
+    gives up (_scratch.RETRY_WAITS)."""
+    check(os.geteuid() != 0, "run as root, where a parent without write "
+          "permission does not stop a removal")
+    base = os.path.dirname(folder("left_base"))
+    t = os.path.join(base, "t")
+    folder("t", base)
+    os.chmod(base, stat.S_IREAD | stat.S_IEXEC)
+    try:
+        err = io.StringIO()
+        try:
+            with redirect_stderr(err):
+                folder("t", base)
+        except ScratchLeft as e:
+            left = str(e)
+        else:
+            raise Fail("folder() went on past %s, which it could not remove" % t)
+        check(t in left, "ScratchLeft does not name %s: %r" % (t, left))
+        check("could not remove %s" % t in err.getvalue(),
+              "stderr does not name %s with its reason: %r" % (t, err.getvalue()))
+    finally:
+        os.chmod(base, stat.S_IRWXU)
+
+
 TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_runner_api, test_held_by_run, test_queue, test_clear, test_take_alive,
          test_lock_timeout, test_pid_wrong_env, test_pid_unsure,
@@ -1334,7 +1415,8 @@ TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_repair_where, test_repair_replay, test_repair_changed,
          test_repair_leftovers, test_repair_finish, test_repair_cli,
          test_retire, test_retire_finish, test_retire_where,
-         test_retire_replay, test_init_predecessor, test_hand_roles]
+         test_retire_replay, test_init_predecessor, test_hand_roles,
+         test_folder_readonly, test_folder_left]
 
 
 # ---- mutants ------------------------------------------------------------
@@ -1357,6 +1439,26 @@ def _edit(old, new):
 
     def off():
         _load(ORIGINAL)
+    return on, off
+
+
+def _old_folder(name, base=None):
+    """folder() as it was before 2026-11-11: a folder rmtree could not remove was
+    ignored without a word, and the test then failed on makedirs (FileExistsError),
+    as a failure of the test, not of the removal."""
+    d = os.path.join(base or SCRATCH, name)
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d)
+    return os.path.join(d, "bench-log.jsonl")
+
+
+def _swap_folder():
+    """A mutant of this file's own folder(), which on() swaps for _old_folder."""
+    def on():
+        globals()["folder"] = _old_folder
+
+    def off():
+        globals()["folder"] = _new_folder
     return on, off
 
 
@@ -1924,6 +2026,12 @@ MUTANTS = {
         ("every role a hand role",
          _edit("HAND_ROLES = (\"android\", \"can-tools\")",
                "HAND_ROLES = (\"android\", \"can-tools\", \"tester (gen-inhibit)\")")),
+    ],
+    "test_folder_readonly": [
+        ("ignore_errors, as before", _swap_folder()),
+    ],
+    "test_folder_left": [
+        ("ignore_errors, as before", _swap_folder(), "linux"),
     ],
 }
 
