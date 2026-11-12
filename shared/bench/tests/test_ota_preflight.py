@@ -32,6 +32,7 @@ import types
 HERE = os.path.dirname(os.path.abspath(__file__))
 import _ota_mutants                                  # noqa: E402
 import _scratch                                      # noqa: E402
+import _canmain_fixture                              # noqa: E402
 sys.path.insert(0, _ota_mutants.package_root())
 from vtrux_bench.run import ota as BF                # noqa: E402
 from vtrux_bench.run import wican_http as G          # noqa: E402
@@ -51,6 +52,7 @@ IFACE = "Wi-Fi"
 SSID_ENV = "OTA_PREFLIGHT_TEST_SSID"  # O2: the SSID only through an environment variable
 os.environ[SSID_ENV] = SSID
 SCRATCH = _scratch.run_dir("ota_preflight")
+CANMAIN = _canmain_fixture.install(SCRATCH)  # the runner's canmain check (SPEC 8), no hardware
 ROLE = "tester (charge-interposer)"
 
 
@@ -497,7 +499,8 @@ def o7_engine():
               images={"w": Image("w", "probe", {}, expect="W", board="wican")},
               identify=lambda image, ctx, logdir: board["read"], flashers={"probe": probe})
     settings = dict(runs_root=os.path.join(root, "runs"), bench_holder=holder,
-                    hosts={"local": {"python": [sys.executable]}}, pause_poll_s=0.2)
+                    hosts={"local": {"python": [sys.executable]}}, pause_poll_s=0.2,
+                    canmain_check=dict(CANMAIN))
     try:
         E.Engine(s, settings, out=lambda *a: None).run()
     except Exception as e:      # noqa: BLE001
@@ -624,10 +627,12 @@ def o11_none_policy_refusals():
 
 
 def cli():
-    if os.name != "nt":
-        print("ok    the by-hand command's hold: not checked here (bench_lock is native Windows only)")
-        return
     from vtrux_bench import bench_lock as BL
+    env = BL.detect_env()
+    if env not in BL.ENVS:
+        print("ok    the by-hand command's hold: not checked here (bench_lock is not implemented "
+              "in the %s environment)" % env)
+        return
     root = os.path.join(SCRATCH, "cli")
     os.makedirs(root, exist_ok=True)
     log = os.path.join(root, "bench-log.jsonl")
@@ -652,7 +657,11 @@ def cli():
     rc, out = run("--holder-pid", str(os.getpid()))
     check("by hand: the lock free, refused before anything", lambda: rc == 2 and "not held" in out, (rc, out))
     BL.take(log, ROLE, os.getpid())
-    rc, out = run("--holder-pid", str(os.getpid() + 1))
+    # Another pid that is certainly running (the parent), so only the pid
+    # compare can refuse it: pid + 1 is usually not running on Linux, where it
+    # would be refused as dead whatever the compare (and on Windows it rounds
+    # down to this process).
+    rc, out = run("--holder-pid", str(os.getppid()))
     check("by hand: the lock held under another pid, refused", lambda: rc == 2 and "not held" in out, (rc, out))
     rc, out = run("--holder-pid", str(os.getpid()))
     check("by hand: held under this pid, the hold is accepted (the flasher then refuses the settings)",
