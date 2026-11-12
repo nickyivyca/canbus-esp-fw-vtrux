@@ -65,7 +65,12 @@ start step puts it on the first image the run needs. Before the hold and the jam
 suite's own flashers first put it on x2_app (written from the pin and read back), unless
 identify last read it there. So the custody dump carries x2_app's ELF, and a hold is a
 hold of x2_app. The SLCAN answers name the protocol, not the build, so identify takes
-x2_slcan's identity only when esptool verify-flash finds the pinned slcan app at its offset.
+x2_slcan's identity only when esptool verify_flash finds the pinned slcan app at its offset.
+esptool (gen-inhibit reviewer, 2026-11-11; bench/gi_esptool.py): settings.esptool.argv,
+of the form [<python>, "-m", "esptool"], at the pinned version (4.13.0). The suite passes
+it to the harness tools as GI_ESPTOOL_ARGV (x2_hold, x2_flash_custody), which refuse
+without it; x2_verify checks the form and the version itself, and counts only the pinned
+version's verify line. Command names are the underscore ones.
 The WiCAN's SSID is read from firmware/bench-holder.md (its only home) when the suite
 is loaded, passed to the checks in their environment, and redacted from every
 declared output. It is never put in the settings, which the record keeps.
@@ -86,9 +91,21 @@ sys.path.insert(0, HERE)
 import suite_judges as SJ   # noqa: E402
 import x2_pin as X2P        # noqa: E402
 
+
+def _load_gi_esptool():
+    """bench/gi_esptool.py beside this file, by file: bench/ is not put on sys.path."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gi_esptool", os.path.join(HERE, "bench", "gi_esptool.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+GE = _load_gi_esptool()
 X2_PIN_FILE = X2P.PIN_FILE  # the committed pin; never a setting
 X2_IMAGES = ("x2_app", "x2_slcan")
-VERIFY_OK = "Verification successful (digest matched)"   # esptool 5's verify-flash, once per file
+# the pinned esptool's verify_flash line, once per file; only the pinned version's counts
+VERIFY_OK = GE.VERIFY_OK
 
 ROLE = "tester (gen-inhibit)"
 HOST = "192.168.80.1"
@@ -200,31 +217,46 @@ def _run(argv, logpath, env_extra, cwd, timeout):
 
 
 def _x2_write(image, params, settings, logdir):
-    """The core's own esptool flasher (vtrux_bench.run.flash): md5s, the chip-id and MAC check,
+    """The core's own esptool flasher (vtrux_bench.run.flash): md5s, the chip_id and MAC check,
     verified writes, the auto-reset check after. The hold and jammer flashers write x2_app
     through it first."""
     from vtrux_bench.run.flash import esptool_flash
     return esptool_flash(image, params, settings, logdir)
 
 
+def esptool_env(settings):
+    """{GI_ESPTOOL_ARGV: settings.esptool.argv as JSON} for the harness tools, or {} when the
+    settings name none (the tools then refuse, naming the variable)."""
+    argv = (settings.get("esptool") or {}).get("argv")
+    return {GE.ENV: json.dumps(argv)} if argv else {}
+
+
 def x2_verify(settings, files, logpath):
-    """esptool verify-flash of [[offset, path], ...] on the X2's port: True when esptool exits 0
-    and says the digest matched once per file, False when it read a different flash. Raises
-    IdentifyError when it could not look (no esptool settings, a port that would not open, a
-    timeout). Writes nothing."""
+    """esptool verify_flash of [[offset, path], ...] on the X2's port: True when esptool exits 0
+    and prints the pinned version's verify line once per file, False when it read a different
+    flash. Raises IdentifyError when it could not look (no esptool settings, an argv of another
+    form or another version than the pin, a port that would not open, a timeout). Writes
+    nothing. The log starts with the version read."""
     et = settings.get("esptool") or {}
-    argv0, port = list(et.get("argv") or []), et.get("port")
+    argv0, port = et.get("argv"), et.get("port")
     if not argv0 or not port:
         raise IdentifyError("settings.esptool needs argv and port to verify the X2's flash")
-    cmd = argv0 + ["--port", port, "--baud", str(et.get("baud") or 921600), "verify-flash"]
+    try:
+        argv0 = GE.check_form(argv0)
+        ver = GE.check_version(argv0)
+    except GE.Refused as e:
+        raise IdentifyError("x2_verify: %s" % e)
+    cmd = argv0 + ["--port", port, "--baud", str(et.get("baud") or 921600), "verify_flash"]
     for off, path in files:
         cmd += [str(off), path]
     rc = _run(cmd, logpath, {}, None, 300)
     t = _text(logpath)
+    with open(logpath, "w", encoding="utf-8") as f:
+        f.write("esptool version: %s (pinned %s)\n%s" % (ver, GE.PINNED, t))
     if rc is None:
-        raise IdentifyError("esptool verify-flash timed out (see %s)" % os.path.basename(logpath))
+        raise IdentifyError("esptool verify_flash timed out (see %s)" % os.path.basename(logpath))
     if PORT_RX.search(t) or "Failed to connect" in t:
-        raise IdentifyError("esptool verify-flash could not reach the X2 (rc %s)" % rc)
+        raise IdentifyError("esptool verify_flash could not reach the X2 (rc %s)" % rc)
     return rc == 0 and t.count(VERIFY_OK) == len(files)
 
 
@@ -256,6 +288,7 @@ def make_hooks(settings, ssid, images=None):
     # GI_FW_TOOLS is retired (2026-10-22): the bench tools find gen-inhibit/tools/ as
     # their parent, and refuse it if set. REVERSE_IT_DIR is where their data is.
     base_env = {"GI_WICAN_SSID": ssid, "REVERSE_IT_DIR": root, "INTERPOSER_CODE": settings.get("interposer_code") or ""}
+    base_env.update(esptool_env(settings))     # GI_ESPTOOL_ARGV (gi_esptool.py, 2026-11-11)
 
     def redact(paths):
         """The SSID out of every text file named; anything else (a flash dump) untouched."""
@@ -422,7 +455,7 @@ def make_hooks(settings, ssid, images=None):
         return got
 
     def x2_slcan_pinned(logdir, stamp):
-        """True when the X2's flash holds x2_slcan's pinned app at its offset (verify-flash)."""
+        """True when the X2's flash holds x2_slcan's pinned app at its offset (verify_flash)."""
         sl = images.get("x2_slcan")
         if sl is None or not sl.params.get("app"):
             return False
