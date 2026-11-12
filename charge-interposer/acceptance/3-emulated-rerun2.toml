@@ -20,8 +20,24 @@
 # guard records other wall-clock work (a "wallclock-others" event) and
 # never refuses, so a match like that one is a record entry, not a NOT-RUN.
 # Such entries can name a session's tool wrapper rather than a bench run;
-# triage treats them as possibly false. The record names 0d88 (A13: the
-# runner's --earlier accept_3_20261112T084805_0d88).
+# triage treats them as possibly false.
+#
+# Re-made after run 2548 (runs/accept_3_20261112T142113_2548, from this list
+# at 58c1f50b, harness 95a21b61), which closed ACCEPTANCE FAIL at once with
+# no product result: m-sims/placement FAILed ("asked for bench.slice, read
+# back None (rc 1)") and the 13 sims were NOT-RUN. The acceptance runner
+# starts a suite run from compile.machine_env(), the OS variables and the
+# adapter's MACHINE_VARS, which held neither XDG_RUNTIME_DIR nor
+# DBUS_SESSION_BUS_ADDRESS, so the nested runner's systemd-run --user could
+# not reach the user manager ("Failed to connect to user scope bus"). The
+# runner's read-back held: the group FAILed rather than run unplaced. The
+# fix, c44a26bd, adds the two to MACHINE_VARS (the charge-interposer
+# reviewer, 2026-11-12, option (a); machine plumbing under ACCEPT-SPEC A7),
+# with accept_adapter_test's test_machine_env_user_bus, which runs the
+# runner's own probe in exactly that environment on madhouse and reads
+# back bench.slice. The record names 2548 (A13: the runner's --earlier
+# accept_3_20261112T142113_2548, which takes one record), and 2548's
+# names 0d88.
 #
 # Placement: on 2026.11.12 with the settings' placement (wallclock and lock
 # in bench.slice, build in build.slice; accept_adapter.PLACEMENT_SLICES,
@@ -46,17 +62,19 @@
 #     Linux (f2d665a5).
 #
 # Trees:
-#   harness   95a21b61, on charge-interposer/tester/madhouse-baseline-2,
-#             merged into charge-interposer/main as 6924ea01 (main
-#             945d87d0). Since 2d14b2e5 (0d88's tree) it adds canchg_mode
+#   harness   c44a26bd, on charge-interposer/tester/madhouse-baseline-2:
+#             95a21b61 (merged into charge-interposer/main as 6924ea01),
+#             this list's first draft (2d856be7) and the user-bus fix
+#             (c44a26bd). Since 2d14b2e5 (0d88's tree) it adds canchg_mode
 #             (c53d0ac9), scratch_dir --apply alongside other work
 #             (f2315ae3), bench_vport F2's Linux form (caa0ca5c, 95a21b61),
 #             run_scenario's Linux priority record (f2d665a5), the
 #             methodology picks (952d7924, 0c87a4fd, 81455c65) and the
 #             shared/bench re-pin to 2026.11.12 with the adapter's
-#             WALLCLOCK_PATTERNS and PLACEMENT_SLICES (0b8344d3). It changes
-#             no product file since f57ca9d3 (premise "digest"; checked
-#             2026-11-12: git diff f57ca9d3 95a21b61 over
+#             WALLCLOCK_PATTERNS and PLACEMENT_SLICES (0b8344d3), and the
+#             adapter's user-bus MACHINE_VARS (c44a26bd). It changes no
+#             product file since f57ca9d3 (premise "digest"; checked
+#             2026-11-12: git diff f57ca9d3 c44a26bd over
 #             bench_suite.product_files, 24 files, is empty). Its
 #             shared/bench pin is 2026.11.12, its can-tools pin fa6c0aea.
 
@@ -66,10 +84,10 @@ project = "charge-interposer"
 ordered_by = "charge-interposer reviewer"
 ordered_on = "2026-11-12"
 spec = ["2", "2.1", "2.3", "2.4", "8", "8.2", "8.3", "9", "9.1"]
-verification = "the tester's VERIFICATION.md entries for port step 3's emulated baseline: this second re-run, naming record accept_3_20261112T084805_0d88"
+verification = "the tester's VERIFICATION.md entries for port step 3's emulated baseline: this second re-run, naming records accept_3_20261112T142113_2548 and accept_3_20261112T084805_0d88"
 
 [trees.harness]
-project = "95a21b61affeac47e34dee71cf85d6cf60f6503f"
+project = "c44a26bd1927a3ebf39388dae89c6c7f5ae99088"
 
 [[premise]]
 id = "digest"
