@@ -678,7 +678,9 @@ def test_suites():
     #      fixes before every Kvaser and gs_usb open; reviewer 2026-11-11)
     # 271: wican-pin-test and its -canfail (the WiCAN's pinned image, the
     #      madhouse rebuild of gen-inhibit 7f2d5032 _man; reviewer 2026-11-11)
-    assert len(seen) == 271, "checks across the suites: %d" % len(seen)
+    # 273: cf.bench-charger-silent and cf.bench-rx-order (the gs_usb stamp's
+    #      32-bit wrap unwrapped, the reviewer's E3, 2026-11-12)
+    assert len(seen) == 273, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -1052,6 +1054,77 @@ def test_wican_board():
         out = hook(W.BOARD, im, None, d)
         a = WT.calls(os.path.dirname(os.environ["FAKE_WICAN_ARGV"]))[-1]
         assert out["ok"] is True and a[a.index(flag) + 1] == W.IMAGE, (out, a)
+
+
+# a made-up Innomaker serial (24 hex digits, the real ones' shape)
+CHG_DEV = {"vid": "1D50", "pid": "606f", "serial": "00CC00DD5555666677778888"}
+
+
+def test_canchg_env():
+    """The reviewer's E2 (tester, 2026-11-12): the settings' canchg_device
+    reaches every check of every bench group as VTRUX_CANCHG_DEVICE
+    "<vid>:<pid>:<serial>", vid and pid lower-cased, and survives the
+    runner's formatting; without the setting no bench check carries it; a
+    malformed entry is refused (ValueError); the emulated and harness
+    suites never carry it."""
+    s = _settings()
+    s["canchg_device"] = dict(CHG_DEV)
+    want = "1d50:606f:" + CHG_DEV["serial"]
+    b = B.bench(s)
+    checks = [c for g in b.groups for c in g.checks]
+    assert len(checks) > 30, len(checks)
+    off = [c.id for c in checks if c.env.get(B.CANCHG_ENV) != want]
+    assert not off, off
+    from vtrux_bench.run.engine import fmt
+    assert fmt(want, {}) == want
+    for k, f in (("emulated", B.emulated), ("harness", B.harness)):
+        assert not [c.id for g in f(s).groups for c in g.checks
+                    if B.CANCHG_ENV in (c.env or {})], k
+    s2 = _settings()
+    assert not [c.id for g in B.bench(s2).groups for c in g.checks
+                if B.CANCHG_ENV in c.env]
+    for bad in ("1d50:606f:" + CHG_DEV["serial"], dict(CHG_DEV, vid="1d5"),
+                dict(CHG_DEV, pid="60zf"), dict(CHG_DEV, serial=""),
+                dict(CHG_DEV, serial="00CC 00DD"), dict(CHG_DEV, serial="{x}")):
+        s2["canchg_device"] = bad
+        try:
+            B.canchg_env(s2)
+        except ValueError:
+            continue
+        raise AssertionError("canchg_device %r not refused" % (bad,))
+
+
+def test_esptool_env():
+    """bench_mcp_reset's esptool is the core flasher's (tester, 2026-11-12;
+    the reviewer, 2026-11-11): the settings' esptool.argv reaches every
+    bench check as VTRUX_ESPTOOL_ARGV, the JSON of the list, which survives
+    the runner's formatting and the driver reads back as the same list;
+    without it no check carries it; a malformed argv is refused."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "bench_mcp_reset", os.path.join(HERE, "bench_drivers", "bench_mcp_reset.py"))
+    mr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mr)
+    argv = ["/opt/idf/python_env/bin/python", "-m", "esptool"]
+    s = _settings()
+    s["esptool"] = {"argv": list(argv), "baud": 921600}
+    b = B.bench(s)
+    vals = {c.env.get(B.ESPTOOL_ENV) for g in b.groups for c in g.checks}
+    assert len(vals) == 1, vals
+    from vtrux_bench.run.engine import fmt
+    v = fmt(vals.pop(), {})
+    assert mr.esptool_argv({mr.ESPTOOL_ENV: v}, "posix") == argv, v
+    assert B.ESPTOOL_ENV == mr.ESPTOOL_ENV
+    s2 = _settings()
+    assert not [c.id for g in B.bench(s2).groups for c in g.checks
+                if B.ESPTOOL_ENV in c.env]
+    for bad in ("python -m esptool", [], ["python", ""], ["python", 3], ["{x}/python"]):
+        s2["esptool"] = {"argv": bad}
+        try:
+            B.esptool_env(s2)
+        except ValueError:
+            continue
+        raise AssertionError("esptool.argv %r not refused" % (bad,))
 
 
 def test_idle_safe():
@@ -1777,7 +1850,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
-         test_m_lanes_host, test_idle_safe]
+         test_m_lanes_host, test_idle_safe, test_canchg_env, test_esptool_env]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -1970,6 +2043,39 @@ _ORIG["_hb_list"] = B._hb_list
 _ORIG["_Build.mgroup"] = B._Build.mgroup
 _ORIG["_Build.mpy"] = B._Build.mpy
 _ORIG["M_LANES_HOSTS"] = B.M_LANES_HOSTS
+_ORIG["canchg_env"] = B.canchg_env
+_ORIG["esptool_env"] = B.esptool_env
+
+
+def _esptool_unchecked(settings):
+    argv = (settings.get("esptool") or {}).get("argv")
+    return {} if argv is None else {B.ESPTOOL_ENV: json.dumps(argv)}
+
+
+def _esptool_space_joined(settings):
+    out = _ORIG["esptool_env"](settings)
+    return out and {B.ESPTOOL_ENV: " ".join(settings["esptool"]["argv"])}
+
+
+def _canchg_unchecked(settings):
+    d = settings.get("canchg_device")
+    return {} if d is None else {B.CANCHG_ENV: "%s:%s:%s" % (
+        d["vid"].lower(), d["pid"].lower(), d["serial"])}
+
+
+def _canchg_case_kept(settings):
+    d = settings.get("canchg_device")
+    out = _ORIG["canchg_env"](settings)
+    return out and {B.CANCHG_ENV: "%s:%s:%s" % (d["vid"], d["pid"], d["serial"])}
+
+
+def _canchg_dropped_from(group, key=None):
+    def fn(s):
+        for g in s.groups:
+            if g.name == group:
+                for c in g.checks:
+                    c.env.pop(key or B.CANCHG_ENV, None)
+    return fn
 
 
 def _mgroup_always_madhouse(self, name, checks):
@@ -2218,6 +2324,19 @@ def _wican_identify_off(s):
 
 
 MUTANTS = {
+    "test_esptool_env": [
+        ("esptool_env", lambda settings: {}, "esptool.argv never passed on"),
+        ("esptool_env", _esptool_unchecked, "a malformed esptool.argv passed on"),
+        ("esptool_env", _esptool_space_joined,
+         "the argv passed space-joined, not as JSON"),
+        ("bench", _wrap_suite("bench", _canchg_dropped_from("b-c12", B.ESPTOOL_ENV)),
+         "one bench group's checks without it")],
+    "test_canchg_env": [
+        ("canchg_env", lambda settings: {}, "canchg_device never passed on"),
+        ("canchg_env", _canchg_unchecked, "a malformed canchg_device passed on"),
+        ("canchg_env", _canchg_case_kept, "vid and pid passed on in the settings' case"),
+        ("bench", _wrap_suite("bench", _canchg_dropped_from("b-c12")),
+         "one bench group's checks without it")],
     "test_idle_safe": [
         ("bench", _wrap_suite("bench", _vport_left_safe),
          "vport_bench left idle-safe"),
@@ -2290,7 +2409,7 @@ MUTANTS = {
          "bench_topology's self-test unlisted (4cdb)"),
         ("CAN_FAILS", [n for n in B.CAN_FAILS if n != "bench_switch_loss"],
          "bench_switch_loss's can-fail unlisted"),
-        ("CAN_FAILS", B.CAN_FAILS + ["bench_rx_order"],
+        ("CAN_FAILS", B.CAN_FAILS + ["bench_switch_errors"],
          "a listed can-fail the script does not have"),
         ("harness", _wrap_suite("harness", _drop_harness_check(
             "cf.bench-usb-host")), "listed, but the harness never runs it")],

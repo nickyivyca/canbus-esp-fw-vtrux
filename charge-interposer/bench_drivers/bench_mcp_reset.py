@@ -65,6 +65,7 @@ Tester, 2026-10-16.
 
 import argparse
 import datetime
+import json
 import os
 import re
 import subprocess
@@ -93,6 +94,11 @@ SETTLE_S = 4.0
 CANFAIL_S = 2.0
 NORMAL_S = 6.0
 NORMAL_RATE = 100.0
+# esptool for the holds: the core flasher's, the local settings'
+# esptool.argv, which bench_suite.py passes as VTRUX_ESPTOOL_ARGV (a JSON
+# list); unset, PlatformIO's esptool.py under this Python on Windows, as
+# before, and refused on Linux (esptool_argv; the reviewer, 2026-11-11)
+ESPTOOL_ENV = "VTRUX_ESPTOOL_ARGV"
 ESPTOOL = os.path.join(os.path.expanduser("~"), ".platformio", "packages",
                        "tool-esptoolpy", "esptool.py")
 # esptool's command for the hold: the underscore name, the one form both
@@ -312,8 +318,7 @@ def open_innomaker(bitrate):
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(d)
     os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    bus = adapter_fixes.bus(interface="gs_usb", channel="can0", index=0,
-                            bitrate=bitrate)
+    bus = adapter_fixes.canchg(bitrate=bitrate)     # by serial on Linux
     from gs_usb.constants import GS_CAN_MODE_HW_TIMESTAMP as HW
     flags = getattr(getattr(bus, "gs_usb", None), "device_flags", None)
     return bus, bool(flags is not None and flags & HW)
@@ -391,10 +396,33 @@ class Sender(object):
         self.t.join(3.0)
 
 
-def esptool(port, before, after, *args):
+def esptool_argv(environ=None, system=None):
+    """The esptool command, before its options. VTRUX_ESPTOOL_ARGV, a JSON
+    list of strings (the local settings' esptool.argv, the core flasher's);
+    unset on Windows ("nt"), PlatformIO's esptool.py under this Python;
+    unset elsewhere, ValueError: no path is guessed."""
+    env = os.environ if environ is None else environ
+    raw = env.get(ESPTOOL_ENV, "")
+    if raw.strip():
+        try:
+            argv = json.loads(raw)
+        except ValueError:
+            argv = None
+        if not (isinstance(argv, list) and argv
+                and all(isinstance(x, str) and x for x in argv)):
+            raise ValueError("%s=%r is not a JSON list of strings" % (ESPTOOL_ENV, raw))
+        return argv
+    if (system or os.name) == "nt":
+        return [sys.executable, ESPTOOL]
+    raise ValueError("%s is not set: bench_suite.py passes the local settings' "
+                     "esptool.argv (the core flasher's esptool); off Windows "
+                     "there is no default" % ESPTOOL_ENV)
+
+
+def esptool(argv0, port, before, after, *args):
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
-    cmd = [sys.executable, ESPTOOL, "--chip", "esp32s3", "--port", port,
-           "--before", before, "--after", after] + list(args)
+    cmd = list(argv0) + ["--chip", "esp32s3", "--port", port,
+                         "--before", before, "--after", after] + list(args)
     p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", env=env)
     return p.returncode, p.stdout + p.stderr
@@ -409,6 +437,14 @@ def run_bench(a):
           "resets %d, holds %d x %.1f s"
           % (datetime.datetime.now().isoformat(), BUILD_EXPECT, STREAM_ID,
              RATE, a.resets, a.holds, a.hold_s))
+    argv0 = None
+    if a.holds:
+        try:
+            argv0 = esptool_argv()              # before anything is opened
+        except ValueError as e:
+            print("REFUSED: %s" % e)
+            return 2
+        print("esptool for the holds: %s" % " ".join(argv0))
     inno, hw = open_innomaker(500000)
     if not hw:
         print("REFUSED: the Innomaker is not in hardware-timestamp mode")
@@ -440,11 +476,11 @@ def run_bench(a):
         time.sleep(SETTLE_S)            # a COM3 close can reset the board
         for j in range(a.holds):
             m = time.perf_counter()
-            rc, txt = esptool(a.port, "default_reset", "no_reset",
+            rc, txt = esptool(argv0, a.port, "default_reset", "no_reset",
                               READ_MEM, "0x6000403C")
             time.sleep(a.hold_s)
             rel = time.perf_counter()
-            rc2, txt2 = esptool(a.port, "no_reset", "hard_reset",
+            rc2, txt2 = esptool(argv0, a.port, "no_reset", "hard_reset",
                                 READ_MEM, "0x6000403C")
             note = "esptool hold rc %d, release rc %d" % (rc, rc2)
             if rc or rc2:
@@ -768,6 +804,25 @@ def self_test():
           and "read-mem" not in src,
           "the hold and its release call esptool's read_mem, the name "
           "esptool v4.13 accepts (it refuses read-mem)")
+    # which esptool (the reviewer, 2026-11-11): the settings' argv, as the
+    # core flasher; the PlatformIO default on Windows only
+    want = ["/opt/idf/python", "-m", "esptool"]
+    got = esptool_argv({ESPTOOL_ENV: json.dumps(want)}, "posix")
+    check(got == want, "VTRUX_ESPTOOL_ARGV is the command -> %s" % got)
+    check(esptool_argv({ESPTOOL_ENV: json.dumps(want)}, "nt") == want,
+          "... on Windows too, ahead of the PlatformIO default")
+    check(esptool_argv({}, "nt") == [sys.executable, ESPTOOL],
+          "unset on Windows: PlatformIO's esptool.py under this Python")
+    for env, what in (({}, "unset on Linux"), ({ESPTOOL_ENV: "esptool.py"}, "not JSON"),
+                      ({ESPTOOL_ENV: "[]"}, "an empty list"),
+                      ({ESPTOOL_ENV: '["python", 3]'}, "a non-string item"),
+                      ({ESPTOOL_ENV: '"python -m esptool"'}, "a string, not a list")):
+        try:
+            esptool_argv(env, "posix")
+            refused = False
+        except ValueError:
+            refused = True
+        check(refused, "esptool argv %s is refused" % what)
     print("\nbench_mcp_reset self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -800,6 +855,14 @@ MUTANTS = [
      "(t - log[0][0]) * 1000.0", "(t - log[i - 1][0]) * 1000.0"),
     ("esptool: the hyphenated read-mem (esptool v4.13 refuses it)",
      'READ_MEM = "read_mem"', 'READ_MEM = "read-mem"'),
+    ("esptool: the settings' argv ignored",
+     "    if raw.strip():\n        try:", "    if False:\n        try:"),
+    ("esptool: the PlatformIO default off Windows too",
+     '    if (system or os.name) == "nt":\n        return [sys.executable, ESPTOOL]',
+     '    if True:\n        return [sys.executable, ESPTOOL]'),
+    ("esptool: a malformed argv taken",
+     "        if not (isinstance(argv, list) and argv\n",
+     "        if not (argv\n"),
 ]
 
 

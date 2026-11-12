@@ -14,10 +14,13 @@ Two transport families:
             gs_usb), channel auto-detected via canbench.live.receiver, so the
             same simulator code drives real silicon once the board exists.
             gs_usb is the exception: opened by device index (--channel N,
-            default 0), its TX echoes drained and dropped (open_gs_usb).
-            On Linux the pinned canbench's linux_fixes are applied first
-            (adapter_fixes), so a gs_usb open there needs the can-tools pin
-            installed; on Windows it does not.
+            default 0) on Windows, and on Linux as canchg by its USB serial
+            from VTRUX_CANCHG_DEVICE, refused unless in libusb mode
+            (adapter_fixes.canchg_target); its TX echoes drained and
+            dropped (open_gs_usb). On Linux the pinned canbench's
+            linux_fixes are applied first (adapter_fixes), so a gs_usb open
+            there needs the can-tools pin installed; on Windows it does
+            not.
 
 Segment map for this bench:
 
@@ -271,25 +274,33 @@ class _DropEchoes:
 
 
 def open_gs_usb(channel, bitrate, *, receive_own_messages=False,
-                logger=None, _bus_cls=None):
-    """The Innomaker USB2CAN (gs_usb / candleLight), opened by INDEX:
-    detect_available_configs(['gs_usb']) returns [] even when the device
-    works (bringup, 2026-10-04), so auto-detection cannot find it.
-    `channel` is the device index ("0" if omitted). `_bus_cls` exists only
-    for bus_gs_usb_test (a fake in place of python-can's GsUsbBus)."""
+                logger=None, _bus_cls=None, _target=None):
+    """The Innomaker USB2CAN (gs_usb / candleLight), opened by INDEX off
+    Linux: detect_available_configs(['gs_usb']) returns [] even when the
+    device works (bringup, 2026-10-04), so auto-detection cannot find it.
+    `channel` is the device index ("0" if omitted; on Linux only 0, and the
+    device is canchg by its serial). `_bus_cls` exists only for
+    bus_gs_usb_test (a fake in place of python-can's GsUsbBus)."""
+    import adapter_fixes
+    index = int(channel) if channel not in (None, "") else 0
+    # which device: index 0 off Linux; on Linux canchg by its serial, refused
+    # unless in libusb mode (adapter_fixes.canchg_target). _target exists
+    # only for bus_gs_usb_test.
+    if _target is None:
+        _target = adapter_fixes.canchg_target(index)
     if _bus_cls is None:
         _libusb_bootstrap()
         # gs_usb's start() without its USB reset, on Linux (adapter_fixes)
-        import adapter_fixes
         adapter_fixes.apply()
         from can.interfaces.gs_usb import GsUsbBus as _bus_cls
-    index = int(channel) if channel not in (None, "") else 0
     cls = type("GsUsbNoEcho", (_DropEchoes, _bus_cls), {})
+    kw = adapter_fixes.gs_usb_kwargs(_target)
     if logger:
-        logger.info("Opening gs_usb device index %d at %d bps (echoes %s)",
-                    index, bitrate,
+        logger.info("Opening gs_usb device %s at %d bps (echoes %s)",
+                    ", ".join("%s %s" % kv for kv in sorted(kw.items())), bitrate,
                     "kept" if receive_own_messages else "drained and dropped")
-    bus = cls(channel="can%d" % index, index=index, bitrate=bitrate)
+    bus = cls(channel="can%d" % index, bitrate=bitrate, **kw)
+    adapter_fixes.check_opened(bus, _target)
     bus._keep_echoes = bool(receive_own_messages)
     return bus
 
