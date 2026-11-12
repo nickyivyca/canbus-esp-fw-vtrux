@@ -377,7 +377,8 @@ def main():
     wit = jam = None
     replay = None
     try:
-        kv = can.Bus(interface="kvaser", channel=0, bitrate=NOMINAL)
+        from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+        kv = kvaser_bus(channel=0, bitrate=NOMINAL)
         wit = Witness(kv)
         wit.start()
         try:

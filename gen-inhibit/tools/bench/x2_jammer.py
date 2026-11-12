@@ -358,7 +358,8 @@ class Witness(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True)
         import can
-        self.bus = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+        from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+        self.bus = kvaser_bus(channel=0, bitrate=BITRATE)
         self.stop_flag = threading.Event()
         self.err = []        # (hw_ts, receipt_epoch)
         self.frames = 0
@@ -640,14 +641,15 @@ def sub_noduration(a, rec, con, wit):
 
 
 def sub_can2_check(a, rec, con, wit):
-    import can
+    # the pinned can-tools' Linux fixes (2026-11-11); close_gs_usb also frees the pyusb handle
+    from kvaser_bus import gs_usb_bus, close_gs_usb
     try:
         import libusb_package
         import usb.backend.libusb1 as lb
         lb.get_backend(find_library=libusb_package.find_library)
     except Exception:
         pass
-    inno = can.Bus(interface="gs_usb", channel="can0", index=0, bitrate=BITRATE)
+    inno = gs_usb_bus(channel="can0", index=0, bitrate=BITRATE)
     # Every Innomaker frame is logged with host and adapter time, so a frame
     # left in its buffer from before the run can be told from a live one: the
     # 01:28 run logged one 0x051 with nothing else to place it (2026-10-08).
@@ -682,7 +684,7 @@ def sub_can2_check(a, rec, con, wit):
     finally:
         stop.set()
         th.join(timeout=2.0)
-        inno.shutdown()
+        close_gs_usb(inno)
     ts, clock = wit.times()
     groups = clusters([t for t in ts if t >= t0 - 0.3], a.interval_ms / 2000.0)
     kv_pages = wit.frames - f0

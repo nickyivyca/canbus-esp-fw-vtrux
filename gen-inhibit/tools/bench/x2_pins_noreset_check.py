@@ -154,7 +154,8 @@ def main():
         return 2
     import can
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    bus = can.Bus(interface="kvaser", channel=0, bitrate=500000)
+    from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+    bus = kvaser_bus(channel=0, bitrate=500000)
     w = Witness(bus)
     w.start()
     marks = {}

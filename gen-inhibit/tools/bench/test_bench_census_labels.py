@@ -11,6 +11,7 @@ fails.
 """
 import os
 import sys
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -27,6 +28,12 @@ class FakeBus:
 def main():
     real = BC.can.Bus
     BC.can.Bus = FakeBus
+    # The Kvaser opens through kvaser_bus (2026-11-12), whose bench guard refuses without the
+    # lock: a fake kvaser_bus stands in, on the same FakeBus.
+    fake_kb = types.ModuleType("kvaser_bus")
+    fake_kb.kvaser_bus = lambda **kw: FakeBus(interface="kvaser", **kw)
+    saved_kb = sys.modules.get("kvaser_bus")
+    sys.modules["kvaser_bus"] = fake_kb
     fails = []
     try:
         _, label = BC.open_adapter("kvaser")
@@ -43,6 +50,10 @@ def main():
             fails.append("pcan")
     finally:
         BC.can.Bus = real
+        if saved_kb is None:
+            sys.modules.pop("kvaser_bus", None)
+        else:
+            sys.modules["kvaser_bus"] = saved_kb
     print("%s" % ("PASS" if not fails else "FAIL: %s" % fails))
     return 1 if fails else 0
 
