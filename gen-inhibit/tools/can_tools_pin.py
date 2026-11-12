@@ -5,9 +5,11 @@ pins.
 Gen-inhibit implementor, 2026-10-30. canbench comes from the can-tools clone
 named by CAN_TOOLS_DIR, and each project pins the can-tools commit it uses
 and moves that pin itself (AGENTS.md, "can-tools: the CAN adapter package";
-user, 2026-10-30). gen-inhibit's only canbench user is vehicle_runner.py's
+user, 2026-10-30). canbench's first gen-inhibit user was vehicle_runner.py's
 --interface auto, so the pin sits beside it: the "can-tools" entry of
 can_tools_pin.json, with the repo and the full commit (reviewer, 2026-10-30).
+The tester's Kvaser opener in the bench harness loads it through this module
+too, and the pin stays the implementor's (reviewer, 2026-11-11).
 
 The clone itself is not what a run loads. It moves when anyone pulls it, and
 it is also what a bare `import canbench` may find (the can-tools.pth that
