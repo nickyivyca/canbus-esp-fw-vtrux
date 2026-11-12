@@ -575,6 +575,15 @@ The cause was never isolated (user, 2026-10-15, for all of this section):
 6. **HTTP round trips to the device are slowed by load too.** Under the build,
    gen-inhibit's arm POST took 39 ms instead of 18 ms. Testers time windows
    from when a request was sent, not from when it returned.
+7. **On `madhouse-debian`, work runs alongside the local LLM's load, never
+   after it** (user, 2026-11-11, in the Local LLM hosting session, its
+   `lcc/llm-load/README.md` in the Infrastructure library, "Standing rule:
+   run alongside, never hold"). Nobody waits for an LLM load window or a
+   trial run to end, or asks for one. A session starting or ending heavy
+   work or a wall-clock test sends its start and end times to the Local
+   LLM hosting session, so its recorders can mark them. A failure under
+   that contention is information about the load controls, not a reason
+   to hold.
 
 ## Simulators, virtual CAN buses and background processes
 
