@@ -1,6 +1,11 @@
 # Port step 3's emulated baseline (shared/bench ACCEPT-SPEC A2; owned by the
-# charge-interposer reviewer). DRAFTED by the tester on 2026-11-11 for the
-# reviewer to check and put to the user. Not yet approved.
+# charge-interposer reviewer). Drafted by the tester, checked by the
+# reviewer, approved by the user 2026-11-11 (the reviewer's session): "go
+# ahead and start the run once the two fixes are ready". Since the approval:
+# the harness tree moved to the commit with the two Linux fixes (72d2c392),
+# so cf.bench-vport and no-led-self-test are no longer listed differences,
+# and E1 (the can-tools pin and adapter_fixes, kept in the baseline by the
+# reviewer's ruling) adds the two adapter-fixes-test lines to c-harness.
 #
 # Step 3 moves the bench and the role sessions from NICKY-XPS to
 # madhouse-debian. This list is the Linux baseline of the two suites that
@@ -33,13 +38,14 @@
 #     checks only (the harness lines below), and none of the emulated ones.
 #
 # Trees:
-#   harness   47ab954f, on charge-interposer/tester/madhouse-baseline-2, the
-#             commit before this list's own (on origin, merged into
-#             charge-interposer/main at 4754f237). Since f57ca9d3 it changes
+#   harness   72d2c392, on charge-interposer/tester/madhouse-baseline-2, the
+#             commit before this list's own: the two Linux fixes, on top of
+#             E1 (0de4f3fa, c1847e78) and the merge of charge-interposer/main
+#             (4754f237 and the AGENTS.md commits). Since f57ca9d3 it changes
 #             no product file (premise "digest"): it adds 2b's re-run fixes
 #             (305cfda0), the madhouse docs (5f716bbd), and this branch's
-#             Linux harness work.
-#             Its shared/bench pin is 2026.11.11.7.
+#             Linux harness work. Its shared/bench pin is 2026.11.11.7, its
+#             can-tools pin fa6c0aea.
 
 [step]
 id = "3"
@@ -50,7 +56,7 @@ spec = ["2", "2.1", "2.3", "2.4", "8", "8.2", "8.3", "9", "9.1"]
 verification = "the tester's VERIFICATION.md entries for port step 3's emulated baseline"
 
 [trees.harness]
-project = "47ab954f5bcd8cc6de46f5e62d241b742329e621"
+project = "72d2c392a111966240319d8e778192459433f1ea"
 
 [[premise]]
 id = "digest"
@@ -99,18 +105,17 @@ differences = []
 #                        and its -canfail
 #   sb.* (18 lines)      the shared/bench pin, 2026.11.04.4 -> 2026.11.11.2
 #                        (892d7528: test_canmain, test_ota_outcome / policy /
-#                        preflight / wire, test_wifi) -> 2026.11.11.6
-#                        (pinned at .7, which adds no test file)
-#                        (test_canfail_control, test_wican_http,
-#                        test_serial_dev), each plain and -canfail
-#   cf.bench-vport       on Linux two of bench_vport's mutants survive (the
-#                        reader's ABOVE_NORMAL priority, F2): the tester's
-#                        Windows-only list, to be fixed
-#   no-led-self-test     on Linux the control fails on the path-length guard
-#                        (148 characters): the tester's Windows-only list,
-#                        to be fixed
-# The last two lines drop out when their fixes land before the run. The
-# three core can-fail FAILs of the 2026.11.11.2 pin (sb.test-accept-remote,
+#                        preflight / wire, test_wifi) -> 2026.11.11.7
+#                        (47ab954f: test_canfail_control, test_wican_http,
+#                        test_serial_dev, from .5 and .6), each plain and
+#                        -canfail
+#   adapter-fixes-test   c1847e78 (E1, added since the user's approval):
+#                        the can-tools pin's Linux fixes before every Kvaser
+#                        and Innomaker open, and its -canfail
+# cf.bench-vport and no-led-self-test, PASS -> FAIL in the draft, are not
+# listed: their Linux fixes are in the harness tree (162530f1, 72d2c392;
+# F2's Linux priority check waits on AGENTS.md point 4). The three core
+# can-fail FAILs of the 2026.11.11.2 pin (sb.test-accept-remote,
 # sb.test-ota-wire and sb.test-scratch, each -canfail) are fixed at
 # 2026.11.11.5 (in .6), so they are not listed.
 [[compare]]
@@ -120,6 +125,8 @@ a = "baseline:harness"
 b = "harness"
 expect = "listed"
 differences = [
+  "NEW in b: m-harness/adapter-fixes-test PASS",
+  "NEW in b: m-harness/adapter-fixes-test-canfail PASS",
   "NEW in b: m-harness/serial-open-test PASS",
   "NEW in b: m-harness/serial-open-test-canfail PASS",
   "NEW in b: l-harness/sb.test-canfail-control PASS",
@@ -140,6 +147,4 @@ differences = [
   "NEW in b: l-harness/sb.test-wican-http-canfail PASS",
   "NEW in b: l-harness/sb.test-wifi PASS",
   "NEW in b: l-harness/sb.test-wifi-canfail PASS",
-  "VERDICT l-harness/cf.bench-vport: PASS -> FAIL",
-  "VERDICT l-harness/no-led-self-test: PASS -> FAIL",
 ]
