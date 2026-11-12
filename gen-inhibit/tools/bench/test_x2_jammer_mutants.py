@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Mutants of x2_jammer.py's sub_id and per_pulse's poll stamp (added 2026-11-05);
+"""Mutants of x2_jammer.py's sub_id, per_pulse's poll stamp (added 2026-11-05) and sub_id's
+reset since the open (added 2026-11-11);
 test_x2_jammer.py must fail on each BY A CHECK.
 A crash is not a kill, and an edit that does not apply is an error.
 
@@ -34,6 +35,21 @@ MUTANTS = [
      '        if b[2] <= lo or a[0] >= hi:', '        if b[0] <= lo or a[0] >= hi:'),
     ("per_pulse: the after reading bounded by its request",
      '        if b[2] <= lo or a[0] >= hi:', '        if b[2] <= lo or a[2] >= hi:'),
+    # sub_id's reset since the open (2026-11-11, the X2 no-reset open)
+    ("id: a banner counts after a reset",
+     '    rec["banner_ok"] = got is not None and rec["reset_since_open"] is False\n',
+     '    rec["banner_ok"] = got is not None\n'),
+    ("id: a lost or reopened port is no reset",
+     '    if any(e.startswith("lost") or e == "reopened" for _t, e in events):\n',
+     '    if False:\n'),
+    ("id: the uptime is not compared with the time since the open",
+     '    return up[1]["uptime_us"] / 1e6 < up[0] - opened[0]\n', '    return False\n'),
+    ("id: no uptime line is taken as no reset",
+     '    if up is None or not opened or not isinstance(up[1].get("uptime_us"), int):\n        return None\n',
+     '    if up is None or not opened or not isinstance(up[1].get("uptime_us"), int):\n        return False\n'),
+    ("id: the uptime read from the mcp2515 line, which has none",
+     '    up = con.wait(lambda p: p["kind"] == "INFO" and "uptime_us" in p, 0.5, t) if got else None\n',
+     '    up = got\n'),
 ]
 # Not a mutant: a space instead of the empty line. The firmware's sscanf("%11s") finds no
 # word in " " either and ignores the line, so it behaves the same (equivalent).

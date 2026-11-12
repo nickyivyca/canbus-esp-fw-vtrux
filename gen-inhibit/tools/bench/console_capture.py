@@ -14,9 +14,11 @@ a reset is counted from the device's post-state, never from the console.
 Whether this capture catches a ROM banner at all is measured by --selftest,
 and that result bounds how much any later quiet console could ever mean.
 
-ATTACH WITHOUT RESET: DTR and RTS are deasserted before open (pyserial asserts
-both by default, and on the C3 they drive reset/boot-select), as in
-serial_boot_log.py. Lines are redacted with redact_secrets before they are
+ATTACH WITHOUT RESET: the port is opened by serial_noreset.open_console (on the
+C3, DTR and RTS drive reset/boot-select), as in serial_boot_log.py. Until
+2026-11-11 DTR and RTS were deasserted before the open, which on Linux reset
+the X2's S3 through the same USB-Serial-JTAG (serial_noreset.py; not measured
+on the C3). Lines are redacted with redact_secrets before they are
 kept, because the boot log prints the device's config including passwords.
 
   py -3.14 gen-inhibit/tools/bench/console_capture.py --selftest
@@ -33,10 +35,9 @@ import sys
 import threading
 import time
 
-import serial
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from redact_secrets import redact                               # noqa: E402
+from serial_noreset import open_console                         # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -58,14 +59,7 @@ class ConsoleCapture(threading.Thread):
         self.ser = None
 
     def _open(self):
-        s = serial.Serial()
-        s.port, s.baudrate, s.timeout = self.port, self.baud, 0.1
-        s.dtr = False
-        s.rts = False
-        s.open()
-        s.dtr = False
-        s.rts = False
-        return s
+        return open_console(self.port, self.baud, 0.1)
 
     def _ev(self, what):
         with self.lock:
