@@ -1443,9 +1443,8 @@ def place_in_slice(slice_name=BENCH_SLICE):
     except (OSError, subprocess.SubprocessError):
         pass
     for _ in range(40):                 # the move lands as the job runs
-        got = slice_of()
-        if got == slice_name:
-            return got
+        if slice_of() == slice_name:
+            return slice_name
         time.sleep(0.05)
     return slice_of()
 
