@@ -164,11 +164,12 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
 
 `gen-inhibit/firmware/tools/wican-log-viewer/`, `docs/`, `sch/`,
 `vehicle_profiles*`, `.vehicle_profiles/` and `minify.bat` in
-`gen-inhibit/firmware/` are upstream WiCAN's. At the repo root, `README.md`,
-`LICENSE` and `.github/` are upstream's and stay there, where GitHub reads
-them (reviewer, 2026-10-26). Upstream's workflows in `.github/workflows/`
-filter on the pre-0d paths, so they no longer run on this branch; they are
-not maintained here.
+`gen-inhibit/firmware/` are upstream WiCAN's. At the repo root, `README.md`
+and `LICENSE` are upstream's and stay there, where GitHub reads them
+(reviewer, 2026-10-26). Upstream's `.github/` (its CODEOWNERS, funding file
+and workflows, which targeted no path left on this branch) is removed
+(user, 2026-11-11, AGENTS.md "Project layout"). The root holds only the
+files that list names, beside this folder.
 
 ## Shared code
 
