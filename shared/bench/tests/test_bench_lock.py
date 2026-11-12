@@ -2,8 +2,9 @@
 
     python -B shared/bench/tests/test_bench_lock.py            every test
     python -B shared/bench/tests/test_bench_lock.py --can-fail  every test
-        again under each of its mutants (a broken copy of the rule it
-        guards), each of which must make it FAIL
+        unmutated first (the control, which must pass, or no mutant is
+        counted), then again under each of its mutants (a broken copy of
+        the rule it guards), each of which must make it FAIL
     python -B shared/bench/tests/test_bench_lock.py NAME...     some tests
 
 Written from the specification, reverse-it firmware/bench-lock-spec.md
@@ -1945,6 +1946,22 @@ def main(argv):
     names = [a for a in argv if not a.startswith("--")]
     tests = [t for t in TESTS if not names or t.__name__ in names]
     bad = total = other = 0
+    if can_fail:
+        print("-- control: every test, unmutated", flush=True)
+        control_failed = []
+        for t in tests:
+            if getattr(t, "env", ENV) != ENV:
+                continue
+            outcome = _run(t)
+            print("%s  %-26s %s" % ("ok  " if outcome is None else "FAIL",
+                                    t.__name__, outcome or ""), flush=True)
+            if outcome is not None:
+                control_failed.append(t.__name__)
+        if control_failed:
+            print("\nREFUSED: the control fails (%s), so a mutant's failures would "
+                  "mean nothing; no mutant is counted" % ", ".join(control_failed))
+            return 1
+        print("-- mutants", flush=True)
     for t in tests:
         if getattr(t, "env", ENV) != ENV:
             print("NOT RUN (other env)  %-26s %s only" % (t.__name__, t.env))
@@ -1982,9 +1999,9 @@ def main(argv):
                 ("fails (" + outcome[:70] + ")") if ok else
                 "STILL PASSES -- the test checks nothing"))
             bad += not ok
-    print("\n%d of %d %s; %d NOT RUN (other env)"
+    print("\n%d of %d %s; %d NOT RUN (other env)%s"
           % (total - bad, total, "mutants caught" if can_fail else "passed",
-             other))
+             other, "; the control passes" if can_fail else ""))
     return 1 if bad else 0
 
 
