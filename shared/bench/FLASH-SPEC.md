@@ -40,9 +40,12 @@ once its rules are shown kept (O13; the gen-inhibit reviewer's condition,
   sha256 and md5. From the suite: its retry policy (O11). From the
   machine's settings: the device's address (default `192.168.80.1`, a WiCAN
   firmware default), the Wi-Fi interface, the name of a saved Wi-Fi profile
-  for the hotspot, and the hotspot's SSID. The SSID embeds the WiCAN's MAC:
-  it is in local settings only, and masked in every log, record and
-  message.
+  for the hotspot, and the name of an environment variable that holds the
+  hotspot's SSID. The SSID embeds the WiCAN's MAC, so it is never in the
+  settings themselves: the chain runner's `record.json` keeps the settings
+  a run used. Settings that hold the SSID itself are refused, and nothing
+  is sent. The SSID is masked in every log, record and message (user,
+  2026-11-11, in the charge-interposer reviewer's session).
 
 ## Before anything is sent
 
