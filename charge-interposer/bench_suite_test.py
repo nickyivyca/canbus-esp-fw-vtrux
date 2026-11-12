@@ -495,7 +495,8 @@ def _settings():
             f.write(name.encode())
     for v, sha in IMG_SHA.items():
         _idf_build(os.path.join(d, "images"), v, sha)
-    # the WiCAN's sources: bench_wican_test's fake gen-inhibit tree
+    # the WiCAN's sources: bench_wican_test's fake gen-inhibit tools and
+    # its image folder (made-up files, so the committed pin's load refuses)
     import bench_wican_test as WT
     ws, _root = WT.fixture("for-bench-suite-test", TMP)
     return {"interposer_code": HERE,
@@ -503,7 +504,7 @@ def _settings():
             "images_src": IMG_SRC,
             "x2_mac": "02:00:00:00:00:01",
             "gi_tools": ws["gi_tools"],
-            "gi_chain_settings": ws["gi_chain_settings"],
+            "wican_image_dir": ws["wican_image_dir"],
             "hosts": {"local": {}, "madhouse": {}}}
 
 
@@ -758,7 +759,7 @@ def test_suites():
     # board writes nothing (methodology, 2026-10-20)
     for n, im in su["bench"].images.items():
         if n == B.bench_wican.IMAGE:
-            continue        # never flashed: test_wican_board
+            continue        # its chip is set at the load: bench_wican_test
         assert im.board == "x2" and (im.params or {}).get("chip") == {
             "type": "ESP32-S3", "mac": s["x2_mac"]}, (n, im.params)
     # the public repo holds no MAC: none in the suite's source
@@ -1023,11 +1024,12 @@ def test_wican_board():
     """The bench suite carries the WiCAN (bench_wican.py; reviewer,
     2026-10-23, for the bench-lock cutover): every bench group that holds
     the lock names wican_man beside its X2 image; wican_man is idle-safe
-    and the WiCAN has no idle-safe image of its own (it is never flashed,
-    so the runner's end pass must never load one), its identity is the fake
-    gen-inhibit build's, its flasher refuses, its hooks are bench_wican's
-    (the X2 gets no step), and identify sends the WiCAN to its page, not to
-    the X2's identify."""
+    and the WiCAN has no idle-safe image of its own (the runner's end pass
+    never loads one), its identity is the committed pin's image hash, its
+    flasher is bench_wican's USB load (2026-11-12), which checks the pinned
+    files first and so runs nothing on the fixture's made-up files, its
+    hooks are bench_wican's (the X2 gets no step), and identify sends the
+    WiCAN to its page, not to the X2's identify."""
     import bench_wican_test as WT
     s, su = _all()
     b = su["bench"]
@@ -1044,7 +1046,8 @@ def test_wican_board():
     assert (im.board, im.flasher, im.expect) == (W.BOARD, W.FLASHER,
                                                  WT.MAN_SHA), im
     res = b.flashers[W.FLASHER](im, {}, s, TMP)
-    assert res["ok"] is False and res["recoverable"] is False, res
+    assert res["ok"] is False and res["phase"] == "pin" and \
+        "nothing run" in res["detail"], res
     assert b.identify(im, None, TMP) == WT.MAN_SHA
     d = os.path.join(TMP, "wican_hooks")
     os.makedirs(d, exist_ok=True)
@@ -2316,6 +2319,11 @@ def _no_release_hook(s):
     s.on_end = None
 
 
+def _wican_flasher_not_the_load(s):
+    s.flashers[B.bench_wican.FLASHER] = lambda *a, **k: dict(
+        ok=False, phase="refused", recoverable=False, detail="never flashes")
+
+
 def _wican_identify_off(s):
     x2_identify = s.identify
     s.identify = lambda image, ctx, logdir: (
@@ -2363,11 +2371,13 @@ MUTANTS = {
         ("bench", _wrap_suite("bench", _no_wican_in("b-vport")),
          "a bench group without the WiCAN"),
         ("bench", _wrap_suite("bench", _wican_marked_unsafe),
-         "the never-flashed WiCAN image marked not idle-safe"),
+         "the WiCAN image marked not idle-safe"),
         ("bench", _wrap_suite("bench", _no_release_hook),
          "no release hook (the WiCAN unread at every release)"),
         ("bench", _wrap_suite("bench", _wican_identify_off),
-         "identify never reads the WiCAN")],
+         "identify never reads the WiCAN"),
+        ("bench", _wrap_suite("bench", _wican_flasher_not_the_load),
+         "the WiCAN's flasher is not bench_wican's load")],
     "test_script_judge": [
         ("script_judge", _pass_all, "passes everything"),
         ("script_judge", _rc0_pass,

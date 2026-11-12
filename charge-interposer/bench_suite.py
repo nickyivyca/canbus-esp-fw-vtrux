@@ -31,8 +31,9 @@ project", 2026-10-18):
             (settings.bench_lock_log) the runner takes and releases it
             itself. Refuses to start unless the newest emulated run is on
             the same code and matched its reference (Suite.requires).
-            Its boards are the X2 and the WiCAN (bench_wican.py: never
-            flashed, identified off its page). The WiCAN's start and
+            Its boards are the X2 and the WiCAN (bench_wican.py: its
+            pinned image loaded over USB by the core's esptool flasher,
+            identified off its page). The WiCAN's start and
             release reboots are the suite's own hooks, so the hand reboots
             before and after a run end here (reviewer, 2026-10-23).
             gen-inhibit's wican_reboot.py disarms a WiCAN that comes up
@@ -75,8 +76,9 @@ Settings beyond the core's (see the NICKY-XPS settings JSON in reverse-it
 interposer-firmware/): interposer_code,
 images_dir, images_src, serial_port, pcan_channel, wican_state,
 madhouse_pio; for the bench suite's WiCAN (bench_wican.py), gi_tools
-(gen-inhibit's tools/gen_inhibit, read-only) and gi_chain_settings
-(gen-inhibit's chain settings JSON, read for its gi_images). The diag DBC
+(gen-inhibit's tools/gen_inhibit, read-only), wican_image_dir (the pinned
+image's files, wican_pin.json), wican_mac and wican_esptool_device (its USB
+load; wican_esptool_port on Windows); canchg_device (adapter_fixes). The diag DBC
 is the git copy (paths.diag_dbc()); interposer_dbc is retired and refused
 (bench_identify).
 
