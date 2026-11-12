@@ -63,6 +63,7 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 
 AGE_OUT_S = 0.100
 SILENT_AFTER_S = 0.500        # spec 2.2: no status page for 500 ms
@@ -291,8 +292,8 @@ def run_bench(args):
     from gs_usb.constants import (GS_CAN_MODE_LISTEN_ONLY,
                                   GS_CAN_MODE_HW_TIMESTAMP)
     import serial
-    veh = can.Bus(interface="kvaser", channel=args.kvaser_channel,
-                  bitrate=500000)
+    veh = adapter_fixes.bus(interface="kvaser", channel=args.kvaser_channel,
+                            bitrate=500000)
     # An acknowledger on the vehicle segment throughout, as on the truck
     # (the VCU and the rest never leave): the PCAN in NORMAL mode, drained
     # and otherwise unused. Without it, once the port goes listen-only 2 s

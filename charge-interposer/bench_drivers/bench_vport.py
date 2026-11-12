@@ -88,6 +88,7 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 import scratch_dir                  # noqa: E402
 
 BUS_BITRATE = 500000
@@ -1429,8 +1430,9 @@ def _node_proc(channel, q, stop_ev, ready_ev):
     witness reader has its own process too since 2026-10-23, F2)."""
     import can
     q.put(("prio", above_normal()))
-    bus = can.Bus(interface="kvaser", channel=channel, bitrate=BUS_BITRATE,
-                  driver_mode=True, receive_own_messages=False)
+    bus = adapter_fixes.bus(interface="kvaser", channel=channel,
+                            bitrate=BUS_BITRATE, driver_mode=True,
+                            receive_own_messages=False)
     ready_ev.set()
 
     def send(seq):

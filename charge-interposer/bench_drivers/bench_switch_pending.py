@@ -56,6 +56,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 
 import bench_hold12 as H                                     # noqa: E402
 
@@ -146,7 +147,8 @@ def phase(name, hp, ack, log, gs):
     pc = U.Rx(U.open_pcan(False), "pcan")           # passive witness
     kv = None
     if ack:
-        kv = can.Bus(interface="kvaser", channel=0, bitrate=H.BITRATE)
+        kv = adapter_fixes.bus(interface="kvaser", channel=0,
+                               bitrate=H.BITRATE)
         kstop = threading.Event()
 
         def kdrain():

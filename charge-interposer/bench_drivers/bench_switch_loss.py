@@ -54,6 +54,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 
 import bench_hold12 as H                                     # noqa: E402
 
@@ -488,7 +489,7 @@ def run_bench(a):
         % (datetime.datetime.now().isoformat(), H.ID, H.ID_RATE, total,
            H.FILLER, CYCLES, ON_S, OFF_S, switch_s))
     hp = U.HostPort(a.port, base + "_serial.txt")
-    kv = can.Bus(interface="kvaser", channel=0, bitrate=H.BITRATE)
+    kv = adapter_fixes.bus(interface="kvaser", channel=0, bitrate=H.BITRATE)
     veh, vlock, vhalt = [], threading.Lock(), threading.Event()
 
     def vrx():
