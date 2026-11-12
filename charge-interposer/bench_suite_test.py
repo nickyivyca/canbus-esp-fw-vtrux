@@ -1054,6 +1054,44 @@ def test_wican_board():
         assert out["ok"] is True and a[a.index(flag) + 1] == W.IMAGE, (out, a)
 
 
+# a made-up Innomaker serial (24 hex digits, the real ones' shape)
+CHG_DEV = {"vid": "1D50", "pid": "606f", "serial": "00CC00DD5555666677778888"}
+
+
+def test_canchg_env():
+    """The reviewer's E2 (tester, 2026-11-12): the settings' canchg_device
+    reaches every check of every bench group as VTRUX_CANCHG_DEVICE
+    "<vid>:<pid>:<serial>", vid and pid lower-cased, and survives the
+    runner's formatting; without the setting no bench check carries it; a
+    malformed entry is refused (ValueError); the emulated and harness
+    suites never carry it."""
+    s = _settings()
+    s["canchg_device"] = dict(CHG_DEV)
+    want = "1d50:606f:" + CHG_DEV["serial"]
+    b = B.bench(s)
+    checks = [c for g in b.groups for c in g.checks]
+    assert len(checks) > 30, len(checks)
+    off = [c.id for c in checks if c.env.get(B.CANCHG_ENV) != want]
+    assert not off, off
+    from vtrux_bench.run.engine import fmt
+    assert fmt(want, {}) == want
+    for k, f in (("emulated", B.emulated), ("harness", B.harness)):
+        assert not [c.id for g in f(s).groups for c in g.checks
+                    if B.CANCHG_ENV in (c.env or {})], k
+    s2 = _settings()
+    assert not [c.id for g in B.bench(s2).groups for c in g.checks
+                if B.CANCHG_ENV in c.env]
+    for bad in ("1d50:606f:" + CHG_DEV["serial"], dict(CHG_DEV, vid="1d5"),
+                dict(CHG_DEV, pid="60zf"), dict(CHG_DEV, serial=""),
+                dict(CHG_DEV, serial="00CC 00DD"), dict(CHG_DEV, serial="{x}")):
+        s2["canchg_device"] = bad
+        try:
+            B.canchg_env(s2)
+        except ValueError:
+            continue
+        raise AssertionError("canchg_device %r not refused" % (bad,))
+
+
 def test_idle_safe():
     """shared/bench 2026.11.11.2 (user, 2026-11-11: no end restore): the
     bench suite names no standing image; exactly witness, c12_bench and
@@ -1777,7 +1815,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
-         test_m_lanes_host, test_idle_safe]
+         test_m_lanes_host, test_idle_safe, test_canchg_env]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -1970,6 +2008,28 @@ _ORIG["_hb_list"] = B._hb_list
 _ORIG["_Build.mgroup"] = B._Build.mgroup
 _ORIG["_Build.mpy"] = B._Build.mpy
 _ORIG["M_LANES_HOSTS"] = B.M_LANES_HOSTS
+_ORIG["canchg_env"] = B.canchg_env
+
+
+def _canchg_unchecked(settings):
+    d = settings.get("canchg_device")
+    return {} if d is None else {B.CANCHG_ENV: "%s:%s:%s" % (
+        d["vid"].lower(), d["pid"].lower(), d["serial"])}
+
+
+def _canchg_case_kept(settings):
+    d = settings.get("canchg_device")
+    out = _ORIG["canchg_env"](settings)
+    return out and {B.CANCHG_ENV: "%s:%s:%s" % (d["vid"], d["pid"], d["serial"])}
+
+
+def _canchg_dropped_from(group):
+    def fn(s):
+        for g in s.groups:
+            if g.name == group:
+                for c in g.checks:
+                    c.env.pop(B.CANCHG_ENV, None)
+    return fn
 
 
 def _mgroup_always_madhouse(self, name, checks):
@@ -2218,6 +2278,12 @@ def _wican_identify_off(s):
 
 
 MUTANTS = {
+    "test_canchg_env": [
+        ("canchg_env", lambda settings: {}, "canchg_device never passed on"),
+        ("canchg_env", _canchg_unchecked, "a malformed canchg_device passed on"),
+        ("canchg_env", _canchg_case_kept, "vid and pid passed on in the settings' case"),
+        ("bench", _wrap_suite("bench", _canchg_dropped_from("b-c12")),
+         "one bench group's checks without it")],
     "test_idle_safe": [
         ("bench", _wrap_suite("bench", _vport_left_safe),
          "vport_bench left idle-safe"),

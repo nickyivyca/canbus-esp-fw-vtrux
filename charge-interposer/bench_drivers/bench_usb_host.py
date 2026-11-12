@@ -637,8 +637,7 @@ def open_innomaker():
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(d)
     os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    return adapter_fixes.bus(interface="gs_usb", channel="can0", index=0,
-                             bitrate=500000)
+    return adapter_fixes.canchg(bitrate=500000)     # by serial on Linux
 
 
 class Injector(object):

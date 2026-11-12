@@ -9,7 +9,10 @@ would read its own frames back. This drives open_gs_usb against a fake
 GsUsbBus and checks each half can fail:
 
   - the device is opened by index, from --channel, default 0, and the
-    auto-detection path is not touched;
+    auto-detection path is not touched (the Windows form; on Linux the
+    device is canchg by its serial, adapter_fixes.canchg_target, tested in
+    adapter_fixes_test.py; here only that open_gs_usb opens the target's
+    bus and address and refuses a device with another serial, 2026-11-12);
   - echoes are drained and dropped by default, kept when asked for;
   - a recv() that sees only echoes inside its timeout returns None, not an
     echo and not a hang;
@@ -86,6 +89,10 @@ class FakeGsUsb(can.BusABC):
     def __init__(self, channel, bitrate=500000, index=None, **kw):
         FakeGsUsb.opened.append(dict(channel=channel, bitrate=bitrate,
                                      index=index))
+        for k in ("bus", "address", "serial"):
+            if k in kw:
+                FakeGsUsb.opened[-1][k] = kw.pop(k)
+        self.shut = False
         self.script = []
         self.channel_info = channel
         super().__init__(channel=channel, **kw)
@@ -101,6 +108,7 @@ class FakeGsUsb(can.BusABC):
         pass
 
     def shutdown(self):
+        self.shut = True
         super().shutdown()
 
 
@@ -185,6 +193,12 @@ def main():
 
 def run(fix):
     import paths
+    import adapter_fixes
+    # the index cases below are the Windows form, on any host; on Linux the
+    # device is canchg by its serial (adapter_fixes.canchg_target, tested in
+    # adapter_fixes_test.py), checked here only as open_gs_usb passes it on
+    real_target = adapter_fixes.canchg_target
+    adapter_fixes.canchg_target = lambda index=0, *a, **k: real_target(index, "win32")
     print("CAN_TOOLS_DIR unset: gs_usb opens, kvaser is refused")
     real_open = busmod.open_gs_usb
     busmod.open_gs_usb = lambda ch, br, **kw: real_open(
@@ -357,6 +371,36 @@ def run(fix):
           "six echoes and nothing received: None after %.3f s" % dt)
     b.shutdown()
 
+    print("the Linux target: canchg by bus and address, its serial checked")
+    made = []
+
+    class Serialed(FakeGsUsb):
+        serial = "S1"
+
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.gs_usb = types.SimpleNamespace(serial_number=self.serial)
+            made.append(self)
+
+    class OtherSerial(Serialed):
+        serial = "S2"
+
+    target = {"bus": 1, "address": 38, "serial": "S1"}
+    FakeGsUsb.opened.clear()
+    b = busmod.open_gs_usb("0", 500000, _bus_cls=Serialed, _target=dict(target))
+    check(FakeGsUsb.opened == [dict(channel="can0", bitrate=500000, index=None,
+                                    bus=1, address=38)],
+          "opened by bus 1 address 38, no index, no serial keyword -> %s"
+          % FakeGsUsb.opened)
+    b.shutdown()
+    try:
+        busmod.open_gs_usb("0", 500000, _bus_cls=OtherSerial, _target=dict(target))
+        err = None
+    except adapter_fixes.CanchgError as e:
+        err = str(e)
+    check(err is not None and "S2" in err and made[-1].shut,
+          "a device carrying another serial is shut down and refused -> %s" % err)
+
     print("\nbus_gs_usb_test: %s" % ("all checks OK" if not FAILS else
                                      "%d FAILED" % len(FAILS)))
     return 1 if FAILS else 0
@@ -383,6 +427,11 @@ MUTANTS = [
     ("a PCAN opens without auto_reset",
      '        kwargs["auto_reset"] = True\n',
      '        pass\n'),
+    ("gs_usb opened by index whatever the target",
+     '    bus = cls(channel="can%d" % index, bitrate=bitrate, **kw)\n',
+     '    bus = cls(channel="can%d" % index, bitrate=bitrate, index=index)\n'),
+    ("the opened device's serial not checked",
+     '    adapter_fixes.check_opened(bus, _target)\n', ''),
 ]
 
 

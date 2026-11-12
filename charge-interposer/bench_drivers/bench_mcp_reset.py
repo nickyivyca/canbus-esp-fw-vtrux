@@ -312,8 +312,7 @@ def open_innomaker(bitrate):
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(d)
     os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    bus = adapter_fixes.bus(interface="gs_usb", channel="can0", index=0,
-                            bitrate=bitrate)
+    bus = adapter_fixes.canchg(bitrate=bitrate)     # by serial on Linux
     from gs_usb.constants import GS_CAN_MODE_HW_TIMESTAMP as HW
     flags = getattr(getattr(bus, "gs_usb", None), "device_flags", None)
     return bus, bool(flags is not None and flags & HW)

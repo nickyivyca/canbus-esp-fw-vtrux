@@ -1002,6 +1002,35 @@ def emulated(settings):
 
 
 # ---- bench --------------------------------------------------------------
+# The local settings' canchg_device {vid, pid, serial} names the charger
+# segment's Innomaker (madhouse also has canmain, the same model). Every
+# bench check gets it as VTRUX_CANCHG_DEVICE "<vid>:<pid>:<serial>", which
+# adapter_fixes.canchg_target reads on Linux; unset there, each Innomaker
+# open refuses (tester, 2026-11-12, the reviewer's E2). Off Linux it is not
+# needed: the Windows bench opens index 0 as before.
+CANCHG_SETTING = "canchg_device"
+CANCHG_ENV = "VTRUX_CANCHG_DEVICE"
+_HEX4 = re.compile(r"[0-9a-f]{4}\Z")
+
+
+def canchg_env(settings):
+    """{VTRUX_CANCHG_DEVICE: "<vid>:<pid>:<serial>"} from the settings'
+    canchg_device, {} when it is absent; ValueError when it is malformed."""
+    dev = settings.get(CANCHG_SETTING)
+    if dev is None:
+        return {}
+    if not isinstance(dev, dict):
+        raise ValueError("settings %s is %r, not {vid, pid, serial}" % (CANCHG_SETTING, dev))
+    vid, pid, serial = (str(dev.get(k) or "").strip() for k in ("vid", "pid", "serial"))
+    if not (_HEX4.match(vid.lower()) and _HEX4.match(pid.lower())):
+        raise ValueError("settings %s: vid %r / pid %r are not four hex digits"
+                         % (CANCHG_SETTING, vid, pid))
+    if not serial or any(c.isspace() or c in "{}" for c in serial):
+        raise ValueError("settings %s: serial %r is empty or holds a space or brace"
+                         % (CANCHG_SETTING, serial))
+    return {CANCHG_ENV: "%s:%s:%s" % (vid.lower(), pid.lower(), serial)}
+
+
 def bench(settings):
     """Hardware only, the lock from start to finish; requires a matched
     emulated run on the same code."""
@@ -1206,6 +1235,12 @@ def bench(settings):
     images[bench_wican.IMAGE] = wican["image"]
     for g in (b_bridge, b_witness, b_truck, b_c12, b_vport):
         g.image = [g.image, bench_wican.IMAGE]
+    # which Innomaker is canchg, for every check that may open it (on Linux
+    # by its serial, adapter_fixes.canchg_target; the reviewer's E2)
+    env = canchg_env(settings)
+    for g in (b_bridge, b_witness, b_truck, b_c12, b_vport, truck_only):
+        for c in g.checks:
+            c.env.update(env)
 
     def identify(image, ctx, logdir):
         if image.board == bench_wican.BOARD:

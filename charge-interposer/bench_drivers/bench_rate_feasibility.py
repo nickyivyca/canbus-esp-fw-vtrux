@@ -124,8 +124,7 @@ def open_gs_usb():
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(d)
     os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    return adapter_fixes.bus(interface="gs_usb", channel="can0", index=0,
-                             bitrate=BITRATE)
+    return adapter_fixes.canchg(bitrate=BITRATE)     # by serial on Linux
 
 
 OPENERS = {
