@@ -258,7 +258,13 @@ out. The interposer's ESP-IDF project is `charge-interposer/firmware/`,
 since port step 2a. **No path in the tree may have a branch's name.** An IDF
 `main/` directly in a project folder would make `<project>/main` both a
 branch and a path, and git then refuses the bare branch name in `log`,
-`show`, `diff` and `reset`.
+`show`, `diff` and `reset`. **Beside the project folder, a project
+branch's root holds only the files every branch shares:** `.claude/`,
+`.gitattributes`, `.gitignore`, `AGENTS.md`, `CLAUDE.md`, `LICENSE`,
+`README.md`, `local-paths.template.md` and `session_pause.sh`. Upstream
+WiCAN's root tree, its `.github/` included, is removed from both project
+branches (user, 2026-11-11: the interposer's root tree in the interposer
+reviewer's session, `.github/` in the methodology owner's).
 
 ### Shared code
 
