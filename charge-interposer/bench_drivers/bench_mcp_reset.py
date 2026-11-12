@@ -34,7 +34,7 @@ no send attempt is the sender pausing and counts for nothing.
 Variants (run): `--resets N` run_scenario's SerialTap.reset_board(), the
 esptool USB-Serial-JTAG hard reset (RTS 0.2 s; the port re-enumerates, so
 this is a reset pulse, not a held EN); `--holds M --hold-s S` the ROM
-download hold (esptool read-mem with --after no_reset, as gen-inhibit
+download hold (esptool read_mem with --after no_reset, as gen-inhibit
 x2_hold.py does: the app is not running for S s), then a hard reset into
 the app.
 
@@ -94,6 +94,11 @@ NORMAL_S = 6.0
 NORMAL_RATE = 100.0
 ESPTOOL = os.path.join(os.path.expanduser("~"), ".platformio", "packages",
                        "tool-esptoolpy", "esptool.py")
+# esptool's command for the hold: the underscore name, the one form both
+# ESP-IDF v5.4.2's esptool v4.13 (madhouse; it refuses "read-mem" as an
+# invalid choice, gen-inhibit tester 2026-11-11) and esptool v5 (a
+# deprecated alias there) accept
+READ_MEM = "read_mem"
 # 756d6714 prints chg(rx= tx= err= off= ring=a/b); the first version of
 # this pattern wanted peak= (the veh field's form), matched nothing and
 # read every block as clean (bench 2026-10-16 01:31)
@@ -435,11 +440,11 @@ def run_bench(a):
         for j in range(a.holds):
             m = time.perf_counter()
             rc, txt = esptool(a.port, "default_reset", "no_reset",
-                              "read-mem", "0x6000403C")
+                              READ_MEM, "0x6000403C")
             time.sleep(a.hold_s)
             rel = time.perf_counter()
             rc2, txt2 = esptool(a.port, "no_reset", "hard_reset",
-                                "read-mem", "0x6000403C")
+                                READ_MEM, "0x6000403C")
             note = "esptool hold rc %d, release rc %d" % (rc, rc2)
             if rc or rc2:
                 note += " | " + " / ".join(
@@ -756,6 +761,12 @@ def self_test():
           "frames not echoed -> NOT NORMAL")
     check(judge_normal(600, 600, None, dict(c0, off=1))[0] == "NOT NORMAL",
           "can-fail: chg bus-off rose -> NOT NORMAL")
+    import inspect
+    src = inspect.getsource(run_bench)
+    check(READ_MEM == "read_mem" and src.count("READ_MEM, ") == 2
+          and "read-mem" not in src,
+          "the hold and its release call esptool's read_mem, the name "
+          "esptool v4.13 accepts (it refuses read-mem)")
     print("\nbench_mcp_reset self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -786,6 +797,8 @@ MUTANTS = [
     # every mutant (script_can_fail now runs a baseline first).
     ("first failure: ms from the send before it, not the first send",
      "(t - log[0][0]) * 1000.0", "(t - log[i - 1][0]) * 1000.0"),
+    ("esptool: the hyphenated read-mem (esptool v4.13 refuses it)",
+     'READ_MEM = "read_mem"', 'READ_MEM = "read-mem"'),
 ]
 
 
