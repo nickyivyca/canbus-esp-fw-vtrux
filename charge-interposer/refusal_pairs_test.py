@@ -282,13 +282,21 @@ def test_worktree_layout(R):
     """the worktrees go beside this worktree, or in --scratch-from's folder;
     every build folder is checked against the 200-character limit, the
     three releases' and every dev and trace build's; one shared-<tag>
-    checkout per distinct tag of the pins"""
-    top = os.path.join("C:\\", "w", "esp", "interposer-tester")
+    checkout per distinct tag of the pins. The stand-in paths start at this
+    system's own root (C:\\ on Windows, / on Linux), so they are absolute
+    there and the length checks do not depend on the folder the test runs
+    in (the reviewer's B2, 2026-11-12: with C:\\ on Linux they were
+    relative, joined to the acceptance runner's deep tree by abspath, and
+    record accept_3_20261111T234853_563d refused them as too deep)"""
+    root = os.path.abspath(os.sep)
+    top = os.path.join(root, "w", "esp", "interposer-tester")
     beside = R.worktree_paths(top)
-    assert beside["standin"] == os.path.join("C:\\", "w", "esp", "interposer-tester-standin"), beside
-    work = os.path.join("C:\\", "w", "esp", "interposer-tester", "scratch", "rp")
+    assert beside["standin"] == os.path.join(root, "w", "esp", "interposer-tester-standin"), beside
+    work = os.path.join(root, "w", "esp", "interposer-tester", "scratch", "rp")
     inw = R.worktree_paths(top, work)
     assert inw == {k: os.path.join(work, k) for k in R.WORKTREES}, inw
+    # absolute as given: abspath (which too_deep measures) leaves them alone
+    assert all(os.path.abspath(p) == p for p in [top, work] + list(inw.values())), inw
     dirs = R.build_dirs(inw)
     assert len(dirs) == 3 + len(R.DEV) + 1, dirs
     want = [os.path.join(inw[k], "charge-interposer", "firmware", "build")
