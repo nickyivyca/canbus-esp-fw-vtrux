@@ -12,8 +12,8 @@ commit and variant, the code hash and image hash, and each file's flash
 offset, size, sha256 and md5. The files live outside git, in the local
 settings' wican_image_dir, and nothing in the settings can change what the
 pin names. Loading the image onto the WiCAN (USB esptool until madhouse has
-its Wi-Fi adapter, then the shared flasher's OTA upload) is the next step's
-and reads this module; nothing flashes from here.
+its Wi-Fi adapter, then the shared flasher's OTA upload) is bench_wican.py's
+(2026-11-12), which reads this module; nothing flashes from here.
 
     python3.13 -B charge-interposer/wican_pin.py check <wican_image_dir>
         every pinned file present with its size, sha256 and md5 -> exit 0,
