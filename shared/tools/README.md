@@ -79,13 +79,17 @@ current folder if not given.
 digest (R7 counts every file but those whose name ends `.md` and those named
 `.gitignore`, case-sensitively), and the record holds the tooling's digest.
 
-The release build runs at whatever priority its shell has. While a
-wall-clock test runs on the machine, the build is throttled as `AGENTS.md`
-"Builds during wall-clock tests" says, or waits. On `NICKY-XPS` that is
-`--jobs 1` from a shell whose priority class is Idle. `idf.py build` has no
-jobs option, so with `--jobs N` the build step is `ninja -C build -j N all`
-(what `idf.py build` runs), in the same environment, after the same
-`idf.py reconfigure`. Without `--jobs` it is `idf.py build`.
+The release build runs at whatever priority it is started with. Builds run
+alongside wall-clock tests and the machine's other work, with no throttle
+and no waiting (`AGENTS.md` "Parallel work on the shared machine"). On
+`madhouse-debian` a build is placed by its slice: start it from the
+exported shell as `systemd-run --user --scope --slice=build.slice
+<command>`, a scope, which keeps the shell's environment, folder, output
+and exit code. `build.slice` gives it the lowest CPU priority and every
+idle core, so it needs no `--jobs`. `idf.py build` has no jobs option, so
+with `--jobs N` the build step is `ninja -C build -j N all` (what `idf.py
+build` runs), in the same environment, after the same `idf.py
+reconfigure`. Without `--jobs` it is `idf.py build`.
 
 ESP-IDF runs in an environment the tooling builds from an empty one (R24,
 `vtrux_build/buildenv.py`), so nothing in the caller's environment reaches
@@ -131,10 +135,10 @@ dev build of one of the variants the project's `vtrux_build.json` lists
 lists none has no build command. R32 runs first. Then, in
 `build/<variant>` under the project root, `idf.py -B build/<variant> -D
 <option>=<value>... reconfigure` with the variant's options, and `ninja -C
-build/<variant> all`, with `-j N` when `--jobs` is given (`--jobs 1` from
-an Idle shell is the throttled form). Both run in the caller's environment
-as it is: nothing added, nothing dropped. None of the release build's
-other conditions apply (R14).
+build/<variant> all`, with `-j N` when `--jobs` is given (a build's slice,
+not `--jobs`, places it beside other work: "Running it" above). Both run
+in the caller's environment as it is: nothing added, nothing dropped.
+None of the release build's other conditions apply (R14).
 
 `SOURCE_DATE_EPOCH` is one fixed value, `1767225600` (2026-01-01T00:00:00Z),
 for every project and commit (R9): GCC takes `__DATE__` and `__TIME__` from
@@ -323,7 +327,7 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `vtrux_build/pin.py` | the tooling's own pin in `shared_pins.json`, and the check that the tooling runs from the pinned checkout: R23, R16's tooling-pin clause |
 | `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (both clauses, the tooling pin through `pin.py`), R21's one-board refusal, R23, R24, R32 (through `idfenv.py`), R33 |
 | `vtrux_build/cli.py`, `__main__.py`, `__init__.py` | the command line |
-| `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s and the command line's are in `test_release.py`, with the check that uses it; `project.py`'s variants are in `test_devbuild.py`); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests`. `test_buildenv.py`'s `RealConfigure` runs ESP-IDF itself, two configures of a small project (about 40 s), so it is skipped unless `VTRUX_IDF_TESTS=1` is set in an exported ESP-IDF shell; it is a build for `AGENTS.md` "Builds during wall-clock tests" |
+| `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s and the command line's are in `test_release.py`, with the check that uses it; `project.py`'s variants are in `test_devbuild.py`); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests`. `test_buildenv.py`'s `RealConfigure` runs ESP-IDF itself, two configures of a small project (about 40 s), so it is skipped unless `VTRUX_IDF_TESTS=1` is set in an exported ESP-IDF shell; it runs in `build.slice` like a build (`AGENTS.md` "Parallel work on the shared machine") |
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
 | `tests/pinkit.py` | a pinned checkout for the tests: a small tagged repository at `<folder>/shared-<tag>/` and the pin that matches it; `test_release.py` gives every test project one |
 | `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/<pid>/`, the run's own, removed when the run ends, pass or fail; refused, with no other place, outside a git worktree or where git does not ignore `scratch/` (`AGENTS.md` "Files and folders"), and so under WSL in a worktree made by Git for Windows, whose `.git` file Linux git cannot follow. Its remover clears read-only flags and retries, uses `\\?\` paths on Windows and prints what it could not remove ("Removing scratch"): a copy of `verification/independent.py`'s, since the unit tests do not import the tester's files. Tested in `tests/test_scratch.py` |
