@@ -125,15 +125,12 @@ machine. Each refuses or falls back loudly rather than guessing.
 
 ### Cross-project dependencies
 
-The charge-interposer's runner reads the WiCAN's standing identity from this
-folder, read-only (gen-inhibit reviewer, 2026-10-24). A change to any of
-these goes to both projects' reviewers first:
+The charge-interposer's runner loads two of this folder's bench tools by path,
+read-only, to reboot the WiCAN and read its status page (gen-inhibit reviewer,
+2026-10-24). It no longer reads the WiCAN's standing identity from here: the
+interposer pins its own WiCAN image since charge-interposer 8681e343,
+2026-11-12. A change to either of these goes to both projects' reviewers first:
 
-- `gi_images` in the standing settings, `chain_settings_NICKY-XPS.json`;
-- `image_bin()` in `suite_gen_inhibit.py`: exactly one `wican-fw_obd_*.bin` in
-  `build-tester-man/`, a folder that also holds `ota_data_initial.bin`;
-- the ELF SHA-256 at offset 0xB0 of that image (`elf_sha256_of_bin()`; the
-  interposer's own copy is `build_lookup.elf_sha256_of_bin`);
 - `bench/wican_reboot.py`, loaded by path from a pinned `gen-inhibit/main`
   checkout: its options `--label`, `--out`, `--known NAME=SHA`, `--first`,
   `--want` and `--want-unknown`, and its record's `verdict`, `detail`,
