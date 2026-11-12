@@ -1091,7 +1091,8 @@ def test_init_predecessor():
     code): init refuses unless the newest retired log beside the path names
     this host as `to`; the first log ever (no bench-log.*.jsonl at all) is
     the one exception; a damaged log is never a retired copy; a
-    retired-named file that does not replay refuses."""
+    retired-named file that does not replay refuses, and so does one that
+    replays but does not end in a retire."""
     me = socket.gethostname()
     p = folder("pred_first")
     B.init(p, CI)
@@ -1132,6 +1133,20 @@ def test_init_predecessor():
     msg = refused(B.init, p, CI)
     check("does not replay" in msg and not os.path.exists(p),
           "a retired-named file that does not replay: %s" % msg)
+    p = folder("pred_no_retire")
+    retired_log(p, "bench-log.OLD-HOST.20261101.jsonl", me,
+                ts="2026-11-01T12:00:00-08:00")
+    q = os.path.join(os.path.dirname(p), "bench-log.NEW-HOST.20261111.jsonl")
+    with open(q, "w", encoding="utf-8", newline="\n") as f:
+        f.write("".join(l + "\n" for l in
+                        [init_line(), jl("take", CI, pid=4194000),
+                         jl("release", CI, boards=BD)]))
+    check(B.read_state(q)["retired"] is None,
+          "the fixture: a log that replays and was never retired")
+    msg = refused(B.init, p, CI)
+    check("does not end in a retire" in msg and not os.path.exists(p),
+          "a retired-named file that replays but does not end in a retire, "
+          "beside an older copy naming this host: %s" % msg)
     p = folder("pred_ok")
     retired_log(p, "bench-log.OLD-HOST.20261101.jsonl", "SOME-OTHER-HOST",
                 ts="2026-11-01T12:00:00-08:00")
@@ -1877,6 +1892,9 @@ MUTANTS = {
         ("a copy that does not replay is skipped",
          _edit("        except (Refused, UnicodeDecodeError) as e:\n            raise Refused(\"%s is named as a retired log",
                "        except (Refused, UnicodeDecodeError) as e:\n            continue\n            raise Refused(\"%s is named as a retired log")),
+        ("a copy that does not end in a retire is skipped",
+         _edit("        if st[\"retired\"] is None:\n            raise Refused(",
+               "        if st[\"retired\"] is None:\n            continue\n            raise Refused(")),
         ("the host compared case-sensitively",
          _edit("    if r[\"to\"].upper() != host.upper():", "    if r[\"to\"] != host:")),
     ],
