@@ -126,9 +126,11 @@ class Check:
              ({run_dir}, {outdir}, {check_id}, {group}, {work} on a remote
              host, {jobs}, and every string in the settings).
     python   prefix argv with the host's python from the settings.
-    cls      "light", "build" (CPU-heavy: throttled while a wall-clock
-             test runs on its host) or "wallclock" (timing-sensitive: its
-             presence throttles builds on its host).
+    cls      "light", "build" (CPU-heavy: every core, {jobs}; its result
+             says when a wall-clock test ran alongside) or "wallclock"
+             (timing-sensitive: one at a time per host within a run, and
+             what else may be timing-sensitive is recorded). With
+             settings.placement on Linux, the class picks the check's slice.
     outputs  files (relative to the check's outdir) the check writes; the
              suite's redaction hook sees these and nothing else.
     gate     if this check does not PASS, the rest of its group is NOT-RUN.

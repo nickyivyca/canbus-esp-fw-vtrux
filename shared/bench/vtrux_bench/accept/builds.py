@@ -8,9 +8,9 @@ images, elf, variant, toolchain). Its output folder is beside the tree's
 checkouts, so they stay clean.
 
 The builds run as one chain run of "build" checks, so the chain runner's
-build throttle applies (AGENTS.md "Builds during wall-clock tests"); the
-"No builds" line in bench-holder.md stays the tester's to set by hand. The
-chain record is inside the acceptance record (chain/), and holds the masked
+placement applies (AGENTS.md "Parallel work on the shared machine": on
+Linux, with settings.placement, build.slice; every core, and a wall-clock
+test running alongside is recorded, not waited for). The chain record is inside the acceptance record (chain/), and holds the masked
 settings (A6).
 
 Each build's record, builds/<id>.json in the acceptance record: the build,

@@ -966,53 +966,46 @@ def test_stop_pause():
     assert "pause" in kinds and "resume" in kinds, kinds
 
 
-def test_throttle():
-    """A build-class check runs at idle priority with one job while a
-    wall-clock test runs on its host (here: the bench lock is held)."""
-    env = Env("throttle")
-    probe = (
-        "import os, sys, json\n"
-        "if sys.platform == 'win32':\n"
-        "    import ctypes\n"
-        "    k = ctypes.windll.kernel32\n"
-        "    k.GetCurrentProcess.restype = ctypes.c_void_p\n"
-        "    k.GetPriorityClass.argtypes = [ctypes.c_void_p]\n"
-        "    pr = k.GetPriorityClass(k.GetCurrentProcess())\n"
-        "    idle = pr == 0x40\n"
-        "else:\n"
-        "    idle = os.getpriority(os.PRIO_PROCESS, 0) >= 19\n"
-        "json.dump({{'idle': idle, 'jobs': os.environ.get('PLATFORMIO_RUN_JOBS'),"
-        " 'arg': sys.argv[1]}}, open(os.path.join(sys.argv[2], 'p.json'), 'w'))\n")
+def test_build_alongside():
+    """A build-class check keeps every core ({jobs} is the host's CPU count)
+    whatever runs alongside it, and its result says whether a wall-clock
+    test did: another role's lock, or a wallclock_patterns process
+    (AGENTS.md "Parallel work on the shared machine", point 1; the
+    charge-interposer reviewer's batch, 2026-11-12: no more one-job
+    throttle)."""
+    env = Env("alongside")
+    cores = str(os.cpu_count() or 1)
+    assert cores != "1", "one CPU: a one-job build cannot be told apart"
+    probe = ("import os, sys; open(os.path.join(sys.argv[2], 'jobs.txt'), 'w')"
+             ".write(sys.argv[1])")
 
     def judge(run):
-        d = json.load(open(os.path.join(run.outdir, "p.json")))
-        ok = d["idle"] and d["jobs"] == "1" and d["arg"] == "1"
-        return Result(Verdict.PASS if ok else Verdict.FAIL, detail=repr(d))
+        got = open(os.path.join(run.outdir, "jobs.txt")).read()
+        return Result(Verdict.PASS if got == cores else Verdict.FAIL,
+                      detail="jobs %s of %s cores" % (got, cores))
 
-    s = suite([Group("g", [Check("build", ["-c", probe, "{jobs}", "{outdir}"], python=True,
-                                 cls="build", judge=judge)])])
+    s = suite([Group("g", [Check("build", ["-c", probe, "{jobs}", "{outdir}"],
+                                 python=True, cls="build", judge=judge)])])
+
+    def one(settings=None):
+        eng, rec = run(env, s, settings=settings)
+        assert verdicts(rec) == {"g/build": "PASS"}, rec["results"]
+        return rec["results"][0]
     env.set_holder("tester (the-other-project)")
-    eng, rec = run(env, s)
-    assert verdicts(rec) == {"g/build": "PASS"}, rec["results"]
-    r = rec["results"][0]
-    assert r["throttled"] and "another role" in r["throttle_reason"], r
-    # under its own lock, with nothing timing-sensitive running: full speed
-    env.set_holder(ROLE + " (test)")
-    eng, rec = run(env, s)
-    assert verdicts(rec) == {"g/build": "FAIL"}, "throttled by its own lock"
-    # ...but a wall-clock process on the host throttles it again
+    r = one()
+    assert r["alongside_wallclock"] is True and "another role" in \
+        r["alongside_reason"], r
+    env.set_holder(ROLE + " (test)")             # its own lock, nothing else
+    r = one()
+    assert r["alongside_wallclock"] is False, r
     marker = "vtrux_bench_wallclock_marker_%d" % os.getpid()
     pid = spawn_foreign(marker)
     try:
-        st = env.settings(wallclock_patterns=[marker])
-        eng, rec = run(env, s, settings=st)
-        assert verdicts(rec) == {"g/build": "PASS"}, rec["results"]
-        assert "process" in rec["results"][0]["throttle_reason"], rec["results"]
+        r = one(env.settings(wallclock_patterns=[marker]))
     finally:
         kill_pid(pid)
-    env.set_holder("-- (free)")
-    eng, rec = run(env, s)
-    assert verdicts(rec) == {"g/build": "FAIL"}, "not throttled when idle"
+    assert r["alongside_wallclock"] is True and "process" in \
+        r["alongside_reason"], r
 
 
 def test_after():
@@ -1044,10 +1037,21 @@ def test_after():
         raise AssertionError("accepted a cycle")
 
 
-def test_wallclock_guard():
-    """A wall-clock check does not start while another wall-clock test
-    runs on its host; the runner's own processes do not count."""
-    env = Env("wcguard")
+def _events(rec, kind, runner=False):
+    """rec's events of kind; for "placement", the groups' (runner=False)
+    or the runner's own one at start (runner=True)."""
+    return [e for e in rec["events"] if e["kind"] == kind
+            and bool(e.get("runner")) == runner]
+
+
+def test_wallclock_records():
+    """A wall-clock check runs whatever else is timing-sensitive on its
+    host, and records it at its start ("wallclock-others"): a matching
+    process that is not the runner's own, another role's lock (AGENTS.md
+    "Parallel work on the shared machine", point 3, user 2026-11-12: the
+    guard records, it does not refuse). The runner's own processes are
+    left out."""
+    env = Env("wcrecords")
     marker = "vtrux_bench_other_sim_%d" % os.getpid()
     # The runner's own process matches by its exact command line, read
     # from the process table. A broad pattern ("vtrux_bench.run") also
@@ -1059,17 +1063,252 @@ def test_wallclock_guard():
                                  cls="wallclock")])])
     eng, rec = run(env, s, settings=st)    # only the runner itself matches
     assert verdicts(rec) == {"g/sim": "PASS"}, rec["results"]
+    ev = _events(rec, "wallclock-others")
+    assert len(ev) == 1 and ev[0]["processes"] == [] and ev[0]["own"] == 0 \
+        and ev[0]["wallclock"] is False and ev[0]["check"] == "g/sim", ev
     pid = spawn_foreign(marker)
     try:
         eng, rec = run(env, s, settings=st)
-        r = rec["results"][0]
-        assert r["verdict"] == "NOT-RUN" and "another wall-clock" in r["detail"], r
     finally:
         kill_pid(pid)
+    assert verdicts(rec) == {"g/sim": "PASS"}, rec["results"]
+    ev = _events(rec, "wallclock-others")
+    assert len(ev) == 1 and ev[0]["wallclock"] is True and \
+        any(marker in a for a in ev[0]["processes"]), ev
     env.set_holder("tester (the-other-project)")
-    eng, rec = run(env, suite([Group("g", [Check("sim", pc("pass"), python=True,
-                                                 cls="wallclock")])]))
-    assert verdicts(rec) == {"g/sim": "NOT-RUN"}, rec["results"]
+    eng, rec = run(env, s)
+    assert verdicts(rec) == {"g/sim": "PASS"}, rec["results"]
+    ev = _events(rec, "wallclock-others")
+    assert len(ev) == 1 and ev[0]["wallclock"] is True and \
+        "the-other-project" in ev[0]["lock"]["who"], ev
+
+
+def test_own_wallclock_wait():
+    """Two of one run's wall-clock checks on the same host, in two lanes,
+    do not overlap: the second waits ("wallclock-wait") and both run (one
+    simulator bench per set of ports; the charge-interposer reviewer,
+    2026-11-12: a wait, not a refusal)."""
+    env = Env("wcownwait")
+    spans = os.path.join(env.root, "spans.txt")
+    code = ("import sys, time; f, n = sys.argv[1], sys.argv[2]; "
+            "open(f, 'a').write('%s start\\n' % n); time.sleep(2); "
+            "open(f, 'a').write('%s end\\n' % n)")
+    s = suite([Group("b", [Check("sim1", pc(code) + [spans, "1"], python=True,
+                                 cls="wallclock")], needs_lock=True),
+               Group("l", [Check("sim2", pc(code) + [spans, "2"], python=True,
+                                 cls="wallclock")])])
+    eng, rec = run(env, s)
+    assert verdicts(rec) == {"b/sim1": "PASS", "l/sim2": "PASS"}, rec["results"]
+    lines = open(spans).read().split("\n")[:-1]
+    # appended as they happen: no overlap means each start is followed by
+    # its own end
+    assert len(lines) == 4 and lines[0].split()[0] == lines[1].split()[0] and \
+        lines[2].split()[0] == lines[3].split()[0] and \
+        [ln.split()[1] for ln in lines] == ["start", "end"] * 2, lines
+    assert _events(rec, "wallclock-wait"), "the second check never waited"
+
+
+def test_wallclock_hand_roles():
+    """Under bench_lock_log, a hand take (bench_lock.HAND_ROLES: android,
+    can-tools; SPEC section 8) is recorded as not another role's wall-clock
+    test (others_on, which feeds both the wall-clock check's record and a
+    build's alongside_wallclock): with no wallclock_patterns process
+    nothing counts, and a matching process does. A tester of the other
+    project holding the lock counts, and so does a lock that does not
+    replay. Whatever is recorded, the wall-clock check runs (the
+    charge-interposer reviewer's batch, 2026-11-12)."""
+    env, p = log_env("wc_hand")
+    marker = "vtrux_bench_hand_sim_%d" % os.getpid()
+    s = suite([Group("g", [Check("sim", pc("pass"), python=True,
+                                 cls="wallclock")])], role=CI)
+    st = env.settings(bench_lock_log=p, wallclock_patterns=[marker])
+
+    def guard():
+        return E.Engine(s, st, out=lambda *a: None).others_on("local")
+
+    o = guard()
+    assert o["lock"] is None and o["wallclock"] is False, o     # lock free
+    for who in BL.HAND_ROLES:
+        BL.take(p, who, os.getpid())
+        o = guard()
+        assert o["lock"]["who"] == who and o["lock"]["wallclock"] is False \
+            and "hand take" in o["lock"]["note"] and o["wallclock"] is False, \
+            (who, o)
+        eng, rec = run(env, s, settings=st)
+        assert verdicts(rec) == {"g/sim": "PASS"}, (who, rec["results"])
+        ev = _events(rec, "wallclock-others")
+        assert ev and ev[0]["lock"]["wallclock"] is False, (who, ev)
+        pid = spawn_foreign(marker)
+        try:
+            o = guard()
+        finally:
+            kill_pid(pid)
+        assert o["wallclock"] is True and o["processes"] and \
+            o["why"].startswith("process: "), (who, o)
+        BL.release(p, who, BD, note="test: nothing opened, nothing sent")
+    BL.take(p, GI, os.getpid())
+    o = guard()
+    assert o["lock"]["wallclock"] is True and o["wallclock"] is True and \
+        "another role" in o["why"], o
+    eng, rec = run(env, s, settings=st)
+    assert verdicts(rec) == {"g/sim": "PASS"}, rec["results"]
+    BL.release(p, GI, BD, note="test")
+    BL.take(p, BL.HAND_ROLES[0], os.getpid())
+    with open(p, "a", encoding="ascii") as f:
+        f.write("not a log line\n")
+    o = guard()
+    assert "unreadable" in o["lock"] and o["wallclock"] is True and \
+        "unreadable" in o["why"], o
+
+
+def _fake_systemd_run(root):
+    """A systemd-run that starts the command where it is, in no slice."""
+    p = os.path.join(root, "fake_systemd_run.py")
+    with open(p, "w", encoding="utf-8", newline="\n") as f:
+        f.write("import subprocess, sys\na = sys.argv[1:]\n"
+                "sys.exit(subprocess.call(a[a.index('--') + 1:]))\n")
+    return [PY, p]
+
+
+def test_placement_slices():
+    """With settings.placement on Linux, each check starts in its class's
+    slice: the check itself reads /proc/self/cgroup and finds bench.slice
+    (wallclock) or build.slice (build); the record names each group's
+    slice, read back with its CPUWeight and MemoryHigh. Off Linux nothing
+    is placed and the record says so (AGENTS.md "Parallel work on the
+    shared machine", point 1; the charge-interposer reviewer, 2026-11-12).
+    The Linux half needs the user systemd and its bench.slice and
+    build.slice, as on madhouse-debian."""
+    env = Env("placement")
+    code = ("import sys; open(sys.argv[1] + '/cg.txt', 'w')"
+            ".write(open('/proc/self/cgroup').read())")
+
+    def judge_in(want):
+        def judge(run):
+            got = P.cgroup_slice(open(os.path.join(run.outdir, "cg.txt")).read())
+            return Result(Verdict.PASS if got == want else Verdict.FAIL,
+                          detail="in %s, want %s" % (got, want))
+        return judge
+    pl = {"slices": {"wallclock": "bench.slice", "build": "build.slice",
+                     "light": "build.slice"}}
+    saved = E.PLATFORM
+    try:
+        E.PLATFORM = "win32"                     # off Linux: nothing placed
+        s = suite([Group("g", [chk("x", "pass")])])
+        eng, rec = run(env, s, settings=env.settings(placement=pl))
+        assert verdicts(rec) == {"g/x": "PASS"}, rec["results"]
+        ev = _events(rec, "placement")
+        assert len(ev) == 1 and ev[0]["slice"] is None and \
+            ev[0]["reason"] == "off Linux", ev
+        ev = _events(rec, "placement", runner=True)
+        assert len(ev) == 1 and ev[0]["slice"] is None and \
+            ev[0]["reason"] == "off Linux", ev
+        assert rec["results"][0]["slice"] is None, rec["results"]
+    finally:
+        E.PLATFORM = saved
+    if not sys.platform.startswith("linux"):
+        return
+    s = suite([Group("w", [Check("sim", pc(code) + ["{outdir}"], python=True,
+                                 cls="wallclock", judge=judge_in("bench.slice"))]),
+               Group("b", [Check("make", pc(code) + ["{outdir}"], python=True,
+                                 cls="build", judge=judge_in("build.slice"))])])
+    eng, rec = run(env, s, settings=env.settings(placement=pl))
+    assert verdicts(rec) == {"w/sim": "PASS", "b/make": "PASS"}, rec["results"]
+    got = {r["check"]: r["slice"] for r in rec["results"]}
+    assert got == {"w/sim": "bench.slice", "b/make": "build.slice"}, got
+    ev = {e["group"]: e for e in _events(rec, "placement")}
+    for grp, want in (("w", "bench.slice"), ("b", "build.slice")):
+        e = ev[grp]
+        assert e["ok"] is True and e["slice"] == want and \
+            e["read_back"] == want and "CPUWeight" in e and \
+            "MemoryHigh" in e, e
+
+
+def test_placement_readback():
+    """A placement that did not take (here a systemd-run that starts the
+    command in no slice) FAILs the group's setup, <group>/placement, and
+    its checks do not run (the charge-interposer reviewer, 2026-11-12: not
+    a silent run)."""
+    env = Env("placement_rb")
+    pl = {"slices": {"light": "vtrux-test-elsewhere.slice"},
+          "systemd_run": _fake_systemd_run(env.root),
+          "systemctl": [PY, "-c", "print('CPUWeight=7'); "
+                                  "print('MemoryHigh=infinity')"]}
+    saved = E.PLATFORM
+    try:
+        E.PLATFORM = "linux"
+        s = suite([Group("g", [chk("x", "pass")])])
+        eng, rec = run(env, s, settings=env.settings(placement=pl))
+    finally:
+        E.PLATFORM = saved
+    v = verdicts(rec)
+    assert v == {"g/placement": "FAIL", "g/x": "NOT-RUN"}, rec["results"]
+    nr = [r for r in rec["results"] if r["id"] == "g/x"][0]
+    assert "placement did not take" in nr["detail"], nr
+    ev = _events(rec, "placement")
+    assert len(ev) == 1 and ev[0]["ok"] is False and \
+        ev[0]["slice"] == "vtrux-test-elsewhere.slice" and \
+        ev[0]["read_back"] != "vtrux-test-elsewhere.slice", ev
+
+
+def test_runner_slice():
+    """The runner's own work (flash, OTA load, board hooks) runs in its
+    own cgroup. At start it reads its slice and records it; on Linux with
+    settings.placement, a run with board work refuses to start, before the
+    take and before any flash, unless the runner is in the wall-clock
+    slice, and prints the systemd-run command. A run with no board work
+    starts anywhere, its slice recorded (the charge-interposer reviewer,
+    2026-11-12)."""
+    env, p = log_env("runnerslice")
+    cg = os.path.join(env.root, "cgroup.txt")
+    want = "vtrux-test-bench.slice"
+    pl = {"slices": {"wallclock": want}}
+    ims = {"w1": Image("w1", "fake", expect="WC-1", board="wican")}
+
+    def in_slice(name):
+        with open(cg, "w") as f:
+            f.write("0::/user.slice/user-1000.slice/user@1000.service/"
+                    "%s/vtrux-test.scope\n" % name)
+    saved = E.PLATFORM, E.RUNNER_CGROUP
+    try:
+        E.PLATFORM, E.RUNNER_CGROUP = "linux", cg
+        tb = TwoBoards(env)
+        tb.set("wican", "WC-0")
+        s = suite([Group("a", [chk("x", "pass")], needs_lock=True,
+                         image="w1")],
+                  images=ims, flashers={"fake": tb.flasher},
+                  identify=tb.identify, role=CI)
+        in_slice("app.slice")
+        try:
+            run(env, s, settings=env.settings(bench_lock_log=p, placement=pl))
+            refused = None
+        except SuiteError as e:
+            refused = str(e)
+        assert refused and "refusing to start" in refused and \
+            "app.slice, not %s" % want in refused and \
+            "systemd-run --user --scope --quiet --slice=%s --" % want \
+            in refused and "groups with images: a" in refused, refused
+        assert tb.flashes == [], tb.flashes
+        assert not [e for e in log_events(p) if e["event"] == "take"], \
+            log_events(p)
+        in_slice(want)
+        eng, rec = run(env, s, settings=env.settings(bench_lock_log=p,
+                                                     placement=pl))
+        assert verdicts(rec) == {"a/x": "PASS"}, rec["results"]
+        ev = _events(rec, "placement", runner=True)
+        assert len(ev) == 1 and ev[0]["slice"] == want and \
+            ev[0]["wallclock_slice"] == want and \
+            ev[0]["board_work"] == "groups with images: a" and \
+            want in ev[0]["cgroup"], ev
+        in_slice("app.slice")             # no board work: starts anywhere
+        s = suite([Group("g", [chk("y", "pass")])])
+        eng, rec = run(env, s, settings=env.settings(placement=pl))
+        assert verdicts(rec) == {"g/y": "PASS"}, rec["results"]
+        ev = _events(rec, "placement", runner=True)
+        assert len(ev) == 1 and ev[0]["slice"] == "app.slice" and \
+            ev[0]["board_work"] is None, ev
+    finally:
+        E.PLATFORM, E.RUNNER_CGROUP = saved
 
 
 def test_requires():
@@ -1110,8 +1349,15 @@ def test_requires_whole():
     skips (gen-inhibit tester, 2026-10-19)."""
     env = Env("reqwhole")
     code = {"commit": "abc", "dirty": False}
+    ready = os.path.join(env.root, "ready")
+    # the sim's gate passes only once the file exists: until then the sim
+    # is NOT-RUN (it was the wall-clock guard's refusal until 2026-11-12,
+    # when the guard came to record instead of refuse)
     emu = suite([Group("e", [chk("x", "pass")]),
-                 Group("f", [Check("sim", pc("pass"), python=True,
+                 Group("f", [chk("ready", "import os, sys; sys.exit(0 if "
+                                 "os.path.exists(%r) else 1)" % ready,
+                                 gate=True),
+                             Check("sim", pc("pass"), python=True,
                                    cls="wallclock"),
                              Check("later", ["-"], skip="by ruling")])],
                 name="emu", code_info=lambda ctx: dict(code))
@@ -1132,12 +1378,11 @@ def test_requires_whole():
     r = refused()
     assert r and "partial" in r, r
     time.sleep(1.1)
-    env.set_holder("tester (the-other-project)")   # the sim is refused
-    run(env, emu)
-    env.set_holder("-- (free)")
+    run(env, emu)                             # the gate fails: sim NOT-RUN
     r = refused()
     assert r and "NOT-RUN" in r and "f/sim" in r, r
     time.sleep(1.1)
+    open(ready, "w").close()
     run(env, emu)                             # whole, one declared skip
     assert refused() is None, refused()
 
@@ -2053,15 +2298,16 @@ def test_record_device():
 
 
 def test_remote_command():
-    """The remote line: cd, env, coreutils timeout, nice when throttled."""
+    """The remote line: cd, env, coreutils timeout; no nice and no one-job
+    environment, since builds keep every core (2026-11-12)."""
     line = P.remote_command(["python3", "x.py", "a b"], "/w", {"K": "v w"},
-                            100, True)
-    for part in ("cd /w &&", "PLATFORMIO_RUN_JOBS=1", "K='v w'",
-                 "timeout --kill-after=30 100", "nice -n 19", "'a b'"):
+                            100)
+    for part in ("cd /w &&", "K='v w'", "timeout --kill-after=30 100",
+                 "'a b'"):
         assert part in line, (part, line)
-    line = P.remote_command(["x"], None, {}, 100, False)
-    assert "nice" not in line and "PLATFORMIO" not in line, line
-    line = P.remote_command(["x"], "/w", {"K": "v"}, 100, False, "/o/.pid")
+    assert "nice" not in line and "PLATFORMIO" not in line and \
+        "-j1" not in line, line
+    line = P.remote_command(["x"], "/w", {"K": "v"}, 100, "/o/.pid")
     assert line.startswith("cd /w && echo $$ > /o/.pid && exec env K=v "
                            "timeout "), line
 
@@ -2776,7 +3022,10 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_release_line, test_end_hooks_crash, test_end_identify,
          test_idle_safe_end, test_idle_unsafe_line, test_idle_pause_untouched,
          test_stop_pause,
-         test_throttle, test_after, test_wallclock_guard, test_requires,
+         test_build_alongside, test_after, test_wallclock_records,
+         test_own_wallclock_wait, test_wallclock_hand_roles,
+         test_placement_slices, test_placement_readback, test_runner_slice,
+         test_requires,
          test_requires_whole, test_subset_mark, test_subset_not_whole,
          test_product_digest, test_digest_bridge,
          test_digest_own_folder, test_digest_folder_removed,
@@ -2844,6 +3093,22 @@ def _reusing_run_dir(runs_root, suite_name, run_id=None):
     return run_id or "x", path
 
 
+def _refusing_run_check(self, g, c, carried, _orig=E.Engine.run_check):
+    """The old guard: a wall-clock check NOT-RUN while anything else may be
+    timing-sensitive on its host."""
+    if c.cls == "wallclock":
+        o = self.others_on(g.host)
+        if o["wallclock"]:
+            self._not_run(g, c, "refused: another wall-clock test on %s (%s)"
+                          % (g.host, o["why"]))
+            return False
+    return _orig(self, g, c, carried)
+
+
+def _niced_remote_command(*a, _orig=P.remote_command, **k):
+    return _orig(*a, **k).replace("timeout --kill", "nice -n 19 timeout --kill")
+
+
 def _write_over(path, text):
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
@@ -2890,9 +3155,23 @@ MUTANTS = {
     "test_idle_pause_untouched": _patch(E.Engine, "pause_reads",
                                         _pause_loads_idle_safe),
     "test_stop_pause": _rule("stop_pause"),
-    "test_throttle": _rule("throttle"),
+    # a build back at one job while a wall-clock test runs alongside
+    "test_build_alongside": _patch(
+        E.Engine, "build_jobs",
+        lambda self, alongside: "1" if alongside else str(os.cpu_count() or 1)),
     "test_after": _rule("after"),
-    "test_wallclock_guard": _rule("wallclock_guard"),
+    # the guard refusing again
+    "test_wallclock_records": _patch(E.Engine, "run_check", _refusing_run_check),
+    "test_own_wallclock_wait": _rule("own_wallclock_wait"),
+    # the HAND_ROLES skip removed: a hand take counts again
+    "test_wallclock_hand_roles": _rule("hand_roles_wallclock"),
+    # every check in build.slice, whatever its class or platform
+    "test_placement_slices": _patch(E.Engine, "placement_for",
+                                    lambda self, g, c: "build.slice"),
+    # the placement not read back
+    "test_placement_readback": _rule("placement_readback"),
+    # the runner's start check removed: board work starts in any slice
+    "test_runner_slice": _rule("runner_slice"),
     "test_requires": _rule("requires"),
     "test_requires_whole": _rule("requires_whole"),
     "test_subset_mark": _rule("subset_mark"),
@@ -2926,7 +3205,8 @@ MUTANTS = {
     "test_esptool_commands": _patch(FL, "COMMANDS", {"chip_id": "chip-id",
                                                      "write_flash": "write-flash"}),
     "test_esptool_v5_output": _patch(FL, "chip_read", _chip_read_first_line),
-    "test_remote_command": _patch(P, "THROTTLE_ENV", {}),
+    # the remote line niced again
+    "test_remote_command": _patch(P, "remote_command", _niced_remote_command),
     "test_remote_stop": _patch(P, "RULES", {"remote_stop": False}),
     "test_lock_each_case": _rule("lock_each_case"),
     "test_lost_record": _rule("lost_record"),

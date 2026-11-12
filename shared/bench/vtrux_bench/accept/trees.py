@@ -256,7 +256,7 @@ def setup_tree(name, tree, adapter, ctx, say=print):
         env = tree_env(adapter, tree)
         if tree.get("remote"):
             ssh_host = settings["hosts"][tree["host"]]["ssh"]
-            line = procs.remote_command(cmd, tree["project_dir"], env, 1800, False)
+            line = procs.remote_command(cmd, tree["project_dir"], env, 1800)
             r = subprocess.run(list(E.SSH) + [ssh_host, line], capture_output=True, text=True,
                                timeout=1900, errors="replace")
         else:

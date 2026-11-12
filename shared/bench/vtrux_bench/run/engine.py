@@ -133,8 +133,6 @@ fails when the rule is switched off through RULES):
                   flagged; registry entries never produced are listed
   stop_pause      STOP ends the lane (the rest NOT-RUN), PAUSE waits; a
                   pause under way ends on the run's own lock even with STOP
-  throttle        build-class checks run throttled while a wall-clock test
-                  runs on their host
   redact_scope    the redaction hook sees only declared outputs
   gate            a gate check that does not PASS makes the rest of its
                   group NOT-RUN
@@ -148,11 +146,39 @@ fails when the rule is switched off through RULES):
                   settings the run used (ACCEPT-SPEC A6); off by default
   after           a group with `after` waits for those groups, and with
                   after_must_pass runs only if they all passed
-  wallclock_guard a wall-clock check starts only when no other wall-clock
-                  test runs on its host (another role's lock, a matching
-                  process that is not this run's own, or another of this
-                  run's wall-clock checks): one long simulation at a time
-  requires        a suite with `requires` starts only when a run of that
+  own_wallclock_wait
+                  a wall-clock check waits while another of this run's
+                  wall-clock checks is active on its host (one simulator
+                  bench per set of ports); what else may be timing-sensitive
+                  there (another role's lock, a wallclock_patterns process)
+                  is recorded ("wallclock-others") and never refuses it
+                  (AGENTS.md "Parallel work on the shared machine", point 3,
+                  user 2026-11-12). Builds keep every core ({jobs}); a
+                  build that ran alongside a wall-clock test says so in its
+                  result (alongside_wallclock, alongside_reason)
+  hand_roles_wallclock
+                  under bench_lock_log, a hand take (android, can-tools)
+                  is recorded as not a wall-clock test
+  placement_readback
+                  with settings.placement on Linux, each check starts as a
+                  scope in its slice (placement_for); before a group's
+                  checks a probe in each slice reads back from
+                  /proc/self/cgroup where it landed, with the slice's
+                  CPUWeight and MemoryHigh ("placement" event), and a
+                  placement that did not take FAILs the group's setup
+                  (<group>/placement), its checks NOT-RUN
+  runner_slice  the runner's own work (flash, OTA load, board hooks) runs
+                  in its own cgroup, with no placement code of its own (the
+                  charge-interposer reviewer, 2026-11-12). At start it reads
+                  its slice from /proc/self/cgroup and records it (a
+                  "placement" event with runner=true). With
+                  settings.placement on Linux, a run with board work (a
+                  selected group with images, or board hooks on a bench
+                  run) refuses to start unless the runner is in the
+                  wall-clock slice (placement.slices["wallclock"], else
+                  ["lock"]), printing the systemd-run command that starts
+                  it there
+  requires     a suite with `requires` starts only when a run of that
                   suite on the same code matched its reference
   product_digest  "the same code" (Suite.requires, --resume) is the product
                   digest over Suite.product_files when the suite gives them,
@@ -206,6 +232,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -230,15 +257,24 @@ RULES = {k: True for k in (
     "own_pid", "pause_hooks", "resume_identify", "resume_stop",
     "resume_stop_kept", "stop_no_resume",
     "flash_gate", "image_schedule", "identify_after",
-    "no_verdict", "known_fail", "stop_pause", "throttle", "redact_scope",
+    "no_verdict", "known_fail", "stop_pause", "redact_scope",
     "gate", "timeout", "skip", "base_env", "record_settings",
     "identify_error", "after",
-    "wallclock_guard", "requires", "requires_whole", "resume_code",
+    "own_wallclock_wait", "placement_readback", "runner_slice",
+    "requires", "requires_whole", "resume_code",
     "subset_mark", "subset_not_whole", "start_identify", "end_identify",
     "idle_safe_end", "idle_unsafe_line", "product_digest", "digest_bridge",
     "board_hooks",
     "start_hook_stops", "release_line", "end_crash_boards", "carry_finished",
-    "carry_check_end", "missing_setting", "record_device")}
+    "carry_check_end", "missing_setting", "record_device",
+    "hand_roles_wallclock")}
+
+# sys.platform, read at each placement; the tests set it
+PLATFORM = sys.platform
+# what systemd-run --user needs from the environment to reach the user manager
+USER_BUS_ENV = ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
+# where the runner reads its own slice (rule runner_slice); the tests set it
+RUNNER_CGROUP = "/proc/self/cgroup"
 
 IDENTIFY_ERROR = "<identify failed>"
 
@@ -493,7 +529,7 @@ class Engine:
         if logged:
             self.rec.event("resume", note="PAUSE removed")
 
-    # ---- lock and throttle ----------------------------------------------
+    # ---- lock -------------------------------------------------------------
     def lock_ours(self):
         """(ok, holder text). Ours = the suite's role holds the lock; under
         the log, its role and this run's id, not paused (section 6)."""
@@ -539,6 +575,32 @@ class Engine:
         if not lockmod.is_free(h) and not lockmod.held_by(h, self.suite.role):
             return h
         return None
+
+    def _lock_other(self):
+        """For others_on: None when the bench lock is free or this role's,
+        else {who, since, run, text, wallclock}. Raises if the lock cannot
+        be read. `wallclock` says whether the hold counts as another role's
+        wall-clock test: under bench_lock_log a hand take
+        (bench_lock.HAND_ROLES, SPEC section 8) does not, since it runs
+        nothing on this suite's segments and its timing-sensitive tools are
+        caught by the process scan (wallclock_patterns). The legacy
+        bench_holder path counts every other holder. Recorded only: the
+        hardware checks (case_gate, runner_holds) still need this run's own
+        lock, so a hand take still blocks every bench case."""
+        if self.lock_log:
+            st = BL.read_state(self.lock_log)
+            h = st["holder"]
+            if h is None or h["who"] == self.suite.role:
+                return None
+            hand = RULES["hand_roles_wallclock"] and h["who"] in BL.HAND_ROLES
+            return {"who": h["who"], "since": h["ts"], "run": h["run"],
+                    "text": BL.holder_text(st), "wallclock": not hand,
+                    "note": "hand take: not a wall-clock test" if hand else None}
+        h = self._other_holder()
+        if not h:
+            return None
+        return {"who": h, "since": None, "run": None, "text": h,
+                "wallclock": True, "note": None}
 
     def _pause_path(self):
         return os.path.join(self.run_dir, "PAUSE")
@@ -892,64 +954,246 @@ class Engine:
                 "refused: %s" % (rid, err, e))
         self.took = False
 
-    def wallclock_running(self, host):
-        with self._wc_lock:
-            if self.active_wallclock.get(host, 0) > 0:
-                return True, "this run has a wall-clock check on %s" % host
-        if host == "local" and (self.bench_holder or self.lock_log):
-            # Another role's lock means its wall-clock test may be running.
-            # Under this suite's own role, nothing of the other project can
-            # run, so this run's own wall-clock checks (above) and the
-            # process scan (below) decide.
-            try:
-                h = self._other_holder()
-                if h:
-                    return True, "bench lock held by another role: %s" % h[:80]
-            except Exception as e:
-                return True, "bench lock unreadable (%s): assume running" % e
-        hit = self.other_wallclock_process(host)
-        if hit:
-            return True, hit
-        return False, "no wall-clock test on %s" % host
+    def others_on(self, host, counted=0):
+        """What else on `host` may be timing-sensitive while this run starts
+        a check there (AGENTS.md "Parallel work on the shared machine",
+        point 3, user 2026-11-12: recorded, never a refusal):
 
-    def other_wallclock_process(self, host):
-        """A matching process on the host that is not this runner, its
-        ancestors or anything it started (locally by process tree; on a
-        remote host, by this run's id in the command line). None if none."""
+          own        this run's wall-clock checks active on the host
+          lock       another role's hold of the bench lock (local host only):
+                     who, since, run, and whether it counts as a wall-clock
+                     test (a hand take, android or can-tools, does not:
+                     _lock_other); {"unreadable": why} if the lock could not
+                     be read
+          processes  each wallclock_patterns match that is not this run's
+                     own (other_wallclock_processes); process_error if the
+                     process list failed
+          wallclock  whether any of these means a wall-clock test may be
+                     running (an unreadable lock or a failed process list
+                     counts: it could not be ruled out)
+          why        one line saying which
+        `counted`: how many of this run's active checks on the host are the
+        caller's own (1 for a wall-clock check that has counted itself in)."""
+        out = {"own": 0, "lock": None, "processes": [], "wallclock": False}
+        whys = []
+        with self._wc_lock:
+            out["own"] = self.active_wallclock.get(host, 0) - counted
+        if out["own"]:
+            whys.append("this run has %d wall-clock check(s) on %s"
+                        % (out["own"], host))
+        if host == "local" and (self.bench_holder or self.lock_log):
+            try:
+                out["lock"] = self._lock_other()
+            except Exception as e:
+                out["lock"] = {"unreadable": str(e)}
+            lk = out["lock"]
+            if lk and "unreadable" in lk:
+                whys.append("bench lock unreadable (%s): cannot rule a "
+                            "wall-clock test out" % lk["unreadable"])
+            elif lk and lk["wallclock"]:
+                whys.append("bench lock held by another role: %s"
+                            % lk["text"][:80])
+        hits, err = self.other_wallclock_processes(host)
+        out["processes"] = hits
+        if err:
+            out["process_error"] = err
+            whys.append("process list failed (%s): cannot rule a wall-clock "
+                        "test out" % err)
+        if hits:
+            whys.append("process: %s" % hits[0][:100])
+        out["wallclock"] = bool(whys)
+        out["why"] = "; ".join(whys) if whys else \
+            "no other wall-clock test on %s" % host
+        return out
+
+    def other_wallclock_processes(self, host):
+        """([matching command lines], error or None): processes on the host
+        matching wallclock_patterns that are not this runner, its ancestors
+        or anything it started (locally by process tree; on a remote host,
+        by this run's id in the command line)."""
         pats = self.settings.get("wallclock_patterns") or []
         if not pats:
-            return None
+            return [], None
         ssh_host = None if host == "local" else self.host_cfg(host).get("ssh")
         try:
             table = procs.process_table(ssh_host)
         except Exception as e:
-            return "process list failed (%s): assume running" % e
+            return [], str(e)
         if host == "local":
             mine = procs.own_tree(table, os.getpid())
             lines = [a for p, _pp, a in table if p not in mine]
         else:
             rid = getattr(self, "run_id", None) or "\0"
             lines = [a for _p, _pp, a in table if rid not in a]
-        hits = procs.matching(lines, pats)
-        return ("process: %s" % hits[0][:100]) if hits else None
+        return [h[:300] for h in procs.matching(lines, pats)], None
 
-    def other_wallclock(self, host):
-        """Is another wall-clock test running on `host`? (busy, why)"""
+    def _own_wallclock_acquire(self, host):
+        """Wait until none of this run's own wall-clock checks is active on
+        `host`, then count this one in. Two of them would share the
+        simulator bench's groups and ports, which is exclusive (AGENTS.md
+        "One simulator bench per set of ports"): a wait, not a refusal.
+        -> True, or False if STOP came first (nothing counted in)."""
+        poll = float(self.settings.get("wallclock_poll_s", 2))
+        waited = False
+        while True:
+            with self._wc_lock:
+                n = self.active_wallclock.get(host, 0)
+                if n == 0 or not RULES["own_wallclock_wait"]:
+                    self.active_wallclock[host] = n + 1
+                    return True
+            if self.stop_text() is not None:
+                return False
+            if not waited:
+                self.rec.event("wallclock-wait", host=host,
+                               note="another wall-clock check of this run is "
+                                    "active on the host")
+                waited = True
+            time.sleep(poll)
+
+    def _own_wallclock_release(self, host):
         with self._wc_lock:
-            if self.active_wallclock.get(host, 0) > 0:
-                return True, ("this run already has a wall-clock check on %s"
-                              % host)
-        if host == "local" and (self.bench_holder or self.lock_log):
+            self.active_wallclock[host] -= 1
+
+    def build_jobs(self, alongside):
+        """{jobs} for a build check: every core, whatever runs alongside
+        (AGENTS.md "Parallel work on the shared machine", point 1: builds
+        are placed in build.slice, not held to one job)."""
+        return str(os.cpu_count() or 1)
+
+    # ---- placement (AGENTS.md "Parallel work on the shared machine", 1) --
+    def placement_for(self, g, c):
+        """The slice check c of group g starts in, or None for none: the
+        settings' placement.groups[<group>], else placement.slices["lock"]
+        for a group that needs the lock, else placement.slices[<cls>].
+        None off Linux, on a remote host, or with no placement setting."""
+        p = self.settings.get("placement") or {}
+        if not p or g.host != "local" or not PLATFORM.startswith("linux"):
+            return None
+        groups = p.get("groups") or {}
+        if g.name in groups:
+            return groups[g.name]
+        slices = p.get("slices") or {}
+        if g.needs_lock and "lock" in slices:
+            return slices["lock"]
+        return slices.get(c.cls)
+
+    def board_work(self):
+        """Why this run does board work in the runner itself (flash or OTA
+        load, board hooks), or None: a selected group with images, or a
+        bench run of a suite with start or end hooks."""
+        sel = self.selected()
+        imgs = sorted(g.name for g, _ in sel if g.image_list)
+        if imgs:
+            return "groups with images: %s" % ", ".join(imgs)
+        if self.needs_bench() and (self.suite.on_start is not None
+                                   or self.suite.on_end is not None):
+            return "board hooks on a bench run"
+        return None
+
+    def runner_placement(self):
+        """The runner's own slice, read from RUNNER_CGROUP, as the start's
+        "placement" event fields: slice, cgroup, wallclock_slice,
+        board_work, and "refuse" with the refusal text when, on Linux with
+        settings.placement, a run with board work is not in the wall-clock
+        slice (rule runner_slice)."""
+        out = {"slice": None, "cgroup": None}
+        if not PLATFORM.startswith("linux"):
+            out["reason"] = "off Linux"
+            return out
+        try:
+            with open(RUNNER_CGROUP, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            out["cgroup"] = text.strip()[:300]
+            out["slice"] = procs.cgroup_slice(text)
+        except OSError as e:
+            out["cgroup"] = "unreadable: %s" % e
+        p = self.settings.get("placement") or {}
+        if not p:
+            out["reason"] = "no placement setting"
+            return out
+        slices = p.get("slices") or {}
+        want = slices.get("wallclock") or slices.get("lock")
+        work = self.board_work()
+        out["wallclock_slice"] = want
+        out["board_work"] = work
+        if work and RULES["runner_slice"] and (not want
+                                               or out["slice"] != want):
+            if not want:
+                out["refuse"] = (
+                    "refusing to start: this run does board work in the "
+                    "runner (%s), and settings.placement names no "
+                    "wall-clock slice (slices.wallclock or slices.lock)"
+                    % work)
+            else:
+                # the original command line, interpreter and -m included
+                cmd = procs.scope_argv(
+                    self._placement_cmd("systemd_run", ["systemd-run"]), want,
+                    getattr(sys, "orig_argv", None)
+                    or [sys.executable] + sys.argv)
+                out["refuse"] = (
+                    "refusing to start: this run does board work in the "
+                    "runner (%s), which runs in the runner's own cgroup, "
+                    "and the runner is in %s, not %s (read from %s). Start "
+                    "it there:\n  %s" % (work, out["slice"], want,
+                                         RUNNER_CGROUP, shlex.join(cmd)))
+        return out
+
+    def _placement_cmd(self, key, default):
+        return list((self.settings.get("placement") or {}).get(key) or default)
+
+    def place_group(self, g, items):
+        """Before a group's checks: start a probe in each slice its checks
+        will use, read where it landed from /proc/self/cgroup and the
+        slice's CPUWeight and MemoryHigh, and record them ("placement").
+        -> None, or why the placement did not take (the group's setup
+        fails)."""
+        slices = []
+        for c in items:
+            if c.skip and RULES["skip"]:
+                continue
+            s = self.placement_for(g, c)
+            if s and s not in slices:
+                slices.append(s)
+        if not slices:
+            why = ("off Linux" if not PLATFORM.startswith("linux") else
+                   "remote host" if g.host != "local" else
+                   "no placement setting" if not self.settings.get("placement")
+                   else "no slice set for its checks")
+            self.rec.event("placement", group=g.name, slice=None, reason=why)
+            return None
+        run = self._placement_cmd("systemd_run", ["systemd-run"])
+        ctl = self._placement_cmd("systemctl", ["systemctl"])
+        bad = []
+        for s in slices:
+            argv = procs.scope_argv(run, s, ["cat", "/proc/self/cgroup"])
             try:
-                h = self._other_holder()
-                if h:
-                    return True, "bench lock held by another role: %s" % h[:80]
-            except Exception as e:
-                return True, "bench lock unreadable (%s)" % e
-        hit = self.other_wallclock_process(host)
-        if hit:
-            return True, hit
-        return False, None
+                r = subprocess.run(argv, capture_output=True, text=True,
+                                   timeout=60, errors="replace")
+                text, rc = r.stdout, r.returncode
+            except (OSError, subprocess.SubprocessError) as e:
+                text, rc = "", "could not run: %s" % e
+            got = procs.cgroup_slice(text)
+            props = {}
+            try:
+                r = subprocess.run(list(ctl) + ["--user", "show", s, "-p",
+                                                "CPUWeight", "-p", "MemoryHigh"],
+                                   capture_output=True, text=True, timeout=60,
+                                   errors="replace")
+                for ln in r.stdout.splitlines():
+                    k, _, v = ln.partition("=")
+                    if k in ("CPUWeight", "MemoryHigh"):
+                        props[k] = v.strip()
+            except (OSError, subprocess.SubprocessError) as e:
+                props["error"] = str(e)
+            ok = rc == 0 and got == s
+            if not RULES["placement_readback"]:
+                ok = True
+            self.rec.event("placement", group=g.name, slice=s, read_back=got,
+                           cgroup=text.strip()[:300], rc=rc, ok=ok, **props)
+            if not ok:
+                bad.append("%s: asked for %s, read back %s (rc %s)"
+                           % (g.name, s, got, rc))
+        return "; ".join(bad) if bad else None
 
     # ---- images ---------------------------------------------------------
     def identify(self, image, logdir):
@@ -1121,32 +1365,36 @@ class Engine:
                 self.rec.result(**r2)
             self.rec.event("check-end", check=fid, group=g.name, results=len(rs))
             return all(r["verdict"] == Verdict.PASS for r in rs)
-        if c.cls == "wallclock" and RULES["wallclock_guard"]:
-            wait_s = float(self.settings.get("wallclock_wait_s", 0))
-            t_end = time.monotonic() + wait_s
-            while True:
-                busy, why = self.other_wallclock(g.host)
-                if not busy or time.monotonic() >= t_end or \
-                        self.stop_text() is not None:
-                    break
-                time.sleep(float(self.settings.get("wallclock_poll_s", 60)))
-            if busy:
-                self.rec.event("wallclock-refused", check=fid, reason=why)
-                self._not_run(g, c, "refused: another wall-clock test on %s "
-                              "(%s)" % (g.host, why))
+        host = g.host
+        if c.cls == "wallclock":
+            # AGENTS.md "Parallel work on the shared machine", point 3 (user,
+            # 2026-11-12): what else may be timing-sensitive is recorded and
+            # the check runs. Only this run's own wall-clock checks on the
+            # host are waited for (one simulator bench per set of ports).
+            if not self._own_wallclock_acquire(host):
+                self._not_run(g, c, "STOP: %s" % self.stop_text())
                 return False
+            others = self.others_on(host, counted=1)    # this check is in
+            self.rec.event("wallclock-others", check=fid, host=host, **others)
+        try:
+            return self._run_check_body(g, c, fid, host)
+        finally:
+            if c.cls == "wallclock":
+                self._own_wallclock_release(host)
+
+    def _run_check_body(self, g, c, fid, host):
         self.executed_checks.add(fid)
         outdir = os.path.join(self.run_dir, g.name, c.id)
         os.makedirs(outdir)
         log_path = os.path.join(outdir, "check.log")
-        host = g.host
         cfg = self.host_cfg(host)
-        throttled, why = False, None
-        if c.cls == "build" and RULES["throttle"]:
-            throttled, why = self.wallclock_running(host)
+        alongside, why = False, None
+        if c.cls == "build":
+            o = self.others_on(host)
+            alongside, why = o["wallclock"], o["why"]
+        slice_ = self.placement_for(g, c)
         ctx = self.base_ctx()
-        ctx.update(check_id=c.id, group=g.name,
-                   jobs="1" if throttled else str(os.cpu_count() or 1))
+        ctx.update(check_id=c.id, group=g.name, jobs=self.build_jobs(alongside))
         if host == "local":
             ctx["outdir"] = outdir
         else:
@@ -1179,28 +1427,31 @@ class Engine:
         env = dict(cfg.get("env") or {})
         env.update(c_env)
         timeout_s = c.timeout_s if RULES["timeout"] else 10 ** 9
-        if c.cls == "wallclock":
-            with self._wc_lock:
-                self.active_wallclock[host] = self.active_wallclock.get(host, 0) + 1
         stop_now = lambda: (self.stop_text() or "").lower().startswith("now")
         t0 = time.monotonic()
-        try:
-            if host == "local":
-                rc, to = procs.run_local(argv, cwd, env, timeout_s, log_path,
-                                         throttled, stop_now,
-                                         c.base_env if RULES["base_env"] else None)
-            else:
-                procs.run_remote(cfg["ssh"], ["mkdir", "-p", ctx["outdir"]],
-                                 None, None, 60, log_path)
-                rc, to = procs.run_remote(
-                    cfg["ssh"], argv, cwd, env, timeout_s, log_path,
-                    throttled, stop_now,
-                    pidfile=ctx["outdir"] + "/.runner.pid")
-                self._fetch(host, ctx["outdir"], outdir)
-        finally:
-            if c.cls == "wallclock":
-                with self._wc_lock:
-                    self.active_wallclock[host] -= 1
+        if host == "local":
+            if slice_:
+                argv = procs.scope_argv(
+                    self._placement_cmd("systemd_run", ["systemd-run"]),
+                    slice_, argv)
+                # systemd-run --user finds the user manager through these;
+                # a check that starts from its own environment (base_env,
+                # ACCEPT-SPEC A7) may not carry them, and the check sees
+                # them too (a scope keeps systemd-run's environment)
+                for k in USER_BUS_ENV:
+                    if k in os.environ and k not in env and \
+                            k not in (c.base_env or {}):
+                        env[k] = os.environ[k]
+            rc, to = procs.run_local(argv, cwd, env, timeout_s, log_path,
+                                     stop_now,
+                                     c.base_env if RULES["base_env"] else None)
+        else:
+            procs.run_remote(cfg["ssh"], ["mkdir", "-p", ctx["outdir"]],
+                             None, None, 60, log_path)
+            rc, to = procs.run_remote(
+                cfg["ssh"], argv, cwd, env, timeout_s, log_path, stop_now,
+                pidfile=ctx["outdir"] + "/.runner.pid")
+            self._fetch(host, ctx["outdir"], outdir)
         dur = time.monotonic() - t0
         if g.cleanup:
             cl = [fmt(a, ctx) for a in g.cleanup]
@@ -1254,8 +1505,8 @@ class Engine:
                 id=rid, check=fid, group=g.name, verdict=v, detail=r.detail,
                 figures={k: vars(f) for k, f in r.figures.items()},
                 tolerances={k: vars(t) for k, t in c.tolerances.items()},
-                rc=rc, duration_s=round(dur, 1), throttled=throttled,
-                throttle_reason=why,
+                rc=rc, duration_s=round(dur, 1), slice=slice_,
+                alongside_wallclock=alongside, alongside_reason=why,
                 log=os.path.relpath(log_path, self.run_dir).replace("\\", "/"),
                 **extra)
         # Written once every result of the check is: --resume carries a check
@@ -1318,6 +1569,16 @@ class Engine:
                 if not ok:
                     status = skip_all(why)
                     return
+            bad = self.place_group(g, items)
+            if bad:
+                # a placement that did not take fails the group's setup; its
+                # checks do not run somewhere else unnoticed
+                pid = "%s/placement" % g.name
+                self.rec.result(id=pid, check=pid, group=g.name,
+                                verdict=Verdict.FAIL,
+                                detail="placement did not take: %s" % bad)
+                status = skip_all("placement did not take: %s" % bad)
+                return
             gate_reason = None
             for c in items:
                 if c.skip and RULES["skip"]:
@@ -1939,6 +2200,9 @@ class Engine:
                                   "the settings name no bench_lock_log: "
                                   "before the cutover the Holder line is "
                                   "edited by hand"))
+        runner = self.runner_placement()
+        if runner.get("refuse"):
+            raise SuiteError(runner["refuse"])
         if self.needs_bench() and RULES["canmain_check"]:
             # SPEC section 8: before the take, so a refusal writes nothing
             # to the log and makes no folder
@@ -1993,6 +2257,8 @@ class Engine:
         header["host_clocks_epoch"] = clocks
         self.rec.event("start", run_id=self.run_id, suite=self.suite.name,
                        code=code, subset=subset, subset_cases=cases)
+        self.rec.event("placement", runner=True,
+                       **{k: v for k, v in runner.items() if k != "refuse"})
         lanes = {}
         for g, items in sel:
             lanes.setdefault(g.lane, []).append((g, items))
