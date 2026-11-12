@@ -67,8 +67,16 @@ python3.13 charge-interposer/run_scenario.py --list
 python3.13 charge-interposer/run_scenario.py evap-override
 
 # the same simulator with the REAL BOARD in the middle (Stage 2)
-py -3.12 charge-interposer/run_scenario.py evap-override     --external-interposer --serial-port COM7     --vehicle-transport kvaser --charger-transport pcan
+python3.13 charge-interposer/run_scenario.py evap-override     --external-interposer --serial-port /dev/ttyACM0     --vehicle-transport kvaser --charger-transport pcan
 ```
+
+The commands are madhouse-debian's. The Python command is the one
+`local-paths.md` names: `python3.13` on `madhouse-debian`, `py -3.14` on the
+Windows machines. `--serial-port` is the board's serial port: a
+`/dev/ttyACM*` or `/dev/serial/by-id/` path on Linux (the user must be in
+`dialout`), a `COM` port such as `COM7` on Windows. The transports name the
+adapter brands on each segment (`bus.REAL_BRANDS`: `ixxat`, `kvaser`, `pcan`,
+`socketcan`, `gs_usb`); use the ones the bench has.
 
 ### Running against the real board
 
@@ -82,11 +90,14 @@ wrong:
   more per scenario: `evap-override` took 88 minutes to charge 79 % -> 100 % in
   real time. Set `--timeout-scale` explicitly to cut a run short.
 - **An interrupted run can strand a simulator that is still transmitting.**
-  Windows has no SIGINT for another process, so children are started in their
-  own process group and interrupted with `CTRL_BREAK_EVENT`; before that fix the
+  On Linux `run_scenario.py` interrupts its children with SIGINT. Windows has
+  no SIGINT for another process, so there children are started in their own
+  process group and interrupted with `CTRL_BREAK_EVENT`; before that fix the
   cleanup path raised and left `charger_sim` alive. After any run that did not
-  exit cleanly, check for survivors -- and note that a process search for
-  `_sim.py` will match its own command line unless ` -c ` is excluded.
+  exit cleanly, check for survivors by the procedure for your machine in the
+  repo's `AGENTS.md`, "Killing background processes". A process search for
+  `_sim.py` matches its own command line unless it is filtered out, as that
+  procedure does.
 
 Or drive the three processes by hand, in three terminals:
 

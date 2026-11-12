@@ -2,8 +2,11 @@
 the pinned shared build tooling, and of the project's variant list. Not
 evidence.
 
-    py -3.14 -B charge-interposer/test_vtrux_tools.py
-    py -3.14 -B charge-interposer/test_vtrux_tools.py --can-fail
+    python3.13 -B charge-interposer/test_vtrux_tools.py
+    python3.13 -B charge-interposer/test_vtrux_tools.py --can-fail
+
+From this repo's root, with the Python command local-paths.md names
+(python3.13 on madhouse-debian, py -3.14 on the Windows machines).
 
 A copy of the launcher runs in a scratch worktree laid out as this repo is:
 the launcher in charge-interposer/, the pin and copies of the real
