@@ -2,16 +2,22 @@
 pins, from its read-only checkout ../shared-<tag>/ beside this worktree's
 root (shared/tools SPEC R23).
 
-    py -3.14 -B charge-interposer/vtrux_tools.py check-env
-    py -3.14 -B charge-interposer/vtrux_tools.py release [--check-only] [--jobs N]
-    py -3.14 -B charge-interposer/vtrux_tools.py build <variant> [--jobs N]
-    py -3.14 -B charge-interposer/vtrux_tools.py image <file.bin>...
-    py -3.14 -B charge-interposer/vtrux_tools.py digest <folder>...
+    python3.13 -B charge-interposer/vtrux_tools.py check-env
+    python3.13 -B charge-interposer/vtrux_tools.py release [--check-only] [--jobs N]
+    python3.13 -B charge-interposer/vtrux_tools.py build <variant> [--jobs N]
+    python3.13 -B charge-interposer/vtrux_tools.py image <file.bin>...
+    python3.13 -B charge-interposer/vtrux_tools.py digest <folder>...
 
-Run from this repo's root, in a PowerShell exported for the interposer's
-ESP-IDF, v5.4.2, with IDF_TOOLS_PATH set before the export (the export
-lines are per machine, in local-paths.md). Throttled, from an Idle shell,
-with --jobs 1 (AGENTS.md "Builds during wall-clock tests").
+The Python command is the one local-paths.md names: python3.13 on
+madhouse-debian, py -3.14 on the Windows machines. Run from this repo's
+root, in a shell exported for the interposer's ESP-IDF, v5.4.2, with
+IDF_TOOLS_PATH set before the export: on madhouse-debian a bash shell,
+`export IDF_TOOLS_PATH="$HOME/.espressif-5.4.2"` then
+`. ~/esp/esp-idf-v5.4.2/export.sh`; on Windows a PowerShell (each
+machine's export lines are in its local-paths.md). While a wall-clock test
+is running, follow AGENTS.md "Builds during wall-clock tests": the build
+waits, or runs in the machine's throttled form where that section allows
+one.
 
 check-env  the IDF environment check (shared/tools R32): IDF_PATH set and
            not empty, IDF_TOOLS_PATH set, not empty and with no spaces
