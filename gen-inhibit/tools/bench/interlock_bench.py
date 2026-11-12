@@ -44,6 +44,10 @@ from the wire, if the 0x051 split by content does not match what the PCAN sent,
 if the WiCAN reset during the case, or if the sender fell more than 100 ms behind
 a gap the stimulus planned (a CPU-starved sender can stale an interlock signal,
 so the device would trip correctly on a case that expects nothing).
+It is VOID, and not judged at all, if the Kvaser's hardware stamps were not on
+the epoch clock (witness_clock.py: never judged on receipt time; the gen-inhibit
+reviewer's A2 ruling (b), 2026-11-11). `rejudge` does the same for a witness
+file on receipt time. The witness file is written either way.
 """
 
 import argparse
@@ -64,6 +68,7 @@ sys.path.insert(0, HERE)
 import interlock_judge as J                                      # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import bench_held  # noqa: E402  the bench lock is the bench log (2026-10-25)
+import witness_clock as WC  # noqa: E402  never judged on receipt time (A2 (b), 2026-11-11)
 
 ROOT = J.project_root()
 sys.path.insert(1, ROOT)
@@ -397,14 +402,17 @@ class Witness(threading.Thread):
         self.join(timeout=2.0)
         self.bus.shutdown()
 
-    def clocked(self):
+    def recorded(self):
+        """(frames [(t, arb, hex)], errs [t], clock note), on the hardware stamps when
+        they are on the epoch clock, else on receipt time (WC.RECEIPT): for the record
+        and the witness file. A judgement first asks WC.judgeable(note)."""
         with self.lock:
             fr, er = list(self.frames), list(self.errs)
         lags = [rx - hw for hw, rx, _, _ in fr]
-        if lags and abs(statistics.median(lags)) < 2.0:
-            note = "kvaser_hw (median receipt lag %.4f s)" % statistics.median(lags)
+        if lags and abs(statistics.median(lags)) < WC.MAX_LAG_S:
+            note = WC.hw_note(statistics.median(lags))
             return [(hw, a, h) for hw, _, a, h in fr], [hw for hw, _ in er], note
-        return [(rx, a, h) for _, rx, a, h in fr], [rx for _, rx in er], "receipt (hw not epoch)"
+        return [(rx, a, h) for _, rx, a, h in fr], [rx for _, rx in er], WC.RECEIPT
 
 
 PAGE_FIELDS = ("mode", "inhibit_live", "abort_latched", "abort_reason", "arm_block", "disabled",
@@ -594,7 +602,7 @@ def run_case(can, LF, info, parsed, power, stamp):
         time.sleep(0.5)
         pol.stop_flag.set()
         pol.join(timeout=3.0)
-        frames, errs, clock = wit.clocked()
+        frames, errs, clock = wit.recorded()
         wit.close()
         pc.shutdown()
     rec.update(posts=posts, samples=pol.samples, witness_clock=clock, witness_frames=len(frames),
@@ -623,6 +631,11 @@ def run_case(can, LF, info, parsed, power, stamp):
         case["resume_at_epoch"] = rec["t0_epoch"] + info["resume_at_s"]
     if "injected_hex" in info:
         case["alias"] = {info["injected_hex"]: info["original_hex"]}
+    if not WC.judgeable(clock):
+        # never judged on receipt time (A2 (b), 2026-11-11): the witness file is kept
+        rec["judged"] = None
+        WC.void(rec, clock)
+        return rec
     res = J.judge(info["judge"], frames, posts, pol.samples, case, sent=sent, identity=rec["decoder"])
     if short:
         res["preconditions"].append({"name": "every sent frame on the wire", "ok": False,
@@ -683,6 +696,16 @@ def rejudge_file(path):
     frames = [tuple(x) for x in w["frames"]]
     sent = [tuple(x) for x in w["sent"]]
     info = dict(rec["stimulus"], _t0_epoch=rec["t0_epoch"])
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    out = path[:-5] + "_rejudged_%s.json" % stamp
+    if not WC.judgeable(w.get("clock")):
+        # a witness file on receipt time is never judged (A2 (b), 2026-11-11)
+        rec2 = WC.void(dict(rec, judged=None, rejudged_from=os.path.basename(path),
+                            rejudged_at=stamp, previous_verdict=rec.get("verdict")),
+                       w.get("clock"))
+        with open(out, "w", encoding="ascii") as fh:
+            json.dump(rec2, fh, indent=1)
+        return rec2, out
     # A record from before 2026-10-24 has no decoder identity: its pages are then
     # decoded by schema byte alone (reading Q1).
     res = J.judge(info["judge"], frames, rec.get("posts") or [], rec.get("samples") or [],
@@ -698,8 +721,6 @@ def rejudge_file(path):
                                      "detail": "VCM by the sender log %s, sent %s"
                                      % (res["facts"].get("vcm_0x051"), n_sent)})
         res["verdict"] = "INCONCLUSIVE"
-    stamp = time.strftime("%Y%m%dT%H%M%S")
-    out = path[:-5] + "_rejudged_%s.json" % stamp
     rec2 = dict(rec, judged=res, verdict=res["verdict"], rejudged_from=os.path.basename(path),
                 rejudged_at=stamp, previous_verdict=rec.get("verdict"))
     with open(out, "w", encoding="ascii") as fh:
@@ -723,6 +744,8 @@ def main(argv=None):
             j = rec2["judged"]
             print("%-20s %-18s (was %s)  %s" % (rec2["case"], rec2["verdict"], rec2["previous_verdict"],
                                                 os.path.basename(out)))
+            if j is None:
+                continue
             for p_ in j["preconditions"] + j["checks"]:
                 if not p_["ok"]:
                     print("    NOT MET: %s -- %s" % (p_["name"], str(p_.get("detail", ""))[:160]))

@@ -20,7 +20,8 @@ import gi_paths  # noqa: E402  scratch/ folders
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEST = "test_serial_noreset.py"
 FILES = ("serial_noreset.py", "x2_jammer.py", "x2_pins_noreset_check.py", "console_capture.py",
-         "serial_boot_log.py", "gi_paths.py", "bench_held.py", "redact_secrets.py")
+         "serial_boot_log.py", "gi_paths.py", "bench_held.py", "redact_secrets.py",
+         "witness_clock.py")      # x2_jammer imports it since 2026-11-11 (A2 (b))
 OLD = ("        s.dtr = False\n        s.rts = False\n        s.open()\n        s.dtr = False\n"
        "        s.rts = False\n")
 NEW = ("        s.open()            # the kernel asserts both lines: no reset\n"

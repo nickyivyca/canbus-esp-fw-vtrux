@@ -31,6 +31,12 @@ not reset the S3, on Linux too (2026-11-11: the old form, DTR and RTS pre-set
 low, resets it there); `boot-silence` resets it deliberately with esptool's
 USB-JTAG ordering (console_capture.pulse_rts).
 
+Error-frame times are the Kvaser's hardware stamps, on the epoch clock. When they
+are not on it, the run is VOID and nothing more is judged: the witness never
+judges on receipt time (witness_clock.py; the gen-inhibit reviewer's A2 ruling
+(b), 2026-11-11). Witness.times() raises witness_clock.ReceiptClock, which main
+records as the VOID; Witness.recorded() still gives the times on either clock.
+
   py -3.14 gen-inhibit/tools/bench/x2_jammer.py <sub> [...]
 """
 import argparse
@@ -42,6 +48,7 @@ import sys
 import threading
 import time
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import witness_clock as WC  # noqa: E402  never judged on receipt time (A2 (b), 2026-11-11)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
@@ -378,16 +385,24 @@ class Witness(threading.Thread):
         self.join(timeout=2.0)
         self.bus.shutdown()
 
-    def times(self):
-        """Error-frame times on the epoch clock, and which clock was used."""
+    def recorded(self):
+        """Error-frame times, and which clock was used: the hardware stamps when they
+        are on the epoch clock, else receipt time. For the record only."""
         with self.lock:
             e = list(self.err)
         if not e:
-            return [], "none"
+            return [], WC.NONE
         off = statistics.median(r - h for h, r in e)
-        if abs(off) < 2.0:
-            return [h for h, _ in e], "kvaser_hw (median receipt lag %.3f s)" % off
-        return [r for _, r in e], "receipt (hw ts not epoch: offset %.1f s)" % off
+        if abs(off) < WC.MAX_LAG_S:
+            return [h for h, _ in e], WC.hw_note(off, 3)
+        return [r for _, r in e], "%s: offset %.1f s" % (WC.RECEIPT, off)
+
+    def times(self):
+        """recorded(), for a judgement: raises WC.ReceiptClock on receipt time, so the
+        run is VOID and never judged on it (A2 (b), 2026-11-11)."""
+        ts, note = self.recorded()
+        WC.require(note)
+        return ts, note
 
 
 def wican_snap():
@@ -692,6 +707,16 @@ SUBS = {"id": sub_id, "boot-silence": sub_boot_silence, "pulses": sub_pulses,
         "can2-check": sub_can2_check}
 
 
+def run_guarded(sub, a, rec, con, wit):
+    """Run one subcommand. If the witness is on receipt time when a judgement asks for
+    its times (Witness.times() raises WC.ReceiptClock), the run is VOID, with the note."""
+    try:
+        sub(a, rec, con, wit)
+    except WC.ReceiptClock as e:
+        WC.void(rec, e.note)
+        print(rec["verdict"])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("sub", choices=sorted(SUBS))
@@ -719,7 +744,7 @@ def main():
         wit = Witness()
         wit.start()
         time.sleep(1.0)
-        SUBS[a.sub](a, rec, con, wit)
+        run_guarded(SUBS[a.sub], a, rec, con, wit)
     finally:
         try:
             if con.ser is not None:

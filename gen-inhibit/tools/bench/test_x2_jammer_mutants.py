@@ -63,6 +63,7 @@ def run(base, label, text):
     open(os.path.join(d, SRC), "w", encoding="utf-8", newline="").write(text)
     shutil.copy(os.path.join(HERE, TEST), d)
     shutil.copy(os.path.join(HERE, "gi_paths.py"), d)   # the moved tool imports it
+    shutil.copy(os.path.join(HERE, "witness_clock.py"), d)   # and this, since 2026-11-11 (A2 (b))
     r = subprocess.run([sys.executable, "-B", os.path.join(d, TEST)], cwd=d, capture_output=True, text=True)
     fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
     crash = r.stderr.strip().splitlines()[-1][:120] if "Traceback" in r.stderr else ""
