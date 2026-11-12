@@ -625,13 +625,20 @@ bench runs. Emulated-time suites are not.
    Each project's tester sets its marks from measured quiet data, written
    in its test plan with the user's approval, as the load trial's marks
    were. The tester's own timing checks still decide whether a run counts.
-   **The record:** local logs of per-slice pressure, CPU and memory, taken
-   from the same Glances endpoint that feeds Home Assistant but kept on
-   madhouse and out of HA and Seafile unless they turn out to matter
-   (user, 2026-11-12). The Local LLM hosting session is building them.
-   Until they run, a session starting or ending heavy work or a
-   wall-clock test sends its start and end times to the Local LLM hosting
-   session, whose monitor records the window.
+   **The record:** `resource-log`, a user unit on `madhouse-debian`,
+   running since 2026-11-12 (checked by the methodology owner that day).
+   Every 5 s it records each slice's CPU use, CPU, memory and I/O
+   pressure, faults and memory, the same for the whole box, and each
+   NVMe disk's load, from the kernel's own counters. Glances has no
+   per-slice or pressure data, so it is not the source. The record stays
+   on madhouse, one CSV per UTC day in the folder its README names,
+   kept 30 days, out of HA and Seafile unless it turns out to matter
+   (user, 2026-11-12). To judge a failure, run
+   `resource-log window START END` over the failed check's window, with
+   times as epochs or anything `date -d` takes; `--rows` prints every
+   interval. A gap over 10 s in its output means the logger itself was
+   starved or down. It is the Local LLM hosting session's tool
+   (`monitoring/resource-log/README.md` in the Infrastructure library).
 3. **The run guard records, it does not refuse** (user, 2026-11-12). At
    `shared/main` tag `2026.11.11.7`, shared/bench's chain runner still
    refuses a wall-clock check, NOT-RUN with "refused: another wall-clock
