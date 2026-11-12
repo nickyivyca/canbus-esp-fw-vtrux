@@ -1029,6 +1029,30 @@ def _bins_out(bins):
     return [tuple(v) for v in bins.values()]
 
 
+def bin_row(bins, cur_b, cur, t, lag):
+    """One row (stamp t, lag) into the reader's stamp-map bins: per
+    FIT_BIN_S of stamps, [stamp of the least lag, least lag, stamp of the
+    most lag, most lag]. A bin's first row opens it with its own stamp and
+    lag; a later row replaces the least (most) only with a strictly lower
+    (higher) lag. cur_b, cur: what the last call returned (None, None at
+    the start), so a run of rows in one bin skips the dict lookup; a row
+    back in an earlier bin finds that bin's entry. Returns (bin, entry).
+    The one copy, used by the reader (_witness_proc) and by the self-test's
+    scripted bins, and checked on fixed rows (the reviewer's B3,
+    2026-11-12: in record accept_3_20261111T234853_563d the mutant that
+    never updates a bin's least lag was caught only on some timings)."""
+    b = int(t // FIT_BIN_S)
+    if b != cur_b:
+        cur_b, cur = b, bins.get(b)
+        if cur is None:
+            cur = bins[b] = [t, lag, t, lag]
+    if lag < cur[1]:
+        cur[0], cur[1] = t, lag
+    if lag > cur[3]:
+        cur[2], cur[3] = t, lag
+    return cur_b, cur
+
+
 def _witness_proc(acks, spec, folder, conn, mode="classic"):
     """The witness's reader in its own process at ABOVE_NORMAL (F2,
     reviewer 2026-10-23): it only drains the PCAN and writes compact rows
@@ -1100,15 +1124,7 @@ def _witness_proc(acks, spec, folder, conn, mode="classic"):
                     lag_max = lag
                 if lag_min is None or lag < lag_min:
                     lag_min = lag
-                b = int(t // FIT_BIN_S)
-                if b != cur_b:
-                    cur_b, cur = b, bins.get(b)
-                    if cur is None:
-                        cur = bins[b] = [t, lag, t, lag]
-                if lag < cur[1]:
-                    cur[0], cur[1] = t, lag
-                if lag > cur[3]:
-                    cur[2], cur[3] = t, lag
+                cur_b, cur = bin_row(bins, cur_b, cur, t, lag)
                 n += 1
                 since += 1
             elif kind == "failure":
@@ -4242,17 +4258,36 @@ def self_test():
 
     def stats_of(rows_read):
         """[(row, read host s)] -> reader_stats with its bins."""
-        bins = {}
+        bins, cb, c = {}, None, None
         for r, rd in rows_read:
-            lag, b = rd - r[0], int(r[0] // FIT_BIN_S)
-            c = bins.setdefault(b, [r[0], lag, r[0], lag])
-            if lag < c[1]:
-                c[0], c[1] = r[0], lag
-            if lag > c[3]:
-                c[2], c[3] = r[0], lag
+            cb, c = bin_row(bins, cb, c, r[0], rd - r[0])
         lags = [rd - r[0] for r, rd in rows_read]
         return reader_stats(len(lags), len(lags), 0.01, 0.0, 1.0,
                             min(lags), max(lags), lags[-1], _bins_out(bins))
+
+    # the reader's per-bin update on fixed rows, no timing in it (the
+    # reviewer's B3, 2026-11-12): (stamp, lag) in the order the reader
+    # reads them. Bin 10: a later row with a lower lag takes the least, a
+    # later one with a higher lag the most, a row in between changes
+    # nothing; bin 11 opens with its own row; a row back in bin 10 with the
+    # lowest lag yet takes its least, and one with the same lag does not
+    fixed = [(10.1, 0.005), (10.4, 0.002), (10.6, 0.009), (10.8, 0.003),
+             (11.2, 0.004), (10.9, 0.001), (10.95, 0.001)]
+    fb, fcb, fc = {}, None, None
+    for t, lag in fixed:
+        fcb, fc = bin_row(fb, fcb, fc, t, lag)
+    want = {10: [10.9, 0.001, 10.6, 0.009], 11: [11.2, 0.004, 11.2, 0.004]}
+    check(fb == want,
+          "stamp map bins on fixed rows: a later row with a lower lag takes "
+          "the bin's least, a higher one its most, a row back in an earlier "
+          "bin updates that bin, an equal lag changes nothing -> %s" % fb)
+    # (the equal-lag row left out: read time less stamp is not exact in
+    # floating point, so a tie there is not a tie)
+    fr = [(_bframe(t, 0x7F4, k), t + lag) for k, (t, lag) in enumerate(fixed[:-1])]
+    got = sorted(stats_of(fr)["bins"])
+    check([tuple(round(x, 9) for x in v) for v in got]
+          == [tuple(want[10]), tuple(want[11])],
+          "the self-test's scripted bins are the reader's (bin_row) -> %s" % got)
 
     class _MW(object):
         """A scripted witness with a stamp map: (rows read, read lag) per
@@ -4596,8 +4631,18 @@ MUTANTS = [
      "                                          lag_max, lag, _bins_out(bins))",
      "                                          lag_max, lag, [])"),
     ("map: a bin's least lag never updated",
-     "                if lag < cur[1]:\n                    cur[0], cur[1] = t, lag",
-     "                if False:\n                    cur[0], cur[1] = t, lag"),
+     "    if lag < cur[1]:\n        cur[0], cur[1] = t, lag",
+     "    if False:\n        cur[0], cur[1] = t, lag"),
+    ("map: a bin's most lag never updated (B3)",
+     "    if lag > cur[3]:\n        cur[2], cur[3] = t, lag",
+     "    if False:\n        cur[2], cur[3] = t, lag"),
+    ("map: a row back in an earlier bin opens it again (B3)",
+     "        cur_b, cur = b, bins.get(b)\n", "        cur_b, cur = b, None\n"),
+    ("map: an equal lag replaces the bin's least (B3)",
+     "    if lag < cur[1]:\n        cur[0], cur[1] = t, lag",
+     "    if lag <= cur[1]:\n        cur[0], cur[1] = t, lag"),
+    ("map: the reader bins no rows (B3)",
+     "                cur_b, cur = bin_row(bins, cur_b, cur, t, lag)\n", "\n"),
     ("map: stamps to host and back inverted",
      "        return (h - self.a + self.b * self.s0) / (1.0 + self.b)",
      "        return (h + self.a + self.b * self.s0) / (1.0 + self.b)"),
