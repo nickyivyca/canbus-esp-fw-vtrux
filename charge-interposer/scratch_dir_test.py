@@ -53,13 +53,15 @@ folder (scratch_dir.run), inside a stand-in worktree there (a folder with a
      candidates;
      the current pins, session-compact/, a live run folder and a
      scratchpad and a running partial install are not, and nothing is
-     removed. --apply refuses when the
-     wall-clock check says busy, removing nothing; when clear it removes
-     exactly the candidates, read-only git trees included. An empty tool
-     folder a run started in after the report stays (rmdir only).
-  8. The wall-clock check: the "No builds" line cleared ("-- ...") is
-     clear and set is not; a Python process running charger_sim.py is
-     seen.
+     removed. --apply outside build.slice (a made-up /proc/self/cgroup)
+     refuses, printing the systemd-run command, removing nothing; in
+     build.slice it removes exactly the candidates, read-only git trees
+     included, and the live run folder stays. An empty tool folder a run
+     started in after the report stays (rmdir only).
+  8. (retired 2026-11-12) The wall-clock check: --apply no longer asks the
+     bench lock, the "No builds" line or the process list (AGENTS.md
+     "Parallel work on the shared machine"; the charge-interposer
+     reviewer, 2026-11-12).
 
     py -3.14 -B charge-interposer/scratch_dir_test.py [--can-fail]
 
@@ -551,19 +553,32 @@ def case_sweep(base):
         t["empty_tool"], wt)]), "")
     check(M.EMPTY_TOOL in tool_row and " 0 files" in tool_row,
           "7. an empty tool folder's row says so -> %s" % tool_row.strip()[:120])
-    lines = []
-    rc = M.sweep([wt], apply=True, guard=lambda: (False, ["busy (test)"]),
-                 out=lines.append)
-    check(rc == 2 and all(os.path.isdir(p) for p in t.values())
-          and "REFUSED" in "\n".join(lines),
-          "7. --apply refused when the wall-clock check says busy, nothing removed")
-    lines = []
+    # --apply runs in build.slice (Linux): a made-up /proc/self/cgroup
+    cg_app, cg_build = os.path.join(base, "cg_app"), os.path.join(base, "cg_build")
+    for p, s in ((cg_app, "app.slice"), (cg_build, "build.slice")):
+        with open(p, "w") as f:
+            f.write("0::/user.slice/user-1000.slice/user@1000.service/%s/x.scope\n" % s)
+    keep = (M.APPLY_SLICE, M.CGROUP)
+    M.APPLY_SLICE, M.CGROUP = "build.slice", cg_app
+    try:
+        lines = []
+        rc = M.sweep([wt], apply=True, out=lines.append)
+        text = "\n".join(lines)
+        check(rc == 2 and all(os.path.isdir(p) for p in t.values())
+              and "REFUSED" in text and "systemd-run --user --scope "
+              "--slice=build.slice" in text and "app.slice" in text,
+              "7. --apply outside build.slice refused with the command, nothing "
+              "removed")
+        lines = []
 
-    def sweep_guard():
-        # a run starts in the raced tool folder after the report
-        open(os.path.join(t["raced"], "started.txt"), "w").close()
-        return True, ["clear (test)"]
-    rc, text = quietly(M.sweep, [wt], apply=True, guard=sweep_guard, out=lines.append)
+        def before_apply():
+            # a run starts in the raced tool folder after the report
+            open(os.path.join(t["raced"], "started.txt"), "w").close()
+        M.CGROUP = cg_build
+        rc, text = quietly(M.sweep, [wt], apply=True, before_apply=before_apply,
+                           out=lines.append)
+    finally:
+        M.APPLY_SLICE, M.CGROUP = keep
     gone = sorted(k for k, p in t.items() if not os.path.exists(p))
     check(rc == 0 and gone == ["empty_tool", "fin", "old_ct", "oldfin", "partial"]
           and "LEFTOVER" not in text,
@@ -575,38 +590,6 @@ def case_sweep(base):
           "and is reported (rmdir only)")
     check(os.path.isdir(t["live"]),
           "7. a tool folder still holding a live run's folder stays")
-
-
-def case_wallclock(base):
-    rid = os.path.join(base, "rid")
-    os.makedirs(os.path.join(rid, "firmware"))
-    hold = os.path.join(rid, "firmware", "bench-holder.md")
-    keep = os.environ.get("REVERSE_IT_DIR")
-    os.environ["REVERSE_IT_DIR"] = rid
-    try:
-        with open(hold, "w") as f:
-            f.write("## No builds\n\n**No builds:** -- (cleared 10:00)\n")
-        ok_clear = M._no_builds_clear()[0]
-        with open(hold, "w") as f:
-            f.write("## No builds\n\n**No builds:** set 10:00 by a tester\n")
-        ok_set = M._no_builds_clear()[0]
-    finally:
-        if keep is None:
-            os.environ.pop("REVERSE_IT_DIR", None)
-        else:
-            os.environ["REVERSE_IT_DIR"] = keep
-    check(ok_clear is True and ok_set is False,
-          "8. No builds: cleared is clear (%s), set is not (%s)" % (ok_clear, ok_set))
-    p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
-                          "charger_sim.py"])
-    try:
-        time.sleep(0.5)
-        ok, why = M._sims_running()
-    finally:
-        p.kill()
-        p.wait()
-    check(not ok and ("pid %d" % p.pid) in why,
-          "8. a Python process running charger_sim.py is seen -> %s" % why)
 
 
 def case_nogit(base):
@@ -624,7 +607,7 @@ def case_nogit(base):
 
 
 CASES = [case_git, case_long, case_leftover, case_owner, case_prune,
-         case_run, case_sweep, case_wallclock, case_nogit, case_make_retried,
+         case_run, case_sweep, case_nogit, case_make_retried,
          case_length, case_ceiling]
 
 
@@ -698,14 +681,13 @@ MUTANTS = [
     ("the sweep takes scratchpads",
      'out.append((tp, "other", "not a run folder: left alone"))',
      'out.append((tp, "candidate", "x"))'),
-    ("the sweep ignores the wall-clock check",
-     "    if not ok:\n        out(\"REFUSED", "    if False:\n        out(\"REFUSED"),
-    ("No builds always clear",
-     '                    return v.startswith("--"), "No builds: %s" % v[:60]',
-     '                    return True, "No builds: %s" % v[:60]'),
-    ("simulators never seen",
-     "        if pid.isdigit() and int(pid) != me and \\",
-     "        if False and \\"),
+    ("the sweep takes a live run folder",
+     '"candidate" if st == "finished" else "kept",',
+     '"candidate" if st != "no-owner" else "kept",'),
+    ("--apply outside build.slice",
+     "        if here != APPLY_SLICE:", "        if False:"),
+    ("--apply's slice not read",
+     "        here = current_slice()", "        here = APPLY_SLICE"),
     ("make(): delete-pending (PermissionError) not tried again",
      "        except (FileNotFoundError, PermissionError):\n            if attempt == MAKE_TRIES",
      "        except FileNotFoundError:\n            if attempt == MAKE_TRIES"),

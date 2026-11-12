@@ -2020,10 +2020,33 @@ def priority_class(pid):
         k32.CloseHandle(h)
 
 
+def cgroup_slice(pid):
+    """-> the innermost *.slice in /proc/<pid>/cgroup's unified ("0::")
+    line, or None (no such line, no slice, or unreadable)."""
+    try:
+        with open("/proc/%d/cgroup" % int(pid), encoding="utf-8",
+                  errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    for ln in text.splitlines():
+        if ln.startswith("0::"):
+            s = [p for p in ln[3:].split("/") if p.endswith(".slice")]
+            return s[-1] if s else None
+    return None
+
+
 def priority_premise(named_pids):
-    """-> (ok, why): every (name, pid) read back at ABOVE_NORMAL."""
+    """-> (ok, why): on Windows, every (name, pid) read back at
+    ABOVE_NORMAL. Elsewhere (Linux, AGENTS.md "Parallel work on the shared
+    machine", point 1) each one's slice, read from /proc/<pid>/cgroup and
+    recorded, never a refusal (the charge-interposer reviewer,
+    2026-11-12): the run is placed by the scope it was started in."""
     if os.name != "nt":
-        return (True, "process priority: not applicable (not Windows)")
+        return (True, "process priority (not Windows): slices read from "
+                "/proc/<pid>/cgroup, recorded, not a premise: %s" % ", ".join(
+                    "%s in %s" % (n, cgroup_slice(p) or "unreadable")
+                    for n, p in named_pids))
     bad, good = [], []
     for name, pid in named_pids:
         c = priority_class(pid)

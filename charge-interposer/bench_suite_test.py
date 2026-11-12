@@ -58,6 +58,29 @@ from vtrux_bench.run.model import CheckRun, validate      # noqa: E402
 # (2026-10-31: before, a fixed folder in the machine temp folder)
 TMP = None
 
+# No test here runs the real canctl or reads the real sysfs (canchg_mode.py,
+# the bench suite's X2 hooks on Linux): its canctl is a command that changes
+# nothing and exits 9, its sysfs roots a folder that does not exist, and the
+# tests that drive the hooks stub canchg_mode.start and .end (_canchg_stubs).
+B.canchg_mode.CANCTL = [sys.executable, "-B", "-c", "import sys; sys.exit(9)"]
+B.canchg_mode.SYSFS_USB = B.canchg_mode.SYSFS_NET = os.path.join(HERE, "no-such-sysfs")
+B.canchg_mode.BIND_WAIT_S = 0
+
+
+def _canchg_stubs(calls):
+    """canchg_mode.start / .end replaced by stubs recording (step, environ)
+    in calls and returning ok; -> the originals, to put back."""
+    M = B.canchg_mode
+    keep = (M.start, M.end)
+
+    def stub(step):
+        def fn(environ, logdir, platform=None):
+            calls.append((step, dict(environ)))
+            return dict(ok=True, detail="canchg %s stub" % step, found={})
+        return fn
+    M.start, M.end = stub("start"), stub("end")
+    return keep
+
 
 class _Chk:
     def __init__(self, cid):
@@ -681,7 +704,9 @@ def test_suites():
     #      madhouse rebuild of gen-inhibit 7f2d5032 _man; reviewer 2026-11-11)
     # 273: cf.bench-charger-silent and cf.bench-rx-order (the gs_usb stamp's
     #      32-bit wrap unwrapped, the reviewer's E3, 2026-11-12)
-    assert len(seen) == 273, "checks across the suites: %d" % len(seen)
+    # 275: canchg-mode-test and its -canfail (the bench run sets canchg's
+    #      mode through canctl; the reviewer's canchg-mode batch, 2026-11-12)
+    assert len(seen) == 275, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -1051,12 +1076,49 @@ def test_wican_board():
     assert b.identify(im, None, TMP) == WT.MAN_SHA
     d = os.path.join(TMP, "wican_hooks")
     os.makedirs(d, exist_ok=True)
-    x2 = b.on_start("x2", b.images["bridge"], None, d)
+    keep = _canchg_stubs([])            # the X2's canchg step: test_canchg_mode_hooks
+    try:
+        x2 = b.on_start("x2", b.images["bridge"], None, d)
+    finally:
+        B.canchg_mode.start, B.canchg_mode.end = keep
     assert x2["ok"] is True and "no start step" in x2["detail"], x2
     for hook, flag in ((b.on_start, "--first"), (b.on_end, "--want")):
         out = hook(W.BOARD, im, None, d)
         a = WT.calls(os.path.dirname(os.environ["FAKE_WICAN_ARGV"]))[-1]
         assert out["ok"] is True and a[a.index(flag) + 1] == W.IMAGE, (out, a)
+
+
+def test_canchg_mode_hooks():
+    """The bench suite's hooks set canchg's mode (canchg_mode.py; tester,
+    2026-11-12, the reviewer's canchg-mode batch): on the X2, on_start runs
+    canchg_mode.start and on_end canchg_mode.end, once each, with the
+    settings' canchg_device as VTRUX_CANCHG_DEVICE; on the WiCAN neither
+    runs (bench_wican's hooks alone). The emulated and harness suites have
+    no hooks. canchg_mode_test.py tests the steps themselves, and the end
+    step running whatever the WiCAN's hook returned or raised."""
+    s = _settings()
+    s["canchg_device"] = dict(CHG_DEV)
+    want = _ORIG["canchg_env"](s)
+    assert want, want
+    b = B.bench(s)
+    W = B.bench_wican
+    d = os.path.join(TMP, "canchg_hooks")
+    os.makedirs(d, exist_ok=True)
+    calls = []
+    keep = _canchg_stubs(calls)
+    try:
+        out = b.on_start("x2", b.images["bridge"], None, d)
+        assert out["ok"] is True and calls == [("start", want)], (out, calls)
+        out = b.on_end("x2", b.images["bridge"], None, d)
+        assert out["ok"] is True and calls == [("start", want), ("end", want)], (out, calls)
+        im = b.images[W.IMAGE]
+        for hook in (b.on_start, b.on_end):
+            hook(W.BOARD, im, None, d)
+        assert len(calls) == 2, calls
+    finally:
+        B.canchg_mode.start, B.canchg_mode.end = keep
+    for su in (B.emulated(s), B.harness(s)):
+        assert su.on_start is None and su.on_end is None, (su.name, su.on_start, su.on_end)
 
 
 # a made-up Innomaker serial (24 hex digits, the real ones' shape)
@@ -1853,7 +1915,8 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
-         test_m_lanes_host, test_idle_safe, test_canchg_env, test_esptool_env]
+         test_m_lanes_host, test_idle_safe, test_canchg_env, test_esptool_env,
+         test_canchg_mode_hooks]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -2048,6 +2111,24 @@ _ORIG["_Build.mpy"] = B._Build.mpy
 _ORIG["M_LANES_HOSTS"] = B.M_LANES_HOSTS
 _ORIG["canchg_env"] = B.canchg_env
 _ORIG["esptool_env"] = B.esptool_env
+_ORIG["canchg_mode.hooks"] = B.canchg_mode.hooks
+
+
+def _hooks_start_only(on_start, on_end, environ, **kw):
+    return _ORIG["canchg_mode.hooks"](on_start, on_end, environ, **kw)[0], on_end
+
+
+def _hooks_end_only(on_start, on_end, environ, **kw):
+    return on_start, _ORIG["canchg_mode.hooks"](on_start, on_end, environ, **kw)[1]
+
+
+def _hooks_no_device(on_start, on_end, environ, **kw):
+    return _ORIG["canchg_mode.hooks"](on_start, on_end, {}, **kw)
+
+
+def _hooks_on_wican(on_start, on_end, environ, **kw):
+    return _ORIG["canchg_mode.hooks"](on_start, on_end, environ,
+                                      board=B.bench_wican.BOARD, **kw)
 
 
 def _esptool_unchecked(settings):
@@ -2378,6 +2459,15 @@ MUTANTS = {
          "identify never reads the WiCAN"),
         ("bench", _wrap_suite("bench", _wican_flasher_not_the_load),
          "the WiCAN's flasher is not bench_wican's load")],
+    "test_canchg_mode_hooks": [
+        ("canchg_mode.hooks", _hooks_start_only,
+         "the canchg end step left out of the bench suite's end hook"),
+        ("canchg_mode.hooks", _hooks_end_only,
+         "the canchg start step left out of the bench suite's start hook"),
+        ("canchg_mode.hooks", _hooks_no_device,
+         "the hooks not given the settings' canchg_device"),
+        ("canchg_mode.hooks", _hooks_on_wican,
+         "the canchg step on the WiCAN, not the X2")],
     "test_script_judge": [
         ("script_judge", _pass_all, "passes everything"),
         ("script_judge", _rc0_pass,

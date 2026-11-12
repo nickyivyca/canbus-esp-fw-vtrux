@@ -90,10 +90,13 @@ run has started in since the report stays (the charge-interposer reviewer,
 2026-11-02: 38 were left in the tester's worktree). Never touched: the
 current pins' folders, session-compact/, a live or unowned run folder, and
 anything else in scratch/ (people's scratchpads), which is listed with its
-file count as not a run folder. --apply refuses while the bench lock is
-held, the bench-holder "No builds" line is set or a simulator or bench
-script is running (AGENTS.md: never during a wall-clock run), and when it
-cannot tell.
+file count as not a run folder: a live run's folder is never a candidate,
+so --apply cannot remove one. --apply runs alongside anything else,
+wall-clock runs included (AGENTS.md "Parallel work on the shared machine",
+user 2026-11-12; the bench-lock, "No builds" and simulator checks it had
+before went with that rule, the charge-interposer reviewer, 2026-11-12).
+On Linux it is heavy disk work and refuses unless this process is in
+build.slice, printing the systemd-run command that puts it there.
 
 Test: scratch_dir_test.py (with --can-fail). Each harness file that uses
 this module is run with a read-only git tree planted in every folder it
@@ -108,7 +111,6 @@ import os
 import shutil
 import socket
 import stat
-import subprocess
 import sys
 import tempfile
 import time
@@ -135,8 +137,10 @@ OWNER = ".scratch-owner.json"
 NEVER = ("session-compact",)
 PIN_DIRS = {"can-tools": "can-tools", "canre": "canre"}   # scratch dir -> pins.json key
 WORKTREES = ("interposer-reviewer", "interposer-implementor", "interposer-tester")
-SIM_SCRIPTS = ("charger_sim.py", "vehicle_sim.py", "interposer_sim.py",
-               "run_scenario.py", "vtrux_bench.run", "vtrux_bench/run")
+# --apply runs in this slice on Linux (the charge-interposer reviewer,
+# 2026-11-12); read from CGROUP. None: no placement check (off Linux)
+APPLY_SLICE = "build.slice" if sys.platform.startswith("linux") else None
+CGROUP = "/proc/self/cgroup"
 
 
 def worktree(start=None):
@@ -606,94 +610,24 @@ def default_worktrees():
             if os.path.isdir(os.path.join(base, w))]
 
 
-def _bench_lock_free():
-    # the pinned shared/bench (port step 2a: no copy on this branch);
-    # shared_pin sits beside this file, so its folder is on sys.path
-    import shared_pin
+def current_slice():
+    """The innermost *.slice this process is in, from CGROUP's unified
+    ("0::") line, or None."""
     try:
-        bench = shared_pin.folder("shared/bench")
-    except shared_pin.SharedPinError as e:
-        return False, "no pinned shared/bench to ask the lock: %s" % e
-    env = dict(os.environ, PYTHONPATH=bench, PYTHONDONTWRITEBYTECODE="1")
-    try:
-        r = subprocess.run([sys.executable, "-B", "-m", "vtrux_bench.bench_lock",
-                            "status"], capture_output=True, text=True, env=env,
-                           timeout=60)
-    except (OSError, subprocess.SubprocessError) as e:
-        return False, "bench_lock status failed: %s" % e
-    for line in r.stdout.splitlines():
-        if line.startswith("holder:"):
-            free = line.strip() == "holder: the lock is free"
-            return free, line.strip()
-    return False, "bench_lock status gave no holder line (rc %d)" % r.returncode
+        with open(CGROUP, encoding="utf-8") as f:
+            for ln in f:
+                if ln.startswith("0::"):
+                    s = [p for p in ln[3:].strip().split("/") if p.endswith(".slice")]
+                    return s[-1] if s else None
+    except OSError:
+        pass
+    return None
 
 
-def _no_builds_clear():
-    rid = os.environ.get("REVERSE_IT_DIR")
-    if not rid:
-        return False, "REVERSE_IT_DIR is not set: cannot read bench-holder.md"
-    try:
-        with open(os.path.join(rid, "firmware", "bench-holder.md"),
-                  encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("**No builds:**"):
-                    v = line[len("**No builds:**"):].strip()
-                    return v.startswith("--"), "No builds: %s" % v[:60]
-    except OSError as e:
-        return False, "bench-holder.md unreadable: %s" % e
-    return False, "bench-holder.md has no No builds line"
-
-
-def _sims_running():
-    """(none running, why). Python processes running a simulator or the
-    chain runner, this one excluded."""
-    me = os.getpid()
-    lines = []
-    if os.name == "nt":
-        ps = ("Get-CimInstance Win32_Process -Filter \"Name='python.exe' or "
-              "Name='py.exe' or Name='pythonw.exe'\" | ForEach-Object { "
-              "'{0} {1}' -f $_.ProcessId, $_.CommandLine }")
-        try:
-            r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                               capture_output=True, text=True, timeout=60)
-        except (OSError, subprocess.SubprocessError) as e:
-            return False, "cannot list processes: %s" % e
-        if r.returncode:
-            return False, "cannot list processes (rc %d)" % r.returncode
-        lines = r.stdout.splitlines()
-    elif os.path.isdir("/proc"):
-        for n in os.listdir("/proc"):
-            if not n.isdigit():
-                continue
-            try:
-                with open("/proc/%s/comm" % n) as f:
-                    if not f.read().startswith("python"):
-                        continue
-                with open("/proc/%s/cmdline" % n, "rb") as f:
-                    lines.append("%s %s" % (n, f.read().replace(b"\0", b" ")
-                                            .decode("utf-8", "replace")))
-            except OSError:
-                pass
-    else:
-        return False, "cannot list processes on this system"
-    hits = []
-    for line in lines:
-        pid, _, cmd = line.strip().partition(" ")
-        if pid.isdigit() and int(pid) != me and \
-                any(s in cmd.replace("\\", "/") for s in SIM_SCRIPTS):
-            hits.append("pid %s" % pid)
-    return not hits, ("running: " + ", ".join(hits)) if hits else "none running"
-
-
-def wallclock_clear():
-    """(clear, [reasons]). Clear only when every check says so."""
-    checks = [_bench_lock_free(), _no_builds_clear(), _sims_running()]
-    return all(ok for ok, _ in checks), [why for _, why in checks]
-
-
-def sweep(worktrees, apply=False, guard=wallclock_clear, out=print):
+def sweep(worktrees, apply=False, before_apply=None, out=print):
     """Report (and with apply, remove) the candidates. Returns the exit code:
-    0 done, 1 something left, 2 refused."""
+    0 done, 1 something left, 2 refused. before_apply, if given, is called
+    once just before the removal (the tests start a run there)."""
     tot = {"candidate": [0, 0, 0, 0], "all": [0, 0, 0, 0]}
     cands = []
     for wt in worktrees:
@@ -720,13 +654,18 @@ def sweep(worktrees, apply=False, guard=wallclock_clear, out=print):
     if not apply:
         out("REPORT ONLY: nothing removed. --apply removes the candidates.")
         return 0
-    ok, why = guard()
-    for w in why:
-        out("   wall-clock check: %s" % w)
-    if not ok:
-        out("REFUSED: --apply is not run during a wall-clock run, or when that "
-            "cannot be told")
-        return 2
+    if APPLY_SLICE:
+        here = current_slice()
+        if here != APPLY_SLICE:
+            out("REFUSED: --apply is heavy disk work and runs in %s (AGENTS.md "
+                "\"Parallel work on the shared machine\"); this process is in %s. "
+                "Run: systemd-run --user --scope --slice=%s -- %s -B %s sweep "
+                "--apply ..." % (APPLY_SLICE, here, APPLY_SLICE,
+                                 os.path.basename(sys.executable),
+                                 os.path.relpath(os.path.abspath(__file__))))
+            return 2
+    if before_apply is not None:
+        before_apply()
     left = kept = 0
     for p, empty_tool in cands:
         if empty_tool:

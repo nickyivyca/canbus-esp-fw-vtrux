@@ -1394,28 +1394,76 @@ def set_witness(wit, acks):
     return w
 
 
-# The witness reader's and the node's raised priority on Linux: not yet.
-# madhouse's form is bench.slice under the user manager (AGENTS.md "Builds
-# during wall-clock tests" point 4, not written yet; the methodology owner,
-# 2026-11-11), so until it lands above_normal() raises nothing there and
-# says so, and F2's mutant runs on Windows only (the reviewer, 2026-11-11).
-PRIO_NOT_APPLICABLE = ("not applicable (Linux: bench.slice, AGENTS.md "
-                       "point 4, not yet written)")
+# F2's Linux form (the charge-interposer reviewer, 2026-11-12; AGENTS.md
+# "Parallel work on the shared machine", point 1): the witness reader and
+# the node place themselves in bench.slice. Each asks the user manager for
+# a transient scope in that slice holding its own pid (StartTransientUnit,
+# through busctl, as `systemd-run --scope` does for a new command), then
+# reads back from /proc/self/cgroup where it landed. A process priority
+# would not do it: nice only ranks processes inside one cgroup.
+BENCH_SLICE = "bench.slice"
+BUSCTL = ["busctl"]
+CGROUP_SELF = "/proc/self/cgroup"
+
+
+def cgroup_slice(text):
+    """The innermost *.slice in a /proc/<pid>/cgroup text, or None."""
+    for ln in (text or "").splitlines():
+        if ln.startswith("0::"):
+            s = [p for p in ln[3:].strip().split("/") if p.endswith(".slice")]
+            return s[-1] if s else None
+    return None
+
+
+def slice_of(pid=None):
+    """The slice of this process (or of pid), read from its cgroup file."""
+    path = CGROUP_SELF if pid is None else "/proc/%d/cgroup" % pid
+    try:
+        with open(path, encoding="utf-8") as f:
+            return cgroup_slice(f.read())
+    except OSError:
+        return None
+
+
+def place_in_slice(slice_name=BENCH_SLICE):
+    """This process into slice_name, in a transient scope of its own;
+    -> the slice read back afterwards (slice_name when it took)."""
+    import subprocess
+    if slice_of() == slice_name:
+        return slice_name
+    pid = os.getpid()
+    try:
+        subprocess.run(BUSCTL + [
+            "--user", "call", "org.freedesktop.systemd1",
+            "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+            "StartTransientUnit", "ssa(sv)a(sa(sv))",
+            "vtrux-vport-%d.scope" % pid, "fail", "2", "PIDs", "au", "1",
+            str(pid), "Slice", "s", slice_name, "0"],
+            capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for _ in range(40):                 # the move lands as the job runs
+        if slice_of() == slice_name:
+            return slice_name
+        time.sleep(0.05)
+    return slice_of()
 
 
 def prio_text(p):
     """A priority as above_normal() gave it -> text for a line."""
     if isinstance(p, int):
         return "%s (0x8000 = ABOVE_NORMAL)" % hex(p)
-    return str(p) if p else "unknown"
+    if p == BENCH_SLICE:
+        return "in %s (read back from its cgroup)" % BENCH_SLICE
+    return ("NOT IN %s: %s" % (BENCH_SLICE, p)) if p else "unknown"
 
 
 def above_normal():
     """This process to ABOVE_NORMAL on Windows (bench_hold12's helper),
     read back; -> the class, or None if it could not be set. On Linux,
-    PRIO_NOT_APPLICABLE: nothing is raised yet."""
+    into bench.slice (place_in_slice) -> the slice read back."""
     if os.name != "nt":
-        return PRIO_NOT_APPLICABLE
+        return place_in_slice(BENCH_SLICE)
     import ctypes
     from ctypes import wintypes
     k32 = ctypes.windll.kernel32
@@ -3470,16 +3518,20 @@ def self_test():
     # complete and in order with nothing leaking across a boundary
     w = Witness(spec=(600, ((150, PCAN_QOVERRUN), (450, PCAN_QOVERRUN)),
                       None, 2000.0))
-    want_prio = 0x8000 if os.name == "nt" else PRIO_NOT_APPLICABLE
-    check(w.pid != os.getpid() and w.prio == want_prio,
+    want_prio = 0x8000 if os.name == "nt" else BENCH_SLICE
+    # Linux: what the reader says is checked against its cgroup, read here
+    # from outside it, so a claim with no placement behind it fails
+    seen = want_prio if os.name == "nt" else slice_of(w.pid)
+    check(w.pid != os.getpid() and w.prio == want_prio and seen == want_prio,
           "can-fail: the witness reader is its own process (pid %s, this "
-          "one %d), its priority %s (Windows: ABOVE_NORMAL; Linux: not "
-          "raised yet, and says so)" % (w.pid, os.getpid(),
-                                        prio_text(w.prio)))
+          "one %d), its priority %s (Windows: ABOVE_NORMAL; Linux: in %s, "
+          "its cgroup read from outside -> %s)"
+          % (w.pid, os.getpid(), prio_text(w.prio), BENCH_SLICE, seen))
     check(prio_text(0x8000).startswith("0x8000")
-          and prio_text(PRIO_NOT_APPLICABLE) == PRIO_NOT_APPLICABLE
+          and prio_text(BENCH_SLICE).startswith("in bench.slice")
+          and prio_text("app.slice") == "NOT IN bench.slice: app.slice"
           and prio_text(None) == "unknown",
-          "the priority line: a class in hex, Linux's text as it is")
+          "the priority line: a class in hex, Linux's slice as read back")
     wins = []
     for _k in range(8):
         time.sleep(0.08)
@@ -4669,20 +4721,22 @@ MUTANTS = [
      "               \"witness complete\","),
 ]
 # The priority mutant runs where its code runs (the reviewer, 2026-11-11):
-# F2's on Windows; on Linux, where nothing is raised until AGENTS.md point
-# 4's bench.slice lands, one that makes Linux claim a raise it never made.
+# F2's ABOVE_NORMAL on Windows; on Linux (F2's Linux form, the reviewer,
+# 2026-11-12), the reader claiming bench.slice without placing itself there,
+# which its cgroup, read from outside, gives away. Run from a process that
+# is itself in bench.slice, the Linux mutant would not show: the self-test
+# runs in build.slice (the harness's placement) or a terminal's app.slice.
 PRIO_MUTANT = {
     "nt": ("F2: the reader not at ABOVE_NORMAL",
            "    prio = above_normal()\n    try:\n        reader = _open_witness_reader(",
            "    prio = None\n    try:\n        reader = _open_witness_reader("),
-    "posix": ("the Linux priority claims it was raised",
-              "    if os.name != \"nt\":\n        return PRIO_NOT_APPLICABLE",
-              "    if os.name != \"nt\":\n        return 0x8000"),
+    "posix": ("F2 (Linux): the reader claims bench.slice without placing itself",
+              "    if os.name != \"nt\":\n        return place_in_slice(BENCH_SLICE)",
+              "    if os.name != \"nt\":\n        return BENCH_SLICE"),
 }
 PRIO_SKIPPED = {
-    "nt": "the Linux priority mutant (Linux code only)",
-    "posix": "F2's ABOVE_NORMAL mutant: the Linux form waits on AGENTS.md "
-             "point 4's bench.slice",
+    "nt": "F2's Linux mutant (Linux code only)",
+    "posix": "F2's ABOVE_NORMAL mutant (Windows code only)",
 }
 MUTANTS.append(PRIO_MUTANT["nt" if os.name == "nt" else "posix"])
 

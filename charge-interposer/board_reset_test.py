@@ -531,10 +531,17 @@ def no_trip_cases(R):
 
 
 def priority_cases(R):
-    """The sims and run_scenario at ABOVE_NORMAL, read back (Windows)."""
+    """The sims and run_scenario at ABOVE_NORMAL, read back (Windows); on
+    Linux each one's slice is read and recorded, never refused."""
     if os.name != "nt":
+        line = [ln for ln in open("/proc/self/cgroup").read().splitlines()
+                if ln.startswith("0::")] or [""]
+        own = [p for p in line[0].split("/")
+               if p.endswith(".slice")][-1:] or ["unreadable"]
         ok, why = R.priority_premise([("x", os.getpid())])
-        check(ok and "not applicable" in why, "not Windows: not applicable")
+        check(ok and ("x in %s" % own[0]) in why,
+              "not Windows: the slice is read and recorded, no refusal -> %s"
+              % why)
         return
     child = subprocess.Popen([sys.executable, "-c",
                               "import time; time.sleep(20)"])
