@@ -252,7 +252,7 @@ way, the Holder is not its own.
   Innomaker is on the charger bus (`canchg`). It is named by its `canctl`
   role, `canmain`, once `canctl`'s redesign is installed (user, 2026-11-11,
   in the canctl plan, reverse-it
-  `android-app/notes/artifacts/madhouse-bench-canctl.md`: renamed from
+  `tools/plans/madhouse-bench-canctl.md`: renamed from
   `canmain2`, made in this spec at the move to madhouse-debian, with the
   Linux lock code); its serial is in
   `$REVERSE_IT_DIR/firmware/bench-holder.md`, not here.
