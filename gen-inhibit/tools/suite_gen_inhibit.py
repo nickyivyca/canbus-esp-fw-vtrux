@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Gen-inhibit's two suites for the shared chain runner (shared/bench, vtrux_bench.run,
-pinned at shared/main tag 2026.11.11 (79e5f7c6; before it b9896a0 on
-charge-interposer/main). That core's on_start / on_end board steps reboot the WiCAN at
+pinned at shared/main tag 2026.11.11.7 (a0e12584; before it 2026.11.11 (79e5f7c6), and
+b9896a0 on charge-interposer/main). From 2026.11.11.2 its bench lock runs on Linux, the
+bench host's system (user, 2026-11-11). That core's on_start / on_end board steps reboot the WiCAN at
 each run's start and release; it refuses an esptool write unless settings.esptool.chip
 names the X2's type and MAC, the MAC living only in the local settings, never in a
 published file; it carries --resume's carry rules (cleared by both reviewers
@@ -176,13 +177,6 @@ def wican_ssid(bench_holder):
     return m.group(1)
 
 
-# Cross-project dependency (gen-inhibit reviewer, 2026-10-24): the charge-interposer's
-# runner reads the WiCAN's identity, read-only, from gi_images in the standing
-# settings (chain_settings_NICKY-XPS.json), image_bin()'s choice of exactly one
-# wican-fw_obd_*.bin in build-tester-man/ (which also holds ota_data_initial.bin), and
-# the ELF SHA-256 at offset 0xB0 of that image (elf_sha256_of_bin; its own copy is
-# build_lookup.elf_sha256_of_bin). bench/wican_reboot.py and bench/page_state.py are
-# the rest (their docstrings). A change to any of them goes to both reviewers first.
 def image_bin(folder):
     got = sorted(glob.glob(os.path.join(folder, "wican-fw_obd_*.bin")))
     if len(got) != 1:
@@ -513,7 +507,15 @@ def make_hooks(settings, ssid, images=None):
         if len(recs) != 1:
             raise IdentifyError("x2_jammer id wrote %d records, want 1 (rc %s)" % (len(recs), rc))
         with open(recs[-1], encoding="utf-8") as f:
-            return "jammer:banner" if json.load(f).get("banner_ok") else None
+            jrec = json.load(f)
+        # A reset of the X2 between the console's open and the reply (the port lost or
+        # reopened, or an uptime shorter than the time since the open) is not explained by
+        # anything identify did: it stops the bench rather than reading "on none of the
+        # images" (gen-inhibit reviewer, 2026-11-11).
+        if jrec.get("reset_since_open") is True:
+            raise IdentifyError("x2_jammer id: the X2 reset after its console was opened "
+                                "(reset_since_open), which nothing in identify explains")
+        return "jammer:banner" if jrec.get("banner_ok") else None
 
     def board_step(step):
         """The core's on_start / on_end for the WiCAN (port plan, board images step 4; user

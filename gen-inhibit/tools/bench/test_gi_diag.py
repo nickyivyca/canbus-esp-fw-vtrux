@@ -351,8 +351,8 @@ def t5():
     bad["core"][G.CORE_FILE]["blob"] = "0" * 40
     check("5 core() refuses a decode.py whose blob is not the pin's",
           lambda: raises(lambda: G.core(pins=bad), G.DiagError, "its pin is"))
-    check("5 the core pin is shared/main 2026.11.11 (79e5f7c6)",
-          lambda: pins["core"][G.CORE_FILE]["commit"].startswith("79e5f7c6"))
+    check("5 the core pin is shared/main 2026.11.11.7 (a0e12584)",
+          lambda: pins["core"][G.CORE_FILE]["commit"].startswith("a0e12584"))
     nopin = json.loads(json.dumps(pins))
     nopin["git"] = {}
     check("5 the interposer DBC unpinned is refused",

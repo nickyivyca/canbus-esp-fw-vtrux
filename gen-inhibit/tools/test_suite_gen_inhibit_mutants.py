@@ -2,7 +2,7 @@
 """Mutants of suite_gen_inhibit.py; test_suite_gen_inhibit.py must fail on each BY A
 CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
-    PYTHONPATH=<core 2026.11.11>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 2026.11.11.7>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
 The mutants run in a shared clone of this repo at HEAD, made in the worktree's scratch/,
@@ -49,7 +49,12 @@ MUTANTS = [
     ("identify X2: bench_identify is skipped (ID goes to every image)",
      'got = BI.identify(image, ctx, logdir, settings)', 'got = None'),
     ("identify X2: no banner is the jammer",
-     'return "jammer:banner" if json.load(f).get("banner_ok") else None', 'return "jammer:banner"'),
+     'return "jammer:banner" if jrec.get("banner_ok") else None', 'return "jammer:banner"'),
+    # the jammer-ID reset (gen-inhibit reviewer, 2026-11-11)
+    ("identify X2: a reset during the jammer's ID read is not looked at",
+     'if jrec.get("reset_since_open") is True:', 'if False:'),
+    ("identify X2: a jammer ID with no uptime raises as a reset",
+     'if jrec.get("reset_since_open") is True:', 'if jrec.get("reset_since_open") is not False:'),
     ("ota: the exit is not looked at", 'ok = rc == 0 and "VERDICT: (c) TOOK" in t', 'ok = "VERDICT: (c) TOOK" in t'),
     ("ota: the verdict is not looked at", 'ok = rc == 0 and "VERDICT: (c) TOOK" in t', 'ok = rc == 0'),
     ("ota: no dual-slot restore before the retry",

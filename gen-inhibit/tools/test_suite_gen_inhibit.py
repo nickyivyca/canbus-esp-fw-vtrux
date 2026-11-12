@@ -6,7 +6,7 @@ tool fails, and a settings file naming bench_lock_log puts a run on that log whi
 without keeps it on the Holder line. No hardware: every tool the hooks run is stood in
 for.
 
-    PYTHONPATH=<core 2026.11.11>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 2026.11.11.7>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit.py
 
 The board steps run the real wican_reboot.py from this folder's bench/ (the suite's
@@ -616,6 +616,28 @@ def test_identify(settings, bench):
         return ident(xj, {}, logdir())
     check("identify X2: no banner either is None (on none of the images)", with_tools(t7) is None)
 
+    # A reset during the jammer's ID read (gen-inhibit reviewer, 2026-11-11): x2_jammer id
+    # writes banner_ok false with reset_since_open true; that stops the bench (RAISES), and
+    # is not "on none of the images". With no uptime to judge by (None) it stays None.
+    def t7r(t):
+        bi(None)
+        t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
+        t.do[("x2_jammer.py", "id")] = lambda a, e: (
+            "", 0, {"x2_jammer_id_T1.json": {"banner_ok": False, "reset_since_open": True}})
+        return raises(lambda: ident(xj, {}, logdir()), SG.IdentifyError)
+    e = with_tools(t7r)
+    check("identify X2: a reset during the jammer's ID read RAISES, naming reset_since_open",
+          e is not None and "reset_since_open" in str(e), e)
+
+    def t7n(t):
+        bi(None)
+        t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
+        t.do[("x2_jammer.py", "id")] = lambda a, e: (
+            "", 0, {"x2_jammer_id_T1.json": {"banner_ok": False, "reset_since_open": None}})
+        return ident(xj, {}, logdir())
+    check("identify X2: a jammer ID with no uptime to judge a reset by is None, not a raise",
+          with_tools(t7n) is None)
+
     def t8(t):
         bi(None)
         t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
@@ -1211,9 +1233,19 @@ def test_lock_source(settings):
     bash is a path that does not exist in case one did."""
     from vtrux_bench import bench_lock as BL
     from vtrux_bench.run.lock import LockError
+    from vtrux_bench.run import canmain as CM
     d = os.path.join(BASE, "lock")
     repo = os.path.join(d, "repo")
     os.makedirs(repo)
+    # From core 2026.11.11.2 a run that needs the bench refuses unless canmain_check
+    # shows canmain down (shared/bench SPEC section 8). Here it runs for real, on a
+    # made-up sysfs whose canmain exists with its link down, never the host's.
+    cm_root = os.path.join(d, "sys")
+    os.makedirs(os.path.join(cm_root, "class", "net", "canmain"))
+    with open(os.path.join(cm_root, "class", "net", "canmain", "flags"), "w") as f:
+        f.write("0x1002\n")
+    CM.SYS_ROOT = cm_root
+    cm_setting = {"probe": "link", "reason": "made-up sysfs, canmain down (test)", "iface": "canmain"}
     git(repo, "init", "-q")
     with open(os.path.join(repo, ".gitignore"), "w") as f:
         f.write("*.bin\n")
@@ -1255,7 +1287,8 @@ def test_lock_source(settings):
             BL.take(lp, log_taken_by, os.getpid(), note="held by the other role")
         before = open(lp, encoding="ascii").read().splitlines()
         s = dict(settings, gi_images=repo, gi_prod_dir=os.path.join(repo, "prod"), gi_fw=repo, gi_commit=h,
-                 runs_root=runs, bench_holder=bh, bash=os.path.join(c, "no-bash.exe"))
+                 runs_root=runs, bench_holder=bh, bash=os.path.join(c, "no-bash.exe"),
+                 canmain_check=dict(cm_setting))
         if log:
             s["bench_lock_log"] = lp
         sp = os.path.join(c, "settings.json")
@@ -1305,6 +1338,8 @@ def test_lock_source(settings):
     check("lock: nothing ran on the bench (the start step stood in and failed)",
           rec and results(rec) and all(v == "NOT-RUN" for _, v in results(rec)), results(rec))
     check("lock: the run on the log leaves the Holder line alone", same)
+    check("lock: the record keeps the core's canmain check line",
+          rec and "canmain exists and its link is down" in str(rec.get("canmain_check")), rec and rec.get("canmain_check"))
 
     # the log named, held by the other role, the Holder line ours: refused by the log
     res, before, after, same, rec, _ = run(True, "%s, 2026-10-24 00:00 (test)" % SG.ROLE, log_taken_by=other)
