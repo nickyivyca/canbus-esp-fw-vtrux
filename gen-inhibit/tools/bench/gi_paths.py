@@ -468,6 +468,24 @@ def vehicle_dbc(name):
     return verify(project("projects", "vtrux", name))
 
 
+TSHARK_WINDOWS = r"C:\Program Files\Wireshark\tshark.exe"
+
+
+def tshark(environ=None, platform=None, which=None):
+    """The tshark the capture readers run (2026-11-12, the reviewer's Linux fix item):
+    $GI_TSHARK if set; else Wireshark's install folder on Windows; else tshark on PATH.
+    Off Windows with none on PATH it returns the bare name, so the reader's own run of
+    it fails, saying so, rather than reading nothing."""
+    environ = os.environ if environ is None else environ
+    platform = sys.platform if platform is None else platform
+    which = shutil.which if which is None else which
+    if environ.get("GI_TSHARK"):
+        return environ["GI_TSHARK"]
+    if platform == "win32":
+        return TSHARK_WINDOWS
+    return which("tshark") or "tshark"
+
+
 def jammer_builds(*parts):
     """The X2 jammer's build binaries (TEST EQUIPMENT, NOT FOR VEHICLE), in SeaDrive;
     a file given is checked against its pin."""

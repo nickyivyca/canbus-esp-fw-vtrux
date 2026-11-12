@@ -281,6 +281,17 @@ def main():
                                                                          "gen-inhibit-tests", "t"))
           and not os.path.normcase(own).startswith(os.path.normcase(os.environ.get("TEMP") or "/tmp")), own)
 
+    print("\n=== tshark (2026-11-12) ===")
+    on_path = lambda name: "/usr/bin/" + name
+    nowhere = lambda name: None
+    check("tshark: GI_TSHARK first, on Linux", lambda: gp.tshark({"GI_TSHARK": "/x/tshark"}, "linux", on_path) == "/x/tshark")
+    check("tshark: GI_TSHARK first, on Windows", lambda: gp.tshark({"GI_TSHARK": "/x/tshark"}, "win32", on_path) == "/x/tshark")
+    check("tshark: Wireshark's folder on Windows", lambda: gp.tshark({}, "win32", on_path) == gp.TSHARK_WINDOWS)
+    check("tshark: PATH's on Linux", lambda: gp.tshark({}, "linux", on_path) == "/usr/bin/tshark")
+    check("tshark: the bare name on Linux with none on PATH (its run then fails)",
+          lambda: gp.tshark({}, "linux", nowhere) == "tshark")
+    check("tshark: an empty GI_TSHARK is not set", lambda: gp.tshark({"GI_TSHARK": ""}, "linux", on_path) == "/usr/bin/tshark")
+
     print("\n=== retired settings ===")
     for k in ("GI_FW_TOOLS", "GEN_INHIBIT_REPO", "VTRUX_DATA", "REVERSE_IT_ROOT"):
         check("check_retired refuses %s" % k, lambda: raises(lambda: gp.check_retired({k: "x"}), k))

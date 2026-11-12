@@ -13,7 +13,7 @@
 # banner; at the end restore from the dump, hold in ROM, release with the PCAN ACKing and
 # read 0x7F7 off the wire. Run from the reverse-it root, holding the bench lock.
 set -u
-A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, gen-inhibit/tools/bench
+H="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$H/bench_host.sh"; A=$(hpath "$H")   # this folder, gen-inhibit/tools/bench
 cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
 DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative to REVERSE_IT_DIR: runs/ and fixtures
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }
@@ -43,7 +43,7 @@ fi
 for spec in 1.5:7 5:7 8.5:6; do
   l=${spec%%:*}; n=${spec##*:}
   echo "$(date +%H:%M:%S) B6_rate_n10_lead$l ($n arms)"
-  py -3.14 -B $A/x2_jam_cases.py threshold --arms $n --n 10 --interval-ms 1000 --lead-s $l --reset-wican \
+  $PY -B $A/x2_jam_cases.py threshold --arms $n --n 10 --interval-ms 1000 --lead-s $l --reset-wican \
     --power "$PW" > "$GI_OUT/B6_rate_n10_lead$l.txt" 2>&1
   echo "  exit $?"
   grep -E "^arm |^verdict" "$GI_OUT/B6_rate_n10_lead$l.txt" | cut -c1-200

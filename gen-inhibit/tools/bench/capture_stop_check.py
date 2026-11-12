@@ -23,8 +23,9 @@ import os
 import re
 import subprocess
 import sys
+import gi_paths  # noqa: E402  the host's tshark (2026-11-12)
 
-TSHARK = os.environ.get("GI_TSHARK") or r"C:\Program Files\Wireshark\tshark.exe"
+TSHARK = gi_paths.tshark()   # $GI_TSHARK first, as before
 DEVICE = "192.168.80.1"
 FIELDS = ("frame.time_epoch", "ip.src", "tcp.srcport", "tcp.dstport", "tcp.flags.fin", "tcp.flags.reset")
 

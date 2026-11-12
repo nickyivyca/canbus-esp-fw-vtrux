@@ -34,9 +34,10 @@ import re
 import subprocess
 import sys
 from collections import defaultdict
+import gi_paths  # noqa: E402  the host's tshark (2026-11-12)
 
 TRAIL_MAX_US = 3000.0
-TSHARK = r"C:\Program Files\Wireshark\tshark.exe"
+TSHARK = gi_paths.tshark()
 DEVICE = "192.168.80.1"
 LINE = re.compile(r"^\((\d+\.\d+)\) \S+ 051#([0-9A-Fa-f]*)")
 

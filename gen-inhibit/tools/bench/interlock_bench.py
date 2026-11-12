@@ -550,12 +550,43 @@ def witness_stalls(parsed, frames, limit=SENDER_STALL_S):
 ABOVE_NORMAL = 0x8000      # Windows ABOVE_NORMAL_PRIORITY_CLASS
 
 
+BENCH_SLICE = "bench.slice"
+BENCH_SCOPE = "systemd-run --user --scope --slice=bench.slice"
+
+
+def in_bench_slice(cgroup_text):
+    """True if a line of /proc/<pid>/cgroup puts the process under a slice named
+    bench.slice: a whole path component, not a substring of one."""
+    for line in cgroup_text.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) == 3 and BENCH_SLICE in parts[2].split("/"):
+            return True
+    return False
+
+
+def bench_slice(cgroup="/proc/self/cgroup"):
+    """On Linux the sender's priority is its cgroup's (user, 2026-11-11, relayed by the
+    gen-inhibit reviewer): wall-clock runs start in `systemd-run --user --scope
+    --slice=bench.slice`, whose CPUWeight is 2000, and builds and mutant runs go in
+    build.slice at CPUWeight=idle. The process cannot raise itself, so this only reads
+    where it runs and says so; the run goes on either way, and the record carries it."""
+    try:
+        with open(cgroup, encoding="ascii", errors="replace") as f:
+            text = f.read()
+    except OSError as e:
+        return "not in bench.slice (%s unreadable: %s)" % (cgroup, e)
+    return BENCH_SLICE if in_bench_slice(text) else "not in bench.slice"
+
+
 def raise_priority():
-    """esp-development.md "Builds during wall-clock tests" rule 4: the tester's
-    stimulus sender runs above normal, never High or Realtime (they can starve the
-    USB stack the CAN adapters need). Returns the class read back, as recorded."""
+    """AGENTS.md "Builds during wall-clock tests" point 4: the tester's stimulus
+    sender runs above normal, never High or Realtime (they can starve the USB stack
+    the CAN adapters need). On Windows it sets the class and returns the class read
+    back; on Linux it returns bench_slice(). Either way the value is recorded."""
+    if sys.platform.startswith("linux"):
+        return bench_slice()
     if sys.platform != "win32":
-        return "not windows: unchanged"
+        return "not windows or linux: unchanged"
     import ctypes
     k = ctypes.windll.kernel32
     k.GetCurrentProcess.restype = ctypes.c_void_p
@@ -801,6 +832,9 @@ def main(argv=None):
         return 2
     prio = raise_priority()
     print("process priority:", prio)
+    if prio.startswith("not in bench.slice"):
+        print("WARNING: not in bench.slice; wall-clock runs start in `%s ...` (user, 2026-11-11). "
+              "The run goes on, and its records say so." % BENCH_SCOPE)
     for info, parsed, _ in built:
         st = time.strftime("%Y%m%dT%H%M%S")
         rec = run_case(can, LF, info, parsed, a.power, st)
