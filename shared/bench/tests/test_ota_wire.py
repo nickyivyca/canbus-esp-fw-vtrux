@@ -10,7 +10,8 @@ ACKs 20,391 with a 90-byte window and then nothing on the upload until a 408.
 Addresses are documentation ones (RFC 5737). Its mutants
 (test_bench_flash_wire_mutants.py) are MUTANTS below, the same edit strings,
 applied to ota_wire.py; then the port's own: the stop by CTRL_BREAK on Windows
-and SIGINT on Linux, a Linux `dumpcap -D` line, and the 540 s ceiling.
+and SIGINT on Linux (the Windows stop checked on every system, through a
+stand-in signal module), a Linux `dumpcap -D` line, and the 540 s ceiling.
 
     py -3.14 -B shared/bench/tests/test_ota_wire.py             exit 0 only if every check passes
     py -3.14 -B shared/bench/tests/test_ota_wire.py --can-fail  the control, then every mutant
@@ -18,6 +19,7 @@ and SIGINT on Linux, a Linux `dumpcap -D` line, and the 540 s ceiling.
 import os
 import signal
 import sys
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 import _ota_mutants                                  # noqa: E402
@@ -48,6 +50,29 @@ def line_of(s):
         return W.wire_line(s)
     except Exception as e:      # noqa: BLE001
         return "%s: %s" % (type(e).__name__, e)
+
+
+def safe(fn):
+    """fn() for a check's detail, worked out outside the check: a crash reads as its text."""
+    try:
+        return fn()
+    except Exception as e:      # noqa: BLE001
+        return "%s: %s" % (type(e).__name__, e)
+
+
+STAND_IN_BREAK = "CTRL_BREAK_EVENT (the stand-in's)"
+
+
+def stop_with_stand_in(os_name):
+    """W.stop_signal(os_name) with ota_wire's signal module swapped for a stand-in that has a
+    CTRL_BREAK_EVENT, which the real one has only on Windows; the real one is put back after."""
+    real = W.signal
+    W.signal = types.SimpleNamespace(CTRL_BREAK_EVENT=STAND_IN_BREAK, SIGINT=signal.SIGINT,
+                                     SIGTERM=signal.SIGTERM)
+    try:
+        return W.stop_signal(os_name)
+    finally:
+        W.signal = real
 
 
 def pkt(t, src, stream, ack=0, win=0, ln=0, syn=False, ackf=True, fin=False, rst=False, payload=b""):
@@ -208,9 +233,20 @@ def main():
           lambda: W.pick_device(linux, "wlx") is None and W.pick_device(linux, "wlan") is None)
     check("pick_device: the Windows form wins over a device token of that name",
           lambda: W.pick_device("1. Wi-Fi\n2. \\Device\\NPF_{C} (Wi-Fi)\n", "Wi-Fi") == "\\Device\\NPF_{C}")
+    # The Windows stop is checked on every system, through a stand-in signal module that has a
+    # CTRL_BREAK_EVENT: under hasattr(signal, "CTRL_BREAK_EVENT") alone it was skipped on Linux
+    # without a word, and the mutant "Windows stops by SIGINT" survived there (gen-inhibit tester,
+    # runs/flasher_check_f67dc7b, 2026-11-11; the gen-inhibit reviewer's fix).
+    check("the capture stops by CTRL_BREAK on Windows (a stand-in signal module, on every system)",
+          lambda: stop_with_stand_in("nt") == STAND_IN_BREAK, safe(lambda: stop_with_stand_in("nt")))
+    check("with a CTRL_BREAK_EVENT there, Linux still stops by SIGINT (the stand-in)",
+          lambda: stop_with_stand_in("posix") == signal.SIGINT, safe(lambda: stop_with_stand_in("posix")))
     if hasattr(signal, "CTRL_BREAK_EVENT"):
-        check("the capture stops by CTRL_BREAK on Windows", lambda: W.stop_signal("nt") == signal.CTRL_BREAK_EVENT,
-              W.stop_signal("nt"))
+        check("the capture stops by CTRL_BREAK on Windows (this system's signal module)",
+              lambda: W.stop_signal("nt") == signal.CTRL_BREAK_EVENT, safe(lambda: W.stop_signal("nt")))
+    else:
+        print("NOT RUN (other env)  the capture stops by CTRL_BREAK on Windows (this system's signal module)"
+              "  Windows only; the stand-in check above runs here")
     check("the capture stops by SIGINT on Linux", lambda: W.stop_signal("posix") == signal.SIGINT, W.stop_signal("posix"))
     check("the capture's ceiling is 540 s", lambda: W.CEILING_S == 540, W.CEILING_S)
 
