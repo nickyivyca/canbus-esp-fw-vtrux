@@ -60,7 +60,11 @@ BARE_SHELLS = ("bash", "bash.exe", "sh", "sh.exe")
 # idle_safe_named: an image marked idle_safe=False needs an idle-safe image
 # for its board in Suite.idle_safe_images, an image of that board that is
 # itself idle-safe (user, 2026-11-11, the same Ruled entries).
-RULES = {"bare_shell": True, "standing_refused": True, "idle_safe_named": True}
+# ota_stops_bench: a suite with an image on the "ota" flasher needs
+# on_flash_failure "stop-bench" (FLASH-SPEC O11: a flash that is not ok stops
+# the bench; the charge-interposer reviewer, 2026-11-11).
+RULES = {"bare_shell": True, "standing_refused": True, "idle_safe_named": True,
+         "ota_stops_bench": True}
 
 
 @dataclasses.dataclass
@@ -286,6 +290,12 @@ def validate(suite: Suite, settings: Dict[str, Any], builtin_flashers=()):
             errs.append("image key %r != name %r" % (name, im.name))
         if im.flasher not in flashers:
             errs.append("image %s: unknown flasher %r" % (name, im.flasher))
+        if (RULES["ota_stops_bench"] and im.flasher == "ota"
+                and suite.on_flash_failure != "stop-bench"):
+            errs.append("image %s: flasher \"ota\" needs on_flash_failure "
+                        "\"stop-bench\" (FLASH-SPEC O11: a flash that is not "
+                        "ok stops the bench), not %r"
+                        % (name, suite.on_flash_failure))
     if RULES["standing_refused"]:
         for key in ("standing_image", "standing_images"):
             if getattr(suite, key, None) is not None:

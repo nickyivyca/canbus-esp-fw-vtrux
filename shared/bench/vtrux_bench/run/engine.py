@@ -999,7 +999,14 @@ class Engine:
         params = fmt_any(im.params, self.base_ctx())
         self.board_touched.add(board)
         self.rec.event("flash-start", board=board, image=name, read_before=got)
-        res = self.flashers[im.flasher](im, params, self.settings, logdir)
+        flasher = self.flashers[im.flasher]
+        if getattr(flasher, "takes_hold", False):
+            # FLASH-SPEC O7: a flasher that acts only under the bench's hold
+            # (the "ota" flasher's disarm) is given the runner's own lock
+            # check, a callable it asks at the moment it would act
+            res = flasher(im, params, self.settings, logdir, hold=self.lock_ours)
+        else:
+            res = flasher(im, params, self.settings, logdir)
         self.rec.event("flash", image=name, **res)
         self._note_image(im, None, flashed=True, md5=res.get("md5"))
         if not res.get("ok"):

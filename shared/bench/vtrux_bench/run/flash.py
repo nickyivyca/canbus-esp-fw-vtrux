@@ -177,4 +177,15 @@ def esptool_flash(image, params, settings, logdir):
     return out
 
 
-BUILTIN = {"esptool": esptool_flash}
+def ota_flash(image, params, settings, logdir, hold=None):
+    """The second built-in, "ota": an app image into a WiCAN over its hotspot
+    (FLASH-SPEC, ota.py). It is also given the runner's hold of the bench (its
+    takes_hold attribute; Engine.ensure_image). ota.py is imported when it is
+    first called, so `python -m vtrux_bench.run.ota` runs it as the only copy."""
+    from .ota import ota_flash as flasher
+    return flasher(image, params, settings, logdir, hold=hold)
+
+
+ota_flash.takes_hold = True
+
+BUILTIN = {"esptool": esptool_flash, "ota": ota_flash}
