@@ -359,7 +359,7 @@ sample showed 8689 transitions in 50 ms, and the one-way frame test delivered
 
 ### Stage 1 -- two dongles, transparency
 
-**Passed 2026-09-11.** One dongle per segment. On `L-EEHTRBPN2` that is a PEAK
+**Passed 2026-09-11.** One dongle per segment. On the Windows laptop that is a PEAK
 **PCAN-USB FD** (`PCAN_USBBUS1`) and a **Kvaser Leaf Light v2** (channel 0) --
 different drivers, so they coexist. An earlier version of this file named the
 Innomaker `gs_usb`; that dongle is not on this bench. Both are auto-detected by
@@ -612,7 +612,7 @@ the same real capture and diffs every emitted frame and state transition:
 py -3.12 .../make_golden.py <capture.log> --name NAME --bus 3 \
     --outdir projects/vtrux/notes/artifacts/interposer-firmware
 
-# build and diff (needs g++; on L-EEHTRBPN2 use WSL)
+# build and diff (needs g++; on Windows use WSL)
 g++ -std=c++11 -O2 -I main -o /tmp/hr ../fw_harness/host_diff/host_runner.cpp main/machine.cpp
 /tmp/hr <NAME>.trace | diff - <NAME>.golden
 ```
@@ -1200,7 +1200,7 @@ the goldens were regenerated from it, and both pairs now diff identical.
 ### The older result (2026-09-17) -- all ten byte-identical
 
 `../fw_harness/host_diff/diff_all.sh` builds the runner and diffs every pair (on
-L-EEHTRBPN2 run it under WSL with `MSYS_NO_PATHCONV=1`). The goldens now
+Windows run it under WSL with `MSYS_NO_PATHCONV=1`). The goldens now
 include the diagnostic mirror frames (spec 8.1), so both real captures were
 regenerated on 2026-09-17.
 
