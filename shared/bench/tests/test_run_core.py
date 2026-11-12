@@ -1349,8 +1349,15 @@ def test_requires_whole():
     skips (gen-inhibit tester, 2026-10-19)."""
     env = Env("reqwhole")
     code = {"commit": "abc", "dirty": False}
+    ready = os.path.join(env.root, "ready")
+    # the sim's gate passes only once the file exists: until then the sim
+    # is NOT-RUN (it was the wall-clock guard's refusal until 2026-11-12,
+    # when the guard came to record instead of refuse)
     emu = suite([Group("e", [chk("x", "pass")]),
-                 Group("f", [Check("sim", pc("pass"), python=True,
+                 Group("f", [chk("ready", "import os, sys; sys.exit(0 if "
+                                 "os.path.exists(%r) else 1)" % ready,
+                                 gate=True),
+                             Check("sim", pc("pass"), python=True,
                                    cls="wallclock"),
                              Check("later", ["-"], skip="by ruling")])],
                 name="emu", code_info=lambda ctx: dict(code))
@@ -1371,12 +1378,11 @@ def test_requires_whole():
     r = refused()
     assert r and "partial" in r, r
     time.sleep(1.1)
-    env.set_holder("tester (the-other-project)")   # the sim is refused
-    run(env, emu)
-    env.set_holder("-- (free)")
+    run(env, emu)                             # the gate fails: sim NOT-RUN
     r = refused()
     assert r and "NOT-RUN" in r and "f/sim" in r, r
     time.sleep(1.1)
+    open(ready, "w").close()
     run(env, emu)                             # whole, one declared skip
     assert refused() is None, refused()
 
