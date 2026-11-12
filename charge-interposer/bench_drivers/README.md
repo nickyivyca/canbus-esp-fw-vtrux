@@ -29,7 +29,7 @@ a pointer, until nothing reads them. Since the move:
 | `bench_flight_silence.py` | Spec 8.3 flight silence on the truck image; with `--idf-log`, spec 8.3's "framework logging is compiled out of every build" on any image: only an application line in ESP-IDF's or the Arduino core's log form fails (2a acceptance, 2026-11-04). The bench suite runs it as `flight-silence` in b-truck (the default verdict: no application byte at all) and with `--idf-log` as `idf-log` in b-bridge and b-witness |
 | `bench_hold12.py` | Spec 12 entry 2: the same-identifier hold on silicon. The filler's echoes are sorted by the Innomaker's device stamps unwrapped (`filler_echoes`, 2026-11-12) |
 | `bench_innomaker_clock.py` | The Innomaker's own clock: device-timestamped echoes and rate runs |
-| `bench_mcp_reset.py` | Whether the X2's MCP2515 keeps ACKing on the charger segment while the ESP32 is down |
+| `bench_mcp_reset.py` | Whether the X2's MCP2515 keeps ACKing on the charger segment while the ESP32 is down. Its ROM holds run the core flasher's esptool, the settings' `esptool.argv` passed as `VTRUX_ESPTOOL_ARGV` (2026-11-12); unset, PlatformIO's esptool.py on Windows as before, refused on Linux |
 | `bench_pacer.py` | The pacer every driver that offers frames at a stated rate uses |
 | `bench_powerup_round.py` | Spec 2.3's power-up round on the board; also run by `../bench_identify.py` to read 0x7F7 |
 | `bench_rate_feasibility.py` | Whether this host can offer the rates spec 12 entry 2 asks for; imported for its rate helpers |

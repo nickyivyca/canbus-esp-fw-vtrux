@@ -1033,6 +1033,29 @@ def canchg_env(settings):
     return {CANCHG_ENV: "%s:%s:%s" % (vid.lower(), pid.lower(), serial)}
 
 
+# The esptool a bench driver runs itself (bench_mcp_reset's ROM holds) is
+# the core flasher's, the settings' esptool.argv, passed as
+# VTRUX_ESPTOOL_ARGV, a JSON list (tester, 2026-11-12; the reviewer,
+# 2026-11-11). Absent, the driver keeps its Windows default and refuses on
+# Linux.
+ESPTOOL_ENV = "VTRUX_ESPTOOL_ARGV"
+
+
+def esptool_env(settings):
+    """{VTRUX_ESPTOOL_ARGV: json list} from the settings' esptool.argv, {}
+    when it is absent; ValueError when it is not a list of non-empty
+    strings, or holds a brace (the runner formats env values)."""
+    argv = (settings.get("esptool") or {}).get("argv")
+    if argv is None:
+        return {}
+    if not (isinstance(argv, list) and argv
+            and all(isinstance(x, str) and x and "{" not in x and "}" not in x
+                    for x in argv)):
+        raise ValueError("settings esptool.argv is %r, not a list of non-empty "
+                         "strings without braces" % (argv,))
+    return {ESPTOOL_ENV: json.dumps(argv)}
+
+
 def bench(settings):
     """Hardware only, the lock from start to finish; requires a matched
     emulated run on the same code."""
@@ -1238,8 +1261,9 @@ def bench(settings):
     for g in (b_bridge, b_witness, b_truck, b_c12, b_vport):
         g.image = [g.image, bench_wican.IMAGE]
     # which Innomaker is canchg, for every check that may open it (on Linux
-    # by its serial, adapter_fixes.canchg_target; the reviewer's E2)
-    env = canchg_env(settings)
+    # by its serial, adapter_fixes.canchg_target; the reviewer's E2), and
+    # the core flasher's esptool for a driver that runs esptool itself
+    env = dict(canchg_env(settings), **esptool_env(settings))
     for g in (b_bridge, b_witness, b_truck, b_c12, b_vport, truck_only):
         for c in g.checks:
             c.env.update(env)

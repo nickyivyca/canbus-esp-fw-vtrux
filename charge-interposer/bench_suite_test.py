@@ -1094,6 +1094,39 @@ def test_canchg_env():
         raise AssertionError("canchg_device %r not refused" % (bad,))
 
 
+def test_esptool_env():
+    """bench_mcp_reset's esptool is the core flasher's (tester, 2026-11-12;
+    the reviewer, 2026-11-11): the settings' esptool.argv reaches every
+    bench check as VTRUX_ESPTOOL_ARGV, the JSON of the list, which survives
+    the runner's formatting and the driver reads back as the same list;
+    without it no check carries it; a malformed argv is refused."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "bench_mcp_reset", os.path.join(HERE, "bench_drivers", "bench_mcp_reset.py"))
+    mr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mr)
+    argv = ["/opt/idf/python_env/bin/python", "-m", "esptool"]
+    s = _settings()
+    s["esptool"] = {"argv": list(argv), "baud": 921600}
+    b = B.bench(s)
+    vals = {c.env.get(B.ESPTOOL_ENV) for g in b.groups for c in g.checks}
+    assert len(vals) == 1, vals
+    from vtrux_bench.run.engine import fmt
+    v = fmt(vals.pop(), {})
+    assert mr.esptool_argv({mr.ESPTOOL_ENV: v}, "posix") == argv, v
+    assert B.ESPTOOL_ENV == mr.ESPTOOL_ENV
+    s2 = _settings()
+    assert not [c.id for g in B.bench(s2).groups for c in g.checks
+                if B.ESPTOOL_ENV in c.env]
+    for bad in ("python -m esptool", [], ["python", ""], ["python", 3], ["{x}/python"]):
+        s2["esptool"] = {"argv": bad}
+        try:
+            B.esptool_env(s2)
+        except ValueError:
+            continue
+        raise AssertionError("esptool.argv %r not refused" % (bad,))
+
+
 def test_idle_safe():
     """shared/bench 2026.11.11.2 (user, 2026-11-11: no end restore): the
     bench suite names no standing image; exactly witness, c12_bench and
@@ -1817,7 +1850,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
-         test_m_lanes_host, test_idle_safe, test_canchg_env]
+         test_m_lanes_host, test_idle_safe, test_canchg_env, test_esptool_env]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -2011,6 +2044,17 @@ _ORIG["_Build.mgroup"] = B._Build.mgroup
 _ORIG["_Build.mpy"] = B._Build.mpy
 _ORIG["M_LANES_HOSTS"] = B.M_LANES_HOSTS
 _ORIG["canchg_env"] = B.canchg_env
+_ORIG["esptool_env"] = B.esptool_env
+
+
+def _esptool_unchecked(settings):
+    argv = (settings.get("esptool") or {}).get("argv")
+    return {} if argv is None else {B.ESPTOOL_ENV: json.dumps(argv)}
+
+
+def _esptool_space_joined(settings):
+    out = _ORIG["esptool_env"](settings)
+    return out and {B.ESPTOOL_ENV: " ".join(settings["esptool"]["argv"])}
 
 
 def _canchg_unchecked(settings):
@@ -2025,12 +2069,12 @@ def _canchg_case_kept(settings):
     return out and {B.CANCHG_ENV: "%s:%s:%s" % (d["vid"], d["pid"], d["serial"])}
 
 
-def _canchg_dropped_from(group):
+def _canchg_dropped_from(group, key=None):
     def fn(s):
         for g in s.groups:
             if g.name == group:
                 for c in g.checks:
-                    c.env.pop(B.CANCHG_ENV, None)
+                    c.env.pop(key or B.CANCHG_ENV, None)
     return fn
 
 
@@ -2280,6 +2324,13 @@ def _wican_identify_off(s):
 
 
 MUTANTS = {
+    "test_esptool_env": [
+        ("esptool_env", lambda settings: {}, "esptool.argv never passed on"),
+        ("esptool_env", _esptool_unchecked, "a malformed esptool.argv passed on"),
+        ("esptool_env", _esptool_space_joined,
+         "the argv passed space-joined, not as JSON"),
+        ("bench", _wrap_suite("bench", _canchg_dropped_from("b-c12", B.ESPTOOL_ENV)),
+         "one bench group's checks without it")],
     "test_canchg_env": [
         ("canchg_env", lambda settings: {}, "canchg_device never passed on"),
         ("canchg_env", _canchg_unchecked, "a malformed canchg_device passed on"),
