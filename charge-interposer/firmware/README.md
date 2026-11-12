@@ -252,8 +252,10 @@ acceptance testing, round 1, steps 3 and 4; see the status note at the top.
 > **Resolve the board from its MAC before every flash, never from a port
 > number written down earlier.** Two ESP32s enumerate here and both report
 > `VID:PID=303A:1001`, so nothing in the description tells them apart. The
-> interposer is the S3 `3C:0F:02:F0:4D:30`; `D4:F9:8D:1D:0D:74` is the C3
-> WiCAN and belongs to another session -- flashing it is the one
+> interposer is the S3 and the WiCAN is the C3; both boards' MACs are in
+> reverse-it, `$REVERSE_IT_DIR/firmware/bench-holder.md`, "Board state",
+> and stay out of this repo. The C3
+> WiCAN belongs to another session -- flashing it is the one
 > unrecoverable mistake on this bench. On `NICKY-XPS` it is **S3=COM3,
 > WiCAN=COM4**, per the measured map of 2026-09-19 and re-confirmed
 > 2026-10-04; COM7/COM8 in older notes is the **laptop's** mapping, not a
