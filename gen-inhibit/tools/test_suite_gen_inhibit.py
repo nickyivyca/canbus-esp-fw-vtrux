@@ -57,6 +57,7 @@ from vtrux_bench.run import cli as CLI                       # noqa: E402
 from vtrux_bench.run.engine import Engine, fmt               # noqa: E402
 from vtrux_bench.run.model import CheckRun, validate         # noqa: E402
 import suite_gen_inhibit as SG                               # noqa: E402
+import _fake_serial as FS     # noqa: E402  bench/ (on sys.path above): the made-up serial devices
 
 # esptool (gi_esptool.py, 2026-11-11): the settings' argv in its one form, and the version
 # `<argv> version` reports, stood in for here (VERSION[0]) so no esptool runs
@@ -66,6 +67,7 @@ SG.GE.version = lambda argv, timeout=60: (VERSION[0], "esptool.py v%s\n%s\n" % (
 
 SSID ="WiCAN_" + "0f" * 6   # made up for the test, and built so this file has no SSID-form literal (test_publish_scan.py)
 BASE = scratch_dir("suite_gen_inhibit")
+SER_PORTS = {}   # the made-up serial devices' by-id links, by board (filled with the settings)
 fails = []
 oks = 0
 
@@ -158,6 +160,13 @@ def fixture():
     # copy takes x2_pin.PIN_FILE from the x2_pin module already imported)
     import x2_pin as X2P
     SG.X2_PIN_FILE = X2P.PIN_FILE = fake_pin(os.path.join(BASE, "x2pin"))
+    # A made-up bench of serial devices (DEVICES-SPEC S1; bench/_fake_serial.py, the core's own
+    # fixture), installed into the core's serial_dev for this process: the X2's port, for
+    # x2_verify and bench_identify, is its by-id link there, never the host's devices.
+    from vtrux_bench import serial_dev as SD
+    env, ports = FS.fake_bench(os.path.join(BASE, "serial"))
+    SER_PORTS.update(ports)
+    SD.SYS_ROOT, SD.BY_ID = env["GI_SERIAL_SYS_ROOT"], env["GI_SERIAL_BY_ID"]
     settings = {
         "reverse_it": BASE.replace("\\", "/"), "gi_tools": HERE.replace("\\", "/"), "gi_commit": "e3d9437",
         "gi_images": os.path.join(BASE, "images"), "gi_prod_dir": os.path.join(BASE, "prod"),
@@ -167,7 +176,8 @@ def fixture():
         "gi_can1_termination": "fixed passive resistors (test)",
         "bench_holder": bh, "runs_root": os.path.join(BASE, "runs"),
         "hosts": {"local": {"python": [sys.executable, "-B"]}},
-        "esptool": {"argv": [sys.executable, "-c", "pass"], "port": "COM3"},
+        "esptool": {"argv": [sys.executable, "-c", "pass"], "device": FS.device(FS.X2_SERIAL)},
+        "wican": {"usb_device": FS.device(FS.WICAN_SERIAL)},
     }
     return settings, shas
 
@@ -691,7 +701,7 @@ def test_identify(settings, bench):
     check("identify X2: the SSID is redacted from the tool's log and its new records", with_tools(t13))
 
     # SLCAN answers name the protocol, not the build: x2_slcan only with the pinned app on the flash
-    sv = dict(settings, esptool={"argv": list(ESPTOOL_ARGV), "port": "COM3", "baud": 921600})
+    sv = dict(settings, esptool={"argv": list(ESPTOOL_ARGV), "device": FS.device(FS.X2_SERIAL), "baud": 921600})
     hv = SG.make_hooks(sv, SSID, bench.images)
     xs = bench.images["x2_slcan"]
     # esptool 4.13.0's verify_flash line, written out here, not taken from the suite
@@ -750,6 +760,56 @@ def test_identify(settings, bench):
     got, _, _ = slcan("could not open port 'COM3': PermissionError\n", 2)
     check("identify X2: a verify whose port would not open RAISES", isinstance(got, SG.IdentifyError), got)
 
+    # The X2's port by its USB IDs (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12): the
+    # tools get the IDs as GI_X2_DEVICE / GI_WICAN_DEVICE; x2_verify and bench_identify get
+    # the by-id link the core's device_port resolves, each written down beside the run (S3).
+    def t_port(settings_=sv):
+        def t(tt):
+            seen = {}
+
+            def identify(image, ctx, logdir_, s):
+                seen["serial_port"] = s.get("serial_port")
+                return "slcan:V0101:NF001"
+            fake_module("bench_identify", identify=identify)
+            tt.do[("x2_hold.py", "pins")] = lambda a, e: (
+                seen.update(env=dict(e)) or ("pins: TX (GPIO7) unknown\n", 1, {"x2_hold_pins_T.json": "{}"}))
+            tt.do[("esptool", "--port")] = lambda a, e: (VER, 0, {})
+            d = logdir()
+            try:
+                got = SG.make_hooks(settings_, SSID, bench.images)["identify"](xs, {}, d)
+            except Exception as e:
+                got = e
+            files = {n: open(os.path.join(d, n), encoding="utf-8").read()
+                     for n in os.listdir(d) if n.startswith("serial_device_")}
+            return got, seen, tt.named("esptool"), files
+        return with_tools(t)
+    got, seen, ver, files = t_port()
+    x2p = SER_PORTS.get("x2")
+    check("identify X2: the tools get the X2's and the WiCAN's USB IDs as GI_X2_DEVICE and GI_WICAN_DEVICE",
+          json.loads((seen.get("env") or {}).get("GI_X2_DEVICE", "null")) == FS.device(FS.X2_SERIAL)
+          and json.loads((seen.get("env") or {}).get("GI_WICAN_DEVICE", "null")) == FS.device(FS.WICAN_SERIAL),
+          {k: (seen.get("env") or {}).get(k) for k in ("GI_X2_DEVICE", "GI_WICAN_DEVICE")})
+    check("identify X2: the verify's esptool --port is the X2's by-id link, resolved from esptool.device",
+          got == "slcan:V0101:NF001" and len(ver) == 1 and x2p and ver[0][2][3:5] == ["--port", x2p],
+          (got, ver and ver[0][2][:6], x2p))
+    check("identify X2: bench_identify is handed that link as serial_port, in a copy of the settings",
+          seen.get("serial_port") == x2p and "serial_port" not in sv, (seen.get("serial_port"), x2p))
+    check("identify X2: serial_device_x2_verify.txt and serial_device_bench_identify.txt keep the port, "
+          "the IDs matched and what each was used for",
+          sorted(files) == ["serial_device_bench_identify.txt", "serial_device_x2_verify.txt"]
+          and all(("port: %s\n" % x2p) in t and ("serial: %s\n" % FS.X2_SERIAL) in t for t in files.values())
+          and files["serial_device_bench_identify.txt"].startswith("used by: bench_identify")
+          and files["serial_device_x2_verify.txt"].startswith("used by: x2_verify"), files)
+    for label, et, want in (
+            ("a port setting (a tty name)", {"argv": list(ESPTOOL_ARGV), "port": "/dev/ttyACM1"}, "refused"),
+            ("no device setting", {"argv": list(ESPTOOL_ARGV)}, "no device setting"),
+            ("IDs that match no device", {"argv": list(ESPTOOL_ARGV), "device": FS.device("NOSUCHSERIAL")},
+             "no device matches")):
+        got, seen, ver, files = t_port(dict(sv, esptool=et))
+        check("identify X2: %s RAISES before bench_identify or esptool runs" % label,
+              isinstance(got, SG.IdentifyError) and want in str(got) and "serial_port" not in seen and ver == [],
+              (got, seen.get("serial_port"), ver))
+
     def t_bridge(t):
         bi("70df3a43")       # a foreign bridge's 0x7F7 build id: not verified, just read
         t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
@@ -787,7 +847,7 @@ def x2_writes(result):
 
 
 def test_flashers(settings, bench):
-    settings = dict(settings, esptool={"argv": list(ESPTOOL_ARGV), "port": "COM3"})
+    settings = dict(settings, esptool={"argv": list(ESPTOOL_ARGV), "device": FS.device(FS.X2_SERIAL)})
     hooks = SG.make_hooks(settings, SSID, bench.images)
     wm, xh, xj = (bench.images[n] for n in ("wican_man", "x2_held", "x2_jammer"))
 

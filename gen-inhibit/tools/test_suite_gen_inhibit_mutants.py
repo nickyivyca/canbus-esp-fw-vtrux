@@ -225,6 +225,16 @@ MUTANTS = [
     ("verify: the version is not in the log", 'f.write("esptool version: %s (pinned %s)\\n%s" % (ver, GE.PINNED, t))',
      'f.write(t)'),
     ("the tools get no GI_ESPTOOL_ARGV", '    base_env.update(esptool_env(settings))', '    pass'),
+    # the X2's port by its USB IDs (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12)
+    ("the tools get no GI_X2_DEVICE / GI_WICAN_DEVICE", '    base_env.update(serial_env(settings))', '    pass'),
+    ("verify: on a tty name, not the X2's IDs",
+     '    port = x2_port(settings, os.path.dirname(os.path.abspath(logpath)), "x2_verify")\n',
+     '    port = et.get("port") or "/dev/ttyACM0"\n'),
+    ("bench_identify gets the settings as they are",
+     '        bi_settings = dict(settings, serial_port=x2_port(settings, logdir, "bench_identify"))\n',
+     '        bi_settings = settings\n'),
+    ("the port's use is not written down", 'f.write("used by: %s\\nport: %s\\n" % (X2_PORT_USES[use], port))',
+     'f.write("port: %s\\n" % port)'),
     ("code: the X2 files' sha256 are not kept", 'sha256=dict(pin["images"][n]["sha256"]))', 'sha256={})'),
 ]
 

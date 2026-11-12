@@ -7,7 +7,8 @@
 #
 #   GI_COMMIT=e3d9437 GI_WICAN_SSID=... bash baseline_b22.sh [a] [b]
 #
-# Opens COM3 only through e4's --flood-slcan session; never flashes or resets the X2.
+# Opens the X2 only through e4's --flood-slcan session (its port found by its USB IDs in
+# GI_X2_DEVICE, gi_serial, DEVICES-SPEC S1, 2026-11-12); never flashes or resets the X2.
 set -u
 H="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$H/bench_host.sh"; A=$(hpath "$H")   # this folder, gen-inhibit/tools/bench
 cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
@@ -28,7 +29,7 @@ print("reboot", I.reboot(LF))
 PY
   n=B22_case3_${C}_man_$a
   $PY -B $A/e4_device_calibration.py --capture "$(hpath "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
-    --window-start 0 --seconds 90 --arm idle --flood-slcan COM3 --out "$D/$n.json" > "$D/$n.txt" 2>&1
+    --window-start 0 --seconds 90 --arm idle --flood-slcan --out "$D/$n.json" > "$D/$n.txt" 2>&1
   echo "  e4 exit $?"
   grep -E "provenance \(live\)|tx_ok=|FLOOD|board after|carried load|error frames" "$D/$n.txt" | cut -c1-220
 done

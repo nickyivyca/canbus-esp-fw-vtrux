@@ -12,6 +12,13 @@ esptool and a fake data folder in the worktree's scratch/; a recorded path that 
 absolute or has a ".." part is refused by both readers, naming the record.
 test_x2_flash_custody_mutants.py runs the mutants of that.
 
+The port (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12): main() runs against a
+made-up bench of serial devices (_fake_serial.py) and GI_X2_DEVICE, so the X2's by-id link
+is resolved through gi_serial and the core's serial_dev and handed to esptool; the record
+keeps the port and serial_device. GI_X2_DEVICE unset, a tty name or IDs matching no device
+give a REFUSED record with nothing read; check-dump needs no port. Needs the pinned core's
+shared/bench on PYTHONPATH (2026.11.11.6 or later), and Linux.
+
 Run: py -3.14 gen-inhibit/tools/bench/test_x2_flash_custody.py
 """
 import os
@@ -239,9 +246,13 @@ def esptool_main_cases():
     import io
     import json
     import _fake_esptool as FE
+    import _fake_serial as FS
     bad = []
     fake = os.path.join(WORK, "fake")
     env_fake = FE.make(fake)
+    # the made-up serial devices (DEVICES-SPEC S1, 2026-11-12): the X2's port is its by-id link
+    serial_env, ports = FS.fake_bench(os.path.join(WORK, "serial"))
+    port = ports["x2"]
     flash = os.path.join(fake, "flash.bin")
     with open(flash, "wb") as fh:
         fh.write(image(OTHER, GOOD, seq=2))
@@ -253,9 +264,11 @@ def esptool_main_cases():
         if not ok:
             bad.append(label)
 
-    def run(args, version="4.13.0", argv=good):
-        """(exit, record, cli lines): main() with sys.argv set, in-process."""
-        keys = ("PYTHONPATH", "FAKE_ESPTOOL_FLASH", "FAKE_ESPTOOL_LOG", "FAKE_ESPTOOL_VERSION", "GI_ESPTOOL_ARGV")
+    def run(args, version="4.13.0", argv=good, device="good"):
+        """(exit, record, cli lines): main() with sys.argv set, in-process. device: "good"
+        (the X2's IDs), None (GI_X2_DEVICE unset) or the variable's text."""
+        keys = ("PYTHONPATH", "FAKE_ESPTOOL_FLASH", "FAKE_ESPTOOL_LOG", "FAKE_ESPTOOL_VERSION", "GI_ESPTOOL_ARGV") \
+            + tuple(serial_env)
         saved_env = {k: os.environ.get(k) for k in keys}
         saved_argv, saved_runs = sys.argv, C.RUNS
         if os.path.exists(log):
@@ -266,7 +279,12 @@ def esptool_main_cases():
         os.environ.pop("GI_ESPTOOL_ARGV", None)
         if argv is not None:
             os.environ["GI_ESPTOOL_ARGV"] = json.dumps(argv)
-        sys.argv, C.RUNS = ["x2_flash_custody.py"] + args + ["--port", "FAKE"], runs
+        os.environ.update(serial_env)
+        if device is None:
+            os.environ.pop("GI_X2_DEVICE")
+        elif device != "good":
+            os.environ["GI_X2_DEVICE"] = device
+        sys.argv, C.RUNS = ["x2_flash_custody.py"] + args, runs
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 rc = C.main()
@@ -294,8 +312,12 @@ def esptool_main_cases():
         reads = [c for c in cli if "read_flash" in c]
         check("main dump: the version first, then two read_flash 0 ALL, PASS", rc == 0 and rec
               and rec.get("verdict") == "PASS" and cli[:1] == ["version"] and len(reads) == 2
-              and all(c.startswith("--chip esp32s3 --port FAKE --baud 921600 read_flash 0 ALL ") for c in reads),
+              and all(c.startswith("--chip esp32s3 --port %s --baud 921600 read_flash 0 ALL " % port) for c in reads),
               (rc, rec and rec.get("verdict"), cli))
+        check("main dump: the port is the X2's by-id link from GI_X2_DEVICE, kept with what matched (S3)",
+              rec and rec.get("port") == port and (rec.get("serial_device") or {}).get("port") == port
+              and (rec.get("serial_device") or {}).get("serial") == FS.X2_SERIAL,
+              rec and {k: rec.get(k) for k in ("port", "serial_device")})
         check("main dump: the record holds esptool's argv and version",
               rec and rec.get("esptool_argv") == good and rec.get("esptool_version") == "4.13.0",
               rec and {k: rec.get(k) for k in ("esptool_argv", "esptool_version")})
@@ -317,10 +339,23 @@ def esptool_main_cases():
                   rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and want in rec3.get("why", "")
                   and rec3.get("esptool_version") is None and not [c for c in cli if c != "version"]
                   and sorted(os.listdir(C.BACKUPS)) == kept, (rc, rec3, cli))
+        for label, dev, want in (("GI_X2_DEVICE unset", None, "GI_X2_DEVICE is not set"),
+                                 ("GI_X2_DEVICE a tty name", "/dev/ttyACM1", "not JSON"),
+                                 ("GI_X2_DEVICE matching no device", json.dumps(FS.device("NOSUCHSERIAL")),
+                                  "no device matches")):
+            rc, rec3, cli = run(["dump"], device=dev)
+            check("main dump, %s: REFUSED record, no port, nothing read, no dump" % label,
+                  rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and want in rec3.get("why", "")
+                  and rec3.get("port") is None and not [c for c in cli if c != "version"]
+                  and sorted(os.listdir(C.BACKUPS)) == kept, (rc, rec3, cli))
         rc, rec4, cli = run(["check-dump", "--dump-record", record], argv=None)
         check("main check-dump: no esptool, none needed; argv and version None in the record",
               rc == 0 and rec4 and rec4.get("verdict") == "PASS" and not cli
               and rec4.get("esptool_argv") is None and rec4.get("esptool_version") is None, (rc, rec4, cli))
+        rc, rec5, cli = run(["check-dump", "--dump-record", record], device=None)
+        check("main check-dump: no port, none needed; port and serial_device None in the record",
+              rc == 0 and rec5 and rec5.get("verdict") == "PASS" and not cli
+              and rec5.get("port") is None and rec5.get("serial_device") is None, (rc, rec5, cli))
     return bad
 
 

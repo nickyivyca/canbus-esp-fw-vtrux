@@ -103,8 +103,9 @@ def run_case(C, a, errs, latch_at, ecc_page, get_raises=False):
 class FakeCC:
     made = 0
 
-    def __init__(self):
+    def __init__(self, port=None):
         FakeCC.made += 1
+        self.port = port
         self.started = self.stopped = self.joined = False
         self.events, self.lines = [(1.0, "open")], [(1.0, "x"), (2.0, "y")]
 
@@ -140,11 +141,19 @@ def console_checks(C):
     p = tried(lambda: C.build_parser().parse_args(["threshold", "--power", "x"]))
     check("the console is on unless asked off", getattr(p, "no_wican_console", None) is False, p)
     FakeCC.made = 0
-    cc = tried(lambda: C.start_wican_console(ns(no_wican_console=True), FakeCC))
-    check("with --no-wican-console no capture is made and none returned", cc is None and FakeCC.made == 0,
-          (cc, FakeCC.made))
-    cc = tried(lambda: C.start_wican_console(ns(no_wican_console=False), FakeCC))
+    asked = []
+
+    def port_of(board):
+        asked.append(board)
+        return "/dev/serial/by-id/usb-Made_Up_%s-if00" % board
+    cc = tried(lambda: C.start_wican_console(ns(no_wican_console=True), FakeCC, port_of))
+    check("with --no-wican-console no capture is made, none returned, and no WiCAN port asked for",
+          cc is None and FakeCC.made == 0 and asked == [], (cc, FakeCC.made, asked))
+    cc = tried(lambda: C.start_wican_console(ns(no_wican_console=False), FakeCC, port_of))
     check("without it the capture is made and started", isinstance(cc, FakeCC) and cc.started, cc)
+    check("on the WiCAN's port by its USB IDs (gi_serial, DEVICES-SPEC S1)",
+          asked == ["wican"] and getattr(cc, "port", None) == "/dev/serial/by-id/usb-Made_Up_wican-if00",
+          (asked, getattr(cc, "port", None)))
     got = tried(lambda: C.console_totals(None))
     check("with no capture the record says the console was off",
           isinstance(got, tuple) and got[0] == {"wican_console": "off (--no-wican-console)"}
@@ -156,7 +165,7 @@ def console_checks(C):
           and got[0].get("wican_console_events") == [(1.0, "open")], got)
     src = open(C.__file__, encoding="utf-8").read()
     check("main makes the capture only through start_wican_console",
-          "ConsoleCapture()" not in src and "CC = start_wican_console(a, ConsoleCapture)" in src)
+          "ConsoleCapture()" not in src and "CC = start_wican_console(a, ConsoleCapture, port_of)" in src)
     out = tried(lambda: C.reset_to_off(None, iter([{"uptime_ms": 900, "mode": 0}, {"uptime_ms": 5, "mode": 0}]).__next__,
                                       lambda path: (200, ""), iter(range(1000)).__next__, lambda s: None))
     check("with no capture the reset is POST /system_reboot", isinstance(out, dict) and
@@ -398,7 +407,9 @@ MUTANTS = [
     ("--no-wican-console is ignored", '    if getattr(a, "no_wican_console", False):\n        return None\n', ""),
     ("the flag is not in the parser", '    ap.add_argument("--no-wican-console", action="store_true",',
      '    ap.add_argument("--no-wican-console-x", action="store_true",'),
-    ("main makes its own capture", "    CC = start_wican_console(a, ConsoleCapture)",
+    ("the capture on a tty name, not the WiCAN's IDs", '    cc = factory(port_of("wican"))\n',
+     '    cc = factory("/dev/ttyACM0")\n'),
+    ("main makes its own capture", "    CC = start_wican_console(a, ConsoleCapture, port_of)",
      "    CC = ConsoleCapture()\n    CC.start()"),
     ("the totals read a capture that is not there", '    if cc is None:\n        return {"wican_console": "off (--no-wican-console)"}, "COM4 console off"\n', ""),
     ("the capture is not stopped", "    cc.stop_flag.set()\n    cc.join(timeout=3.0)\n", ""),

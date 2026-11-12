@@ -113,11 +113,14 @@ def detect_chip(port, baud, before):
 
 
 def make(root):
-    """Writes root/esptool/ and returns {"PYTHONPATH": root}, to add to a run's
-    environment (with any FAKE_ESPTOOL_* settings)."""
+    """Writes root/esptool/ and returns {"PYTHONPATH": root, then this process's
+    PYTHONPATH}, to add to a run's environment (with any FAKE_ESPTOOL_* settings). root
+    comes first, so this esptool is the one found; what follows keeps the pinned core's
+    shared/bench importable for gi_serial (2026-11-12)."""
     pkg = os.path.join(root, "esptool")
     os.makedirs(pkg, exist_ok=True)
     for name, text in (("__init__.py", INIT), ("__main__.py", MAIN), ("cmds.py", CMDS)):
         with open(os.path.join(pkg, name), "w", encoding="utf-8", newline="\n") as f:
             f.write(text.lstrip("\n"))
-    return {"PYTHONPATH": root}
+    rest = os.environ.get("PYTHONPATH")
+    return {"PYTHONPATH": root + (os.pathsep + rest if rest else "")}

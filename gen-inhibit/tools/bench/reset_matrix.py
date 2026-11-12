@@ -10,7 +10,9 @@ it:
 and on a panic halts with a register dump (PANIC_PRINT_HALT); after that, a
 USB-JTAG reset reads USB (11), not PANIC, so the dump is the only record.
 
-Cases (one session each, COM4 captured for the whole session):
+Cases (one session each, the WiCAN's console captured for the whole session; each
+console's port is found by the board's USB IDs, GI_WICAN_DEVICE and GI_X2_DEVICE, through
+gi_serial, DEVICES-SPEC S1, 2026-11-12, and kept in the record as serial_devices):
   baseline  device idle in mode 0 for --seconds, page polled every 2 s. Start
             it BEFORE the OTA that boots the image, so that boot is captured.
   A         mode 3, no 0x051, NO node ACKs: the witness is the PCAN in
@@ -28,7 +30,7 @@ the WiCAN's TEC stayed 0 with it open and reached 128 with no adapter open
 20261009T042000, _B_20261009T042311) opened it "silent", so in those arms the
 Kvaser ACKed. The PCAN in listen-only did not ACK (TEC 128), so it is the
 silent witness. witness_plan() holds the choice; the test pins it.
-  E         as A, with the X2's console (COM3) held open throughout.
+  E         as A, with the X2's console held open throughout.
 
 A BOOT is read from the console only, by three independent signs, any of which
 counts: the diag reason line, a ROM banner line ("ESP-ROM" / "rst:0x"), or the
@@ -421,8 +423,19 @@ def main():
 
     stamp = time.strftime("%Y%m%dT%H%M%S")
     base = os.path.join(RUNS, "reset_matrix_%s_%s" % (a.case, stamp))
+    # the consoles' ports by the boards' USB IDs (DEVICES-SPEC S1; gen-inhibit reviewer,
+    # 2026-11-12): the WiCAN's always, the X2's for case E. No device, or not exactly one,
+    # refuses before anything opens (exit 2, no record).
+    import gi_serial as GS
+    try:
+        serial_devices = {"wican": GS.resolve("wican")}
+        if a.case == "E":
+            serial_devices["x2"] = GS.resolve("x2")
+    except GS.Refused as e:
+        print("REFUSED: %s (nothing run, no record)" % e)
+        return 2
     rec = {"when": stamp, "case": a.case, "power": a.power,
-           "args": vars(a), "arms": [], "halts": []}
+           "args": vars(a), "arms": [], "halts": [], "serial_devices": serial_devices}
     if a.case != "baseline":
         p = LF.page()
         if p is None or p.get("mode") != 0:
@@ -437,11 +450,11 @@ def main():
 
     state = {"silent_since": None, "rejoin_after": a.rejoin_after,
              "last_rejoin": 0.0, "rejoins": []}
-    cc = ConsoleCapture("COM4")
+    cc = ConsoleCapture(serial_devices["wican"]["port"])
     cc.start()
     cc3 = None
     if a.case == "E":
-        cc3 = ConsoleCapture("COM3")
+        cc3 = ConsoleCapture(serial_devices["x2"]["port"])
         cc3.start()
     kv = pc = wit = None
     replay = None

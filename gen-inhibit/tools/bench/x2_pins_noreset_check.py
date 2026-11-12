@@ -15,7 +15,7 @@ charge-interposer tester's measured figures on 756d6714: a reset sends the power
 round (0x7F4-0x7F7, once each) about 0.32 s later, and the round waits up to ~50 ms for
 an ACK. So the Kvaser is held open in NORMAL mode (ACKing) for the whole check, and:
 
-  1. serial before: COM3 read passively (opened without a reset, nothing written) for --serial
+  1. serial before: the X2's console read passively (opened without a reset, nothing written) for --serial
      seconds (default 11, so at least two of the 5 s status lines); the app's 1 Hz
      "diag st=" line, the status line's "t=Ns" (seconds since boot) and any boot banner
      ("rst:0x.. (", "Vtrux charge interposer") are kept.
@@ -37,6 +37,12 @@ an ACK. So the Kvaser is held open in NORMAL mode (ACKing) for the whole check, 
     PASS          otherwise
 
 Writes x2_pins_noreset_<stamp>.json in GI_RUNS_DIR or runs/. Gen-inhibit tester.
+
+The port (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12; gi_serial.py): the X2 is
+named by its USB IDs in GI_X2_DEVICE and resolved to its /dev/serial/by-id/ path through
+the core's serial_dev, after esptool's check and before the Kvaser opens or the board is
+touched. No device, or not exactly one, refuses (exit 2, nothing run). The record keeps
+the port and serial_device (S3); x2_hold.py pins resolves the same IDs itself.
 """
 import argparse
 import json
@@ -134,7 +140,6 @@ def read_serial(port, seconds):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default="COM3")
     ap.add_argument("--serial", type=float, default=11.0, help="seconds per serial read (t= line every 5 s)")
     ap.add_argument("--quiet", type=float, default=3.0)
     ap.add_argument("--after", type=float, default=3.0)
@@ -149,9 +154,11 @@ def main():
     # checked before the Kvaser opens or the board is touched
     try:
         et = x2_hold.esptool_info()
-    except x2_hold.GE.Refused as e:
+        dev = x2_hold.GS.resolve("x2")      # the X2's port by its USB IDs (S1, 2026-11-12)
+    except (x2_hold.GE.Refused, x2_hold.GS.Refused) as e:
         print("REFUSED: %s (nothing run)" % e)
         return 2
+    a.port = dev["port"]
     import can
     stamp = time.strftime("%Y%m%dT%H%M%S")
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
@@ -164,7 +171,7 @@ def main():
         marks["quiet"] = time.time()
         time.sleep(a.quiet)
         marks["pins"] = time.time()
-        p = subprocess.run([sys.executable, "-B", os.path.join(HERE, "x2_hold.py"), "pins", "--port", a.port],
+        p = subprocess.run([sys.executable, "-B", os.path.join(HERE, "x2_hold.py"), "pins"],
                            capture_output=True, text=True, env=dict(os.environ, GI_RUNS_DIR=RUNS))
         marks["after"] = time.time()
         time.sleep(a.after)
@@ -192,6 +199,7 @@ def main():
            "control_tail": ctxt.strip().splitlines()[-3:],
            "marks": {k: round(v - marks["quiet"], 3) for k, v in marks.items()},
            "esptool_argv": et["argv"], "esptool_version": et["version"],
+           "port": a.port, "serial_device": dev,
            "args": vars(a)}
     os.makedirs(RUNS, exist_ok=True)
     path = os.path.join(RUNS, "x2_pins_noreset_%s.json" % stamp)

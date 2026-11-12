@@ -40,9 +40,15 @@ baseline ran; a check's records go to its own folder (GI_OUT, GI_RUNS_DIR).
 Settings this suite reads, besides the core's (shared/bench/README.md):
     reverse_it       the reverse-it root, forward slashes
     gi_tools         this folder (gen-inhibit/tools of the tester worktree)
-    bash             Git Bash's bash.exe, by full path: on Windows a bare "bash" goes
-                     through CreateProcess, which looks in System32 before PATH and
-                     finds WSL's bash.exe
+    bash             bash, by full path (/usr/bin/bash on the Linux bench; on Windows,
+                     Git Bash's bash.exe: a bare "bash" goes through CreateProcess,
+                     which looks in System32 before PATH and finds WSL's bash.exe)
+    esptool.device   the X2's USB IDs {vid, pid, serial, interface} (DEVICES-SPEC S1,
+                     Linux): the core's flasher, x2_verify and bench_identify find its
+                     port by them, and the tools get them as GI_X2_DEVICE
+    wican.usb_device the WiCAN's USB IDs, the same form: the tools get them as
+                     GI_WICAN_DEVICE (its console). No COM or tty name is a setting;
+                     serial numbers are bench identifiers, local settings only
     gi_commit        the short commit the images were built from
     gi_images        the WiCAN tree holding build-tester-<name>/ (part C's builds): a
                      worktree's gen-inhibit/firmware/ from port step 0d (2026-10-26), its
@@ -56,7 +62,10 @@ Settings this suite reads, besides the core's (shared/bench/README.md):
                      tree its prod build verified (12.3 item 3)
     gi_host_ssh      the ssh host part H and B15host run on (madhouse-debian, user, 2026-10-22)
     gi_host_root     the reverse-it root on that host (H's RROOT; a leading ~/ is that host's home)
-    interposer_code  a charge-interposer/ clone (for x2_flash_custody and the X2's identify)
+    interposer_code  a charge-interposer/ clone (for x2_flash_custody and the X2's identify;
+                     its bench_identify reads settings.serial_port, so it is handed a copy
+                     of the settings with serial_port set to the X2's resolved by-id path,
+                     written down in serial_device_bench_identify.txt)
     x2_pin_dir       the folder holding the X2's pinned images (x2_pin.py): only where the
                      files are. Their files and identities are x2_pin.json's, committed
                      beside this file (user ruling 2026-11-10, through the gen-inhibit
@@ -94,16 +103,17 @@ import suite_judges as SJ   # noqa: E402
 import x2_pin as X2P        # noqa: E402
 
 
-def _load_gi_esptool():
-    """bench/gi_esptool.py beside this file, by file: bench/ is not put on sys.path."""
+def _load_bench(name):
+    """bench/<name>.py beside this file, by file: bench/ is not put on sys.path."""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("gi_esptool", os.path.join(HERE, "bench", "gi_esptool.py"))
+    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, "bench", name + ".py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
-GE = _load_gi_esptool()
+GE = _load_bench("gi_esptool")
+GS = _load_bench("gi_serial")      # the boards' USB IDs for the tools (DEVICES-SPEC S1, 2026-11-12)
 X2_PIN_FILE = X2P.PIN_FILE  # the committed pin; never a setting
 X2_IMAGES = ("x2_app", "x2_slcan")
 # Images not safe to leave idle on the bench (the core's Image.idle_safe=False, shared/main
@@ -243,21 +253,60 @@ def esptool_env(settings):
     return {GE.ENV: json.dumps(argv)} if argv else {}
 
 
+def serial_env(settings):
+    """{GI_X2_DEVICE, GI_WICAN_DEVICE} for the harness tools, from settings.esptool.device and
+    settings.wican.usb_device (gi_serial.py; DEVICES-SPEC S1, 2026-11-12). A board the settings
+    name no IDs for is left out, and the tools that need it refuse, naming the variable."""
+    return GS.env_from_settings(settings)
+
+
+def x2_port(settings, logdir, use):
+    """The X2's port, resolved by the core flasher's own device_port from settings.esptool
+    (on Linux its device by USB IDs; a port setting is refused there, DEVICES-SPEC S1), and
+    written to serial_device_<use>.txt in logdir in the core's serial_device.txt form, with
+    what it was used for (S3). Raises IdentifyError when it cannot be had."""
+    from vtrux_bench.run import flash as CF
+    et = settings.get("esptool") or {}
+    try:
+        port, dev = CF.device_port({}, et)
+    except CF.SD.Refused as e:
+        raise IdentifyError("the X2's port (%s): %s" % (use, e))
+    with open(os.path.join(logdir, "serial_device_%s.txt" % use), "w", encoding="utf-8") as f:
+        f.write("used by: %s\nport: %s\n" % (X2_PORT_USES[use], port))
+        for k in CF.SD.KEYS + ("usb", "tty"):
+            f.write("%s: %s\n" % (k, (dev or {}).get(k)))
+    return port
+
+
+# what serial_device_<use>.txt says the X2's resolved port was used for
+X2_PORT_USES = {
+    "x2_verify": "x2_verify: esptool verify_flash --port",
+    # The interposer's bench_identify (interposer_code) reads settings["serial_port"] as a
+    # port name. It is handed a copy of the settings with serial_port set to the by-id path
+    # resolved here, so no tty name is written in this suite's settings (gen-inhibit
+    # reviewer, 2026-11-12, who asked for the hand-off to be recorded beside the S3 entry).
+    "bench_identify": "bench_identify (charge-interposer), handed as settings.serial_port in a "
+                      "copy of the settings",
+}
+
+
 def x2_verify(settings, files, logpath):
     """esptool verify_flash of [[offset, path], ...] on the X2's port: True when esptool exits 0
     and prints the pinned version's verify line once per file, False when it read a different
     flash. Raises IdentifyError when it could not look (no esptool settings, an argv of another
-    form or another version than the pin, a port that would not open, a timeout). Writes
-    nothing. The log starts with the version read."""
+    form or another version than the pin, no single device for the X2's USB IDs, a port that
+    would not open, a timeout). Writes nothing. The log starts with the version read; the port
+    and the IDs matched are in serial_device_x2_verify.txt beside it."""
     et = settings.get("esptool") or {}
-    argv0, port = et.get("argv"), et.get("port")
-    if not argv0 or not port:
-        raise IdentifyError("settings.esptool needs argv and port to verify the X2's flash")
+    argv0 = et.get("argv")
+    if not argv0:
+        raise IdentifyError("settings.esptool needs argv to verify the X2's flash")
     try:
         argv0 = GE.check_form(argv0)
         ver = GE.check_version(argv0)
     except GE.Refused as e:
         raise IdentifyError("x2_verify: %s" % e)
+    port = x2_port(settings, os.path.dirname(os.path.abspath(logpath)), "x2_verify")
     cmd = argv0 + ["--port", port, "--baud", str(et.get("baud") or 921600), "verify_flash"]
     for off, path in files:
         cmd += [str(off), path]
@@ -301,6 +350,7 @@ def make_hooks(settings, ssid, images=None):
     # their parent, and refuse it if set. REVERSE_IT_DIR is where their data is.
     base_env = {"GI_WICAN_SSID": ssid, "REVERSE_IT_DIR": root, "INTERPOSER_CODE": settings.get("interposer_code") or ""}
     base_env.update(esptool_env(settings))     # GI_ESPTOOL_ARGV (gi_esptool.py, 2026-11-11)
+    base_env.update(serial_env(settings))      # GI_X2_DEVICE, GI_WICAN_DEVICE (gi_serial.py, 2026-11-12)
 
     def redact(paths):
         """The SSID out of every text file named; anything else (a flash dump) untouched."""
@@ -492,7 +542,8 @@ def make_hooks(settings, ssid, images=None):
             return "held:not driven"
         # 2: the charge-interposer tester's identify (resets the board): its own image, slcan.
         import bench_identify as BI
-        got = BI.identify(image, ctx, logdir, settings)
+        bi_settings = dict(settings, serial_port=x2_port(settings, logdir, "bench_identify"))
+        got = BI.identify(image, ctx, logdir, bi_settings)
         if got and got.startswith("slcan:"):
             # any SLCAN build gives the same answers: the pinned app must be on the flash too
             return got if x2_slcan_pinned(logdir, stamp) else got + ":unpinned"

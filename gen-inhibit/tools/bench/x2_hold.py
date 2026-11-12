@@ -38,6 +38,12 @@ before anything else; unset, another form or another version refuses (exit 2, no
 record, nothing run on the board). Every record holds esptool_argv and
 esptool_version. Command names are the underscore ones (read_mem). enable-inputs uses
 esptool's Python API, so it runs x2_hold_inputs.py under that argv's python.
+
+The port (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12; gi_serial.py): the X2 is
+named by its USB IDs in GI_X2_DEVICE, resolved to its /dev/serial/by-id/ path through the
+core's serial_dev before anything runs. No device, or not exactly one, refuses like
+esptool (exit 2, no record). Every record holds the port and serial_device, what was
+matched (S3). Linux only.
 """
 import argparse
 import json
@@ -48,6 +54,7 @@ import sys
 import time
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import gi_esptool as GE  # noqa: E402  esptool from the settings, pinned (2026-11-11)
+import gi_serial as GS  # noqa: E402  the X2's port by its USB IDs (DEVICES-SPEC S1, 2026-11-12)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
@@ -166,15 +173,16 @@ def read_with_inputs(port):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["hold", "pins", "enable-inputs", "release"])
-    ap.add_argument("--port", default="COM3")
     a = ap.parse_args()
     stamp = time.strftime("%Y%m%dT%H%M%S")
     try:
         info = esptool_info()
-    except GE.Refused as e:
+        dev = GS.resolve("x2")
+    except (GE.Refused, GS.Refused) as e:
         print("REFUSED: %s (nothing run, no record)" % e)
         return 2
-    rec = {"when": stamp, "cmd": a.cmd, "port": a.port,
+    a.port = dev["port"]
+    rec = {"when": stamp, "cmd": a.cmd, "port": a.port, "serial_device": dev,
            "esptool_argv": info["argv"], "esptool_version": info["version"]}
     if a.cmd == "enable-inputs":
         try:

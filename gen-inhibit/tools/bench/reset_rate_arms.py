@@ -11,8 +11,9 @@ Per arm: mode 3 with the interlock slice of vtrux_20260719_190019_T4.log
 replayed on the PCAN (the stimulus the other arms use), wait for live, hold
 live for --live-seconds polling the page at ~2 Hz, then mode 0. The Kvaser is
 an independent witness counting the 0x051 on the wire. The console
-(COM4, USB-Serial-JTAG) is captured throughout by console_capture.py, which
-reopens the port if it drops.
+(USB-Serial-JTAG, named by its USB IDs in GI_WICAN_DEVICE and found through gi_serial,
+DEVICES-SPEC S1, 2026-11-12; refused, exit 2, without one) is captured throughout by
+console_capture.py, which reopens the port if it drops.
 
 A RESET IS COUNTED ONLY FROM POST-STATE (reviewer, 2026-10-07): while the
 harness has the device armed, a page reading mode 0, or tx_ok lower than an
@@ -125,6 +126,12 @@ def main():
     a = ap.parse_args()
     stamp = time.strftime("%Y%m%dT%H%M%S")
     path = os.path.join(RUNS, "reset_rate_%s.json" % stamp)
+    import gi_serial as GS
+    try:
+        dev = GS.resolve("wican")     # its port by its USB IDs (DEVICES-SPEC S1, 2026-11-12)
+    except GS.Refused as e:
+        print("REFUSED: %s (nothing run, no record)" % e)
+        return 2
     p = LF.page()
     if p is None or p.get("mode") != 0:
         print("FAIL: device must be in mode 0")
@@ -134,11 +141,12 @@ def main():
            "poll_sleep_s": a.poll_sleep, "replayer": a.replayer,
            "pcan_opened": a.replayer == "pcan",
            "witness_sees_replay": a.replayer == "pcan",
+           "port": dev["port"], "serial_device": dev,
            "arms": []}
     print("build %s" % rec["build"])
     stim = LF.build_stimulus()
     total = a.arms * (a.live_seconds + 20) + 30
-    cc = ConsoleCapture()
+    cc = ConsoleCapture(dev["port"])
     cc.start()
     kv = pc = wit = replay = None
     try:

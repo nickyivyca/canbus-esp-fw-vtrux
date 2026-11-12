@@ -40,10 +40,17 @@ MUTANTS = [
     ("the version is not checked", "                _ET.update(GE.checked())\n",
      '                _ET.update({"argv": GE.from_env(), "version": None})\n'),
     ("the record has no esptool argv or version",
-     '            rec["esptool_argv"], rec["esptool_version"] = _ET["argv"], _ET["version"]\n', "            pass\n"),
+     '                rec["esptool_argv"], rec["esptool_version"] = _ET["argv"], _ET["version"]\n',
+     "                pass\n"),
     ("a refusal goes on to the board",
      '                print("REFUSED: %s (nothing run)" % e)\n                return 1\n',
      '                print("REFUSED: %s (nothing run)" % e)\n'),
+    # the port by the X2's USB IDs (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12)
+    ("the port is a tty name, not resolved", '                dev = GS.resolve("x2")\n',
+     '                dev = {"port": "/dev/ttyACM0"}\n'),
+    ("the record has no serial_device", '            rec["serial_device"] = dev\n', "            pass\n"),
+    ("a port refusal goes on to the board", "            except (GE.Refused, GS.Refused) as e:\n",
+     "            except GE.Refused as e:\n"),
 ]
 
 
