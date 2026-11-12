@@ -20,8 +20,15 @@ suites (tester, 2026-10-18). No hardware, no runner, no ssh.
            refusal (a hand-edited folder, none installed, CAN_TOOLS_DIR
            unset) with the pin still named; the emulated and harness
            suites, which open no dongle, do not
+  m-lanes  settings m_lanes_host: unset (the Windows settings) keeps the
+           m-* groups on madhouse over ssh from the shipped copy, exactly
+           as before; "local" (madhouse-debian, user 2026-11-11) puts them
+           on host local from the worktree, nothing shipped and no {work}
+           path left, with the same checks, argv, class and judge; any
+           other value refused
 
-    py -3.14 charge-interposer/bench_suite_test.py [--can-fail]
+    py -3.14 charge-interposer/bench_suite_test.py [--can-fail]      (Windows)
+    python3.13 charge-interposer/bench_suite_test.py [--can-fail]    (madhouse)
 
 --can-fail runs each test against a mutant of what it tests (a judge that
 passes everything, a suite with its requires dropped, ...) and requires the
@@ -504,6 +511,61 @@ def _all():
     s = _settings()
     return s, {"emulated": B.emulated(s), "bench": B.bench(s),
                "harness": B.harness(s)}
+
+
+M_GROUPS = {"emulated": ("m-host", "m-sims"), "harness": ("m-harness", "m-mutants")}
+
+
+def _check_text(c):
+    return " ".join([str(c.cwd)] + [str(a) for a in c.argv]
+                    + ["%s=%s" % kv for kv in sorted((c.env or {}).items())])
+
+
+def test_m_lanes_host():
+    s = _settings()
+    s_loc = dict(s, m_lanes_host="local")
+    for k, make in (("emulated", B.emulated), ("harness", B.harness)):
+        win, loc = make(s), make(s_loc)
+        validate(loc, s_loc, builtin_flashers=("esptool",))
+        wg = {g.name: g for g in win.groups}
+        lg = {g.name: g for g in loc.groups}
+        assert set(wg) == set(lg), (k, sorted(wg), sorted(lg))
+        for n in M_GROUPS[k]:
+            w, l = wg[n], lg[n]
+            # the Windows settings (no m_lanes_host): ssh and the shipped copy
+            assert w.host == "madhouse", (n, w.host)
+            assert w.ship and set(w.ship) == {"code", "canre", "shared"}, (n, w.ship)
+            live = [c for c in w.checks if not c.skip]
+            assert live, n
+            for c in live:
+                assert c.cwd == "{work}/code", (n, c.id, c.cwd)
+                assert (c.env.get("INTERPOSER_CODE"), c.env.get("CANRE_DIR"),
+                        c.env.get("TWAI_FAKE_DIR")) == (
+                    "{work}/code", "{work}/canre", "{work}/shared/twai_port/test"), (n, c.id)
+            # local: the worktree, nothing shipped, no {work} anywhere
+            assert l.host == "local" and not l.ship, (n, l.host, l.ship)
+            for c in l.checks:
+                if c.skip:
+                    continue
+                assert "{work}" not in _check_text(c), (n, c.id, _check_text(c))
+                assert c.cwd == "{interposer_code}", (n, c.id, c.cwd)
+                assert c.env.get("INTERPOSER_CODE") == "{interposer_code}", (n, c.id)
+                assert "CANRE_DIR" not in c.env and "TWAI_FAKE_DIR" not in c.env, (n, c.id)
+                assert c.env.get("L3_STIMULUS") == "{madhouse_artifacts}/l3_stimulus.txt"
+            # the same checks either way
+            assert [(c.id, c.argv, c.cls, c.judge, c.skip, c.python, c.timeout_s)
+                    for c in w.checks] == \
+                   [(c.id, c.argv, c.cls, c.judge, c.skip, c.python, c.timeout_s)
+                    for c in l.checks], n
+        for n in set(wg) - set(M_GROUPS[k]):
+            assert (wg[n].host, [_check_text(c) for c in wg[n].checks]) == \
+                   (lg[n].host, [_check_text(c) for c in lg[n].checks]), n
+    for bad in ("ssh", "", "Local", "madhouse-debian"):
+        try:
+            B.emulated(dict(s, m_lanes_host=bad))
+        except ValueError:
+            continue
+        raise AssertionError("m_lanes_host %r taken" % bad)
 
 
 HARNESS_MARKS = ("mutation", "--can-fail", "--self-test", "canfail",
@@ -1678,7 +1740,8 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_script_coverage, test_shared_bench_tests,
          test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
-         test_scripts_in_tree, test_can_tools_record, test_runner_stage]
+         test_scripts_in_tree, test_can_tools_record, test_runner_stage,
+         test_m_lanes_host]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -1868,6 +1931,26 @@ _ORIG = {n: getattr(B, n) for n in ("script_judge", "recorded_judge",
                                     "host_bridge_judge", "emulated", "bench",
                                     "harness", "product_files")}
 _ORIG["_hb_list"] = B._hb_list
+_ORIG["_Build.mgroup"] = B._Build.mgroup
+_ORIG["_Build.mpy"] = B._Build.mpy
+_ORIG["M_LANES_HOSTS"] = B.M_LANES_HOSTS
+
+
+def _mgroup_always_madhouse(self, name, checks):
+    return B.Group(name, host="madhouse", ship=self.ship, checks=checks)
+
+
+def _mgroup_always_local(self, name, checks):
+    return B.Group(name, host="local", ship=None, checks=checks)
+
+
+def _mgroup_ships_locally(self, name, checks):
+    return B.Group(name, host=self.m_host, ship=self.ship, checks=checks)
+
+
+def _mpy_work_cwd(self, cid, argv, **kw):
+    kw.setdefault("cwd", "{work}/code")
+    return _ORIG["_Build.mpy"](self, cid, argv, **kw)
 _ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
 _ORIG["bench_identify.identify"] = B.bench_identify.identify
 _ORIG["self._PYCACHE_DROP"] = _PYCACHE_DROP
@@ -2079,6 +2162,17 @@ def _wican_identify_off(s):
 
 
 MUTANTS = {
+    "test_m_lanes_host": [
+        ("_Build.mgroup", _mgroup_always_madhouse,
+         "m_lanes_host local ignored: the m-lanes still over ssh"),
+        ("_Build.mgroup", _mgroup_always_local,
+         "the Windows settings' m-lanes moved off the ssh route"),
+        ("_Build.mgroup", _mgroup_ships_locally,
+         "a local m-lane still ships the copy"),
+        ("_Build.mpy", _mpy_work_cwd,
+         "a local m-check left in {work}/code"),
+        ("M_LANES_HOSTS", ("madhouse", "local", "ssh", "", "Local", "madhouse-debian"),
+         "any m_lanes_host taken")],
     "test_wican_board": [
         ("bench", _wrap_suite("bench", _no_wican_in("b-vport")),
          "a bench group without the WiCAN"),
