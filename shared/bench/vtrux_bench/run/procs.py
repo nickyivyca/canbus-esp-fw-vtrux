@@ -1,14 +1,15 @@
-"""Running commands: timeouts that kill the whole tree, the build throttle,
-and the process-list scan for wall-clock tests.
+"""Running commands: timeouts that kill the whole tree, placement in a
+systemd slice, and the process-list scan for wall-clock tests.
 
-The throttle is the standing rule for the shared machines (esp-development
-.md, 2026-10-16): while a wall-clock test of either project runs on a host,
-every build there runs at idle priority with one job. A wall-clock test is
-running on a host when
-  - this runner has a "wallclock" check active there, or
-  - (local host) bench-holder.md names any holder, or
-  - a process whose command line matches one of the settings'
-    "wallclock_patterns" is running there.
+Placement (AGENTS.md "Parallel work on the shared machine", point 1; user,
+2026-11-12): on Linux a check's command can start as a scope in a slice,
+`systemd-run --user --scope --slice=<slice> -- <argv>` (scope_argv). A scope
+keeps the environment, working folder, output and exit code, and the
+command runs as systemd-run's own process, so the process-group kill below
+still reaches it. Where it landed is read back from /proc/<pid>/cgroup
+(cgroup_slice). This replaces the old build throttle (idle priority, one
+job, while a wall-clock test ran): builds keep every core, and the slices'
+weights decide who gets the CPU.
 """
 
 import os
@@ -20,11 +21,8 @@ import sys
 import time
 
 WIN = sys.platform == "win32"
-IDLE_PRIORITY_CLASS = 0x00000040
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
-THROTTLE_ENV = {"PLATFORMIO_RUN_JOBS": "1", "MAKEFLAGS": "-j1",
-                "CMAKE_BUILD_PARALLEL_LEVEL": "1"}
 # remote_stop: a remote command whose local side is killed has its remote
 # process group killed too (see run_remote).
 RULES = {"remote_stop": True}
@@ -47,28 +45,39 @@ def kill_tree(proc):
         pass
 
 
-def run_local(argv, cwd, env, timeout_s, log_path, throttled=False,
-              stop_check=None, base_env=None):
+def scope_argv(systemd_run, slice_name, argv):
+    """argv started as a transient scope in slice_name (systemd_run: the
+    systemd-run command, as a list)."""
+    return list(systemd_run) + ["--user", "--scope", "--quiet",
+                                "--slice=%s" % slice_name, "--"] + list(argv)
+
+
+def cgroup_slice(text):
+    """The innermost *.slice named in a /proc/<pid>/cgroup text (the
+    unified hierarchy's "0::" line), or None."""
+    for ln in text.splitlines():
+        if ln.startswith("0::"):
+            parts = [p for p in ln[3:].strip().split("/") if p]
+            slices = [p for p in parts if p.endswith(".slice")]
+            return slices[-1] if slices else None
+    return None
+
+
+def run_local(argv, cwd, env, timeout_s, log_path, stop_check=None,
+              base_env=None):
     """Run argv; stdout and stderr to log_path. Returns (rc, timed_out).
     rc is None if killed. stop_check() returning True kills it early.
     The environment is base_env (default this process's), then env."""
     kw = {}
     if WIN:
-        flags = CREATE_NEW_PROCESS_GROUP
-        if throttled:
-            flags |= IDLE_PRIORITY_CLASS
-        kw["creationflags"] = flags
+        kw["creationflags"] = CREATE_NEW_PROCESS_GROUP
     else:
         kw["start_new_session"] = True
-        if throttled:
-            kw["preexec_fn"] = lambda: os.nice(19)
     full_env = dict(os.environ if base_env is None else base_env)
     full_env.update(env or {})
-    if throttled:
-        full_env.update(THROTTLE_ENV)
     with open(log_path, "ab") as log:
-        log.write(("$ %s\n# cwd=%s throttled=%s\n" % (
-            " ".join(shlex.quote(a) for a in argv), cwd, throttled)).encode())
+        log.write(("$ %s\n# cwd=%s\n" % (
+            " ".join(shlex.quote(a) for a in argv), cwd)).encode())
         log.flush()
         proc = subprocess.Popen(argv, cwd=cwd, env=full_env, stdout=log,
                                 stderr=subprocess.STDOUT,
@@ -90,7 +99,7 @@ def run_local(argv, cwd, env, timeout_s, log_path, throttled=False,
                 return None, False
 
 
-def remote_command(argv, cwd, env, timeout_s, throttled, pidfile=None):
+def remote_command(argv, cwd, env, timeout_s, pidfile=None):
     """The shell line run on a remote host over ssh. coreutils `timeout`
     kills the remote side even if the ssh link drops. With `pidfile`, the
     shell writes its pid there and execs into `timeout` (env execs too), so
@@ -102,14 +111,10 @@ def remote_command(argv, cwd, env, timeout_s, throttled, pidfile=None):
     if pidfile:
         parts.append("echo $$ > %s && exec" % shlex.quote(pidfile))
     e = dict(env or {})
-    if throttled:
-        e.update(THROTTLE_ENV)
     if e:
         parts.append("env " + " ".join("%s=%s" % (k, shlex.quote(str(v)))
                                        for k, v in sorted(e.items())))
     parts.append("timeout --kill-after=30 %d" % int(max(1, timeout_s)))
-    if throttled:
-        parts.append("nice -n 19")
     parts.append(" ".join(shlex.quote(a) for a in argv))
     return " ".join(parts)
 
@@ -122,7 +127,7 @@ def remote_kill_line(pidfile):
             'kill -KILL -- -"$p" 2>/dev/null; fi; true' % f)
 
 
-def run_remote(ssh_host, argv, cwd, env, timeout_s, log_path, throttled=False,
+def run_remote(ssh_host, argv, cwd, env, timeout_s, log_path,
                stop_check=None, ssh=("ssh", "-o", "BatchMode=yes"),
                pidfile=None):
     """Run argv on ssh_host. If the local side is killed (STOP now, or the
@@ -132,9 +137,9 @@ def run_remote(ssh_host, argv, cwd, env, timeout_s, log_path, throttled=False,
     Killing the local ssh does not reach the remote side: on 2026-10-19 a
     `STOP now` ended a run while its simulation on madhouse ran on, and
     would have until its 4 h `timeout` (charge-interposer tester)."""
-    line = remote_command(argv, cwd, env, timeout_s, throttled, pidfile)
+    line = remote_command(argv, cwd, env, timeout_s, pidfile)
     rc, to = run_local(list(ssh) + [ssh_host, line], None, None,
-                       timeout_s + 90, log_path, False, stop_check)
+                       timeout_s + 90, log_path, stop_check)
     if rc is None and pidfile and RULES["remote_stop"]:
         with open(log_path, "ab") as log:
             log.write(("# runner: killing the process group left on %s "

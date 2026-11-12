@@ -210,9 +210,9 @@ def test_build_record():
 
 
 def test_build_is_build_work():
-    """A5: builds are build work under AGENTS.md "Builds during wall-clock
-    tests": each runs as a "build" check of the chain runner, so its
-    throttle applies, and its chain record is inside the acceptance
+    """A5: builds are build work (AGENTS.md "Parallel work on the shared
+    machine"): each runs as a "build" check of the chain runner, so its
+    placement applies, and its chain record is inside the acceptance
     record, holding the masked settings (A6)."""
     f = Fixture()
     suite, _ctx = B.build_suite(f.repo, f.alist, FA, f.machine, f.made, f.parent,
