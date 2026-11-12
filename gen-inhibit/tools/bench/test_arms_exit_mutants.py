@@ -4,9 +4,9 @@ CHECK. A crash or a time-out is not a kill, and an edit that does not apply is a
 
     py -3.14 -B gen-inhibit/tools/bench/test_arms_exit_mutants.py
 
-Each mutant is a copy of the three scripts (with bench_images.sh and capture_window.py,
-which they call from their own folder) in the worktree's scratch/, one edit applied, run
-through BATCH_DIR. About 2 minutes a mutant. Gen-inhibit tester, 2026-10-25.
+Each mutant is a copy of the three scripts (with bench_images.sh, bench_host.sh and
+capture_window.py, which they call from their own folder) in the worktree's scratch/, one
+edit applied, run through BATCH_DIR. About 2 minutes a mutant. Gen-inhibit tester, 2026-10-25.
 
 The unmutated copy runs first, as the control (2026-10-30): if it fails, no mutant is
 judged and the run exits 1.
@@ -20,7 +20,7 @@ import gi_paths  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEST = os.path.join(HERE, "test_arms_exit.py")
 NOX2, B3, HAND = "baseline_b_noX2.sh", "baseline_b3_golive.sh", "baseline_b_hand.sh"
-FILES = (NOX2, B3, HAND, "bench_images.sh", "capture_window.py")
+FILES = (NOX2, B3, HAND, "bench_images.sh", "bench_host.sh", "capture_window.py")
 COUNT = "[ $r -eq 0 ] || ARMS_FAILED=$((ARMS_FAILED + 1))"
 MUTANTS = [
     ("noX2: an e4 arm is not counted", NOX2, '  echo "  exit $r"\n  ' + COUNT, '  echo "  exit $r"\n  true'),

@@ -25,8 +25,9 @@ Prints the table and writes <probe run>_wire.json. Tested by test_ota_guard_prob
 import json
 import subprocess
 import sys
+import gi_paths  # noqa: E402  the host's tshark (2026-11-12)
 
-TSHARK = r"C:\Program Files\Wireshark\tshark.exe"
+TSHARK = gi_paths.tshark()
 DEVICE = "192.168.80.1"
 FIELDS = ("tcp.stream", "ip.src", "tcp.srcport", "tcp.dstport", "tcp.flags.fin",
           "tcp.flags.reset", "tcp.len", "tcp.payload")

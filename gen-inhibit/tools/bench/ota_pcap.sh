@@ -13,13 +13,15 @@
 set -u
 img="$1"; stem="$2"
 : "${GI_WICAN_SSID:?set GI_WICAN_SSID}"
-DUMPCAP="/c/Program Files/Wireshark/dumpcap.exe"
-IFACE='\Device\NPF_{2D126A09-0299-425A-88DC-51DA04E0C70C}'   # Wi-Fi on NICKY-XPS (dumpcap -D)
-BF="$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)")/bench_flash.py"   # gen-inhibit/tools
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bench_host.sh"   # $PY, hpath, capture defaults (2026-11-12)
+DUMPCAP=${GI_DUMPCAP:-$GI_HOST_DUMPCAP}
+IFACE=${GI_CAPTURE_IFACE:-$GI_HOST_IFACE}   # none on Linux
+need_iface
+BF="$(hpath "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)")/bench_flash.py"   # gen-inhibit/tools
 "$DUMPCAP" -q -i "$IFACE" -f "host 192.168.80.1 and tcp port 80" -a duration:200 -w "$stem.pcapng" 2>"$stem.dumpcap.txt" &
 cap=$!
 sleep 3
-py -3.14 -B "$BF" --bin "$img" --flash --record "$stem.json" > "$stem.txt" 2>&1
+$PY -B "$BF" --bin "$img" --flash --record "$stem.json" > "$stem.txt" 2>&1
 rc=$?
 wait "$cap" 2>/dev/null
 sed -i "s/$GI_WICAN_SSID/<GI_WICAN_SSID>/g" "$stem.txt" "$stem.json"

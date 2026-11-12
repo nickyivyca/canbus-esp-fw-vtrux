@@ -54,6 +54,11 @@ def run_poster(post_case, get_case="good", timeout=3.0):
         return real(host, path, timeout=timeout, method=method, port=p, base=base, **kw)
 
     E4.RHP.raw_request = routed
+    # The poster's raw timeout is this call's (2026-11-12). It was main()'s 3.0 s for every
+    # case, so the silent case's 1.0 sized only the join, and its timeout raced the fake's
+    # 3.0 s hold and FIN: on Linux the FIN won ("fin", not "timeout").
+    saved = E4.POST_RAW_TIMEOUT
+    E4.POST_RAW_TIMEOUT = timeout
     try:
         p = E4.ModePoster(3)
         p.base = time.perf_counter()
@@ -61,6 +66,7 @@ def run_poster(post_case, get_case="good", timeout=3.0):
         p.join(timeout=4 * timeout + 10)
     finally:
         E4.RHP.raw_request = real
+        E4.POST_RAW_TIMEOUT = saved
     return p, calls
 
 

@@ -37,7 +37,7 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-TSHARK = r"C:\Program Files\Wireshark\tshark.exe"
+TSHARK = gi_paths.tshark()   # the host's tshark (2026-11-12)
 DEVICE_IP = "192.168.80.1"
 STRICT_PASS, STRICT_FAIL, ACK_ONLY, NO_DATA = ("PASS", "FAIL", "strict FAIL, PASS on ACK", "UNDETERMINED")
 NOT_APPLICABLE = "NOT APPLICABLE (no device 0x051 in the 100 ms before arrival)"

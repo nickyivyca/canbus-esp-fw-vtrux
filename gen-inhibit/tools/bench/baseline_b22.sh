@@ -9,7 +9,7 @@
 #
 # Opens COM3 only through e4's --flood-slcan session; never flashes or resets the X2.
 set -u
-A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, gen-inhibit/tools/bench
+H="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$H/bench_host.sh"; A=$(hpath "$H")   # this folder, gen-inhibit/tools/bench
 cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
 DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative to REVERSE_IT_DIR: runs/ and fixtures
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }
@@ -19,7 +19,7 @@ mkdir -p "$D"
 ARMS=${*:-a b}
 for a in $ARMS; do
   echo "== $(date +%H:%M:%S) arm $a: reboot"
-  py -3.14 -B - "$A" <<'PY'
+  $PY -B - "$A" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 import interlock_bench as I
@@ -27,7 +27,7 @@ import lowid_flood_skip_bench as LF
 print("reboot", I.reboot(LF))
 PY
   n=B22_case3_${C}_man_$a
-  py -3.14 -B $A/e4_device_calibration.py --capture "$(cygpath -m "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
+  $PY -B $A/e4_device_calibration.py --capture "$(hpath "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
     --window-start 0 --seconds 90 --arm idle --flood-slcan COM3 --out "$D/$n.json" > "$D/$n.txt" 2>&1
   echo "  e4 exit $?"
   grep -E "provenance \(live\)|tx_ok=|FLOOD|board after|carried load|error frames" "$D/$n.txt" | cut -c1-220

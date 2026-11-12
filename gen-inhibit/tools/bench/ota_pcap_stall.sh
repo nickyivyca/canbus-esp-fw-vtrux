@@ -13,13 +13,14 @@
 # small-window ACK, to show how a good upload resumes. Last for each capture: that
 # pause timed from the upload's SYN (the PAUSE line). tshark reads files only.
 set -u
-T="/c/Program Files/Wireshark/tshark.exe"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bench_host.sh"   # $PY, hpath, tshark (2026-11-12)
+T=${GI_TSHARK:-$GI_HOST_TSHARK}
 S=$(mktemp)
 F='-T fields -e frame.number -e frame.time_relative -e ip.src -e tcp.srcport -e tcp.dstport -e tcp.flags.str -e tcp.seq -e tcp.ack -e tcp.len -e tcp.window_size -e _ws.expert.message'
 summary() {   # summary <pcap>: device ACKs on the stream that reached the highest ack
   "$T" -r "$1" -Y "ip.src==192.168.80.1 && tcp.srcport==80 && tcp.len==0 && tcp.flags.syn==0 && tcp.flags.fin==0" \
     -T fields -e tcp.stream -e frame.time_relative -e tcp.ack -e tcp.window_size 2>/dev/null > "$S"
-  py -3.14 -B - "$(basename "$1")" "$(cygpath -m "$S")" <<'PY'
+  $PY -B - "$(basename "$1")" "$(hpath "$S")" <<'PY'
 import sys, collections
 rows = [l.rstrip("\n").split("\t") for l in open(sys.argv[2]) if l.strip()]
 by = collections.defaultdict(list)

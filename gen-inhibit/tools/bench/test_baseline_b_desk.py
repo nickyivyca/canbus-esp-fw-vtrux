@@ -77,15 +77,25 @@ def main():
     gi_paths.remove_tree(tmp)
     try:
         # 1. the e3d9437 files: each step's output judges as the index says
+        # The e3d9437 index names port step 1c's renamed switches by their old names; the
+        # judges report the new ones since 551dc655 (suite_judges.RENAMED, new -> old).
+        new_name = {old: new for new, old in SJ.RENAMED.items()}
         for s in steps:
             out = os.path.join(tmp, "real", s)
             dirs = [runs if s == "B25" else bench] * NDIRS[s]
+            if s == "B11raw":
+                # b11_rawpost_judge reads the captures with tshark (gi_paths.tshark()); without
+                # it the step judges no arm, and this says why first (2026-11-12).
+                ts = gi_paths.tshark()
+                check("B11raw: tshark is there to read the captures (%s)" % ts,
+                      os.path.isfile(ts) or shutil.which(ts) is not None,
+                      "not found: install tshark, or set GI_TSHARK")
             rc, log = desk(s, dirs, out)
             check("%s: exits 0 on the e3d9437 files" % s, rc == 0, log[-300:])
             res = SJ.judge_one(s, out)
             v = [r["verdict"] for r in res]
             fg = {k: x["value"] for r in res for k, x in r["figures"].items()}
-            want = idx[s]
+            want = dict(idx[s], figures={new_name.get(k, k): x for k, x in idx[s]["figures"].items()})
             check("%s: judged as the index (%s)" % (s, want["verdict"]), v == [want["verdict"]],
                   [(r["verdict"], r["detail"][:120]) for r in res])
             check("%s: every figure is the index's, and no other" % s, fg == want["figures"],

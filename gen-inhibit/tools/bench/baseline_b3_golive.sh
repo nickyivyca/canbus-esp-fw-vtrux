@@ -9,7 +9,7 @@
 #
 # Run from the reverse-it root. One arm at a time; each arm's stdout is kept.
 set -u
-A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, gen-inhibit/tools/bench
+H="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$H/bench_host.sh"; A=$(hpath "$H")   # this folder, gen-inhibit/tools/bench
 cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
 DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative to REVERSE_IT_DIR: runs/ and fixtures
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }
@@ -31,7 +31,7 @@ for m in $MODES; do
       extra="--mode $m --post-schedule 20:3"
     fi
     echo "$(date +%H:%M:%S) $m arm $n -> $out.json"
-    py -3.14 $A/e4_device_calibration.py --arm idle --capture runs/scottsvalley_armable_300s.log \
+    $PY $A/e4_device_calibration.py --arm idle --capture runs/scottsvalley_armable_300s.log \
       --seconds 35 --offset-us 500 $extra --out "$out.json" > "$out.txt" 2>&1
     r=$?
     echo "  exit $r"
