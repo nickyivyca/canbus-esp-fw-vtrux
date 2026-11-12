@@ -505,9 +505,14 @@ there.
 - **Besides the testers and their loans,** two roles may take the bench by
   hand, with no run: `android`, the Android sessions' runs that touch the
   bench adapters, and `can-tools`, the CAN replay tooling session (SPEC
-  section 8). They flash no board. At release, everything they opened is
-  closed and back on its driver, `canmain` is down, and what they
-  transmitted is noted.
+  section 8). They may build and flash the X2's test images (the jammer
+  and the SLCAN images), but do not change them, and flash no other image
+  or board (user, 2026-11-12, in the CAN replay tooling session). Until
+  those images' sources move into `shared/x2_test_images`, they use the
+  archived PlatformIO builds. SPEC section 8 still says they flash no
+  board; its update is drafted, for the lock's users to review. At
+  release, everything they opened is closed and back on its driver,
+  `canmain` is down, and what they transmitted is noted.
 - **`canmain`, CAN1's Innomaker, is for the Android app's two-bus tests**
   and is kept down during ESP runs. Every run that needs the bench refuses
   to start unless its settings' `canmain_check` shows `canmain` down
