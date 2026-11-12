@@ -242,15 +242,25 @@ def main():
             bad.append(label)
     # sub_id against the firmware's line discipline, with input an earlier probe left
     # unterminated (bench_identify's slcan "V\r" "N\r" leave "VN"; 2026-10-19)
-    for label, pending, want in (("id after a probe left VN pending", "VN", True),
-                                 ("id with nothing pending", "", True)):
+    # The reset since the open (2026-11-11): a banner counts only from a board whose uptime
+    # is longer than the time since the console opened, on a port neither lost nor reopened.
+    for label, pending, kw, want, want_reset in (
+            ("id after a probe left VN pending", "VN", {}, True, False),
+            ("id with nothing pending", "", {}, True, False),
+            ("id: the board booted after the open (uptime 0.5 s, open 1 s before)", "",
+             {"uptime_us": 500000}, False, True),
+            ("id: the port was lost and reopened (uptime long)", "",
+             {"events": ["lost: SerialException", "reopened"]}, False, True),
+            ("id: no uptime line in the banner", "", {"uptime_us": None}, False, None)):
         rec = {}
         try:
-            X.sub_id(None, rec, FakeCon(FakeJammer(pending)), None)
+            X.sub_id(None, rec, FakeCon(FakeJammer(pending, kw.get("uptime_us", 3600 * 10 ** 6)),
+                                        kw.get("events", [])), None)
         except Exception as e:      # a crash is not a kill: report it against this case
             rec["banner_ok"] = "RAISED %r" % e
-        ok = rec.get("banner_ok") is want
-        print("  %-4s id       %-60s %s" % ("ok" if ok else "FAIL", label, rec.get("banner_ok")))
+        ok = rec.get("banner_ok") is want and rec.get("reset_since_open") is want_reset
+        print("  %-4s id       %-60s %s %s" % ("ok" if ok else "FAIL", label[:60], rec.get("banner_ok"),
+                                              rec.get("reset_since_open")))
         if not ok:
             bad.append(label)
     jam = FakeJammer("VN")
@@ -275,11 +285,12 @@ def main():
 
 class FakeJammer:
     """The firmware's console (x2_jammer/src/main.cpp loop() and handle()): CR dropped,
-    a line runs on LF, an empty line is ignored, ID prints the banner line, any other
-    word is unknown_command."""
+    a line runs on LF, an empty line is ignored, ID prints the banner's src_digest line
+    (its uptime, unless uptime_us is None) and its mcp2515 line, any other word is
+    unknown_command."""
 
-    def __init__(self, pending=""):
-        self.buf, self.out = pending, []
+    def __init__(self, pending="", uptime_us=3600 * 10 ** 6):
+        self.buf, self.out, self.uptime_us = pending, [], uptime_us
 
     def feed(self, data, t):
         for ch in data:
@@ -291,14 +302,23 @@ class FakeJammer:
             words, self.buf = self.buf.split(), ""
             if not words:
                 continue
-            txt = ("JAMMER mcp2515 canstat=0x80 canctrl=0x87 config_mode=yes" if words[0] == "ID"
-                   else "JAMMER ERR unknown_command")
-            self.out.append((t, txt, X.parse_line(txt)))
+            if words[0] == "ID":
+                up = "" if self.uptime_us is None else " uptime_us=%d" % self.uptime_us
+                lines = ["JAMMER src_digest=0123abcd tx=GPIO7(CAN1/TWAI) reset_reason=1" + up,
+                         "JAMMER mcp2515 canstat=0x80 canctrl=0x87 config_mode=yes"]
+            else:
+                lines = ["JAMMER ERR unknown_command"]
+            for txt in lines:
+                self.out.append((t, txt, X.parse_line(txt)))
 
 
 class FakeCon:
-    def __init__(self, jam):
+    """The console: opened 1 s before it is made, then `events` after the open."""
+
+    def __init__(self, jam, events=()):
         self.jam = jam
+        t = time.time()
+        self.events = [(t - 1.0, "open")] + [(t - 0.5, e) for e in events]
 
     def send(self, line):
         self.jam.feed(line + "\n", time.time())

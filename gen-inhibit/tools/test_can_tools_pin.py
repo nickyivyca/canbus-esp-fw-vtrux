@@ -178,7 +178,7 @@ class PinTool(unittest.TestCase):
     # pin()
     def test_the_committed_pin_is_a_full_commit(self):
         p = ctp.pin()
-        self.assertEqual(p["commit"], "1cd39420181899d5b2dfe8da0aceef9187d29bc5")
+        self.assertEqual(p["commit"], "fa6c0aea5399ab1ac887d95a6edb381590e1c644")
         self.assertEqual(p["repo"], "https://github.com/nickyivyca/can-tools")
 
     def test_an_incomplete_or_short_pin_is_refused(self):
@@ -391,6 +391,8 @@ class RealPin(unittest.TestCase):
             self.skipTest("CAN_TOOLS_DIR is not set: the real pin is not checked")
         files = ctp.tree(ctp.clone(), ctp.pin())
         self.assertIn("live/receiver.py", files)
+        # the reason for the fa6c0ae pin: the Linux openers' fixes
+        self.assertIn("live/linux_fixes.py", files)
 
 
 if __name__ == "__main__":

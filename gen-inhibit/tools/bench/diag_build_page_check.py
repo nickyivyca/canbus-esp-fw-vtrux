@@ -175,12 +175,14 @@ def open_buses(want_ixxat):
             "  silently narrow." % (", ".join(missing),
                                     ", ".join(sorted(found)) or "nothing"))
 
+    # kvaser_bus.bus: the Kvaser through the pinned can-tools' Linux fixes (2026-11-11)
+    from kvaser_bus import bus as open_bus  # noqa: E402
     buses = {}
     for name in order:
-        buses[name] = can.Bus(interface=name,
-                              channel=found[name]["channel"],
-                              bitrate=500000,
-                              **({"auto_reset": True} if name == "pcan" else {}))
+        buses[name] = open_bus(interface=name,
+                               channel=found[name]["channel"],
+                               bitrate=500000,
+                               **({"auto_reset": True} if name == "pcan" else {}))
         if name == "pcan":
             # A previous run that ended bus-off otherwise leaves the channel
             # unusable. Tolerate failure: a fresh channel has nothing to reset.

@@ -246,7 +246,8 @@ def main():
                "post_at": a.post_at, "build_before": LF.build_id(),
                "page_before": {k: p0.get(k) for k in ("mode", "drv", "uptime_ms", "reset_reason") + extra_keys}}
         tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000, auto_reset=True)
-        kv = can.Bus(interface="kvaser", channel=0, bitrate=500000)
+        from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+        kv = kvaser_bus(channel=0, bitrate=500000)
         got, errs, fails, sent_epoch, reads = [], [], [], [], []
         stop = threading.Event()
         ev = {}

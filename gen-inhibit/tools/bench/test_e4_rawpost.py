@@ -20,6 +20,7 @@ OBSERVE). Checked here, against test_raw_http_probe.py's fake server:
 
 import sys
 import time
+import types
 
 import e4_device_calibration as E4
 import raw_http_probe as RHP
@@ -53,6 +54,11 @@ def run_poster(post_case, get_case="good", timeout=3.0):
         return real(host, path, timeout=timeout, method=method, port=p, base=base, **kw)
 
     E4.RHP.raw_request = routed
+    # The poster's raw timeout is this call's (2026-11-12). It was main()'s 3.0 s for every
+    # case, so the silent case's 1.0 sized only the join, and its timeout raced the fake's
+    # 3.0 s hold and FIN: on Linux the FIN won ("fin", not "timeout").
+    saved = E4.POST_RAW_TIMEOUT
+    E4.POST_RAW_TIMEOUT = timeout
     try:
         p = E4.ModePoster(3)
         p.base = time.perf_counter()
@@ -60,6 +66,7 @@ def run_poster(post_case, get_case="good", timeout=3.0):
         p.join(timeout=4 * timeout + 10)
     finally:
         E4.RHP.raw_request = real
+        E4.POST_RAW_TIMEOUT = saved
     return p, calls
 
 
@@ -95,6 +102,22 @@ def run_arm_wiring(arm_after, raw_timeout):
     def witness(*a, **kw):
         raise _Stop()
 
+    # run_arm opens the Kvaser through kvaser_bus (2026-11-12), which imports the real can, not
+    # E4.can: without this fake the test opened the bench's real Kvaser (the opener's dev run,
+    # 2026-11-12 01:26-01:48).
+    did["kvaser_opens"] = []
+    fake_kb = types.ModuleType("kvaser_bus")
+
+    class FakeKvaser(Bus):
+        pass
+
+    def kvaser_bus(**kw):
+        did["kvaser_opens"].append(kw)
+        return FakeKvaser()
+    fake_kb.kvaser_bus = kvaser_bus
+    saved_kb = sys.modules.get("kvaser_bus")
+    sys.modules["kvaser_bus"] = fake_kb
+
     saved = {k: getattr(E4, k) for k in ("can", "gi", "ModePoster", "Witness", "device_sockets",
                                          "ARM_AFTER_S", "POST_RAW_TIMEOUT")}
     saved_sleep = E4.time.sleep
@@ -112,6 +135,10 @@ def run_arm_wiring(arm_after, raw_timeout):
         for k, v in saved.items():
             setattr(E4, k, v)
         E4.time.sleep = saved_sleep
+        if saved_kb is None:
+            sys.modules.pop("kvaser_bus", None)
+        else:
+            sys.modules["kvaser_bus"] = saved_kb
     return did
 
 
@@ -132,6 +159,8 @@ def check_run_arm_wiring():
         posts = [c for c in d["calls"] if c[0] == "POST"]
         gets = [c for c in d["calls"] if c[0] == "GET"]
         check(tag + ": runs to the witness", d["reached_witness"])
+        check(tag + ": the Kvaser opened once, through the fake kvaser_bus (no real adapter)",
+              len(d["kvaser_opens"]) == 1, d["kvaser_opens"])
         check(tag + ": %s POST before the replay" % ("one" if posts_now else "no"),
               len(posts) == (1 if posts_now else 0), posts)
         check(tag + ": %s deferred poster" % ("one" if deferred else "no"),

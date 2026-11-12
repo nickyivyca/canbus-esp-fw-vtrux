@@ -22,7 +22,7 @@
 # Run from the reverse-it root. A step whose inputs are missing says so and exits 2:
 # an analysis of nothing is not a result.
 set -u
-A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, gen-inhibit/tools/bench
+H="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$H/bench_host.sh"; A=$(hpath "$H")   # this folder, gen-inhibit/tools/bench
 cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
 DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative to REVERSE_IT_DIR: runs/ and fixtures
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }
@@ -39,38 +39,38 @@ case $s in
     set -- "$app"/B2_e4_presence_*_${C}_x2app.json "$held"/B2_e4_presence_*_${C}_x2held.json; need "$@"
     [ $# -eq 6 ] || { echo "B2: $# arm records, want 6"; exit 2; }
     for j in "$@"; do cp "${j%.json}.txt" "$D/"; cp "$j" "$D/"; cp "${j%.json}_idle_witness.log.gz" "$D/" 2>/dev/null; done
-    py -3.14 -B $A/x2_presence_count.py "$D"/B2_e4_presence_*_${C}_x2*.json > "$D/B2_x2_presence_count.txt" 2>&1
+    $PY -B $A/x2_presence_count.py "$D"/B2_e4_presence_*_${C}_x2*.json > "$D/B2_x2_presence_count.txt" 2>&1
     echo "B2 count exit $?" ;;
   B3)
     set -- "${1:?B3 dir}"/B3_e4_golive_*_${C}_*.json; need "$@"
-    py -3.14 -B $A/golive_stale_check.py judge "$@" > "$D/B3_golive_stale_check.txt" 2>&1; echo "stale exit $?"
-    py -3.14 -B $A/mode_entry_analysis.py "$@" > "$D/B3_mode_entry_analysis.txt" 2>&1; echo "mode entry exit $?" ;;
+    $PY -B $A/golive_stale_check.py judge "$@" > "$D/B3_golive_stale_check.txt" 2>&1; echo "stale exit $?"
+    $PY -B $A/mode_entry_analysis.py "$@" > "$D/B3_mode_entry_analysis.txt" 2>&1; echo "mode entry exit $?" ;;
   B24)
     app=${1:?B2 app dir}; b3=${2:?B3 dir}
     set -- "$app"/B2_e4_presence_*_${C}_x2app.json "$b3"/B3_e4_golive_*_${C}_*.json; need "$@"
-    py -3.14 -B $A/b24_frame_content_judge.py "$@" > "$D/B24_frame_content_${C}.txt" 2>&1; echo "B24 exit $?" ;;
+    $PY -B $A/b24_frame_content_judge.py "$@" > "$D/B24_frame_content_${C}.txt" 2>&1; echo "B24 exit $?" ;;
   B25)
     set -- "${1:?B20 dir}"/interlock_rekey-long_*.json; need "$@"
     [ $# -eq 1 ] || { echo "B25: $# rekey-long records, want 1"; exit 2; }
-    py -3.14 -B $A/b25_keystate_judge.py "$1" > "$D/B25_keystate_rekey-long_${C}.txt" 2>&1; echo "B25 exit $?" ;;
+    $PY -B $A/b25_keystate_judge.py "$1" > "$D/B25_keystate_rekey-long_${C}.txt" 2>&1; echo "B25 exit $?" ;;
   B11)
     set -- "${1:?B11 dir}"/B11_e4_quiesce_*_${C}_*.json; need "$@"
-    py -3.14 -B $A/quiesce_analysis.py "$@" > "$D/B11_quiesce_analysis.txt" 2>&1; echo "B11 exit $?" ;;
+    $PY -B $A/quiesce_analysis.py "$@" > "$D/B11_quiesce_analysis.txt" 2>&1; echo "B11 exit $?" ;;
   B11raw)
     dir=${1:?B11raw dir}
     set -- "$dir"/B11raw_e4_quiesce_*.json; need "$@"
     args=(); for n in "$@"; do args+=("$n" "${n%.json}.pcapng"); done   # an array: run dirs have spaces
-    py -3.14 -B $A/b11_rawpost_judge.py "${args[@]}" > "$D/B11raw_rawpost_judge.txt" 2>&1; echo "judge exit $?"
-    py -3.14 -B $A/quiesce_analysis.py "$@" > "$D/B11raw_quiesce_analysis.txt" 2>&1; echo "qa exit $?" ;;
+    $PY -B $A/b11_rawpost_judge.py "${args[@]}" > "$D/B11raw_rawpost_judge.txt" 2>&1; echo "judge exit $?"
+    $PY -B $A/quiesce_analysis.py "$@" > "$D/B11raw_quiesce_analysis.txt" 2>&1; echo "qa exit $?" ;;
   B13)
     b13=${1:?B13 dir}; app=${2:?B2 app dir}; held=${3:?B2 held dir}
     set -- "$b13"/B13_e4_passive_*_${C}_*.json; need "$@"
-    py -3.14 -B $A/passive_analysis.py "$@" > "$D/B13_passive_analysis.txt" 2>&1; echo "passive exit $?"
+    $PY -B $A/passive_analysis.py "$@" > "$D/B13_passive_analysis.txt" 2>&1; echo "passive exit $?"
     # B2's RESPOND arms by their full names: a glob in each folder would take both
     # arms twice when the two folders are one (an offline rerun over one bench folder)
     set -- "$b13"/B13_e4_passive_*passive_${C}_*.json "$app"/B2_e4_presence_respond_${C}_x2app.json "$held"/B2_e4_presence_respond_${C}_x2held.json; need "$@"
     for j in "$@"; do [ -f "$j" ] || { echo "B13: no $j"; exit 2; }; done
-    py -3.14 -B $A/respond_booking_check.py "$@" > "$D/B13_respond_booking_check.txt" 2>&1; echo "booking exit $?" ;;
+    $PY -B $A/respond_booking_check.py "$@" > "$D/B13_respond_booking_check.txt" 2>&1; echo "booking exit $?" ;;
   B19present)
     [ $# -eq 4 ] || { echo "B19present: 4 dirs, got $#"; exit 2; }
     for t in rt txabort abortwin rxq; do

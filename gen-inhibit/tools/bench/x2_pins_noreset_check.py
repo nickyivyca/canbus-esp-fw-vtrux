@@ -15,7 +15,7 @@ charge-interposer tester's measured figures on 756d6714: a reset sends the power
 round (0x7F4-0x7F7, once each) about 0.32 s later, and the round waits up to ~50 ms for
 an ACK. So the Kvaser is held open in NORMAL mode (ACKing) for the whole check, and:
 
-  1. serial before: COM3 read passively (DTR/RTS low, nothing written) for --serial
+  1. serial before: COM3 read passively (opened without a reset, nothing written) for --serial
      seconds (default 11, so at least two of the 5 s status lines); the app's 1 Hz
      "diag st=" line, the status line's "t=Ns" (seconds since boot) and any boot banner
      ("rst:0x.. (", "Vtrux charge interposer") are kept.
@@ -25,7 +25,7 @@ an ACK. So the Kvaser is held open in NORMAL mode (ACKing) for the whole check, 
      boot plus round is ~0.32 s; the pin read itself takes seconds, so a reset in it
      would send its round before the read ends).
   5. serial after, as in 1.
-  6. positive control: esptool chip-id with the default reset and a hard reset after
+  6. positive control: esptool chip_id with the default reset and a hard reset after
      (the auto-reset check), then --after seconds of CAN, which must carry the round.
 
     VOID          the control reset's round did not reach the Kvaser: the witness or
@@ -118,13 +118,11 @@ class Witness(threading.Thread):
 
 
 def read_serial(port, seconds):
-    """Lines from a passive read: DTR and RTS set low before the port opens, nothing written."""
-    import serial
-    s = serial.Serial()
-    s.port, s.baudrate, s.timeout = port, 115200, 0.2
-    s.dtr = False
-    s.rts = False
-    s.open()
+    """Lines from a passive read: the port opened without a reset (serial_noreset.py; on
+    Linux the old form, DTR and RTS set low before the open, reset the X2, 2026-11-11),
+    nothing written."""
+    from serial_noreset import open_console
+    s = open_console(port, 115200, 0.2)
     buf, end = b"", time.time() + seconds
     try:
         while time.time() < end:
@@ -145,11 +143,19 @@ def main():
     if not ok:
         print("REFUSED: the bench lock is not ours: %s" % (who,))
         return 2
-    import can
     sys.path.insert(0, HERE)
     import x2_hold
+    # esptool from GI_ESPTOOL_ARGV at the pinned version (gi_esptool.py, 2026-11-11),
+    # checked before the Kvaser opens or the board is touched
+    try:
+        et = x2_hold.esptool_info()
+    except x2_hold.GE.Refused as e:
+        print("REFUSED: %s (nothing run)" % e)
+        return 2
+    import can
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    bus = can.Bus(interface="kvaser", channel=0, bitrate=500000)
+    from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+    bus = kvaser_bus(channel=0, bitrate=500000)
     w = Witness(bus)
     w.start()
     marks = {}
@@ -165,7 +171,7 @@ def main():
         marks["serial_after"] = time.time()
         ser_after = read_serial(a.port, a.serial)
         marks["control"] = time.time()
-        crc, ctxt = x2_hold.esptool(a.port, "default_reset", "hard_reset", "chip-id")
+        crc, ctxt = x2_hold.esptool(a.port, "default_reset", "hard_reset", "chip_id")
         marks["control_after"] = time.time()
         time.sleep(a.after)
         marks["end"] = time.time()
@@ -185,6 +191,7 @@ def main():
            "pins_rc": p.returncode, "pins_out": pins[-3:], "control_rc": crc,
            "control_tail": ctxt.strip().splitlines()[-3:],
            "marks": {k: round(v - marks["quiet"], 3) for k, v in marks.items()},
+           "esptool_argv": et["argv"], "esptool_version": et["version"],
            "args": vars(a)}
     os.makedirs(RUNS, exist_ok=True)
     path = os.path.join(RUNS, "x2_pins_noreset_%s.json" % stamp)

@@ -628,7 +628,8 @@ def main():
         wit.start()
 
         def kv_open():
-            return can.Bus(interface="kvaser", channel=0, bitrate=500000)
+            from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+            return kvaser_bus(channel=0, bitrate=500000)
         main_done = 0
         for n in range(1, a.max_arms + 1):
             arm = run_arm(n, kv_open, wit, LF, stim, kf, a)

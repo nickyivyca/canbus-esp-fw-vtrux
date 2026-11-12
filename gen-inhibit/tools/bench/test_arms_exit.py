@@ -75,8 +75,7 @@ def main():
     tmp = gi_paths.scratch("arms-exit-test")
     gi_paths.remove_tree(tmp)
     os.makedirs(os.path.join(tmp, "bin"))
-    with open(os.path.join(tmp, "bin", "py"), "w", newline="\n") as f:
-        f.write(FAKE_PY)
+    T.put_fake_py(os.path.join(tmp, "bin"), FAKE_PY)   # the host's Python name (bench_host.sh)
     open(os.path.join(tmp, "fake_dumpcap.py"), "w").write(FAKE_DUMPCAP)
     try:
         for label, script, args, arms, bad in [

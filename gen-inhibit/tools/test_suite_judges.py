@@ -129,6 +129,18 @@ EDITS = [
     ("B8", "bench", r"B8_busoff\.txt", r"^arm 3 train=False: INCONCLUSIVE", "arm 3 train=False: FAIL", "FAIL"),
     ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(A3 recent .*?)  as specified", r"\g<1>  NOT as specified", "FAIL"),
     ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(A4 expired .*\n +history )as specified", r"\g<1>NOT", "FAIL"),
+    # A2 (a), 2026-11-11: the PCAN's clock outside the harness bounds -> the tool's VOID line;
+    # an arm the tool VOIDs (its mapped gap against the receipt gap) -> VOID, unless another
+    # arm is NOT as specified
+    ("B9", "bench", r"B9_wrong_bitrate_calibrate\.txt", r"^(summary )",
+     r"witness clock VOID: the PCAN's stamps are on the host's epoch clock\n\g<1>", "VOID"),
+    ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(build )",
+     r"witness clock VOID: residual p99 0.2000 s, over 0.05 s\n\g<1>", "VOID"),
+    ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(A4 expired .*?)  as specified",
+     r"\g<1>  VOID: the gap from the PCAN's stamps (15.300 s) and the receipt gap", "VOID"),
+    ("B10", "bench", r"B10_trip6_rearm_check\.txt",
+     [(r"^(A4 expired .*?)  as specified", r"\g<1>  VOID: the gap from the PCAN's stamps"),
+      (r"^(A3 recent .*?)  as specified", r"\g<1>  NOT as specified")], None, "FAIL"),
     ("B11", "bench", r"B11_quiesce_analysis\.txt", r'(_arm4\.json".*?"agree": )true', r"\g<1>false", "FAIL"),
     ("B11", "bench", r"B11_quiesce_analysis\.txt", r'(_arm3\.json".*?"provenance": )"as specified"', r'\g<1>"double"', "FAIL"),
     ("B11raw", "bench", r"B11raw_rawpost_judge\.txt", r'("local_port": 61947, .*?"verdict": )"PASS"', r'\g<1>"strict FAIL"', "FAIL"),

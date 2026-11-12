@@ -12,7 +12,7 @@ In download mode the app is not running, so its TWAI controller is not either:
 the X2 cannot ACK, cannot send and cannot bridge. What then decides the wire is
 its CAN1 transceiver's TXD input, on GPIO7 (RXD is GPIO6;
 charge-interposer firmware `CAN1_TX_GPIO = 7`). The hold reads, by esptool
-read-mem in the ROM (ESP32-S3 addresses from ESP-IDF v5.4.1
+read_mem in the ROM (ESP32-S3 addresses from ESP-IDF v5.4.1
 components/soc/esp32s3/register/soc/{reg_base,gpio_reg,io_mux_reg}.h):
 
   GPIO_ENABLE_REG   0x60004020  bit 7: GPIO7 output driver enabled
@@ -31,6 +31,13 @@ is not, and `decode` says so. GPIO6 reads the bus as the transceiver sees it
     py -3.14 x2_hold.py release   # hard reset into the app
 Each writes runs/x2_hold_<cmd>_<stamp>.json. Identify the app afterwards with
 interposer-firmware/bench_identify_board.py --require-witness.
+
+esptool (gen-inhibit reviewer, 2026-11-11; gi_esptool.py): the argv in GI_ESPTOOL_ARGV,
+[<python>, "-m", "esptool"] from settings.esptool.argv, at the pinned version, read
+before anything else; unset, another form or another version refuses (exit 2, no
+record, nothing run on the board). Every record holds esptool_argv and
+esptool_version. Command names are the underscore ones (read_mem). enable-inputs uses
+esptool's Python API, so it runs x2_hold_inputs.py under that argv's python.
 """
 import argparse
 import json
@@ -40,12 +47,20 @@ import subprocess
 import sys
 import time
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_esptool as GE  # noqa: E402  esptool from the settings, pinned (2026-11-11)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
-ESPTOOL = os.path.join(os.path.expanduser("~"), ".platformio", "packages",
-                       "tool-esptoolpy", "esptool.py")
+INPUTS = os.path.join(HERE, "x2_hold_inputs.py")
+_ET = {}    # {"argv", "version"} once checked in this process (esptool_info)
+
+
+def esptool_info():
+    """esptool's argv and version, checked once per process (gi_esptool.checked)."""
+    if not _ET:
+        _ET.update(GE.checked())
+    return _ET
 
 REGS = {
     "GPIO_ENABLE": 0x60004020,
@@ -104,8 +119,8 @@ def decode(regs):
 
 def esptool(port, before, after, *args):
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
-    cmd = [sys.executable, ESPTOOL, "--chip", "esp32s3", "--port", port,
-           "--before", before, "--after", after] + list(args)
+    cmd = esptool_info()["argv"] + ["--chip", GE.CHIP, "--port", port,
+                                    "--before", before, "--after", after] + list(args)
     p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", env=env)
     return p.returncode, (p.stdout + p.stderr)
@@ -115,7 +130,7 @@ def read_regs(port, first_before):
     regs, raw = {}, []
     before = first_before
     for name, addr in REGS.items():
-        rc, txt = esptool(port, before, "no_reset", "read-mem", "0x%08x" % addr)
+        rc, txt = esptool(port, before, "no_reset", "read_mem", "0x%08x" % addr)
         regs[name] = parse_read_mem(txt, addr) if rc == 0 else None
         raw.append([name, rc, [ln for ln in txt.splitlines() if "0x%08x" % addr in ln.lower()
                                or "error" in ln.lower()][-2:]])
@@ -127,22 +142,25 @@ def read_with_inputs(port):
     """Set FUN_IE (bit 9) on GPIO7 and GPIO6 and read every register, in ONE esptool
     session. Input enable changes no output; the reset at release clears it.
 
-    One session, because a separate `esptool write-mem` reported success and the next
+    One session, because a separate `esptool write_mem` reported success and the next
     connection read the bit clear again (2026-10-10): something in each new connection
-    resets it. So this uses esptool's Python API from PlatformIO's package."""
-    sys.path.insert(0, os.path.dirname(ESPTOOL))
-    from esptool.cmds import detect_chip
-    esp = detect_chip(port, 115200, "no_reset").run_stub()
-    writes = []
+    resets it. So this uses esptool's Python API, in x2_hold_inputs.py run under the
+    settings' esptool python (argv[0]), which checks the pinned version itself. Raises
+    GE.Refused when that run refuses, fails, or prints no result."""
+    info = esptool_info()
+    cmd = [info["argv"][0], "-B", INPUTS, "--port", port, "--regs", json.dumps(REGS),
+           "--enable", "IO_MUX_GPIO7,IO_MUX_GPIO6", "--pin", GE.PINNED]
+    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    lines = [ln for ln in p.stdout.splitlines() if ln.strip()]
     try:
-        for name in ("IO_MUX_GPIO7", "IO_MUX_GPIO6"):
-            before = esp.read_reg(REGS[name])
-            esp.write_reg(REGS[name], 0x200, mask=0x200)
-            writes.append([name, "0x%08x" % before, "0x%08x" % esp.read_reg(REGS[name])])
-        regs = {k: esp.read_reg(v) for k, v in REGS.items()}
-    finally:
-        esp._port.close()
-    return regs, writes
+        res = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        res = {}
+    if p.returncode != 0 or "regs" not in res:
+        why = res.get("refused") or (p.stderr.strip().splitlines() or ["no output"])[-1]
+        raise GE.Refused("enable-inputs under %s: rc %s, %s" % (info["argv"][0], p.returncode, why))
+    return {k: int(v) for k, v in res["regs"].items()}, res["writes"]
 
 
 def main():
@@ -151,9 +169,18 @@ def main():
     ap.add_argument("--port", default="COM3")
     a = ap.parse_args()
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    rec = {"when": stamp, "cmd": a.cmd, "port": a.port}
+    try:
+        info = esptool_info()
+    except GE.Refused as e:
+        print("REFUSED: %s (nothing run, no record)" % e)
+        return 2
+    rec = {"when": stamp, "cmd": a.cmd, "port": a.port,
+           "esptool_argv": info["argv"], "esptool_version": info["version"]}
     if a.cmd == "enable-inputs":
-        regs, rec["writes"] = read_with_inputs(a.port)
+        try:
+            regs, rec["writes"] = read_with_inputs(a.port)
+        except GE.Refused as e:
+            regs, rec["writes"], rec["refused"] = {}, [], str(e)
         rec.update({"regs": {k: (None if v is None else "0x%08x" % v) for k, v in regs.items()},
                     "pins": decode(regs)})
         print("%s: TX (GPIO%d) %s -- %s; RX (GPIO%d) level %s"
@@ -167,7 +194,7 @@ def main():
               % (a.cmd, TX, rec["pins"]["verdict"], rec["pins"].get("why"), RX,
                  rec["pins"].get("rx_level")))
     else:
-        rc, txt = esptool(a.port, "no_reset", "hard_reset", "read-mem", "0x%08x" % REGS["GPIO_IN"])
+        rc, txt = esptool(a.port, "no_reset", "hard_reset", "read_mem", "0x%08x" % REGS["GPIO_IN"])
         rec.update({"rc": rc, "tail": [ln for ln in txt.splitlines()
                                        if "reset" in ln.lower() or "error" in ln.lower()][-4:]})
         print("release: esptool rc %d, %s" % (rc, rec["tail"]))

@@ -93,7 +93,7 @@ class Log:
         return next((i for i, e in enumerate(self.ev) if pred(e)), None)
 
 
-def fakes(log, running_after):
+def fakes(log, running_after, stamps="device"):
     """running_after: page reads after the mode 3 POST before the driver reports running
     (None: never)."""
     can = types.ModuleType("can")
@@ -101,11 +101,21 @@ def fakes(log, running_after):
     class CanError(Exception):
         pass
 
+    # The PCAN's stamp, taken when a frame is on the wire (2026-11-11, A2 (a)): its device clock
+    # in RAW mode (perf_counter less DEV0: an uptime base, not the epoch), or with
+    # stamps="epoch" the host's epoch clock, as libpcanbasic gives in COOKED mode.
+    DEV0 = 5000.0
+
+    def stamp():
+        return time.time() if stamps == "epoch" else time.perf_counter() - DEV0
+
     class Message:
         def __init__(self, arbitration_id=0, is_extended_id=False, data=b""):
             self.arbitration_id, self.data, self.is_error_frame = arbitration_id, data, False
+            self.timestamp = stamp()
 
     wire = []       # error frames the witness (the PCAN) has yet to read
+    last_data = [0.0]
 
     class Bus:
         def __init__(self, interface=None, channel=None, bitrate=None):
@@ -124,6 +134,11 @@ def fakes(log, running_after):
             while time.perf_counter() < end:
                 if self.interface == "pcan" and wire:
                     return wire.pop(0)
+                # while the slice plays, the device's frames reach the PCAN every 5 ms: the
+                # messages its clock is fitted on (A2 (a))
+                if self.interface == "pcan" and state["slice"] and time.perf_counter() - last_data[0] >= 0.005:
+                    last_data[0] = time.perf_counter()
+                    return Message(arbitration_id=0x051, data=bytes(8))
                 time.sleep(0.0005)
             return None
 
@@ -175,13 +190,28 @@ def fakes(log, running_after):
             log.add("slice stop")
 
     S.Player = Player
-    return {"can": can, "lowid_flood_skip_bench": LF, "skip_method_bench": S}
+
+    # kvaser_bus (2026-11-11): the tool opens the Kvaser through it. The fake's fixes take
+    # 0.5 s, so fixes loaded inside the open's time show in open_s.
+    KB = types.ModuleType("kvaser_bus")
+
+    def fixes():
+        log.add("kvaser fixes")
+        time.sleep(0.5)
+        return {"kvaser": False, "gs_usb": False}
+
+    KB.fixes = fixes
+    KB.kvaser_bus = lambda **kw: Bus(interface="kvaser", **kw)
+    return {"can": can, "lowid_flood_skip_bench": LF, "skip_method_bench": S, "kvaser_bus": KB}
 
 
-def run_main(W, running_after):
+OUT = {}       # the tool's stdout from the last run_main
+
+
+def run_main(W, running_after, stamps="device"):
     log = Log()
-    saved = {k: sys.modules.get(k) for k in ("can", "lowid_flood_skip_bench", "skip_method_bench")}
-    sys.modules.update(fakes(log, running_after))
+    saved = {k: sys.modules.get(k) for k in ("can", "lowid_flood_skip_bench", "skip_method_bench", "kvaser_bus")}
+    sys.modules.update(fakes(log, running_after, stamps))
     runs = os.path.join(SCRATCH, "runs")
     gi_paths.remove_tree(runs)
     os.makedirs(runs)
@@ -192,11 +222,13 @@ def run_main(W, running_after):
     try:
         import contextlib
         import io
-        with contextlib.redirect_stdout(io.StringIO()):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
             try:
                 rc = W.main()
             except Exception as e:      # noqa: BLE001  the tool raising is a FAIL of "ran", not a crash here
                 rc = "raised %s: %s" % (type(e).__name__, e)
+        OUT["text"] = buf.getvalue()
     finally:
         sys.argv = argv
         for k, v in saved.items():
@@ -236,8 +268,25 @@ def order_cases(W):
           b[0].get("witness_error_frames") == 1 and rec.get("witness_error_frames") == 1, (b, rec.get("witness_error_frames")))
     check("main: each burst records how long the open took", isinstance(b[0].get("open_s"), float)
           and 0.015 <= b[0]["open_s"] < 1.0, b)
+    check("main: the Kvaser opens through kvaser_bus, its fixes applied before the open and outside open_s",
+          log.index(lambda e: e == ("kvaser fixes",)) is not None
+          and log.index(lambda e: e == ("kvaser fixes",)) < log.index(lambda e: e == ("bus open", "kvaser"))
+          and isinstance(b[0].get("open_s"), float) and b[0]["open_s"] < 0.4, (b, log.ev[:12]))
     check("main: live_before true with the slice playing on a running driver", rec.get("live_before") is True,
           rec.get("live_before"))
+    # A2 (a), 2026-11-11: the error frames are judged on the PCAN's own stamps, mapped
+    fit = rec.get("witness_clock") or {}
+    check("main: the PCAN's device stamps fit within the bounds, not VOID",
+          fit.get("void") is None and fit.get("n", 0) >= 20 and "witness_clock_void" not in rec
+          and "verdict" not in rec, (fit.get("void"), fit.get("n"), rec.get("verdict")))
+    check("main: the figures are on the mapped stamps, and say so",
+          rec.get("witness_clock_figures", "").startswith("PCAN device stamps"), rec.get("witness_clock_figures"))
+    check("main: the fit and its bounds are recorded beside each other",
+          (fit.get("bounds") or {}).get("residual_p99_max_s") == 0.05 and isinstance(fit.get("residual_p99_s"), float)
+          and isinstance(fit.get("slope_ppm"), float), fit)
+    text = OUT.get("text", "")
+    check("main: prints the clock fit line, and no VOID line",
+          "pcan clock: n " in text and "witness clock VOID" not in text, text[-400:])
 
     rc, log, rec = run_main(W, running_after=None)
     start = log.index(lambda e: e == ("slice start",))
@@ -248,6 +297,18 @@ def order_cases(W):
           rec.get("driver_running_before_slice"))
     check("main, driver never running: no clean sample, so no count", (rec.get("pre_burst_window") or {}).get("errors")
           is None, rec.get("pre_burst_window"))
+
+    # COOKED: the PCAN's stamps on the host's epoch clock are host receipt time -> VOID (A2 (a))
+    rc, log, rec = run_main(W, running_after=2, stamps="epoch")
+    text = OUT.get("text", "")
+    check("main, stamps on the epoch clock: ran and wrote one record", rc == 0 and rec, (rc, sorted(rec)[:5]))
+    check("main, stamps on the epoch clock: VOID with the reason",
+          "epoch clock" in str(rec.get("witness_clock_void")) and str(rec.get("verdict", "")).startswith("VOID"),
+          (rec.get("witness_clock_void"), rec.get("verdict")))
+    check("main, stamps on the epoch clock: prints the VOID line the suite reads",
+          "\nwitness clock VOID: " in "\n" + text, text[-400:])
+    check("main, stamps on the epoch clock: the figures are labelled receipt, not judged",
+          "not judged" in rec.get("witness_clock_figures", ""), rec.get("witness_clock_figures"))
 
 
 def main():

@@ -46,7 +46,8 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 
 
-def import_canbench():
+def import_canbench(what="--interface auto",
+                    hint=" (or name the interface with --interface)"):
     """canbench for --interface auto, at the can-tools commit gen-inhibit
     pins (AGENTS.md, "can-tools", user 2026-10-30): can_tools_pin.use()
     loads it by file from scratch/can-tools/<commit>/, which
@@ -57,8 +58,10 @@ def import_canbench():
 
     Until 2026-10-30 this loaded $CAN_TOOLS_DIR/canbench itself, and before
     that it put SeaDrive's reverse-it root on sys.path[0] for the canbench
-    mirror there, which is never read now. Only --interface auto calls it,
-    so the other interfaces need no setting.
+    mirror there, which is never read now. --interface auto calls it, and so
+    does an explicit kvaser or gs_usb open on Linux (apply_linux_fixes());
+    every other interface, and kvaser or gs_usb off Linux, needs no setting.
+    what and hint word the refusal for the caller.
     """
     import can_tools_pin
     assert Path(can_tools_pin.__file__).resolve().parent == _HERE.resolve(), (
@@ -67,9 +70,38 @@ def import_canbench():
     try:
         return can_tools_pin.use()
     except can_tools_pin.CanToolsPinError as e:
-        raise SystemExit("vehicle_runner: --interface auto needs canbench at "
-                         "the pinned can-tools commit (or name the interface "
-                         "with --interface): %s" % e)
+        raise SystemExit("vehicle_runner: %s needs canbench at the pinned "
+                         "can-tools commit%s: %s" % (what, hint, e))
+
+
+# Interfaces whose python-can open fails on Linux without can-tools'
+# canbench.live.linux_fixes (can-tools fa6c0ae): linuxcan refuses python-can's
+# 1-byte canIOCTL_SET_LOCAL_TXACK buffer, so no Kvaser channel opens, and
+# gs_usb's start() resets the USB device, which makes an Innomaker
+# re-enumerate and lose its handle. The auto path gets the fixes when it
+# imports canbench.live.receiver; an explicit --interface does not import it.
+LINUX_FIX_INTERFACES = ("kvaser", "gs_usb")
+
+
+def apply_linux_fixes(interface):
+    """Before an explicit open: on Linux, for kvaser and gs_usb, apply the
+    pinned canbench's linux_fixes, loaded by file through import_canbench()
+    as the auto path loads canbench. Returns linux_fixes.apply()'s dict, or
+    None when nothing is needed (another interface, or not Linux, where the
+    fixes are no-ops), so off Linux the named interface stays the fallback
+    the auto path's refusal points to. Not the bench harness's kvaser_bus:
+    its bench guard refuses without the bench lock, and this tool runs on the
+    truck (reviewer, 2026-11-12)."""
+    if interface not in LINUX_FIX_INTERFACES or not sys.platform.startswith("linux"):
+        return None
+    import_canbench("--interface %s on Linux" % interface,
+                    " (for canbench.live.linux_fixes, without which python-can "
+                    "cannot open a %s here)" % interface)
+    from canbench.live import linux_fixes
+    done = linux_fixes.apply()
+    print("can-tools linux_fixes applied before the %s open: %s"
+          % (interface, done))
+    return done
 
 
 sys.path.insert(0, str(_HERE))
@@ -445,6 +477,7 @@ class Runner:
                 kw["auto_reset"] = True
             if a.channel is not None:
                 kw["channel"] = a.channel
+            apply_linux_fixes(a.interface)      # before the open, or no-op
             self.bus = can.Bus(**kw)
 
         # --wait-for-bus lets the runner be started BEFORE the truck is keyed

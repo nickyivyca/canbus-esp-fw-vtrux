@@ -20,7 +20,7 @@
 # 0x051 landing class; cap 80 arms) is applied by the tester between sessions, from
 # b6_multicount_landing.py and each arm's ecc summary.
 set -u
-A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, gen-inhibit/tools/bench
+H="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$H/bench_host.sh"; A=$(hpath "$H")   # this folder, gen-inhibit/tools/bench
 cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
 DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative to REVERSE_IT_DIR: runs/ and fixtures
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }
@@ -58,7 +58,7 @@ stopped=
 for spec in 1.5:7 5:7 8.5:6; do
   l=${spec%%:*}; n=${spec##*:}
   echo "$(date +%H:%M:%S) B6_ecc_n29_lead$l ($n arms)"
-  py -3.14 -B $A/x2_jam_cases.py threshold --arms $n --n 29 --judge-first 10 --interval-ms 1000 \
+  $PY -B $A/x2_jam_cases.py threshold --arms $n --n 29 --judge-first 10 --interval-ms 1000 \
     --lead-s $l --reset-wican --ecc $gate --want-sha "$GI_ECC_SHA" --no-wican-console \
     --power "$PW" > "$GI_OUT/B6_ecc_n29_lead$l.txt" 2>&1
   rc=$?

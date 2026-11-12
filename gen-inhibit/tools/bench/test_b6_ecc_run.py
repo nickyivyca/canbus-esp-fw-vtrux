@@ -85,12 +85,16 @@ def tree(tmp, script_src):
         fh.write(script_src)
     with open(os.path.join(a, "baseline_b_jam.sh"), "w", newline="\n") as fh:
         fh.write(fake_jam())
+    shutil.copy(os.path.join(HERE, "bench_host.sh"), a)   # $PY and hpath (2026-11-12)
     with open(os.path.join(root, "firmware", "bench-holder.md"), "w") as fh:
         fh.write("The WiCAN's SoftAP `%s` (test).\n" % SSID)
     b = os.path.join(tmp, "bin")
     os.makedirs(b)
-    with open(os.path.join(b, "py"), "w", newline="\n") as fh:
+    # the fake under the host's Python name, executable: python3.13 on Linux, py in Git Bash
+    p = os.path.join(b, "py" if os.name == "nt" else "python3.13")
+    with open(p, "w", newline="\n") as fh:
         fh.write(FAKE_PY)
+    os.chmod(p, 0o755)
     return root, b
 
 

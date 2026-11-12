@@ -11,6 +11,10 @@ through the test's BATCH_DIR. The whole folder, since the scripts run tools besi
 ($A, capture_window.py among them): a copy of the five alone failed the same five checks
 with no edit at all. The unmutated copy runs first, as the control: if it fails a check,
 no kill counts. About 25 minutes. Gen-inhibit tester, 2026-10-20.
+
+The otagroup page-read mutants name the interpreter as the script does, $PY (bench_host.sh,
+2026-11-12): with the old `py -3.14` the first matched nothing and the second inserted a
+command that does not exist on Linux, so it survived.
 """
 import os
 import shutil
@@ -47,10 +51,10 @@ MUTANTS = [
      '      inert rt present --switch RESTART_GUARD_TEST\n',
      '      inert rt present --switch RESTART_GUARD_TEST\n      ota rt_self "$(img rt)"\n'),
     ("otagroup: no page read at the end of rt", "baseline_b_otagroup.sh",
-     '      py -3.14 -B $A/page_state.py --label "B12 rt end" --out "$D/B12_rt_end_page.json"; echo "rt end page exit $?"\n', ""),
+     '      $PY -B $A/page_state.py --label "B12 rt end" --out "$D/B12_rt_end_page.json"; echo "rt end page exit $?"\n', ""),
     ("otagroup: the page read before test_only_inert", "baseline_b_otagroup.sh",
      '      inert rt present --switch RESTART_GUARD_TEST\n',
-     '      py -3.14 -B $A/page_state.py --label "B12 rt early" --out "$D/B12_rt_end_page.json"\n'
+     '      $PY -B $A/page_state.py --label "B12 rt early" --out "$D/B12_rt_end_page.json"\n'
      '      inert rt present --switch RESTART_GUARD_TEST\n'),
 ]
 

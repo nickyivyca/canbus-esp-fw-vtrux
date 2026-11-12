@@ -12,8 +12,12 @@ CAN_TOOLS_DIR unset, the pin not installed (the refusal names the install
 command), and a canbench already imported from anywhere else. Neither the
 installed folder, the clone nor reverse-it goes on sys.path, and neither a
 canbench earlier on the path, the clone's HEAD nor reverse-it's mirror
-stands in for the pin. The other interfaces need no setting, and importing
-the file needs none either.
+stands in for the pin. An explicit --interface kvaser or gs_usb on Linux
+applies the pinned canbench's linux_fixes before can.Bus is called, loaded
+the same way, and refuses before the open without the setting or the
+install (ExplicitOpen, with a fake can.Bus and a stand-in linux_fixes;
+reviewer, 2026-11-12). Every other interface, and kvaser or gs_usb off
+Linux, needs no setting, and importing the file needs none either.
 
 The auto path runs in a child process against test_can_tools_pin.py's
 stand-in clone and planted worktree, in this run's own folder,
@@ -36,7 +40,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import vehicle_runner as vr  # noqa: E402,F401
 import can_tools_pin as ctp  # noqa: E402
-from test_can_tools_pin import fixture, pointed, rmtree, run_folder  # noqa: E402
+from test_can_tools_pin import (PINNED_FILES, fixture, pointed, rmtree,  # noqa: E402
+                                run_folder)
 
 # Points can_tools_pin at the fixture, runs the optional %s preamble, then
 # calls Runner.open_and_identify on a stand-in self, as --interface auto does,
@@ -190,6 +195,124 @@ class Root(unittest.TestCase):
         self.assertIn("PINNED canbench 500000", out)
         self.assertIn("no CAN interface detected", out)
         self.assertNotIn("already imported", out)
+
+
+# The pinned commit with a stand-in canbench.live.linux_fixes whose apply()
+# records that it ran.
+FIXES_FILES = dict(PINNED_FILES)
+FIXES_FILES["canbench/live/linux_fixes.py"] = (
+    "APPLIED = False\n"
+    "def apply():\n"
+    "    global APPLIED\n"
+    "    APPLIED = True\n"
+    "    print('PINNED linux_fixes applied')\n"
+    "    return {'kvaser': True, 'gs_usb': True}\n")
+
+# Points can_tools_pin at the fixture, replaces can.Bus with a fake that
+# prints the interface and whether the pinned linux_fixes had been applied
+# at the moment of the open (then stops the run), sets sys.platform, and
+# calls Runner.open_and_identify for an explicit --interface.
+EXPLICIT = ("import sys, types\n"
+            "sys.path.insert(0, %r)\n"
+            "import can_tools_pin\n"
+            "can_tools_pin.PINS_FILE, can_tools_pin.START = %r, %r\n"
+            "import can\n"
+            "def fake_bus(**kw):\n"
+            "    lf = sys.modules.get('canbench.live.linux_fixes')\n"
+            "    print('OPEN %%s fixes=%%s' %% (kw.get('interface'),\n"
+            "                                 getattr(lf, 'APPLIED', None)))\n"
+            "    raise SystemExit('FAKE BUS')\n"
+            "can.Bus = fake_bus\n"
+            "import vehicle_runner as vr\n"
+            "me = types.SimpleNamespace(args=types.SimpleNamespace("
+            "interface=%r, bitrate=500000, channel='0'))\n"
+            "sys.platform = %r\n"
+            "print('BEFORE=' + repr(sys.path))\n"
+            "try:\n"
+            "    vr.Runner.open_and_identify(me)\n"
+            "finally:\n"
+            "    print('PATH=' + repr(sys.path))\n")
+
+
+class ExplicitOpen(unittest.TestCase):
+    """An explicit --interface kvaser or gs_usb opens with python-can's
+    can.Bus, which on Linux fails without can-tools' linux_fixes (reviewer,
+    2026-11-12). On Linux, vehicle_runner applies the pinned canbench's
+    linux_fixes before that open, loaded through can_tools_pin as the auto
+    path loads canbench; other interfaces, and kvaser or gs_usb off Linux,
+    load nothing and need no setting."""
+
+    def setUp(self):
+        self.d = os.path.join(run_folder("vehicle-runner-test"),
+                              self.id().rsplit(".", 1)[-1])
+        rmtree(self.d)
+        os.makedirs(self.d)
+        self.fx = fixture(os.path.join(self.d, "fx"), files=FIXES_FILES)
+
+    def install(self):
+        with pointed(self.fx):
+            return ctp.install()[0]
+
+    def run_explicit(self, interface, platform, clone):
+        p = subprocess.run(
+            [sys.executable, "-B", "-c", EXPLICIT % (
+                HERE, self.fx["pins"], self.fx["worktree"], interface,
+                platform)],
+            env=child_env(clone), capture_output=True, text=True)
+        out = p.stdout + p.stderr
+        paths = []
+        for tag in ("BEFORE=", "PATH="):
+            got = [ln[len(tag):] for ln in p.stdout.splitlines()
+                   if ln.startswith(tag)]
+            self.assertEqual(len(got), 1, out)
+            paths.append([norm(e) for e in ast.literal_eval(got[0]) if e])
+        self.assertEqual(paths[1], paths[0], out)   # sys.path left as it was
+        return p.returncode, out
+
+    def test_kvaser_and_gs_usb_on_linux_apply_the_fixes_before_the_open(self):
+        self.install()
+        for iface in ("kvaser", "gs_usb"):
+            with self.subTest(iface=iface):
+                rc, out = self.run_explicit(iface, "linux", self.fx["clone"])
+                self.assertIn("PINNED linux_fixes applied", out)
+                self.assertIn("OPEN %s fixes=True" % iface, out)
+                self.assertNotIn("fixes=False", out)
+                self.assertNotIn("fixes=None", out)
+                self.assertLess(out.index("PINNED linux_fixes applied"),
+                                out.index("OPEN %s" % iface), out)
+                self.assertNotIn("Traceback", out)
+
+    def test_kvaser_on_linux_without_the_setting_refuses_before_the_open(self):
+        self.install()
+        rc, out = self.run_explicit("kvaser", "linux", None)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("--interface kvaser on Linux needs canbench", out)
+        self.assertIn("CAN_TOOLS_DIR is not set", out)
+        self.assertNotIn("OPEN kvaser", out)
+        self.assertNotIn("Traceback", out)
+
+    def test_gs_usb_on_linux_without_the_install_names_the_command(self):
+        rc, out = self.run_explicit("gs_usb", "linux", self.fx["clone"])
+        self.assertNotEqual(rc, 0)
+        self.assertIn("can_tools_pin.py install", out)
+        self.assertNotIn("OPEN gs_usb", out)
+        self.assertNotIn("Traceback", out)
+
+    def test_other_interfaces_on_linux_load_nothing(self):
+        for iface in ("pcan", "ixxat"):
+            with self.subTest(iface=iface):
+                rc, out = self.run_explicit(iface, "linux", None)
+                self.assertIn("OPEN %s fixes=None" % iface, out)
+                self.assertNotIn("linux_fixes applied", out)
+                self.assertNotIn("needs canbench", out)
+
+    def test_kvaser_off_linux_loads_nothing_and_needs_no_setting(self):
+        for platform in ("win32", "darwin"):
+            with self.subTest(platform=platform):
+                rc, out = self.run_explicit("kvaser", platform, None)
+                self.assertIn("OPEN kvaser fixes=None", out)
+                self.assertNotIn("linux_fixes applied", out)
+                self.assertNotIn("needs canbench", out)
 
 
 if __name__ == "__main__":

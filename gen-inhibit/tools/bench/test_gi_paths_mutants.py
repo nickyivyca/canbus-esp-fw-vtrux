@@ -67,7 +67,18 @@ MUTANTS = [
     ("use_canre also puts the reverse-it root on sys.path",
      "    import canre_pin\n    try:\n        return canre_pin.use()\n",
      "    import canre_pin\n    sys.path.append(reverse_it_dir())\n    try:\n        return canre_pin.use()\n"),
+    # the host's tshark (2026-11-12)
+    ("tshark: GI_TSHARK ignored", '    if environ.get("GI_TSHARK"):\n        return environ["GI_TSHARK"]\n', ""),
+    ("tshark: Windows' folder everywhere", '    if platform == "win32":\n        return TSHARK_WINDOWS\n',
+     "    return TSHARK_WINDOWS\n"),
+    ("tshark: PATH not searched", '    return which("tshark") or "tshark"', '    return "tshark"'),
+    ("tshark: None when not on PATH", '    return which("tshark") or "tshark"', '    return which("tshark")'),
 ]
+# Mutants that change nothing off Windows, so no check can kill them there. They run on
+# Windows and are named, not counted, elsewhere (2026-11-12: the bench host is Linux).
+WINDOWS_ONLY = {
+    "pins looked up case-sensitively": "os.path.normcase is the identity off Windows, so the edit changes nothing",
+}
 
 
 def run_test(d):
@@ -99,7 +110,12 @@ def main():
     control_ok = rc == 0 and not fails
     print("%s control: the unmutated copy, laid out as the repo  (exit %d, %d FAIL)%s"
           % ("PASS    " if control_ok else "FAILED  ", rc, len(fails), "".join("\n           " + f[:130] for f in fails[:3])))
+    skipped = 0
     for n, (name, old, new) in enumerate(MUTANTS, 1):
+        if name in WINDOWS_ONLY and os.name != "nt":
+            print("SKIPPED  m%d %s: %s" % (n, name, WINDOWS_ONLY[name]))
+            skipped += 1
+            continue
         if src.count(old) != 1:
             print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
             errors += 1
@@ -111,9 +127,9 @@ def main():
                                                  ", CRASHED" if crashed else "",
                                                  "".join("\n           " + f[:130] for f in fails[:3])))
     gi_paths.remove_tree(base)
-    print("\n%d of %d killed by a check, %d errors; the control %s"
-          % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
-    return 0 if killed == len(MUTANTS) and not errors and control_ok else 1
+    print("\n%d of %d killed by a check (%d skipped off Windows, named above), %d errors; the control %s"
+          % (killed, len(MUTANTS) - skipped, skipped, errors, "passes" if control_ok else "DOES NOT PASS"))
+    return 0 if killed == len(MUTANTS) - skipped and not errors and control_ok else 1
 
 
 if __name__ == "__main__":

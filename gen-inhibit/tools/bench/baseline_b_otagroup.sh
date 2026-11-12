@@ -18,7 +18,7 @@
 # (reviewer, 2026-10-16). Run from the reverse-it root.
 set -u
 W=${1:?worktree}; P=${2:?prod build dir}; shift 2
-A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, gen-inhibit/tools/bench
+H="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$H/bench_host.sh"; A=$(hpath "$H")   # this folder, gen-inhibit/tools/bench
 cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
 DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative to REVERSE_IT_DIR: runs/ and fixtures
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }
@@ -40,7 +40,7 @@ ota() {   # ota <label> <image>
 . "$A/bench_images.sh"   # img_in: the image of $C, named with or without the commit (port step 0c)
 img() { img_in "$W/build-tester-$1"; }
 inert() { local tag=$1 expect=$2; shift 2
-  py -3.14 -B $A/test_only_inert.py --expect $expect "$@" --power "$PWR; image $tag" > "$D/B19_${expect}_$tag.txt" 2>&1
+  $PY -B $A/test_only_inert.py --expect $expect "$@" --power "$PWR; image $tag" > "$D/B19_${expect}_$tag.txt" 2>&1
   echo "B19 $expect $tag exit $?"; tail -2 "$D/B19_${expect}_$tag.txt"; }
 for s in $STEPS; do
   echo "== $(date +%H:%M:%S) $s"
@@ -51,17 +51,17 @@ for s in $STEPS; do
       for r in reboot crash crash reboot reboot crash; do
         k=$((k + 1))
         extra=""; [ $r = crash ] && extra="--crash-path /gi_quiesce?crash=illegal"
-        py -3.14 -B $A/restart_error_frames.py --condition live --cycles 1 --restart $r $extra \
+        $PY -B $A/restart_error_frames.py --condition live --cycles 1 --restart $r $extra \
           --record-get /gi_quiesce --power "$PWR; image $C _man_rt" > "$D/B12_${k}_live_$r.txt" 2>&1
         echo "B12 $k live $r exit $?"
       done
-      py -3.14 -B $A/restart_error_frames.py --condition off --cycles 1 --restart reboot \
+      $PY -B $A/restart_error_frames.py --condition off --cycles 1 --restart reboot \
         --record-get /gi_quiesce --power "$PWR; image $C _man_rt" > "$D/B12_7_off_reboot.txt" 2>&1
       echo "B12 7 off reboot exit $?"
       inert rt present --switch RESTART_GUARD_TEST
       # The page as the rt step leaves it: mode, uptime, latch (reviewer, 2026-10-20).
       # Without rt_self's OTA the next step starts from this state, not a fresh boot.
-      py -3.14 -B $A/page_state.py --label "B12 rt end" --out "$D/B12_rt_end_page.json"; echo "rt end page exit $?"
+      $PY -B $A/page_state.py --label "B12 rt end" --out "$D/B12_rt_end_page.json"; echo "rt end page exit $?"
       # No second OTA of _man_rt over itself ("rt_self", dropped 2026-10-20, reviewer). An
       # OTA always writes the slot that is not running, and a failed or rolled-back next
       # upload falls back to the image running when it started: _man_rt either way, with
@@ -71,7 +71,7 @@ for s in $STEPS; do
     txabort)
       ota txabort "$(img txabort)"
       inert txabort present --switch TWAI_PORT_TXABORT_PROBE
-      py -3.14 -B $A/wican_txabort_bench.py --no-ixxat > "$D/B23_txabort_bench.txt" 2>&1; echo "B23 exit $?"
+      $PY -B $A/wican_txabort_bench.py --no-ixxat > "$D/B23_txabort_bench.txt" 2>&1; echo "B23 exit $?"
       ;;
     abortwin)
       ota abortwin "$(img abortwin)"
@@ -82,7 +82,7 @@ for s in $STEPS; do
       inert rxq present --switch GI_INSTRUMENT_RXQ
       for a in idle_a idle_b loaded; do
         arm=idle; [ $a = loaded ] && arm=loaded
-        py -3.14 -B $A/e4_device_calibration.py --capture "$(cygpath -m "$PWD/$DATA/runs/truck_passive2.log")" \
+        $PY -B $A/e4_device_calibration.py --capture "$(hpath "$PWD/$DATA/runs/truck_passive2.log")" \
           --window-start 0.0 --seconds 35 --arm $arm --out "$D/B26_rxq_$a.json" > "$D/B26_rxq_$a.txt" 2>&1
         echo "B26 $a exit $?"
       done
@@ -92,16 +92,16 @@ for s in $STEPS; do
       inert prod absent --switch RESTART_GUARD_TEST --switch GI_INSTRUMENT_RXQ \
         --switch GI_INSTRUMENT_ABORTWIN --switch OTA_HEALTH_FAULT_INJECT
       inert prod_txabort absent --switch TWAI_PORT_TXABORT_PROBE
-      py -3.14 -B $A/spec11_page_check.py --image "$(img_in "$P" "")" --other "$(img rxq)" \
+      $PY -B $A/spec11_page_check.py --image "$(img_in "$P" "")" --other "$(img rxq)" \
         --out "$D/B19_spec11_page_prod.json" > "$D/B19_spec11_page_prod.txt" 2>&1; echo "prod page exit $?"
       ;;
     prod_rxq30)   # RXQ again 30 s after the QUIESCE probe, on prod (reviewer, 2026-10-17; e3d9437 00:58)
-      py -3.14 -B $A/test_only_inert.py --expect absent --switch RESTART_GUARD_TEST --switch GI_INSTRUMENT_RXQ \
+      $PY -B $A/test_only_inert.py --expect absent --switch RESTART_GUARD_TEST --switch GI_INSTRUMENT_RXQ \
         --gap-s 30 --power "$PWR; image prod" > "$D/B19_absent_prod_rxq_gap30.txt" 2>&1
       echo "B19 absent prod rxq gap30 exit $?"; tail -3 "$D/B19_absent_prod_rxq_gap30.txt"
       ;;
     rxq_page)   # B17b, the board already on rxq (no OTA here: the rxq step made it)
-      py -3.14 -B $A/spec11_page_check.py --image "$(img rxq)" --other "$(img man)" \
+      $PY -B $A/spec11_page_check.py --image "$(img rxq)" --other "$(img man)" \
         --out "$D/B17_spec11_page_${C}_rxq.json" > "$D/B17_spec11_page_${C}_rxq.txt" 2>&1; echo "B17b exit $?"
       ;;
     man)

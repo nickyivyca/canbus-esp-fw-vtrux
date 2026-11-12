@@ -106,7 +106,8 @@ def main():
     stamp = time.strftime("%Y%m%dT%H%M%S")
     before = page_state()
     tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
-    kv = can.Bus(interface="kvaser", channel=0, bitrate=500000)
+    from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+    kv = kvaser_bus(channel=0, bitrate=500000)
     wit = Witness(kv)
     sent = []
     try:

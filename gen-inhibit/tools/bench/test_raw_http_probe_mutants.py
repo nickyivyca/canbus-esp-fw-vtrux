@@ -199,7 +199,19 @@ SUITES = [
         ("witness stall ignores the plan", "(w[j] - w[j - 1]) - (p[j] - p[j - 1])", "(w[j] - w[j - 1])"),
         ("witness stall hides an unpaired ID", 'bad.append("%s planned %d seen %d" % (k, len(p), len(w)))',
          "pass"),
-        ("priority not raised", "k.SetPriorityClass(ctypes.c_void_p(h), ABOVE_NORMAL)", "pass"),
+        # On Windows the sender sets its class; on Linux its priority is its cgroup's
+        # (user, 2026-11-11), so there the same mutant drops the bench.slice check:
+        # test_interlock_judge's Windows check runs only on Windows.
+        ("priority not raised", "k.SetPriorityClass(ctypes.c_void_p(h), ABOVE_NORMAL)", "pass")
+        if sys.platform == "win32" else
+        ("priority not raised", 'return BENCH_SLICE if in_bench_slice(text) else "not in bench.slice"',
+         "return BENCH_SLICE"),
+        ("bench.slice matched as a substring", "BENCH_SLICE in parts[2].split(\"/\")", "BENCH_SLICE in parts[2]"),
+        ("cgroup v1 lines skipped", "if len(parts) == 3 and", "if parts[0] == \"0\" and len(parts) == 3 and"),
+        ("unreadable cgroup reads as bench.slice", 'return "not in bench.slice (%s unreadable: %s)" % (cgroup, e)',
+         "return BENCH_SLICE"),
+        ("Linux not dispatched to bench_slice", 'if sys.platform.startswith("linux"):\n        return bench_slice()',
+         'if False:\n        return bench_slice()'),
         # The lock check left this file for bench_held.py (9b74ba0, 2026-10-25); its mutants,
         # the loan and the gate here included, are test_bench_held_mutants.py's.
     ]),

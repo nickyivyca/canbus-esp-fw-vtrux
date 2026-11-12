@@ -142,7 +142,8 @@ def main():
     cc.start()
     kv = pc = wit = replay = None
     try:
-        kv = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+        from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+        kv = kvaser_bus(channel=0, bitrate=BITRATE)
         wit = Wit(kv)
         wit.start()
         if a.replayer == "pcan":

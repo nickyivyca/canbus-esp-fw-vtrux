@@ -10,7 +10,10 @@ wrong-bit-rate method, with a calibration first.
 Adapters on the WiCAN segment (bench-holder.md): only two, so
   PCAN 500 kbit   plays the interlock slice (skip_method_bench.Player) so the device
                   is armed and live, AND witnesses: a separate thread reads it and
-                  counts every error frame it reports, with its host time;
+                  counts every error frame it reports, with the PCAN's own stamp
+                  mapped onto the host clock (since 2026-11-11, A2 (a): before, its
+                  host receipt time; witness_clock.device_fit, and a fit outside
+                  its bounds makes the run VOID, printed as "witness clock VOID");
   Kvaser 250 kbit the error source. A frame sent at half the bus rate is garbage to
                   the 500 kbit nodes and fails at the Kvaser too, which retransmits
                   until its controller gives up; a BURST is one send, held for
@@ -46,6 +49,7 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import witness_clock as WC  # noqa: E402  the PCAN's own stamps, mapped (A2 (a), 2026-11-11)
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 SOURCE_ID = 0x6A7
@@ -89,8 +93,9 @@ def pre_burst_window(series, errors, first_burst):
     the first burst and the burst itself: {"from_s", "errors", "error_times_s"}, times on the
     burst clock (first burst 0). With no such sample, from_s and errors are None. The B9 judge
     needs errors == 0, so a latch in that gap is never credited to the bursts (reviewer,
-    2026-10-25). `series` and `errors` are on the host clock, as the poller and witness keep
-    them."""
+    2026-10-25). `series` and `errors` are on the host's perf_counter clock: the poller's
+    receipt times, and the witness's error frames as the PCAN stamped them, mapped onto that
+    clock (judged_errors, since 2026-11-11)."""
     clean = [s["t"] for s in series
              if s["t"] < first_burst and s.get("live") is True and not s.get("abort")]
     if not clean:
@@ -101,9 +106,13 @@ def pre_burst_window(series, errors, first_burst):
 
 
 class PcanWitness(threading.Thread):
+    """Every message the PCAN delivers: its receipt on perf_counter and the epoch, and its own
+    stamp (points, for the clock fit); each error frame's receipt (errors) and stamp (error_ts).
+    Since 2026-11-11 (A2 (a)) the judged times are the stamps, mapped (judged_errors)."""
+
     def __init__(self, bus):
         super().__init__(daemon=True)
-        self.bus, self.errors, self.frames = bus, [], 0
+        self.bus, self.errors, self.error_ts, self.points, self.frames = bus, [], [], [], 0
         self.stop = threading.Event()
 
     def run(self):
@@ -111,10 +120,23 @@ class PcanWitness(threading.Thread):
             m = self.bus.recv(timeout=0.1)
             if m is None:
                 continue
+            p, e = time.perf_counter(), time.time()
+            self.points.append((p, e, m.timestamp))
             if m.is_error_frame:
-                self.errors.append(time.perf_counter())
+                self.errors.append(p)
+                self.error_ts.append(m.timestamp)
             else:
                 self.frames += 1
+
+
+def judged_errors(wit):
+    """(error-frame times on the perf_counter clock, the clock fit, which clock the figures are on).
+    The PCAN's own stamps, mapped by WC.device_fit; if the fit is VOID, the receipt times, for the
+    record only: the run is then VOID and never judged on them (A2 (a), 2026-11-11)."""
+    fit = WC.device_fit(wit.points)
+    if fit["void"]:
+        return list(wit.errors), fit, "receipt time (PCAN clock VOID): recorded, not judged"
+    return [WC.mapped(fit, ts) for ts in wit.error_ts], fit, "PCAN device stamps, mapped onto perf_counter"
 
 
 class Poller(threading.Thread):
@@ -150,8 +172,12 @@ def burst(ms):
     and step 1a's acceptance run counted 36 and 43 witness error frames, all within 5 ms
     before that t, as "before the first burst". Returns (start, seconds the open took)."""
     import can
+    # The pinned can-tools' Linux fixes (2026-11-11), applied before t, so loading them is not
+    # counted in the open's time.
+    from kvaser_bus import kvaser_bus, fixes  # noqa: E402
+    fixes()
     t = time.perf_counter()
-    kv = can.Bus(interface="kvaser", channel=0, bitrate=250000)
+    kv = kvaser_bus(channel=0, bitrate=250000)
     opened = time.perf_counter() - t
     try:
         kv.send(can.Message(arbitration_id=SOURCE_ID, is_extended_id=False, data=bytes(8)),
@@ -254,7 +280,12 @@ def main():
                 pass
             pc.shutdown()
     st = [s for s, _ in starts]
-    errs = wit.errors
+    errs, fit, figures_clock = judged_errors(wit)
+    rec["witness_clock"] = fit
+    rec["witness_clock_figures"] = figures_clock
+    if fit["void"]:
+        rec["witness_clock_void"] = fit["void"]
+        rec["verdict"] = WC.pcan_void_verdict(fit["void"])
     series = poll.series if poll else []
     t_ref = st[0] if st else 0.0
     # open_s: how long the Kvaser's open took, from the burst's start (2026-10-29)
@@ -277,6 +308,10 @@ def main():
     path = os.path.join(RUNS, "wrong_bitrate_%s_%s.json" % (a.cmd, stamp))
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(rec, fh, indent=1)
+    print(WC.fit_line(fit))
+    if fit["void"]:
+        # the suite's B9 judge reads this line first: VOID, never judged (A2 (a))
+        print("witness clock VOID: %s" % fit["void"])
     for b in rec["bursts"]:
         print("  burst at %.3f s, %g ms -> witness error frames %d" % (b["t"], b["ms"], b["witness_error_frames"]))
     print("summary", rec["summary"], "witness total", rec["witness_error_frames"],

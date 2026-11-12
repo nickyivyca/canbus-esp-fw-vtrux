@@ -119,6 +119,13 @@ MUTANTS = [
     ("the first of several files is taken", '        if len(got) != 1:\n            raise Missing',
      '        if not got:\n            raise Missing'),
     ("a missing file is a pass", '        return [result(cid, "ERROR", detail="files: %s" % e)]', '        return [result(cid, "PASS")]'),
+    # A2 (a), 2026-11-11: the PCAN's clock VOID line, and B10's VOID arms
+    ("B9: the clock's VOID line is ignored",
+     '        return [result("B9", "VOID", detail="the PCAN\'s clock: %s" % cv.group(1))]', '        pass'),
+    ("B10: the clock's VOID line is ignored",
+     '        return [result("B10", "VOID", detail="the PCAN\'s clock: %s" % cv.group(1))]', '        pass'),
+    ("B10: a VOID arm is FAIL, as before", "    if voided and not notspec:", "    if False:"),
+    ("B10: a VOID arm hides a NOT as specified", "    if voided and not notspec:", "    if voided:"),
 ]
 
 

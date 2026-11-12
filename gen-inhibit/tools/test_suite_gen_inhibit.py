@@ -58,7 +58,13 @@ from vtrux_bench.run.engine import Engine, fmt               # noqa: E402
 from vtrux_bench.run.model import CheckRun, validate         # noqa: E402
 import suite_gen_inhibit as SG                               # noqa: E402
 
-SSID = "WiCAN_" + "0f" * 6   # made up for the test, and built so this file has no SSID-form literal (test_publish_scan.py)
+# esptool (gi_esptool.py, 2026-11-11): the settings' argv in its one form, and the version
+# `<argv> version` reports, stood in for here (VERSION[0]) so no esptool runs
+ESPTOOL_ARGV = [sys.executable, "-m", "esptool"]
+VERSION = ["4.13.0"]
+SG.GE.version = lambda argv, timeout=60: (VERSION[0], "esptool.py v%s\n%s\n" % (VERSION[0], VERSION[0]))
+
+SSID ="WiCAN_" + "0f" * 6   # made up for the test, and built so this file has no SSID-form literal (test_publish_scan.py)
 BASE = scratch_dir("suite_gen_inhibit")
 fails = []
 oks = 0
@@ -471,7 +477,8 @@ class Tools:
         self.do = {}
 
     def __call__(self, argv, logpath, env_extra, cwd, timeout):
-        k = next(i for i, a in enumerate(argv) if a.endswith(".py"))    # the tool, after the python
+        # the tool, after the python: a script, or a module run with -m (esptool, 2026-11-11)
+        k = next(i for i, a in enumerate(argv) if a.endswith(".py") or (i > 0 and argv[i - 1] == "-m"))
         tool = os.path.basename(argv[k])
         sub = argv[k + 1] if k + 1 < len(argv) else ""
         self.calls.append((tool, sub, list(argv)))
@@ -662,46 +669,69 @@ def test_identify(settings, bench):
     check("identify X2: the SSID is redacted from the tool's log and its new records", with_tools(t13))
 
     # SLCAN answers name the protocol, not the build: x2_slcan only with the pinned app on the flash
-    sv = dict(settings, esptool={"argv": [sys.executable, "esptool.py"], "port": "COM3", "baud": 921600})
+    sv = dict(settings, esptool={"argv": list(ESPTOOL_ARGV), "port": "COM3", "baud": 921600})
     hv = SG.make_hooks(sv, SSID, bench.images)
     xs = bench.images["x2_slcan"]
-    VER = "Verifying 0x... bytes at 0x00010000 in flash against 'x2_slcan.bin'...\n" + SG.VERIFY_OK + ".\n"
+    # esptool 4.13.0's verify_flash line, written out here, not taken from the suite
+    VER = "Verifying 0x... bytes at 0x00010000 in flash against 'x2_slcan.bin'...\n-- verify OK (digest matched)\n"
+    V5 = "Verifying 0x... bytes at 0x00010000 in flash against 'x2_slcan.bin'...\nVerification successful (digest matched).\n"
 
-    def slcan(out, rc):
+    def slcan(out, rc, hooks_=None, version="4.13.0"):
         def t(tt):
             bi("slcan:V0101:NF001")
             tt.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
-            tt.do[("esptool.py", "--port")] = lambda a, e: (out, rc, {})
+            tt.do[("esptool", "--port")] = lambda a, e: (out, rc, {})
+            VERSION[0] = version
+            d = logdir()
             try:
-                got = hv["identify"](xs, {}, logdir())
+                got = (hooks_ or hv)["identify"](xs, {}, d)
             except Exception as e:
                 got = e
-            return got, tt.named("esptool.py")
+            finally:
+                VERSION[0] = "4.13.0"
+            logs = [n for n in os.listdir(d) if n.startswith("x2_slcan_verify_")]
+            first = open(os.path.join(d, logs[0]), encoding="utf-8").readline() if logs else ""
+            return got, tt.named("esptool"), first
         return with_tools(t)
-    got, ver = slcan(VER, 0)
+    got, ver, first = slcan(VER, 0)
     check("identify X2: SLCAN answers with the pinned slcan app verified on the flash is x2_slcan",
           got == "slcan:V0101:NF001" and len(ver) == 1, (got, ver))
-    check("identify X2: the verify reads the pinned slcan app at its offset, and only it",
-          ver and ver[0][2][-3:] == ["verify-flash"] + list(xs.params.get("app") or ["<no app>"]) and "write-flash" not in ver[0][2],
-          ver and ver[0][2])
-    got, _ = slcan("Verifying ...\nVerification failed (digest mismatch).\n", 2)
+    check("identify X2: the verify reads the pinned slcan app at its offset, and only it, by verify_flash",
+          ver and ver[0][2][-3:] == ["verify_flash"] + list(xs.params.get("app") or ["<no app>"])
+          and not [a for a in ver[0][2] if a.replace("_", "-") in ("write-flash", "verify-flash")
+                   and a != "verify_flash"], ver and ver[0][2])
+    check("identify X2: the verify runs settings.esptool.argv, and its log starts with the version read",
+          ver and ver[0][2][:3] == ESPTOOL_ARGV and first.startswith("esptool version: 4.13.0"), (ver and ver[0][2], first))
+    got, ver, _ = slcan(V5, 0)
+    check("identify X2: esptool 5's verify line does not count under the 4.13.0 pin (not x2_slcan)",
+          got == "slcan:V0101:NF001:unpinned" and len(ver) == 1, (got, ver))
+    got, ver, _ = slcan(VER, 0, version="5.0.2")
+    check("identify X2: an esptool of another version than the pin RAISES and runs no verify",
+          isinstance(got, SG.IdentifyError) and "5.0.2" in str(got) and ver == [], (got, ver))
+    for form in ([sys.executable, "esptool.py"], [sys.executable, "-m", "esptool.py"],
+                 [sys.executable, "-m", "esptool", "--chip"]):
+        hf = SG.make_hooks(dict(sv, esptool=dict(sv["esptool"], argv=form)), SSID, bench.images)
+        got, ver, _ = slcan(VER, 0, hooks_=hf)
+        check("identify X2: an esptool argv of another form (%s) RAISES and runs no verify" % form[1:],
+              isinstance(got, SG.IdentifyError) and ver == [], (got, ver))
+    got, _, _ = slcan("Verifying ...\n-- verify FAILED: digest mismatch\n", 2)
     check("identify X2: SLCAN answers from another build (verify mismatch) are not x2_slcan",
           got == "slcan:V0101:NF001:unpinned", got)
-    got, _ = slcan(VER, 2)
+    got, _, _ = slcan(VER, 2)
     check("identify X2: a verify that exits non-zero is not x2_slcan", got == "slcan:V0101:NF001:unpinned", got)
-    got, _ = slcan("Verifying ...\n", 0)
+    got, _, _ = slcan("Verifying ...\n", 0)
     check("identify X2: a verify that never says the digest matched is not x2_slcan",
           got == "slcan:V0101:NF001:unpinned", got)
-    got, _ = slcan("A fatal error occurred: Failed to connect to ESP32-S3\n", 2)
+    got, _, _ = slcan("A fatal error occurred: Failed to connect to ESP32-S3\n", 2)
     check("identify X2: a verify that could not reach the board RAISES (could not look)",
           isinstance(got, SG.IdentifyError), got)
-    got, _ = slcan("could not open port 'COM3': PermissionError\n", 2)
+    got, _, _ = slcan("could not open port 'COM3': PermissionError\n", 2)
     check("identify X2: a verify whose port would not open RAISES", isinstance(got, SG.IdentifyError), got)
 
     def t_bridge(t):
         bi("70df3a43")       # a foreign bridge's 0x7F7 build id: not verified, just read
         t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
-        return hv["identify"](xs, {}, logdir()), t.named("esptool.py")
+        return hv["identify"](xs, {}, logdir()), t.named("esptool")
     got, ver = with_tools(t_bridge)
     check("identify X2: a foreign bridge's build id is read as it is, with no verify",
           got == "70df3a43" and ver == [], (got, ver))
@@ -721,7 +751,7 @@ def x2_reads(tt, *reads):
     tt.do[("x2_hold.py", "pins")] = lambda a, e: ("pins: TX (GPIO7) unknown\n", 1, {"x2_hold_pins_T%d.json" % len(a): "{}"})
     tt.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T%d.json" % len(a): {"banner_ok": False}})
     # an SLCAN answer is verified against the pinned slcan app: here it is some other build
-    tt.do[("esptool.py", "--port")] = lambda a, e: ("Verification failed (digest mismatch).\n", 2, {})
+    tt.do[("esptool", "--port")] = lambda a, e: ("-- verify FAILED: digest mismatch\n", 2, {})
 
 
 def x2_writes(result):
@@ -735,7 +765,7 @@ def x2_writes(result):
 
 
 def test_flashers(settings, bench):
-    settings = dict(settings, esptool={"argv": [sys.executable, "esptool.py"], "port": "COM3"})
+    settings = dict(settings, esptool={"argv": list(ESPTOOL_ARGV), "port": "COM3"})
     hooks = SG.make_hooks(settings, SSID, bench.images)
     wm, xh, xj = (bench.images[n] for n in ("wican_man", "x2_held", "x2_jammer"))
 
@@ -798,15 +828,24 @@ def test_flashers(settings, bench):
         x2_reads(tt, read)
         hooks["identify"](xa, {}, logdir())
 
+    envs = []
+
     def hold(out, rc, read="756d6714"):
         def t(tt):
             on(tt, read)
-            tt.do[("x2_hold.py", "hold")] = lambda a, e: (out, rc, {})
+
+            def do(a, e):
+                envs.append(dict(e))
+                return out, rc, {}
+            tt.do[("x2_hold.py", "hold")] = do
             return hooks["x2_hold"](xh, xh.params, settings, logdir())
         return with_tools(t)
     SG._x2_write = lambda *a: {"ok": False, "detail": "MUST NOT WRITE"}
     try:
         check("x2_hold: not driven, exit 0 is ok", hold("hold: TX (GPIO7) not driven, level unreadable\n", 0)["ok"])
+        check("x2_hold: the tool gets settings.esptool.argv as GI_ESPTOOL_ARGV (gi_esptool.py)",
+              envs and json.loads(envs[-1].get("GI_ESPTOOL_ARGV", "null")) == ESPTOOL_ARGV,
+              envs and envs[-1].get("GI_ESPTOOL_ARGV"))
         check("x2_hold: driven is not ok", not hold("hold: TX (GPIO7) driven -- out_sel 1\n", 0)["ok"])
         check("x2_hold: unknown, exit 1 is not ok", not hold("hold: TX (GPIO7) unknown\n", 1)["ok"])
     finally:

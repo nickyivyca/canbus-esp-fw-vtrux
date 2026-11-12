@@ -125,8 +125,9 @@ and tell the user.
 it has checked out. Each branch keeps
 only its own role's skill current; changes reach other branches by
 cherry-pick. After a cherry-pick that touches your skill, re-read its
-`SKILL.md`. On Linux every worktree shares the anchor's `settings.local.json`;
-on Windows each worktree has its own.
+`SKILL.md`. Each worktree has its own `.claude/settings.local.json`, on
+Linux as on Windows (`madhouse-debian`'s anchor has no `.claude/`, checked
+2026-11-11).
 
 **Never build WiCAN firmware from an interposer worktree or branch.** A
 WiCAN image's name and compiled-in commit come from the whole tree, so
@@ -264,7 +265,13 @@ out. The interposer's ESP-IDF project is `charge-interposer/firmware/`,
 since port step 2a. **No path in the tree may have a branch's name.** An IDF
 `main/` directly in a project folder would make `<project>/main` both a
 branch and a path, and git then refuses the bare branch name in `log`,
-`show`, `diff` and `reset`.
+`show`, `diff` and `reset`. **Beside the project folder, a project
+branch's root holds only the files every branch shares:** `.claude/`,
+`.gitattributes`, `.gitignore`, `AGENTS.md`, `CLAUDE.md`, `LICENSE`,
+`README.md`, `local-paths.template.md` and `session_pause.sh`. Upstream
+WiCAN's root tree, its `.github/` included, is removed from both project
+branches (user, 2026-11-11: the interposer's root tree in the interposer
+reviewer's session, `.github/` in the methodology owner's).
 
 ### Shared code
 
@@ -441,7 +448,9 @@ The machine names `NICKY-XPS`, `madhouse-debian` and `NICKYDESKTOP` are
 accepted (user, 2026-10-23). So are WiCAN firmware defaults such as its
 hotspot addresses `192.168.80.1` (device) and `192.168.80.2` (laptop), which
 are not home-network details (user, 2026-10-20). So is `~/.espressif`,
-ESP-IDF's default tools folder, as the whole path only (user, 2026-11-03).
+ESP-IDF's default tools folder, as the whole path only (user, 2026-11-03),
+and so are `~/esp/esp-idf` and `~/esp/esp-idf-v<version>`, its default
+install folder, as whole paths (user, 2026-11-11).
 So is bare `madhouse`, in prose and in file names, though it is also a
 bench WiFi SSID (user, 2026-11-07).
 
@@ -481,6 +490,32 @@ bring-up. The rules for taking, loaning and handing back, and each board's
 state, are in `$REVERSE_IT_DIR/firmware/bench-holder.md`. Both files stay
 out of git: they change at every hand-off, and they record home-bench
 details.
+
+**The bench host is `madhouse-debian`** from port plan step 3 (the hardware
+moved on 2026-11-11; it was `NICKY-XPS` before). Its lock is native Linux,
+in `shared/main` from tag `2026.11.11.2` (SPEC section 4); the testers'
+pinned `shared/bench` version must include it before they take the lock
+there.
+- **The move to a new host** (SPEC section 4): on the old host, a role that
+  may take runs `bench_lock.py retire --to <new host> --reason ...` while
+  the lock is free, which renames the log aside as
+  `bench-log.<old host>.<date>.jsonl`. The new host runs `init` only once
+  that renamed copy has synced there and no `bench-log.jsonl` is left;
+  `init` refuses otherwise.
+- **Besides the testers and their loans,** two roles may take the bench by
+  hand, with no run: `android`, the Android sessions' runs that touch the
+  bench adapters, and `can-tools`, the CAN replay tooling session (SPEC
+  section 8). They flash no board. At release, everything they opened is
+  closed and back on its driver, `canmain` is down, and what they
+  transmitted is noted.
+- **`canmain`, CAN1's Innomaker, is for the Android app's two-bus tests**
+  and is kept down during ESP runs. Every run that needs the bench refuses
+  to start unless its settings' `canmain_check` shows `canmain` down
+  (`shared/bench/README.md`).
+- **Root operations on the CAN adapters** (links up and down, an
+  Innomaker's driver binding) go through `canctl`, run as `sudo -n
+  /usr/local/sbin/canctl ...`. It is the CAN replay tooling session's, and
+  its README is `$REVERSE_IT_DIR/tools/bench/canctl/README.md`.
 
 ### Build tooling
 

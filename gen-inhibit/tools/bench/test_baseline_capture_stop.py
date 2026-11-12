@@ -101,13 +101,34 @@ def fw(p):
     return p.replace("\\", "/")
 
 
+# The scripts call the host's Python through bench_host.sh's $PY (2026-11-12): python3.13
+# on Linux, `py -3.14` in Git Bash. The fake goes first on PATH under that name.
+PY_CMD = ["py", "-3.14"] if os.name == "nt" else ["python3.13"]
+
+
+def put_fake_py(bindir, text):
+    """Writes the fake interpreter as bindir/<the host's Python name>, executable."""
+    p = os.path.join(bindir, PY_CMD[0])
+    with open(p, "w", newline="\n") as f:
+        f.write(text)
+    os.chmod(p, 0o755)
+    return p
+
+
+def host_py():
+    """bench_host.sh's $PY, as this host's bash reads it, split into words."""
+    r = subprocess.run([BASH, "-c", '. "$1/bench_host.sh" && printf "%s\\n" $PY', "x", fw(BATCH)],
+                       capture_output=True, text=True)
+    return r.stdout.split() if r.returncode == 0 else ["exit %d: %s" % (r.returncode, r.stderr.strip())]
+
+
 def env_for(tmp, runs, out, **extra):
     e = dict(os.environ)
     e["PATH"] = fw(os.path.join(tmp, "bin")) + os.pathsep + e.get("PATH", "")
     e.update({"FAKE_LOG": fw(os.path.join(tmp, "calls.log")), "FAKE_DUMPCAP_LOG": fw(os.path.join(tmp, "dumpcap.log")),
               "REAL_PY": fw(sys.executable), "GI_DUMPCAP_PRE": "%s -B %s" % (fw(sys.executable), fw(os.path.join(tmp, "fake_dumpcap.py"))),
               "GI_CAPTURE_TAIL_S": str(TAIL), "GI_CAPTURE_MAX_S": "60", "GI_COMMIT": "e3d9437",
-              "GI_WICAN_SSID": "WiCAN_testssid", "INTERPOSER_CODE": "x",
+              "GI_WICAN_SSID": "WiCAN_testssid", "INTERPOSER_CODE": "x", "GI_CAPTURE_IFACE": "test-iface",
               "GI_RUNS_DIR": fw(runs), "GI_OUT": fw(out), "MSYS_NO_PATHCONV": "1"})
     e.update(extra)
     return e
@@ -152,10 +173,25 @@ def main():
     tmp = gi_paths.scratch("capture-stop-test")
     gi_paths.remove_tree(tmp)
     os.makedirs(os.path.join(tmp, "bin"))
-    with open(os.path.join(tmp, "bin", "py"), "w", newline="\n") as f:
-        f.write(FAKE_PY)
+    put_fake_py(os.path.join(tmp, "bin"), FAKE_PY)
     open(os.path.join(tmp, "fake_dumpcap.py"), "w").write(FAKE_DUMPCAP)
     try:
+        # 0. bench_host.sh: the scripts call the host's Python, under its own name
+        check("bench_host.sh: the scripts' Python is %s here" % " ".join(PY_CMD), host_py() == PY_CMD,
+              host_py())
+        if os.name != "nt":
+            # no capture interface on Linux unless named (madhouse-debian has no Wi-Fi yet)
+            for label, script, args, extra in [("B21 probe", "baseline_b21.sh", ["img.bin"], {"GI_B21_STEPS": "probe"}),
+                                               ("B11raw", "baseline_b_noX2.sh", ["B11raw"], {})]:
+                runs, out = os.path.join(tmp, "noif runs"), os.path.join(tmp, "noif out")
+                os.makedirs(runs, exist_ok=True)
+                e = env_for(tmp, runs, out, **extra)
+                del e["GI_CAPTURE_IFACE"]
+                open(os.path.join(tmp, "calls.log"), "w").close()
+                rc, text = bash(script, args, e)
+                check("%s: no GI_CAPTURE_IFACE on Linux -> exit 2, nothing run" % label,
+                      rc == 2 and "GI_CAPTURE_IFACE" in text and calls(tmp) == "", (rc, text[-300:], calls(tmp)[-300:]))
+        open(os.path.join(tmp, "calls.log"), "w").close()
         # 1. B21's probe step
         runs, out = os.path.join(tmp, "b21runs"), os.path.join(tmp, "b21out")
         os.makedirs(runs)
@@ -171,6 +207,8 @@ def main():
               (begins, calls(tmp)[-400:]))
         check("B21: dumpcap keeps its own bound (-a duration)",
               begins and all("duration:60" in d["argv"] for d in begins), begins)
+        check("B21: dumpcap captures on GI_CAPTURE_IFACE",
+              begins and all(d["argv"][d["argv"].index("-i") + 1] == "test-iface" for d in begins), begins)
         # 2. B11raw
         open(os.path.join(tmp, "dumpcap.log"), "w").close()
         runs, out = os.path.join(tmp, "b11runs"), os.path.join(tmp, "b11out")

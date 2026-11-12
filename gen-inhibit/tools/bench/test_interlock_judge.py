@@ -835,6 +835,39 @@ def test_common():
           any(x.startswith("0x617 planned") for x in st), "%s" % st)
     if sys.platform == "win32":
         check("raise_priority: the sender runs above normal", B.raise_priority() == "above_normal", "")
+    # Linux: the sender's priority is its cgroup's (user, 2026-11-11): bench_slice() reads
+    # where it runs. Its parsing is checked on every platform, against cgroup files written here.
+    os.makedirs(SCRATCH, exist_ok=True)
+    cg_cases = [
+        ("bench.slice scope", "0::/user.slice/user-1000.slice/user@1000.service/bench.slice/run-p1-i2.scope\n",
+         "bench.slice"),
+        ("build.slice scope", "0::/user.slice/user-1000.slice/user@1000.service/build.slice/run-p1-i2.scope\n",
+         "not in bench.slice"),
+        ("a terminal's scope", "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-x.scope\n",
+         "not in bench.slice"),
+        ("bench.slice only inside a name", "0::/user.slice/user-1000.slice/user@1000.service/app.slice/"
+         "run-bench.slice-x.scope\n", "not in bench.slice"),
+        ("a child slice of bench.slice", "0::/user.slice/user-1000.slice/user@1000.service/bench.slice/"
+         "bench-x.slice/run-p1.scope\n", "bench.slice"),
+        ("cgroup v1 lines, bench.slice in one", "12:cpu,cpuacct:/user.slice\n"
+         "1:name=systemd:/user.slice/user-1000.slice/user@1000.service/bench.slice/run-p1.scope\n", "bench.slice"),
+        ("empty", "", "not in bench.slice"),
+    ]
+    for label, text, want in cg_cases:
+        p = os.path.join(SCRATCH, "cgroup_case")
+        with open(p, "w", encoding="ascii") as f:
+            f.write(text)
+        got = B.bench_slice(p)
+        check("bench_slice: %s -> %s" % (label, want), got == want, "got %r" % got)
+    got = B.bench_slice(os.path.join(SCRATCH, "no_such_cgroup"))
+    check("bench_slice: an unreadable cgroup file reads as not in bench.slice, with the reason",
+          got.startswith("not in bench.slice (") and "no_such_cgroup" in got, "got %r" % got)
+    if sys.platform.startswith("linux"):
+        real = open("/proc/self/cgroup", encoding="ascii", errors="replace").read()
+        want = "bench.slice" if "/bench.slice/" in real else "not in bench.slice"
+        got = B.raise_priority()
+        check("raise_priority on Linux: this process's own cgroup, %s" % want, got == want,
+              "got %r, /proc/self/cgroup %r" % (got, real.strip()))
     # The lock check is bench_held.py's, tested in test_bench_held.py (2026-10-25).
     gen = os.path.join(SCRATCH, "gen")
     st = {}
@@ -1073,7 +1106,10 @@ def test_decoding():
     os.makedirs(d, exist_ok=True)
     name = next(iter(B.BY_NAME))
     with gzip.open(os.path.join(d, "w.json.gz"), "wt", encoding="ascii") as fh:
-        json.dump({"frames": base.f, "sent": [], "clock": None, "errs": []}, fh)
+        # the hardware note run_case records (2026-11-11: a file on receipt time, or with no
+        # note, is VOID and never judged, A2 (b); test_witness_clock.py covers that)
+        json.dump({"frames": base.f, "sent": [], "clock": "kvaser_hw (median receipt lag 0.0011 s)",
+                   "errs": []}, fh)
 
     def rec_with(decoder):
         p = os.path.join(d, "run_%s.json" % ("none" if decoder is None else decoder["dbc_hash"][:4]))

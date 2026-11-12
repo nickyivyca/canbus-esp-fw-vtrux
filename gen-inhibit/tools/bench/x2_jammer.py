@@ -26,9 +26,16 @@ runs/x2_jammer_<sub>_<stamp>.json and never overwrites):
   can2-check         WiCAN in mode 2 + n pulses; the Kvaser (WiCAN segment)
                      must see pages and pulses, the Innomaker (X2 CAN2) neither
 
-The console is opened with DTR and RTS pre-set low so opening and closing do
-not reset the S3 (tools-reference.md); `boot-silence` resets it deliberately
-with esptool's USB-JTAG ordering (console_capture.pulse_rts).
+The console is opened by serial_noreset.open_console, so opening and closing do
+not reset the S3, on Linux too (2026-11-11: the old form, DTR and RTS pre-set
+low, resets it there); `boot-silence` resets it deliberately with esptool's
+USB-JTAG ordering (console_capture.pulse_rts).
+
+Error-frame times are the Kvaser's hardware stamps, on the epoch clock. When they
+are not on it, the run is VOID and nothing more is judged: the witness never
+judges on receipt time (witness_clock.py; the gen-inhibit reviewer's A2 ruling
+(b), 2026-11-11). Witness.times() raises witness_clock.ReceiptClock, which main
+records as the VOID; Witness.recorded() still gives the times on either clock.
 
   py -3.14 gen-inhibit/tools/bench/x2_jammer.py <sub> [...]
 """
@@ -41,6 +48,7 @@ import sys
 import threading
 import time
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import witness_clock as WC  # noqa: E402  never judged on receipt time (A2 (b), 2026-11-11)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
@@ -274,15 +282,10 @@ class Console(threading.Thread):
         self.ser = None
 
     def _open(self):
-        import serial
-        s = serial.Serial()
-        s.port, s.baudrate, s.timeout = self.port, 115200, 0.05
-        s.dtr = False
-        s.rts = False
-        s.open()
-        s.dtr = False
-        s.rts = False
-        return s
+        # Without a reset on Linux too (serial_noreset.py, 2026-11-11). Imported here, so
+        # the copies of this file other tests make need nothing beside them.
+        from serial_noreset import open_console
+        return open_console(self.port, 115200, 0.05)
 
     def run(self):
         pending, first = b"", True
@@ -355,7 +358,8 @@ class Witness(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True)
         import can
-        self.bus = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+        from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+        self.bus = kvaser_bus(channel=0, bitrate=BITRATE)
         self.stop_flag = threading.Event()
         self.err = []        # (hw_ts, receipt_epoch)
         self.frames = 0
@@ -382,16 +386,24 @@ class Witness(threading.Thread):
         self.join(timeout=2.0)
         self.bus.shutdown()
 
-    def times(self):
-        """Error-frame times on the epoch clock, and which clock was used."""
+    def recorded(self):
+        """Error-frame times, and which clock was used: the hardware stamps when they
+        are on the epoch clock, else receipt time. For the record only."""
         with self.lock:
             e = list(self.err)
         if not e:
-            return [], "none"
+            return [], WC.NONE
         off = statistics.median(r - h for h, r in e)
-        if abs(off) < 2.0:
-            return [h for h, _ in e], "kvaser_hw (median receipt lag %.3f s)" % off
-        return [r for _, r in e], "receipt (hw ts not epoch: offset %.1f s)" % off
+        if abs(off) < WC.MAX_LAG_S:
+            return [h for h, _ in e], WC.hw_note(off, 3)
+        return [r for _, r in e], "%s: offset %.1f s" % (WC.RECEIPT, off)
+
+    def times(self):
+        """recorded(), for a judgement: raises WC.ReceiptClock on receipt time, so the
+        run is VOID and never judged on it (A2 (b), 2026-11-11)."""
+        ts, note = self.recorded()
+        WC.require(note)
+        return ts, note
 
 
 def wican_snap():
@@ -426,6 +438,22 @@ def _console_dump(con, since=0.0):
         return [(round(t, 4), x) for t, x, _ in con.lines if t >= since]
 
 
+def reset_since_open(events, up):
+    """Whether the X2 reset after its console was opened (2026-11-11). events: the
+    console's (time, what); up: the reply's uptime line as (time, parsed), or None.
+    True when the port was lost or reopened (the USB device drops with the chip), or when
+    the uptime is shorter than the time from the open to the line (the board booted
+    after the open). None when there is no uptime line or no open to judge by. Else
+    False. The jammer's boot banner and its reply to ID are the same lines, so only the
+    uptime tells a reply from a boot."""
+    if any(e.startswith("lost") or e == "reopened" for _t, e in events):
+        return True
+    opened = [t for t, e in events if e == "open"]
+    if up is None or not opened or not isinstance(up[1].get("uptime_us"), int):
+        return None
+    return up[1]["uptime_us"] / 1e6 < up[0] - opened[0]
+
+
 def sub_id(a, rec, con, wit):
     # An empty line first. The jammer runs a line only on LF and drops CR, so input an
     # earlier probe left unterminated (bench_identify's slcan "V\r" "N\r", 2026-10-19)
@@ -436,7 +464,13 @@ def sub_id(a, rec, con, wit):
     t = time.time()
     con.send("ID")
     got = con.wait(lambda p: p["kind"] == "INFO" and "mcp2515" in p["raw"], 3.0, t)
-    rec["banner_ok"] = got is not None
+    # The banner's src_digest line, printed before the mcp2515 line, carries the uptime.
+    up = con.wait(lambda p: p["kind"] == "INFO" and "uptime_us" in p, 0.5, t) if got else None
+    rec["uptime_s"] = up[1]["uptime_us"] / 1e6 if up and isinstance(up[1].get("uptime_us"), int) else None
+    # A banner only from a board that has not reset since the open: a reset at the open
+    # (the old open form on Linux, 2026-11-11) would make a boot banner look like a reply.
+    rec["reset_since_open"] = reset_since_open(list(con.events), up)
+    rec["banner_ok"] = got is not None and rec["reset_since_open"] is False
     time.sleep(0.3)
 
 
@@ -607,14 +641,15 @@ def sub_noduration(a, rec, con, wit):
 
 
 def sub_can2_check(a, rec, con, wit):
-    import can
+    # the pinned can-tools' Linux fixes (2026-11-11); close_gs_usb also frees the pyusb handle
+    from kvaser_bus import gs_usb_bus, close_gs_usb
     try:
         import libusb_package
         import usb.backend.libusb1 as lb
         lb.get_backend(find_library=libusb_package.find_library)
     except Exception:
         pass
-    inno = can.Bus(interface="gs_usb", channel="can0", index=0, bitrate=BITRATE)
+    inno = gs_usb_bus(channel="can0", index=0, bitrate=BITRATE)
     # Every Innomaker frame is logged with host and adapter time, so a frame
     # left in its buffer from before the run can be told from a live one: the
     # 01:28 run logged one 0x051 with nothing else to place it (2026-10-08).
@@ -649,7 +684,7 @@ def sub_can2_check(a, rec, con, wit):
     finally:
         stop.set()
         th.join(timeout=2.0)
-        inno.shutdown()
+        close_gs_usb(inno)
     ts, clock = wit.times()
     groups = clusters([t for t in ts if t >= t0 - 0.3], a.interval_ms / 2000.0)
     kv_pages = wit.frames - f0
@@ -672,6 +707,16 @@ def sub_can2_check(a, rec, con, wit):
 SUBS = {"id": sub_id, "boot-silence": sub_boot_silence, "pulses": sub_pulses,
         "timeout": sub_timeout, "noduration": sub_noduration,
         "can2-check": sub_can2_check}
+
+
+def run_guarded(sub, a, rec, con, wit):
+    """Run one subcommand. If the witness is on receipt time when a judgement asks for
+    its times (Witness.times() raises WC.ReceiptClock), the run is VOID, with the note."""
+    try:
+        sub(a, rec, con, wit)
+    except WC.ReceiptClock as e:
+        WC.void(rec, e.note)
+        print(rec["verdict"])
 
 
 def main():
@@ -701,7 +746,7 @@ def main():
         wit = Witness()
         wit.start()
         time.sleep(1.0)
-        SUBS[a.sub](a, rec, con, wit)
+        run_guarded(SUBS[a.sub], a, rec, con, wit)
     finally:
         try:
             if con.ser is not None:

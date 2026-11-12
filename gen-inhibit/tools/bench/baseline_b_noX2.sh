@@ -11,7 +11,7 @@
 # It runs from the reverse-it root, which it cd's to (DATA below is relative to it);
 # canre comes from the pin since 2026-10-26 (canre_pin.py). One arm at a time; each arm's stdout is kept beside its record in runs/baseline_<commit>/bench/.
 set -u
-A=$(cygpath -m "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")   # this folder, gen-inhibit/tools/bench
+H="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; . "$H/bench_host.sh"; A=$(hpath "$H")   # this folder, gen-inhibit/tools/bench
 cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
 DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative to REVERSE_IT_DIR: runs/ and fixtures
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }
@@ -23,16 +23,16 @@ STEPS=${*:-B4 B11 B13}
 # rest have run (reviewer, 2026-10-25): the arms cases have no judge, so they were a
 # PASS on exit 0 while every arm failed (6926fb0 re-run 2, a Wi-Fi outage).
 ARMS_FAILED=0   # B4 is judged from its own output and is not counted
-DUMPCAP=${GI_DUMPCAP:-"/c/Program Files/Wireshark/dumpcap.exe"}
+DUMPCAP=${GI_DUMPCAP:-$GI_HOST_DUMPCAP}   # bench_host.sh
 DUMPCAP_PRE=${GI_DUMPCAP_PRE:-}   # a command put in front of dumpcap (the test's fake); empty here
 # B11raw's capture stops TAIL s after its arm (reviewer, 2026-10-20; a fixed 75 s before).
 # Its records are capture_<arm>.json and window_<arm>.json, not B11raw_e4_*.json, which
 # baseline_b_desk.sh B11raw takes as the e4 records.
 TAIL=${GI_CAPTURE_TAIL_S:-5}
 CAPMAX=${GI_CAPTURE_MAX_S:-300}
-IFACE='\Device\NPF_{2D126A09-0299-425A-88DC-51DA04E0C70C}'   # Wi-Fi on NICKY-XPS (dumpcap -D)
+IFACE=${GI_CAPTURE_IFACE:-$GI_HOST_IFACE}   # bench_host.sh: none on Linux
 uptime_line() {   # one line: uptime_ms and reset reason from the page
-  py -3.14 -B - "$A" <<'PY'
+  $PY -B - "$A" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 import ota_guard_raw_probe as P
@@ -43,7 +43,7 @@ PY
 e4() {   # e4 <out name> <args...>
   local n=$1; shift
   echo "$(date +%H:%M:%S) $n"
-  py -3.14 -B $A/e4_device_calibration.py --arm idle --offset-us 500 "$@" --out "$D/$n.json" > "$D/$n.txt" 2>&1
+  $PY -B $A/e4_device_calibration.py --arm idle --offset-us 500 "$@" --out "$D/$n.json" > "$D/$n.txt" 2>&1
   local r=$?
   echo "  exit $r"
   [ $r -eq 0 ] || ARMS_FAILED=$((ARMS_FAILED + 1))
@@ -51,7 +51,7 @@ e4() {   # e4 <out name> <args...>
 for s in $STEPS; do
   case $s in
     B4)
-      py -3.14 -B $A/skip_method_bench.py > "$D/B4_skip_method_stdout.txt" 2>&1
+      $PY -B $A/skip_method_bench.py > "$D/B4_skip_method_stdout.txt" 2>&1
       echo "B4 exit $?"
       ;;
     B11)   # INHIBIT/PASSIVE -> OBSERVE at 10 s -> back at 20 s, interleaved I P P I I P
@@ -61,27 +61,28 @@ for s in $STEPS; do
         k=$((k + 1))
         back=3; [ $m = passive ] && back=4
         pre=$(uptime_line); t0=$(date +%s.%N)
-        e4 B11_e4_quiesce_${m}_${C}_${stamp}_arm$k --capture "$(cygpath -m "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
+        e4 B11_e4_quiesce_${m}_${C}_${stamp}_arm$k --capture "$(hpath "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
           --window-start 0 --seconds 35 --mode $m --post-schedule "10:1,20:$back"
         post=$(uptime_line); t1=$(date +%s.%N)
-        echo "arm$k $m pre=[$pre] post=[$post] wall_s=$(py -3.14 -c "print('%.2f' % ($t1 - $t0))")" >> "$D/B11_quiesce_uptime_$stamp.txt"
+        echo "arm$k $m pre=[$pre] post=[$post] wall_s=$($PY -c "print('%.2f' % ($t1 - $t0))")" >> "$D/B11_quiesce_uptime_$stamp.txt"
       done
       ;;
     B11raw)   # B11's arms again with raw POSTs and a Wi-Fi capture per arm (reviewer, 2026-10-17):
               # the request's arrival at the device read from the capture (b11_rawpost_judge.py)
+      need_iface
       stamp=$(date +%Y%m%dT%H%M%S)
       k=0
       for m in inhibit passive passive inhibit inhibit passive; do
         k=$((k + 1))
         back=3; [ $m = passive ] && back=4
         n=B11raw_e4_quiesce_${m}_${C}_${stamp}_arm$k
-        py -3.14 -B $A/capture_window.py --stopfile "$D/$n.stop" --record "$D/capture_$n.json" --max $CAPMAX -- \
+        $PY -B $A/capture_window.py --stopfile "$D/$n.stop" --record "$D/capture_$n.json" --max $CAPMAX -- \
           $DUMPCAP_PRE "$DUMPCAP" -q -i "$IFACE" -f "host 192.168.80.1 and tcp port 80" -a duration:$CAPMAX \
           -w "$D/$n.pcapng" > "$D/$n.dumpcap.txt" 2>&1 &
         cap=$!
         sleep 3
         pre=$(uptime_line); t0=$(date +%s.%N)
-        e4 $n --capture "$(cygpath -m "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
+        e4 $n --capture "$(hpath "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
           --window-start 0 --seconds 35 --mode $m --post-schedule "10:1,20:$back" --post-raw-timeout 3
         post=$(uptime_line); t1=$(date +%s.%N)
         sleep $TAIL
@@ -90,7 +91,7 @@ for s in $STEPS; do
         [ $r -eq 0 ] || ARMS_FAILED=$((ARMS_FAILED + 1))
         rm -f "$D/$n.stop"
         echo "{\"arm_start\": $t0, \"arm_end\": $t1, \"tail_s\": $TAIL}" > "$D/window_$n.json"
-        echo "arm$k $m pre=[$pre] post=[$post] wall_s=$(py -3.14 -c "print('%.2f' % ($t1 - $t0))") capture $(stat -c %s "$D/$n.pcapng") bytes" >> "$D/B11raw_quiesce_uptime_$stamp.txt"
+        echo "arm$k $m pre=[$pre] post=[$post] wall_s=$($PY -c "print('%.2f' % ($t1 - $t0))") capture $(stat -c %s "$D/$n.pcapng") bytes" >> "$D/B11raw_quiesce_uptime_$stamp.txt"
       done
       sed -i "s/$GI_WICAN_SSID/<GI_WICAN_SSID>/g" "$D"/B11raw_e4_*.txt "$D"/B11raw_quiesce_uptime_*.txt   # not B11raw_run_log.txt (2026-10-17)
       ;;
@@ -99,12 +100,12 @@ for s in $STEPS; do
       k=0
       for m in passive inhibit inhibit passive passive inhibit; do
         k=$((k + 1))
-        e4 B13_e4_passive_tp2_${m}_${C}_${stamp}_arm$k --capture "$(cygpath -m "$PWD/$DATA/runs/truck_passive2.log")" \
+        e4 B13_e4_passive_tp2_${m}_${C}_${stamp}_arm$k --capture "$(hpath "$PWD/$DATA/runs/truck_passive2.log")" \
           --window-start 0 --seconds 30 --mode $m
       done
       for m in passive inhibit; do
         k=$((k + 1))
-        e4 B13_e4_passive_sv_${m}_${C}_${stamp}_arm$k --capture "$(cygpath -m "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
+        e4 B13_e4_passive_sv_${m}_${C}_${stamp}_arm$k --capture "$(hpath "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
           --window-start 0 --seconds 30 --mode $m
       done
       ;;

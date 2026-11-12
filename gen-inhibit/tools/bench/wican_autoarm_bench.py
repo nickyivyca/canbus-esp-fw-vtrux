@@ -324,7 +324,8 @@ def open_buses():
     #
     tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE,
                  auto_reset=True)
-    kv = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+    from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+    kv = kvaser_bus(channel=0, bitrate=BITRATE)
     return tx, kv
 
 

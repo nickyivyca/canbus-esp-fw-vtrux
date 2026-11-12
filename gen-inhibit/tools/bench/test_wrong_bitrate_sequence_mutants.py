@@ -41,11 +41,20 @@ MUTANTS = [
      'rec["driver_running_before_slice"] = True'),
     # the burst starts at the Kvaser's open (2026-10-29)
     ("the burst starts after the open, as before",
-     '    t = time.perf_counter()\n    kv = can.Bus(interface="kvaser", channel=0, bitrate=250000)\n'
+     '    t = time.perf_counter()\n    kv = kvaser_bus(channel=0, bitrate=250000)\n'
      '    opened = time.perf_counter() - t\n',
-     '    kv = can.Bus(interface="kvaser", channel=0, bitrate=250000)\n    t = time.perf_counter()\n'
+     '    kv = kvaser_bus(channel=0, bitrate=250000)\n    t = time.perf_counter()\n'
      '    opened = 0.0\n'),
+    # the Kvaser through kvaser_bus (2026-11-11)
+    ("the fixes are loaded inside the open's time",
+     '    fixes()\n    t = time.perf_counter()\n', '    t = time.perf_counter()\n    fixes()\n'),
     ("the open's time is not recorded", '"open_s": round(o, 4), ', ''),
+    # the PCAN's own stamps (A2 (a), 2026-11-11)
+    ("the clock's VOID line is not printed", '        print("witness clock VOID: %s" % fit["void"])\n',
+     '        pass\n'),
+    ("a VOID fit leaves no VOID verdict", '        rec["verdict"] = WC.pcan_void_verdict(fit["void"])\n',
+     '        pass\n'),
+    ("the fit is not recorded", '    rec["witness_clock"] = fit\n', '    pass\n'),
 ]
 
 

@@ -56,8 +56,10 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   `vehicle_runner.py` takes canbench from; not evidence), gen-inhibit's
   can-tools pin `can_tools_pin.json` and its tool `can_tools_pin.py`, which
   writes the pinned commit's canbench to `scratch/can-tools/<commit>/`
-  (AGENTS.md "can-tools"; the pin is the implementor's because
-  `vehicle_runner.py` is its only canbench user, reviewer, 2026-10-30), with
+  (AGENTS.md "can-tools"; the pin is the implementor's, reviewer,
+  2026-10-30, and stays so now that the tester's Kvaser opener in the bench
+  harness also loads canbench from it for `canbench.live.linux_fixes`,
+  reviewer, 2026-11-11; the tester asks for a move through me), with
   `test_can_tools_pin.py` (self-test, not evidence), `HANDOFF.md`,
   `requirements.txt`, and the folder's `README.md`, which the tester's rows
   in it are sent to the implementor to change.
@@ -164,11 +166,12 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
 
 `gen-inhibit/firmware/tools/wican-log-viewer/`, `docs/`, `sch/`,
 `vehicle_profiles*`, `.vehicle_profiles/` and `minify.bat` in
-`gen-inhibit/firmware/` are upstream WiCAN's. At the repo root, `README.md`,
-`LICENSE` and `.github/` are upstream's and stay there, where GitHub reads
-them (reviewer, 2026-10-26). Upstream's workflows in `.github/workflows/`
-filter on the pre-0d paths, so they no longer run on this branch; they are
-not maintained here.
+`gen-inhibit/firmware/` are upstream WiCAN's. At the repo root, `README.md`
+and `LICENSE` are upstream's and stay there, where GitHub reads them
+(reviewer, 2026-10-26). Upstream's `.github/` (its CODEOWNERS, funding file
+and workflows, which targeted no path left on this branch) is removed
+(user, 2026-11-11, AGENTS.md "Project layout"). The root holds only the
+files that list names, beside this folder.
 
 ## Shared code
 

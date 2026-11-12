@@ -43,6 +43,7 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import witness_clock as WC  # noqa: E402  the PCAN's own stamps, mapped (A2 (a), 2026-11-11)
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 TRIP6 = "error-frame rate exceeded"
@@ -136,10 +137,16 @@ def wire_errors(detail):
 
 
 class Witness(threading.Thread):
+    """The PCAN's messages. Receipt times (perf_counter) pace the live sequence; the PCAN's
+    own stamps, mapped onto perf_counter after the run, are what is judged (judge_arms,
+    A2 (a), 2026-11-11). points: every message's (perf, epoch, stamp), for the clock fit."""
+
     def __init__(self, bus):
         super().__init__(daemon=True)
         self.bus, self.errors, self.dev051, self.frames = bus, [], [], 0
-        self.error_detail = []      # (perf, arbitration_id, data hex): what the PCAN reported
+        self.dev051_ts = []         # the PCAN's stamp of each device 0x051, beside dev051
+        self.error_detail = []      # (perf, arbitration_id, data hex, stamp): what the PCAN reported
+        self.points = []
         self.stop = threading.Event()
 
     def run(self):
@@ -147,14 +154,67 @@ class Witness(threading.Thread):
             m = self.bus.recv(timeout=0.1)
             if m is None:
                 continue
-            t = time.perf_counter()
+            t, e = time.perf_counter(), time.time()
+            self.points.append((t, e, m.timestamp))
             if m.is_error_frame:
                 self.errors.append(t)
-                self.error_detail.append((t, m.arbitration_id, bytes(m.data).hex()))
+                self.error_detail.append((t, m.arbitration_id, bytes(m.data).hex(), m.timestamp))
             else:
                 self.frames += 1
                 if m.arbitration_id == 0x051:
                     self.dev051.append(t)
+                    self.dev051_ts.append(m.timestamp)
+
+
+def judge_arms(arms, judged, wit, t0):
+    """After the run (A2 (a), 2026-11-11): every arm's witness figures from the PCAN's stamps,
+    mapped onto perf_counter, and each judged arm's verdicts on them. judged: [(arm, kind,
+    last)], kind "expired" or "recent", last the previous flood's last wire error (perf, id,
+    hex, stamp) or None. The live sequence paced on receipt time; a judged gap from the mapped
+    stamps that disagrees with the receipt gap beyond the fit's bound is VOID. If the fit is
+    VOID, so is every witness verdict (err_burst's prediction needs no witness time). Returns
+    the fit."""
+    fit = WC.device_fit(wit.points)
+    if fit["void"]:
+        v = WC.pcan_void_verdict(fit["void"])
+        for arm, _kind, _last in judged:
+            arm["verdict"] = arm["history_verdict"] = v
+            arm["prediction_verdict"] = judge_prediction(arm["pre_arm_read"], arm["reads"])
+        return fit
+    det = [(WC.mapped(fit, d[3]), d) for d in wit.error_detail]
+    wire = [t for t, d in det if d[1] != 0]
+    d051 = [WC.mapped(fit, s) for s in wit.dev051_ts]
+    for arm in arms:
+        ta, te = arm["_ta"], arm["_t_end"]
+        arm["error_times_since_arm"] = [round(t - ta, 4) for t, _d in det if ta <= t <= te][:100]
+        arm["errors_since_arm"] = sum(1 for t in wire if ta <= t <= te)
+        arm["device_0x051_since_arm"] = sum(1 for t in d051 if ta <= t <= te)
+        first = next((t for t in d051 if t >= ta), None)
+        arm["first_0x051_after_arm_s"] = None if first is None or first > te else round(first - ta, 3)
+    for arm, kind, last in judged:
+        pre = arm["pre_arm_read"]
+        if last is None:
+            gap = gap_r = hgap = None
+        else:
+            lm = WC.mapped(fit, last[3])
+            gap = round(arm["armed_at"] - (lm - t0), 3)
+            gap_r = round(arm["armed_at"] - (last[0] - t0), 3)
+            hgap = round(pre["t"] - (lm - t0), 3) if (pre and "t" in pre) else None
+        arm["armed_after_last_error_s"] = gap
+        arm["armed_after_last_error_receipt_s"] = gap_r
+        arm["pre_arm_after_last_error_s"] = hgap
+        arm["prediction_verdict"] = judge_prediction(pre, arm["reads"])
+        if last is not None and not WC.gap_agrees(gap, gap_r):
+            v = ("VOID: the gap from the PCAN's stamps (%.3f s) and the receipt gap the sequence paced "
+                 "on (%.3f s) differ by more than %g s" % (gap, gap_r, WC.RESIDUAL_P99_MAX_S))
+            arm["verdict"] = arm["history_verdict"] = v
+            continue
+        if kind == "recent":
+            arm["verdict"] = judge_recent(arm["reads"], gap, arm["device_0x051_since_arm"])
+        else:
+            arm["verdict"] = judge_expired(arm["reads"], arm["errors_since_arm"])
+        arm["history_verdict"] = judge_history(pre, hgap, kind == "recent")
+    return fit
 
 
 def read(LF, t0):
@@ -237,13 +297,17 @@ def main():
         while time.perf_counter() - ta < seconds:
             reads.append(read(LF, t0))
             time.sleep(1.0 / a.poll_hz)
+        t_end = time.perf_counter()
         kinds = {}
-        for _t, i, h in wit.error_detail[n_err:]:
-            kinds["%X:%s" % (i, h)] = kinds.get("%X:%s" % (i, h), 0) + 1
+        for d in wit.error_detail[n_err:]:
+            kinds["%X:%s" % (d[1], d[2])] = kinds.get("%X:%s" % (d[1], d[2]), 0) + 1
+        # The since-arm witness figures here are on receipt time, for the live sequence;
+        # judge_arms replaces them from the PCAN's mapped stamps after the run (A2 (a)).
         arm = {"arm": name, "armed_at": round(ta - t0, 3), "slice_at": round(slice_at - t0, 3),
+               "_ta": ta, "_t_end": t_end,
                "pre_arm_read": pre, "reads": reads, "error_kinds_since_arm": kinds,
                "device_bus_error_max": max([r.get("bus_error") or 0 for r in reads], default=None),
-               "error_times_since_arm": [round(t - ta, 4) for t, _i, _h in wit.error_detail[n_err:]][:100],
+               "error_times_since_arm": [round(d[0] - ta, 4) for d in wit.error_detail[n_err:]][:100],
                "witness_reports_since_arm": len(wit.errors) - n_err,
                "errors_since_arm": len(wire_errors(wit.error_detail[n_err:])),
                "device_0x051_since_arm": len(wit.dev051) - n_051,
@@ -264,10 +328,10 @@ def main():
         arm["burst_reports"] = len(burst)
         arm["burst_error_frames"] = len(wire)
         by_id = {}
-        for _t, i, _h in burst:
-            by_id["%X" % i] = by_id.get("%X" % i, 0) + 1
+        for d in burst:
+            by_id["%X" % d[1]] = by_id.get("%X" % d[1], 0) + 1
         arm["burst_reports_by_id"] = by_id
-        last = wire[-1][0] if wire else None
+        last = wire[-1] if wire else None       # (perf, id, hex, stamp): perf paces, the stamp is judged
         arm["reads"].append(read(LF, t0))
         disarm()
         arm["mode0_at"] = round(time.perf_counter() - t0, 3)
@@ -278,14 +342,9 @@ def main():
         while time.perf_counter() < t_abs:
             time.sleep(0.05)
 
-    def history(arm, last, expect_recent):
-        """The spec 11 history verdicts for a re-arm; last = the last witness error (perf)."""
-        pre = arm["pre_arm_read"]
-        gap = round(pre["t"] - (last - t0), 3) if (last and pre and "t" in pre) else None
-        arm["pre_arm_after_last_error_s"] = gap
-        arm["history_verdict"] = judge_history(pre, gap, expect_recent)
-        arm["prediction_verdict"] = judge_prediction(pre, arm["reads"])
-
+    # The sequence paces on receipt time (wait_until the last error's receipt + gap); every
+    # judged number comes from the PCAN's stamps after the run (judge_arms, A2 (a)).
+    judged = []
     try:
         pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
         wit = Witness(pc)
@@ -294,31 +353,21 @@ def main():
         time.sleep(2.0)
         rec["errors_quiet_before"] = len(wit.errors)
         last = flood("A0 flood")
-        rec["A0_last_error_at"] = round(last - t0, 3) if last else None
+        rec["A0_last_error_at_receipt"] = round(last[0] - t0, 3) if last else None
         if last is not None:
-            wait_until(last + a.expired_gap)
-        arm = poll_arm("A1 expired", a.arm_s)
-        arm["armed_after_last_error_s"] = round(arm["armed_at"] - (last - t0), 3) if last else None
-        arm["verdict"] = judge_expired(arm["reads"], arm["errors_since_arm"])
-        history(arm, last, False)
+            wait_until(last[0] + a.expired_gap)
+        judged.append((poll_arm("A1 expired", a.arm_s), "expired", last))
         disarm()
         time.sleep(1.0)
         last = flood("A2 flood")
-        rec["A2_last_error_at"] = round(last - t0, 3) if last else None
+        rec["A2_last_error_at_receipt"] = round(last[0] - t0, 3) if last else None
         if last is not None:
-            wait_until(last + a.recent_gap)
-        arm = poll_arm("A3 recent", a.arm_s)
-        gap = round(arm["armed_at"] - (last - t0), 3) if last else None
-        arm["armed_after_last_error_s"] = gap
-        arm["verdict"] = judge_recent(arm["reads"], gap, arm["device_0x051_since_arm"])
-        history(arm, last, True)
+            wait_until(last[0] + a.recent_gap)
+        judged.append((poll_arm("A3 recent", a.arm_s), "recent", last))
         disarm()
         if last is not None:
-            wait_until(last + a.expired_gap)
-        arm = poll_arm("A4 expired", a.arm_s)
-        arm["armed_after_last_error_s"] = round(arm["armed_at"] - (last - t0), 3) if last else None
-        arm["verdict"] = judge_expired(arm["reads"], arm["errors_since_arm"])
-        history(arm, last, False)
+            wait_until(last[0] + a.expired_gap)
+        judged.append((poll_arm("A4 expired", a.arm_s), "expired", last))
     finally:
         try:
             disarm()
@@ -336,9 +385,20 @@ def main():
     time.sleep(1.0)
     rec["after"] = read(LF, t0)
     rec["witness_error_frames"] = len(wit.errors) if wit else None
+    fit = judge_arms(rec["arms"], judged, wit, t0)
+    rec["witness_clock"] = fit
+    if fit["void"]:
+        rec["witness_clock_void"] = fit["void"]
+    for arm in rec["arms"]:
+        arm.pop("_ta", None)
+        arm.pop("_t_end", None)
     path = os.path.join(RUNS, "trip6_rearm_check_%s.json" % stamp)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(rec, fh, indent=1)
+    print(WC.fit_line(fit))
+    if fit["void"]:
+        # the suite's B10 judge reads this line first: VOID, never judged (A2 (a))
+        print("witness clock VOID: %s" % fit["void"])
     for arm in rec["arms"]:
         aborts = sorted({r.get("abort") for r in arm["reads"] if r.get("abort")})
         lives = [r["t"] for r in arm["reads"] if r.get("live")]

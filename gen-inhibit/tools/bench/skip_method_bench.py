@@ -471,7 +471,8 @@ def main():
     stim = LF.build_stimulus()
     kv = pc = player = wit = None
     try:
-        kv = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+        from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+        kv = kvaser_bus(channel=0, bitrate=BITRATE)
         wit = Witness(kv)
         wit.start()
         pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)

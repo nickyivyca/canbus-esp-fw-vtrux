@@ -211,6 +211,15 @@ MUTANTS = [
      'return t.count(VERIFY_OK) == len(files)'),
     ("verify: the digest line is not looked at", 'return rc == 0 and t.count(VERIFY_OK) == len(files)', 'return rc == 0'),
     ("verify: a board it could not reach is a mismatch", 'if PORT_RX.search(t) or "Failed to connect" in t:', 'if False:'),
+    # esptool (gi_esptool.py; gen-inhibit reviewer, 2026-11-11)
+    ("verify: the dashed command name back", '"verify_flash"]', '"verify-flash"]'),
+    ("verify: the version is not checked", '        ver = GE.check_version(argv0)\n', '        ver = GE.PINNED\n'),
+    ("verify: the argv's form is not checked", '        argv0 = GE.check_form(argv0)\n', '        argv0 = list(argv0)\n'),
+    ("verify: esptool 5's line counts", 'VERIFY_OK = GE.VERIFY_OK',
+     'VERIFY_OK = "Verification successful (digest matched)"'),
+    ("verify: the version is not in the log", 'f.write("esptool version: %s (pinned %s)\\n%s" % (ver, GE.PINNED, t))',
+     'f.write(t)'),
+    ("the tools get no GI_ESPTOOL_ARGV", '    base_env.update(esptool_env(settings))', '    pass'),
     ("code: the X2 files' sha256 are not kept", 'sha256=dict(pin["images"][n]["sha256"]))', 'sha256={})'),
 ]
 
