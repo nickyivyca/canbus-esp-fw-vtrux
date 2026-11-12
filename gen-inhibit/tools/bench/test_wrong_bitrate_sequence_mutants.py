@@ -46,6 +46,12 @@ MUTANTS = [
      '    kv = can.Bus(interface="kvaser", channel=0, bitrate=250000)\n    t = time.perf_counter()\n'
      '    opened = 0.0\n'),
     ("the open's time is not recorded", '"open_s": round(o, 4), ', ''),
+    # the PCAN's own stamps (A2 (a), 2026-11-11)
+    ("the clock's VOID line is not printed", '        print("witness clock VOID: %s" % fit["void"])\n',
+     '        pass\n'),
+    ("a VOID fit leaves no VOID verdict", '        rec["verdict"] = WC.pcan_void_verdict(fit["void"])\n',
+     '        pass\n'),
+    ("the fit is not recorded", '    rec["witness_clock"] = fit\n', '    pass\n'),
 ]
 
 

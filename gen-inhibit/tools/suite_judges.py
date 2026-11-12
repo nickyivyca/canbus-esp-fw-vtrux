@@ -284,6 +284,9 @@ def b8(F):
 
 
 B9_PRE_S = 0.5     # the newest clean, live page sample may be this far before the first burst
+# B9 and B10 judge the PCAN's own stamps, mapped onto the host clock; a fit outside the
+# harness bounds prints this line, and the check is VOID, never judged (A2 (a), 2026-11-11).
+CLOCK_VOID_RE = re.compile(r"^witness clock VOID: (.*)$", re.M)
 
 
 @judge("B9", "B")
@@ -300,6 +303,9 @@ def b9(F):
     # cannot be credited to the bursts (reviewer, 2026-10-25). Short of that it is INCONCLUSIVE.
     # Then, as before, trip 6 the latch and every burst drawing error frames, or FAIL.
     t = text(F.one(r"B9_wrong_bitrate_calibrate\.txt"))
+    cv = CLOCK_VOID_RE.search(t)
+    if cv:
+        return [result("B9", "VOID", detail="the PCAN's clock: %s" % cv.group(1))]
     bursts = [int(n) for n in re.findall(r"^  burst at [\d.]+ s, \d+ ms -> witness error frames (\d+)$", t, re.M)]
     m = re.search(r"^summary (\{.*\}) witness total (\d+)", t, re.M)
     if not m or not bursts:
@@ -348,15 +354,31 @@ def b9(F):
 @judge("B10", "B")
 def b10(F):
     t = text(F.one(r"B10_trip6_rearm_check\.txt"))
+    cv = CLOCK_VOID_RE.search(t)
+    if cv:
+        return [result("B10", "VOID", detail="the PCAN's clock: %s" % cv.group(1))]
     # The flood arms are the stimulus and carry no verdict; every other arm ends with its own.
     arms = re.findall(r"^(A\d+) (\w+) +armed .*? aborts \[[^]]*\] *(.*?) *$", t, re.M)
     judged = [(a, k, v) for a, k, v in arms if k != "flood"]
     hist = re.findall(r"^ +history (.+?) \| prediction (.+?) *$", t, re.M)
     spec = sum(1 for *_, v in judged if v == "as specified")
+    figs = {"judged_arms": fig(len(judged)), "flood_arms": fig(len(arms) - len(judged))}
+    # An arm the tool VOIDs (its stimulus not as planned, or since 2026-11-11 its mapped gap
+    # disagreeing with the receipt gap it paced on) supports no verdict: the check is VOID, not
+    # FAIL, unless another arm or history is NOT as specified, which stays FAIL (A2 (a); the
+    # gen-inhibit reviewer, 2026-11-11: VOID is not PASS, so it is no weakening). So a record
+    # with an old arm verdict such as "VOID: armed X s after the burst (needs <= 8)" or "VOID:
+    # N witness error frames since arming" rejudges as VOID, where it read FAIL before.
+    voided = [a for a, _k, v in judged if v.startswith("VOID")] + \
+        [h for h, _p in hist if h.startswith("VOID")]
+    notspec = [v for *_, v in judged if v.startswith("NOT")] + [x for h, p in hist for x in (h, p)
+                                                                  if x.startswith("NOT")]
+    if voided and not notspec:
+        return [result("B10", "VOID", figs, "%d of %d judged arms as specified; VOID: %s"
+                       % (spec, len(judged), "; ".join(v for _a, _k, v in judged if v.startswith("VOID"))[:300]))]
     ok = (judged and spec == len(judged) and len(hist) == len(judged)
           and all(h == p == "as specified" for h, p in hist))
-    return [result("B10", "PASS" if ok else "FAIL",
-                   {"judged_arms": fig(len(judged)), "flood_arms": fig(len(arms) - len(judged))},
+    return [result("B10", "PASS" if ok else "FAIL", figs,
                    "%d of %d judged arms as specified" % (spec, len(judged)))]
 
 
