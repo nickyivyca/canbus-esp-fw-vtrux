@@ -644,9 +644,13 @@ def test_identify(settings, bench):
         t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
         t.do[("x2_jammer.py", "id")] = lambda a, e: (
             "", 0, {"x2_jammer_id_T1.json": {"banner_ok": False, "reset_since_open": None}})
-        return ident(xj, {}, logdir())
+        try:
+            return ident(xj, {}, logdir())
+        except SG.IdentifyError as e:   # a check, not a crash (suite mutant m12)
+            return "RAISED: %s" % e
+    got = with_tools(t7n)
     check("identify X2: a jammer ID with no uptime to judge a reset by is None, not a raise",
-          with_tools(t7n) is None)
+          got is None, got)
 
     def t8(t):
         bi(None)

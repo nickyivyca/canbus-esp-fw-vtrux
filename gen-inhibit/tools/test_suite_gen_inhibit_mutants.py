@@ -47,7 +47,7 @@ MUTANTS = [
     ("identify X2: any pin verdict is a hold",
      'if rc == 0 and "TX (GPIO7) not driven" in t:', 'if "TX (GPIO7)" in t:'),
     ("identify X2: bench_identify is skipped (ID goes to every image)",
-     'got = BI.identify(image, ctx, logdir, settings)', 'got = None'),
+     'got = BI.identify(image, ctx, logdir, bi_settings)', 'got = None'),
     ("identify X2: no banner is the jammer",
      'return "jammer:banner" if jrec.get("banner_ok") else None', 'return "jammer:banner"'),
     # the jammer-ID reset (gen-inhibit reviewer, 2026-11-11)
