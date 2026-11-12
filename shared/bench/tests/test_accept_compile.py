@@ -321,6 +321,22 @@ def test_env():
         rec["_dir"], "env", "run", "check.log")).read())
 
 
+def test_user_bus_env():
+    """A7 (the charge-interposer reviewer, 2026-11-12, after its run 2548):
+    the environment a check or a suite run starts from carries
+    XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS, which the chain runner's
+    placement needs to reach the user's systemd manager, and still nothing
+    of the operator's shell. test_accept_suite_runs.py's
+    test_nested_placement shows it end to end on Linux."""
+    environ = {"PATH": os.environ.get("PATH", ""), "XDG_RUNTIME_DIR": "/run/user/1000",
+               "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+               "VTRUX_OPERATOR_ONLY": "1"}
+    env = C.machine_env(FA, environ)
+    for k in C.USER_BUS_VARS:
+        assert env.get(k) == environ[k], (k, env)
+    assert "VTRUX_OPERATOR_ONLY" not in env, env
+
+
 def test_compile_shape():
     """A7: one group per check, in the list's order; after becomes the
     group's after; the command is the shell's then the file in its tree
@@ -416,7 +432,8 @@ def test_suite_images():
 
 TESTS = [test_build_record, test_build_is_build_work, test_build_failure,
          test_build_tree_setup, test_settings_from_builds, test_settings_masked_and_removed,
-         test_settings_no_passwords, test_env, test_compile_shape, test_chain_run,
+         test_settings_no_passwords, test_env, test_user_bus_env, test_compile_shape,
+         test_chain_run,
          test_suite_images]
 
 MUTANTS = [
@@ -443,6 +460,7 @@ MUTANTS = [
     (C, "list_env", test_env),
     (C, "machine_vars", test_env),
     (C, "tree_env", test_env),
+    (C, "user_bus", test_user_bus_env),
     (C, "after", test_compile_shape),
     (C, "shared_path", test_compile_shape),
     (C, "cwd_tree", test_compile_shape),

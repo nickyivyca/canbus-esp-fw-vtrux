@@ -23,6 +23,13 @@ the ones AGENTS.md and local-paths.md name), never the operator's shell
 laid over it, and over that the adapter's tree_env(tree), which names the
 check's own tree to the code run in it (A15; the interposer's
 INTERPOSER_CODE). A suite run and a mutant run get theirs the same way.
+With them go XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS
+(USER_BUS_VARS), which reach the user's systemd manager on Linux: the
+chain runner's placement (systemd-run --user, the settings' placement)
+needs them in a nested suite run, which otherwise reads back no slice and
+FAILs <group>/placement (the charge-interposer's run 2548; the
+charge-interposer reviewer, 2026-11-12: machine plumbing like HOME and
+USER, not an operator setting).
 
 A check on a remote tree runs on that host (its group's host is the
 tree's), from the remote checkout, with the remote paths and the adapter's
@@ -46,7 +53,7 @@ from ..run.model import Check, Group, Suite, exit_code_judge
 RULES = {k: True for k in ("base_env", "list_env", "machine_vars", "after",
                            "shared_path", "cwd_tree", "chain_in_record",
                            "masked_record", "tree_env", "remote_paths", "remote_shell",
-                           "chain_work_removed", "remote_suite_refused")}
+                           "chain_work_removed", "remote_suite_refused", "user_bus")}
 
 # what the operating system needs to start a program, nothing of a person's
 OS_VARS_NT = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "PATH",
@@ -56,16 +63,21 @@ OS_VARS_NT = ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "PATH
               "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS", "USERNAME",
               "COMPUTERNAME")
 OS_VARS_POSIX = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "SHELL")
+# what reaches the user's systemd manager, for the chain runner's placement
+USER_BUS_VARS = ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")
 
 
 def machine_env(adapter, environ=None):
     """The environment a check starts from: the operating system's
-    variables and the adapter's MACHINE_VARS, taken from environ (default
+    variables, USER_BUS_VARS (set only where there is a systemd user
+    manager) and the adapter's MACHINE_VARS, taken from environ (default
     this process's), and nothing else."""
     environ = os.environ if environ is None else environ
     if not RULES["base_env"]:
         return dict(environ)
     names = list(OS_VARS_NT if os.name == "nt" else OS_VARS_POSIX)
+    if RULES["user_bus"]:
+        names += list(USER_BUS_VARS)
     if RULES["machine_vars"]:
         names += list(getattr(adapter, "MACHINE_VARS", ()))
     if os.name == "nt":

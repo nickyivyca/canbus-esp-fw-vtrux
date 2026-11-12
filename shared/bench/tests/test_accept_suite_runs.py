@@ -101,7 +101,7 @@ def write(root, rel, text):
 class Fixture:
     """Runs the list's suite run to the end; holds what it made."""
 
-    def __init__(self, rerun=True):
+    def __init__(self, rerun=True, placement=None):
         N[0] += 1
         self.dir = os.path.join(BASE, "f%d" % N[0])
         self.repo = os.path.join(self.dir, "repo")
@@ -131,10 +131,13 @@ class Fixture:
         flake = os.path.join(self.dir, "flake")
         os.makedirs(flake)
         machine = os.path.join(self.dir, "machine.json")
+        m = dict(hosts={"local": {"python": [sys.executable]}}, bench_mac=MAC,
+                 flake_dir=flake, runs_root=os.path.join(self.dir, "elsewhere"),
+                 bench_holder=os.path.join(self.dir, "bench-holder.md"))
+        if placement:
+            m["placement"] = placement
         with open(machine, "w", encoding="utf-8") as f:
-            json.dump(dict(hosts={"local": {"python": [sys.executable]}}, bench_mac=MAC,
-                           flake_dir=flake, runs_root=os.path.join(self.dir, "elsewhere"),
-                           bench_holder=os.path.join(self.dir, "bench-holder.md")), f)
+            json.dump(m, f)
         path, s = ST.write_settings(machine, FA, {}, trees, self.rec, self.made, work)
         base = C.machine_env(FA)
         off = ",".join(k for k, v in NS.RULES.items() if not v)
@@ -214,9 +217,55 @@ def test_first_run_decides():
                for ln in log.splitlines()), log[-800:]
 
 
-TESTS = [test_nested_record, test_rerun_new_record, test_first_run_decides]
+def _user_bench_slice():
+    """True on Linux with the user's systemd and a bench.slice, as on
+    madhouse-debian."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        r = subprocess.run(["systemctl", "--user", "show", "bench.slice", "-p",
+                            "LoadState"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "LoadState=loaded" in r.stdout
+
+
+def test_nested_placement():
+    """A7 with the chain runner's placement (the charge-interposer
+    reviewer, 2026-11-12, after its run 2548): a suite run started by the
+    acceptance runner, in the environment it gives a suite run
+    (compile.machine_env), places its group in the settings' slice and
+    reads it back: the nested record's "placement" event for group a says
+    bench.slice, ok, and every case runs. Before compile.USER_BUS_VARS, the
+    nested runner's systemd-run --user could not reach the user manager,
+    the read-back was None and a/placement FAILed. Linux with the user's
+    bench.slice only; elsewhere it checks nothing and says so."""
+    if not _user_bench_slice():
+        print("      test_nested_placement: not on Linux with a user bench.slice; "
+              "nothing checked")
+        return
+    # only the nested suite's group "a" is placed, by name: the outer chain
+    # check that starts the suite run ("emu") is not, as in a real
+    # acceptance (a placed check is given the user bus by the chain runner
+    # itself, which would hide the gap)
+    f = Fixture(rerun=False, placement={"groups": {"a": "bench.slice"}})
+    _t, rec = f.record(f.rid)
+    v = {r["id"]: r["verdict"] for r in rec["results"]}
+    assert "a/placement" not in v, v
+    assert v == {"a/ok": "PASS", "a/flaky": "FAIL", "a/tree": "PASS"}, v
+    with open(os.path.join(f.runs, f.rid, "progress.jsonl"), encoding="utf-8") as fh:
+        ev = [json.loads(ln) for ln in fh if '"placement"' in ln]
+    grp = [e for e in ev if e.get("group") == "a"]
+    assert len(grp) == 1 and grp[0]["ok"] is True and \
+        grp[0]["read_back"] == "bench.slice", grp
+    assert {r["slice"] for r in rec["results"]} == {"bench.slice"}, rec["results"]
+
+
+TESTS = [test_nested_record, test_rerun_new_record, test_first_run_decides,
+         test_nested_placement]
 
 MUTANTS = [
+    (C, "user_bus", test_nested_placement),
     (NS, "nested_masked", test_nested_record),
     (NS, "rerun_new_record", test_rerun_new_record),
     (NS, "rerun_only_flagged", test_rerun_new_record),
@@ -255,7 +304,13 @@ def main(argv):
             print("FAIL  rules with no mutant: %s" % ", ".join(missing))
             bad += 1
         caught = 0
+        here = _user_bench_slice()
         for mod, k, t in MUTANTS:
+            if t is test_nested_placement and not here:
+                print("NOT RUN (other env)  %s off: %s needs Linux with a user "
+                      "bench.slice" % (k, t.__name__), flush=True)
+                caught += 1
+                continue
             mod.RULES[k] = False
             try:
                 out = outcome_of(t)
