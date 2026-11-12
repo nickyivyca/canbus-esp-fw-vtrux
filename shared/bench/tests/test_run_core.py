@@ -309,10 +309,10 @@ def test_flash_gate():
               identify=env.identify)
     eng, rec = run(env, s)
     calls = env.esptool_calls()
-    assert not any("write-flash" in c for c in calls), calls
+    assert not any("write_flash" in c for c in calls), calls
     v = verdicts(rec)
     assert v == {"g1/x": "NOT-RUN", "g2/y": "NOT-RUN"}, v
-    assert len([c for c in calls if "chip-id" in c]) == 1, calls
+    assert len([c for c in calls if "chip_id" in c]) == 1, calls
     # write fails, after-check passes: no retry of that image
     env = Env("flashgate2")
     os.environ["FAKE_ESPTOOL_MODE"] = "write-fail"
@@ -323,12 +323,12 @@ def test_flash_gate():
               on_flash_failure="skip-image-groups")
     eng, rec = run(env, s)
     calls = env.esptool_calls()
-    assert len([c for c in calls if "write-flash" in c]) == 1, calls
+    assert len([c for c in calls if "write_flash" in c]) == 1, calls
     assert verdicts(rec) == {"g1/x": "NOT-RUN", "g2/y": "NOT-RUN"}
 
 
 def test_chip_mismatch():
-    """A chip-id that reads another chip type or MAC than the image names
+    """A chip_id that reads another chip type or MAC than the image names
     writes nothing, and the flash's record names the mismatch (methodology,
     2026-10-20)."""
     for name, chip, mac in (("chiptype", "ESP32-C3", "02:00:00:00:00:01"),
@@ -346,11 +346,11 @@ def test_chip_mismatch():
                   images={"A": a, "B": b}, identify=env.identify)
         eng, rec = run(env, s)
         calls = env.esptool_calls()
-        assert not any("write-flash" in c for c in calls), (name, calls)
+        assert not any("write_flash" in c for c in calls), (name, calls)
         assert verdicts(rec) == {"g1/x": "NOT-RUN", "g2/y": "NOT-RUN"}, verdicts(rec)
         ev = [e for e in rec["events"] if e["kind"] == "flash"]
         assert len(ev) == 1 and ev[0]["phase"] == "chip-mismatch" and \
-            "chip-id mismatch" in ev[0]["detail"], (name, ev)
+            "chip_id mismatch" in ev[0]["detail"], (name, ev)
     # the same check passes on the right chip (the control)
     env = Env("chipok")
     a = env.image("A", "IMG-A")
@@ -359,7 +359,7 @@ def test_chip_mismatch():
               images={"A": a}, identify=env.identify)
     eng, rec = run(env, s)
     assert verdicts(rec) == {"g1/x": "PASS"}, verdicts(rec)
-    assert len([c for c in env.esptool_calls() if "write-flash" in c]) == 1
+    assert len([c for c in env.esptool_calls() if "write_flash" in c]) == 1
 
 
 def test_chip_required():
@@ -396,7 +396,7 @@ def test_image_schedule():
                Group("g3", [chk("z", "pass")], needs_lock=True, image="B")],
               images={"A": a, "B": b}, identify=env.identify)
     eng, rec = run(env, s)
-    writes = [c for c in env.esptool_calls() if "write-flash" in c]
+    writes = [c for c in env.esptool_calls() if "write_flash" in c]
     assert len(writes) == 1 and writes[0].endswith("B.bin"), writes   # for g3
     assert open(env.board).read() == "IMG-B"
     assert set(verdicts(rec).values()) == {"PASS"}
@@ -416,7 +416,7 @@ def test_identify_error():
                Group("g2", [chk("y", "pass")], needs_lock=True, image="A")],
               images={"A": a}, identify=broken)
     eng, rec = run(env, s)
-    assert not [c for c in env.esptool_calls() if "write-flash" in c], \
+    assert not [c for c in env.esptool_calls() if "write_flash" in c], \
         env.esptool_calls()
     assert verdicts(rec) == {"g1/x": "NOT-RUN", "g2/y": "NOT-RUN"}, verdicts(rec)
 
@@ -1904,6 +1904,61 @@ def test_esptool_flasher():
     assert not r["ok"] and r["recoverable"] is False, r
 
 
+def test_esptool_commands():
+    """esptool is called with the underscore command names, chip_id and
+    write_flash, which esptool v4 (ESP-IDF v5.4.x's, the fake's default
+    form) requires: it refuses a dashed name as an invalid choice. Every
+    call names one, and none names a dashed one (gen-inhibit reviewer,
+    2026-11-11)."""
+    env = Env("esptool_commands")
+    im = env.image("A", "IMG-A")
+    logd = os.path.join(env.root, "log")
+    os.makedirs(logd)
+    r = FL.esptool_flash(im, im.params, env.settings(), logd)
+    assert r["ok"] and "2 writes verified" in r["detail"], r
+    calls = env.esptool_calls()
+    names = [[w for w in c.split() if w.replace("-", "_") in
+              ("chip_id", "write_flash")] for c in calls]
+    assert names == [["chip_id"], ["write_flash"], ["chip_id"]], calls
+
+
+def _esptool_output(text):
+    """esptool's own lines in a run_local log: without the command and
+    cwd lines (`$ ...`, `# ...`) run_local writes first, or blank lines."""
+    return [ln for ln in text.splitlines()
+            if ln.strip() and not ln.startswith(("$ ", "# "))]
+
+
+def test_esptool_v5_output():
+    """On esptool v5, which prints deprecation warnings on stdout ahead of
+    its output for the underscore names (v5.0.2, NICKY-XPS, 2026-11-11),
+    the flasher still reads the chip type and MAC and counts the verified
+    writes: a flash on the right chip succeeds, and on another MAC writes
+    nothing. The warnings really are first in the log the flasher read."""
+    env = Env("esptool_v5")
+    os.environ["FAKE_ESPTOOL_FORM"] = "v5"
+    im = env.image("A", "IMG-A")
+    logd = os.path.join(env.root, "log1")
+    os.makedirs(logd)
+    r = FL.esptool_flash(im, im.params, env.settings(), logd)
+    assert r["ok"] and "2 writes verified" in r["detail"], r
+    with open(os.path.join(logd, "autoreset_before.txt")) as f:
+        text = f.read()
+    assert "Warning: Deprecated" in _esptool_output(text)[0] and \
+        "Chip type:" in text, text
+    env = Env("esptool_v5_mac")
+    os.environ["FAKE_ESPTOOL_FORM"] = "v5"
+    os.environ["FAKE_ESPTOOL_MAC"] = "02:00:00:00:00:02"
+    im = env.image("A", "IMG-A")
+    logd = os.path.join(env.root, "log2")
+    os.makedirs(logd)
+    r = FL.esptool_flash(im, im.params, env.settings(), logd)
+    assert not r["ok"] and r["phase"] == "chip-mismatch" and \
+        "MAC 02:00:00:00:00:02, expected 02:00:00:00:00:01" in r["detail"], r
+    assert not [c for c in env.esptool_calls() if "write_flash" in c], \
+        env.esptool_calls()
+
+
 def _device_env(name):
     assert SD_LINK, SD_WHY
     env = Env(name)
@@ -2732,7 +2787,8 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_record_settings,
          test_timeout,
          test_resume, test_carry_finished, test_carry_check_end, test_compare,
-         test_esptool_flasher, test_esptool_device, test_esptool_port_refused,
+         test_esptool_flasher, test_esptool_commands, test_esptool_v5_output,
+         test_esptool_device, test_esptool_port_refused,
          test_esptool_windows_port, test_record_device,
          test_remote_command,
          test_remote_stop,
@@ -2767,6 +2823,14 @@ def _patch(mod, attr, value):
 
 def _both(*pairs):
     return (lambda: [p[0]() for p in pairs], lambda: [p[1]() for p in pairs])
+
+
+def _chip_read_first_line(text, _orig=FL.chip_read):
+    """The chip_id output read from esptool's first line of output only (the
+    first line after run_local's own), as a parser that expects the output
+    to start with the chip would."""
+    out = _esptool_output(text)
+    return _orig(out[0] if out else "")
 
 
 def _reusing_run_dir(runs_root, suite_name, run_id=None):
@@ -2858,6 +2922,10 @@ MUTANTS = {
     "test_esptool_flasher": _patch(
         __import__("vtrux_bench.run.flash", fromlist=["md5_of"]), "md5_of",
         lambda p: "0" * 32),
+    # the dashed names back, as before 2026-11-11
+    "test_esptool_commands": _patch(FL, "COMMANDS", {"chip_id": "chip-id",
+                                                     "write_flash": "write-flash"}),
+    "test_esptool_v5_output": _patch(FL, "chip_read", _chip_read_first_line),
     "test_remote_command": _patch(P, "THROTTLE_ENV", {}),
     "test_remote_stop": _patch(P, "RULES", {"remote_stop": False}),
     "test_lock_each_case": _rule("lock_each_case"),
