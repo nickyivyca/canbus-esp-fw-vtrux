@@ -1,0 +1,159 @@
+# Port step 3's emulated baseline, re-run (shared/bench ACCEPT-SPEC A2, A13;
+# owned by the charge-interposer reviewer). Drafted by the tester; approved
+# by the reviewer 2026-11-12, as a re-run of the user-approved 3-emulated.toml
+# with harness-only changes ("It doesn't go back to the user").
+#
+# Run 563d (runs/accept_3_20261111T234853_563d, from 3-emulated.toml at
+# a55c16cc, harness 72d2c392) closed ACCEPTANCE FAIL with no product result
+# in it: the product was f57ca9d3's (premise "digest" held), and every FAIL
+# and NOT-RUN came from the test setup or the harness:
+#   A   c-emulated: 20 of the 27 m-sims NOT-RUN, refused by the wall-clock
+#       guard at 01:49:17 because the tester's own unit run
+#       (bench_suite_test.py) was running, and the settings'
+#       wallclock_patterns match bench_*.py. The 7 sims that ran PASSed; the
+#       m-host group matched b467 (54 PASS, 2 KNOWN-FAIL). The tester runs no
+#       bench_*.py process during a run's m-sims from now on.
+#   B1  scratch-dir-test and scratch-run-test (each -canfail too): the
+#       scratch_dir / scratch_run.sh length guard, git for Windows' limit,
+#       refused the acceptance runner's deeper madhouse tree on Linux.
+#   B2  refusal-pairs-test (and -canfail): test_worktree_layout's stand-in
+#       paths started at C:\, relative on Linux, so abspath joined them to the
+#       deep tree and they read as too deep.
+#   B3  cf.bench-vport: the mutant "map: a bin's least lag never updated" was
+#       caught only on some timings (4 of 6 runs by hand), since the only
+#       self-test case reaching the reader's bin update was the real-time
+#       witness.
+# None of these is a product result: A is a refusal before the sims ran, and
+# B1-B3 are harness checks that failed on the Linux tree, not on the product.
+# The fixes (the reviewer's B1-B3, 2026-11-12) are in the harness tree below.
+# This list re-runs both suites whole, on the same product, against the same
+# Windows baselines, in a new record that names 563d (A13: the runner's
+# --earlier accept_3_20261111T234853_563d).
+#
+# Load, as 3-emulated.toml: Local LLM hosting's load runs alongside (AGENTS.md
+# point 7); the whole run goes in bench.slice (CPUWeight 2000; user, 2026-11-11,
+# relayed by the reviewer). The tester sends Hosting the run's start and end
+# epochs.
+#
+# Known causes of difference from the Windows records, none of them a list
+# line, as in 3-emulated.toml:
+#   - the m-* groups run on the bench host itself, logic:local (settings
+#     m_lanes_host local; 22b546d6).
+#   - the sims run in bench.slice at its weight, not at Windows'
+#     above-normal priority (F2's Linux form waits on AGENTS.md point 4).
+#   - Linux serial, IDF export and the shared/bench re-pin change harness
+#     checks only (the harness lines below).
+#
+# Trees:
+#   harness   2d14b2e5, on charge-interposer/tester/madhouse-baseline-2, the
+#             commit before this list's own: B1 (a8ae694a), B2 (7d75be91) and
+#             B3 (2d14b2e5) on top of charge-interposer/main 8681e343. Since 72d2c392
+#             (563d's tree) it adds the WiCAN pin (782e1baf), a comment fix
+#             (e0818577), E2 (b9436937), E3 (864ea995), bench_mcp_reset's
+#             esptool (48935c1f), bench_wican's USB load (8f51b063), the
+#             reviewer's file map and firmware README edits, and B1-B3. It
+#             changes no product file since f57ca9d3 (premise "digest";
+#             checked 2026-11-12 over bench_suite.product_files). Its
+#             shared/bench pin is 2026.11.11.7, its can-tools pin fa6c0aea.
+
+[step]
+id = "3"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-12"
+spec = ["2", "2.1", "2.3", "2.4", "8", "8.2", "8.3", "9", "9.1"]
+verification = "the tester's VERIFICATION.md entries for port step 3's emulated baseline: this re-run, naming record accept_3_20261111T234853_563d"
+
+[trees.harness]
+project = "2d14b2e59a99beb275895e4ac087075f53a307b6"
+
+[[premise]]
+id = "digest"
+kind = "product_digest_same_as"
+tree = "harness"
+commit = "f57ca9d38bfae50791564fe0089b337581bdcf12"
+
+# ---- the two suites, whole ---------------------------------------------------
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+
+[[suite_run]]
+id = "harness"
+tree = "harness"
+suite = "harness"
+after = ["emulated"]
+
+# ---- the baselines -----------------------------------------------------------
+# The same as 3-emulated.toml's: the newest whole Windows runs on the f57ca9d3
+# product. The emulated suite from b467 (harness f57ca9d3), the harness suite
+# from 2b's re-run 08e8 (harness 305cfda0).
+[baseline]
+emulated = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-emulated"
+harness = "accept_2b_20261111T102458_08e8/runs/accept_2b_20261111T102458_08e8-harness"
+
+# The emulated suite against b467's: no difference, as in 3-emulated.toml. Its
+# check list is unchanged since 72d2c392 (checked 2026-11-12 from
+# bench_suite.emulated at both commits). The two host_bridge KNOWN-FAILs are
+# KNOWN-FAIL on both sides; any other FAIL, or a NOT-RUN, is a difference.
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = []
+
+# The harness suite against 08e8's. 3-emulated.toml's 22 lines, each from a
+# committed change, and four added since, found by comparing
+# bench_suite.harness's check ids at 72d2c392 and the harness tree:
+#   serial-open-test     2236d77d: serial_open.py, the X2 port opened without
+#                        a reset on Linux, and its -canfail
+#   sb.* (18 lines)      the shared/bench pin, 2026.11.04.4 -> 2026.11.11.2
+#                        (892d7528) -> 2026.11.11.7 (47ab954f), each plain and
+#                        -canfail
+#   adapter-fixes-test   c1847e78 (E1): the can-tools pin's Linux fixes before
+#                        every Kvaser and Innomaker open, and its -canfail
+#   wican-pin-test       782e1baf: the WiCAN's pinned image (wican_pin.json)
+#                        and its check, and its -canfail (new since 563d)
+#   cf.bench-charger-silent, cf.bench-rx-order
+#                        864ea995 (E3): the two drivers' can-fails, added with
+#                        the Innomaker stamp unwrap (new since 563d)
+# B1-B3 add no line: scratch-dir-test, scratch-run-test, refusal-pairs-test
+# (each -canfail too) and cf.bench-vport PASS in 08e8, so their PASS here is
+# no difference.
+[[compare]]
+id = "c-harness"
+comparer = "run-records"
+a = "baseline:harness"
+b = "harness"
+expect = "listed"
+differences = [
+  "NEW in b: m-harness/adapter-fixes-test PASS",
+  "NEW in b: m-harness/adapter-fixes-test-canfail PASS",
+  "NEW in b: m-harness/serial-open-test PASS",
+  "NEW in b: m-harness/serial-open-test-canfail PASS",
+  "NEW in b: m-harness/wican-pin-test PASS",
+  "NEW in b: m-harness/wican-pin-test-canfail PASS",
+  "NEW in b: l-harness/cf.bench-charger-silent PASS",
+  "NEW in b: l-harness/cf.bench-rx-order PASS",
+  "NEW in b: l-harness/sb.test-canfail-control PASS",
+  "NEW in b: l-harness/sb.test-canfail-control-canfail PASS",
+  "NEW in b: l-harness/sb.test-canmain PASS",
+  "NEW in b: l-harness/sb.test-canmain-canfail PASS",
+  "NEW in b: l-harness/sb.test-ota-outcome PASS",
+  "NEW in b: l-harness/sb.test-ota-outcome-canfail PASS",
+  "NEW in b: l-harness/sb.test-ota-policy PASS",
+  "NEW in b: l-harness/sb.test-ota-policy-canfail PASS",
+  "NEW in b: l-harness/sb.test-ota-preflight PASS",
+  "NEW in b: l-harness/sb.test-ota-preflight-canfail PASS",
+  "NEW in b: l-harness/sb.test-ota-wire PASS",
+  "NEW in b: l-harness/sb.test-ota-wire-canfail PASS",
+  "NEW in b: l-harness/sb.test-serial-dev PASS",
+  "NEW in b: l-harness/sb.test-serial-dev-canfail PASS",
+  "NEW in b: l-harness/sb.test-wican-http PASS",
+  "NEW in b: l-harness/sb.test-wican-http-canfail PASS",
+  "NEW in b: l-harness/sb.test-wifi PASS",
+  "NEW in b: l-harness/sb.test-wifi-canfail PASS",
+]
