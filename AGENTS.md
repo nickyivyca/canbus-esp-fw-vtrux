@@ -132,7 +132,11 @@ commit and the image's size and hashes. The run loads it at its start
 through the shared flasher's OTA upload (`shared/bench`) over the WiCAN's
 hotspot, with the board's identity read before and after, and flashes
 nothing built from its own tree (user, 2026-11-11, in the interposer
-reviewer's session).
+reviewer's session). **Until `madhouse-debian` has its USB Wi-Fi adapter,**
+the Linux baseline of port plan step 3 loads the same pinned image over
+USB, with the shared flasher's esptool path, instead of OTA (user,
+2026-11-11, in the CAN replay tooling session, its plan
+`tools/plans/madhouse-bench-canctl.md` in reverse-it).
 
 ## Session rules
 
