@@ -247,14 +247,19 @@ way, the Holder is not its own.
   no `run`. So `free_paused` and `lost`, which are a runner's, never come
   from them. A take, a release, a request and a withdraw work as for any
   role.
-- **CAN1's second Innomaker** is the one added to CAN1 for the Android
-  tests (they may also pass other bench Innomakers through), named by
-  its `canctl` role, `canmain2`, once `canctl`'s redesign is installed;
-  its serial is in `$REVERSE_IT_DIR/firmware/bench-holder.md`, not here.
+- **CAN1's Innomaker** is the one added to CAN1 for the Android tests
+  (they may also pass other bench Innomakers through); the bench's own
+  Innomaker is on the charger bus (`canchg`). It is named by its `canctl`
+  role, `canmain`, once `canctl`'s redesign is installed (user, 2026-11-11,
+  in the canctl plan, reverse-it
+  `android-app/notes/artifacts/madhouse-bench-canctl.md`: renamed from
+  `canmain2`, made in this spec at the move to madhouse-debian, with the
+  Linux lock code); its serial is in
+  `$REVERSE_IT_DIR/firmware/bench-holder.md`, not here.
   Down means its link is down, or the device unbound if a down link turns
   out still to ACK; step 3's adapter characterisation settles which.
 - **What a hand-take role leaves at its release:** every bench adapter it
-  opened is closed, back on the driver it found it on, and `canmain2` is
+  opened is closed, back on the driver it found it on, and `canmain` is
   down. The release note says so, and says what it transmitted on which
   bus. Closed means a SocketCAN interface is down, so the next opener sets
   its own bit rate and mode, listen-only included, and a vendor-stack or
@@ -277,7 +282,7 @@ way, the Holder is not its own.
   unbound bench Innomakers, and stops any emulator that holds one.
 - **A run checks CAN1 at its start, and does not trust the note**
   (charge-interposer reviewer's review, 2026-11-11): beside listening
-  first, it refuses unless `canmain2` is down, so a hand
+  first, it refuses unless `canmain` is down, so a hand
   release that went wrong, or a crash, cannot leave a second ACKing node on
   CAN1 under checks that need none. Whether the runner or each suite's
   start hook makes the check is the testers' to settle.
@@ -366,11 +371,11 @@ way, the Holder is not its own.
   a move, with the new host's `init` waiting until the sync shows the
   renamed copy (sections 3 and 4, from the gen-inhibit reviewer's review). It gains the hand-take
   roles `android` and `can-tools`: hand takes only, no runs, adapters
-  closed and `canmain2` down at release with what was transmitted noted,
+  closed and `canmain` down at release with what was transmitted noted,
   `ADAPTER NOT RESTORED` when an adapter cannot be put back, a clearer's
   check for a detached emulator, and no board flashing until the Android
   bench tests need it (section 8, with the Android and CAN replay tooling
-  sessions' reviews). A run checks `canmain2` itself at its start (the
+  sessions' reviews). A run checks `canmain` itself at its start (the
   charge-interposer reviewer's review). The user ruled that
   the methodology owner drafts this change, and that all of the lock's
   consumers review it: both project reviewers, the CAN replay tooling
