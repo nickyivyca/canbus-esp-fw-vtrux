@@ -118,14 +118,8 @@ def read_7f7(settings, logdir, tag):
 
 
 def _serial(settings):
-    import serial
-    s = serial.Serial()
-    s.port = settings["serial_port"]
-    s.baudrate = 115200
-    s.timeout = 0.2
-    s.dtr = False
-    s.rts = False
-    s.open()
+    import serial_open
+    s = serial_open.open_quiet(settings["serial_port"], 115200, 0.2)
     time.sleep(0.5)
     s.reset_input_buffer()
     return s

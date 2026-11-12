@@ -310,10 +310,8 @@ def run_bench(args):
     lock = threading.Lock()
     # lines held low: closing the port then does not reset the X2 (8.3 bench
     # facts, 2026-10-14)
-    ser = serial.Serial()
-    ser.port, ser.baudrate, ser.timeout = args.port, 115200, 0.2
-    ser.dtr, ser.rts = False, False
-    ser.open()
+    import serial_open
+    ser = serial_open.open_quiet(args.port, 115200, 0.2)
 
     def serial_rx():
         buf = b""

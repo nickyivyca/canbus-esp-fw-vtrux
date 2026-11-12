@@ -668,7 +668,9 @@ def test_suites():
     # 259: sb.* for shared/bench 2026.11.11.2's six new test files
     #      (test_canmain, test_ota_outcome/policy/preflight/wire, test_wifi),
     #      each plain and -canfail (re-pin, reviewer 2026-11-11)
-    assert len(seen) == 259, "checks across the suites: %d" % len(seen)
+    # 261: serial_open-test and its -canfail (the X2 port's no-reset open on
+    #      Linux, adapter characterisation step 7; reviewer 2026-11-11)
+    assert len(seen) == 261, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in

@@ -1667,12 +1667,10 @@ class SerialTap(object):
             import serial as S
         if first:
             return S.Serial(self.port, self.baud, timeout=0.5)
-        # a reconnect must not reset the board again: lines held low
-        s = S.Serial()
-        s.port, s.baudrate, s.timeout = self.port, self.baud, 0.5
-        s.dtr, s.rts = False, False
-        s.open()
-        return s
+        # a reconnect must not reset the board again: lines held low, in the
+        # order that does not reset it on this system (serial_open)
+        import serial_open
+        return serial_open.open_quiet(self.port, self.baud, 0.5, serial_mod=S)
 
     def _reconnect(self, give_up_s=30.0):
         """The port re-enumerates when the chip resets (USB-Serial-JTAG):
