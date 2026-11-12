@@ -657,7 +657,11 @@ def cli():
     rc, out = run("--holder-pid", str(os.getpid()))
     check("by hand: the lock free, refused before anything", lambda: rc == 2 and "not held" in out, (rc, out))
     BL.take(log, ROLE, os.getpid())
-    rc, out = run("--holder-pid", str(os.getpid() + 1))
+    # Another pid that is certainly running (the parent), so only the pid
+    # compare can refuse it: pid + 1 is usually not running on Linux, where it
+    # would be refused as dead whatever the compare (and on Windows it rounds
+    # down to this process).
+    rc, out = run("--holder-pid", str(os.getppid()))
     check("by hand: the lock held under another pid, refused", lambda: rc == 2 and "not held" in out, (rc, out))
     rc, out = run("--holder-pid", str(os.getpid()))
     check("by hand: held under this pid, the hold is accepted (the flasher then refuses the settings)",
