@@ -15,8 +15,9 @@ IDF_TOOLS_PATH set before the export: on madhouse-debian a bash shell,
 `export IDF_TOOLS_PATH="$HOME/.espressif-5.4.2"` then
 `. ~/esp/esp-idf-v5.4.2/export.sh`; on Windows a PowerShell (each
 machine's export lines are in its local-paths.md). While a wall-clock test
-is running, build only in the machine's throttled form, with --jobs 1
-(AGENTS.md "Builds during wall-clock tests").
+is running, follow AGENTS.md "Builds during wall-clock tests": the build
+waits, or runs in the machine's throttled form where that section allows
+one.
 
 check-env  the IDF environment check (shared/tools R32): IDF_PATH set and
            not empty, IDF_TOOLS_PATH set, not empty and with no spaces
