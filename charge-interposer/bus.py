@@ -72,7 +72,7 @@ REAL_BRANDS = ("ixxat", "kvaser", "pcan", "socketcan", "gs_usb")
 
 # Wall time a sim process spent FROZEN must not become simulated time.
 #
-# Measured 2026-09-12 on L-EEHTRBPN2 (Windows): the machine suspends every
+# Measured 2026-09-12 on a Windows laptop: the machine suspends every
 # process for 40-70 ms, occasionally over 100 ms, at random -- charger_sim and
 # vehicle_sim logged 62 ms and 58 ms stalls in the SAME second with zero GC
 # collections, and a 0.5 ms sleep took 28 ms. Nothing in the bench causes it

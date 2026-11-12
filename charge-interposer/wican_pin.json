@@ -1,0 +1,28 @@
+{
+  "_comment": "The WiCAN's image for the charge-interposer's bench, pinned as a tool of its harness (AGENTS.md 'Never build WiCAN firmware from an interposer worktree', user 2026-11-11; the bench baseline's image is a madhouse rebuild of gen-inhibit 7f2d5032 _man, user ruling 2026-11-11 in the interposer reviewer's session). wican_pin.py reads it. The files are not in git: each sits at <wican_image_dir>/<name>, wican_image_dir from the local settings, and must have the size, sha256 and md5 given here. No setting can change an image's files or identity. A re-pin is a new pin here.",
+  "pin": "7f2d5032_man_2aac016d",
+  "source": {
+    "project": "gen-inhibit",
+    "commit": "7f2d5032b0fb45fd44571615d47e174650039973",
+    "variant": "_man",
+    "built": "idf.py -B build-tester-man build, ESP-IDF v5.4.2, in a clean detached gen-inhibit worktree at 7f2d5032 on madhouse-debian, by the gen-inhibit tester on 2026-11-11 (reverse-it projects/vtrux/notes/artifacts/gen-inhibit/runs/man7f2d_madhouse, its README and SHA256SUMS, sha256 a6dd8528665fb8189dc578c92213abf6d9fc19a9ae0aaf3deb3a8e14cb0163e0 after its README correction of 2026-11-11)",
+    "code_hash": "bc49dce07426f7f7f160587930711c861aa60d0a13e00e030e4b137587c95eb2",
+    "code_hash_read": "shared/tools R3, by 7f2d5032's gen-inhibit/vtrux_tools.py image at its pin, the same call as the image the WiCAN held at the pin (NICKY-XPS's step 1d _man, image hash f515a383b399c6a958f481c9d241c14148cfa0ead016f91b7ac77bbad3f9151b): the same code hash, the two .bin files differing only in the descriptor's elf_sha256 and the trailing checksum and hash (65 bytes)"
+  },
+  "image": {
+    "chip": "ESP32-C3",
+    "flash": ["--flash_mode", "dio", "--flash_freq", "80m", "--flash_size", "4MB"],
+    "image_hash": "2aac016da75cb694cc285208595f7a24c5600a133c64504afdbb133fa2d321cc",
+    "image_hash_read": "the app descriptor's elf_sha256, equal to the ELF's sha256 (wican-fw_obd_man.elf beside the .bin)",
+    "files": [
+      {"offset": "0x0", "name": "bootloader/bootloader.bin", "size": 19088,
+       "sha256": "a2a167d288183a2d9c81b1dcea3d3ff09719fed4225df126e0fd450ac6374c22", "md5": "084f08fbd31c7d5ec05caf005a71a538"},
+      {"offset": "0x8000", "name": "partition_table/partition-table.bin", "size": 3072,
+       "sha256": "98d193a613ff7e9d14269ccfdb11e4bc652339d41d8b6f1aedea9fd7a9e2185e", "md5": "aa07e66ac11f860c8007e31e64acebec"},
+      {"offset": "0xd000", "name": "ota_data_initial.bin", "size": 8192,
+       "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f", "md5": "84d04c9d6cc8ef35bf825d51a5277699"},
+      {"offset": "0x10000", "name": "wican-fw_obd_man.bin", "size": 1021520, "app": true,
+       "sha256": "dbcc9191b4fd7a72262e9e7979a245d46278ed1005bdfb19548600b1eb4ff4b0", "md5": "ee69e9c6c7736131ac788710a52a1bc3"}
+    ]
+  }
+}

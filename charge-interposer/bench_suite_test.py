@@ -676,7 +676,9 @@ def test_suites():
     #      plain and -canfail (re-pin, reviewer 2026-11-11)
     # 269: adapter-fixes-test and its -canfail (the can-tools pin's Linux
     #      fixes before every Kvaser and gs_usb open; reviewer 2026-11-11)
-    assert len(seen) == 269, "checks across the suites: %d" % len(seen)
+    # 271: wican-pin-test and its -canfail (the WiCAN's pinned image, the
+    #      madhouse rebuild of gen-inhibit 7f2d5032 _man; reviewer 2026-11-11)
+    assert len(seen) == 271, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
