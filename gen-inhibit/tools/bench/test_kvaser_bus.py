@@ -8,6 +8,16 @@ scan gen-inhibit's tools for an open that goes round it (gen-inhibit reviewer, 2
             close_gs_usb() shuts the bus down, then releases its pyusb handle through canbench's
             release_gs_usb, also when the shutdown raises; bus() sends kvaser and gs_usb through
             the two openers, and anything else straight to can.Bus with its arguments
+  guard     (reviewer, 2026-11-12) require_bench() runs first: with the lock free, unreadable,
+            held by another role, or held under a pid that is neither this process nor an
+            ancestor, kvaser_bus(), gs_usb_bus() and bus(interface="kvaser") raise BenchNotHeld
+            before the pin, the fixes or an open; held by a gen-inhibit role under this process's
+            pid (a runner) or an ancestor's (a hand take's session; the implementor on a loan),
+            they open. _ancestors() walks /proc. In a child, the REAL guard: the real kvaser_bus,
+            the real python-can (its Bus entry points and CANlib's canOpenChannel replaced by
+            tripwires first, so a broken guard still opens nothing), no vtrux_bench importable
+            and a tool module with its own fake `can`, as test_e4_rawpost had: every open
+            refuses with BenchNotHeld, and no tripwire is reached
   pin       in a child interpreter, with the real pin: linux_fixes comes from the pinned folder
             (scratch/can-tools/<commit>/, can_tools_pin.py install), and on Linux the real
             fixes are installed in python-can's Kvaser backend and in gs_usb, where those are
@@ -93,7 +103,11 @@ def check(name, ok, detail=""):
 class Fakes:
     """A fake can, a fake pin tool and a fake pinned canbench, all logging to one list."""
 
-    def __init__(self, use_raises=False, apply_raises=False, shutdown_raises=False):
+    def __init__(self, use_raises=False, apply_raises=False, shutdown_raises=False, holder="ours"):
+        """holder: the bench log's holder _lock_holder gives: "ours" (tester (gen-inhibit) with
+        this process's pid), None (free), "raise" (unreadable), or a dict."""
+        self.holder = {"who": "tester (gen-inhibit)", "pid": os.getpid(), "run": None} if holder == "ours" \
+            else holder
         self.log = []
         self.use_raises, self.apply_raises, self.shutdown_raises = use_raises, apply_raises, shutdown_raises
         log = self.log
@@ -151,6 +165,14 @@ class Fakes:
         kb = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(kb)
         kb._pin_tool = self.pin_tool
+        fakes = self
+
+        def lock_holder():
+            fakes.log.append(("lock",))
+            if fakes.holder == "raise":
+                raise kb.BenchNotHeld("the bench log could not be read: planted")
+            return fakes.holder
+        kb._lock_holder = lock_holder
         return kb
 
     def __exit__(self, *exc):
@@ -178,8 +200,8 @@ def unit():
         f = Fakes()
         with f as kb:
             b = kb.kvaser_bus(channel=0, bitrate=500000, driver_mode=True)
-        check("kvaser_bus: the pin is loaded and the fixes applied before the open",
-              f.kinds() == ["use", "apply", "Bus"], f.log)
+        check("kvaser_bus: the lock checked first, then the pin loaded and the fixes applied, then the open",
+              f.kinds() == ["lock", "use", "apply", "Bus"], f.log)
         check("kvaser_bus: opens interface kvaser with the caller's arguments",
               f.log[-1][1] == {"interface": "kvaser", "channel": 0, "bitrate": 500000, "driver_mode": True}
               and b.kw is f.log[-1][1], f.log[-1])
@@ -215,8 +237,8 @@ def unit():
         f = Fakes()
         with f as kb:
             kb.gs_usb_bus(channel="can0", index=0, bitrate=500000)
-        check("gs_usb_bus: the pin is loaded and the fixes applied before the open",
-              f.kinds() == ["use", "apply", "Bus"], f.log)
+        check("gs_usb_bus: the lock checked first, then the pin loaded and the fixes applied, then the open",
+              f.kinds() == ["lock", "use", "apply", "Bus"], f.log)
         check("gs_usb_bus: opens interface gs_usb with the caller's arguments",
               f.log[-1][1] == {"interface": "gs_usb", "channel": "can0", "index": 0, "bitrate": 500000}, f.log[-1])
     case("gs_usb_bus: opens", gs_open)
@@ -254,8 +276,8 @@ def unit():
             cfg = dict(kw, interface=iface)
             with f as kb:
                 kb.bus(**cfg)
-            check("bus(interface=%r): through its opener, the fixes applied first" % iface,
-                  f.kinds() == ["use", "apply", "Bus"] and f.log[-1][1] == dict(kw, interface=iface), f.log)
+            check("bus(interface=%r): through its opener, the lock checked and the fixes applied first" % iface,
+                  f.kinds() == ["lock", "use", "apply", "Bus"] and f.log[-1][1] == dict(kw, interface=iface), f.log)
         f = Fakes()
         cfg = {"interface": "pcan", "channel": "PCAN_USBBUS1", "bitrate": 500000, "auto_reset": True}
         with f as kb:
@@ -263,6 +285,60 @@ def unit():
         check("bus(interface='pcan'): straight to can.Bus with every argument",
               f.log and f.log[-1] == ("Bus", cfg) and cfg["interface"] == "pcan", f.log)
     case("bus: routes", router)
+
+    # the bench guard (reviewer, 2026-11-12): no real open without the lock
+    me, parent = os.getpid(), os.getppid()
+    for label, holder in (
+            ("the lock free", None),
+            ("the lock unreadable", "raise"),
+            ("the lock held by the other tester", {"who": "tester (charge-interposer)", "pid": me, "run": None}),
+            ("the lock held by can-tools by hand", {"who": "can-tools", "pid": me, "run": None}),
+            ("the lock held by tester (gen-inhibit) under a pid that is no ancestor",
+             {"who": "tester (gen-inhibit)", "pid": 2 ** 22 + 7, "run": None})):
+        for opener, kw in (("kvaser_bus", {"channel": 0, "bitrate": 500000}),
+                           ("gs_usb_bus", {"channel": "can0", "index": 0, "bitrate": 500000})):
+            def go(label=label, holder=holder, opener=opener, kw=kw):
+                f = Fakes(holder=holder)
+                raised = None
+                with f as kb:
+                    try:
+                        getattr(kb, opener)(**kw)
+                    except kb.BenchNotHeld as e:
+                        raised = e
+                check("guard: %s, %s refuses (BenchNotHeld) before the pin, the fixes or an open" % (label, opener),
+                      raised is not None and f.kinds() == ["lock"], (raised, f.log))
+            case("guard %s %s" % (label, opener), go)
+
+    def guard_bus():
+        f = Fakes(holder=None)
+        raised = None
+        with f as kb:
+            try:
+                kb.bus(interface="kvaser", channel=0, bitrate=500000)
+            except kb.BenchNotHeld as e:
+                raised = e
+        check("guard: bus(interface='kvaser') with the lock free refuses", raised is not None
+              and "Bus" not in f.kinds(), (raised, f.log))
+    case("guard bus", guard_bus)
+
+    for label, holder in (("a runner's own pid (this process)", {"who": "tester (gen-inhibit)", "pid": me, "run": "r1"}),
+                          ("a hand take's pid (an ancestor)", {"who": "tester (gen-inhibit)", "pid": parent, "run": None}),
+                          ("the implementor on a loan", {"who": "implementor (gen-inhibit)", "pid": parent, "run": None})):
+        def ok(label=label, holder=holder):
+            f = Fakes(holder=holder)
+            with f as kb:
+                kb.kvaser_bus(channel=0, bitrate=500000)
+            check("guard: held under %s, kvaser_bus opens" % label, f.kinds() == ["lock", "use", "apply", "Bus"], f.log)
+        case("guard ok %s" % label, ok)
+
+    def ancestors():
+        spec = importlib.util.spec_from_file_location("kvaser_bus_anc", os.path.join(SRC, "kvaser_bus.py"))
+        kb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(kb)
+        anc = kb._ancestors()
+        check("guard: _ancestors() is this process, then its parent, up to the first process",
+              anc[:2] == [me, parent] and len(anc) >= 3 and len(set(anc)) == len(anc), anc)
+    case("guard ancestors", ancestors)
 
 
 # ---------------------------------------------------------------- the real pin, in a child
@@ -316,6 +392,67 @@ def pin():
                 print("      %s: %s, so its fix is not checked here" % (k, v))
             else:
                 check("pin: on Linux the real %s fix is installed" % k, v is True and out["fixes"][k] is True, out)
+
+
+# The real guard, in a child, as a host test that fakes a tool's `can` the old way would meet it:
+# the real kvaser_bus, the real python-can and the real _lock_holder. Tripwires replace the
+# real python-can's Bus entry points and CANlib's canOpenChannel first, so a guard that let the
+# call through records a tripwire and still opens nothing (its mutants run this too). With no
+# vtrux_bench importable (PYTHONPATH unset), or the lock free or held elsewhere, every open
+# must raise BenchNotHeld.
+CHILD_GUARD = r"""
+import json, os, sys, types
+sys.path.insert(0, sys.argv[1])            # kvaser_bus under test
+sys.path.insert(1, sys.argv[2])            # the bench folder, for gi_paths
+import can
+import can.interface
+trips = []
+def trip(name):
+    def f(*a, **kw):
+        trips.append(name)
+        raise RuntimeError("TRIPWIRE: %s reached" % name)
+    return f
+can.Bus = trip("can.Bus")
+can.interface.Bus = trip("can.interface.Bus")
+try:
+    from can.interfaces.kvaser import canlib as kv
+    kv.canOpenChannel = trip("canOpenChannel")
+except Exception:
+    pass
+import kvaser_bus as K
+out = {"refused": {}, "trips": trips}
+# a tool module with its own fake can, as test_e4_rawpost faked e4_device_calibration
+tool = types.ModuleType("a_tool")
+tool.can = types.SimpleNamespace(Bus=lambda **kw: None)
+for name, call in (("kvaser_bus", lambda: K.kvaser_bus(channel=0, bitrate=500000)),
+                   ("gs_usb_bus", lambda: K.gs_usb_bus(channel="can0", index=0, bitrate=500000)),
+                   ("bus kvaser", lambda: K.bus(interface="kvaser", channel=0, bitrate=500000))):
+    try:
+        call()
+        out["refused"][name] = None
+    except K.BenchNotHeld as e:
+        out["refused"][name] = "BenchNotHeld: %s" % e
+    except Exception as e:
+        out["refused"][name] = "OTHER %s: %s" % (type(e).__name__, e)
+print("CHILD " + json.dumps(out))
+"""
+
+
+def guard_real():
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    r = subprocess.run([sys.executable, "-B", "-c", CHILD_GUARD, SRC, HERE], env=env, capture_output=True,
+                       text=True, timeout=120)
+    line = [x for x in r.stdout.splitlines() if x.startswith("CHILD ")]
+    if r.returncode != 0 or not line:
+        check("guard (real): the child ran", False, (r.returncode, r.stdout[-300:], r.stderr[-600:]))
+        return
+    out = json.loads(line[0][6:])
+    for name, why in sorted(out["refused"].items()):
+        check("guard (real): a host test's %s, the real can and no lock held, refuses with BenchNotHeld" % name,
+              isinstance(why, str) and why.startswith("BenchNotHeld"), why)
+    check("guard (real): no tripwire on the real python-can or CANlib was reached", out["trips"] == [],
+          out["trips"])
+    print("      guard (real): %s" % (out["refused"].get("kvaser_bus") or "")[:160])
 
 
 # ---------------------------------------------------------------- the scan
@@ -488,8 +625,22 @@ def scan_can_fail():
 
 MUTANTS = [
     (None, None, None),
-    ("kvaser_bus applies no fixes", "def kvaser_bus(**kw):\n    fixes()\n", "def kvaser_bus(**kw):\n"),
-    ("gs_usb_bus applies no fixes", "def gs_usb_bus(**kw):\n    fixes()\n", "def gs_usb_bus(**kw):\n"),
+    ("kvaser_bus applies no fixes", "def kvaser_bus(**kw):\n    require_bench()\n    fixes()\n",
+     "def kvaser_bus(**kw):\n    require_bench()\n"),
+    ("gs_usb_bus applies no fixes", "def gs_usb_bus(**kw):\n    require_bench()\n    fixes()\n",
+     "def gs_usb_bus(**kw):\n    require_bench()\n"),
+    # the bench guard (reviewer, 2026-11-12)
+    ("kvaser_bus opens without the guard", "def kvaser_bus(**kw):\n    require_bench()\n", "def kvaser_bus(**kw):\n"),
+    ("gs_usb_bus opens without the guard", "def gs_usb_bus(**kw):\n    require_bench()\n", "def gs_usb_bus(**kw):\n"),
+    ("the guard checks after the fixes", "def kvaser_bus(**kw):\n    require_bench()\n    fixes()\n",
+     "def kvaser_bus(**kw):\n    fixes()\n    require_bench()\n"),
+    ("a free lock passes", "    if h is None:\n        raise", "    if h is None:\n        return h\n        raise"),
+    ("any holder's role passes", '    if h.get("who") not in ROLES:\n', "    if False:\n"),
+    ("any holder's pid passes", '    if h.get("pid") not in anc:\n', "    if False:\n"),
+    ("vtrux_bench missing reads as held by us",
+     '        raise BenchNotHeld("vtrux_bench is not importable',
+     '        return {"who": ROLES[0], "pid": os.getpid()}\n        raise BenchNotHeld("vtrux_bench is not importable'),
+    ("_ancestors stops at this process", '        pid = int(stat.rsplit(")", 1)[1].split()[1])\n', "        break\n"),
     ("kvaser_bus applies the fixes after the open",
      '    fixes()\n    import can\n    return can.Bus(interface="kvaser", **kw)\n',
      '    import can\n    b = can.Bus(interface="kvaser", **kw)\n    fixes()\n    return b\n'),
@@ -567,6 +718,7 @@ def main(argv):
         return can_fail()
     unit()
     pin()
+    guard_real()
     if "--no-scan" not in argv:
         scan()
         scan_can_fail()

@@ -20,6 +20,23 @@ canbench imported from anywhere else (AGENTS.md "can-tools").
                        gs_usb through the two above, anything else straight to can.Bus
   fixes()              the fixes' result, {"kvaser": bool, "gs_usb": bool}, applied once per
                        process (canbench's own apply() is idempotent too)
+  require_bench()      THE BENCH GUARD (reviewer's ask, 2026-11-12). kvaser_bus() and
+                       gs_usb_bus() call it before anything else, and open nothing unless it
+                       passes: the bench log (the lock, AGENTS.md "The shared bench") replays,
+                       its holder is a gen-inhibit role (tester, or implementor on a loan), and
+                       the holder's pid is this process or one of its ancestors. A runner takes
+                       the lock with its own pid and runs the tools as its children; a take by
+                       hand gives the Claude Code session's pid, and the tools that session
+                       runs descend from it (bench-holder.md rule 2). Anything else raises
+                       BenchNotHeld: a free lock, another holder, a log that does not replay,
+                       vtrux_bench not importable (the pinned core's shared/bench is on
+                       PYTHONPATH for bench runs, as for bench_held.py), a pid that is not an
+                       ancestor, or no /proc to walk. There is no switch to turn it off. It
+                       exists because a host test once faked a tool's `can` and reached the
+                       real Kvaser through this module (2026-11-12, test_e4_rawpost.py): a
+                       host test fakes this module, or its _lock_holder, and never needs the
+                       lock. The PCAN and other interfaces opened straight through can.Bus are
+                       not guarded here.
 
 Every harness file opens these adapters through this module; test_kvaser_bus.py scans for a
 can.Bus that opens either directly, or with an interface named at run time. The tools import
@@ -32,7 +49,59 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PIN_TOOL = os.path.join(os.path.dirname(HERE), "can_tools_pin.py")
+ROLES = ("tester (gen-inhibit)", "implementor (gen-inhibit)")
 _fixes = None
+
+
+class BenchNotHeld(RuntimeError):
+    pass
+
+
+def _lock_holder():
+    """The bench log's holder ({who, run, pid, ts}, or None when free), replayed by shared/bench's
+    own vtrux_bench.bench_lock. Raises BenchNotHeld when it cannot say."""
+    try:
+        from vtrux_bench import bench_lock
+    except ImportError as e:
+        raise BenchNotHeld("vtrux_bench is not importable (%s): a real adapter opens only in a bench "
+                           "run, with the pinned core's shared/bench on PYTHONPATH" % e)
+    try:
+        import gi_paths
+        return bench_lock.read_state(gi_paths.bench_log())["holder"]
+    except Exception as e:      # noqa: BLE001  any failure to read the lock is "not held"
+        raise BenchNotHeld("the bench log could not be read: %s: %s" % (type(e).__name__, e))
+
+
+def _ancestors(pid=None):
+    """This process's pid and each ancestor's, read from /proc. Raises BenchNotHeld without it."""
+    pid = os.getpid() if pid is None else pid
+    out = []
+    while pid > 0 and pid not in out:
+        out.append(pid)
+        try:
+            with open("/proc/%d/stat" % pid, encoding="ascii", errors="replace") as f:
+                stat = f.read()
+        except OSError as e:
+            if not out[1:]:
+                raise BenchNotHeld("cannot read this process's parent from /proc (%s)" % e)
+            break
+        # pid (comm) state ppid ...: comm may hold spaces and parentheses, so split after the last ')'
+        pid = int(stat.rsplit(")", 1)[1].split()[1])
+    return out
+
+
+def require_bench():
+    """The holder, when this process may open a real adapter; raises BenchNotHeld otherwise."""
+    h = _lock_holder()
+    if h is None:
+        raise BenchNotHeld("the bench lock is free: a real adapter opens only under the lock")
+    if h.get("who") not in ROLES:
+        raise BenchNotHeld("the bench lock is held by %s, not a gen-inhibit role" % h.get("who"))
+    anc = _ancestors()
+    if h.get("pid") not in anc:
+        raise BenchNotHeld("the bench lock's holder pid %s (%s) is not this process or an ancestor "
+                           "(%s)" % (h.get("pid"), h.get("who"), " <- ".join(str(p) for p in anc)))
+    return h
 
 
 def _pin_tool():
@@ -56,12 +125,14 @@ def fixes():
 
 
 def kvaser_bus(**kw):
+    require_bench()
     fixes()
     import can
     return can.Bus(interface="kvaser", **kw)
 
 
 def gs_usb_bus(**kw):
+    require_bench()
     fixes()
     import can
     return can.Bus(interface="gs_usb", **kw)
