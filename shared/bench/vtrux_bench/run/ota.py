@@ -40,13 +40,14 @@ Settings, "ota" (machine-local, never committed):
     iface         the Wi-Fi interface (netsh's interface name; nmcli's device)
     profile       the saved Wi-Fi profile for the hotspot (made by the user;
                   its passphrase stays with the system)
-    ssid          the hotspot's SSID, or
-    ssid_env      the name of an environment variable holding it. The SSID
-                  embeds the WiCAN's MAC: it is replaced by <WICAN_SSID> in
-                  every console line, record and result this writes. The
-                  chain runner's record.json keeps the settings it ran with
-                  (unless the run gives record_settings), so ssid_env keeps
-                  it out of that record.
+    ssid_env      the name of an environment variable holding the hotspot's
+                  SSID (O2). The SSID embeds the WiCAN's MAC, so it is never
+                  in the settings themselves: the chain runner's record.json
+                  keeps the settings a run used. Settings with an "ssid" key
+                  are refused, nothing sent, whatever it holds; so is an
+                  ssid_env naming a variable that is unset or empty. The SSID
+                  is replaced by <WICAN_SSID> in every console line, record
+                  and result this writes.
     capture       the optional Wi-Fi capture (ota_wire.py); default true
     capture_iface the capture interface's name in `dumpcap -D` (default iface)
     echo          print each upload's console as it goes (the command line's)
@@ -899,11 +900,19 @@ class Stopped(Exception):
 def ota_settings(settings):
     """(cfg, None) or (None, why) from settings["ota"]."""
     s = settings.get("ota") or {}
-    ssid = s.get("ssid") or (os.environ.get(s["ssid_env"]) if s.get("ssid_env") else None)
+    if "ssid" in s:
+        # O2: never the SSID itself in the settings, which reach record.json;
+        # the value is not repeated here, since it is what must not spread
+        return None, ("settings.ota holds the SSID itself (key \"ssid\"); name an environment "
+                      "variable holding it in ssid_env instead (FLASH-SPEC O2)")
     miss = [k for k, v in (("iface", s.get("iface")), ("profile", s.get("profile")),
-                           ("ssid or ssid_env", ssid)) if not v]
+                           ("ssid_env", s.get("ssid_env"))) if not v]
     if miss:
         return None, "settings.ota has no %s" % ", ".join(miss)
+    ssid = os.environ.get(s["ssid_env"])
+    if not ssid:
+        return None, ("the environment variable %s, named by settings.ota.ssid_env, is unset or "
+                      "empty" % s["ssid_env"])
     return {"host": s.get("host") or DEFAULT_HOST, "iface": s["iface"], "profile": s["profile"],
             "ssid": ssid, "capture": s.get("capture", True) is not False,
             "capture_iface": s.get("capture_iface") or s["iface"],

@@ -48,6 +48,8 @@ SSID = "WiCAN_test_000000"       # made up; the masking checks look for it
 OTHER = "home_test_net"
 PROFILE = "wican-hotspot-test"
 IFACE = "Wi-Fi"
+SSID_ENV = "OTA_PREFLIGHT_TEST_SSID"  # O2: the SSID only through an environment variable
+os.environ[SSID_ENV] = SSID
 SCRATCH = _scratch.run_dir("ota_preflight")
 ROLE = "tester (charge-interposer)"
 
@@ -286,7 +288,7 @@ def flasher(params, settings=None, bench_kw=None, wifi=None, routes=None, hold=N
     logdir = logdir or os.path.join(SCRATCH, "log_%d" % len(os.listdir(SCRATCH)))
     os.makedirs(logdir, exist_ok=True)
     settings = settings if settings is not None else {
-        "ota": {"host": HOST, "iface": IFACE, "profile": PROFILE, "ssid": SSID, "capture": False}}
+        "ota": {"host": HOST, "iface": IFACE, "profile": PROFILE, "ssid_env": SSID_ENV, "capture": False}}
     image = image or Image("app_new", "ota", params, NEW, board="wican")
     try:
         with faked(b, w, routes, clk, b.post):
@@ -570,6 +572,22 @@ def o11_none_policy_refusals():
     r, b, w, _ = flasher({"bin": IMG, "retry": "none"}, settings={"ota": {"host": HOST, "iface": IFACE}})
     check("O2: settings without a profile or SSID: refused, nothing sent",
           lambda: r["ok"] is False and r["phase"] == "settings" and not b.calls, r)
+    literal = {"host": HOST, "iface": IFACE, "profile": PROFILE, "capture": False}
+    for label, extra in (("the SSID itself", {"ssid": SSID}),
+                         ("the SSID itself beside ssid_env", {"ssid": SSID, "ssid_env": SSID_ENV}),
+                         ("an empty ssid key", {"ssid": "", "ssid_env": SSID_ENV})):
+        r, b, w, _ = flasher({"bin": IMG, "retry": "none"}, settings={"ota": dict(literal, **extra)})
+        check("O2: settings holding %s: refused, nothing sent, the SSID not repeated" % label,
+              lambda: r["ok"] is False and r["phase"] == "settings" and not b.calls and not w.calls
+              and "ssid_env" in str(r.get("detail")) and SSID not in json.dumps(r, default=str), r)
+    os.environ.pop("OTA_TEST_UNSET_SSID_ENV", None)
+    os.environ["OTA_TEST_EMPTY_SSID_ENV"] = ""
+    for name in ("OTA_TEST_UNSET_SSID_ENV", "OTA_TEST_EMPTY_SSID_ENV"):
+        r, b, w, _ = flasher({"bin": IMG, "retry": "none"}, settings={"ota": dict(literal, ssid_env=name)})
+        check("O2: ssid_env naming a variable %s: refused, nothing sent"
+              % ("that is unset" if "UNSET" in name else "that is empty"),
+              lambda: r["ok"] is False and r["phase"] == "settings" and not b.calls and not w.calls
+              and name in str(r.get("detail")), r)
     from vtrux_bench.run import flash as FL
     builtin = FL.BUILTIN.get("ota")
     check("O1: \"ota\" is a built-in flasher beside esptool, and takes the runner's hold",
@@ -759,8 +777,11 @@ MUTANTS = [(n, OTA, o, w) for n, o, w in [
     ("O11: the built-in tries dual-slot without identify", 'if policy == "dual-slot" and identify is None:', "if False:"),
     ("a crash in an upload raises", "    except Exception as e:      # noqa: BLE001 -- bench_flash crashing was a non-zero exit\n",
      "    except ZeroDivisionError as e:\n"),
-    ("O2: ssid_env not read", 'ssid = s.get("ssid") or (os.environ.get(s["ssid_env"]) if s.get("ssid_env") else None)',
-     'ssid = s.get("ssid")'),
+    ("O2: ssid_env not read", '    ssid = os.environ.get(s["ssid_env"])\n', '    ssid = s.get("ssid_env")\n'),
+    ("O2: the SSID itself in the settings taken", '    if "ssid" in s:\n', '    if False:\n'),
+    ("O2: the SSID itself taken when not empty", '    if "ssid" in s:\n', '    if s.get("ssid") and not s.get("ssid_env"):\n'),
+    ("O2: an unset or empty variable not refused", "    if not ssid:\n        return None, (\"the environment variable",
+     "    if False:\n        return None, (\"the environment variable"),
     # the by-hand command
     ("by hand: no hold needed", '    if not held:\n        builtins.print("refused: the bench is not held',
      '    if False:\n        builtins.print("refused: the bench is not held'),
