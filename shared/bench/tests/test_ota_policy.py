@@ -32,7 +32,9 @@ FAILS = []
 SCRATCH = _scratch.run_dir("ota_policy")
 SSID = "WiCAN_test_000000"
 ROLE = "tester (gen-inhibit)"
-SETTINGS = {"ota": {"host": "192.0.2.1", "iface": "Wi-Fi", "profile": "wican-hotspot-test", "ssid": SSID,
+SSID_ENV = "OTA_POLICY_TEST_SSID"     # O2: the SSID only through an environment variable
+os.environ[SSID_ENV] = SSID
+SETTINGS = {"ota": {"host": "192.0.2.1", "iface": "Wi-Fi", "profile": "wican-hotspot-test", "ssid_env": SSID_ENV,
                     "capture": False}}
 TOOK, A1 = "...\nVERDICT: (c) TOOK -- page reads the image\n", "VERDICT: (a1) did NOT take: reset at 131072\n"
 
