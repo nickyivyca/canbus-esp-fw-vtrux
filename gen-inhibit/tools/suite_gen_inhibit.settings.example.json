@@ -1,21 +1,27 @@
 {
-  "_comment": "Settings for suite_gen_inhibit.py (bench and emulated). One copy per machine, outside git; every <...> is a local path or name. The WiCAN SSID is never put here: the suite reads it from bench_holder. Keys the core reads: runs_root, bench_holder, bench_lock_log, hosts, esptool, wallclock_patterns (shared/bench/README.md). bench_lock_log puts the bench lock on that log; without it the Holder line of bench_holder is the lock, as before the cutover (shared/bench/SPEC.md (shared/main), section 7).",
+  "_comment": "Settings for suite_gen_inhibit.py (bench and emulated). One copy per machine, outside git; every <...> is a local path or name. The WiCAN SSID is never put here: the suite reads it from bench_holder. Keys the core reads: runs_root, bench_holder, bench_lock_log, canmain_check, hosts, esptool, wallclock_patterns, placement (shared/bench/README.md). placement (core 2026.11.12, Linux; AGENTS.md 'Parallel work on the shared machine', point 1): bench.slice for the lock and wallclock classes, build.slice for build and light, so every bench check starts in bench.slice and every emulated one in build.slice; with it the core refuses a bench run whose runner is not itself in bench.slice (start it with systemd-run --user --scope --slice=bench.slice). bench_lock_log puts the bench lock on that log; without it the Holder line of bench_holder is the lock, as before the cutover (shared/bench/SPEC.md (shared/main), section 7). Serial devices are named by their USB IDs, never a COM or tty name (DEVICES-SPEC S1, Linux only): esptool.device is the X2's, wican.usb_device the WiCAN's; the suite hands both to the tools as GI_X2_DEVICE and GI_WICAN_DEVICE. Serial numbers are bench identifiers: local settings only.",
   "runs_root": "<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit/runs/chain",
   "bench_holder": "<reverse-it>/firmware/bench-holder.md",
   "bench_lock_log": "<reverse-it>/firmware/bench-log.jsonl",
+  "canmain_check": {"probe": "<link, unbound or absent>", "reason": "<why this probe shows canmain down on this bench>",
+                    "iface": "canmain"},
   "hosts": {
     "local": {
-      "python": ["py", "-3.14", "-B"],
-      "env": {"PYTHONPATH": "<core>/shared/bench;<interposer clone>/charge-interposer"}
+      "python": ["python3.13", "-B"],
+      "env": {"PYTHONPATH": "<core 2026.11.12>/shared/bench:<interposer clone>/charge-interposer"}
     }
   },
   "esptool": {"argv": ["<the python of ESP-IDF v5.4.2's python env, whose esptool is 4.13.0>", "-m", "esptool"],
-              "port": "COM3", "baud": 921600,
+              "device": {"vid": "303a", "pid": "1001", "serial": "<the X2's USB serial number>", "interface": 0},
+              "baud": 921600,
               "chip": {"type": "ESP32-S3", "mac": "<the X2's MAC, as esptool chip_id prints it>"}},
+  "wican": {"usb_device": {"vid": "303a", "pid": "1001", "serial": "<the WiCAN's USB serial number>", "interface": 0}},
   "wallclock_patterns": [],
+  "placement": {"slices": {"lock": "bench.slice", "wallclock": "bench.slice",
+                           "build": "build.slice", "light": "build.slice"}},
 
   "reverse_it": "<reverse-it>",
-  "bash": "<Git Bash's bash.exe, full path; a bare bash finds WSL's>",
+  "bash": "/usr/bin/bash",
   "gi_tools": "<tester worktree>/gen-inhibit/tools",
   "gi_index": "<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit/runs/baseline_e3d9437/suite_index_e3d9437.json",
   "gi_commit": "<the commit in the images' app descriptor, character for character: git's short form when they were built, which is 8 hex digits in this repo since 2026-11 (7 before); the suite compares it exactly, so a shorter or longer prefix of the same commit is refused as 'code is not identifiable'. The bench run looks for an emulated run on the same string, so give both runs the same one>",
@@ -33,6 +39,6 @@
 
   "interposer_artifacts": "<as bench_identify.py reads it>",
   "interposer_dbc": "<reverse-it>/projects/vtrux/vtrux-interposer-diag.dbc",
-  "serial_port": "COM3",
+  "_comment_serial_port": "No serial_port: the interposer's bench_identify reads settings.serial_port, and the suite hands it a copy of these settings with serial_port set to the X2's by-id path, resolved from esptool.device (recorded in the identify step's serial_device_bench_identify.txt).",
   "wican_state": "<as bench_identify.py reads it>"
 }

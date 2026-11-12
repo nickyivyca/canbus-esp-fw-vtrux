@@ -761,17 +761,19 @@ def replay_stop(pc, th, st, tx):
         pass
 
 
-CC = None   # the session's COM4 ConsoleCapture, started in main()
+CC = None   # the session's WiCAN ConsoleCapture, started in main()
 
 
-def start_wican_console(a, factory):
-    """The COM4 ConsoleCapture, started, or None with --no-wican-console (reviewer,
+def start_wican_console(a, factory, port_of):
+    """The WiCAN's ConsoleCapture, started, or None with --no-wican-console (reviewer,
     2026-10-20: no WiCAN console captures until the WiCAN's factory reset, since its
     console has printed its config). With None the reset is POST /system_reboot and
-    each arm records "not captured"."""
+    each arm records "not captured". port_of("wican") gives its port by its USB IDs
+    (gi_serial, DEVICES-SPEC S1, 2026-11-12), asked only when the capture is made, so a
+    run with --no-wican-console (USB unplugged) needs no WiCAN device."""
     if getattr(a, "no_wican_console", False):
         return None
-    cc = factory()
+    cc = factory(port_of("wican"))
     cc.start()
     return cc
 
@@ -1457,14 +1459,30 @@ def main():
     if why:
         print("REFUSED: %s" % why)
         return 2
+    # the boards' ports by their USB IDs (DEVICES-SPEC S1; gen-inhibit reviewer,
+    # 2026-11-12): the X2's always, the WiCAN's only for its console capture. No device,
+    # or not exactly one, refuses before anything opens (exit 2, no record).
+    import gi_serial as GS
+    serial_devices = {}
+
+    def port_of(board):
+        serial_devices[board] = GS.resolve(board)
+        return serial_devices[board]["port"]
+    try:
+        x2_port = port_of("x2")
+        if not a.no_wican_console:
+            port_of("wican")
+    except GS.Refused as e:
+        print("REFUSED: %s (nothing run, no record)" % e)
+        return 2
     rec = {"when": time.strftime("%Y%m%dT%H%M%S"), "case": a.case, "args": vars(a),
            "build": build, "power": a.power, "decoder": gi_diag.run_identity(),
            "jammer": "X2 CAN1, x2_jammer bb20e4a37b64 / md5 a89ece8c...",
-           "witness": "Kvaser, normal mode"}
+           "witness": "Kvaser, normal mode", "serial_devices": serial_devices}
     global CC
     from console_capture import ConsoleCapture
-    CC = start_wican_console(a, ConsoleCapture)      # COM4, every live arm (reviewer 2026-10-08)
-    con = XJ.Console("COM3")
+    CC = start_wican_console(a, ConsoleCapture, port_of)      # every live arm (reviewer 2026-10-08)
+    con = XJ.Console(x2_port)
     con.start()
     wit = None
     time.sleep(0.5)

@@ -6,7 +6,7 @@ tool fails, and a settings file naming bench_lock_log puts a run on that log whi
 without keeps it on the Holder line. No hardware: every tool the hooks run is stood in
 for.
 
-    PYTHONPATH=<core b9896a0>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 2026.11.12>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit.py
 
 The board steps run the real wican_reboot.py from this folder's bench/ (the suite's
@@ -54,9 +54,11 @@ def scratch_dir(name):
 sys.path.insert(0, HERE)
 
 from vtrux_bench.run import cli as CLI                       # noqa: E402
+from vtrux_bench.run import engine as ENG                    # noqa: E402
 from vtrux_bench.run.engine import Engine, fmt               # noqa: E402
-from vtrux_bench.run.model import CheckRun, validate         # noqa: E402
+from vtrux_bench.run.model import CheckRun, SuiteError, validate   # noqa: E402
 import suite_gen_inhibit as SG                               # noqa: E402
+import _fake_serial as FS     # noqa: E402  bench/ (on sys.path above): the made-up serial devices
 
 # esptool (gi_esptool.py, 2026-11-11): the settings' argv in its one form, and the version
 # `<argv> version` reports, stood in for here (VERSION[0]) so no esptool runs
@@ -66,6 +68,7 @@ SG.GE.version = lambda argv, timeout=60: (VERSION[0], "esptool.py v%s\n%s\n" % (
 
 SSID ="WiCAN_" + "0f" * 6   # made up for the test, and built so this file has no SSID-form literal (test_publish_scan.py)
 BASE = scratch_dir("suite_gen_inhibit")
+SER_PORTS = {}   # the made-up serial devices' by-id links, by board (filled with the settings)
 fails = []
 oks = 0
 
@@ -158,6 +161,13 @@ def fixture():
     # copy takes x2_pin.PIN_FILE from the x2_pin module already imported)
     import x2_pin as X2P
     SG.X2_PIN_FILE = X2P.PIN_FILE = fake_pin(os.path.join(BASE, "x2pin"))
+    # A made-up bench of serial devices (DEVICES-SPEC S1; bench/_fake_serial.py, the core's own
+    # fixture), installed into the core's serial_dev for this process: the X2's port, for
+    # x2_verify and bench_identify, is its by-id link there, never the host's devices.
+    from vtrux_bench import serial_dev as SD
+    env, ports = FS.fake_bench(os.path.join(BASE, "serial"))
+    SER_PORTS.update(ports)
+    SD.SYS_ROOT, SD.BY_ID = env["GI_SERIAL_SYS_ROOT"], env["GI_SERIAL_BY_ID"]
     settings = {
         "reverse_it": BASE.replace("\\", "/"), "gi_tools": HERE.replace("\\", "/"), "gi_commit": "e3d9437",
         "gi_images": os.path.join(BASE, "images"), "gi_prod_dir": os.path.join(BASE, "prod"),
@@ -167,7 +177,8 @@ def fixture():
         "gi_can1_termination": "fixed passive resistors (test)",
         "bench_holder": bh, "runs_root": os.path.join(BASE, "runs"),
         "hosts": {"local": {"python": [sys.executable, "-B"]}},
-        "esptool": {"argv": [sys.executable, "-c", "pass"], "port": "COM3"},
+        "esptool": {"argv": [sys.executable, "-c", "pass"], "device": FS.device(FS.X2_SERIAL)},
+        "wican": {"usb_device": FS.device(FS.WICAN_SERIAL)},
     }
     return settings, shas
 
@@ -206,8 +217,20 @@ def test_suites(settings, shas):
           all(sorted(bench.images[n].board for n in g.image_list) == ["wican", "x2"] for g in bench.groups))
     check("emulated: no group holds the lock or carries an image",
           not any(g.needs_lock or g.image_list for g in emu.groups) and not emu.images)
-    check("bench: standing images are _man and the X2's own",
-          bench.standings() == {"wican": "wican_man", "x2": "x2_app"}, bench.standings())
+    # no restore at a run's end from core 2026.11.11 (user, 2026-11-11): marks instead
+    check("bench: no standing image (retired 2026-11-11)",
+          getattr(bench, "standing_image", None) is None and getattr(bench, "standing_images", None) is None,
+          (getattr(bench, "standing_image", None), getattr(bench, "standing_images", None)))
+    marked = sorted(n for n, im in bench.images.items() if not im.idle_safe)
+    check("bench: x2_held and x2_jammer, and nothing else, are marked not safe to leave idle",
+          marked == ["x2_held", "x2_jammer"], marked)
+    check("bench: no WiCAN image is marked (every one boots idle)",
+          not [n for n in marked if bench.images[n].board == "wican"], marked)
+    check("bench: the X2's idle-safe image is x2_app, the only board with one",
+          bench.idle_safe_images == {"x2": "x2_app"}, bench.idle_safe_images)
+    check("bench: each mark's reason is in its image's note",
+          all("not safe to leave idle: " in bench.images[n].note and len(bench.images[n].note) > 60
+              for n in ("x2_held", "x2_jammer")), [bench.images[n].note for n in ("x2_held", "x2_jammer")])
     want = dict(shas)
     got = {n: im.expect for n, im in bench.images.items() if im.board == "wican"}
     check("bench: each WiCAN image expects its own bin's ELF sha", got == want, (got, want))
@@ -584,25 +607,56 @@ def test_identify(settings, bench):
     def t5(t):
         calls = bi("756d6714")
         t.do[("x2_hold.py", "pins")] = pins("unknown -- a register was not read", rc=1)
-        t.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T1.json": {"banner_ok": False}})
+        t.do[("x2_jammer.py", "id")] = lambda a, e: (
+            "", 0, {"x2_jammer_id_T1.json": {"banner_ok": False, "reset_since_open": False}})
         return ident(xa, {}, logdir()), calls, t.named("x2_jammer.py")
     got, calls, jam = with_tools(t5)
     check("identify X2: a running image goes to bench_identify, and no ID is sent",
           got == "756d6714" and calls == ["x2_app"] and jam == [], (got, calls, jam))
 
+    # x2_jammer id always writes reset_since_open (False when the uptime shows no reset), so the
+    # fake records carry it too; without it suite mutant m12 crashed here instead of failing t7n.
     def t6(t):
         bi(None)
         t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
-        t.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T1.json": {"banner_ok": True}})
+        t.do[("x2_jammer.py", "id")] = lambda a, e: (
+            "", 0, {"x2_jammer_id_T1.json": {"banner_ok": True, "reset_since_open": False}})
         return ident(xa, {}, logdir())
     check("identify X2: the jammer's banner when bench_identify knows nothing", with_tools(t6) == "jammer:banner")
 
     def t7(t):
         bi(None)
         t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
-        t.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T1.json": {"banner_ok": False}})
+        t.do[("x2_jammer.py", "id")] = lambda a, e: (
+            "", 0, {"x2_jammer_id_T1.json": {"banner_ok": False, "reset_since_open": False}})
         return ident(xj, {}, logdir())
     check("identify X2: no banner either is None (on none of the images)", with_tools(t7) is None)
+
+    # A reset during the jammer's ID read (gen-inhibit reviewer, 2026-11-11): x2_jammer id
+    # writes banner_ok false with reset_since_open true; that stops the bench (RAISES), and
+    # is not "on none of the images". With no uptime to judge by (None) it stays None.
+    def t7r(t):
+        bi(None)
+        t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
+        t.do[("x2_jammer.py", "id")] = lambda a, e: (
+            "", 0, {"x2_jammer_id_T1.json": {"banner_ok": False, "reset_since_open": True}})
+        return raises(lambda: ident(xj, {}, logdir()), SG.IdentifyError)
+    e = with_tools(t7r)
+    check("identify X2: a reset during the jammer's ID read RAISES, naming reset_since_open",
+          e is not None and "reset_since_open" in str(e), e)
+
+    def t7n(t):
+        bi(None)
+        t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
+        t.do[("x2_jammer.py", "id")] = lambda a, e: (
+            "", 0, {"x2_jammer_id_T1.json": {"banner_ok": False, "reset_since_open": None}})
+        try:
+            return ident(xj, {}, logdir())
+        except SG.IdentifyError as e:   # a check, not a crash (suite mutant m12)
+            return "RAISED: %s" % e
+    got = with_tools(t7n)
+    check("identify X2: a jammer ID with no uptime to judge a reset by is None, not a raise",
+          got is None, got)
 
     def t8(t):
         bi(None)
@@ -657,7 +711,7 @@ def test_identify(settings, bench):
     check("identify X2: the SSID is redacted from the tool's log and its new records", with_tools(t13))
 
     # SLCAN answers name the protocol, not the build: x2_slcan only with the pinned app on the flash
-    sv = dict(settings, esptool={"argv": list(ESPTOOL_ARGV), "port": "COM3", "baud": 921600})
+    sv = dict(settings, esptool={"argv": list(ESPTOOL_ARGV), "device": FS.device(FS.X2_SERIAL), "baud": 921600})
     hv = SG.make_hooks(sv, SSID, bench.images)
     xs = bench.images["x2_slcan"]
     # esptool 4.13.0's verify_flash line, written out here, not taken from the suite
@@ -716,6 +770,56 @@ def test_identify(settings, bench):
     got, _, _ = slcan("could not open port 'COM3': PermissionError\n", 2)
     check("identify X2: a verify whose port would not open RAISES", isinstance(got, SG.IdentifyError), got)
 
+    # The X2's port by its USB IDs (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12): the
+    # tools get the IDs as GI_X2_DEVICE / GI_WICAN_DEVICE; x2_verify and bench_identify get
+    # the by-id link the core's device_port resolves, each written down beside the run (S3).
+    def t_port(settings_=sv):
+        def t(tt):
+            seen = {}
+
+            def identify(image, ctx, logdir_, s):
+                seen["serial_port"] = s.get("serial_port")
+                return "slcan:V0101:NF001"
+            fake_module("bench_identify", identify=identify)
+            tt.do[("x2_hold.py", "pins")] = lambda a, e: (
+                seen.update(env=dict(e)) or ("pins: TX (GPIO7) unknown\n", 1, {"x2_hold_pins_T.json": "{}"}))
+            tt.do[("esptool", "--port")] = lambda a, e: (VER, 0, {})
+            d = logdir()
+            try:
+                got = SG.make_hooks(settings_, SSID, bench.images)["identify"](xs, {}, d)
+            except Exception as e:
+                got = e
+            files = {n: open(os.path.join(d, n), encoding="utf-8").read()
+                     for n in os.listdir(d) if n.startswith("serial_device_")}
+            return got, seen, tt.named("esptool"), files
+        return with_tools(t)
+    got, seen, ver, files = t_port()
+    x2p = SER_PORTS.get("x2")
+    check("identify X2: the tools get the X2's and the WiCAN's USB IDs as GI_X2_DEVICE and GI_WICAN_DEVICE",
+          json.loads((seen.get("env") or {}).get("GI_X2_DEVICE", "null")) == FS.device(FS.X2_SERIAL)
+          and json.loads((seen.get("env") or {}).get("GI_WICAN_DEVICE", "null")) == FS.device(FS.WICAN_SERIAL),
+          {k: (seen.get("env") or {}).get(k) for k in ("GI_X2_DEVICE", "GI_WICAN_DEVICE")})
+    check("identify X2: the verify's esptool --port is the X2's by-id link, resolved from esptool.device",
+          got == "slcan:V0101:NF001" and len(ver) == 1 and x2p and ver[0][2][3:5] == ["--port", x2p],
+          (got, ver and ver[0][2][:6], x2p))
+    check("identify X2: bench_identify is handed that link as serial_port, in a copy of the settings",
+          seen.get("serial_port") == x2p and "serial_port" not in sv, (seen.get("serial_port"), x2p))
+    check("identify X2: serial_device_x2_verify.txt and serial_device_bench_identify.txt keep the port, "
+          "the IDs matched and what each was used for",
+          sorted(files) == ["serial_device_bench_identify.txt", "serial_device_x2_verify.txt"]
+          and all(("port: %s\n" % x2p) in t and ("serial: %s\n" % FS.X2_SERIAL) in t for t in files.values())
+          and files["serial_device_bench_identify.txt"].startswith("used by: bench_identify")
+          and files["serial_device_x2_verify.txt"].startswith("used by: x2_verify"), files)
+    for label, et, want in (
+            ("a port setting (a tty name)", {"argv": list(ESPTOOL_ARGV), "port": "/dev/ttyACM1"}, "refused"),
+            ("no device setting", {"argv": list(ESPTOOL_ARGV)}, "no device setting"),
+            ("IDs that match no device", {"argv": list(ESPTOOL_ARGV), "device": FS.device("NOSUCHSERIAL")},
+             "no device matches")):
+        got, seen, ver, files = t_port(dict(sv, esptool=et))
+        check("identify X2: %s RAISES before bench_identify or esptool runs" % label,
+              isinstance(got, SG.IdentifyError) and want in str(got) and "serial_port" not in seen and ver == [],
+              (got, seen.get("serial_port"), ver))
+
     def t_bridge(t):
         bi("70df3a43")       # a foreign bridge's 0x7F7 build id: not verified, just read
         t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
@@ -737,7 +841,8 @@ def x2_reads(tt, *reads):
         return r
     fake_module("bench_identify", identify=identify)
     tt.do[("x2_hold.py", "pins")] = lambda a, e: ("pins: TX (GPIO7) unknown\n", 1, {"x2_hold_pins_T%d.json" % len(a): "{}"})
-    tt.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T%d.json" % len(a): {"banner_ok": False}})
+    tt.do[("x2_jammer.py", "id")] = lambda a, e: ("", 0, {"x2_jammer_id_T%d.json" % len(a): {"banner_ok": False,
+                                                                                         "reset_since_open": False}})
     # an SLCAN answer is verified against the pinned slcan app: here it is some other build
     tt.do[("esptool", "--port")] = lambda a, e: ("-- verify FAILED: digest mismatch\n", 2, {})
 
@@ -753,7 +858,7 @@ def x2_writes(result):
 
 
 def test_flashers(settings, bench):
-    settings = dict(settings, esptool={"argv": list(ESPTOOL_ARGV), "port": "COM3"})
+    settings = dict(settings, esptool={"argv": list(ESPTOOL_ARGV), "device": FS.device(FS.X2_SERIAL)})
     hooks = SG.make_hooks(settings, SSID, bench.images)
     wm, xh, xj = (bench.images[n] for n in ("wican_man", "x2_held", "x2_jammer"))
 
@@ -1196,12 +1301,25 @@ def test_lock_source(settings):
     clean code with a passing emulated run (Suite.requires). Every tool the hooks run is
     stood in for, and the WiCAN's start step fails, which stops the bench before
     anything is identified or flashed (the core's start_hook_stops): no case runs, and
-    bash is a path that does not exist in case one did."""
+    bash is a path that does not exist in case one did. Then the settings example's
+    placement (core 2026.11.12): a bench run refuses to start unless the runner is in
+    bench.slice, before the take; in bench.slice it starts; with no placement it starts
+    anywhere. The runner's cgroup is made up (engine.RUNNER_CGROUP)."""
     from vtrux_bench import bench_lock as BL
     from vtrux_bench.run.lock import LockError
+    from vtrux_bench.run import canmain as CM
     d = os.path.join(BASE, "lock")
     repo = os.path.join(d, "repo")
     os.makedirs(repo)
+    # From core 2026.11.11.2 a run that needs the bench refuses unless canmain_check
+    # shows canmain down (shared/bench SPEC section 8). Here it runs for real, on a
+    # made-up sysfs whose canmain exists with its link down, never the host's.
+    cm_root = os.path.join(d, "sys")
+    os.makedirs(os.path.join(cm_root, "class", "net", "canmain"))
+    with open(os.path.join(cm_root, "class", "net", "canmain", "flags"), "w") as f:
+        f.write("0x1002\n")
+    CM.SYS_ROOT = cm_root
+    cm_setting = {"probe": "link", "reason": "made-up sysfs, canmain down (test)", "iface": "canmain"}
     git(repo, "init", "-q")
     with open(os.path.join(repo, ".gitignore"), "w") as f:
         f.write("*.bin\n")
@@ -1218,11 +1336,14 @@ def test_lock_source(settings):
                 image_elf_sha256=__import__("bench_flash").image_elf_sha256)
     fake_module("bench_identify", identify=lambda image, ctx, logdir_, settings_: None)
     n = [0]
+    cg0, plat0 = ENG.RUNNER_CGROUP, ENG.PLATFORM
 
-    def run(log, holder, log_taken_by=None):
+    def run(log, holder, log_taken_by=None, placement=None, cgroup=None):
         """One run: (outcome, the log's lines before, after, the Holder file unchanged,
         record.json or None). log: name the scratch log in the settings, or not; it is
-        made in both cases."""
+        made in both cases. placement: the settings' placement, or none. cgroup: the
+        runner's /proc/self/cgroup text, made up in a file the core reads instead
+        (engine.RUNNER_CGROUP), with the core told it is on Linux; None leaves both."""
         n[0] += 1
         c = os.path.join(d, "c%d" % n[0])
         runs = os.path.join(c, "runs")
@@ -1243,9 +1364,17 @@ def test_lock_source(settings):
             BL.take(lp, log_taken_by, os.getpid(), note="held by the other role")
         before = open(lp, encoding="ascii").read().splitlines()
         s = dict(settings, gi_images=repo, gi_prod_dir=os.path.join(repo, "prod"), gi_fw=repo, gi_commit=h,
-                 runs_root=runs, bench_holder=bh, bash=os.path.join(c, "no-bash.exe"))
+                 runs_root=runs, bench_holder=bh, bash=os.path.join(c, "no-bash.exe"),
+                 canmain_check=dict(cm_setting))
         if log:
             s["bench_lock_log"] = lp
+        if placement is not None:
+            s["placement"] = placement
+        if cgroup is not None:
+            cg = os.path.join(c, "cgroup")
+            with open(cg, "w", encoding="ascii", newline="\n") as f:
+                f.write(cgroup)
+            ENG.RUNNER_CGROUP, ENG.PLATFORM = cg, "linux"
         sp = os.path.join(c, "settings.json")
         with open(sp, "w", encoding="utf-8") as f:
             json.dump(s, f)
@@ -1262,6 +1391,8 @@ def test_lock_source(settings):
                     res = "ran"
                 except LockError as e:
                     res = "refused: %s" % e
+                except SuiteError as e:
+                    res = "refused (suite): %s" % e
                 except Exception as e:
                     res = "error: %r" % (e,)
             rec = None
@@ -1269,7 +1400,10 @@ def test_lock_source(settings):
                 with open(os.path.join(eng.run_dir, "record.json"), encoding="utf-8") as f:
                     rec = json.load(f)
             return res, rec, getattr(eng, "run_id", None)
-        res, rec, rid = with_tools(go)
+        try:
+            res, rec, rid = with_tools(go)
+        finally:
+            ENG.RUNNER_CGROUP, ENG.PLATFORM = cg0, plat0
         after = open(lp, encoding="ascii").read().splitlines()
         return res, before, after, open(bh, "rb").read() == held, rec, rid
 
@@ -1293,6 +1427,8 @@ def test_lock_source(settings):
     check("lock: nothing ran on the bench (the start step stood in and failed)",
           rec and results(rec) and all(v == "NOT-RUN" for _, v in results(rec)), results(rec))
     check("lock: the run on the log leaves the Holder line alone", same)
+    check("lock: the record keeps the core's canmain check line",
+          rec and "canmain exists and its link is down" in str(rec.get("canmain_check")), rec and rec.get("canmain_check"))
 
     # the log named, held by the other role, the Holder line ours: refused by the log
     res, before, after, same, rec, _ = run(True, "%s, 2026-10-24 00:00 (test)" % SG.ROLE, log_taken_by=other)
@@ -1316,6 +1452,55 @@ def test_lock_source(settings):
           rec and rec.get("lock"))
     check("lock: the run on the Holder line writes nothing to the log, and leaves the Holder file alone",
           after == before and same, (after[len(before):], same))
+
+    # Placement (core 2026.11.12; gen-inhibit reviewer, 2026-11-12): with the settings
+    # example's placement, a bench run (man_app has images, so the runner flashes) refuses
+    # to start unless the runner is in bench.slice. The cgroup texts are made up; the
+    # probes the core would start per group are a command that fails, so no systemd-run
+    # runs here, and nothing reaches a group anyway (the start step fails).
+    with open(os.path.join(HERE, "suite_gen_inhibit.settings.example.json"), encoding="utf-8") as f:
+        pl = dict(json.load(f).get("placement") or {})
+    nope = [sys.executable, "-c", "raise SystemExit(1)"]
+    pl.update(systemd_run=nope, systemctl=nope)
+    app = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/test.scope\n"
+    bench_cg = "0::/user.slice/user-1000.slice/user@1000.service/bench.slice/run-test.scope\n"
+    free = "-- (free)"
+
+    def runner_ev(rec):
+        evs = [e for e in (rec or {}).get("events", []) if e.get("kind") == "placement" and e.get("runner")]
+        return evs[0] if evs else None
+
+    res, before, after, same, rec, _ = run(True, free, placement=pl, cgroup=app)
+    check("placement: with the example's placement, a bench run whose runner is in app.slice is refused (%s)"
+          % res[:80], res.startswith("refused (suite): refusing to start") and "app.slice" in res
+          and "bench.slice" in res, res)
+    # the command is the settings' systemd_run (here the stand-in) with the scope's arguments
+    check("placement: the refusal prints the command that starts it in bench.slice (a user scope)",
+          "--user --scope" in res and "--slice=bench.slice" in res and "raise SystemExit(1)" in res, res)
+    check("placement: that refusal takes nothing, writes nothing to the log and makes no run",
+          after == before and rec is None and same, (after[len(before):], rec is None))
+    # can-fail: the refusal is the core's rule runner_slice; with it off, the same run
+    # starts, so the checks above are what catch a core or settings that stop refusing
+    rule0 = ENG.RULES["runner_slice"]
+    ENG.RULES["runner_slice"] = False
+    try:
+        res, before, after, same, rec, _ = run(True, free, placement=pl, cgroup=app)
+    finally:
+        ENG.RULES["runner_slice"] = rule0
+    check("placement can-fail: with the core's runner_slice rule off, the same run in app.slice is not refused",
+          res == "ran", res)
+    res, before, after, same, rec, _ = run(True, free, placement=pl, cgroup=bench_cg)
+    ev_ = runner_ev(rec)
+    check("placement: the same run with the runner in bench.slice starts (%s)" % res[:80],
+          res == "ran" and rec is not None, res)
+    check("placement: its record names the runner's slice, bench.slice, and its board work",
+          ev_ is not None and ev_.get("slice") == "bench.slice" and ev_.get("wallclock_slice") == "bench.slice"
+          and "man_app" in str(ev_.get("board_work")), ev_)
+    res, before, after, same, rec, _ = run(True, free, placement=None, cgroup=app)
+    ev_ = runner_ev(rec)
+    check("placement: with no placement setting the run in app.slice starts, its slice recorded (%s)" % res[:80],
+          res == "ran" and ev_ is not None and ev_.get("slice") == "app.slice"
+          and ev_.get("reason") == "no placement setting", (res, ev_))
 
 
 FAKE_SSH = r"""#!/usr/bin/env bash
@@ -1422,8 +1607,11 @@ def test_host_group(settings, emu):
           [l for l in lines if "tar xf" in l] != [], (rc, lines, txt[-300:]))
 
 
-def test_example(bench, emu):
-    """The settings example names every key the suites need and every placeholder."""
+def test_example(bench, emu, settings):
+    """The settings example names every key the suites need and every placeholder, and
+    its placement (core 2026.11.12; gen-inhibit reviewer, 2026-11-12) starts every bench
+    check in bench.slice and every emulated check in build.slice, as the core reads it on
+    Linux (Engine.placement_for)."""
     import re
     with open(os.path.join(HERE, "suite_gen_inhibit.settings.example.json"), encoding="utf-8") as f:
         ex = json.load(f)
@@ -1441,13 +1629,31 @@ def test_example(bench, emu):
     check("the settings example names x2_pin_dir and not the retired x2_images",
           "x2_pin_dir" in ex and "x2_images" not in ex, sorted(ex))
     check("the settings example has no WiCAN SSID", not re.search(r"WiCAN_[0-9a-fA-F]{4}", json.dumps(ex)))
+    pl = ex.get("placement") or {}
+    check("the settings example's placement: bench.slice for lock and wallclock, build.slice for build and light",
+          pl.get("slices") == {"lock": "bench.slice", "wallclock": "bench.slice",
+                               "build": "build.slice", "light": "build.slice"}, pl)
+    plat0 = ENG.PLATFORM
+    ENG.PLATFORM = "linux"
+    try:
+        s = dict(settings, placement=pl)
+        got = {}
+        for suite, want in ((bench, "bench.slice"), (emu, "build.slice")):
+            eng = Engine(suite, s)
+            got[suite.name] = sorted({"%s/%s" % (g.name, c.id): eng.placement_for(g, c)
+                                      for g in suite.groups for c in g.checks if not c.skip}.items())
+            wrong = [(k, v) for k, v in got[suite.name] if v != want]
+            check("with the example's placement, every %s check starts in %s (%d checks)"
+                  % (suite.name, want, len(got[suite.name])), got[suite.name] and not wrong, wrong)
+    finally:
+        ENG.PLATFORM = plat0
 
 
 def main():
     try:
         settings, shas = fixture()
         bench, emu = test_suites(settings, shas)
-        test_example(bench, emu)
+        test_example(bench, emu, settings)
         test_host_group(settings, emu)
         test_code_info(settings)
         test_lock_source(settings)

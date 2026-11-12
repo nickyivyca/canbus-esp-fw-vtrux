@@ -39,6 +39,13 @@ record with verdict REFUSED, nothing run). dump, flash-jammer and restore record
 esptool_argv and esptool_version; check-dump runs no esptool and records None for both.
 Command names are the underscore ones (read_flash, write_flash, verify_flash).
 
+The port (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12; gi_serial.py): the X2 is
+named by its USB IDs in GI_X2_DEVICE and resolved to its /dev/serial/by-id/ path through
+the core's serial_dev, after esptool's check and before the board is touched. No device,
+or not exactly one, refuses like esptool (exit 1, verdict REFUSED, nothing run). dump,
+flash-jammer and restore records hold the port and serial_device, what was matched (S3);
+check-dump opens no port and records None for both. Linux only.
+
 After `dump` and after `restore`, identify the board from the wire with
 interposer-firmware/bench_identify_board.py; this script does not, because
 esptool and the CAN witness are separate steps and each is recorded.
@@ -58,6 +65,7 @@ import time
 import zlib
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import gi_esptool as GE  # noqa: E402  esptool from the settings, pinned (2026-11-11)
+import gi_serial as GS  # noqa: E402  the X2's port by its USB IDs (DEVICES-SPEC S1, 2026-11-12)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
@@ -341,24 +349,27 @@ def sub_restore(a, rec):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("sub", choices=("dump", "flash-jammer", "restore", "check-dump"))
-    ap.add_argument("--port", default="COM3")
     ap.add_argument("--expect-elf", default="7f197bfd")
     ap.add_argument("--dump-record")
     ap.add_argument("--build", help="jammer app md5 (its builds/ dir name)")
     a = ap.parse_args()
+    a.port = None
     rec = {"when": time.strftime("%Y%m%dT%H%M%S"), "sub": a.sub,
-           "esptool_argv": None, "esptool_version": None, "port": a.port,
+           "esptool_argv": None, "esptool_version": None, "port": None, "serial_device": None,
            "build_lookup": BUILD_LOOKUP}
     try:
         if a.sub in ESPTOOL_SUBS:
             _ET.clear()
             try:
                 _ET.update(GE.checked())
-            except GE.Refused as e:
+                rec["esptool_argv"], rec["esptool_version"] = _ET["argv"], _ET["version"]
+                dev = GS.resolve("x2")
+            except (GE.Refused, GS.Refused) as e:
                 rec.update(verdict="REFUSED", why=str(e))
                 print("REFUSED: %s (nothing run)" % e)
                 return 1
-            rec["esptool_argv"], rec["esptool_version"] = _ET["argv"], _ET["version"]
+            a.port = rec["port"] = dev["port"]
+            rec["serial_device"] = dev
         {"dump": sub_dump, "flash-jammer": sub_flash_jammer,
          "restore": sub_restore, "check-dump": sub_check_dump}[a.sub](a, rec)
     finally:

@@ -27,7 +27,10 @@ Made-up identities and images only, in this worktree's scratch/:
                   the level from the markers; phase_bootloader records them
   esptool MAC     the otadata and bootloader phases compare esptool's MAC value-blind: a
                   fake esptool printing a made-up MAC; neither MAC printed or in the run
-                  file, the match recorded, another unit fails (2026-10-30)
+                  file, the match recorded, another unit fails (2026-10-30); esptool's
+                  port is the WiCAN's by-id link from GI_WICAN_DEVICE on a made-up bench
+                  of serial devices, the run file keeps what matched (S3), and with
+                  GI_WICAN_DEVICE unset each phase refuses before esptool (S1, 2026-11-12)
 
     py -3.14 -B gen-inhibit/tools/bench/test_ota_rehearsal_none.py
 Mutants: test_ota_rehearsal_none_mutants.py (REHEARSAL_DIR runs another copy).
@@ -46,6 +49,7 @@ SRC = os.environ.get("REHEARSAL_DIR") or HERE
 sys.path.insert(0, HERE)
 import gi_paths                      # noqa: E402
 import image_elf_sha as M            # noqa: E402
+import _fake_serial as FS            # noqa: E402  a made-up bench of serial devices
 
 SCRATCH = gi_paths.scratch("ota-rehearsal-none")
 DEVICE_ID = "00005e005311"           # made up, in the RFC 7042 documentation range
@@ -362,30 +366,76 @@ def mac_cases(R):
     img = fake_bootloader(b"E (%lu) boot: No bootable app partitions in the partition table\x00")
     real = (R.RUNS, R.log, R.subprocess)
     runs = os.path.join(SCRATCH, "runs_mac")
-    for phase, blob in (("bootloader", img + b"\xff" * (0x8000 - len(img))), ("otadata", b"\xff" * 0x2000)):
-        for label, mac, want_rc in (("the expected unit", BASE_MAC, 0), ("another unit", other_mac, 1)):
+    # The WiCAN's port comes from its USB IDs (GI_WICAN_DEVICE, DEVICES-SPEC S1) on a made-up
+    # bench of serial devices (_fake_serial.py), 2026-11-12.
+    serial_env, ports = FS.fake_bench(os.path.join(SCRATCH, "serial"), x2=False)
+    saved_env = {k: os.environ.get(k) for k in serial_env}
+    os.environ.update(serial_env)
+    try:
+        for phase, blob in (("bootloader", img + b"\xff" * (0x8000 - len(img))), ("otadata", b"\xff" * 0x2000)):
+            for label, mac, want_rc in (("the expected unit", BASE_MAC, 0), ("another unit", other_mac, 1)):
+                gi_paths.remove_tree(runs)
+                os.makedirs(runs)
+                logged, cmds = [], []
+                R.SERIAL_DEVICE.clear()
+
+                def run(cmd, **kw):
+                    cmds.append(cmd)
+                    open(cmd[-1], "wb").write(blob)
+                    return types.SimpleNamespace(returncode=0, stderr="",
+                                                 stdout="esptool.py v4.8\nChip is ESP32-C3\nMAC: %s\nRead done\n" % mac)
+                try:
+                    R.RUNS, R.log = runs, logged.append
+                    R.subprocess = types.SimpleNamespace(run=run, SubprocessError=Exception)
+                    args = types.SimpleNamespace(fw=os.path.join(SCRATCH, "fw"), bootloader_file=None, otadata_file=None)
+                    rc = R.phase_bootloader(args) if phase == "bootloader" else R.phase_otadata(args)
+                finally:
+                    R.RUNS, R.log, R.subprocess = real
+                recs = sorted(f for f in os.listdir(runs) if f.startswith("rollback_%s_2" % phase))
+                rec = open(os.path.join(runs, recs[-1]), encoding="utf-8").read() if recs else ""
+                seen = [m for m in (BASE_MAC, other_mac, BASE_MAC.replace(":", "")) if m in rec + "\n".join(logged)]
+                check("%s phase, %s: exit %d" % (phase, label, want_rc), rc == want_rc, rc)
+                check("%s phase, %s: no MAC printed or in the run file" % (phase, label), recs and not seen, seen or recs)
+                check("%s phase, %s: the run file says whether it matched" % (phase, label),
+                      ('"mac_matches": %s' % ("true" if want_rc == 0 else "false")) in rec, rec[:200])
+                got_port = [c[c.index("--port") + 1] for c in cmds if "--port" in c]
+                check("%s phase, %s: esptool's port is the WiCAN's by-id link, from GI_WICAN_DEVICE" % (phase, label),
+                      got_port == [ports["wican"]], got_port)
+                sd = (json.loads(rec).get("serial_device") or {}) if rec else {}
+                check("%s phase, %s: the run file keeps what the lookup matched (S3)" % (phase, label),
+                      sd.get("port") == ports["wican"] and sd.get("env") == "GI_WICAN_DEVICE", sd)
+        # GI_WICAN_DEVICE unset: refused before esptool runs (S1: no IDs, no port).
+        for phase in ("bootloader", "otadata"):
+            os.environ.pop("GI_WICAN_DEVICE", None)
+            R.SERIAL_DEVICE.clear()
+            cmds = []
             gi_paths.remove_tree(runs)
             os.makedirs(runs)
-            logged = []
-
-            def run(cmd, **kw):
-                open(cmd[-1], "wb").write(blob)
-                return types.SimpleNamespace(returncode=0, stderr="",
-                                             stdout="esptool.py v4.8\nChip is ESP32-C3\nMAC: %s\nRead done\n" % mac)
             try:
-                R.RUNS, R.log = runs, logged.append
-                R.subprocess = types.SimpleNamespace(run=run, SubprocessError=Exception)
+                R.RUNS, R.log = runs, (lambda s: None)
+                def run_unset(cmd, **kw):
+                    cmds.append(cmd)
+                    return types.SimpleNamespace(returncode=2, stderr="", stdout="A fatal error occurred\n")
+                R.subprocess = types.SimpleNamespace(run=run_unset, SubprocessError=Exception)
                 args = types.SimpleNamespace(fw=os.path.join(SCRATCH, "fw"), bootloader_file=None, otadata_file=None)
-                rc = R.phase_bootloader(args) if phase == "bootloader" else R.phase_otadata(args)
+                try:
+                    out = "returned %r" % (R.phase_bootloader(args) if phase == "bootloader" else R.phase_otadata(args))
+                except SystemExit as e:
+                    out = "SystemExit: %s" % e
+                except Exception as e:      # noqa: BLE001  a check, not a crash
+                    out = "raised %s: %s" % (type(e).__name__, e)
             finally:
                 R.RUNS, R.log, R.subprocess = real
-            recs = sorted(f for f in os.listdir(runs) if f.startswith("rollback_%s_2" % phase))
-            rec = open(os.path.join(runs, recs[-1]), encoding="utf-8").read() if recs else ""
-            seen = [m for m in (BASE_MAC, other_mac, BASE_MAC.replace(":", "")) if m in rec + "\n".join(logged)]
-            check("%s phase, %s: exit %d" % (phase, label, want_rc), rc == want_rc, rc)
-            check("%s phase, %s: no MAC printed or in the run file" % (phase, label), recs and not seen, seen or recs)
-            check("%s phase, %s: the run file says whether it matched" % (phase, label),
-                  ('"mac_matches": %s' % ("true" if want_rc == 0 else "false")) in rec, rec[:200])
+                os.environ["GI_WICAN_DEVICE"] = serial_env["GI_WICAN_DEVICE"]
+            check("%s phase, GI_WICAN_DEVICE unset: refused naming it, esptool never run" % phase,
+                  out.startswith("SystemExit: REFUSED") and "GI_WICAN_DEVICE" in out and not cmds, (out, cmds))
+    finally:
+        R.SERIAL_DEVICE.clear()
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def main():

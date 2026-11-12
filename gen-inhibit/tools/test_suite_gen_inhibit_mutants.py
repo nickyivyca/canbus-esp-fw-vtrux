@@ -2,7 +2,7 @@
 """Mutants of suite_gen_inhibit.py; test_suite_gen_inhibit.py must fail on each BY A
 CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
-    PYTHONPATH=<core b9896a0>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 2026.11.12>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
 The mutants run in a shared clone of this repo at HEAD, made in the worktree's scratch/,
@@ -12,7 +12,8 @@ git history from bench/ (B15host exports it; in a bare folder it found no histor
 every mutant failed the same six B15host checks). This folder's test, settings example,
 x2_pin.py and x2_pin.json, and bench/ (the suite's HARNESS, 2026-10-22) are copied over
 the clone's; each mutant
-writes suite_gen_inhibit.py there with one edit. The unmutated copy runs first, as the
+writes suite_gen_inhibit.py there with one edit, or, for a mutant whose fourth field
+names it, the settings example (the placement mutants, core 2026.11.12). The unmutated copy runs first, as the
 control: if it fails a check, no kill counts. Gen-inhibit tester, 2026-10-19.
 """
 import os
@@ -47,9 +48,14 @@ MUTANTS = [
     ("identify X2: any pin verdict is a hold",
      'if rc == 0 and "TX (GPIO7) not driven" in t:', 'if "TX (GPIO7)" in t:'),
     ("identify X2: bench_identify is skipped (ID goes to every image)",
-     'got = BI.identify(image, ctx, logdir, settings)', 'got = None'),
+     'got = BI.identify(image, ctx, logdir, bi_settings)', 'got = None'),
     ("identify X2: no banner is the jammer",
-     'return "jammer:banner" if json.load(f).get("banner_ok") else None', 'return "jammer:banner"'),
+     'return "jammer:banner" if jrec.get("banner_ok") else None', 'return "jammer:banner"'),
+    # the jammer-ID reset (gen-inhibit reviewer, 2026-11-11)
+    ("identify X2: a reset during the jammer's ID read is not looked at",
+     'if jrec.get("reset_since_open") is True:', 'if False:'),
+    ("identify X2: a jammer ID with no uptime raises as a reset",
+     'if jrec.get("reset_since_open") is True:', 'if jrec.get("reset_since_open") is not False:'),
     ("ota: the exit is not looked at", 'ok = rc == 0 and "VERDICT: (c) TOOK" in t', 'ok = "VERDICT: (c) TOOK" in t'),
     ("ota: the verdict is not looked at", 'ok = rc == 0 and "VERDICT: (c) TOOK" in t', 'ok = rc == 0'),
     ("ota: no dual-slot restore before the retry",
@@ -103,8 +109,19 @@ MUTANTS = [
     ("a placeholder no setting fills", '"REMOTE": "{gi_host_ssh}"', '"REMOTE": "{gi_hostssh}"'),
     ("the suite's role is not the one the bench lock names", 'ROLE = "tester (gen-inhibit)"',
      'ROLE = "tester (gen-inhibit-x)"'),
-    ("the WiCAN's standing image is not _man", 'standing_images={"wican": "wican_man", "x2": "x2_app"}',
-     'standing_images={"wican": "wican_rxq", "x2": "x2_app"}'),
+    ("the suite names a standing image again (retired 2026-11-11)",
+     '        idle_safe_images=dict(IDLE_SAFE),\n',
+     '        idle_safe_images=dict(IDLE_SAFE), standing_images={"wican": "wican_man", "x2": "x2_app"},\n'),
+    ("x2_held is not marked not safe to leave idle", '        images[name].idle_safe = False\n',
+     '        images[name].idle_safe = name == "x2_held"\n'),
+    ("x2_jammer is not marked not safe to leave idle", '        images[name].idle_safe = False\n',
+     '        images[name].idle_safe = name == "x2_jammer"\n'),
+    ("the X2's idle-safe image is not x2_app", 'IDLE_SAFE = {"x2": "x2_app"}',
+     'IDLE_SAFE = {"x2": "x2_slcan"}'),
+    ("a WiCAN image is marked not safe to leave idle", 'IDLE_SAFE = {"x2": "x2_app"}',
+     'IDLE_SAFE = {"x2": "x2_app", "wican": "wican_man"}\nIDLE_UNSAFE["wican_rt"] = "made up"'),
+    ("a marked image is not marked on its Image",
+     '        images[name].idle_safe = False\n', '        pass\n'),
     ("code: an image from another commit is not dirty",
      'clean = all(t["clean"] and t["at"] for t in trees.values()) and all(',
      'clean = all(t["clean"] and t["at"] for t in trees.values()) or all('),
@@ -179,8 +196,8 @@ MUTANTS = [
     ("x2_hold: no x2_app first", '"""x2_app first (so a hold is a hold of x2_app), then x2_hold.py hold."""\n'
      '        bad = x2_app_first(settings_, logdir)', '"""x2_app first (so a hold is a hold of x2_app), then x2_hold.py hold."""\n'
      '        bad = None'),
-    ("x2_jammer: no x2_app first", 'flasher at the restore."""\n        bad = x2_app_first(settings_, logdir)',
-     'flasher at the restore."""\n        bad = None'),
+    ("x2_jammer: no x2_app first", 'not safe to leave idle)."""\n        bad = x2_app_first(settings_, logdir)',
+     'not safe to leave idle)."""\n        bad = None'),
     ("x2_app first: any read is taken as x2_app", '        if read == app.expect:\n', '        if read:\n'),
     ("x2_app first: a failed write goes on", 'if not res.get("ok"):\n            return dict(ok=False, phase="x2-app-first:%s"',
      'if False:\n            return dict(ok=False, phase="x2-app-first:%s"'),
@@ -209,7 +226,25 @@ MUTANTS = [
     ("verify: the version is not in the log", 'f.write("esptool version: %s (pinned %s)\\n%s" % (ver, GE.PINNED, t))',
      'f.write(t)'),
     ("the tools get no GI_ESPTOOL_ARGV", '    base_env.update(esptool_env(settings))', '    pass'),
+    # the X2's port by its USB IDs (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12)
+    ("the tools get no GI_X2_DEVICE / GI_WICAN_DEVICE", '    base_env.update(serial_env(settings))', '    pass'),
+    ("verify: on a tty name, not the X2's IDs",
+     '    port = x2_port(settings, os.path.dirname(os.path.abspath(logpath)), "x2_verify")\n',
+     '    port = et.get("port") or "/dev/ttyACM0"\n'),
+    ("bench_identify gets the settings as they are",
+     '        bi_settings = dict(settings, serial_port=x2_port(settings, logdir, "bench_identify"))\n',
+     '        bi_settings = settings\n'),
+    ("the port's use is not written down", 'f.write("used by: %s\\nport: %s\\n" % (X2_PORT_USES[use], port))',
+     'f.write("port: %s\\n" % port)'),
     ("code: the X2 files' sha256 are not kept", 'sha256=dict(pin["images"][n]["sha256"]))', 'sha256={})'),
+    # placement (core 2026.11.12; gen-inhibit reviewer, 2026-11-12): the settings example's
+    # slices (a bench group with images and no lock is the core's validate's to refuse)
+    ("example: no placement",
+     '  "placement": {"slices": {"lock": "bench.slice", "wallclock": "bench.slice",\n'
+     '                           "build": "build.slice", "light": "build.slice"}},\n', '', EXAMPLE),
+    ("example: wall-clock checks in build.slice", '"wallclock": "bench.slice"', '"wallclock": "build.slice"', EXAMPLE),
+    ("example: no lock slice", '"lock": "bench.slice", ', '', EXAMPLE),
+    ("example: light checks in bench.slice", '"light": "build.slice"', '"light": "bench.slice"', EXAMPLE),
 ]
 
 
@@ -222,10 +257,13 @@ def main():
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (env.get("PYTHONPATH"), HERE) if p)
     killed = errors = 0
-    src = open(os.path.join(HERE, SRC), encoding="utf-8", newline="").read()
+    srcs = {t: open(os.path.join(HERE, t), encoding="utf-8", newline="").read() for t in (SRC, EXAMPLE)}
+    src = srcs[SRC]
 
-    def run(text):
-        open(os.path.join(d, SRC), "w", encoding="utf-8", newline="").write(text)
+    def run(text, target=SRC):
+        """The test, with target holding text and the other file unmutated."""
+        for t in (SRC, EXAMPLE):
+            open(os.path.join(d, t), "w", encoding="utf-8", newline="").write(text if t == target else srcs[t])
         r = subprocess.run([sys.executable, "-B", os.path.join(d, TEST)], cwd=d, capture_output=True, text=True,
                            env=env)
         fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
@@ -238,12 +276,13 @@ def main():
         "PASS    " if control_ok else "FAILED  ", r.returncode, len(fails), crash,
         "".join("\n           " + f[:130] for f in fails[:3])))
     sys.stdout.flush()
-    for n, (name, old, new) in enumerate(MUTANTS, 1):
-        if src.count(old) != 1:
-            print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
+    for n, (name, old, new, *tgt) in enumerate(MUTANTS, 1):
+        target = tgt[0] if tgt else SRC
+        if srcs[target].count(old) != 1:
+            print("ERROR    m%d %s: edit matched %d times in %s" % (n, name, srcs[target].count(old), target))
             errors += 1
             continue
-        r, fails, crash = run(src.replace(old, new))
+        r, fails, crash = run(srcs[target].replace(old, new), target)
         dead = bool(fails)
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL%s%s)" % (

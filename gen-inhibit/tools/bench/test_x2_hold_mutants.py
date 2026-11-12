@@ -22,7 +22,7 @@ import gi_paths  # noqa: E402  scratch/ folders
 
 SRC = "x2_hold.py"
 TEST = "test_x2_hold.py"
-BESIDE = ("gi_paths.py", "gi_esptool.py", "x2_hold_inputs.py")
+BESIDE = ("gi_paths.py", "gi_esptool.py", "gi_serial.py", "x2_hold_inputs.py")
 MUTANTS = [
     ("pins and hold: the dashed read-mem", '"read_mem", "0x%08x" % addr)', '"read-mem", "0x%08x" % addr)'),
     ("release: the dashed read-mem", '"hard_reset", "read_mem"', '"hard_reset", "read-mem"'),
@@ -36,6 +36,12 @@ MUTANTS = [
     ("enable-inputs runs under x2_hold's python", 'cmd = [info["argv"][0], "-B", INPUTS,',
      'cmd = [sys.executable, "-B", INPUTS,'),
     ("enable-inputs is handed another pin", '"--pin", GE.PINNED]', '"--pin", "4.12.0"]'),
+    # the port by the X2's USB IDs (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12)
+    ("the port is a tty name, not resolved", '        dev = GS.resolve("x2")\n',
+     '        dev = {"port": "/dev/ttyACM0"}\n'),
+    ("the record has no serial_device", '"serial_device": dev,\n', '\n'),
+    ("a port refusal goes on to the board", "    except (GE.Refused, GS.Refused) as e:\n",
+     "    except GE.Refused as e:\n"),
 ]
 
 

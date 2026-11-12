@@ -200,6 +200,9 @@ POST_CHAIN = False
 HTTP_PORT = 80          # the device's; a test points HOST/HTTP_PORT at a fake server
 
 
+
+SLCAN_DEVICE = {}   # --flood-slcan: the X2 as gi_serial resolved it (S3), set in main()
+
 def parse_netstat(txt, host):
     """Rows of `netstat -n -p TCP` whose remote end is host, as [local port, remote, state]."""
     rows = []
@@ -1196,7 +1199,8 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         # The separate-adapter filler, with the board's OWN counters either side.
         # Kept distinct from "flood" above because the two are not the same
         # experiment: one shares the replay's queue and one does not.
-        "flood_slcan": ({"port": flood_slcan, "id": "0x%03X" % FLOOD_ID,
+        "flood_slcan": ({"port": flood_slcan, "serial_device": SLCAN_DEVICE.get("x2"),
+                         "id": "0x%03X" % FLOOD_ID,
                          "wire_s": SLCAN_FILLER_WIRE_S,
                          "offered": sl_filler.sent if sl_filler else 0,
                          "write_failures": sl_filler.failed if sl_filler else 0,
@@ -1476,15 +1480,17 @@ def main():
                     help="saturate the bus with low-priority filler on 0x%03X "
                          "while the replay runs (spec 5.2 item 10 case 3)"
                          % FLOOD_ID)
-    # CROSS-SESSION HAZARD, 2026-10-04. COM3 is the S3 interposer board and
-    # belongs to another session. Opening it takes their hardware, and CLOSING
+    # CROSS-SESSION HAZARD, 2026-10-04. The X2 is the S3 interposer board and
+    # belongs to another session too. Opening it takes their hardware, and CLOSING
     # it RESETS the board, because DTR/RTS is its reset line -- they lost a
     # whole measurement condition to exactly that, since a freshly reset board
-    # has dropped nothing and so reports clean loss counters. There is no
-    # default here and there must not be one: ask that session first, and
-    # confirm the MAC rather than trusting a remembered port number.
-    ap.add_argument("--flood-slcan", default=None, metavar="PORT",
-                    help="saturate from a SECOND adapter instead (e.g. COM3, the "
+    # has dropped nothing and so reports clean loss counters. Ask that session
+    # first. Its port is never a remembered name: it is found by the X2's USB IDs
+    # in GI_X2_DEVICE (gi_serial, DEVICES-SPEC S1, 2026-11-12; until then this
+    # option took a COM port), and the record keeps what was matched.
+    ap.add_argument("--flood-slcan", action="store_true",
+                    help="saturate from a SECOND adapter instead (the X2, its port "
+                         "found by its USB IDs in GI_X2_DEVICE, the "
                          "interposer board running the `slcan` env -- WHICH "
                          "BELONGS TO ANOTHER SESSION, and closing its port "
                          "RESETS it; ask first). Frames from "
@@ -1521,6 +1527,14 @@ def main():
         print("--flood and --flood-slcan are mutually exclusive: two fillers "
               "would make the carried load unattributable to either.")
         return 2
+    if args.flood_slcan:
+        # the X2's port by its USB IDs (DEVICES-SPEC S1, 2026-11-12); refused before anything opens
+        import gi_serial as GS
+        try:
+            SLCAN_DEVICE["x2"] = GS.resolve("x2")
+        except GS.Refused as e:
+            print("REFUSED: %s (nothing run)" % e)
+            return 2
 
     #
     # `--out runs/foo.json` used to be taken relative to the CWD, which put the
@@ -1620,7 +1634,8 @@ def main():
     arms = ["idle", "loaded"] if args.arm == "both" else [args.arm]
     for a in arms:
         run_arm(a, frames, a == "loaded", out, mode=mode_num,
-                flood=args.flood, flood_slcan=args.flood_slcan)
+                flood=args.flood,
+                flood_slcan=SLCAN_DEVICE["x2"]["port"] if args.flood_slcan else None)
         time.sleep(2.0)
 
     # The raw-log bookkeeping is internal; it does not belong in the record.

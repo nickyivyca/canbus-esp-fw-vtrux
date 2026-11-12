@@ -1,7 +1,8 @@
 """Host side of the X2 jammer (x2_jammer/, test equipment, NOT FOR VEHICLE).
 
 Gen-inhibit tester, 2026-10-08. Talks to the jammer image on the
-ESP32-CAN-X2's USB-Serial-JTAG console (COM3 on NICKY-XPS), watches the
+ESP32-CAN-X2's USB-Serial-JTAG console (named by its USB IDs in GI_X2_DEVICE and found
+through gi_serial and the core's serial_dev, DEVICES-SPEC S1, 2026-11-12), watches the
 WiCAN's segment with an independent witness (Kvaser, NORMAL mode -- a silent
 Kvaser reports 0 error frames whatever happens), and judges what was
 DELIVERED, never what was commanded.
@@ -269,9 +270,10 @@ def per_pulse(err_ts, n_cmd, interval_s, samples=None, slack_s=0.05):
 # ------------------------------------------------------------- bench parts
 
 class Console(threading.Thread):
-    """COM3 reader that survives a reset (reopens) and can be paused."""
+    """The X2's console reader; survives a reset (reopens) and can be paused. port: the
+    by-id path gi_serial resolved (no default: never a tty name, DEVICES-SPEC S1)."""
 
-    def __init__(self, port="COM3"):
+    def __init__(self, port):
         super().__init__(daemon=True)
         self.port = port
         self.stop_flag = threading.Event()
@@ -722,7 +724,6 @@ def run_guarded(sub, a, rec, con, wit):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("sub", choices=sorted(SUBS))
-    ap.add_argument("--port", default="COM3")
     ap.add_argument("--resets", type=int, default=3)
     ap.add_argument("--w", type=int, default=20)
     ap.add_argument("--p", type=int, default=200)
@@ -737,9 +738,17 @@ def main():
     ap.add_argument("--wican-mode", type=int, default=0)
     a = ap.parse_args()
     sys.path.insert(0, HERE)
+    # the X2's port by its USB IDs (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12): no
+    # device, or not exactly one, refuses before anything opens (exit 2, no record)
+    import gi_serial as GS
+    try:
+        dev = GS.resolve("x2")
+    except GS.Refused as e:
+        print("REFUSED: %s (nothing run, no record)" % e)
+        return 2
     rec = {"when": time.strftime("%Y%m%dT%H%M%S"), "sub": a.sub, "args": vars(a),
-           "wican_before": wican_snap()}
-    con = Console(a.port)
+           "port": dev["port"], "serial_device": dev, "wican_before": wican_snap()}
+    con = Console(dev["port"])
     con.start()
     wit = None
     try:

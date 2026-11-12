@@ -24,14 +24,20 @@ reported as outages; 0 outages means no reboot by this test. A mode that is
 not 0 is reported too (nothing posts during the run). Rejoins with netsh after
 --rejoin-after s of WLAN loss.
 
---watch-port COM4: records on every poll whether that COM port is present, so
+--watch-wican: records on every poll whether the WiCAN's USB device is present (its USB
+IDs in GI_WICAN_DEVICE, looked up through gi_serial and the core's serial_dev,
+DEVICES-SPEC S1, 2026-11-12; until then --watch-port named its COM port), so
 the moment the user pulls the USB cable is stamped in the run (`port_gone_at`).
 Outages are then split into before/at the unplug (within --unplug-window s) and
 after it; the idle window is counted from the unplug.
 
---pulse-rts-at S (validation only, USB connected): opens COM4 at S seconds and
+--pulse-rts-at S (validation only, USB connected): opens the WiCAN's console (its port
+resolved from GI_WICAN_DEVICE, kept in the record as serial_device) at S seconds and
 gives one USB-JTAG reset, so the detector can be checked against a reboot that
-is known to happen. COM4 is never read for counting.
+is known to happen. The console is never read for counting.
+
+The WLAN state comes from Windows' netsh, so as written this tool runs on Windows only;
+its port lookup is Linux only. A Linux WLAN reading is not part of this change.
 
 UPTIME (spec 11, "Uptime and reset reason are reported", user 2026-10-09; first
 on cc34c80). Every poll also records the page's `uptime_ms` and `reset_reason`,
@@ -302,8 +308,9 @@ def build_parser():
     ap.add_argument("--rejoin-after", type=float, default=4.0)
     ap.add_argument("--stall-s", type=float, default=3.0,
                     help="a poll slower than this is an outage sign (a reboot stalls ~7 s)")
-    ap.add_argument("--watch-port", default=None,
-                    help="stamp when this COM port disappears (the USB unplug)")
+    ap.add_argument("--watch-wican", action="store_true",
+                    help="stamp when the WiCAN's USB device (GI_WICAN_DEVICE) disappears (the USB "
+                         "unplug)")
     ap.add_argument("--unplug-window", type=float, default=15.0)
     ap.add_argument("--pulse-rts-at", type=float, default=None,
                     help="validation only (USB connected): one USB-JTAG reset at this time")
@@ -319,9 +326,23 @@ def main():
         print("FAIL: set %s" % SSID_ENV)
         return 2
     import lowid_flood_skip_bench as LF
+    import gi_serial as GS
+    # the WiCAN's USB device by its IDs (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12),
+    # checked before the run when it is watched or pulsed; refused (exit 2, no record) on IDs
+    # that are wrong or match several devices
+    wican_dev = None
+    try:
+        if a.watch_wican:
+            GS.present("wican")
+        if a.pulse_rts_at is not None:
+            wican_dev = GS.resolve("wican")
+    except GS.Refused as e:
+        print("REFUSED: %s (nothing run, no record)" % e)
+        return 2
     cc = None
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    rec = {"when": stamp, "power": a.power, "args": vars(a), "events": [], "samples": []}
+    rec = {"when": stamp, "power": a.power, "args": vars(a), "events": [], "samples": [],
+           "serial_device": wican_dev}
     if a.build_check:
         rec["build_start"] = {"wall": stamp, "elf_sha256": (LF.build_id() or {}).get("elf_sha256")}
     t0 = time.perf_counter()
@@ -331,7 +352,7 @@ def main():
             t = time.perf_counter() - t0
             if a.pulse_rts_at is not None and cc is None and t >= a.pulse_rts_at:
                 from console_capture import ConsoleCapture
-                cc = ConsoleCapture("COM4")
+                cc = ConsoleCapture(wican_dev["port"])
                 cc.start()
                 for _ in range(40):
                     if cc.ser is not None:
@@ -343,9 +364,12 @@ def main():
                                capture_output=True, text=True, timeout=10)
             wlan_ok, state = parse_wlan(r.stdout, ssid)
             port = None
-            if a.watch_port:
-                import serial.tools.list_ports as LP
-                port = any(x.device == a.watch_port for x in LP.comports())
+            if a.watch_wican:
+                try:
+                    port = GS.present("wican")
+                except GS.Refused as e:      # several matches mid-run: recorded, not guessed
+                    port = None
+                    rec["events"].append([round(time.perf_counter() - t0, 3), "presence refused: %s" % e])
             tq = time.perf_counter()
             p = LF.page() if wlan_ok else None
             s = {"t": round(t, 3), "tq": round(tq - t0, 3), "wlan_ok": wlan_ok,
@@ -399,11 +423,11 @@ def main():
     if j["unplug"]:
         u = j["unplug"]
         print("  %s gone at %.1f s; outages before %d, at unplug %d, after %d; idle after %.1f s (%d polls)"
-              % (a.watch_port, u["port_gone_at"], len(u["outages_before"]),
+              % ("the WiCAN's USB device", u["port_gone_at"], len(u["outages_before"]),
                  len(u["outages_at_unplug"]), len(u["outages_after"]),
                  u["idle_after_s"], u["idle_after_polls"]))
-    elif a.watch_port:
-        print("  %s never disappeared" % a.watch_port)
+    elif a.watch_wican:
+        print("  the WiCAN's USB device never disappeared")
     up = j["uptime"]
     print("uptime: %s" % j["uptime_verdict"])
     for x in up["reboots"]:

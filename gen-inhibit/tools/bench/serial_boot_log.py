@@ -14,12 +14,17 @@ observe boot is a way to lose the very event you came for. So the port is
 opened by serial_noreset.open_console, which leaves both lines deasserted
 without a reset on Windows and on Linux (open_port).
 
-    py -3.11 gen-inhibit/tools/bench/serial_boot_log.py \
+    python3.13 -B gen-inhibit/tools/bench/serial_boot_log.py \
         --out runs/reboot_hang_console.log --seconds 120
+
+THE PORT (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12): --board's USB IDs, from
+GI_WICAN_DEVICE (the default) or GI_X2_DEVICE, resolved through gi_serial and the core's
+serial_dev to its /dev/serial/by-id/ path; none, or not exactly one, refuses (exit 2,
+nothing opened). The log's header keeps what was matched (S3). Linux only.
 
 --reset IS OPT-IN, AND THE DEFAULT STAYS OFF. Everything above is why. But after a
 flash the device has already booted -- the flash's own hard reset happens before any
-logger can attach, and COM4 can only be held by one process, so esptool cannot reset the
+logger can attach, and the port can only be held by one process, so esptool cannot reset the
 chip while this tool listens. --reset pulses RTS once the capture is already running, so
 the banner lands inside the log. Use it when you need a boot you have to provoke; leave
 it off when you are diagnosing a boot that provokes itself.
@@ -33,6 +38,7 @@ part that matters.
 import argparse
 import datetime
 import io
+import json
 import os
 import sys
 import time
@@ -55,7 +61,9 @@ def open_port(port, baud):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", default="COM4")
+    ap.add_argument("--board", choices=("wican", "x2"), default="wican",
+                    help="whose console: its port is found by its USB IDs in GI_WICAN_DEVICE or "
+                         "GI_X2_DEVICE (gi_serial, DEVICES-SPEC S1), never a tty name")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--out", required=True,
                     help="output path; a bare name lands in runs/")
@@ -65,6 +73,13 @@ def main():
                          "boot that has already happened (e.g. after a flash). "
                          "Off by default: see the module docstring.")
     args = ap.parse_args()
+    import gi_serial as GS
+    try:
+        dev = GS.resolve(args.board)   # the port by the board's USB IDs (S1, 2026-11-12)
+    except GS.Refused as e:
+        print("REFUSED: %s (nothing opened, no log)" % e)
+        return 2
+    args.port = dev["port"]
 
     out = args.out
     if not os.path.isabs(out) and os.path.dirname(out) in ("", "runs"):
@@ -80,6 +95,8 @@ def main():
     fh.write("# %s %s @ %d, host start %s\n"
              % (args.port, "console capture", args.baud,
                 datetime.datetime.now().isoformat(timespec="milliseconds")))
+    # what the lookup matched (DEVICES-SPEC S3): this log is the run's record
+    fh.write("# serial_device %s\n" % json.dumps(dev, sort_keys=True))
     fh.flush()
     print("logging %s -> %s for %.0f s" % (args.port, out, args.seconds))
     sys.stdout.flush()

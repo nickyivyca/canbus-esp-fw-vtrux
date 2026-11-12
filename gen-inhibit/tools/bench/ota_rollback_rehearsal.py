@@ -105,7 +105,7 @@ PHASES
   baseline  HTTP /gen_inhibit, and the connected AP's BSSID against the expected
             unit (value-blind). Refuses to continue unless it is the unit and the
             device is in mode 0 and not live. Never /check_status (2026-10-25).
-  otadata   esptool read of the otadata partition, parsed. Needs COM4 free and
+  otadata   esptool read of the otadata partition, parsed. Needs the WiCAN's port free and
             RESETS the device; run it only between phases.
   control   OTA the GOOD image onto a device running another. Engagement: one
             boot (ROM banner); the page names the good image, up past the
@@ -161,7 +161,23 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS = gi_paths.runs()
 
 HOST = "192.168.80.1"
-PORT = "COM4"
+# THE WICAN'S PORT (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12): its USB IDs in
+# GI_WICAN_DEVICE, resolved through gi_serial and the core's serial_dev when the port is
+# first needed; no device, or not exactly one, refuses (SystemExit, before esptool or the
+# console touches the board). Each phase's record keeps what was matched (S3,
+# serial_device). Until then this was a COM port constant.
+SERIAL_DEVICE = {}
+
+
+def wican_port():
+    """The WiCAN's /dev/serial/by-id/ path, resolved once per run."""
+    if not SERIAL_DEVICE:
+        import gi_serial as GS
+        try:
+            SERIAL_DEVICE.update(GS.resolve("wican"))
+        except GS.Refused as e:
+            raise SystemExit("REFUSED: %s (nothing run on the board)" % e)
+    return SERIAL_DEVICE["port"]
 #
 # THE MAC IS THE UNIT'S SERIAL NUMBER (user, 2026-10-05). There has only ever
 # been one WiCAN on this bench under the current setup; earlier testing used a
@@ -193,9 +209,9 @@ def expected_ids():
 
 EXPECT_MAC, EXPECT_DEVICE_ID = expected_ids()   # base MAC; SoftAP MAC = base + 1
 
-# COM3 is the S3 interposer and belongs to another session;
+# The X2 (the S3 interposer) belongs to the charge-interposer's sessions too;
 # closing its port RESETS it. Every esptool call here checks the MAC it printed
-# against EXPECT_MAC, so a wrong --port is caught before it can matter rather
+# against EXPECT_MAC, so a wrong port is caught before it can matter rather
 # than after someone notices a board rebooting mid-arm.
 RE_ESPTOOL_MAC = re.compile(r"MAC:\s*([0-9a-fA-F:]{17})")
 
@@ -254,6 +270,7 @@ def save(phase, record):
     stamp = ts()
     record["_phase"] = phase
     record["_run"] = stamp
+    record["serial_device"] = dict(SERIAL_DEVICE) or None   # S3: what the lookup matched, if run
     live = os.path.join(RUNS, "rollback_%s.json" % phase)
     frozen = os.path.join(RUNS, "rollback_%s_%s.json" % (phase, stamp))
     for p in (live, frozen):
@@ -369,12 +386,13 @@ def start_serial(out_name, seconds):
         os.makedirs(RUNS)
     if os.path.exists(out):
         os.rename(out, out + ".prev")
+    wican_port()    # refused here, before the OTA, if the WiCAN's IDs match no one device
     cmd = [sys.executable, os.path.join(HERE, "serial_boot_log.py"),
-           "--port", PORT, "--out", out, "--seconds", "%.0f" % seconds]
+           "--board", "wican", "--out", out, "--seconds", "%.0f" % seconds]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
     # Give it time to open the port and write its header; if it cannot get
-    # COM4 we must find out now and not after the OTA has been pushed.
+    # the WiCAN's port we must find out now and not after the OTA has been pushed.
     for _ in range(40):
         time.sleep(0.25)
         if os.path.exists(out) and os.path.getsize(out) > 0:
@@ -383,7 +401,7 @@ def start_serial(out_name, seconds):
             raise RuntimeError("serial_boot_log.py exited at once: %s"
                                % (proc.stdout.read() if proc.stdout else "?"))
     raise RuntimeError("serial_boot_log.py produced nothing in 10 s; "
-                       "is COM4 held by another process?")
+                       "is the WiCAN's port held by another process?")
 
 
 def read_serial(path):
@@ -771,7 +789,7 @@ def read_otadata(fw_root, out_bin):
     has 4.12.0. The command is returned rather than run when esptool is absent,
     so the caller can say what to run instead of failing obscurely.
     """
-    cmd = ["esptool.py", "--chip", "esp32c3", "--port", PORT, "--baud",
+    cmd = ["esptool.py", "--chip", "esp32c3", "--port", wican_port(), "--baud",
            "460800", "read_flash", "0xd000", "0x2000", out_bin]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -950,7 +968,7 @@ def phase_otadata(args):
     if seen and not mac_ok:
         # Hard stop: a wrong --port most likely means COM3, which is another
         # session's interposer, and closing its port resets it mid-run.
-        log("  FAIL: this is not the expected unit. Check --port.")
+        log("  FAIL: this is not the expected unit. Check GI_WICAN_DEVICE.")
         save("otadata", {"esptool": res, "mac_matches": False, "verdict": "FAIL"})
         return 1
     parsed = parse_otadata(open(out_bin, "rb").read())
@@ -1297,7 +1315,7 @@ def phase_bootloader(args):
     rehearsal -- is what closes that gap. Which makes the procedure
     load-bearing: `idf.py app-flash` would NOT close it.
 
-    Needs COM4 free and RESETS the device, like the otadata phase. Pass
+    Needs the WiCAN's port free and RESETS the device, like the otadata phase. Pass
     --bootloader-file to parse an existing dump.
     """
     log("=== bootloader ===")
@@ -1308,7 +1326,7 @@ def phase_bootloader(args):
     if not args.bootloader_file:
         if not os.path.isdir(RUNS):
             os.makedirs(RUNS)
-        cmd = ["esptool.py", "--chip", "esp32c3", "--port", PORT, "--baud",
+        cmd = ["esptool.py", "--chip", "esp32c3", "--port", wican_port(), "--baud",
                "460800", "read_flash", "0x0", "0x8000", out_bin]
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -1326,7 +1344,7 @@ def phase_bootloader(args):
     if seen:
         log("  esptool MAC: %s the expected unit's" % ("MATCHES" if mac_ok else "DOES NOT MATCH"))
         if not mac_ok:
-            log("  FAIL: this is not the expected unit. Check --port.")
+            log("  FAIL: this is not the expected unit. Check GI_WICAN_DEVICE.")
             save("bootloader", {"esptool": res, "mac_matches": False, "verdict": "FAIL"})
             return 1
 

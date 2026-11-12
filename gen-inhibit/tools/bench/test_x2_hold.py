@@ -9,6 +9,13 @@ version in every record, a refusal with no record and nothing run when GI_ESPTOO
 unset, of another form or another version, and enable-inputs run under that argv's own
 python (x2_hold_inputs.py). No port is opened. X2_HOLD_DIR names a folder holding a mutant
 x2_hold.py (test_x2_hold_mutants.py), run in place of this folder's.
+
+The port (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12): each run gets a made-up bench
+of serial devices (_fake_serial.py) and GI_X2_DEVICE, so x2_hold resolves the X2's by-id
+link through gi_serial and the core's serial_dev, and esptool is handed that link; the
+record keeps the port and serial_device. GI_X2_DEVICE unset, a tty name, or IDs that match
+no device refuse (exit 2), with no record and no board command. Needs the pinned core's
+shared/bench on PYTHONPATH (2026.11.11.6 or later), and Linux.
 """
 import json
 import os
@@ -23,6 +30,7 @@ if HOLD_DIR != HERE:
 import x2_hold as H                                              # noqa: E402
 import gi_paths                                                  # noqa: E402
 import _fake_esptool as FE                                       # noqa: E402
+import _fake_serial as FS                                        # noqa: E402
 
 BASE = {"GPIO_ENABLE": 0, "GPIO_IN": (1 << 7) | (1 << 6), "GPIO7_OUT_SEL": 0x100,
         "IO_MUX_GPIO7": (1 << 9) | (1 << 8) | (1 << 12), "IO_MUX_GPIO6": (1 << 9) | (1 << 12)}
@@ -80,23 +88,32 @@ class Bench:
         except (OSError, NotImplementedError):
             self.py = None
         self.argv = [self.py or sys.executable, "-m", "esptool"]
+        # the made-up serial devices: the X2 and the WiCAN plugged in
+        self.serial_env, ports = FS.fake_bench(os.path.join(work, "serial"))
+        self.port = ports["x2"]
 
-    def run(self, args, argv="good", version="4.13.0", regs=None):
-        """(rc, stdout, [records], [fake log lines]) of `x2_hold.py <args> --port FAKE`."""
+    def run(self, args, argv="good", version="4.13.0", regs=None, device="good"):
+        """(rc, stdout, [records], [fake log lines]) of `x2_hold.py <args>`. device: "good"
+        (the X2's IDs), None (GI_X2_DEVICE unset) or the variable's text."""
         self.n += 1
         d = os.path.join(self.work, "r%d" % self.n)
         os.makedirs(d)
         log = os.path.join(d, "esptool.log")
-        env = {k: v for k, v in os.environ.items() if k not in ("GI_ESPTOOL_ARGV",)}
+        env = {k: v for k, v in os.environ.items() if k not in ("GI_ESPTOOL_ARGV", "GI_X2_DEVICE")}
         env.update(self.fake, GI_RUNS_DIR=d, FAKE_ESPTOOL_LOG=log, FAKE_ESPTOOL_VERSION=version,
                    FAKE_ESPTOOL_REGS=json.dumps({"0x%08x" % a: v for a, v in
                                                  (regs or {}).items()}))
+        env.update({k: v for k, v in self.serial_env.items() if k != "GI_X2_DEVICE"})
+        if device == "good":
+            env["GI_X2_DEVICE"] = self.serial_env["GI_X2_DEVICE"]
+        elif device is not None:
+            env["GI_X2_DEVICE"] = device
         if argv == "good":
             env["GI_ESPTOOL_ARGV"] = json.dumps(self.argv)
         elif argv is not None:
             env["GI_ESPTOOL_ARGV"] = json.dumps(argv)
-        p = subprocess.run([sys.executable, "-B", os.path.join(HOLD_DIR, "x2_hold.py")] + args
-                           + ["--port", "FAKE"], capture_output=True, text=True, env=env, timeout=120)
+        p = subprocess.run([sys.executable, "-B", os.path.join(HOLD_DIR, "x2_hold.py")] + args,
+                           capture_output=True, text=True, env=env, timeout=120)
         recs = []
         for n in sorted(os.listdir(d)):
             if n.startswith("x2_hold_") and n.endswith(".json"):
@@ -127,9 +144,15 @@ def esptool_checks(b):
          rc == 0 and len(reads) == 5 and len(recs) == 1 and recs[0]["pins"]["verdict"] == "recessive",
          (rc, txt[-300:], cli(lines))),
         ("pins: no dashed command name, each on --chip esp32s3 with no reset before or after",
-         bool(reads) and all(" --chip esp32s3 --port FAKE --before no_reset --after no_reset read_mem 0x"
-                             in " " + c for c in reads)
+         bool(reads) and all(" --chip esp32s3 --port %s --before no_reset --after no_reset read_mem 0x"
+                             % b.port in " " + c for c in reads)
          and not any("read-mem" in c for c in cli(lines)), reads),
+        ("pins: the port is the X2's by-id link, resolved from GI_X2_DEVICE, kept with what matched (S3)",
+         bool(recs) and recs[0].get("port") == b.port
+         and (recs[0].get("serial_device") or {}).get("port") == b.port
+         and (recs[0].get("serial_device") or {}).get("serial") == FS.X2_SERIAL
+         and (recs[0].get("serial_device") or {}).get("interface") == 0,
+         recs and {k: recs[0].get(k) for k in ("port", "serial_device")}),
         ("pins: the version is read first, by `version`", cli(lines)[:1] == ["version"], cli(lines)[:2]),
         ("pins: the record holds esptool's argv and its version",
          bool(recs) and recs[0].get("esptool_argv") == b.argv and recs[0].get("esptool_version") == "4.13.0",
@@ -147,7 +170,11 @@ def esptool_checks(b):
                 and bool(recs) and recs[0].get("esptool_version") == "4.13.0", (rc, reads, txt[-200:])))
     for label, kw in (("GI_ESPTOOL_ARGV unset", {"argv": None}),
                       ("an argv of another form", {"argv": [sys.executable, "esptool.py"]}),
-                      ("esptool 5.0.2", {"version": "5.0.2"})):
+                      ("esptool 5.0.2", {"version": "5.0.2"}),
+                      ("GI_X2_DEVICE unset", {"device": None}),
+                      ("GI_X2_DEVICE a tty name", {"device": "/dev/ttyACM1"}),
+                      ("GI_X2_DEVICE matching no device",
+                       {"device": json.dumps(FS.device("NOSUCHSERIAL"))})):
         rc, txt, recs, lines = b.run(["pins"], regs=HELD, **kw)
         out.append(("%s: refused (exit 2), no record, no board command" % label,
                     rc == 2 and "REFUSED" in txt and not recs

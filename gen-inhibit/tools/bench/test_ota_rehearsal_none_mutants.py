@@ -59,6 +59,14 @@ MUTANTS = [
      "            pass\n"),
     ("any MAC esptool prints is the unit's", "    return True, m.group(1).lower() == EXPECT_MAC\n",
      "    return True, True\n"),
+    # DEVICES-SPEC S1/S3 (2026-11-12): the port from GI_WICAN_DEVICE, and the match recorded
+    ("the bootloader read's port a fixed tty, not from GI_WICAN_DEVICE",
+     '"--port", wican_port(), "--baud",\n               "460800", "read_flash", "0x0"',
+     '"--port", "/dev/ttyACM0", "--baud",\n               "460800", "read_flash", "0x0"'),
+    ("the run file keeps no serial_device", 'record["serial_device"] = dict(SERIAL_DEVICE) or None',
+     'record["serial_device"] = None'),
+    ("an unresolved port is not refused", '            raise SystemExit("REFUSED: %s (nothing run on the board)" % e)\n',
+     '            SERIAL_DEVICE.update(port="/dev/ttyACM0")\n'),
 ]
 
 

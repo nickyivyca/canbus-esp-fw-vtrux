@@ -1,8 +1,10 @@
 """WiCAN console capture that SURVIVES a chip reset: reopens the port and keeps logging.
 
 Gen-inhibit tester, 2026-10-08, for the reset-rate measurement. The WiCAN's
-only console is USB-Serial-JTAG (COM4 on NICKY-XPS; its USB serial number is
-its MAC). That USB device resets with the chip, so the port drops
+only console is USB-Serial-JTAG (its USB serial number is its MAC; named by its USB
+IDs in GI_WICAN_DEVICE and found through gi_serial and the core's serial_dev,
+DEVICES-SPEC S1, 2026-11-12: ConsoleCapture takes the port it resolved, with no
+default, never a tty name). That USB device resets with the chip, so the port drops
 and re-enumerates, and serial_boot_log.py -- which opens once -- stops at the
 drop and never sees the ROM banner ("rst:0x..") or a panic line that follows.
 This class records the drop and the re-open as events and keeps reading.
@@ -22,7 +24,8 @@ on the C3). Lines are redacted with redact_secrets before they are
 kept, because the boot log prints the device's config including passwords.
 
   py -3.14 gen-inhibit/tools/bench/console_capture.py --selftest
-      opens COM4, puts the WiCAN in mode 3, pulses RTS for 200 ms (esptool's
+      opens the WiCAN's console (GI_WICAN_DEVICE; refused, exit 2, without one),
+      puts the WiCAN in mode 3, pulses RTS for 200 ms (esptool's
       USB-JTAG hard-reset timing), and reports: did the post-state show a reset
       (mode 0, tx_ok 0, drv null), did the port drop and come back, and did any
       ROM banner line arrive. Writes runs/console_selftest_<stamp>.json.
@@ -49,7 +52,7 @@ BANNER_RE = re.compile(r"rst:0x[0-9a-fA-F]+|ESP-ROM|Brownout|Guru Meditation|"
 class ConsoleCapture(threading.Thread):
     """Reads the port; on any serial error closes, retries every 50 ms."""
 
-    def __init__(self, port="COM4", baud=115200):
+    def __init__(self, port, baud=115200):
         super().__init__(daemon=True)
         self.port, self.baud = port, baud
         self.stop_flag = threading.Event()
@@ -130,13 +133,20 @@ class ConsoleCapture(threading.Thread):
 
 def selftest():
     import lowid_flood_skip_bench as LF
+    import gi_serial as GS
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    rec = {"when": stamp, "what": "deliberate reset: RTS 200 ms with DTR low"}
+    try:
+        dev = GS.resolve("wican")     # its port by its USB IDs (DEVICES-SPEC S1, 2026-11-12)
+    except GS.Refused as e:
+        print("REFUSED: %s (nothing run, no record)" % e)
+        return 2
+    rec = {"when": stamp, "what": "deliberate reset: RTS 200 ms with DTR low",
+           "port": dev["port"], "serial_device": dev}
     p = LF.page()
     if p is None or p.get("mode") != 0:
         print("FAIL: device must be in mode 0")
         return 1
-    cc = ConsoleCapture()
+    cc = ConsoleCapture(dev["port"])
     cc.start()
     time.sleep(1.5)
     LF.dev_post("/gen_inhibit_set?mode=3")
