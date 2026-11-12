@@ -15,7 +15,7 @@ charge-interposer tester's measured figures on 756d6714: a reset sends the power
 round (0x7F4-0x7F7, once each) about 0.32 s later, and the round waits up to ~50 ms for
 an ACK. So the Kvaser is held open in NORMAL mode (ACKing) for the whole check, and:
 
-  1. serial before: COM3 read passively (DTR/RTS low, nothing written) for --serial
+  1. serial before: COM3 read passively (opened without a reset, nothing written) for --serial
      seconds (default 11, so at least two of the 5 s status lines); the app's 1 Hz
      "diag st=" line, the status line's "t=Ns" (seconds since boot) and any boot banner
      ("rst:0x.. (", "Vtrux charge interposer") are kept.
@@ -118,13 +118,11 @@ class Witness(threading.Thread):
 
 
 def read_serial(port, seconds):
-    """Lines from a passive read: DTR and RTS set low before the port opens, nothing written."""
-    import serial
-    s = serial.Serial()
-    s.port, s.baudrate, s.timeout = port, 115200, 0.2
-    s.dtr = False
-    s.rts = False
-    s.open()
+    """Lines from a passive read: the port opened without a reset (serial_noreset.py; on
+    Linux the old form, DTR and RTS set low before the open, reset the X2, 2026-11-11),
+    nothing written."""
+    from serial_noreset import open_console
+    s = open_console(port, 115200, 0.2)
     buf, end = b"", time.time() + seconds
     try:
         while time.time() < end:

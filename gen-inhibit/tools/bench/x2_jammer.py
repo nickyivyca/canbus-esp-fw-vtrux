@@ -26,9 +26,10 @@ runs/x2_jammer_<sub>_<stamp>.json and never overwrites):
   can2-check         WiCAN in mode 2 + n pulses; the Kvaser (WiCAN segment)
                      must see pages and pulses, the Innomaker (X2 CAN2) neither
 
-The console is opened with DTR and RTS pre-set low so opening and closing do
-not reset the S3 (tools-reference.md); `boot-silence` resets it deliberately
-with esptool's USB-JTAG ordering (console_capture.pulse_rts).
+The console is opened by serial_noreset.open_console, so opening and closing do
+not reset the S3, on Linux too (2026-11-11: the old form, DTR and RTS pre-set
+low, resets it there); `boot-silence` resets it deliberately with esptool's
+USB-JTAG ordering (console_capture.pulse_rts).
 
   py -3.14 gen-inhibit/tools/bench/x2_jammer.py <sub> [...]
 """
@@ -274,15 +275,10 @@ class Console(threading.Thread):
         self.ser = None
 
     def _open(self):
-        import serial
-        s = serial.Serial()
-        s.port, s.baudrate, s.timeout = self.port, 115200, 0.05
-        s.dtr = False
-        s.rts = False
-        s.open()
-        s.dtr = False
-        s.rts = False
-        return s
+        # Without a reset on Linux too (serial_noreset.py, 2026-11-11). Imported here, so
+        # the copies of this file other tests make need nothing beside them.
+        from serial_noreset import open_console
+        return open_console(self.port, 115200, 0.05)
 
     def run(self):
         pending, first = b"", True
@@ -426,6 +422,22 @@ def _console_dump(con, since=0.0):
         return [(round(t, 4), x) for t, x, _ in con.lines if t >= since]
 
 
+def reset_since_open(events, up):
+    """Whether the X2 reset after its console was opened (2026-11-11). events: the
+    console's (time, what); up: the reply's uptime line as (time, parsed), or None.
+    True when the port was lost or reopened (the USB device drops with the chip), or when
+    the uptime is shorter than the time from the open to the line (the board booted
+    after the open). None when there is no uptime line or no open to judge by. Else
+    False. The jammer's boot banner and its reply to ID are the same lines, so only the
+    uptime tells a reply from a boot."""
+    if any(e.startswith("lost") or e == "reopened" for _t, e in events):
+        return True
+    opened = [t for t, e in events if e == "open"]
+    if up is None or not opened or not isinstance(up[1].get("uptime_us"), int):
+        return None
+    return up[1]["uptime_us"] / 1e6 < up[0] - opened[0]
+
+
 def sub_id(a, rec, con, wit):
     # An empty line first. The jammer runs a line only on LF and drops CR, so input an
     # earlier probe left unterminated (bench_identify's slcan "V\r" "N\r", 2026-10-19)
@@ -436,7 +448,13 @@ def sub_id(a, rec, con, wit):
     t = time.time()
     con.send("ID")
     got = con.wait(lambda p: p["kind"] == "INFO" and "mcp2515" in p["raw"], 3.0, t)
-    rec["banner_ok"] = got is not None
+    # The banner's src_digest line, printed before the mcp2515 line, carries the uptime.
+    up = con.wait(lambda p: p["kind"] == "INFO" and "uptime_us" in p, 0.5, t) if got else None
+    rec["uptime_s"] = up[1]["uptime_us"] / 1e6 if up and isinstance(up[1].get("uptime_us"), int) else None
+    # A banner only from a board that has not reset since the open: a reset at the open
+    # (the old open form on Linux, 2026-11-11) would make a boot banner look like a reply.
+    rec["reset_since_open"] = reset_since_open(list(con.events), up)
+    rec["banner_ok"] = got is not None and rec["reset_since_open"] is False
     time.sleep(0.3)
 
 

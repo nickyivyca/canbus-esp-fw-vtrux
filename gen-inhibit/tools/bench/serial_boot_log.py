@@ -11,7 +11,8 @@ THE ATTACH MUST NOT RESET. On the ESP32-C3 the console is USB-serial/JTAG, where
 DTR and RTS are wired to reset and boot select. pyserial asserts both on open by
 default, which reboots the chip -- and rebooting the device you are trying to
 observe boot is a way to lose the very event you came for. So the port is
-configured before it is opened and both lines are left deasserted.
+opened by serial_noreset.open_console, which leaves both lines deasserted
+without a reset on Windows and on Linux (open_port).
 
     py -3.11 gen-inhibit/tools/bench/serial_boot_log.py \
         --out runs/reboot_hang_console.log --seconds 120
@@ -36,14 +37,20 @@ import os
 import sys
 import time
 
-import serial
-
 # Same directory, so the script dir that Python already put on sys.path finds it.
 from redact_secrets import redact
+from serial_noreset import open_console
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = gi_paths.runs()
+
+
+def open_port(port, baud):
+    """The console, opened so the open itself cannot pulse reset/boot. Until 2026-11-11
+    DTR and RTS were deasserted BEFORE the open, which holds on Windows but on Linux
+    reset the X2's S3 through the same USB-Serial-JTAG (serial_noreset.py)."""
+    return open_console(port, baud, 0.2)
 
 
 def main():
@@ -66,16 +73,7 @@ def main():
     if not os.path.isdir(d):
         os.makedirs(d)
 
-    ser = serial.Serial()
-    ser.port = args.port
-    ser.baudrate = args.baud
-    ser.timeout = 0.2
-    # Deassert BEFORE open so the open itself cannot pulse reset/boot.
-    ser.dtr = False
-    ser.rts = False
-    ser.open()
-    ser.dtr = False
-    ser.rts = False
+    ser = open_port(args.port, args.baud)
 
     t0 = time.time()
     fh = io.open(out, "w", encoding="utf-8", newline="\n")
