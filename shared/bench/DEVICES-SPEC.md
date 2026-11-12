@@ -15,8 +15,11 @@ Named `RIG-SPEC.md` until 2026-11-11 (renamed by the user's ruling).
   slcan ports, the supply, any USB-serial adapter) is named in a suite's
   local settings by its USB vendor ID, product ID and serial number, with
   the interface number on a composite device. The tooling resolves the
-  port when it opens it: a COM port on Windows, `/dev/serial/by-id/` on
-  Linux. No COM or tty name is written in settings or code.
+  port when it opens it, through `/dev/serial/by-id/`. No tty name is
+  written in settings or code. The lookup is Linux only and refuses on
+  Windows (user, 2026-11-11: new bench hardware tooling is Linux-only);
+  existing tooling that already runs on Windows, such as the esptool
+  flasher, keeps its COM-port setting there.
 - **S2.** No match, or more than one, refuses, naming every device that was
   found. The tooling never guesses.
 - **S3.** The run record keeps the port resolved and the identifiers
