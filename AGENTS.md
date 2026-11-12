@@ -118,8 +118,9 @@ and tell the user.
 it has checked out. Each branch keeps
 only its own role's skill current; changes reach other branches by
 cherry-pick. After a cherry-pick that touches your skill, re-read its
-`SKILL.md`. On Linux every worktree shares the anchor's `settings.local.json`;
-on Windows each worktree has its own.
+`SKILL.md`. Each worktree has its own `.claude/settings.local.json`, on
+Linux as on Windows (`madhouse-debian`'s anchor has no `.claude/`, checked
+2026-11-11).
 
 **Never build WiCAN firmware from an interposer worktree or branch.** A
 WiCAN image's name and compiled-in commit come from the whole tree, so
