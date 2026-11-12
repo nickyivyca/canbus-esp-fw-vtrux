@@ -59,9 +59,10 @@ Requirements are numbered A1 to A16. The numbers are stable.
 - **A5. Builds the runner owns.** Each build runs through the adapter's
   target and shell in a clean tree of its own, and writes a build record: its
   images with their sha256, the ELF sha256, the variant and the toolchain.
-  Builds are build work under AGENTS.md "Builds during wall-clock tests", so
-  the chain runner's throttle applies. The "No builds" line in
-  `bench-holder.md` stays the tester's to set by hand (AGENTS.md point 5).
+  Builds are build work under AGENTS.md "Parallel work on the shared
+  machine": they run alongside wall-clock tests, placed where that section
+  puts builds (on `madhouse-debian`, `build.slice`), with every core and no
+  one-job throttle (user, 2026-11-12, in the methodology owner's session).
 - **A6. Settings from the builds.** The runner writes a settings file for the
   run from the machine's settings file. The keys that depend on a build are
   filled from the build records through the adapter's key map, never edited
