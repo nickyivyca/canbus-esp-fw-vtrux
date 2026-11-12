@@ -1378,11 +1378,28 @@ def set_witness(wit, acks):
     return w
 
 
+# The witness reader's and the node's raised priority on Linux: not yet.
+# madhouse's form is bench.slice under the user manager (AGENTS.md "Builds
+# during wall-clock tests" point 4, not written yet; the methodology owner,
+# 2026-11-11), so until it lands above_normal() raises nothing there and
+# says so, and F2's mutant runs on Windows only (the reviewer, 2026-11-11).
+PRIO_NOT_APPLICABLE = ("not applicable (Linux: bench.slice, AGENTS.md "
+                       "point 4, not yet written)")
+
+
+def prio_text(p):
+    """A priority as above_normal() gave it -> text for a line."""
+    if isinstance(p, int):
+        return "%s (0x8000 = ABOVE_NORMAL)" % hex(p)
+    return str(p) if p else "unknown"
+
+
 def above_normal():
     """This process to ABOVE_NORMAL on Windows (bench_hold12's helper),
-    read back; -> the class or None."""
+    read back; -> the class, or None if it could not be set. On Linux,
+    PRIO_NOT_APPLICABLE: nothing is raised yet."""
     if os.name != "nt":
-        return None
+        return PRIO_NOT_APPLICABLE
     import ctypes
     from ctypes import wintypes
     k32 = ctypes.windll.kernel32
@@ -1711,21 +1728,52 @@ def host_summary(samples, t0, t1):
                max(x[2] for x in w), max(x[3] for x in w)))
 
 
+def ws_mb(nbytes):
+    """A working set in bytes -> MB (both systems' reads)."""
+    return nbytes / 1048576.0
+
+
+def linux_host_read(stat, meminfo, status):
+    """/proc/stat, /proc/meminfo and /proc/self/status as text -> ((idle,
+    kernel, user), memory load %%, working set MB), in the form
+    HostSampler's Windows read gives (kernel includes idle, as
+    GetSystemTimes', so cpu_busy_pct serves both). idle is idle + iowait,
+    kernel system + irq + softirq + idle, user user + nice + steal; memory
+    load is MemTotal less MemAvailable over MemTotal; the working set is
+    VmRSS."""
+    f = [int(x) for x in stat.splitlines()[0].split()[1:9]]
+    user, nice, system, idle, iowait, irq, softirq, steal = f
+    idle_all = idle + iowait
+    m = dict((ln.split(":")[0], int(ln.split()[1]))
+             for ln in meminfo.splitlines() if ":" in ln and ln.split()[1:])
+    load = int(round(100.0 * (m["MemTotal"] - m["MemAvailable"])
+                     / m["MemTotal"]))
+    rss_kb = [int(ln.split()[1]) for ln in status.splitlines()
+              if ln.startswith("VmRSS:")][0]
+    return ((idle_all, system + irq + softirq + idle_all, user + nice + steal),
+            load, ws_mb(rss_kb * 1024))
+
+
 class HostSampler(object):
-    """Samples the host every period s on Windows (diagnostic for H3,
-    reviewer 2026-10-23): system CPU busy, memory load, and this process's
-    working set. Nothing elsewhere."""
+    """Samples the host every period s (diagnostic for H3, reviewer
+    2026-10-23): system CPU busy, memory load, and this process's working
+    set. Windows through kernel32 and psapi; Linux from /proc (2026-11-11,
+    linux_host_read)."""
 
     def __init__(self, period=0.5):
         self.samples, self.period = [], period
         self.stop_ev = threading.Event()
-        self.ok = os.name == "nt"
+        self.ok = os.name == "nt" or os.path.exists("/proc/self/status")
         if self.ok:
             self.t = threading.Thread(target=self._run, daemon=True)
             self.t.start()
 
     @staticmethod
     def _read():
+        if os.name != "nt":
+            with open("/proc/stat") as a, open("/proc/meminfo") as b, \
+                    open("/proc/self/status") as c:
+                return linux_host_read(a.read(), b.read(), c.read())
         import ctypes
         from ctypes import wintypes
 
@@ -1754,7 +1802,7 @@ class HostSampler(object):
         k32.K32GetProcessMemoryInfo(wintypes.HANDLE(-1),
                                     ctypes.byref(pmc), pmc.cb)
         v = lambda f: (f.hi << 32) | f.lo                  # noqa: E731
-        return (v(i), v(k), v(u)), ms.load, pmc.ws / 1048576.0
+        return (v(i), v(k), v(u)), ms.load, ws_mb(pmc.ws)
 
     def _run(self):
         prev = None
@@ -1776,14 +1824,19 @@ class HostSampler(object):
 HOST = None         # a HostSampler, set by run_bench (diagnostic)
 
 
+# what process_snapshot runs, per system
+SNAPSHOT_CMD = {"nt": ["tasklist", "/v", "/fo", "csv"],
+                "posix": ["ps", "-eo",
+                          "pid,ppid,ni,pcpu,pmem,rss,etime,cgroup,args"]}
+
+
 def process_snapshot(path):
     """What else runs on the host (diagnostic, H3): tasklist's CSV with CPU
-    time, to path. -> a one-line note."""
-    if os.name != "nt":
-        return "process snapshot: not Windows"
+    time on Windows, ps with CPU, memory, nice and cgroup on Linux, to
+    path. -> a one-line note."""
     import subprocess
     try:
-        out = subprocess.run(["tasklist", "/v", "/fo", "csv"],
+        out = subprocess.run(SNAPSHOT_CMD["nt" if os.name == "nt" else "posix"],
                              capture_output=True, text=True, timeout=60).stdout
     except Exception as exc:                               # noqa: BLE001
         return "process snapshot failed: %s" % exc
@@ -2811,9 +2864,8 @@ def run_bench(args):
                   "after %.1f s" % ("settled, %.0f s with no failed send"
                                     % SETTLE_CLEAN_S if settled else
                                     "NEVER SETTLED", took))
-            print("  node process priority class: %s (0x8000 = "
-                  "ABOVE_NORMAL)" % (hex(node.prio) if getattr(
-                      node, "prio", None) else "unknown"))
+            print("  node process priority: %s"
+                  % prio_text(getattr(node, "prio", None)))
             base, _s = window(board, wit, node, secs, label="flood_baseline")
             print("  baseline %s" % node.window_load)
             nf = (node_fault(node, "flood baseline")
@@ -3363,11 +3415,26 @@ def self_test():
           % hs)
     check(host_summary([(0.5, 1.0, 1, 1.0)], 1.0, 2.0) == "",
           "no host sample in the window -> no line")
-    if os.name == "nt":
-        times, load, ws = HostSampler._read()
-        check(min(times) > 0 and 1 <= load <= 100 and 1.0 < ws < 65536.0,
-              "can-fail: the host read is plausible (CPU times > 0, memory "
-              "load %d %%, this process's working set %.1f MB)" % (load, ws))
+    # Linux's read from /proc, on fixed text (both systems run it)
+    lt, ll, lw = linux_host_read(
+        "cpu  100 20 30 400 50 6 4 2 0 0\ncpu0 1 2 3 4 5 6 7 8 0 0\n",
+        "MemTotal:       16000000 kB\nMemFree:         1000000 kB\n"
+        "MemAvailable:    4000000 kB\n",
+        "Name:\tpython3\nVmSize:\t 900000 kB\nVmRSS:\t  204800 kB\n")
+    check(lt == (450, 490, 122) and ll == 75 and lw == 200.0
+          and ws_mb(3 * 1048576) == 3.0,
+          "can-fail: the Linux host read: idle + iowait, kernel with idle, "
+          "user + nice + steal, memory load from MemAvailable (75 %%), the "
+          "working set from VmRSS in MB (200) -> %s, %s, %s" % (lt, ll, lw))
+    check(SNAPSHOT_CMD["posix"][0] == "ps" and "cgroup" in SNAPSHOT_CMD[
+        "posix"][2] and SNAPSHOT_CMD["nt"][0] == "tasklist",
+          "the process snapshot: ps with the cgroup on Linux, tasklist on "
+          "Windows")
+    times, load, ws = HostSampler._read()
+    check(min(times) > 0 and 1 <= load <= 100 and 1.0 < ws < 65536.0,
+          "can-fail: the host read on this system is plausible (CPU times "
+          "> 0, memory load %d %%, this process's working set %.1f MB)"
+          % (load, ws))
 
     # start refusals end VOID, never FAIL (reviewer, 2026-10-23)
     import re as _re
@@ -3387,10 +3454,16 @@ def self_test():
     # complete and in order with nothing leaking across a boundary
     w = Witness(spec=(600, ((150, PCAN_QOVERRUN), (450, PCAN_QOVERRUN)),
                       None, 2000.0))
-    check(w.pid != os.getpid() and (os.name != "nt" or w.prio == 0x8000),
+    want_prio = 0x8000 if os.name == "nt" else PRIO_NOT_APPLICABLE
+    check(w.pid != os.getpid() and w.prio == want_prio,
           "can-fail: the witness reader is its own process (pid %s, this "
-          "one %d) at ABOVE_NORMAL (class %s)" % (w.pid, os.getpid(),
-                                                  w.prio))
+          "one %d), its priority %s (Windows: ABOVE_NORMAL; Linux: not "
+          "raised yet, and says so)" % (w.pid, os.getpid(),
+                                        prio_text(w.prio)))
+    check(prio_text(0x8000).startswith("0x8000")
+          and prio_text(PRIO_NOT_APPLICABLE) == PRIO_NOT_APPLICABLE
+          and prio_text(None) == "unknown",
+          "the priority line: a class in hex, Linux's text as it is")
     wins = []
     for _k in range(8):
         time.sleep(0.08)
@@ -4373,9 +4446,6 @@ MUTANTS = [
     ("F2: the reader runs in-process",
      "        self.proc = ctx.Process(target=_witness_proc, args=(",
      "        self.proc = threading.Thread(target=_witness_proc, args=("),
-    ("F2: the reader not at ABOVE_NORMAL",
-     "    prio = above_normal()\n    try:\n        reader = _open_witness_reader(",
-     "    prio = None\n    try:\n        reader = _open_witness_reader("),
     # the reader's own classification and decode (2026-10-25)
     ("reader: python-can's order (an overrun with BUSHEAVY a warning)",
      "    if result & (PCAN_OVERRUN | PCAN_QOVERRUN):\n        return \"failure\"\n    if result == PCAN_QRCVEMPTY:\n        return \"empty\"\n    if result & (PCAN_BUSLIGHT | PCAN_BUSHEAVY):\n        return \"warning\"",
@@ -4411,7 +4481,15 @@ MUTANTS = [
      "    return 100.0 * (tot - di) / tot",
      "    return 100.0 * di / tot"),
     ("diag: working set read in bytes",
-     "pmc.ws / 1048576.0", "float(pmc.ws)"),
+     "    return nbytes / 1048576.0", "    return float(nbytes)"),
+    ("diag: Linux idle without iowait",
+     "    idle_all = idle + iowait", "    idle_all = idle"),
+    ("diag: Linux memory load from MemFree",
+     "    load = int(round(100.0 * (m[\"MemTotal\"] - m[\"MemAvailable\"])",
+     "    load = int(round(100.0 * (m[\"MemTotal\"] - m[\"MemFree\"])"),
+    ("diag: Linux working set from VmSize",
+     "              if ln.startswith(\"VmRSS:\")][0]",
+     "              if ln.startswith(\"VmSize:\")][0]"),
     ("diag: host summary ignores the window",
      "    w = [x for x in samples if t0 <= x[0] <= t1]",
      "    w = list(samples)"),
@@ -4545,6 +4623,23 @@ MUTANTS = [
      "               (\"WITNESS FAULT: \" + wf) if wf else \"witness complete\",",
      "               \"witness complete\","),
 ]
+# The priority mutant runs where its code runs (the reviewer, 2026-11-11):
+# F2's on Windows; on Linux, where nothing is raised until AGENTS.md point
+# 4's bench.slice lands, one that makes Linux claim a raise it never made.
+PRIO_MUTANT = {
+    "nt": ("F2: the reader not at ABOVE_NORMAL",
+           "    prio = above_normal()\n    try:\n        reader = _open_witness_reader(",
+           "    prio = None\n    try:\n        reader = _open_witness_reader("),
+    "posix": ("the Linux priority claims it was raised",
+              "    if os.name != \"nt\":\n        return PRIO_NOT_APPLICABLE",
+              "    if os.name != \"nt\":\n        return 0x8000"),
+}
+PRIO_SKIPPED = {
+    "nt": "the Linux priority mutant (Linux code only)",
+    "posix": "F2's ABOVE_NORMAL mutant: the Linux form waits on AGENTS.md "
+             "point 4's bench.slice",
+}
+MUTANTS.append(PRIO_MUTANT["nt" if os.name == "nt" else "posix"])
 
 
 def main():
@@ -4602,6 +4697,8 @@ def main():
         return self_test()
     if args.can_fail:
         import script_can_fail
+        print("not run on this system: %s"
+              % PRIO_SKIPPED["nt" if os.name == "nt" else "posix"])
         return script_can_fail.run(__file__, MUTANTS)
     try:
         listen_arm_keys(args.listen_arms)
