@@ -12,8 +12,9 @@ working tree or HEAD instead of the pin is caught. The pinned commit has a
 `* text eol=crlf` .gitattributes, so a checkout-style export (which
 converts) is told apart from the raw blobs. No network is needed.
 
-  1. pin(): the committed entry is the reviewer's (repo, 1cd39420...; it
-     was 14f8ee60... until the pin move of 2026-11-01); a
+  1. pin(): the committed entry is the reviewer's (repo, fa6c0aea...; it
+     was 14f8ee60... until the pin move of 2026-11-01, then 1cd39420...
+     until 2026-11-11's, which took canbench.live.linux_fixes); a
      pins file with no can-tools entry, a commit that is short or not
      lower-case hex, or no repo, is refused.
   2. clone(): CAN_TOOLS_DIR unset is refused, naming it; a folder with no
@@ -73,7 +74,7 @@ import can_tools_pin  # noqa: E402
 import scratch_dir  # noqa: E402
 
 REPO = "https://github.com/nickyivyca/can-tools"
-COMMIT = "1cd39420181899d5b2dfe8da0aceef9187d29bc5"
+COMMIT = "fa6c0aea5399ab1ac887d95a6edb381590e1c644"
 OTHER = "0123456789abcdef0123456789abcdef01234567"
 FAILS = []
 
@@ -83,6 +84,11 @@ PINNED_FILES = {
     "canbench/live/receiver.py":
         "X = 1\n\n\ndef detect_all_can_interfaces(bitrate, brands=None):\n"
         "    return []\n",
+    # the pinned canbench has the Linux adapter fixes since fa6c0aea, and
+    # bus.open_bus applies them (adapter_fixes): a stand-in that changes
+    # nothing
+    "canbench/live/linux_fixes.py":
+        "def apply():\n    return {'kvaser': False, 'gs_usb': False}\n",
     "canbench/live/note.md": "line one\nline two\n",
     ".gitattributes": "* text eol=crlf\n",
 }
@@ -298,7 +304,7 @@ def checks():
     try:
         # 1. the pin
         p = can_tools_pin.pin()
-        check("1 pins.json's can-tools entry is the reviewer's (repo, 1cd39420...)",
+        check("1 pins.json's can-tools entry is the reviewer's (repo, fa6c0aea...)",
               p == {"repo": REPO, "commit": COMMIT}, p)
         for name, entry in (("no can-tools entry", None),
                             ("a short commit", dict(p, commit=COMMIT[:7])),

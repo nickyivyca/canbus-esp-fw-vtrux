@@ -49,6 +49,7 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 
 BITRATE = 500000
 MAGIC = 0x5C
@@ -275,8 +276,8 @@ def run_bench(args):
     print("run at %s; MCP2515 path: YES (charger -> vehicle receive)"
           % datetime.datetime.now().isoformat())
     tx = bcw.open_gs_usb()
-    rx = can.Bus(interface="kvaser", channel=args.kvaser_channel,
-                 bitrate=BITRATE)
+    rx = adapter_fixes.bus(interface="kvaser", channel=args.kvaser_channel,
+                           bitrate=BITRATE)
     lines = None
     ser = None
     if args.port:

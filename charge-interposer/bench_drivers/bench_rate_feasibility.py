@@ -62,6 +62,7 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 
 import bench_pacer                                            # noqa: E402
 import can                                                    # noqa: E402
@@ -123,8 +124,8 @@ def open_gs_usb():
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(d)
     os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    return can.Bus(interface="gs_usb", channel="can0", index=0,
-                   bitrate=BITRATE)
+    return adapter_fixes.bus(interface="gs_usb", channel="can0", index=0,
+                             bitrate=BITRATE)
 
 
 OPENERS = {
@@ -141,8 +142,8 @@ WITNESS_NAME = "kvaser"
 
 
 def open_witness():
-    return can.Bus(interface="kvaser", channel=0, bitrate=BITRATE,
-                   receive_own_messages=False)
+    return adapter_fixes.bus(interface="kvaser", channel=0, bitrate=BITRATE,
+                             receive_own_messages=False)
 
 
 def drain(bus, stop, counter):

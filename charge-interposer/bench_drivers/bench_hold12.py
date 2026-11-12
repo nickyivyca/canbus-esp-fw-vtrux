@@ -86,6 +86,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 
 BITRATE = 500000
 ID = 0x18FFDEC0
@@ -967,7 +968,7 @@ def run_bench(a):
             log("12 entry 2 (witness build): VOID")
             out.close()
             return 1
-    kv = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+    kv = adapter_fixes.bus(interface="kvaser", channel=0, bitrate=BITRATE)
     veh, vlock, vhalt = [], threading.Lock(), threading.Event()
 
     def vrx():

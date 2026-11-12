@@ -15,6 +15,9 @@ Two transport families:
             same simulator code drives real silicon once the board exists.
             gs_usb is the exception: opened by device index (--channel N,
             default 0), its TX echoes drained and dropped (open_gs_usb).
+            On Linux the pinned canbench's linux_fixes are applied first
+            (adapter_fixes), so a gs_usb open there needs the can-tools pin
+            installed; on Windows it does not.
 
 Segment map for this bench:
 
@@ -201,6 +204,10 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
 
     import paths
     paths.import_canbench()     # the pinned canbench, nothing on sys.path
+    # the Kvaser's linuxcan fix, explicitly, not as the receiver's import
+    # side effect (adapter_fixes; reviewer, 2026-11-11)
+    import adapter_fixes
+    adapter_fixes.apply()
     from canbench.live.receiver import detect_all_can_interfaces
     if logger:
         logger.info("Detecting %s interfaces at %d bps...", transport, bitrate)
@@ -272,6 +279,9 @@ def open_gs_usb(channel, bitrate, *, receive_own_messages=False,
     for bus_gs_usb_test (a fake in place of python-can's GsUsbBus)."""
     if _bus_cls is None:
         _libusb_bootstrap()
+        # gs_usb's start() without its USB reset, on Linux (adapter_fixes)
+        import adapter_fixes
+        adapter_fixes.apply()
         from can.interfaces.gs_usb import GsUsbBus as _bus_cls
     index = int(channel) if channel not in (None, "") else 0
     cls = type("GsUsbNoEcho", (_DropEchoes, _bus_cls), {})

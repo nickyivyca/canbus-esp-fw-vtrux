@@ -576,23 +576,39 @@ def remove_checkouts(repo, paths):
     paths[:] = []
 
 
-# Windows: a process's working folder must be shorter than MAX_PATH (260),
-# and idf.py runs cmake in the build folder, whose own files nest about 60
-# characters deeper (WinError 267 inside a runner's tree, the build smoke
-# of 2026-11-04). Refused before anything is cloned or built.
-MAX_BUILD_DIR = 200
+# The deepest mutant build folder let run, per system; refused before
+# anything is cloned or built.
+#   nt     a process's working folder must be shorter than MAX_PATH (260),
+#          and idf.py runs cmake in the build folder, whose own files nest
+#          about 60 characters deeper (WinError 267 inside a runner's tree,
+#          the build smoke of 2026-11-04): 200.
+#   posix  PATH_MAX is 4096 bytes with its NUL (linux/limits.h; pathconf
+#          PC_PATH_MAX on madhouse-debian), so 4095 for a whole path, less
+#          the build's own nesting below the folder: 176 characters at the
+#          deepest in an interposer variant's build (bridge and selftest,
+#          a libsodium object, measured on madhouse 2026-11-11), with
+#          BUILD_NEST_MARGIN about three times that (tester, 2026-11-11).
+BUILD_NEST_MARGIN = 512
+MAX_BUILD_DIR = {"nt": 200, "posix": 4095 - BUILD_NEST_MARGIN}
+
+
+def build_dir_limit(system=None):
+    """The deepest build folder for this system ("nt" or "posix")."""
+    return MAX_BUILD_DIR[system or ("nt" if os.name == "nt" else "posix")]
 
 
 def mutant_build_dir(repo, variant):
     return os.path.join(repo, "charge-interposer", "firmware", "build", variant)
 
 
-def check_build_path(build_dir):
+def check_build_path(build_dir, system=None):
     p = os.path.abspath(build_dir)
-    if len(p) > MAX_BUILD_DIR:
-        raise Refused("the mutant's build folder would be %d characters long (%s), over %d: "
-                      "ESP-IDF cannot run a build that deep on Windows. Give --scratch-from "
-                      "a shallower worktree (the list's {clone})" % (len(p), p, MAX_BUILD_DIR))
+    limit = build_dir_limit(system)
+    if len(p) > limit:
+        raise Refused("the mutant's build folder would be %d characters long (%s), over %d "
+                      "on this system: ESP-IDF cannot run a build that deep. Give "
+                      "--scratch-from a shallower worktree (the list's {clone})"
+                      % (len(p), p, limit))
 
 
 def mutant_build(variant, jobs, scratch_from=None):
@@ -879,14 +895,27 @@ def self_test():
             expect(label, got, "refused")
             expect("...and leaves no checkout", [d for d in os.listdir(work)
                                                  if d.startswith("shared-")], [])
-    for depth, want in ((10, "ok"), (100, "ok"), (180, "refused")):
-        d = mutant_build_dir(os.path.join("C:\\", *(["d" * 9] * (depth // 10)), "repo"), "bridge")
+    # the guard on this host's own root and limit: a short folder, one at
+    # the limit, one a character over it (the paths are absolute here, so
+    # their length is what check_build_path measures)
+    expect("the limits: 200 on Windows, PATH_MAX 4095 less %d on Linux"
+           % BUILD_NEST_MARGIN, MAX_BUILD_DIR, {"nt": 200, "posix": 3583})
+    root = os.path.abspath(os.sep)
+    tail = len(mutant_build_dir(os.path.join(root, "repo"), "bridge")) - len(root)
+    limit = build_dir_limit()
+    for target, want in ((60, "ok"), (limit, "ok"), (limit + 1, "refused")):
+        pad = target - tail - len(root) - 1
+        d = mutant_build_dir(os.path.join(root, "p" * pad, "repo"), "bridge")
         try:
             check_build_path(d)
             got = "ok"
         except Refused:
             got = "refused"
-        expect("a mutant build folder %d characters long is %s" % (len(d), want), got, want)
+        expect("a mutant build folder %d characters long is %s (limit %d)"
+               % (len(os.path.abspath(d)), want, limit), got, want)
+        if target == limit:
+            expect("...and the folder at the limit is exactly %d long" % limit,
+                   len(os.path.abspath(d)), limit)
     print("\nno_led --self-test: %s" % ("all checks OK" if not bad else "%d FAILED" % bad))
     return 1 if bad else 0
 

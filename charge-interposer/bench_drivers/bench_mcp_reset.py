@@ -78,6 +78,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 
 STREAM_ID = 0x0CFF01C0
 RATE = 500.0
@@ -311,8 +312,8 @@ def open_innomaker(bitrate):
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(d)
     os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    bus = can.Bus(interface="gs_usb", channel="can0", index=0,
-                  bitrate=bitrate)
+    bus = adapter_fixes.bus(interface="gs_usb", channel="can0", index=0,
+                            bitrate=bitrate)
     from gs_usb.constants import GS_CAN_MODE_HW_TIMESTAMP as HW
     flags = getattr(getattr(bus, "gs_usb", None), "device_flags", None)
     return bus, bool(flags is not None and flags & HW)

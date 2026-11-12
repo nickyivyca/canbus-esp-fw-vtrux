@@ -95,6 +95,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 import scratch_dir                  # noqa: E402
 
 INJECT_ID = 0x6A2          # clear of the truck, the WiCAN, the interposer
@@ -626,7 +627,7 @@ def open_pcan(acks):
 
 def open_kvaser():
     import can
-    return can.Bus(interface="kvaser", channel=0, bitrate=500000)
+    return adapter_fixes.bus(interface="kvaser", channel=0, bitrate=500000)
 
 
 def open_innomaker():
@@ -636,8 +637,8 @@ def open_innomaker():
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(d)
     os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    return can.Bus(interface="gs_usb", channel="can0", index=0,
-                   bitrate=500000)
+    return adapter_fixes.bus(interface="gs_usb", channel="can0", index=0,
+                             bitrate=500000)
 
 
 class Injector(object):

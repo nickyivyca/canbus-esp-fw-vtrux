@@ -54,6 +54,7 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 
 import can                                                   # noqa: E402
 
@@ -116,8 +117,8 @@ def open_gs_usb():
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(d)
     os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    return can.Bus(interface="gs_usb", channel="can0", index=0,
-                   bitrate=BITRATE)
+    return adapter_fixes.bus(interface="gs_usb", channel="can0", index=0,
+                             bitrate=BITRATE)
 
 
 OPENERS = {
@@ -126,8 +127,8 @@ OPENERS = {
     # reachability test into one that cannot fail honestly.
     "pcan": lambda: can.Bus(interface="pcan", channel="PCAN_USBBUS1",
                             bitrate=BITRATE, auto_reset=True),
-    "kvaser": lambda: can.Bus(interface="kvaser", channel=0,
-                              bitrate=BITRATE),
+    "kvaser": lambda: adapter_fixes.bus(interface="kvaser", channel=0,
+                                        bitrate=BITRATE),
     "innomaker": open_gs_usb,
 }
 
