@@ -292,7 +292,11 @@ def test_machine_env_user_bus(A, work):
     """Run 2548 (the charge-interposer reviewer, 2026-11-12): the environment
     the acceptance runner starts a suite run from, compile.machine_env with
     this adapter, carries XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS, and
-    nothing it was not given. On Linux with the user's bench.slice (as on
+    nothing it was not given. Since the re-pin to shared/bench 2026.11.13.2
+    the core supplies the two (compile.USER_BUS_VARS, its rule user_bus and
+    that rule's mutant in tests/test_accept_compile.py) and the adapter no
+    longer lists them, so this checks the pinned core with this adapter;
+    no adapter edit can drop them. On Linux with the user's bench.slice (as on
     madhouse-debian), the real acceptance path: a process started in exactly
     that environment, as a nested suite run is, runs the chain runner's own
     placement probe (procs.scope_argv, systemd-run --user, then
@@ -937,9 +941,6 @@ TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_s
          test_sim_judged, test_run_logs, test_vport_windows, test_vport_real]
 
 MUTANTS = [
-    # run 2548: the user bus not passed to a suite run
-    ("the user bus not in the machine variables",
-     '                "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")', "                )"),
     # the re-pin to 2026.11.12's settings guard (the charge-interposer
     # reviewer, 2026-11-12)
     ("a CAN replay harness name dropped", '    "e4_rig_calibration", "h2_backends")',
