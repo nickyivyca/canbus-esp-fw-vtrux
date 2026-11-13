@@ -27,11 +27,21 @@ so a run here never reads as a remote one.
   4. gi_host_run.sh --sched, the same two ways (LOCAL_PY a fake for the gi_diag export
      and wican_ref.py, the shared checkout a fake): the same commands, the sync's archive
      the same, no ssh in local mode, and the first output line says which.
+  5. shim_wire_probe.sh, the same two ways (gen-inhibit reviewer, 2026-11-12, after
+     1-4), with a DEST holding a space and two scenarios: the same five commands (the
+     host identity, the probe source as cat's stdin, the build, each scenario), DEST
+     quoted, scp never called; each output file in GI_OUT, its first line the mode
+     line and its second the host identity; the first output line says which.
+  6. shim_7f3_probe.sh, the same two ways, two trees, one with a space: the host
+     identity, then each tree's probe with the tree and PY quoted; the first output line
+     says which.
+  Part 2 also checks HOST_SSH_BATCH (the suite's B15host): -o BatchMode=yes on ssh only
+  when it is set.
 
     python3.13 -B gen-inhibit/tools/bench/test_host_target.py
     python3.13 -B gen-inhibit/tools/bench/test_host_target.py --mutants
 
---mutants runs the test on copies of the three scripts with one edit each (GI_HOST_TARGET_DIR
+--mutants runs the test on copies of the scripts with one edit each (GI_HOST_TARGET_DIR
 names the folder of copies). The unmutated copy runs first, as the control. Gen-inhibit
 tester, 2026-11-12.
 """
@@ -47,7 +57,8 @@ DIR = os.environ.get("GI_HOST_TARGET_DIR") or HERE
 FW = gi_paths.project_root()
 BASH = shutil.which("bash")
 OLD_COMMIT = os.environ.get("GI_TEST_COMMIT", "2a1a0f1")    # root layout, no gi_diag: quick to stage
-FILES = ("host_target.sh", "baseline_host_run.sh", "gi_host_run.sh", "host_identity.sh")
+FILES = ("host_target.sh", "baseline_host_run.sh", "gi_host_run.sh", "host_identity.sh", "shim_wire_probe.sh",
+         "shim_wire_probe.c", "shim_7f3_probe.sh")
 FAILS = []
 
 
@@ -64,12 +75,16 @@ def script(path, body):
 
 
 def recorder(path, calls, kind):
-    """A fake ssh (kind "ssh": $1 the host, $2 the command) or shell (kind "shell": $1 is -c,
-    $2 the command). Paths are written in, since the local mode's env -i drops the test's
-    variables. Each call n leaves n.cmd, n.host, n.cwd, n.env and n.in; "bash -s" answers as
-    the remote script's first step would."""
+    """A fake ssh (kind "ssh": options first, then $1 the host, $2 the command), shell (kind
+    "shell": $1 is -c, $2 the command) or scp (kind "scp"). Paths are written in, since the
+    local mode's env -i drops the test's variables. Each call n leaves n.cmd, n.host, n.opts
+    (ssh's options), n.cwd, n.env and n.in; "bash -s" answers as the remote script's first
+    step would."""
     os.makedirs(calls, exist_ok=True)
-    script(path, 'd=%s; n=$(ls "$d" | grep -c "\\.cmd$")\n'
+    opts = ('o=""; while [ "${1#-}" != "$1" ]; do o="$o $1"; [ "$1" = -o ] && { o="$o $2"; shift; }; shift; done\n'
+            if kind == "ssh" else 'o=""\n')
+    script(path, opts + 'd=%s; n=$(ls "$d" | grep -c "\\.cmd$")\n'
+                 'printf %%s "$o" > "$d/$n.opts"\n'
                  'printf %%s "$2" > "$d/$n.cmd"; printf %%s "%s:$1" > "$d/$n.host"\n'
                  'pwd > "$d/$n.cwd"; env | sort > "$d/$n.env"; cat > "$d/$n.in"\n'
                  'case "$2" in "bash -s") echo "=== exit 0 (fake)" ;; esac\n'
@@ -88,8 +103,8 @@ def calls_of(calls):
     out = []
     for i in range(n):
         rd = lambda ext, mode="r": open(os.path.join(calls, "%d.%s" % (i, ext)), mode).read()  # noqa: E731
-        out.append({"cmd": rd("cmd"), "host": rd("host"), "cwd": rd("cwd").strip(), "env": rd("env"),
-                    "in": rd("in", "rb")})
+        out.append({"cmd": rd("cmd"), "host": rd("host"), "opts": rd("opts"), "cwd": rd("cwd").strip(),
+                    "env": rd("env"), "in": rd("in", "rb")})
     return out
 
 
@@ -175,6 +190,12 @@ def part_on_host(base, base_env, me):
     check("remote: ssh is called with REMOTE and the command, and its status comes back",
           rc == 5 and len(got) == 1 and got[0]["host"] == "ssh:nowhere.invalid"
           and got[0]["cmd"] == "echo remote command", (rc, got[:1]))
+    check("remote: without HOST_SSH_BATCH, ssh gets no option", len(got) == 1 and got[0]["opts"] == "", got[:1])
+    rc, out, err = sh(pre_r + 'HOST_SSH_BATCH=1; on_host "echo batch"', e)
+    got = calls_of(calls)
+    check("remote: with HOST_SSH_BATCH=1, ssh gets -o BatchMode=yes before REMOTE",
+          rc == 0 and len(got) == 2 and got[1]["opts"] == " -o BatchMode=yes" and got[1]["host"] == "ssh:nowhere.invalid"
+          and got[1]["cmd"] == "echo batch", (rc, got[1:]))
 
 
 def run_twice(base, tag, argv, env_extra, me):
@@ -187,6 +208,7 @@ def run_twice(base, tag, argv, env_extra, me):
         ssh_calls, sh_calls = os.path.join(d, "ssh_calls"), os.path.join(d, "shell_calls")
         recorder(os.path.join(bindir, "ssh"), ssh_calls, "ssh")
         recorder(os.path.join(bindir, "fakeshell"), sh_calls, "shell")
+        recorder(os.path.join(bindir, "scp"), os.path.join(d, "scp_calls"), "scp")
         home = os.path.join(d, "home")
         os.makedirs(home)
         e = {k: v for k, v in os.environ.items() if k not in ("REMOTE", "FW", "DEST", "PY", "RROOT", "HOST_BASH")}
@@ -271,6 +293,59 @@ def part_gi_host(base, me):
     compare("gi_host_run --sched", res, me)
 
 
+def read_bytes(name):
+    with open(os.path.join(DIR, name), "rb") as fh:
+        return fh.read()
+
+
+def part_wire(base, me):
+    print("5. shim_wire_probe.sh, remote and local")
+    dest = "gi host_t"
+    res = run_twice(base, "wire", [os.path.join(DIR, "shim_wire_probe.sh"), "probe-a", "probe-b"],
+                    lambda d: {"DEST": dest, "GI_OUT": os.path.join(d, "out"), "REVERSE_IT_DIR": os.path.join(d, "rit")},
+                    me)
+    compare("wire", res, me)
+    want = ["bash -s", "cat > gi\\ host_t/test/shim_wire_probe.c", "bash -s gi\\ host_t",
+            "cd gi\\ host_t/test/gen_inhibit_shim_wireprobe && timeout 120 ./shim_wire_probe probe-a",
+            "cd gi\\ host_t/test/gen_inhibit_shim_wireprobe && timeout 120 ./shim_wire_probe probe-b"]
+    for mode, want_first in (("remote", "# remote: ssh nowhere.invalid, from %s" % me),
+                             ("local", "# local mode: REMOTE=%s names this host, %s;" % (me, me))):
+        rc, out, ssh_c, sh_c, home, d = res[mode]
+        got = ssh_c if mode == "remote" else sh_c
+        check("wire %s: the identity, the copy, the build and each scenario, DEST quoted" % mode,
+              [c["cmd"] for c in got] == want, [c["cmd"] for c in got])
+        check("wire %s: the copy's stdin is shim_wire_probe.c, the identity's host_identity.sh" % mode,
+              len(got) == 5 and got[1]["in"] == read_bytes("shim_wire_probe.c")
+              and got[0]["in"] == read_bytes("host_identity.sh"), [len(c["in"]) for c in got])
+        check("wire %s: scp is never called" % mode, calls_of(os.path.join(d, "scp_calls")) == [],
+              len(calls_of(os.path.join(d, "scp_calls"))))
+        files = sorted(os.listdir(os.path.join(d, "out"))) if os.path.isdir(os.path.join(d, "out")) else []
+        heads = [open(os.path.join(d, "out", f)).read().splitlines()[:2] for f in files]
+        check("wire %s: one file per scenario in GI_OUT, nothing in reverse-it's runs/" % mode,
+              len(files) == 2 and files[0].startswith("shim_wire_probe_probe-a_")
+              and files[1].startswith("shim_wire_probe_probe-b_") and not os.path.exists(os.path.join(d, "rit")),
+              (files, os.path.exists(os.path.join(d, "rit"))))
+        check("wire %s: each file's first line is the mode line, its second the host identity" % mode,
+              len(heads) == 2 and all(h[:1] and h[0].startswith(want_first) and h[1:] == ["=== exit 0 (fake)"]
+                                      for h in heads), heads)
+
+
+def part_7f3(base, me):
+    print("6. shim_7f3_probe.sh, remote and local")
+    res = run_twice(base, "p7f3", [os.path.join(DIR, "shim_7f3_probe.sh"), "gi host_a", "gi_host_b"],
+                    lambda d: {"PY": "py3x"}, me)
+    compare("7f3", res, me)
+    want = ["bash -s", "bash -s gi\\ host_a py3x", "bash -s gi_host_b py3x"]
+    for mode in ("remote", "local"):
+        rc, out, ssh_c, sh_c, home, d = res[mode]
+        got = ssh_c if mode == "remote" else sh_c
+        check("7f3 %s: the identity, then each tree's probe, the tree and PY quoted" % mode,
+              [c["cmd"] for c in got] == want, [c["cmd"] for c in got])
+        check("7f3 %s: each probe gets the probe script on stdin, the same for both trees" % mode,
+              len(got) == 3 and got[1]["in"] == got[2]["in"] and got[1]["in"].startswith(b"set -euo pipefail\ndest="),
+              [c["in"][:30] for c in got])
+
+
 def checks():
     base = gi_paths.scratch("test_host_target")
     try:
@@ -280,6 +355,8 @@ def checks():
         part_on_host(base, base_env, me)
         part_baseline(base, me)
         part_gi_host(base, me)
+        part_wire(base, me)
+        part_7f3(base, me)
     finally:
         gi_paths.remove_tree(base)
     return FAILS
@@ -316,6 +393,27 @@ MUTANTS = [
      'ssh "$REMOTE" "bash -s" < "$(dirname'),
     ("gi_host_run.sh", "gi_host_run: --sched still over ssh", '    on_host "cd ~/$DEST/test/gen_inhibit_sched',
      '    ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_sched'),
+    # 2026-11-12, after the first two: the suite's BatchMode and the two shim probes
+    ("host_target.sh", "BatchMode never", 'ssh ${HOST_SSH_BATCH:+-o BatchMode=yes} "$REMOTE"', 'ssh "$REMOTE"'),
+    ("host_target.sh", "BatchMode always", 'ssh ${HOST_SSH_BATCH:+-o BatchMode=yes} "$REMOTE"',
+     'ssh -o BatchMode=yes "$REMOTE"'),
+    ("shim_wire_probe.sh", "wire: no record on its output", 'host_target || exit 2\necho "$HOST_MODE"\n',
+     "host_target || exit 2\n"),
+    ("shim_wire_probe.sh", "wire: no record in its files", '{ echo "# $HOST_MODE"; echo "$ID"; } > "$out"',
+     'echo "$ID" > "$out"'),
+    ("shim_wire_probe.sh", "wire: the identity still over ssh", 'ID="$(on_host "bash -s"', 'ID="$(ssh "$REMOTE" "bash -s"'),
+    ("shim_wire_probe.sh", "wire: the copy still over scp",
+     'on_host "cat > $QD/test/shim_wire_probe.c" < "$HERE/shim_wire_probe.c"',
+     'scp -q "$HERE/shim_wire_probe.c" "$REMOTE:$DEST/test/shim_wire_probe.c"'),
+    ("shim_wire_probe.sh", "wire: the build still over ssh", 'on_host "bash -s $QD" <<', 'ssh "$REMOTE" "bash -s $QD" <<'),
+    ("shim_wire_probe.sh", "wire: each scenario still over ssh", '  on_host "cd $QD/test', '  ssh "$REMOTE" "cd $QD/test'),
+    ("shim_wire_probe.sh", "wire: DEST not quoted", 'printf -v QD %q "$DEST"', 'QD="$DEST"'),
+    ("shim_wire_probe.sh", "wire: GI_OUT not read", 'OUT="${GI_OUT:-', 'OUT="${GI_OUT_NOT:-'),
+    ("shim_7f3_probe.sh", "7f3: no record", 'host_target || exit 2\necho "$HOST_MODE"\n', "host_target || exit 2\n"),
+    ("shim_7f3_probe.sh", "7f3: the identity still over ssh", 'on_host "bash -s" < "$(dirname "$0")/host_identity.sh"',
+     'ssh "$REMOTE" "bash -s" < "$(dirname "$0")/host_identity.sh"'),
+    ("shim_7f3_probe.sh", "7f3: each probe still over ssh", '  on_host "bash -s $(printf', '  ssh "$REMOTE" "bash -s $(printf'),
+    ("shim_7f3_probe.sh", "7f3: the tree not quoted", """$(printf '%q %q' "$dest" "$PY")""", "$dest $PY"),
 ]
 
 

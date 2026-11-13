@@ -183,8 +183,16 @@ MUTANTS = [
      'B15_FILES = ("diag_decode_check.py", "gi_diag.py")'),
     ("B15host runs the check from another folder", '"~/gi_bench_%s/diag_decode_check.py', '"~/gi_bench_%.0s/diag_decode_check.py'),
     ("B15host does not set REVERSE_IT_DIR", 'REVERSE_IT_DIR=\\"$PWD\\" python3 -B', 'python3 -B'),
-    ("B15host's copy failing is not seen", '"set -o pipefail; (%s', '"(%s'),
+    ("B15host's copy failing is not seen", '"set -o pipefail; (echo', '"(echo'),
     ("B15host runs the check after a failed copy", "tar xf - -C ~/gi_bench_%s' && \"", "tar xf - -C ~/gi_bench_%s'; \""),
+    # B15host through host_target.sh (2026-11-12): local mode, the record line, BatchMode
+    ("B15host: the copy still over ssh", 'diag_schemas | on_host "', 'diag_schemas | ssh -o BatchMode=yes {gi_host_ssh} "'),
+    ("B15host: the check still over ssh", '"on_host \'cd {gi_host_root}', '"ssh -o BatchMode=yes {gi_host_ssh} \'cd {gi_host_root}'),
+    ("B15host: no record line in its file", '(echo \\"# $HOST_MODE\\"; %s', '(%s'),
+    ("B15host: no BatchMode", 'host_target || exit 2; HOST_SSH_BATCH=1; ', 'host_target || exit 2; '),
+    ("B15host: REMOTE not given", 'env={"REMOTE": "{gi_host_ssh}"}, outputs=', 'outputs='),
+    ("B15host: a REMOTE that is no host name runs anyway", '. \\"%s/host_target.sh\\" && host_target || exit 2;',
+     '. \\"%s/host_target.sh\\" && host_target;'),
     # the X2's pinned images (user ruling 2026-11-10): the pin, x2_app first, the SLCAN verify
     ("the retired x2_images setting is accepted", 'if "x2_images" in settings:', 'if False:'),
     ("a setting names the pin file", 'pin = X2P.load(need(settings, "x2_pin_dir"), X2_PIN_FILE)',
@@ -305,7 +313,9 @@ def clone(base):
     subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", wt, repo], check=True)
     subprocess.run(["git", "-C", repo, "-c", "advice.detachedHead=false", "checkout", "-q", head], check=True)
     d = os.path.join(repo, os.path.relpath(HERE, wt))
-    for f in (TEST, EXAMPLE, "x2_pin.py", "x2_pin.json"):     # the X2's pin, which the suite imports (2026-11-10)
+    # the X2's pin, which the suite imports (2026-11-10); the judges, which the test reads
+    # (2026-11-12: at HEAD they lagged an uncommitted change, and the control failed on it)
+    for f in (TEST, EXAMPLE, "x2_pin.py", "x2_pin.json", "suite_judges.py"):
         shutil.copy(os.path.join(HERE, f), d)
     # The suite's HARNESS is bench/ beside it (2026-10-22); the e2e board-hook check
     # runs wican_reboot.py from there.

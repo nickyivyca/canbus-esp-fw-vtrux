@@ -19,6 +19,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import sys
 import threading
@@ -375,8 +376,11 @@ def test_ssid(settings, bench, emu):
     check("every bash check runs bash by the full path in the settings, never a bare bash",
           all(c.argv[0] == "{bash}" for s in (bench, emu) for g in s.groups for c in g.checks
               if not c.skip and c.argv[0] != "powershell"), [c.argv[0] for g in bench.groups for c in g.checks][:3])
-    check("no argv names the host H runs on (gi_host_ssh does)",
-          "madhouse" not in raw and "{gi_host_ssh}" in raw)
+    # since 2026-11-12 H and B15host both take it as REMOTE in their env (host_target.sh)
+    raw_env = json.dumps([[c.argv, c.cwd, c.env] for s in (bench, emu) for g in s.groups for c in g.checks])
+    check("no argv or env names the host H and B15host run on (gi_host_ssh does, as REMOTE in both)",
+          "madhouse" not in raw_env and all(c.env.get("REMOTE") == "{gi_host_ssh}" for g in emu.groups
+                                            for c in g.checks if c.id in ("H", "B15host")))
     blob = json.dumps(settings)
     check("the SSID is not in the settings (the record keeps them)", SSID not in blob)
     argvs = json.dumps([c.argv for s in (bench, emu) for g in s.groups for c in g.checks])
@@ -1506,7 +1510,9 @@ def test_lock_source(settings):
 FAKE_SSH = r"""#!/usr/bin/env bash
 # The host-group test's ssh: logs the host and the command; runs a copy (tar xf) here
 # with HOME set to the fake host's home, and answers anything else as a passing check.
-while [ "${1#-}" != "$1" ]; do [ "$1" = "-o" ] && shift; shift; done
+o=""
+while [ "${1#-}" != "$1" ]; do o="$o $1"; [ "$1" = "-o" ] && { o="$o $2"; shift; }; shift; done
+printf 'OPTS%s\n' "$o" >> "$SSH_LOG.opts"
 printf 'HOST %s CMD %s\n' "$1" "$2" >> "$SSH_LOG"
 case "$2" in
   *"tar xf"*) h=$FAKE_HOME; command -v cygpath > /dev/null && h=$(cygpath -u "$h")   # a POSIX home, as the host has
@@ -1515,11 +1521,26 @@ case "$2" in
 esac
 """
 
+# The local mode's shell (host_target.sh's HOST_BASH; $1 is -c, $2 the command): logs the
+# command and its folder as FAKE_SSH logs the host, runs a copy for real, and answers
+# anything else as a passing check. The log's path is written in, since the local mode
+# runs the shell with only HOME, USER, LOGNAME, PATH and LANG.
+FAKE_SHELL = r"""#!/usr/bin/env bash
+printf 'LOCAL %%s CMD %%s\n' "$PWD" "$2" >> %s
+case "$2" in
+  *"tar xf"*) bash -c "$2" ;;
+  *) echo "pages seen: fake"; echo "all emitted diag frames decode against the DBC"; echo "exit 0" ;;
+esac
+"""
+
 
 def test_host_group(settings, emu):
     """H and B15host run this clone's harness (host-run commit, 2026-10-22): H the repo's
     baseline_host_run.sh with RROOT from gi_host_root; B15host copies its files to the
-    host and runs them there, under a fake ssh; a copy that fails stops the check."""
+    host and runs them there, under a fake ssh; a copy that fails stops the check.
+    Since 2026-11-12 B15host goes through host_target.sh: over ssh with BatchMode, and
+    when gi_host_ssh names this host, here without ssh (a fake shell), the same commands
+    from $HOME; its output file's first line says which, and its judge keeps it."""
     import subprocess
     host = {c.id: c for g in emu.groups if g.name == "host" for c in g.checks}
     h, b = host.get("H"), host.get("B15host")
@@ -1540,13 +1561,27 @@ def test_host_group(settings, emu):
         f.write(FAKE_SSH)
     os.chmod(os.path.join(fbin, "ssh"), 0o755)      # Linux needs it; Git Bash goes by the #! line
 
-    def run_b15(gi_tools, tag):
+    def run_b15(gi_tools, tag, host=None, home=None, outdir=None):
+        """B15host's argv and env, filled as the core fills them; host replaces gi_host_ssh,
+        and home, when given, is $HOME (the local mode's) with the fake shell as HOST_BASH."""
         log = os.path.join(d, "ssh_%s.log" % tag)
         ctx = {k: v for k, v in settings.items() if isinstance(v, str)}
-        ctx.update(gi_tools=gi_tools.replace("\\", "/"), outdir=out.replace("\\", "/"), run_dir="R", run_id="I",
-                   suite="S", check_id="B15host", group="host", jobs="1")
+        ctx.update(gi_tools=gi_tools.replace("\\", "/"), outdir=(outdir or out).replace("\\", "/"), run_dir="R",
+                   run_id="I", suite="S", check_id="B15host", group="host", jobs="1")
+        if host:
+            ctx["gi_host_ssh"] = host
         argv = [fmt(a, ctx) for a in b.argv]
-        e = dict(os.environ, PATH=fbin + os.pathsep + os.environ.get("PATH", ""), SSH_LOG=log, FAKE_HOME=fhome)
+        e = {k: v for k, v in os.environ.items() if k not in ("REMOTE", "HOST_BASH", "HOST_SSH_BATCH")}
+        e.update({k: fmt(v, ctx) for k, v in b.env.items()})
+        e.update(PATH=fbin + os.pathsep + os.environ.get("PATH", ""), SSH_LOG=log, FAKE_HOME=fhome)
+        if home:
+            shell = os.path.join(d, "fakeshell_%s" % tag)
+            with open(shell, "w", newline="\n") as f:
+                f.write(FAKE_SHELL % shlex.quote(log))
+            os.chmod(shell, 0o755)
+            # the run folder's gi_diag export runs here too: keep this user's site-packages
+            import site
+            e.update(HOME=home, HOST_BASH=shell, PYTHONUSERBASE=site.getuserbase())
         r = subprocess.run(argv, capture_output=True, text=True, env=e, stdin=subprocess.DEVNULL, timeout=120)
         lines = open(log, encoding="utf-8").read().splitlines() if os.path.exists(log) else []
         return r.returncode, lines, r.stdout + r.stderr
@@ -1581,6 +1616,51 @@ def test_host_group(settings, emu):
           len(lines) == 2 and all(l.startswith("HOST hosttest CMD ") for l in lines), lines)
     check("B15host's output file holds the host's answer",
           os.path.exists(res) and "exit 0" in open(res, encoding="utf-8").read(), txt[-300:])
+    me = subprocess.run(["hostname"], capture_output=True, text=True).stdout.strip()
+    first = open(res, encoding="utf-8").read().splitlines()[:1] if os.path.exists(res) else []
+    check("B15host remote: its output file's first line says remote, ssh, gi_host_ssh and this host",
+          first == ["# remote: ssh hosttest, from %s" % me], first)
+    opts = open(os.path.join(d, "ssh_good.log.opts"), encoding="utf-8").read().splitlines() \
+        if os.path.exists(os.path.join(d, "ssh_good.log.opts")) else []
+    check("B15host remote: both ssh calls carry -o BatchMode=yes, as before",
+          opts == ["OPTS -o BatchMode=yes"] * 2, opts)
+    jr = SG.SJ.judge_one("B15host", out)
+    check("B15host remote: its judge passes and keeps host_mode remote, the line at the end of its detail",
+          [r["verdict"] for r in jr] == ["PASS"] and jr[0]["figures"].get("host_mode", {}).get("value") == "remote"
+          and jr[0]["detail"].endswith("; remote: ssh hosttest, from %s" % me), jr)
+
+    # The local mode: gi_host_ssh names this host. The same two commands, to the fake
+    # shell from $HOME (a fake home), never to ssh; the copy lands in that home.
+    lhome, lout = os.path.join(d, "lhome"), os.path.join(d, "lout")
+    for p in (lhome, lout):
+        os.makedirs(p)
+    rc_l, lines_l, txt_l = run_b15(HERE, "local", host=me, home=lhome, outdir=lout)
+    res_l = os.path.join(lout, "B15_diag_decode_check_host_e3d9437.txt")
+    txt_l += open(res_l, encoding="utf-8", errors="replace").read() if os.path.exists(res_l) else ""
+    ssh_l = os.path.exists(os.path.join(d, "ssh_local.log.opts"))
+    check("B15host local: exit 0, ssh never called, both commands to the local shell",
+          rc_l == 0 and not ssh_l and len(lines_l) == 2 and all(l.startswith("LOCAL ") for l in lines_l),
+          (rc_l, ssh_l, lines_l, txt_l[-300:]))
+    check("B15host local: the same commands as over ssh, in the same order",
+          [l.split(" CMD ", 1)[1] for l in lines_l] == [l.split(" CMD ", 1)[1] for l in lines], (lines_l, lines))
+    check("B15host local: each runs from $HOME",
+          [l.split(" CMD ", 1)[0] for l in lines_l] == ["LOCAL " + lhome] * 2, lines_l)
+    ldest = os.path.join(lhome, "gi_bench_e3d9437")
+    check("B15host local: the copy lands in $HOME/gi_bench_<commit>, the same files",
+          all(os.path.isfile(os.path.join(ldest, f)) and
+              open(os.path.join(ldest, f), "rb").read() == open(os.path.join(HERE, "bench", f), "rb").read()
+              for f in SG.B15_FILES), os.listdir(ldest) if os.path.isdir(ldest) else None)
+    first_l = open(res_l, encoding="utf-8").read().splitlines()[:1] if os.path.exists(res_l) else []
+    want_l = "# local mode: REMOTE=%s names this host, %s; the commands run here without ssh" % (me, me)
+    check("B15host local: its output file's first line says local mode and names this host",
+          first_l == [want_l], first_l)
+    jl = SG.SJ.judge_one("B15host", lout)
+    check("B15host local: its judge passes and keeps host_mode local, the line at the end of its detail",
+          [r["verdict"] for r in jl] == ["PASS"] and jl[0]["figures"].get("host_mode", {}).get("value") == "local"
+          and jl[0]["detail"].endswith("; " + want_l[2:]), jl)
+    rc_x, lines_x, txt_x = run_b15(HERE, "badremote", host="a;b")
+    check("B15host: a gi_host_ssh that is not a host name is refused (exit 2) before anything runs",
+          rc_x == 2 and lines_x == [], (rc_x, lines_x, txt_x[-200:]))
 
     # A tree missing a file tar copies but neither file gi_diag's export reads (gi_diag.py,
     # pins.json), so the export passes and only tar fails, after sending what it could:

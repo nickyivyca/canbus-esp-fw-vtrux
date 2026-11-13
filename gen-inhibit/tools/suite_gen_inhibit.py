@@ -68,7 +68,9 @@ Settings this suite reads, besides the core's (shared/bench/README.md):
                      tester worktree's gen-inhibit/ from port step 0d, its root before)
     gi_components    the -Components argument of c_checks_run.ps1: a managed_components
                      tree its prod build verified (12.3 item 3)
-    gi_host_ssh      the ssh host part H and B15host run on (madhouse-debian, user, 2026-10-22)
+    gi_host_ssh      the ssh host part H and B15host run on (madhouse-debian, user, 2026-10-22);
+                     when it names the host the suite runs on, both run there without ssh
+                     (host_target.sh's local mode, 2026-11-12)
     gi_host_root     the reverse-it root on that host (H's RROOT; a leading ~/ is that host's home)
     interposer_code  a charge-interposer/ clone (for x2_flash_custody and the X2's identify;
                      its bench_identify reads settings.serial_port, so it is handed a copy
@@ -869,21 +871,26 @@ def emulated(settings):
     # files to ~/gi_bench_<commit> first. The data they read is the host's reverse-it
     # root (gi_host_root); gi_paths checks the DBCs there against this clone's pins.
     # (a subshell, not braces, round both: the core reads braces as placeholders)
+    # Both reach the host through host_target.sh (2026-11-12, gen-inhibit reviewer): over
+    # ssh, or here without it when gi_host_ssh names this host (madhouse-debian cannot ssh
+    # to itself). H's record is host_run.log's first line; B15host's is its output file's
+    # first line, the same "# local mode: ..." or "# remote: ...", and their judges keep it.
     py = " ".join('"%s"' % x.replace("\\", "/") for x in _py(settings))      # bash: no backslashes
-    host_half = ("set -o pipefail; (%s \"%s/gi_diag.py\" export \"{outdir}/B15host_export/diag_schemas\" && "
-                 "tar cf - -C \"%s\" %s -C \"{outdir}/B15host_export\" diag_schemas | ssh -o BatchMode=yes {gi_host_ssh} "
+    host_half = (". \"%s/host_target.sh\" && host_target || exit 2; HOST_SSH_BATCH=1; "
+                 "set -o pipefail; (echo \"# $HOST_MODE\"; %s \"%s/gi_diag.py\" export \"{outdir}/B15host_export/diag_schemas\" && "
+                 "tar cf - -C \"%s\" %s -C \"{outdir}/B15host_export\" diag_schemas | on_host "
                  "'rm -rf ~/gi_bench_%s && mkdir -p ~/gi_bench_%s && tar xf - -C ~/gi_bench_%s' && "
-                 "ssh -o BatchMode=yes {gi_host_ssh} 'cd {gi_host_root} && REVERSE_IT_DIR=\"$PWD\" python3 -B "
+                 "on_host 'cd {gi_host_root} && REVERSE_IT_DIR=\"$PWD\" python3 -B "
                  "~/gi_bench_%s/diag_decode_check.py ~/gi_baseline_%s/test/gen_inhibit_host 2>&1; echo \"exit $?\"') "
                  "> \"{outdir}/B15_diag_decode_check_host_%s.txt\" 2>&1"
-                 % (py, HARNESS, HARNESS, " ".join(B15_FILES), C, C, C, C, C, C))
+                 % (HARNESS, py, HARNESS, HARNESS, " ".join(B15_FILES), C, C, C, C, C, C))
     groups = [
         Group("host", checks=[
             Check(id="H", argv=["{bash}", "%s/baseline_host_run.sh" % HARNESS, C], cwd="{reverse_it}",
                   env={"GI_OUT": "{outdir}", "FW": "{gi_fw}", "REMOTE": "{gi_host_ssh}", "RROOT": "{gi_host_root}"},
                   timeout_s=7200, outputs=["host_run.log"], judge=judged("H")),
             Check(id="B15host", argv=["{bash}", "-c", host_half], cwd="{reverse_it}", timeout_s=900,
-                  outputs=["B15_diag_decode_check_host_%s.txt" % C], judge=judged("B15host")),
+                  env={"REMOTE": "{gi_host_ssh}"}, outputs=["B15_diag_decode_check_host_%s.txt" % C], judge=judged("B15host")),
         ]),
         Group("build_checks", checks=[
             Check(id="C2scan", argv=["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
