@@ -133,8 +133,14 @@ def require(up, root=None):
     return got
 
 
-def _canctl(*args):
-    """-> (rc or None if it could not run, its last output line)."""
+def _canctl(*args, argv0=None):
+    """-> (rc or None if it could not run, its last output line). Never from
+    a driver's --self-test (or its --can-fail copies, run the same way): a
+    self-test touches no hardware, and bench_vport's once ran a real
+    `canctl down kvaser` through NoNode() (2026-11-13, caught the same
+    hour; the bench lock was free and the link already down)."""
+    if "--self-test" in (argv0 if argv0 is not None else sys.argv):
+        return None, "refused: a --self-test never runs canctl"
     argv = list(CANCTL) + list(args)
     try:
         p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -218,12 +224,17 @@ class EchoWatch:
     unechoed send is older than stall_s. finish() waits out the last echoes.
     .echoed is the sent count (D3: "sent" means its own echo arrived)."""
 
-    def __init__(self, bus, stall_s=STALL_S, on_rx=None, clock=None):
+    def __init__(self, bus, stall_s=STALL_S, on_rx=None, clock=None, on_echo=None):
         self.bus, self.stall_s, self.on_rx = bus, stall_s, on_rx
+        self.on_echo = on_echo          # (key, t send returned, t echo read)
         self.clock = clock or perf
         self.pending = collections.deque()
         self.calls = self.echoed = self.stray = 0
         self.echo_times = []
+        # True while no ACK is expected by design (bench_vport's no-ACK and
+        # wrong-rate windows; the reviewer, 2026-11-13): the bound is not
+        # checked; rebase() when the ACK returns
+        self.suspended = False
         # one thread may send while another reads (bench_topology's drain)
         self._lock = threading.Lock()
 
@@ -255,16 +266,32 @@ class EchoWatch:
                 self.on_rx(m, self.clock())
             return
         k = _key(m)
+        hit = None
         with self._lock:
-            for i, (_, pk) in enumerate(self.pending):
+            for i, (tr, pk) in enumerate(self.pending):
                 if pk == k:
                     del self.pending[i]
                     self.echoed += 1
-                    self.echo_times.append(self.clock())
-                    return
-            self.stray += 1
+                    hit = (tr, self.clock())
+                    self.echo_times.append(hit[1])
+                    break
+            else:
+                self.stray += 1
+        if hit is not None and self.on_echo is not None:
+            self.on_echo(k, hit[0], hit[1])
+
+    def rebase(self, t):
+        """The ACK is back at t: every pending send's age counts from t at
+        the earliest, so frames held through a no-ACK window get the bound
+        from the ACK's return (the reviewer, 2026-11-13)."""
+        with self._lock:
+            for e in self.pending:
+                if e[0] is not None and e[0] < t:
+                    e[0] = t
 
     def check(self):
+        if self.suspended:
+            return
         with self._lock:
             ts = [e[0] for e in self.pending if e[0] is not None]
             oldest = min(ts) if ts else None

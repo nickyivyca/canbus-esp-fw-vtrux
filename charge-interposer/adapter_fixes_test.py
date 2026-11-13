@@ -72,7 +72,10 @@ if HERE not in sys.path:
 import scratch_dir                                      # noqa: E402
 
 MODULE = os.path.join(HERE, "adapter_fixes.py")
-MIN_BUS_CALLS = 16
+# 16 until 2026-11-13, when the Kvaser's openers moved to kvaser_link
+# (kvaser_usb, no CANlib): five canchg() and bench_rate_feasibility's
+# CANlib-only witness are left
+MIN_BUS_CALLS = 6
 MIN_CANCHG_CALLS = 5
 
 

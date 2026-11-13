@@ -176,6 +176,19 @@ def case_set_up(M, work):
     assert M.link_state(b.net) == "up" and "read back" in line, line
 
 
+def case_self_test_guard(M, work):
+    """A process run with --self-test never runs canctl: set_link raises,
+    and the fake canctl is never called."""
+    b = Bench(M, work, up=True)
+    saved = list(sys.argv)
+    sys.argv[:] = ["bench_x.py", "--self-test"]
+    try:
+        e = _raises(M.LinkError, M.set_link, False, b.net, "linux")
+    finally:
+        sys.argv[:] = saved
+    assert "never runs canctl" in e and b.calls() == [], (e, b.calls())
+
+
 def case_set_down(M, work):
     b = Bench(M, work, up=True)
     M.set_link(False, b.net, "linux")
@@ -324,6 +337,33 @@ def case_echo_watch(M, work):
     _raises(ValueError, w.send, Msg(0x7A9, b"\x00"))
 
 
+def case_suspend(M, work):
+    """on_echo gets (key, send returned, echo read); suspended, a missing
+    echo is no stall; rebase(t) gives every pending send its bound from t
+    (bench_vport's no-ACK windows; the reviewer, 2026-11-13)."""
+    c = Clock()
+    got = []
+    fb = FakeBus(c, delay=0.002, lose={7})
+    w = M.EchoWatch(fb, clock=c, on_echo=lambda k, tr, te: got.append((k[2][0], tr, te)))
+    w.send(Msg(0x100, b"\x01"))
+    t_ret = c()
+    c.t += 0.003
+    w.poll(0.0)
+    assert got == [(1, t_ret, c())], got
+    w.suspended = True
+    w.send(Msg(0x100, b"\x07"))
+    c.t += 5.0
+    w.poll(0.0)                          # 5 s unechoed, suspended: no stall
+    t_ack = c()
+    w.suspended = False
+    w.rebase(t_ack)
+    c.t = t_ack + 0.099
+    w.poll(0.0)
+    c.t = t_ack + 0.1005
+    e = _raises(M.Stall, w.poll, 0.0)
+    assert "no own echo 100 ms" in e or "no own echo 101 ms" in e, e
+
+
 class ThreadBus:
     """Echoes every send at once, for two threads: one sends, one reads."""
 
@@ -342,11 +382,39 @@ class ThreadBus:
             return None
 
 
+class SyncBus(ThreadBus):
+    """send() returns only once the reader has taken its echo: the order a
+    fast echo can take on the bench, made certain."""
+
+    def __init__(self):
+        import threading
+        ThreadBus.__init__(self)
+        self.taken = threading.Event()
+
+    def send(self, m, timeout=None):
+        self.taken.clear()
+        ThreadBus.send(self, m, timeout)
+        self.taken.wait(2.0)
+
+    def recv(self, timeout=None):
+        m = ThreadBus.recv(self, timeout)
+        if m is not None:
+            self.taken.set()
+        return m
+
+
 def case_threads(M, work):
     """One thread sends while another polls (bench_topology's drain): no
-    error from a deque changed while it is searched, every echo matched."""
+    error from a deque changed while it is searched, every echo matched;
+    and an echo read before send() has returned is still matched."""
     import threading
-    w = M.EchoWatch(ThreadBus(), stall_s=5.0)
+    for bus, n in ((SyncBus(), 200), (ThreadBus(), 20000)):
+        _threads(M, bus, n)
+
+
+def _threads(M, bus, n):
+    import threading
+    w = M.EchoWatch(bus, stall_s=5.0)
     errs, stop = [], threading.Event()
 
     def reader():
@@ -357,12 +425,16 @@ def case_threads(M, work):
             errs.append(repr(e))
     t = threading.Thread(target=reader)
     t.start()
-    for i in range(20000):
+    for i in range(n):
         w.send(Msg(0x7A9, i.to_bytes(3, "big")))
     stop.set()
     t.join(10)
-    w.finish()
-    assert not errs and w.echoed == 20000 and w.stray == 0, (errs[:2], w.echoed, w.stray)
+    try:
+        w.finish()
+    except M.Stall as e:
+        errs.append(repr(e))
+    assert not errs and w.echoed == n and w.stray == 0, (type(bus).__name__, errs[:2],
+                                                         w.echoed, w.stray)
 
 
 def case_watched_bus(M, work):
@@ -390,7 +462,7 @@ def case_watched_bus(M, work):
     c.t += 0.2
     _raises(M.Stall, w.recv, 0.0)
     v = M.link_void("planted", 1794590000.0, 1794590001.0, lambda s, u: PLANTED)
-    assert v.startswith("VOID: kvaser link: planted; kernel USB/CAN lines 5"), v
+    assert v.startswith("VOID: kvaser link: planted; kernel USB/CAN lines 7"), v
 
 
 PLANTED = """\
@@ -401,6 +473,8 @@ PLANTED = """\
 2026-11-13T10:20:16.000004-08:00 madhouse-debian kernel: pcan32: PCAN-USB FD CAN1: msg lost: err -28
 2026-11-13T10:20:17.000005-08:00 madhouse-debian kernel: usb 1-3.4: USB disconnect, device number 9
 2026-11-13T10:20:18.000006-08:00 madhouse-debian kernel: e1000e: eno1 NIC Link is Up
+2026-11-13T10:20:19.000007-08:00 madhouse-debian kernel: usb 1-3.2.4: new full-speed USB device number 9 using xhci_hcd
+2026-11-13T10:20:20.000008-08:00 madhouse-debian kernel: cdc_acm 1-3.4:1.0: urb 1 failed submission with -71
 """
 
 
@@ -413,11 +487,14 @@ def case_kernel_lines(M, work):
     t0, t1 = 1794590000.4, 1794590060.7
     kl = M.kernel_lines(t0, t1, journal)
     assert asked and asked[0][0] <= t0 and asked[0][1] >= t1, asked
-    assert len(kl) == 5, kl
+    assert len(kl) == 7, kl
+    assert any("usb 1-3.2.4: new full-speed" in x for x in kl), ("usb 1-3.2 alone", kl)
+    assert any("cdc_acm 1-3.4:1.0: urb 1 failed submission with -71" in x for x in kl), \
+        ("-71 alone", kl)
     assert not any("unrelated" in x or "eno1" in x for x in kl), kl
     assert any(x.startswith("2026-11-13T10:20:14.000002") and "error -71" in x for x in kl), kl
     v = M.void_line("kvaser TX stall: planted", t0, t1, journal)
-    assert v.startswith("VOID: kvaser TX stall: planted; kernel USB/CAN lines 5 in the window"), v
+    assert v.startswith("VOID: kvaser TX stall: planted; kernel USB/CAN lines 7 in the window"), v
     for want in ("usb 1-3.2.1: device descriptor read/64, error -71", "failed to xmit URB 0: -EPROTO",
                  "kvaser_usb 1-3.2.1:1.0", "pcan32", "USB disconnect"):
         assert want in v, (want, v)
@@ -560,8 +637,8 @@ def case_scan(M, work):
     assert [int(h.split(":")[1].split()[0]) for h in hits] == [2], hits
 
 
-CASES = [case_link_state, case_set_up, case_set_down, case_not_taken, case_open_bus,
-         case_echo_watch, case_threads, case_watched_bus, case_kernel_lines, case_recover, case_stall_lines,
+CASES = [case_link_state, case_set_up, case_self_test_guard, case_set_down, case_not_taken, case_open_bus,
+         case_echo_watch, case_suspend, case_threads, case_watched_bus, case_kernel_lines, case_recover, case_stall_lines,
          case_scan]
 
 MUTANTS = [
@@ -621,14 +698,21 @@ MUTANTS = [
     ("recover: the bench never stopped",
      "            return False, \"kvaser recovery FAILED, %s; %s\" % (why, _stop(why, environ))",
      "            return False, \"kvaser recovery FAILED, %s\" % why"),
-    ("no lock: a send races the reader's search",
-     "        with self._lock:\n            for i, (_, pk) in enumerate(self.pending):",
-     "        if True:\n            for i, (_, pk) in enumerate(list(self.pending)):"),
+    # (no mutant for the lock itself: a race without it shows only now and
+    # then, 5 strays in 20,000 sends when it was found, so a mutant of it
+    # would pass or fail by chance; the ordering below is deterministic)
     ("a send noted only after it returned (its echo may come first)",
      "        with self._lock:\n            self.pending.append(entry)\n        try:\n"
      "            self.bus.send(msg, timeout=timeout)\n",
      "        try:\n            self.bus.send(msg, timeout=timeout)\n"
      "            with self._lock:\n                self.pending.append(entry)\n"),
+    ("canctl from a self-test", "    if \"--self-test\" in (argv0 if argv0 is not None else sys.argv):",
+     "    if False:"),
+    ("suspended ignored", "        if self.suspended:\n            return\n", ""),
+    ("rebase does nothing", "                if e[0] is not None and e[0] < t:\n                    e[0] = t",
+     "                pass"),
+    ("on_echo never called", "        if hit is not None and self.on_echo is not None:",
+     "        if False:"),
     ("WatchedBus: send not watched", "        self.watch.send(msg, timeout=0.05 if timeout is None else timeout)",
      "        self.bus.send(msg)"),
     ("WatchedBus: a buffered frame skips the bound", "        else:\n            self.watch.check()\n",

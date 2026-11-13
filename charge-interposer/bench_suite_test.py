@@ -765,7 +765,9 @@ def test_suites():
     #      reviewer's M6, 2026-11-13)
     # 284: cf.bench-switch-pending (its phases' Kvaser link, 2026-11-13)
     # 285: cf.bench-switch-errors (its phases' Kvaser link, 2026-11-13)
-    assert len(seen) == 285, "checks across the suites: %d" % len(seen)
+    # 287: st.klog-windows and cf.klog-windows (the kernel's USB/CAN lines
+    #      over every judged check's window, the reviewer, 2026-11-13)
+    assert len(seen) == 287, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -2073,7 +2075,8 @@ def test_script_coverage():
         src = open(os.path.join(art, n), encoding="utf-8",
                    errors="replace").read()
         # keepalive_probe and rx_proc have one since 2026-11-13 (kvaser_link)
-        if (n.startswith("bench_") or n in ("keepalive_probe.py", "rx_proc.py")) \
+        if (n.startswith("bench_") or n in ("keepalive_probe.py", "rx_proc.py",
+                                            "klog_windows.py")) \
                 and '"--self-test"' in src:
             st.add(n[:-3])
         if "script_can_fail.run(" in src and n != "script_can_fail.py":
