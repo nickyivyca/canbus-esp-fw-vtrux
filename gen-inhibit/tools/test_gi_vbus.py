@@ -43,6 +43,16 @@ The counters (5, the judge):
 on top of it is not, and a judge that read from zero would have failed the
 background.
 
+  6. No .py under gen-inhibit/ (but firmware/, the upstream WiCAN tree) uses
+     a raw UDP or multicast socket call (SOCK_DGRAM, sendto, IP_MULTICAST_*,
+     IP_ADD_MEMBERSHIP) except gi_vbus.py and this test. TTL 0 confines a
+     group only while a socket on this host has joined it (AGENTS.md "A
+     virtual CAN bus is not automatically local", 2026-11-12); a python-can
+     bus always joins its group, a send-only socket, replayer or probe need
+     not (gen-inhibit reviewer, 2026-11-12: each must join, and be covered
+     by the counter checks or shown to be none). The scan is shown able to
+     fail on a planted send-only socket in a made-up tree.
+
 --can-fail runs the network checks where they must fail, and passes only if
 they do:
   a. the positive control sent through gi_vbus.open_bus (TTL 0, its group
@@ -460,6 +470,69 @@ def part_rigs(control_ok):
                   group, port, control_ok)
 
 
+# ------------------------------------------------------------ 6
+
+GI = os.path.dirname(HERE)
+RAW_UDP = ("SOCK_DGRAM", "sendto(", "IP_MULTICAST", "IP_ADD_MEMBERSHIP")
+RAW_UDP_ALLOWED = {
+    "tools/gi_vbus.py": "sets and reads back the TTL on python-can's own socket",
+    "tools/test_gi_vbus.py": "the deliberate TTL-1 control, and this scan",
+}
+
+
+def raw_udp_users(root):
+    """{path relative to root, '/' separated: [patterns]} for every .py under root
+    (not firmware/, the upstream WiCAN tree) that uses a raw UDP or multicast
+    socket call."""
+    found = {}
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if not (d == root and x == "firmware")
+                   and x not in ("__pycache__", ".git")]
+        for f in files:
+            if f.endswith(".py"):
+                p = os.path.join(d, f)
+                try:
+                    text = open(p, encoding="utf-8", errors="replace").read()
+                except OSError:
+                    continue
+                hits = [s for s in RAW_UDP if s in text]
+                if hits:
+                    found[os.path.relpath(p, root).replace(os.sep, "/")] = hits
+    return found
+
+
+def part_scan():
+    """6: no harness tool sends to a group except through a python-can bus.
+    TTL 0 confines a group only while a socket on the host has joined it
+    (AGENTS.md "A virtual CAN bus is not automatically local", 2026-11-12), and
+    a python-can bus always joins its group; a raw socket need not."""
+    print("6. no raw UDP or multicast sockets outside gi_vbus and this test")
+    found = raw_udp_users(GI)
+    extra = {k: v for k, v in found.items() if k not in RAW_UDP_ALLOWED}
+    check("no other .py under gen-inhibit/ uses %s" % "/".join(RAW_UDP), not extra,
+          "found: %s" % extra if extra else "%d allowed: %s" % (
+              len(found), ", ".join(sorted(found))))
+    gone = [k for k in RAW_UDP_ALLOWED if k not in found]
+    check("each allowed file is still found by the scan", not gone,
+          "not found: %s" % gone if gone else "")
+    # A made-up tree in this run's scratch folder, removed at exit, pass or fail.
+    sys.path.insert(0, os.path.join(HERE, "bench"))
+    import gi_paths
+    t = gi_paths.scratch("gi_vbus", start=__file__)
+    os.makedirs(os.path.join(t, "tools", "bench"))
+    os.makedirs(os.path.join(t, "firmware"))
+    with open(os.path.join(t, "tools", "bench", "probe.py"), "w") as f:
+        f.write("import socket\ns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+                "s.sendto(b'x', ('239.0.2.4', 43217))\n")
+    with open(os.path.join(t, "firmware", "upstream.py"), "w") as f:
+        f.write("s.sendto(b'x', addr)\n")
+    got = raw_udp_users(t)
+    check("scan can-fail: a planted send-only socket is found",
+          "tools/bench/probe.py" in got, "found: %s" % got)
+    check("scan: firmware/ (upstream WiCAN) is not scanned",
+          "firmware/upstream.py" not in got, "found: %s" % got)
+
+
 def tally():
     bad = [n for n, ok in results if ok is False]
     print("\n=== %s === %d pass, %d fail" % ("FAIL" if bad else "PASS",
@@ -514,6 +587,7 @@ def main():
     print("gi_vbus proof, python-can %s, %s" % (can.__version__, sys.executable))
     part_refusals()
     part_judge()
+    part_scan()
     control_ok = where() and part_control()[0]
     part_rigs(control_ok)
     return tally()
