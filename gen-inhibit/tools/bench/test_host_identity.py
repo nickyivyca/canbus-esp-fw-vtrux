@@ -105,7 +105,7 @@ MUTANTS = [
      "gcc --version 2>/dev/null"),
     ("host_identity.sh", "the OS name, not the host", "h=$(uname -n 2>/dev/null)", "h=$(uname -s 2>/dev/null)"),
     ("gi_host_run.sh", "gi_host_run records nothing",
-     'ssh "$REMOTE" "bash -s" < "$(dirname "${BASH_SOURCE[0]}")/host_identity.sh"\n', ""),
+     'on_host "bash -s" < "$(dirname "${BASH_SOURCE[0]}")/host_identity.sh"\n', ""),
     ("shim_wire_probe.sh", "shim_wire_probe records nothing",
      'ID="$(ssh "$REMOTE" "bash -s" < "$HERE/host_identity.sh")"', 'ID=""'),
     ("baseline_host_run.sh", "baseline_host_run drops its gcc line",
