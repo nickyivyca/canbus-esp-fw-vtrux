@@ -1,7 +1,7 @@
 {
-  "_comment": "can-tools, whose canbench/ is the CAN adapter package gen-inhibit uses (vehicle_runner.py's --interface auto, and the tester's Kvaser opener in the bench harness), at one commit (AGENTS.md, \"can-tools\"; user, 2026-10-30: each project pins its own can-tools and moves the pin itself; the pin is the implementor's, reviewer 2026-10-30 and 2026-11-11). can_tools_pin.py writes that commit's canbench/ out of the CAN_TOOLS_DIR clone into the worktree's scratch/can-tools/<commit>/ and refuses any other canbench. fa6c0ae (2026-11-11) adds canbench.live.linux_fixes, without which no Kvaser channel opens on Linux.",
+  "_comment": "can-tools, whose canbench/ is the CAN adapter package gen-inhibit uses (vehicle_runner.py's --interface auto, and the tester's Kvaser opener in the bench harness), at one commit (AGENTS.md, \"can-tools\"; user, 2026-10-30: each project pins its own can-tools and moves the pin itself; the pin is the implementor's, reviewer 2026-10-30 and 2026-11-11; moving it before a bench case where the PCAN witnesses under jammer bursts is the tester's call, reviewer 2026-11-12). can_tools_pin.py writes that commit's canbench/ out of the CAN_TOOLS_DIR clone into the worktree's scratch/can-tools/<commit>/ and refuses any other canbench. fa6c0ae (2026-11-11) adds canbench.live.linux_fixes, without which no Kvaser channel opens on Linux. 5e30066 (2026-11-13, from fa6c0ae, the tester before the jammer-idf bench pass, reviewer 2026-11-13) adds errors.py and the canbench pcan/kvaser classes, the PCAN's bus-off recovery (PCAN_HARD_RESET_STATUS) and the Kvaser's polled state, all reached only through canbench.live.backends.install(), and FrameClock in receiver/can_logger; linux_fixes.py is unchanged.",
   "can-tools": {
     "repo": "https://github.com/nickyivyca/can-tools",
-    "commit": "fa6c0aea5399ab1ac887d95a6edb381590e1c644"
+    "commit": "5e30066b3de072de69c3fac4fd0351d5133b58f4"
   }
 }

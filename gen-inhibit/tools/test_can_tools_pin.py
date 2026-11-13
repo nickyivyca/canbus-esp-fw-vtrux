@@ -178,7 +178,7 @@ class PinTool(unittest.TestCase):
     # pin()
     def test_the_committed_pin_is_a_full_commit(self):
         p = ctp.pin()
-        self.assertEqual(p["commit"], "fa6c0aea5399ab1ac887d95a6edb381590e1c644")
+        self.assertEqual(p["commit"], "5e30066b3de072de69c3fac4fd0351d5133b58f4")
         self.assertEqual(p["repo"], "https://github.com/nickyivyca/can-tools")
 
     def test_an_incomplete_or_short_pin_is_refused(self):
@@ -393,6 +393,9 @@ class RealPin(unittest.TestCase):
         self.assertIn("live/receiver.py", files)
         # the reason for the fa6c0ae pin: the Linux openers' fixes
         self.assertIn("live/linux_fixes.py", files)
+        # the reason for the 5e30066 pin: the PCAN's bus-off recovery under install()
+        self.assertIn("live/pcan_bus.py", files)
+        self.assertIn("live/backends.py", files)
 
 
 if __name__ == "__main__":
