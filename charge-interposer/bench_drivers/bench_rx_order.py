@@ -30,6 +30,7 @@ The board's serial c2v counter, read before and after, cross-checks the
 count forwarded against the count offered and the count witnessed.
 
     py -3.14 bench_rx_order.py --self-test        # no hardware
+    py -3.14 bench_rx_order.py --can-fail         # each MUTANTS edit fails it
     py -3.14 bench_rx_order.py --port COM3 --bursts 2000
 
 Tester, 2026-10-13. Not yet run on hardware.
@@ -49,6 +50,8 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+from bench_usb_host import unwrap_us32   # noqa: E402  (gs_usb's 32-bit us stamp)
 
 BITRATE = 500000
 MAGIC = 0x5C
@@ -117,6 +120,20 @@ def decode(data):
     if len(data) < 5 or data[0] != MAGIC:
         return None
     return data[1], (data[2] << 8) | data[3], data[4]
+
+
+def echo_spans(rows, per_burst):
+    """rows: [(burst, device stamp s)] of the sender's echoes in arrival
+    order -> each complete burst's span on the charger wire, in us, sorted.
+    The Innomaker's 32-bit microsecond stamps are unwrapped first (they wrap
+    every 71.6 min; the reviewer's E3, 2026-11-12), so a burst across a wrap
+    spans its few hundred us, not 4295 s."""
+    dev = unwrap_us32([s for _b, s in rows])
+    stamps = collections.defaultdict(list)
+    for (b, _s), t in zip(rows, dev):
+        stamps[b].append(t)
+    return sorted((max(v) - min(v)) * 1e6 for v in stamps.values()
+                  if len(v) == per_burst)
 
 
 def judge(arrivals, n_bursts, per_burst):
@@ -255,12 +272,8 @@ def run_variant(tx, rx, vname, vno, bursts, gap_s, serial_lines):
     j = judge(arr, bursts, len(ids))
     # how tight were the bursts on the charger wire, by the echoes' device
     # stamps (single-adapter: the sender's own view)
-    stamps = collections.defaultdict(list)
-    for _h, m in echoes.got:
-        d = decode(m.data)
-        stamps[d[1]].append(m.timestamp)
-    spans = sorted((max(v) - min(v)) * 1e6 for v in stamps.values()
-                   if len(v) == len(ids))
+    spans = echo_spans([(decode(m.data)[1], m.timestamp) for _h, m in echoes.got],
+                       len(ids))
     return dict(judge=j, sent=sent, send_errors=errs, echoes=len(echoes.got),
                 offered=bursts, ka_sent=ka_sent, ka_seen=len(ka_seen.got),
                 premise=premise_verdict(ka_sent, len(ka_seen.got)),
@@ -275,8 +288,8 @@ def run_bench(args):
     print("run at %s; MCP2515 path: YES (charger -> vehicle receive)"
           % datetime.datetime.now().isoformat())
     tx = bcw.open_gs_usb()
-    rx = can.Bus(interface="kvaser", channel=args.kvaser_channel,
-                 bitrate=BITRATE)
+    rx = adapter_fixes.bus(interface="kvaser", channel=args.kvaser_channel,
+                           bitrate=BITRATE)
     lines = None
     ser = None
     if args.port:
@@ -446,6 +459,16 @@ def self_test():
     check(j["ok"],
           "(why VOID must be decided first: judge() of zero bursts is "
           "vacuously ok)")
+    # the reviewer's E3 (2026-11-12): a burst across the device stamp's
+    # 32-bit wrap (4294.967296 s); echoes in arrival order
+    wrap = 2 ** 32 / 1e6
+    rows = [(7, wrap - 0.000400), (7, wrap - 0.000150), (7, 0.000100),
+            (8, 0.005100), (8, 0.005350), (8, 0.005600),
+            (9, 0.010100), (9, 0.010350)]
+    sp = echo_spans(rows, 3)
+    check(len(sp) == 2 and all(abs(s - 500.0) < 0.01 for s in sp),
+          "a planted wrap inside burst 7: both complete bursts span 500 us, "
+          "the incomplete burst 9 left out -> %s" % sp)
     print("\nbench_rx_order self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -454,6 +477,8 @@ def self_test():
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--can-fail", action="store_true",
+                    help="run the self-test on each edit in MUTANTS; each must fail it")
     ap.add_argument("--port", default=None,
                     help="the board's serial port, for the c2v cross-check "
                     "(opening it resets the board: open it before the run)")
@@ -467,6 +492,9 @@ def main():
     args = ap.parse_args()
     if args.self_test:
         return self_test()
+    if args.can_fail:
+        import script_can_fail
+        return script_can_fail.run(__file__, MUTANTS)
     # with no --out, the default output goes where it went before the
     # move: SeaDrive's interposer-firmware/ folder, never this tree
     import paths
@@ -484,6 +512,17 @@ def main():
         tee.f.close()
         print("saved verbatim to %s" % out)
     return rc
+
+
+# --can-fail (script_can_fail.py): each edit must make --self-test fail
+MUTANTS = [
+    ("echo_spans: the device stamps not unwrapped",
+     "    dev = unwrap_us32([s for _b, s in rows])",
+     "    dev = [s for _b, s in rows]"),
+    ("echo_spans: an incomplete burst counted",
+     "                  if len(v) == per_burst)",
+     "                  if len(v) > 1)"),
+]
 
 
 if __name__ == "__main__":

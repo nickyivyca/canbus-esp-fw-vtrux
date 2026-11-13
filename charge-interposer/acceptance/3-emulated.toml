@@ -1,0 +1,150 @@
+# Port step 3's emulated baseline (shared/bench ACCEPT-SPEC A2; owned by the
+# charge-interposer reviewer). Drafted by the tester, checked by the
+# reviewer, approved by the user 2026-11-11 (the reviewer's session): "go
+# ahead and start the run once the two fixes are ready". Since the approval:
+# the harness tree moved to the commit with the two Linux fixes (72d2c392),
+# so cf.bench-vport and no-led-self-test are no longer listed differences,
+# and E1 (the can-tools pin and adapter_fixes, kept in the baseline by the
+# reviewer's ruling) adds the two adapter-fixes-test lines to c-harness.
+#
+# Step 3 moves the bench and the role sessions from NICKY-XPS to
+# madhouse-debian. This list is the Linux baseline of the two suites that
+# need no board: the emulated suite and the harness suite, run whole on
+# madhouse-debian, on the same product as step 2b, compared against the
+# newest Windows records of each. The bench baseline is a list of its own,
+# after the Linux lock and the adapter characterisation. No bench here: no
+# lock, no board, no flash.
+#
+# Load (user, 2026-11-11, in the tester's session): Local LLM hosting's
+# Qwen benchmark keeps running during this run. "run it and if it passes it
+# passes ... if the emulation fails during a time of resource contention
+# then we know that's likely why." So a wall-clock failure here is matched
+# against Hosting's metrics before it is read as a product or harness
+# result. The run record carries the epochs that needs: the record's start
+# and end and host_clocks_epoch, and each case's start and end in
+# progress.jsonl, the m-sims windows among them. The tester sends Hosting
+# the run's start and end epochs, for its passive recorders.
+#
+# Known causes of difference from the Windows records, none of them a list
+# line (they change no result id or verdict that is predicted):
+#   - the m-* groups run on the bench host itself, logic:local, where the
+#     Windows runs reached madhouse over ssh, logic:madhouse (settings
+#     m_lanes_host local; user, 2026-11-11: "change to just run locally";
+#     22b546d6). Same machine as before, so the same g++ and toolchains.
+#   - the sims run at normal priority: Linux has no above-normal yet
+#     (AGENTS.md "Builds during wall-clock tests" point 4; the tester's B4
+#     proposal is with the methodology owner). Every Linux record lists it.
+#   - Linux serial, IDF export and the shared/bench re-pin change harness
+#     checks only (the harness lines below), and none of the emulated ones.
+#
+# Trees:
+#   harness   72d2c392, on charge-interposer/tester/madhouse-baseline-2, the
+#             commit before this list's own: the two Linux fixes, on top of
+#             E1 (0de4f3fa, c1847e78) and the merge of charge-interposer/main
+#             (4754f237 and the AGENTS.md commits). Since f57ca9d3 it changes
+#             no product file (premise "digest"): it adds 2b's re-run fixes
+#             (305cfda0), the madhouse docs (5f716bbd), and this branch's
+#             Linux harness work. Its shared/bench pin is 2026.11.11.7, its
+#             can-tools pin fa6c0aea.
+
+[step]
+id = "3"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-11"
+spec = ["2", "2.1", "2.3", "2.4", "8", "8.2", "8.3", "9", "9.1"]
+verification = "the tester's VERIFICATION.md entries for port step 3's emulated baseline"
+
+[trees.harness]
+project = "72d2c392a111966240319d8e778192459433f1ea"
+
+[[premise]]
+id = "digest"
+kind = "product_digest_same_as"
+tree = "harness"
+commit = "f57ca9d38bfae50791564fe0089b337581bdcf12"
+
+# ---- the two suites, whole ---------------------------------------------------
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+
+[[suite_run]]
+id = "harness"
+tree = "harness"
+suite = "harness"
+after = ["emulated"]
+
+# ---- the baselines -----------------------------------------------------------
+# Paths under the runs root: the newest whole Windows runs on the f57ca9d3
+# product. The emulated suite from b467 (harness f57ca9d3), the harness suite
+# from 2b's re-run 08e8 (harness 305cfda0).
+[baseline]
+emulated = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-emulated"
+harness = "accept_2b_20261111T102458_08e8/runs/accept_2b_20261111T102458_08e8-harness"
+
+# The emulated suite against b467's: no difference. Its check list is the
+# same (emulated() unchanged but for where the m-groups run, 22b546d6), with
+# no result figures. The two host_bridge KNOWN-FAILs
+# (l2.bridge-ok-veh-failed, l2.bridge-ok-switch-discard; ruling 2026-11-03,
+# kept through 2b until stage (b)) are KNOWN-FAIL on both sides, so they are
+# not a difference; any other FAIL is.
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = []
+
+# The harness suite against 08e8's. The differences, each from a committed
+# change:
+#   serial-open-test     2236d77d: serial_open.py, the X2 port opened without
+#                        a reset on Linux (adapter characterisation step 7),
+#                        and its -canfail
+#   sb.* (18 lines)      the shared/bench pin, 2026.11.04.4 -> 2026.11.11.2
+#                        (892d7528: test_canmain, test_ota_outcome / policy /
+#                        preflight / wire, test_wifi) -> 2026.11.11.7
+#                        (47ab954f: test_canfail_control, test_wican_http,
+#                        test_serial_dev, from .5 and .6), each plain and
+#                        -canfail
+#   adapter-fixes-test   c1847e78 (E1, added since the user's approval):
+#                        the can-tools pin's Linux fixes before every Kvaser
+#                        and Innomaker open, and its -canfail
+# cf.bench-vport and no-led-self-test, PASS -> FAIL in the draft, are not
+# listed: their Linux fixes are in the harness tree (162530f1, 72d2c392;
+# F2's Linux priority check waits on AGENTS.md point 4). The three core
+# can-fail FAILs of the 2026.11.11.2 pin (sb.test-accept-remote,
+# sb.test-ota-wire and sb.test-scratch, each -canfail) are fixed at
+# 2026.11.11.5 (in .6), so they are not listed.
+[[compare]]
+id = "c-harness"
+comparer = "run-records"
+a = "baseline:harness"
+b = "harness"
+expect = "listed"
+differences = [
+  "NEW in b: m-harness/adapter-fixes-test PASS",
+  "NEW in b: m-harness/adapter-fixes-test-canfail PASS",
+  "NEW in b: m-harness/serial-open-test PASS",
+  "NEW in b: m-harness/serial-open-test-canfail PASS",
+  "NEW in b: l-harness/sb.test-canfail-control PASS",
+  "NEW in b: l-harness/sb.test-canfail-control-canfail PASS",
+  "NEW in b: l-harness/sb.test-canmain PASS",
+  "NEW in b: l-harness/sb.test-canmain-canfail PASS",
+  "NEW in b: l-harness/sb.test-ota-outcome PASS",
+  "NEW in b: l-harness/sb.test-ota-outcome-canfail PASS",
+  "NEW in b: l-harness/sb.test-ota-policy PASS",
+  "NEW in b: l-harness/sb.test-ota-policy-canfail PASS",
+  "NEW in b: l-harness/sb.test-ota-preflight PASS",
+  "NEW in b: l-harness/sb.test-ota-preflight-canfail PASS",
+  "NEW in b: l-harness/sb.test-ota-wire PASS",
+  "NEW in b: l-harness/sb.test-ota-wire-canfail PASS",
+  "NEW in b: l-harness/sb.test-serial-dev PASS",
+  "NEW in b: l-harness/sb.test-serial-dev-canfail PASS",
+  "NEW in b: l-harness/sb.test-wican-http PASS",
+  "NEW in b: l-harness/sb.test-wican-http-canfail PASS",
+  "NEW in b: l-harness/sb.test-wifi PASS",
+  "NEW in b: l-harness/sb.test-wifi-canfail PASS",
+]

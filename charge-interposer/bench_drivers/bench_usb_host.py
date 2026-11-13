@@ -95,6 +95,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 import scratch_dir                  # noqa: E402
 
 INJECT_ID = 0x6A2          # clear of the truck, the WiCAN, the interposer
@@ -491,11 +492,11 @@ class HostPort(object):
 
     def __init__(self, port, path, lines_low=True, rx_size=None):
         import serial
-        s = serial.Serial()
-        s.port, s.baudrate, s.timeout = port, 115200, 0.1
         if lines_low:
-            s.dtr, s.rts = False, False
-        s.open()
+            import serial_open
+            s = serial_open.open_quiet(port, 115200, 0.1)
+        else:
+            s = serial.Serial(port, 115200, timeout=0.1)
         self.rx_note = "driver default"
         if rx_size:
             try:
@@ -626,7 +627,7 @@ def open_pcan(acks):
 
 def open_kvaser():
     import can
-    return can.Bus(interface="kvaser", channel=0, bitrate=500000)
+    return adapter_fixes.bus(interface="kvaser", channel=0, bitrate=500000)
 
 
 def open_innomaker():
@@ -636,8 +637,7 @@ def open_innomaker():
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(d)
     os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    return can.Bus(interface="gs_usb", channel="can0", index=0,
-                   bitrate=500000)
+    return adapter_fixes.canchg(bitrate=500000)     # by serial on Linux
 
 
 class Injector(object):
@@ -1330,6 +1330,14 @@ MUTANTS = [
     ("any USB serial port reported as the WiCAN",
      "    others = [p for p in ports if (p[1], p[2]) == ESP_USB_JTAG and",
      "    others = [p for p in ports if True and"),
+    # unwrap_us32 is shared since 2026-11-12 (bench_charger_silent,
+    # bench_hold12, bench_rx_order; the reviewer's E3)
+    ("unwrap: a wrap not added",
+     "            add += WRAP_S                  # a wrap\n            c += WRAP_S\n",
+     "            pass\n"),
+    ("unwrap: a late frame from before a wrap taken as a second wrap",
+     "        elif ref is not None and c > ref + WRAP_S / 2:\n",
+     "        elif False:\n"),
 ]
 
 

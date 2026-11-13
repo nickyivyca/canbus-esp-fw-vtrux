@@ -52,7 +52,12 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `pins.json` | The harness pin file: canre at the pinned public-repo commit (port step 0, reviewer 2026-10-26) and can-tools at the pinned commit (user, 2026-10-30: each project owns its can-tools pin) | Tester |
 | `canre_pin.py`, `canre_pin_test.py` | Install and check the pinned canre (`scratch/canre/<commit>`; `CANRE_DIR` on madhouse), and its test | Tester |
 | `can_tools_pin.py`, `can_tools_pin_test.py` | Install and check the pinned can-tools `canbench/` (`scratch/can-tools/<commit>`, from the `CAN_TOOLS_DIR` clone), and its test | Tester |
-| `scratch_dir.py`, `scratch_dir_test.py` | The harness's throwaway run folders, `scratch/cih/<tool>/<pid>-<random>/`, each with an owner file, pruned when finished and removed, read-only files and long paths included (AGENTS.md, "Removing scratch"); a length guard refusing, before anything is made, a run folder whose path plus its fixtures' git depth passes 240; the run folder put first in `GIT_CEILING_DIRECTORIES` for what runs under it, so git in a fixture whose own repo is missing gets "not a git repository" rather than an enclosing one; its `sweep` reports old folders (the old `charge-interposer-harness/` name included) before any `--apply`; and its test (reviewer, 2026-11-05) | Tester |
+| `adapter_fixes.py`, `adapter_fixes_test.py` | The pinned can-tools' `canbench.live.linux_fixes` applied before every Kvaser and Innomaker open the harness makes, on Linux only (`bus()`, or `apply()` before an open it does not make), and its test, with `--can-fail` (reviewer, 2026-11-11) | Tester |
+| `canchg_mode.py`, `canchg_mode_test.py` | A bench run's canchg mode through `canctl`: libusb at the run's start, back on gs_usb (`--wait`) at its end, each checked in sysfs, so the bench needs no hand setup (user, 2026-11-12), and its test, with `--can-fail` (reviewer, 2026-11-12) | Tester |
+| `canx2_slcan.py`, `canx2_slcan_test.py` | A bench run's canx2 detach: at the X2's start hook, at start and every resume, canx2 found attached as SLCAN (netdev or slcand) is detached through `canctl slcan detach canx2` and checked gone, before the rest of that hook; a failure stops the bench; nothing put back at the end (shared/bench SPEC 8, the lock as a mutex); and its test, with `--can-fail` (reviewer, 2026-11-13) | Tester |
+| `wican_pin.json`, `wican_pin.py`, `wican_pin_test.py` | The WiCAN's image pinned as a tool of the harness (AGENTS.md, "Never build WiCAN firmware from an interposer worktree"): the gen-inhibit commit and variant, code hash, image hash and each flashed file's offset, size, sha256 and md5; `check` against the files in the local settings' `wican_image_dir`; and its test, with `--can-fail` (reviewer, 2026-11-11) | Tester |
+| `serial_open.py`, `serial_open_test.py` | Opening the X2's USB serial port with DTR and RTS low without resetting it, in each system's order (`open_quiet`), and its test, with `--can-fail` (port step 3's adapter characterisation, 2026-11-11) | Tester |
+| `scratch_dir.py`, `scratch_dir_test.py` | The harness's throwaway run folders, `scratch/cih/<tool>/<pid>-<random>/`, each with an owner file, pruned when finished and removed, read-only files and long paths included (AGENTS.md, "Removing scratch"); on Windows only, a length guard refusing, before anything is made, a run folder whose path plus its fixtures' git depth passes 240 (git for Windows' limit; none on Linux, reviewer 2026-11-12); the run folder put first in `GIT_CEILING_DIRECTORIES` for what runs under it, so git in a fixture whose own repo is missing gets "not a git repository" rather than an enclosing one; its `sweep` reports old folders (the old `charge-interposer-harness/` name included) before any `--apply`, which never takes a live run's folder and runs alongside other work, on Linux only in `build.slice` (reviewer, 2026-11-12); and its test (reviewer, 2026-11-05) | Tester |
 | `scratch_dir_check.py` | Runs each harness entry point that makes run folders with a read-only git tree planted in them, and with the read-only handler taken out, and checks nothing is left or the leftover is reported, judged after the process exits; `--self-check` proves it on removal in a `finally`, at exit, and none | Tester |
 | `vehicle_sim.py` | VCU, A123 BMS and the VCM's evap flag (0x649), as a model or a capture replay | Tester |
 | `charger_sim.py` | Bel Fuse charger/inverter, with fault injection | Tester |
@@ -90,7 +95,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `twai_fake_option_test.py` | Test of how `host_bridge` builds on the shared vehicle port and TWAI fake (`run.sh`, `l2_build.sh`; until port step 2b its `TWAI_FAKE` option), and of the shared fake's can-fail (reviewer, 2026-11-02) | Tester |
 | `shared_pin.py`, `shared_pin_test.py` | The harness's shared code from the read-only `../shared-<tag>/` checkout, checked against `firmware/shared_pins.json`, and its test (port step 2a); `idf-match`: the twai_port and can_port pins are one tag, the versions idf_component.yml takes | Tester |
 | `firmware/vtrux_checks.json` | The release profile and the build-switch table (shared/tools R12, R18, R20, R29) | Tester |
-| `bench_wican.py`, `bench_wican_test.py` | The WiCAN as a board of the bench suite, read and rebooted but never flashed, and its test (reviewer, 2026-10-24) | Tester |
+| `bench_wican.py`, `bench_wican_test.py` | The WiCAN as a board of the bench suite: identified and rebooted through gen-inhibit's tools, and loaded only with the pinned gen-inhibit image (`wican_pin.json`) over USB by the core's esptool flasher on the WiCAN's own device, never the X2's; and its test (reviewer, 2026-10-24; the USB load 2026-11-12) | Tester |
 | `bench_drivers/` | Whole directory: the bench suite's hardware drivers and helpers, `reset_check`, `keepalive_probe`, and `script_can_fail` with its test. Moved from reverse-it (port step 0, reviewer 2026-10-26); `README.md` inside | Tester |
 | `harness_checks/` | Whole directory: the harness suite's mutants, can-fails and controls. Moved from reverse-it (port step 0, reviewer 2026-10-26); `README.md` inside | Tester |
 | `fw_harness/host_diff/` | The reference-vs-port differential | Tester |
@@ -101,7 +106,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `fw_harness/refusal_pairs_runs.py` | Makes the stand-in, R19, fixture and dev builds, then runs the pairs (the bridge-release fixture: a local commit it makes, never on a branch; reviewer, 2026-11-03) | Tester |
 | `fw_harness/variant_diff.py` | Spec 9 build check C2b: two variants' builds differ only by the named test switches (sdkconfig, source files and compile flags), with `--self-test` and `--can-fail` (reviewer, 2026-11-04) | Tester |
 | `fw_harness/no_led.py` | Spec 8 no LED: ELF symbols (`led_strip_*`, `neopixelWrite`, `board_led`), the project's own sources and the board data's port pins, with `--can-fail`, `--mutant-build` and `--self-test` (reviewer, 2026-11-04, form (B)). `--mutant-build` makes the pinned shared checkouts its clone needs beside it (one per tag in `firmware/shared_pins.json`, each checked against the pin) and removes them after; `--self-test --can-fail` breaks that step seven ways (2b harness fix, 2026-11-11) | Tester |
-| `fw_harness/idf_build_shell.py` | The acceptance runner's "idf" shell: exports the interposer's ESP-IDF from the machine's settings, runs the adapter's `idf-build` target, refuses a checkout not clean before and fails a build that changed a tracked file (`dependencies.lock`, shared/tools R33); Windows only (reviewer, 2026-11-04) | Tester |
+| `fw_harness/idf_build_shell.py` | The acceptance runner's "idf" shell: exports the interposer's ESP-IDF from the machine's settings, runs the adapter's `idf-build` target, refuses a checkout not clean before and fails a build that changed a tracked file (`dependencies.lock`, shared/tools R33); on Windows and Linux (reviewer, 2026-11-04; Linux export from aaeeefae, 2026-11-11) | Tester |
 | `fw_harness/idf_build_shell_test.py` | Test of `idf_build_shell.py` on a stand-in export, with `--can-fail` | Tester |
 | `refusal_pairs_test.py` | Test of `refusal_pairs.py`'s judging and the runner's fixture check, with `--can-fail` | Tester |
 | `fw_harness/c12_bench/` | Whole directory: the standalone ESP-IDF C12 bench Target, not a product image (reviewer, 2026-10-13) | Tester |
@@ -136,17 +141,16 @@ gen-inhibit reviewer before it lands (reviewer, 2026-10-08).
 
 The other way round, `bench_wican.py` reads from gen-inhibit, read-only,
 never copying anything onto this branch (both reviewers, 2026-10-23/24):
-- the key `gi_images` in gen-inhibit's local chain settings
-  (`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/chain_settings_<host>.json`),
-  and in `<gi_images>/build-tester-man/` exactly one file matching
-  `wican-fw_obd_*.bin`, the glob of gen-inhibit's `image_bin()`;
-- that image's identity through `elf_sha256_of_bin` above (the app
-  descriptor's ELF SHA-256 at 0xB0);
 - `tools/gen_inhibit/bench/wican_reboot.py`, its options `--label`, `--out`,
   `--known`, `--first`, `--want` and `--want-unknown`, and
   `page_state.read_page(timeout)`, from a detached worktree at a pinned
   `gen-inhibit/main` commit (`interposer-tester-gi-tools-<commit>`), named in
   the tester's local settings as `gi_tools`.
+
+The WiCAN's image is no longer read from gen-inhibit's chain settings (from
+2026-11-12): it is a gen-inhibit build pinned in `wican_pin.json` as a tool
+of this harness (AGENTS.md, "Never build WiCAN firmware from an interposer
+worktree"), its identity the pin's image hash.
 
 A change to any of these on either side goes to both reviewers first.
 gen-inhibit keeps the same list in `tools/gen_inhibit/README.md`, under

@@ -63,7 +63,7 @@ class Board(object):
         self.lines_log = []          # (what, value, t)
         self.reset_at = None
         self.uptime = 300            # seconds before the reset
-        self.opens = []              # (dtr, rts) at each open after the first
+        self.opens = []              # (dtr, rts, lines_log index) at each open after the first
         self.booted = False
 
     def saw(self, what, value):
@@ -109,7 +109,7 @@ class FakePort(object):
                     not b.comes_back or
                     time.perf_counter() - b.reset_at < b.down_s):
                 raise OSError("could not open port (re-enumerating)")
-            b.opens.append((self._dtr, self._rts))
+            b.opens.append((self._dtr, self._rts, len(b.lines_log)))
             self.after_reset = b.reset_at is not None
             self.n = 0
 
@@ -531,10 +531,17 @@ def no_trip_cases(R):
 
 
 def priority_cases(R):
-    """The sims and run_scenario at ABOVE_NORMAL, read back (Windows)."""
+    """The sims and run_scenario at ABOVE_NORMAL, read back (Windows); on
+    Linux each one's slice is read and recorded, never refused."""
     if os.name != "nt":
+        line = [ln for ln in open("/proc/self/cgroup").read().splitlines()
+                if ln.startswith("0::")] or [""]
+        own = [p for p in line[0].split("/")
+               if p.endswith(".slice")][-1:] or ["unreadable"]
         ok, why = R.priority_premise([("x", os.getpid())])
-        check(ok and "not applicable" in why, "not Windows: not applicable")
+        check(ok and ("x in %s" % own[0]) in why,
+              "not Windows: the slice is read and recorded, no refusal -> %s"
+              % why)
         return
     child = subprocess.Popen([sys.executable, "-c",
                               "import time; time.sleep(20)"])
@@ -571,9 +578,18 @@ def main():
           and any(m.startswith("# SERIAL BACK gap=") for m in marks),
           "the stamped copy marks the reset, the loss and the return -> %s"
           % [m[:30] for m in marks])
-    check(b.opens and all(o == (False, False) for o in b.opens),
-          "every reconnect opens with DTR and RTS low (no second reset) "
-          "-> %s" % b.opens)
+    # serial_open's order for this host (2026-11-11, adapter characterisation
+    # step 7): Windows holds both low before open(); Linux opens with the
+    # defaults, then RTS low, then DTR low (the low-before-open order resets
+    # the X2 under cdc_acm)
+    def quiet(o):
+        if os.name == "nt":
+            return o[:2] == (False, False)
+        after = [(w, v) for w, v, _t in b.lines_log[o[2]:o[2] + 2]]
+        return o[:2] == (True, True) and after == [("rts", False), ("dtr", False)]
+    check(b.opens and all(quiet(o) for o in b.opens),
+          "every reconnect opens in serial_open's no-reset order for this "
+          "host, ending with DTR and RTS low (no second reset) -> %s" % b.opens)
     check("Vtrux charge interposer" in plain and "# RESET SENT" in plain,
           "the plain log carries the boot lines and the marker")
     rel = 20.0

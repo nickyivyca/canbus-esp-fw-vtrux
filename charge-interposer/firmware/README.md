@@ -31,8 +31,8 @@ bench artifacts stayed there when this folder moved into
 
 | Path | What |
 |------|------|
-| `CMakeLists.txt` | The ESP-IDF project (port step 2a). Defines the variant option `INTP_VARIANT` (bridge, witness, truck, selftest, diag, slcan; spec 8.2), names the project `interposer_<variant>`, and sets the two fixed USB lines on the Arduino component. |
-| `main/CMakeLists.txt` | The `main` component: **each variant's sources and switches**. A variant lists exactly the `*_main.cpp` it links, so no variant can pick up another's `setup()`. The PlatformIO build excluded them instead, and `slcan_main.cpp`, added 2026-09-29 without updating the others, stopped the bridge linking at all until 2026-10-03. |
+| `CMakeLists.txt` | The ESP-IDF project (port step 2a). Defines the variant option `INTP_VARIANT` (bridge, witness, truck, selftest, diag; spec 8.2), names the project `interposer_<variant>`, and sets the two fixed USB lines on the Arduino component. |
+| `main/CMakeLists.txt` | The `main` component: **each variant's sources and switches**. A variant lists exactly the `*_main.cpp` it links, so no variant can pick up another's `setup()`. The PlatformIO build excluded them instead, and the SLCAN transmitter's `slcan_main.cpp`, added 2026-09-29 without updating the others, stopped the bridge linking at all until 2026-10-03. |
 | `main/idf_component.yml`, `dependencies.lock` | The dependencies: arduino-esp32 3.2.1 from the Component Manager, five of its own dependencies held at the baseline's versions, the three shared components from git at one `shared/main` tag (2026.11.08 since port step 2b: the board `vtrux/x2`, the CAN port interface `vtrux/can_port` and the vehicle port's driver `vtrux/twai_port`; spec 2.4), ESP-IDF v5.4.2 exactly. The lock records what they resolved to. |
 | `sdkconfig` | The one configuration every variant builds from (spec 9's settings, 8.3's log levels, the X2's fixed values). Committed. |
 | `shared_pins.json`, `vtrux_build.json` | The pins of the shared code, and the project's name, shared components and dev-build variants for the shared build tooling (`shared/tools/SPEC.md`; the variants are R31's, each with the `-D INTP_VARIANT` it is configured with). |
@@ -46,7 +46,6 @@ bench artifacts stayed there when this folder moved into
 | `main/bridge_health.h` | Spec 8.2's `bridge_ok`: health **since the previous status frame**, not since boot. `sample()` answers and moves the baselines, for a frame; `peek()` answers without moving them, for 8.3's serial line in listen-only where no frame goes out. Pure and header-only, kept out of `main.cpp` so `../host_unit/` can compile it. |
 | `main/charger_tx_failures.h` | Spec 2.2's `0x7F6` B7 counter: the sum of the charger port's three disjoint tallies (queue full, controller failure, the 100 ms age-out), accrued only while the VCU's flow bit is 1, with a delta that arrives outside a session DISCARDED rather than banked for the next one. Lifted out of `main.cpp` on 2026-10-13 for the same reason as `bridge_health.h`: the rule is the whole of it, and nothing could test it where it was. |
 | `main/main.cpp` | Wiring only. Moves frames, reports losses. Owns spec 2.3's two caller duties: the one round of status frames at power-up, and applying the core's `vehicleListenOnly()` to the port BEFORE dispatching that pass's frames. |
-| `main/slcan_main.cpp` | **Bench only, and not part of the bridge.** Turns the board into a plain SLCAN transmitter on CAN1 so the generator-inhibit bench has a SECOND transmitter on the powertrain segment. Frames queued in one adapter do not arbitrate against each other, so filler from the bench's PCAN delays the replay's `0x051` whatever its CAN priority; from this board's own controller arbitration places it, `0x7E0` loses to every truck id, and it cannot delay a command. Silent until it receives an `O`. Read its header before flashing it -- it lists the protocol subset and four deliberate refusals. |
 | `main/selftest_main.cpp` | Stage 0. Cross-port identity, DLC and throughput over the loopback jumpers. |
 | `main/diag_main.cpp` | Stage 0a. Controller internal loopback + physical-layer probes. Flash this when Stage 0 fails and the cause could be either wiring or driver. |
 | `datasheets/` | **Not in this repo.** The vendor data sheets (MCP2515 DS20001801J) were deliberately left out of the move and stay in the reverse-it project, at `projects/vtrux/tools/interposer/firmware/datasheets/`. Findings taken from them need both text extraction and the rendered page -- see that folder's `README.md`. |
@@ -61,7 +60,7 @@ An ESP-IDF project since port step 2a: ESP-IDF **v5.4.2** with the Arduino
 core, arduino-esp32 3.2.1, as a component of `main` (user, 2026-11-03:
 arduino-esp32 3.2.1 does not compile on v5.4.1, gen-inhibit's IDF, so this
 project has its own install; `main/idf_component.yml` requires 5.4.2
-exactly). Six variants, each a value of the CMake option `INTP_VARIANT`,
+exactly). Five variants, each a value of the CMake option `INTP_VARIANT`,
 each in its own build folder, all from the one committed `sdkconfig`.
 
 | Variant | What it is |
@@ -71,11 +70,15 @@ each in its own build folder, all from the one committed `sdkconfig`.
 | `witness` | **Bench only.** The bridge plus the completion-order witness (`INTP_ORDER_WITNESS`). Keeps serial, because dumping the witness is the point. |
 | `selftest` | Stage 0 board self-test (needs jumpers). |
 | `diag` | Stage 0a fault-isolation build. |
-| `slcan` | Bench-only SLCAN transmitter for the generator-inhibit rig (see `main/slcan_main.cpp`). |
 
-**Flashing `slcan` or `witness` replaces the bridge**; restore it by flashing
-the `bridge` variant, and there is a byte-exact image of the flash as it was
-before `slcan` first went on in
+The SLCAN transmitter on CAN1, a sixth variant `slcan` until 2026-11-13, is
+no longer built here: it is test equipment, and its source is
+`shared/x2_test_images/slcan_can1/` on `shared/main` (from tag
+`2026.11.13.3`; user, 2026-11-12), with its own README.
+
+**Flashing `witness` replaces the bridge**, as does flashing any test
+image; restore it by flashing the `bridge` variant. There is a byte-exact
+image of the flash as it was before the SLCAN transmitter first went on, in
 `projects/vtrux/notes/artifacts/interposer-firmware/flash-backup/`.
 
 **Build identity and release builds follow `shared/tools/SPEC.md`** (spec
@@ -110,7 +113,6 @@ dev build through `vtrux_tools.py build` (below) runs it itself. Then, from
 idf.py -B build/bridge -D INTP_VARIANT=bridge build      # one variant
 idf.py -B build/truck -D INTP_VARIANT=truck build        # no serial
 idf.py -B build/bridge -D INTP_VARIANT=bridge -p COM3 flash
-idf.py -B build/slcan -D INTP_VARIANT=slcan -p COM3 flash
 # BENCH ONLY -- replaces the bridge with the instrumented build:
 idf.py -B build/witness -D INTP_VARIANT=witness -p COM3 flash
 ```
@@ -130,7 +132,6 @@ this folder as the project:
 ```powershell
 py -3.14 -B charge-interposer/vtrux_tools.py check-env                 # the IDF environment check (R32)
 py -3.14 -B charge-interposer/vtrux_tools.py build bridge              # dev build, build/bridge
-py -3.14 -B charge-interposer/vtrux_tools.py build bridge --jobs 1     # throttled, from an Idle shell
 py -3.14 -B charge-interposer/vtrux_tools.py release --check-only      # the release refusals only
 py -3.14 -B charge-interposer/vtrux_tools.py image charge-interposer/firmware/build/bridge/interposer_bridge.bin
 ```
@@ -139,7 +140,7 @@ py -3.14 -B charge-interposer/vtrux_tools.py image charge-interposer/firmware/bu
 `idf.py -B build/<variant> -D INTP_VARIANT=<variant> reconfigure`, then
 ninja in that folder, in the caller's environment, adding nothing. The
 variants and their `-D` options are `vtrux_build.json`'s `variants`; the
-`INTP_VARIANTS` line in `CMakeLists.txt` names the same six, and
+`INTP_VARIANTS` line in `CMakeLists.txt` names the same five, and
 `../test_vtrux_tools.py` checks that the two agree. Any failure, including
 a failed `idf.py` or ninja, exits 1, and only a finished build prints
 `BUILT`. `release` and `build` first run the R32 check, and refuse a shell
@@ -156,21 +157,22 @@ names (R33); none goes on the truck during the port, and the never-flashed
 stand-in the acceptance items use points `REVERSE_IT_DIR` at a stand-in
 folder for its record.
 
-**Before any build, check for wall-clock tests** (AGENTS.md, "Builds during
-wall-clock tests"): the bench lock, the "No builds" line and running
-simulators. Until the tester's build trial on this ESP-IDF build has passed,
-an interposer build waits until none is running, throttled or not. The
-throttled form sets the shell's priority class to Idle, then builds with
-one job, from the repo root:
+**Builds run alongside other work** (AGENTS.md, "Parallel work on the
+shared machine"): wall-clock tests, bench runs, other sessions' work and
+the local LLM. There is no check for wall-clock tests before a build, and
+no throttled form. On `madhouse-debian` every build runs as a scope in
+`build.slice`, at idle CPU weight and free to use every core, from the
+repo root in a shell exported for this project's ESP-IDF, with the Python
+command `local-paths.md` names:
 
-```powershell
-(Get-Process -Id $PID).PriorityClass = 'Idle'
-py -3.14 -B charge-interposer/vtrux_tools.py build bridge --jobs 1
+```bash
+systemd-run --user --scope --slice=build.slice \
+    <python> -B charge-interposer/vtrux_tools.py build bridge
 ```
 
-which is, from `charge-interposer/firmware/` in the same Idle shell, the
-check-env above, then `idf.py -B build/bridge -D INTP_VARIANT=bridge
-reconfigure` and `ninja -C build/bridge -j 1`.
+A scope keeps the shell's environment; a service would see none of the
+`IDF_*` variables, and the R32 check refuses it. `cat /proc/<pid>/cgroup`
+reads the placement back.
 
 **`sdkconfig` and `dependencies.lock` are committed with LF line endings.**
 On Windows ESP-IDF writes both as CRLF when it regenerates them; save them
@@ -189,7 +191,6 @@ bytes used in every variant.
 | `witness` | 311,282 | 168,324 | 66,776 | 82,035 (24.0 %) |
 | `selftest` | 300,698 | 160,300 | 64,292 | 69,871 (20.44 %) |
 | `diag` | 301,306 | 160,484 | 64,716 | 69,879 (20.45 %) |
-| `slcan` | 290,402 | 152,600 | 61,728 | 67,135 (19.64 %) |
 
 **After flashing, confirm what is actually on the board rather than assuming.**
 `0x7F7` B0-B3 carries the first four bytes of the image's ELF SHA-256, as a
@@ -252,8 +253,10 @@ acceptance testing, round 1, steps 3 and 4; see the status note at the top.
 > **Resolve the board from its MAC before every flash, never from a port
 > number written down earlier.** Two ESP32s enumerate here and both report
 > `VID:PID=303A:1001`, so nothing in the description tells them apart. The
-> interposer is the S3 `3C:0F:02:F0:4D:30`; `D4:F9:8D:1D:0D:74` is the C3
-> WiCAN and belongs to another session -- flashing it is the one
+> interposer is the S3 and the WiCAN is the C3; both boards' MACs are in
+> reverse-it, `$REVERSE_IT_DIR/firmware/bench-holder.md`, "Board state",
+> and stay out of this repo. The C3
+> WiCAN belongs to another session -- flashing it is the one
 > unrecoverable mistake on this bench. On `NICKY-XPS` it is **S3=COM3,
 > WiCAN=COM4**, per the measured map of 2026-09-19 and re-confirmed
 > 2026-10-04; COM7/COM8 in older notes is the **laptop's** mapping, not a
@@ -357,7 +360,7 @@ sample showed 8689 transitions in 50 ms, and the one-way frame test delivered
 
 ### Stage 1 -- two dongles, transparency
 
-**Passed 2026-09-11.** One dongle per segment. On `L-EEHTRBPN2` that is a PEAK
+**Passed 2026-09-11.** One dongle per segment. On the Windows laptop that is a PEAK
 **PCAN-USB FD** (`PCAN_USBBUS1`) and a **Kvaser Leaf Light v2** (channel 0) --
 different drivers, so they coexist. An earlier version of this file named the
 Innomaker `gs_usb`; that dongle is not on this bench. Both are auto-detected by
@@ -610,7 +613,7 @@ the same real capture and diffs every emitted frame and state transition:
 py -3.12 .../make_golden.py <capture.log> --name NAME --bus 3 \
     --outdir projects/vtrux/notes/artifacts/interposer-firmware
 
-# build and diff (needs g++; on L-EEHTRBPN2 use WSL)
+# build and diff (needs g++; on Windows use WSL)
 g++ -std=c++11 -O2 -I main -o /tmp/hr ../fw_harness/host_diff/host_runner.cpp main/machine.cpp
 /tmp/hr <NAME>.trace | diff - <NAME>.golden
 ```
@@ -738,8 +741,8 @@ attached-but-not-reading USB host to block the bridge loop on.
 The bench and bring-up builds keep their prints and bound the block instead:
 `INTP_SERIAL_BEGIN` sets the CDC TX timeout to `INTP_CDC_TX_TIMEOUT_MS`,
 1 ms, so output a host is not reading is dropped rather than held (spec 8.3,
-user 2026-10-14). `diag`, `selftest` and `slcan` set the same value beside
-their own `Serial.begin()`.
+user 2026-10-14). `diag` and `selftest` set the same value beside their
+own `Serial.begin()`.
 
 **The setting is 1 and 8.3's bound is 2 ms** (`6505ded27e460190`), and they
 are different numbers. The macro is what `setTxTimeoutMs()` gets, and in
@@ -778,9 +781,8 @@ which is why E8 shows none of it.
 `begin()`, which is what makes it stick: `begin()` creates a ring only
 `if (tx_ring_buf == NULL)`, so an existing one is left alone and nothing
 buffered is discarded, while calling it afterwards would delete the ring
-`begin()` had just made. `diag`, `selftest` and `slcan` do the same beside
-their own `Serial.begin()`; `slcan` already had `setRxBufferSize(8192)`
-there, against the RX form of this same failure.
+`begin()` had just made. `diag` and `selftest` do the same beside their
+own `Serial.begin()`.
 
 **Why 2048 and not the ~11 KB the worst case would need.** One pass fits
 with room -- 515 B of status block, ~140 B of diag line, and an event line
@@ -1198,7 +1200,7 @@ the goldens were regenerated from it, and both pairs now diff identical.
 ### The older result (2026-09-17) -- all ten byte-identical
 
 `../fw_harness/host_diff/diff_all.sh` builds the runner and diffs every pair (on
-L-EEHTRBPN2 run it under WSL with `MSYS_NO_PATHCONV=1`). The goldens now
+Windows run it under WSL with `MSYS_NO_PATHCONV=1`). The goldens now
 include the diagnostic mirror frames (spec 8.1), so both real captures were
 regenerated on 2026-09-17.
 

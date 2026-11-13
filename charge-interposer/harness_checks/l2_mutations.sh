@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Mutation check for test_l2_bridge, and since port step 2b for
 # test_canport_contract's vehicle half (Q-X, spec 2.4's counter mapping).
+# Y and Z (2026-11-13): main.cpp's dispatch by port, spec 2's "The
+# charger's frames count only from the charger port" (sa-c0-vehicle-port).
 #
 # The L2 harness exists because the whole bridge loop had never run on a
 # host. Its coverage assertion exists because the MCP2515 RECEIVE path had
@@ -119,7 +121,7 @@ fi
 # 2026-10-08 rx-rollover-order and rx-rollover-refill fail on a known
 # product defect (evidence 2), and rev 2's all-cases gate then refused to
 # run any mutation at all.
-NEED="boot failed-start rtr-not-forwarded busoff-charger busoff-vehicle bridge-ok-veh-refused bridge-ok-rx-missed bridge-ok-rx-overrun failed-start-vehicle listen-only-switch listen-only-revert rx-lost-at-recovery"
+NEED="boot failed-start rtr-not-forwarded busoff-charger busoff-vehicle bridge-ok-veh-refused bridge-ok-rx-missed bridge-ok-rx-overrun failed-start-vehicle listen-only-switch listen-only-revert rx-lost-at-recovery sa-c0-vehicle-port"
 cases="$("$WORK/run")"
 n=0
 failing=""
@@ -409,6 +411,20 @@ mutate "X: busOffEvents() is the level, not the count of episodes" \
   's|    return status().bus_off_entries;|    return status().bus_off ? 1u : 0u;|' \
   @contract \
   'busOffEvents() rises by one'
+
+# Spec 2, "The charger's frames count only from the charger port" (user,
+# 2026-11-12; tracker G; tester, 2026-11-13): main.cpp's dispatch by port.
+mutate "Y: vehicle-port SA 0xC0 frames go to the core's charger handler instead" \
+  fw/main.cpp \
+  's|^    core->onVehicleFrame(f.id, f.ext, f.data, f.len, t_ms, out);$|    if (f.ext \&\& (f.id \& 0xFF) == 0xC0) { core->onChargerFrame(f.id, f.ext, f.data, f.len, t_ms, out); applyVehicleMode(t_ms); } else core->onVehicleFrame(f.id, f.ext, f.data, f.len, t_ms, out);|' \
+  sa-c0-vehicle-port \
+  'SA 0xC0 [mode]'
+
+mutate "Z: vehicle-port SA 0xC0 frames also read as charger frames, forwarded as before" \
+  fw/main.cpp \
+  's|^    core->onVehicleFrame(f.id, f.ext, f.data, f.len, t_ms, out);$|&\n    if (f.ext \&\& (f.id \& 0xFF) == 0xC0) { EmitList x; core->onChargerFrame(f.id, f.ext, f.data, f.len, t_ms, x); }|' \
+  sa-c0-vehicle-port \
+  'SA 0xC0 [arm]'
 
 echo
 if [ "$rc" -eq 0 ]; then

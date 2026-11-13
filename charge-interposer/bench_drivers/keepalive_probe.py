@@ -22,10 +22,10 @@ import bench_charger_witness as bcw
 
 KA = 0x18FF5AC0
 lines = []
-ser = serial.Serial()
-ser.port, ser.baudrate, ser.timeout = "COM3", 115200, 0.2
-ser.dtr, ser.rts = False, False
-ser.open()
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import serial_open                                         # noqa: E402
+ser = serial_open.open_quiet("COM3", 115200, 0.2)
 stop = threading.Event()
 
 
@@ -47,7 +47,7 @@ def drain(bus, name, out):
 
 
 tx = bcw.open_gs_usb()
-kv = can.Bus(interface="kvaser", channel=0, bitrate=500000)
+kv = adapter_fixes.bus(interface="kvaser", channel=0, bitrate=500000)
 pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000,
              state=can.BusState.PASSIVE)
 got = []

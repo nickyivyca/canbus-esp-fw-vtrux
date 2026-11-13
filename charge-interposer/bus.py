@@ -14,7 +14,13 @@ Two transport families:
             gs_usb), channel auto-detected via canbench.live.receiver, so the
             same simulator code drives real silicon once the board exists.
             gs_usb is the exception: opened by device index (--channel N,
-            default 0), its TX echoes drained and dropped (open_gs_usb).
+            default 0) on Windows, and on Linux as canchg by its USB serial
+            from VTRUX_CANCHG_DEVICE, refused unless in libusb mode
+            (adapter_fixes.canchg_target); its TX echoes drained and
+            dropped (open_gs_usb). On Linux the pinned canbench's
+            linux_fixes are applied first (adapter_fixes), so a gs_usb open
+            there needs the can-tools pin installed; on Windows it does
+            not.
 
 Segment map for this bench:
 
@@ -69,7 +75,7 @@ REAL_BRANDS = ("ixxat", "kvaser", "pcan", "socketcan", "gs_usb")
 
 # Wall time a sim process spent FROZEN must not become simulated time.
 #
-# Measured 2026-09-12 on L-EEHTRBPN2 (Windows): the machine suspends every
+# Measured 2026-09-12 on a Windows laptop: the machine suspends every
 # process for 40-70 ms, occasionally over 100 ms, at random -- charger_sim and
 # vehicle_sim logged 62 ms and 58 ms stalls in the SAME second with zero GC
 # collections, and a 0.5 ms sleep took 28 ms. Nothing in the bench causes it
@@ -201,6 +207,10 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
 
     import paths
     paths.import_canbench()     # the pinned canbench, nothing on sys.path
+    # the Kvaser's linuxcan fix, explicitly, not as the receiver's import
+    # side effect (adapter_fixes; reviewer, 2026-11-11)
+    import adapter_fixes
+    adapter_fixes.apply()
     from canbench.live.receiver import detect_all_can_interfaces
     if logger:
         logger.info("Detecting %s interfaces at %d bps...", transport, bitrate)
@@ -216,7 +226,12 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
 
     kwargs = dict(bitrate=bitrate, receive_own_messages=receive_own_messages)
     if iface == "pcan":
-        # see canbench/live/pcan-busoff-recovery.md
+        # see canbench/live/pcan-busoff-recovery.md. On Linux PCAN-Basic
+        # 9.3.3, auto_reset alone does not clear a bus-off: the reset only
+        # flushes the queues unless PCAN_HARD_RESET_STATUS is on, and the
+        # write path's auto-reset never fires (that note at can-tools
+        # 521eb24). Recovery there needs canbench's own PCAN class
+        # (backends.install()), which this harness does not use.
         kwargs["auto_reset"] = True
     if isinstance(ch, dict):
         bus = can.interface.Bus(interface=iface, **kwargs, **ch)
@@ -264,22 +279,33 @@ class _DropEchoes:
 
 
 def open_gs_usb(channel, bitrate, *, receive_own_messages=False,
-                logger=None, _bus_cls=None):
-    """The Innomaker USB2CAN (gs_usb / candleLight), opened by INDEX:
-    detect_available_configs(['gs_usb']) returns [] even when the device
-    works (bringup, 2026-10-04), so auto-detection cannot find it.
-    `channel` is the device index ("0" if omitted). `_bus_cls` exists only
-    for bus_gs_usb_test (a fake in place of python-can's GsUsbBus)."""
+                logger=None, _bus_cls=None, _target=None):
+    """The Innomaker USB2CAN (gs_usb / candleLight), opened by INDEX off
+    Linux: detect_available_configs(['gs_usb']) returns [] even when the
+    device works (bringup, 2026-10-04), so auto-detection cannot find it.
+    `channel` is the device index ("0" if omitted; on Linux only 0, and the
+    device is canchg by its serial). `_bus_cls` exists only for
+    bus_gs_usb_test (a fake in place of python-can's GsUsbBus)."""
+    import adapter_fixes
+    index = int(channel) if channel not in (None, "") else 0
+    # which device: index 0 off Linux; on Linux canchg by its serial, refused
+    # unless in libusb mode (adapter_fixes.canchg_target). _target exists
+    # only for bus_gs_usb_test.
+    if _target is None:
+        _target = adapter_fixes.canchg_target(index)
     if _bus_cls is None:
         _libusb_bootstrap()
+        # gs_usb's start() without its USB reset, on Linux (adapter_fixes)
+        adapter_fixes.apply()
         from can.interfaces.gs_usb import GsUsbBus as _bus_cls
-    index = int(channel) if channel not in (None, "") else 0
     cls = type("GsUsbNoEcho", (_DropEchoes, _bus_cls), {})
+    kw = adapter_fixes.gs_usb_kwargs(_target)
     if logger:
-        logger.info("Opening gs_usb device index %d at %d bps (echoes %s)",
-                    index, bitrate,
+        logger.info("Opening gs_usb device %s at %d bps (echoes %s)",
+                    ", ".join("%s %s" % kv for kv in sorted(kw.items())), bitrate,
                     "kept" if receive_own_messages else "drained and dropped")
-    bus = cls(channel="can%d" % index, index=index, bitrate=bitrate)
+    bus = cls(channel="can%d" % index, bitrate=bitrate, **kw)
+    adapter_fixes.check_opened(bus, _target)
     bus._keep_echoes = bool(receive_own_messages)
     return bus
 

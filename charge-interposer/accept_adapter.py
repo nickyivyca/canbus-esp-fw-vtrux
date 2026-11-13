@@ -35,7 +35,14 @@ first, for port step 2a). This first cut gives:
                      (the first tree's setup, before anything runs): the
                      runner lays a host's env over every check's, so it would
                      override tree_env (run 2a f308; the charge-interposer
-                     reviewer, 2026-11-05)
+                     reviewer, 2026-11-05). From the re-pin to 2026.11.12,
+                     settings that give wallclock_patterns must hold every
+                     one of WALLCLOCK_PATTERNS (ours, gen-inhibit's and the
+                     CAN replay tooling session's names), and on Linux
+                     settings that give them or placement must give
+                     placement.slices PLACEMENT_SLICES (wallclock and lock
+                     in bench.slice, build in build.slice; the
+                     charge-interposer reviewer, 2026-11-12)
   JUDGES, judge      bench_suite's judges by name
   identifier_scan    reverse-it's prepush scan (its patterns and private
                      value file, firmware/prepush-scan/) over a record: each
@@ -139,7 +146,11 @@ SUITES = {n: "charge-interposer/bench_suite.py:%s" % n
 SHELLS = ("python", "git-bash", "powershell", "idf")
 IDF_SHELL = os.path.join(HERE, "fw_harness", "idf_build_shell.py")
 IDF_VERSION = "v5.4.2"     # spec 8.2: the interposer builds on ESP-IDF v5.4.2 (user, 2026-11-03)
-# the machine variables a check may see (AGENTS.md, local-paths.md)
+# the machine variables a check may see (AGENTS.md, local-paths.md). The two
+# that reach the user's systemd manager (XDG_RUNTIME_DIR,
+# DBUS_SESSION_BUS_ADDRESS), which a nested suite run's placement needs on
+# Linux (run 2548), come from the acceptance core itself from shared/bench
+# 2026.11.12.2 (compile.USER_BUS_VARS), so this adapter no longer lists them
 MACHINE_VARS = ("REVERSE_IT_DIR", "CAN_TOOLS_DIR", "VTRUX_PUBLIC_REPO")
 JUDGES = ("script", "recorded", "c12", "host-bridge", "corrupt-pin", "scenario")
 COMPARERS = ("masked-log", "sim-judged", "run-logs", "vport-windows")
@@ -352,22 +363,79 @@ def default_shell(path):
 # charge-interposer reviewer, 2026-11-05: refuse it before anything runs).
 TREE_VARS = ("INTERPOSER_CODE", "PYTHONPATH")
 
+# What shared/bench's runner (from 2026.11.12) records as another wall-clock
+# test running beside one of ours: regexes over process command lines
+# (re.search), the settings' wallclock_patterns. Recorded, never a refusal
+# (AGENTS.md "Parallel work on the shared machine", point 3). The
+# interposer's and gen-inhibit's simulators and bench drivers, and the CAN
+# replay tooling session's timing-sensitive scripts, as it named them on
+# 2026-11-12: can-tools' replayer, logger and GUI, every
+# cantools_bench_<name>.py, and its older harnesses by name (its
+# analysis-only scripts are not here).
+CAN_TOOLS_HARNESSES = (
+    "wiring_check", "step1_open", "step2_innomaker_echo", "step2_can1_clock",
+    "step2_pcan_stamp_base", "step3_echo_order", "step3_canchg_lo_switch",
+    "step4_replay_witness", "step5_ack", "step6_errors", "step7_x2_serial",
+    "rx_logger", "pcan_raw_confirm", "verify_canbench_fixes",
+    "pcan_backtoback_capability", "kvaser_error_frame_capability",
+    "e4_rig_calibration", "h2_backends")
+WALLCLOCK_PATTERNS = [
+    r"run_scenario\.py", r"vehicle_sim\.py", r"charger_sim\.py",
+    r"interposer_sim\.py", r"e4_device_calibration\.py", r"live_bench\.py",
+    r"bench_vehicle\.py", r"wican_[a-z_]+_bench\.py", r"bench_[a-z0-9_]+\.py",
+    r"(^|[/\s])can_(replayer|logger|gui)\.py",
+    r"(^|[/\s])cantools_bench_[a-z0-9_]+\.py",
+    r"(^|[/\s])(%s)\.py" % "|".join(CAN_TOOLS_HARNESSES),
+]
+# Where the runner starts each check on Linux (settings placement.slices;
+# AGENTS.md "Parallel work on the shared machine", point 1; the
+# charge-interposer reviewer, 2026-11-12): wall-clock checks and the bench
+# groups in bench.slice, builds in build.slice.
+PLACEMENT_SLICES = {"wallclock": "bench.slice", "lock": "bench.slice",
+                    "build": "build.slice"}
+# sys.platform, read by settings_refusal; the tests set it
+PLATFORM = sys.platform
+
 
 def settings_refusal(settings):
-    """Why these machine settings are refused, or None: a host whose env
-    (hosts.<host>.env, on any host, madhouse's included) names a TREE_VARS
-    variable. A check's own env, such as the madhouse checks'
-    INTERPOSER_CODE={work}/code, is not the settings' and is not looked at."""
+    """Why these machine settings are refused, or None:
+    - a host whose env (hosts.<host>.env, on any host, madhouse's included)
+      names a TREE_VARS variable. A check's own env, such as the madhouse
+      checks' INTERPOSER_CODE={work}/code, is not the settings' and is not
+      looked at;
+    - settings that give wallclock_patterns without every one of
+      WALLCLOCK_PATTERNS;
+    - on Linux, settings that give wallclock_patterns or placement without
+      placement.slices holding PLACEMENT_SLICES.
+    Settings with neither key (the tests' own) are not looked at for
+    them."""
+    s = settings or {}
     bad = []
-    for host, cfg in sorted(((settings or {}).get("hosts") or {}).items()):
+    for host, cfg in sorted((s.get("hosts") or {}).items()):
         env = (cfg or {}).get("env") or {}
         bad += ["hosts.%s.env names %s" % (host, k) for k in TREE_VARS if k in env]
-    if not bad:
-        return None
-    return ("the machine settings are refused: %s. The runner gives each tree its "
-            "own (tree_env); a host's env is laid over every check's on that host, "
-            "so it would point them all at one checkout. Remove it from the settings"
-            % "; ".join(bad))
+    if bad:
+        return ("the machine settings are refused: %s. The runner gives each tree its "
+                "own (tree_env); a host's env is laid over every check's on that host, "
+                "so it would point them all at one checkout. Remove it from the settings"
+                % "; ".join(bad))
+    if "wallclock_patterns" in s:
+        have = s.get("wallclock_patterns") or []
+        lacking = [p for p in WALLCLOCK_PATTERNS if p not in have]
+        if lacking:
+            return ("the machine settings are refused: wallclock_patterns lacks %s "
+                    "(accept_adapter.WALLCLOCK_PATTERNS: what the runner records as "
+                    "another wall-clock test running)" % ", ".join(lacking))
+    if PLATFORM.startswith("linux") and ("wallclock_patterns" in s
+                                         or "placement" in s):
+        slices = (s.get("placement") or {}).get("slices") or {}
+        wrong = ["%s=%s (want %s)" % (k, slices.get(k), v)
+                 for k, v in sorted(PLACEMENT_SLICES.items()) if slices.get(k) != v]
+        if wrong:
+            return ("the machine settings are refused: placement.slices %s "
+                    "(accept_adapter.PLACEMENT_SLICES: where the runner starts each "
+                    "check on Linux)" % ", ".join(wrong))
+    return None
 
 
 def shell_argv(shell, settings, host="local"):

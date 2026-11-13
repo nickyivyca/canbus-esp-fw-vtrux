@@ -78,7 +78,6 @@ def builds(t):
         "witness": {"outputs": outputs(t, "witness", serial=True, witness=True)},
         "selftest": {"outputs": outputs(t, "selftest")},
         "diag": {"outputs": outputs(t, "diag")},
-        "slcan": {"outputs": outputs(t, "slcan")},
         "trace": {"outputs": outputs(t, "bridge", serial=True, trace=True)},
         "bridge-release": {"outputs": outputs(t, "bridge", serial=True)},
     }
@@ -204,9 +203,9 @@ def test_table_vs_expect(M, SW):
                     "INTP_NEW_PROBE rule elf_symbols_absent is expected to fail")
     t3 = copy.deepcopy(t)
     t3["INTP_NO_SERIAL"]["refusal"] = [r for r in t3["INTP_NO_SERIAL"]["refusal"]
-                                       if r != {"project_name_token_absent": "slcan"}]
+                                       if r != {"project_name_token_absent": "diag"}]
     assert fails_on(M.checks(t3, off, ons, SW.judge_rule),
-                    "slcan: INTP_NO_SERIAL rule project_name_token_absent slcan is in the table")
+                    "diag: INTP_NO_SERIAL rule project_name_token_absent diag is in the table")
     t4 = copy.deepcopy(t)
     t4["INTP_TX_TRACE"]["refusal"] = []
     assert fails_on(M.checks(t4, off, ons, SW.judge_rule), "INTP_TX_TRACE has refusal rules")
@@ -236,7 +235,7 @@ def load_runs(text=None):
 def git_diff(minus, plus, path=CMAKE_REL, extra=""):
     """`git diff --unified=0`'s shape for one hunk of one file"""
     return ("diff --git a/{p} b/{p}\nindex 1111111..2222222 100644\n--- a/{p}\n+++ b/{p}\n"
-            "@@ -22 +22 @@ set(INTP_VARIANTS bridge witness truck selftest diag slcan)\n"
+            "@@ -22 +22 @@ set(INTP_VARIANTS bridge witness truck selftest diag)\n"
             "{m}{pl}{x}").format(p=path, m="".join("-%s\n" % ln for ln in minus),
                                  pl="".join("+%s\n" % ln for ln in plus), x=extra)
 
@@ -282,13 +281,21 @@ def test_worktree_layout(R):
     """the worktrees go beside this worktree, or in --scratch-from's folder;
     every build folder is checked against the 200-character limit, the
     three releases' and every dev and trace build's; one shared-<tag>
-    checkout per distinct tag of the pins"""
-    top = os.path.join("C:\\", "w", "esp", "interposer-tester")
+    checkout per distinct tag of the pins. The stand-in paths start at this
+    system's own root (C:\\ on Windows, / on Linux), so they are absolute
+    there and the length checks do not depend on the folder the test runs
+    in (the reviewer's B2, 2026-11-12: with C:\\ on Linux they were
+    relative, joined to the acceptance runner's deep tree by abspath, and
+    record accept_3_20261111T234853_563d refused them as too deep)"""
+    root = os.path.abspath(os.sep)
+    top = os.path.join(root, "w", "esp", "interposer-tester")
     beside = R.worktree_paths(top)
-    assert beside["standin"] == os.path.join("C:\\", "w", "esp", "interposer-tester-standin"), beside
-    work = os.path.join("C:\\", "w", "esp", "interposer-tester", "scratch", "rp")
+    assert beside["standin"] == os.path.join(root, "w", "esp", "interposer-tester-standin"), beside
+    work = os.path.join(root, "w", "esp", "interposer-tester", "scratch", "rp")
     inw = R.worktree_paths(top, work)
     assert inw == {k: os.path.join(work, k) for k in R.WORKTREES}, inw
+    # absolute as given: abspath (which too_deep measures) leaves them alone
+    assert all(os.path.abspath(p) == p for p in [top, work] + list(inw.values())), inw
     dirs = R.build_dirs(inw)
     assert len(dirs) == 3 + len(R.DEV) + 1, dirs
     want = [os.path.join(inw[k], "charge-interposer", "firmware", "build")

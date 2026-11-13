@@ -15,10 +15,9 @@
 # and rebuilt only when a source was newer than it; a build of host_runner
 # and machine.cpp now comes with each call, which run_scenario.py makes once
 # per scenario, after its simulators have stopped. That build is a build
-# under AGENTS.md, "Builds during wall-clock tests": if a scenario chain runs
-# while another wall-clock test is running on the same machine, it comes
-# under that section's throttle rule like any other build (reviewer,
-# 2026-11-02).
+# under AGENTS.md, "Parallel work on the shared machine", like any other
+# build (reviewer, 2026-11-02; until 2026-11-12 it came under the throttle
+# rule of "Builds during wall-clock tests", since removed).
 #
 #   diff_one.sh <trace>        -> exit 0 identical, 1 differs, 2 cannot run
 set -u

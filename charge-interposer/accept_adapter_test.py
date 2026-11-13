@@ -222,6 +222,120 @@ def test_settings_tree_vars(A, work):
             assert ("hosts.%s.env names %s" % (host, key)) in why, why
 
 
+def test_settings_guard(A, work):
+    """The re-pin to shared/bench 2026.11.12 (the charge-interposer reviewer,
+    2026-11-12): each of the CAN replay tooling session's timing-sensitive
+    scripts, as it named them, matches a wallclock pattern, and its
+    analysis-only scripts match none; settings that give wallclock_patterns
+    without all of them are refused, naming the one missing; on Linux,
+    settings with wallclock_patterns or placement must give the slices
+    (wallclock and lock in bench.slice, build in build.slice), and off Linux
+    they need not; settings with neither key are not looked at."""
+    import re
+    pats = [re.compile(p) for p in A.WALLCLOCK_PATTERNS]
+
+    def matched(cmd):
+        return [p.pattern for p in pats if p.search(cmd)]
+    timed = (["can_replayer", "can_logger", "can_gui", "cantools_bench_trc_errors"]
+             + ["adapter-characterisation/" + n for n in (
+                 "wiring_check", "step1_open", "step2_innomaker_echo",
+                 "step2_can1_clock", "step2_pcan_stamp_base", "step3_echo_order",
+                 "step3_canchg_lo_switch", "step4_replay_witness", "step5_ack",
+                 "step6_errors", "step7_x2_serial", "rx_logger", "pcan_raw_confirm",
+                 "verify_canbench_fixes")]
+             + ["adapter-characterisation/ref/" + n for n in (
+                 "pcan_backtoback_capability", "kvaser_error_frame_capability",
+                 "e4_rig_calibration")]
+             + ["can-tools-bench/h2_backends"])
+    for n in timed:
+        cmd = "python3.13 /r/tools/artifacts/%s.py --seconds 30" % n
+        assert matched(cmd), "a CAN replay harness matches no pattern: %s" % cmd
+    for n in ("h3_summary", "h3_trc_readback", "reanalyse_can1_clock",
+              "replay_fidelity"):
+        cmd = "python3.13 /r/tools/artifacts/can-tools-bench/%s.py x" % n
+        assert not matched(cmd), "analysis-only %s matches %s" % (n, matched(cmd))
+    good = {"hosts": {"local": {"python": ["python3.13"]}},
+            "wallclock_patterns": list(A.WALLCLOCK_PATTERNS) + [r"extra\.py"],
+            "placement": {"slices": dict(A.PLACEMENT_SLICES, light="build.slice")}}
+    saved = A.PLATFORM
+    try:
+        A.PLATFORM = "linux"
+        assert A.settings_refusal(good) is None, A.settings_refusal(good)
+        for p in A.WALLCLOCK_PATTERNS:
+            t = json.loads(json.dumps(good))
+            t["wallclock_patterns"].remove(p)
+            why = A.settings_refusal(t)
+            assert why and "wallclock_patterns lacks" in why and p in why, (p, why)
+        for k in A.PLACEMENT_SLICES:
+            t = json.loads(json.dumps(good))
+            t["placement"]["slices"][k] = "app.slice"
+            why = A.settings_refusal(t)
+            assert why and ("%s=app.slice" % k) in why, (k, why)
+        t = json.loads(json.dumps(good))
+        del t["placement"]
+        why = A.settings_refusal(t)
+        assert why and "placement.slices" in why, why
+        try:
+            A.shell_argv("python", t)
+        except A.AdapterError as e:
+            assert "placement.slices" in str(e), str(e)
+        else:
+            raise AssertionError("shell_argv took settings with no placement")
+        assert A.settings_refusal({"hosts": {}}) is None
+        A.PLATFORM = "win32"                  # off Linux: no placement needed
+        assert A.settings_refusal(t) is None, A.settings_refusal(t)
+    finally:
+        A.PLATFORM = saved
+
+
+def test_machine_env_user_bus(A, work):
+    """Run 2548 (the charge-interposer reviewer, 2026-11-12): the environment
+    the acceptance runner starts a suite run from, compile.machine_env with
+    this adapter, carries XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS, and
+    nothing it was not given. Since the re-pin to shared/bench 2026.11.13.2
+    the core supplies the two (compile.USER_BUS_VARS, its rule user_bus and
+    that rule's mutant in tests/test_accept_compile.py) and the adapter no
+    longer lists them, so this checks the pinned core with this adapter;
+    no adapter edit can drop them. On Linux with the user's bench.slice (as on
+    madhouse-debian), the real acceptance path: a process started in exactly
+    that environment, as a nested suite run is, runs the chain runner's own
+    placement probe (procs.scope_argv, systemd-run --user, then
+    procs.cgroup_slice) and reads back bench.slice; the same process
+    without the two variables does not (the control: the check can fail
+    here)."""
+    from vtrux_bench.accept import compile as CO
+    fake = {"PATH": "/usr/bin:/bin", "HOME": "/h", "XDG_RUNTIME_DIR": "/run/user/1000",
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+            "SOMETHING_ELSE": "x", "INTERPOSER_CODE": "/somewhere"}
+    env = CO.machine_env(A, environ=fake)
+    for k in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+        assert env.get(k) == fake[k], (k, env)
+    assert "SOMETHING_ELSE" not in env and "INTERPOSER_CODE" not in env, env
+    if not sys.platform.startswith("linux"):
+        return
+    r = subprocess.run(["systemctl", "--user", "show", "bench.slice", "-p", "LoadState"],
+                       capture_output=True, text=True)
+    if "LoadState=loaded" not in r.stdout:
+        return                       # no user bench.slice on this machine
+    probe = ("import subprocess, sys; sys.path.insert(0, %r); "
+             "from vtrux_bench.run import procs; "
+             "r = subprocess.run(procs.scope_argv(['systemd-run'], 'bench.slice', "
+             "['cat', '/proc/self/cgroup']), capture_output=True, text=True); "
+             "print(procs.cgroup_slice(r.stdout))" % CORE)
+
+    def read_back(environ):
+        p = subprocess.run([sys.executable, "-B", "-c", probe], env=environ,
+                           capture_output=True, text=True, timeout=120)
+        return p.stdout.strip()
+    real = CO.machine_env(A)
+    assert read_back(real) == "bench.slice", (
+        "a process in the acceptance runner's environment read back %r, not "
+        "bench.slice" % read_back(real))
+    bare = {k: v for k, v in real.items()
+            if k not in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS")}
+    assert read_back(bare) != "bench.slice", "the control placed without the user bus"
+
+
 def test_idf_shell(A, work):
     """A5, A15: the "idf" shell is the host's python running
     fw_harness/idf_build_shell.py with the machine settings' ESP-IDF
@@ -441,6 +555,67 @@ def test_madhouse_entries(A, work):
         assert e["env"].get("L3_STIMULUS") == "{madhouse_artifacts}/l3_stimulus.txt", e
         assert git(REPO, "cat-file", "-t", "HEAD:" + e["path"]) == "blob", e["path"]
         assert e["judge"] in A.JUDGES, e
+
+
+class _Reached(Exception):
+    """The madhouse tree got past the settings check, to its first git or ssh."""
+
+
+class _MadeStub:
+    def add_remote(self, *a):
+        pass
+
+
+def test_madhouse_refused_when_local(A, work):
+    """On madhouse-debian the m-lanes run locally (bench_suite m_lanes_host
+    "local"; user, 2026-11-11) and the machine settings name no host
+    madhouse. A list naming host madhouse is then refused by the core before
+    anything runs (charge-interposer reviewer, 2026-11-11, option A: no
+    adapter or core change): a tree in make_trees, before any build or ssh
+    (trees._to_remote); a check, selection or can-fail at the Engine's
+    validate, before any check (named by its group, the item's id). Under
+    Windows-shaped settings that name hosts.madhouse neither is refused: the
+    tree reaches its first git/ssh step (stubbed here), and validate takes
+    the group, so the refusal comes from the settings, not from the host
+    name."""
+    from vtrux_bench.accept import trees as T
+    from vtrux_bench.run import model as M
+    mad = {"m_lanes_host": "local", "hosts": {"local": {"python": ["python3.13", "-B"]}}}
+    win = {"hosts": {"local": {"python": ["py", "-3.14", "-B"]},
+                     "madhouse": {"ssh": "madhouse-debian", "python": ["python3", "-B"],
+                                  "workroot": "/srv/workroot/accept"}}}
+    tree = {"host": "madhouse", "project": "0" * 40, "shared": {}}
+    local = {"project_dir": os.path.join(work, "p"), "shared_dirs": {}, "dir": work,
+             "record": {}}
+
+    def reached(*a, **k):
+        raise _Reached()
+
+    saved = (T._git, T._ssh)
+    T._git, T._ssh = reached, reached
+    try:
+        try:
+            T._to_remote("mtree", tree, local, {"project": "p"},
+                         {"settings": mad, "record_id": "r"}, _MadeStub(), print, "tree-")
+            raise AssertionError("a madhouse tree was not refused under the madhouse settings")
+        except T.TreeError as e:
+            assert "mtree" in str(e) and "madhouse" in str(e), str(e)
+        try:
+            T._to_remote("mtree", tree, local, {"project": "p"},
+                         {"settings": win, "record_id": "r"}, _MadeStub(), print, "tree-")
+            raise AssertionError("the stubbed git/ssh step was never reached")
+        except _Reached:
+            pass
+    finally:
+        T._git, T._ssh = saved
+    suite = M.Suite(name="s", role="tester (charge-interposer)", groups=[
+        M.Group(name="host-diff", host="madhouse", checks=[M.Check("c", ["true"])])])
+    try:
+        M.validate(suite, mad)
+        raise AssertionError("a madhouse group was not refused under the madhouse settings")
+    except M.SuiteError as e:
+        assert "host-diff" in str(e) and "'madhouse' not in settings" in str(e), str(e)
+    M.validate(suite, win)
 
 
 def test_tree_setup(A, work):
@@ -758,13 +933,26 @@ def test_vport_real(A, work):
 
 
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
-         test_settings_tree_vars, test_idf_shell, test_targets, test_settings_keys, test_suite_settings,
+         test_settings_tree_vars, test_settings_guard, test_machine_env_user_bus,
+         test_idf_shell, test_targets, test_settings_keys, test_suite_settings,
          test_shared_pins,
-         test_madhouse_entries, test_tree_setup, test_identifier_scan, test_artifacts_row,
+         test_madhouse_entries, test_madhouse_refused_when_local, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
          test_sim_judged, test_run_logs, test_vport_windows, test_vport_real]
 
 MUTANTS = [
+    # the re-pin to 2026.11.12's settings guard (the charge-interposer
+    # reviewer, 2026-11-12)
+    ("a CAN replay harness name dropped", '    "e4_rig_calibration", "h2_backends")',
+     '    "e4_rig_calibration")'),
+    ("can-tools' replayer, logger and GUI not a pattern",
+     '    r"(^|[/\\s])can_(replayer|logger|gui)\\.py",\n', ""),
+    ("the analysis scripts caught too", r'    r"(^|[/\s])(%s)\.py" % "|".join(CAN_TOOLS_HARNESSES),',
+     r'    r"(%s|reanalyse_can1_clock|replay_fidelity)\.py" % "|".join(CAN_TOOLS_HARNESSES),'),
+    ("missing patterns not refused", "        if lacking:\n", "        if False:\n"),
+    ("the slices not checked", "        if wrong:\n", "        if False:\n"),
+    ("the slices asked for off Linux too", '    if PLATFORM.startswith("linux") and',
+     '    if True and'),
     ("suites from another file", '"charge-interposer/bench_suite.py:%s"', '"charge-interposer/suite.py:%s"'),
     ("product files not the suite's", "    return bench_suite.product_files(root)\n",
      "    return bench_suite.product_files(root)[1:]\n"),
@@ -776,9 +964,12 @@ MUTANTS = [
     ("INTERPOSER_CODE not the tree's", 'env = {"INTERPOSER_CODE": _code(tree)}',
      'env = {"INTERPOSER_CODE": HERE}'),
     ("no TWAI_FAKE_DIR", '        env["TWAI_FAKE_DIR"] = fake\n', "        pass\n"),
-    ("the shared fake's folder on a remote tree in local form",
+    # Windows' local form (ntpath) on any host: os.path.join is posixpath on
+    # Linux, where an os.path mutant changes nothing (found on madhouse,
+    # 2026-11-11: it survived there)
+    ("the shared fake's folder on a remote tree in Windows' local form",
      '        return posixpath.join(d, "shared", "twai_port", "test")',
-     '        return os.path.join(d, "shared", "twai_port", "test")'),
+     '        return __import__("ntpath").join(d, "shared", "twai_port", "test")'),
     ("host_bridge's can-fail without --can-fail",
      '             ["--can-fail"], shell="git-bash", timeout_s=4 * 3600)',
      '             [], shell="git-bash", timeout_s=4 * 3600)'),
@@ -882,8 +1073,8 @@ MUTANTS = [
     ("settings naming a tree variable taken", "    if why:\n        raise AdapterError(why)\n",
      "    pass\n"),
     ("only the local host's env looked at",
-     '    for host, cfg in sorted(((settings or {}).get("hosts") or {}).items()):',
-     '    for host, cfg in [("local", ((settings or {}).get("hosts") or {}).get("local"))]:'),
+     '    for host, cfg in sorted((s.get("hosts") or {}).items()):',
+     '    for host, cfg in [("local", (s.get("hosts") or {}).get("local"))]:'),
     ("PYTHONPATH not refused", 'TREE_VARS = ("INTERPOSER_CODE", "PYTHONPATH")',
      'TREE_VARS = ("INTERPOSER_CODE",)'),
     ("the refusal not naming the host and key", '["hosts.%s.env names %s" % (host, k) for k',

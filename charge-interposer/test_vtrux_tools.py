@@ -2,8 +2,11 @@
 the pinned shared build tooling, and of the project's variant list. Not
 evidence.
 
-    py -3.14 -B charge-interposer/test_vtrux_tools.py
-    py -3.14 -B charge-interposer/test_vtrux_tools.py --can-fail
+    python3.13 -B charge-interposer/test_vtrux_tools.py
+    python3.13 -B charge-interposer/test_vtrux_tools.py --can-fail
+
+From this repo's root, with the Python command local-paths.md names
+(python3.13 on madhouse-debian, py -3.14 on the Windows machines).
 
 A copy of the launcher runs in a scratch worktree laid out as this repo is:
 the launcher in charge-interposer/, the pin and copies of the real
@@ -30,7 +33,7 @@ arguments and environment and exit with a code the test chooses. Covered:
   reconfigure or ninja exits 1 and is never reported as BUILT;
 - check-env and check_idf_env(): the tooling's R32 refusals, each as exit
   1; check_idf_env() refuses a vtrux_build imported from anywhere else;
-- the variants: vtrux_build.json lists the six CMakeLists.txt's
+- the variants: vtrux_build.json lists the five CMakeLists.txt's
   INTP_VARIANTS line names, in its order, each configured with exactly
   -D INTP_VARIANT=<its name>.
 
@@ -66,7 +69,7 @@ PINS = os.path.join(HERE, "firmware", "shared_pins.json")
 SCRATCH = os.path.join(os.path.dirname(HERE), "scratch",
                        "charge-interposer-vtrux-tools-test")
 TAG = "2026.01.01"
-VARIANTS = ["bridge", "witness", "truck", "selftest", "diag", "slcan"]
+VARIANTS = ["bridge", "witness", "truck", "selftest", "diag"]
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
 IDF_NAMES = ("IDF_TOOLS_PATH", "IDF_PATH", "IDF_PYTHON_ENV_PATH",
@@ -593,7 +596,7 @@ MUTANTS = [
      "            if False: raise SystemExit(\"vtrux_tools: a vtrux_build from "
      "%s is already \"\n"),
     ("a variant missing from the data", "data",
-     ",\n    \"slcan\": {\"INTP_VARIANT\": \"slcan\"}\n", "\n"),
+     ",\n    \"diag\": {\"INTP_VARIANT\": \"diag\"}\n", "\n"),
     ("a variant's option misnamed", "data",
      "\"truck\": {\"INTP_VARIANT\": \"truck\"}",
      "\"truck\": {\"INTP_VARIAN\": \"truck\"}"),

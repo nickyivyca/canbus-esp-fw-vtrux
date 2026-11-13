@@ -37,6 +37,7 @@ SINGLE-ADAPTER, NOT CLEAN: no witness sees the charger wire while the
 Innomaker is closed. MCP2515 path: YES.
 
     py -3.14 bench_charger_silent.py --self-test      # no hardware
+    py -3.14 bench_charger_silent.py --can-fail       # each MUTANTS edit fails it
     py -3.14 bench_charger_silent.py --port COM3 --seconds 20,10,10
 
 Tester, 2026-10-13. Revised 2026-10-14 for spec 2.3 (see DIAG_RE): phases
@@ -63,6 +64,8 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+from bench_usb_host import unwrap_us32   # noqa: E402  (gs_usb's 32-bit us stamp)
 
 AGE_OUT_S = 0.100
 SILENT_AFTER_S = 0.500        # spec 2.2: no status page for 500 ms
@@ -123,10 +126,15 @@ def crosscheck(can_vals, ser_vals, window_s=0.6):
 
 def held_seq_of(witnessed_b):
     """The frame the board was retrying when the charger came back: the
-    last one the listen-only witness saw in phase B (device clock)."""
+    last one the listen-only witness saw in phase B (device clock).
+    witnessed_b is in arrival order, so the Innomaker's 32-bit microsecond
+    stamps are unwrapped first (they wrap every 71.6 min: the reviewer's
+    E3, 2026-11-12); a phase B across a wrap would otherwise name a frame
+    from before it."""
     if not witnessed_b:
         return None
-    return max(witnessed_b, key=lambda r: r[2])[1]
+    dev = unwrap_us32([r[2] for r in witnessed_b])
+    return witnessed_b[max(range(len(dev)), key=dev.__getitem__)][1]
 
 
 def diag_value(db, frame_id, data, signal):
@@ -291,8 +299,8 @@ def run_bench(args):
     from gs_usb.constants import (GS_CAN_MODE_LISTEN_ONLY,
                                   GS_CAN_MODE_HW_TIMESTAMP)
     import serial
-    veh = can.Bus(interface="kvaser", channel=args.kvaser_channel,
-                  bitrate=500000)
+    veh = adapter_fixes.bus(interface="kvaser", channel=args.kvaser_channel,
+                            bitrate=500000)
     # An acknowledger on the vehicle segment throughout, as on the truck
     # (the VCU and the rest never leave): the PCAN in NORMAL mode, drained
     # and otherwise unused. Without it, once the port goes listen-only 2 s
@@ -310,10 +318,8 @@ def run_bench(args):
     lock = threading.Lock()
     # lines held low: closing the port then does not reset the X2 (8.3 bench
     # facts, 2026-10-14)
-    ser = serial.Serial()
-    ser.port, ser.baudrate, ser.timeout = args.port, 115200, 0.2
-    ser.dtr, ser.rts = False, False
-    ser.open()
+    import serial_open
+    ser = serial_open.open_quiet(args.port, 115200, 0.2)
 
     def serial_rx():
         buf = b""
@@ -559,7 +565,7 @@ def run_bench(args):
                           sum(1 for s in ss if s in sent)))
     ok, lines = judge(sent, rc_pairs, state["reopen"], ser_counters,
                       ser_flags, (b0, b1), (state["reopen"], c1), ra_pairs,
-                      burst_dev=[d for _h, _s, d in received],
+                      burst_dev=unwrap_us32([d for _h, _s, d in received]),
                       held_seq=held_seq_of(witnessed_b))
     for ln in lines:
         print("  " + ln.replace("0x7F6 intp_tx_fail_expected",
@@ -752,6 +758,16 @@ def self_test():
           "the same run judged on CAN frames that stop 2 s into phase B "
           "FAILS (why the serial line carries it) -> %s"
           % [x for x in lines2 if "FAIL" in x])
+    # the reviewer's E3 (2026-11-12): phase B across the device stamp's
+    # 32-bit wrap (4294.967296 s); rows in arrival order
+    wrap = 2 ** 32 / 1e6
+    across = [(20.0, 1540, wrap - 0.004), (20.02, 1541, wrap - 0.002),
+              (20.04, 1542, 0.0003), (20.06, 1543, 0.0021)]
+    check(held_seq_of(across) == 1543,
+          "a planted wrap in phase B: the held frame is the last one seen "
+          "(1543), not the last one before the wrap -> %s" % held_seq_of(across))
+    check(held_seq_of(across[:2]) == 1541 and held_seq_of([]) is None,
+          "no wrap: the last frame by device stamp; none seen: None")
     print("\nbench_charger_silent self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -760,6 +776,8 @@ def self_test():
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--can-fail", action="store_true",
+                    help="run the self-test on each edit in MUTANTS; each must fail it")
     ap.add_argument("--seconds", default="20,10,10",
                     help="phases A,B,C in seconds")
     ap.add_argument("--kvaser-channel", type=int, default=0)
@@ -774,6 +792,9 @@ def main():
     args = ap.parse_args()
     if args.self_test:
         return self_test()
+    if args.can_fail:
+        import script_can_fail
+        return script_can_fail.run(__file__, MUTANTS)
     if not args.port:
         ap.error("--port is required: with the vehicle port listen-only "
                  "the CAN diag frames stop, and the serial diag line is the "
@@ -795,6 +816,17 @@ def main():
         tee.f.close()
         print("saved verbatim to %s" % out)
     return rc
+
+
+# --can-fail (script_can_fail.py): each edit must make --self-test fail
+MUTANTS = [
+    ("held_seq_of: the device stamps not unwrapped",
+     "    dev = unwrap_us32([r[2] for r in witnessed_b])",
+     "    dev = [r[2] for r in witnessed_b]"),
+    ("held_seq_of: the first frame seen, not the last",
+     "    return witnessed_b[max(range(len(dev)), key=dev.__getitem__)][1]",
+     "    return witnessed_b[min(range(len(dev)), key=dev.__getitem__)][1]"),
+]
 
 
 if __name__ == "__main__":

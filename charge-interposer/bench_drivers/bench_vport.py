@@ -88,6 +88,7 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
 import scratch_dir                  # noqa: E402
 
 BUS_BITRATE = 500000
@@ -1009,14 +1010,47 @@ def _open_witness_reader(acks, spec=None, mode="classic"):
                        bus.shutdown, bus.status_string, mode)
 
 
-def reader_stats(n, reads, t_read, t_wait, wall, lag_min, lag_max, lag_end):
+def reader_stats(n, reads, t_read, t_wait, wall, lag_min, lag_max, lag_end,
+                 bins=None):
     """One window's reader figures, as the reader process forwards them
     with its cut: rows, Read calls, seconds in Read and in the wait for
     the receive event, the window's wall time, and the read time less the
-    stamp (lag, s) of its rows: least, most, and the last row's."""
+    stamp (lag, s) of its rows: least, most, and the last row's. bins:
+    per FIT_BIN_S of stamps, (stamp of the least lag, least lag, stamp of
+    the most lag, most lag), in stamp order: the points the stamp map is
+    fitted on (StampMap) and the lags it is judged on (reader_fault)."""
     return {"rows": n, "reads": reads, "t_read": t_read, "t_wait": t_wait,
             "wall": wall, "lag_min": lag_min, "lag_max": lag_max,
-            "lag_end": lag_end}
+            "lag_end": lag_end, "bins": sorted(bins or ())}
+
+
+def _bins_out(bins):
+    """The reader's {bin: [s_min, lag_min, s_max, lag_max]} -> tuples."""
+    return [tuple(v) for v in bins.values()]
+
+
+def bin_row(bins, cur_b, cur, t, lag):
+    """One row (stamp t, lag) into the reader's stamp-map bins: per
+    FIT_BIN_S of stamps, [stamp of the least lag, least lag, stamp of the
+    most lag, most lag]. A bin's first row opens it with its own stamp and
+    lag; a later row replaces the least (most) only with a strictly lower
+    (higher) lag. cur_b, cur: what the last call returned (None, None at
+    the start), so a run of rows in one bin skips the dict lookup; a row
+    back in an earlier bin finds that bin's entry. Returns (bin, entry).
+    The one copy, used by the reader (_witness_proc) and by the self-test's
+    scripted bins, and checked on fixed rows (the reviewer's B3,
+    2026-11-12: in record accept_3_20261111T234853_563d the mutant that
+    never updates a bin's least lag was caught only on some timings)."""
+    b = int(t // FIT_BIN_S)
+    if b != cur_b:
+        cur_b, cur = b, bins.get(b)
+        if cur is None:
+            cur = bins[b] = [t, lag, t, lag]
+    if lag < cur[1]:
+        cur[0], cur[1] = t, lag
+    if lag > cur[3]:
+        cur[2], cur[3] = t, lag
+    return cur_b, cur
 
 
 def _witness_proc(acks, spec, folder, conn, mode="classic"):
@@ -1046,6 +1080,9 @@ def _witness_proc(acks, spec, folder, conn, mode="classic"):
     fast = mode == "fast"
     now = time.perf_counter
     w0, reads, lag_min, lag_max, lag = now(), 0, None, None, None
+    # the stamp map's points (StampMap): per FIT_BIN_S of stamps, the rows
+    # read soonest and latest after their stamps
+    bins, cur_b, cur = {}, None, None
     try:
         while True:
             if since >= WITNESS_POLL_ROWS or (not fast and conn.poll()):
@@ -1056,12 +1093,13 @@ def _witness_proc(acks, spec, folder, conn, mode="classic"):
                         f.close()
                         st = reader_stats(n, reads, reader.t_read,
                                           reader.t_wait, now() - w0, lag_min,
-                                          lag_max, lag)
+                                          lag_max, lag, _bins_out(bins))
                         conn.send(("cut", k, n, kinds, fails, warns, wlast, st))
                         k, n, kinds, fails, warns, wlast = (k + 1, 0, {}, 0,
                                                             0, "")
                         w0, reads, lag_min, lag_max, lag = (now(), 0, None,
                                                             None, None)
+                        bins, cur_b, cur = {}, None, None
                         reader.t_read = reader.t_wait = 0.0
                         f = open(os.path.join(folder, "w%06d.bin" % k),
                                  "wb", 1 << 20)
@@ -1086,6 +1124,7 @@ def _witness_proc(acks, spec, folder, conn, mode="classic"):
                     lag_max = lag
                 if lag_min is None or lag < lag_min:
                     lag_min = lag
+                cur_b, cur = bin_row(bins, cur_b, cur, t, lag)
                 n += 1
                 since += 1
             elif kind == "failure":
@@ -1147,12 +1186,15 @@ class _FakeBasic(object):
     die_at the process exits (os._exit(3))."""
 
     def __init__(self, n, statuses=(), die_at=None, rate=0.0, clock=False,
-                 delay=0.0, skew=0.0):
+                 delay=0.0, skew=0.0, scale=0.0, step=None):
         self.n, self.statuses = n, dict(statuses)
         self.die_at, self.rate = die_at, rate
         # clock: row k is stamped when it "arrived", t0 + k / rate, on this
-        # clock (plus skew); delay: each Read takes this long (a slow reader)
+        # clock (plus skew, and running scale faster: an epoch clock off
+        # rate); step (k, s): rows after k stamped s later; delay: each Read
+        # takes this long (a slow reader)
         self.clock, self.delay, self.skew = clock, delay, skew
+        self.scale, self.step = scale, step
         self.k, self.t0 = 0, time.perf_counter()
 
     def Read(self, _handle):
@@ -1168,8 +1210,9 @@ class _FakeBasic(object):
             os._exit(3)
         if self.k in self.statuses:
             return self.statuses[self.k], None, None
-        t = (self.t0 + self.k / self.rate + self.skew if self.clock
-             else float(self.k))
+        t = (self.t0 + self.k / self.rate * (1.0 + self.scale) + self.skew
+             + (self.step[1] if self.step and self.k > self.step[0] else 0.0)
+             if self.clock else float(self.k))
         return (PCAN_OK, _FakePcanMsg(NODE_ID, 0, node_payload(self.k)),
                 _FakePcanTs(t))
 
@@ -1199,6 +1242,9 @@ class Witness(object):
         self.acks = acks
         self.mode = mode or WITNESS_READER
         self.stats = None           # the last take's reader_stats
+        # its stamps -> this process's perf_counter, fitted on every take's
+        # rows (StampMap; reviewer, 2026-11-11)
+        self.stamp_map = StampMap()
         # a scratch_dir run folder, removed by close(); one a crash
         # leaves is pruned by the next Witness once this process is gone
         self.folder = scratch_dir.make("vport-witness")
@@ -1247,6 +1293,7 @@ class Witness(object):
             if r is not None and r[0] == "cut" and r[1] == self.k:
                 _c, k, n, kinds, fails, warns, wlast = r[:7]
                 self.stats = r[7] if len(r) > 7 else None
+                self.stamp_map.add(self.stats)
                 rows = _read_window(os.path.join(self.folder,
                                                  "w%06d.bin" % k))
                 self._drop(k)
@@ -1347,11 +1394,76 @@ def set_witness(wit, acks):
     return w
 
 
+# F2's Linux form (the charge-interposer reviewer, 2026-11-12; AGENTS.md
+# "Parallel work on the shared machine", point 1): the witness reader and
+# the node place themselves in bench.slice. Each asks the user manager for
+# a transient scope in that slice holding its own pid (StartTransientUnit,
+# through busctl, as `systemd-run --scope` does for a new command), then
+# reads back from /proc/self/cgroup where it landed. A process priority
+# would not do it: nice only ranks processes inside one cgroup.
+BENCH_SLICE = "bench.slice"
+BUSCTL = ["busctl"]
+CGROUP_SELF = "/proc/self/cgroup"
+
+
+def cgroup_slice(text):
+    """The innermost *.slice in a /proc/<pid>/cgroup text, or None."""
+    for ln in (text or "").splitlines():
+        if ln.startswith("0::"):
+            s = [p for p in ln[3:].strip().split("/") if p.endswith(".slice")]
+            return s[-1] if s else None
+    return None
+
+
+def slice_of(pid=None):
+    """The slice of this process (or of pid), read from its cgroup file."""
+    path = CGROUP_SELF if pid is None else "/proc/%d/cgroup" % pid
+    try:
+        with open(path, encoding="utf-8") as f:
+            return cgroup_slice(f.read())
+    except OSError:
+        return None
+
+
+def place_in_slice(slice_name=BENCH_SLICE):
+    """This process into slice_name, in a transient scope of its own;
+    -> the slice read back afterwards (slice_name when it took)."""
+    import subprocess
+    if slice_of() == slice_name:
+        return slice_name
+    pid = os.getpid()
+    try:
+        subprocess.run(BUSCTL + [
+            "--user", "call", "org.freedesktop.systemd1",
+            "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+            "StartTransientUnit", "ssa(sv)a(sa(sv))",
+            "vtrux-vport-%d.scope" % pid, "fail", "2", "PIDs", "au", "1",
+            str(pid), "Slice", "s", slice_name, "0"],
+            capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for _ in range(40):                 # the move lands as the job runs
+        if slice_of() == slice_name:
+            return slice_name
+        time.sleep(0.05)
+    return slice_of()
+
+
+def prio_text(p):
+    """A priority as above_normal() gave it -> text for a line."""
+    if isinstance(p, int):
+        return "%s (0x8000 = ABOVE_NORMAL)" % hex(p)
+    if p == BENCH_SLICE:
+        return "in %s (read back from its cgroup)" % BENCH_SLICE
+    return ("NOT IN %s: %s" % (BENCH_SLICE, p)) if p else "unknown"
+
+
 def above_normal():
     """This process to ABOVE_NORMAL on Windows (bench_hold12's helper),
-    read back; -> the class or None."""
+    read back; -> the class, or None if it could not be set. On Linux,
+    into bench.slice (place_in_slice) -> the slice read back."""
     if os.name != "nt":
-        return None
+        return place_in_slice(BENCH_SLICE)
     import ctypes
     from ctypes import wintypes
     k32 = ctypes.windll.kernel32
@@ -1399,8 +1511,9 @@ def _node_proc(channel, q, stop_ev, ready_ev):
     witness reader has its own process too since 2026-10-23, F2)."""
     import can
     q.put(("prio", above_normal()))
-    bus = can.Bus(interface="kvaser", channel=channel, bitrate=BUS_BITRATE,
-                  driver_mode=True, receive_own_messages=False)
+    bus = adapter_fixes.bus(interface="kvaser", channel=channel,
+                            bitrate=BUS_BITRATE, driver_mode=True,
+                            receive_own_messages=False)
     ready_ev.set()
 
     def send(seq):
@@ -1679,21 +1792,52 @@ def host_summary(samples, t0, t1):
                max(x[2] for x in w), max(x[3] for x in w)))
 
 
+def ws_mb(nbytes):
+    """A working set in bytes -> MB (both systems' reads)."""
+    return nbytes / 1048576.0
+
+
+def linux_host_read(stat, meminfo, status):
+    """/proc/stat, /proc/meminfo and /proc/self/status as text -> ((idle,
+    kernel, user), memory load %%, working set MB), in the form
+    HostSampler's Windows read gives (kernel includes idle, as
+    GetSystemTimes', so cpu_busy_pct serves both). idle is idle + iowait,
+    kernel system + irq + softirq + idle, user user + nice + steal; memory
+    load is MemTotal less MemAvailable over MemTotal; the working set is
+    VmRSS."""
+    f = [int(x) for x in stat.splitlines()[0].split()[1:9]]
+    user, nice, system, idle, iowait, irq, softirq, steal = f
+    idle_all = idle + iowait
+    m = dict((ln.split(":")[0], int(ln.split()[1]))
+             for ln in meminfo.splitlines() if ":" in ln and ln.split()[1:])
+    load = int(round(100.0 * (m["MemTotal"] - m["MemAvailable"])
+                     / m["MemTotal"]))
+    rss_kb = [int(ln.split()[1]) for ln in status.splitlines()
+              if ln.startswith("VmRSS:")][0]
+    return ((idle_all, system + irq + softirq + idle_all, user + nice + steal),
+            load, ws_mb(rss_kb * 1024))
+
+
 class HostSampler(object):
-    """Samples the host every period s on Windows (diagnostic for H3,
-    reviewer 2026-10-23): system CPU busy, memory load, and this process's
-    working set. Nothing elsewhere."""
+    """Samples the host every period s (diagnostic for H3, reviewer
+    2026-10-23): system CPU busy, memory load, and this process's working
+    set. Windows through kernel32 and psapi; Linux from /proc (2026-11-11,
+    linux_host_read)."""
 
     def __init__(self, period=0.5):
         self.samples, self.period = [], period
         self.stop_ev = threading.Event()
-        self.ok = os.name == "nt"
+        self.ok = os.name == "nt" or os.path.exists("/proc/self/status")
         if self.ok:
             self.t = threading.Thread(target=self._run, daemon=True)
             self.t.start()
 
     @staticmethod
     def _read():
+        if os.name != "nt":
+            with open("/proc/stat") as a, open("/proc/meminfo") as b, \
+                    open("/proc/self/status") as c:
+                return linux_host_read(a.read(), b.read(), c.read())
         import ctypes
         from ctypes import wintypes
 
@@ -1722,7 +1866,7 @@ class HostSampler(object):
         k32.K32GetProcessMemoryInfo(wintypes.HANDLE(-1),
                                     ctypes.byref(pmc), pmc.cb)
         v = lambda f: (f.hi << 32) | f.lo                  # noqa: E731
-        return (v(i), v(k), v(u)), ms.load, pmc.ws / 1048576.0
+        return (v(i), v(k), v(u)), ms.load, ws_mb(pmc.ws)
 
     def _run(self):
         prev = None
@@ -1744,14 +1888,19 @@ class HostSampler(object):
 HOST = None         # a HostSampler, set by run_bench (diagnostic)
 
 
+# what process_snapshot runs, per system
+SNAPSHOT_CMD = {"nt": ["tasklist", "/v", "/fo", "csv"],
+                "posix": ["ps", "-eo",
+                          "pid,ppid,ni,pcpu,pmem,rss,etime,cgroup,args"]}
+
+
 def process_snapshot(path):
     """What else runs on the host (diagnostic, H3): tasklist's CSV with CPU
-    time, to path. -> a one-line note."""
-    if os.name != "nt":
-        return "process snapshot: not Windows"
+    time on Windows, ps with CPU, memory, nice and cgroup on Linux, to
+    path. -> a one-line note."""
     import subprocess
     try:
-        out = subprocess.run(["tasklist", "/v", "/fo", "csv"],
+        out = subprocess.run(SNAPSHOT_CMD["nt" if os.name == "nt" else "posix"],
                              capture_output=True, text=True, timeout=60).stdout
     except Exception as exc:                               # noqa: BLE001
         return "process snapshot failed: %s" % exc
@@ -1779,9 +1928,20 @@ def window(board, wit, node, seconds, command=None, label=None,
     and dropped;
     wit.window_reader holds the reader's figures (reader_stats, the cut's
     and the drain's together) and wit.window_stamp_fault a TEST FAULT line
-    when the reader fell behind or its stamps are not on this clock
-    (reader_fault), which witness_fault reports."""
+    when the reader fell behind or its stamps do not follow the map
+    (reader_fault), which witness_fault reports.
+    The window's bounds are taken on this process's clock and turned into
+    witness stamps by the witness's stamp map (StampMap; reviewer,
+    2026-11-11: on Linux the PCAN's stamps are on the Unix epoch, not on
+    perf_counter), as fitted on the rows read before the window: the
+    window's own rows are judged against it, never fitted into it. A
+    window with no rows read before it (the run's first) is mapped by its
+    own rows, and its diagnostic line says so. wit.window_map is the map
+    used. A witness with no map (the self-test's scripted ones) keeps the
+    stamps as they are (offset 0, rate 1), the map before 2026-11-11."""
     pre = wit.take()
+    smap = getattr(wit, "stamp_map", None)
+    fit = smap.frozen() if smap is not None else None
     wit.take_incomplete()
     if hasattr(wit, "take_failures"):
         wit.take_failures()
@@ -1809,12 +1969,17 @@ def window(board, wit, node, seconds, command=None, label=None,
     time.sleep(STAMP_DRAIN_S)
     drained = wit.take()
     st_drain = getattr(wit, "stats", None)
-    lo, hi = stamp_bounds(node.window_log, t_w0, t_wcut,
-                          t_cmd if from_command else None)
+    if fit is not None and not fit.n:
+        fit = smap.frozen(own=True)
+    h_lo, h_hi = stamp_bounds(node.window_log, t_w0, t_wcut,
+                              t_cmd if from_command else None)
+    lo, hi = ((fit.to_stamp(h_lo), fit.to_stamp(h_hi)) if fit is not None
+              else (h_lo, h_hi))
     rows, wit.window_stamp = assign_by_stamp(pre, raw, drained, lo, hi)
     wit.window_bounds = (lo, hi)
+    wit.window_map = fit
     wit.window_reader = merge_stats(st_cut, st_drain)
-    wit.window_stamp_fault = reader_fault(wit.window_reader)
+    wit.window_stamp_fault = reader_fault(wit.window_reader, fit)
     node.window_load = window_load(rows, node.window_log, seconds)
     wit.window_incomplete = wit.take_incomplete()
     t_w1 = time.perf_counter()
@@ -1828,7 +1993,7 @@ def window(board, wit, node, seconds, command=None, label=None,
                        if HOST is not None else "")
     wit.window_saved = save_rows(rows, label or command, rows_dir)
     print("    diagnostic, witness: " + stamp_line(wit.window_stamp) + "; "
-          + reader_line(wit.window_reader, rows, lo, hi)
+          + reader_line(wit.window_reader, rows, lo, hi, fit)
           + ("; the window from the command (%s), %.1f ms before the "
              "node's first send" % (command, 1000 * (
                  min(x[3] for x in node.window_log) - t_cmd))
@@ -1873,9 +2038,120 @@ STAMP_TAIL_S = 0.100    # and ends this long after its last send returned
 # error storm, and a reader that falls behind must not pass): a row read
 # more than READER_LAG_TOL_S after its stamp faults the window, and so does
 # one read more than STAMP_CLOCK_TOL_S BEFORE its stamp (stamps on another
-# clock than the one the window is cut on)
+# clock than the one the window is cut on). Since 2026-11-11 both are
+# measured against the stamp map (StampMap), the thresholds unchanged.
 READER_LAG_TOL_S = 0.25
 STAMP_CLOCK_TOL_S = 0.005
+# the stamp map's points: per this much of stamps, per take, the reader
+# keeps its least- and most-lagged row (reader_stats' bins)
+FIT_BIN_S = 1.0
+# and fits a rate only once its points span this much: two points a few
+# seconds apart, each with a millisecond of read latency, would give a
+# rate off by hundreds of ppm (until then the rate is the host's, b = 0)
+FIT_RATE_SPAN_S = 30.0
+
+
+def envelope(pts, min_span=None):
+    """[(stamp, lag)] in stamp order -> (a, b, s0): the line lag = a + b *
+    (stamp - s0) below every point with the least summed distance to them,
+    the lower convex hull's edge over the points' mean stamp (the sum is
+    n times the mean lag less the line's value at the mean stamp, so the
+    best line is the highest one there that stays below every point).
+    Points spanning less than min_span (FIT_RATE_SPAN_S): b = 0 and a the
+    least lag."""
+    s0 = pts[0][0]
+    xy = [(s - s0, o) for s, o in pts]
+    if xy[-1][0] < (FIT_RATE_SPAN_S if min_span is None else min_span):
+        return min(o for _x, o in xy), 0.0, s0
+    hull = []
+    for p in xy:
+        while len(hull) >= 2 and (
+                (hull[-1][0] - hull[-2][0]) * (p[1] - hull[-2][1])
+                - (hull[-1][1] - hull[-2][1]) * (p[0] - hull[-2][0])) <= 0:
+            hull.pop()
+        hull.append(p)
+    hull = [p for k, p in enumerate(hull)
+            if k == 0 or p[0] != hull[k - 1][0]]
+    if len(hull) < 2:
+        return min(o for _x, o in xy), 0.0, s0
+    xm = sum(x for x, _o in xy) / len(xy)
+    for (x0, y0), (x1, y1) in zip(hull, hull[1:]):
+        if x1 >= xm:
+            break
+    b = (y1 - y0) / (x1 - x0)
+    return y0 - b * x0, b, s0
+
+
+class StampFit(object):
+    """One stamp map: host time = stamp + off(stamp), off(s) = a + b * (s -
+    s0), fitted on n points (own: on the judged window's own rows)."""
+
+    def __init__(self, a=0.0, b=0.0, s0=0.0, n=0, own=False):
+        self.a, self.b, self.s0, self.n, self.own = a, b, s0, n, own
+
+    def off(self, s):
+        return self.a + self.b * (s - self.s0)
+
+    def to_host(self, s):
+        return s + self.off(s)
+
+    def to_stamp(self, h):
+        return (h - self.a + self.b * self.s0) / (1.0 + self.b)
+
+    def describe(self):
+        if not self.n:
+            return "no stamp map (stamps taken as they are)"
+        return ("stamp map: host - stamp %.6f s at stamp %.3f, drifting "
+                "%+.1f ppm, from %d point(s)%s" % (
+                    self.a, self.s0, 1e6 * self.b, self.n,
+                    " of this window's own rows (none read before it)"
+                    if self.own else " read before the window"))
+
+
+class StampMap(object):
+    """The witness's stamps -> this process's perf_counter (reviewer,
+    2026-11-11). The windows are cut on perf_counter and the rows by their
+    stamps; before 2026-11-11 the two were taken as one clock (offset 0,
+    rate 1), true of the PCAN on Windows, while on Linux its stamps are
+    on the Unix epoch (CAN replay tooling, 2026-11-11, pcanfd ts_mode 2:
+    rate -2.5 / -1.8 ppm against perf_counter, latency over the least p99
+    3.1 ms, max 8.8 ms). Fitted on the run's own rows: every take adds,
+    per FIT_BIN_S of stamps, its least-lagged row as a point, and the map
+    is the points' lower envelope (envelope): the reads that came soonest
+    after their frames, moved neither by a slow read nor by a reader that
+    fell behind for a whole window. Offset and rate only (the rate once the
+    points span FIT_RATE_SPAN_S): a step in either
+    clock is not fitted, and reader_fault reports one that puts rows ahead
+    of the map. No points: offset 0, rate 1."""
+
+    def __init__(self):
+        self.pts = []
+        self.fit = StampFit()
+
+    def add(self, st):
+        new = [(x[0], x[1]) for x in ((st or {}).get("bins") or ())]
+        if not new:
+            return
+        self.pts.extend(new)
+        self.pts.sort()
+        a, b, s0 = envelope(self.pts)
+        self.fit = StampFit(a, b, s0, len(self.pts))
+
+    def frozen(self, own=False):
+        """The map as it stands, apart from later points."""
+        f = self.fit
+        return StampFit(f.a, f.b, f.s0, f.n, own)
+
+
+def mapped_lags(st, fit):
+    """-> (least, most) lag of st's rows against fit (read time less the
+    mapped stamp, s); st's own lag figures (offset 0, rate 1) with no map
+    or no bins."""
+    bins = st.get("bins") or ()
+    if fit is None or not bins:
+        return st["lag_min"], st["lag_max"]
+    return (min(x[1] - fit.off(x[0]) for x in bins),
+            max(x[3] - fit.off(x[2]) for x in bins))
 
 
 def stamp_bounds(log, t_lo, t_hi, t_cmd=None):
@@ -1922,26 +2198,31 @@ def merge_stats(*parts):
     out["lag_min"] = min(lmin) if lmin else None
     out["lag_max"] = max(lmax) if lmax else None
     out["lag_end"] = lend[-1] if lend else None
+    out["bins"] = sorted(b for p in parts for b in (p.get("bins") or ()))
     return out
 
 
-def reader_fault(st):
+def reader_fault(st, fit=None):
     """"" or a TEST FAULT line: a row read more than READER_LAG_TOL_S after
-    its stamp (the reader fell behind, or its stamps run behind this
-    clock), or one read more than STAMP_CLOCK_TOL_S before it (the stamps
-    run ahead). No figures (a fake witness, a dead reader): ""; a dead
-    reader is witness_fault's own."""
+    its stamp as fit maps it (the reader fell behind, or its stamps run
+    behind the map), or one read more than STAMP_CLOCK_TOL_S before it
+    (the stamps run ahead of the map). fit None: the stamps as they are
+    (offset 0, rate 1). No figures (a fake witness, a dead reader): ""; a
+    dead reader is witness_fault's own."""
     if not st or st.get("lag_max") is None:
         return ""
-    if st["lag_max"] > READER_LAG_TOL_S:
+    lmin, lmax = mapped_lags(st, fit)
+    if lmax > READER_LAG_TOL_S:
         return ("TEST FAULT: the witness's reader fell behind: a row read "
-                "%.3f s after its stamp, beyond %.3f s (or its stamps are "
-                "not on this clock) -- the window is not judged"
-                % (st["lag_max"], READER_LAG_TOL_S))
-    if st["lag_min"] < -STAMP_CLOCK_TOL_S:
-        return ("TEST FAULT: a witness row was read %.3f s BEFORE its stamp: "
-                "its stamps are not on this clock, so the window cannot be "
-                "cut by them" % -st["lag_min"])
+                "%.3f s after its stamp, beyond %.3f s (or its stamps run "
+                "behind the stamp map) -- the window is not judged"
+                % (lmax, READER_LAG_TOL_S))
+    if lmin < -STAMP_CLOCK_TOL_S:
+        return ("TEST FAULT: a witness row was read %.3f s BEFORE its stamp "
+                "(%s): its stamps do not follow the map, so the window "
+                "cannot be cut by them"
+                % (-lmin, fit.describe() if fit is not None
+                   else "stamps taken as they are"))
     return ""
 
 
@@ -1952,25 +2233,30 @@ def stamp_line(info):
             "it dropped" % (a + b + c, a, b, c, before, after))
 
 
-def reader_line(st, rows, lo, hi):
+def reader_line(st, rows, lo, hi, fit=None):
     """The reader's figures for one window: its rate (rows over the time
-    it was not waiting on an empty queue), the Read call's cost, the lag,
-    and how much of the window its kept rows' stamps cover."""
+    it was not waiting on an empty queue), the Read call's cost, the lag
+    against the stamp map (fit; the stamps as they are with none), how
+    much of the window its kept rows' stamps cover, and the map."""
     cover = ("stamps %.2f..%.2f s of the window's %.2f s"
              % (rows[0][0] - lo, rows[-1][0] - lo, hi - lo) if rows
              else "no rows")
+    mp = "; " + (fit.describe() if fit is not None
+                 else "no stamp map (stamps taken as they are)")
     if not st:
-        return "reader figures not available; " + cover
+        return "reader figures not available; " + cover + mp
     busy = st["wall"] - st["t_wait"]
+    if st["lag_max"] is not None:
+        lmin, lmax = mapped_lags(st, fit)
+        lag = "%.1f..%.1f ms" % (1000 * lmin, 1000 * lmax)
+    else:
+        lag = "-"
     return ("reader: %d rows in %d reads, %.0f rows/s while not waiting "
-            "(%.2f of %.2f s), Read %.1f us/call; lag %s; %s" % (
+            "(%.2f of %.2f s), Read %.1f us/call; lag %s; %s%s" % (
                 st["rows"], st["reads"],
                 st["rows"] / busy if busy > 0 else float("nan"), busy,
                 st["wall"], 1e6 * st["t_read"] / max(st["reads"], 1),
-                ("%.1f..%.1f ms, last %.1f ms" % (
-                    1000 * st["lag_min"], 1000 * st["lag_max"],
-                    1000 * st["lag_end"])) if st["lag_max"] is not None
-                else "-", cover))
+                lag, cover, mp))
 
 
 def edge_summary(log, rows, post, post_log, t_wcut, t_ncut):
@@ -2642,9 +2928,8 @@ def run_bench(args):
                   "after %.1f s" % ("settled, %.0f s with no failed send"
                                     % SETTLE_CLEAN_S if settled else
                                     "NEVER SETTLED", took))
-            print("  node process priority class: %s (0x8000 = "
-                  "ABOVE_NORMAL)" % (hex(node.prio) if getattr(
-                      node, "prio", None) else "unknown"))
+            print("  node process priority: %s"
+                  % prio_text(getattr(node, "prio", None)))
             base, _s = window(board, wit, node, secs, label="flood_baseline")
             print("  baseline %s" % node.window_load)
             nf = (node_fault(node, "flood baseline")
@@ -3194,11 +3479,26 @@ def self_test():
           % hs)
     check(host_summary([(0.5, 1.0, 1, 1.0)], 1.0, 2.0) == "",
           "no host sample in the window -> no line")
-    if os.name == "nt":
-        times, load, ws = HostSampler._read()
-        check(min(times) > 0 and 1 <= load <= 100 and 1.0 < ws < 65536.0,
-              "can-fail: the host read is plausible (CPU times > 0, memory "
-              "load %d %%, this process's working set %.1f MB)" % (load, ws))
+    # Linux's read from /proc, on fixed text (both systems run it)
+    lt, ll, lw = linux_host_read(
+        "cpu  100 20 30 400 50 6 4 2 0 0\ncpu0 1 2 3 4 5 6 7 8 0 0\n",
+        "MemTotal:       16000000 kB\nMemFree:         1000000 kB\n"
+        "MemAvailable:    4000000 kB\n",
+        "Name:\tpython3\nVmSize:\t 900000 kB\nVmRSS:\t  204800 kB\n")
+    check(lt == (450, 490, 122) and ll == 75 and lw == 200.0
+          and ws_mb(3 * 1048576) == 3.0,
+          "can-fail: the Linux host read: idle + iowait, kernel with idle, "
+          "user + nice + steal, memory load from MemAvailable (75 %%), the "
+          "working set from VmRSS in MB (200) -> %s, %s, %s" % (lt, ll, lw))
+    check(SNAPSHOT_CMD["posix"][0] == "ps" and "cgroup" in SNAPSHOT_CMD[
+        "posix"][2] and SNAPSHOT_CMD["nt"][0] == "tasklist",
+          "the process snapshot: ps with the cgroup on Linux, tasklist on "
+          "Windows")
+    times, load, ws = HostSampler._read()
+    check(min(times) > 0 and 1 <= load <= 100 and 1.0 < ws < 65536.0,
+          "can-fail: the host read on this system is plausible (CPU times "
+          "> 0, memory load %d %%, this process's working set %.1f MB)"
+          % (load, ws))
 
     # start refusals end VOID, never FAIL (reviewer, 2026-10-23)
     import re as _re
@@ -3218,10 +3518,20 @@ def self_test():
     # complete and in order with nothing leaking across a boundary
     w = Witness(spec=(600, ((150, PCAN_QOVERRUN), (450, PCAN_QOVERRUN)),
                       None, 2000.0))
-    check(w.pid != os.getpid() and (os.name != "nt" or w.prio == 0x8000),
+    want_prio = 0x8000 if os.name == "nt" else BENCH_SLICE
+    # Linux: what the reader says is checked against its cgroup, read here
+    # from outside it, so a claim with no placement behind it fails
+    seen = want_prio if os.name == "nt" else slice_of(w.pid)
+    check(w.pid != os.getpid() and w.prio == want_prio and seen == want_prio,
           "can-fail: the witness reader is its own process (pid %s, this "
-          "one %d) at ABOVE_NORMAL (class %s)" % (w.pid, os.getpid(),
-                                                  w.prio))
+          "one %d), its priority %s (Windows: ABOVE_NORMAL; Linux: in %s, "
+          "its cgroup read from outside -> %s)"
+          % (w.pid, os.getpid(), prio_text(w.prio), BENCH_SLICE, seen))
+    check(prio_text(0x8000).startswith("0x8000")
+          and prio_text(BENCH_SLICE).startswith("in bench.slice")
+          and prio_text("app.slice") == "NOT IN bench.slice: app.slice"
+          and prio_text(None) == "unknown",
+          "the priority line: a class in hex, Linux's slice as read back")
     wins = []
     for _k in range(8):
         time.sleep(0.08)
@@ -3964,6 +4274,146 @@ def self_test():
                   "" if want is True else "can-fail: ", what,
                   verdict_word(ok) if ok in (True, False, FAULT) else ok,
                   ln[0] if ln else ""))
+    # the stamp map (reviewer, 2026-11-11): stamps on an epoch clock 470
+    # ppm fast, as the PCAN's are on Linux but off rate, the windows cut on
+    # this process's clock. S(h): the stamp of host time h.
+    import random
+    rnd = random.Random(7)
+    EP, PPM = 1794450000.0, 470e-6
+
+    def S(h):
+        return EP + h * (1.0 + PPM)
+
+    def true_off(s):
+        return (s - EP) / (1.0 + PPM) - s
+
+    pts = []
+    for h in range(50, 151):
+        lat = 0.0003 + rnd.uniform(0.0, 0.003)
+        pts.append((S(h), h + lat - S(h)))
+    pts[40] = (pts[40][0], pts[40][1] + 0.2)      # a reader late once
+    sm = StampMap()
+    sm.add(reader_stats(len(pts), 0, 0, 0, 1, 0, 0, 0,
+                        [(s, o, s, o) for s, o in pts]))
+    fit = sm.frozen()
+    err = [fit.off(s) - true_off(s) for s, _o in pts]
+    check(fit.n == 101 and 0.0 <= min(err) and max(err) < 0.001
+          and abs(1e6 * fit.b + 470) < 10
+          and abs(fit.to_stamp(fit.to_host(S(120.5))) - S(120.5)) < 1e-6,
+          "stamp map: an epoch clock 470 ppm fast, 0.3-3.3 ms read latency "
+          "and one read 200 ms late -> the map within %.2f..%.2f ms of the "
+          "true offset, %+.1f ppm" % (1000 * min(err), 1000 * max(err),
+                                       1e6 * fit.b))
+    check(envelope([(5.0, 0.002)]) == (0.002, 0.0, 5.0)
+          and StampMap().frozen().describe().startswith("no stamp map"),
+          "stamp map: one point -> rate 0; no points -> stamps as they are")
+
+    def stats_of(rows_read):
+        """[(row, read host s)] -> reader_stats with its bins."""
+        bins, cb, c = {}, None, None
+        for r, rd in rows_read:
+            cb, c = bin_row(bins, cb, c, r[0], rd - r[0])
+        lags = [rd - r[0] for r, rd in rows_read]
+        return reader_stats(len(lags), len(lags), 0.01, 0.0, 1.0,
+                            min(lags), max(lags), lags[-1], _bins_out(bins))
+
+    # the reader's per-bin update on fixed rows, no timing in it (the
+    # reviewer's B3, 2026-11-12): (stamp, lag) in the order the reader
+    # reads them. Bin 10: a later row with a lower lag takes the least, a
+    # later one with a higher lag the most, a row in between changes
+    # nothing; bin 11 opens with its own row; a row back in bin 10 with the
+    # lowest lag yet takes its least, and one with the same lag does not
+    fixed = [(10.1, 0.005), (10.4, 0.002), (10.6, 0.009), (10.8, 0.003),
+             (11.2, 0.004), (10.9, 0.001), (10.95, 0.001)]
+    fb, fcb, fc = {}, None, None
+    for t, lag in fixed:
+        fcb, fc = bin_row(fb, fcb, fc, t, lag)
+    want = {10: [10.9, 0.001, 10.6, 0.009], 11: [11.2, 0.004, 11.2, 0.004]}
+    check(fb == want,
+          "stamp map bins on fixed rows: a later row with a lower lag takes "
+          "the bin's least, a higher one its most, a row back in an earlier "
+          "bin updates that bin, an equal lag changes nothing -> %s" % fb)
+    # (the equal-lag row left out: read time less stamp is not exact in
+    # floating point, so a tie there is not a tie)
+    fr = [(_bframe(t, 0x7F4, k), t + lag) for k, (t, lag) in enumerate(fixed[:-1])]
+    got = sorted(stats_of(fr)["bins"])
+    check([tuple(round(x, 9) for x in v) for v in got]
+          == [tuple(want[10]), tuple(want[11])],
+          "the self-test's scripted bins are the reader's (bin_row) -> %s" % got)
+
+    class _MW(object):
+        """A scripted witness with a stamp map: (rows read, read lag) per
+        take, as the reader would bin them."""
+
+        def __init__(self, takes):
+            self.takes, self.stats = list(takes), None
+            self.stamp_map = StampMap()
+
+        def take(self):
+            rr = self.takes.pop(0) if self.takes else []
+            self.stats = stats_of(rr) if rr else None
+            self.stamp_map.add(self.stats)
+            return [r for r, _rd in rr if r is not None]
+
+        def take_incomplete(self):
+            return 0
+
+        def take_failures(self):
+            return {}
+
+        def take_warnings(self):
+            return 0, ""
+
+    def epoch_takes(step=0.0):
+        """Rows read before the window (host 50..150 s, one 200 ms late),
+        then the window's node frames 848..1848 (sent at host 200 s on,
+        slog), stamped 0.5 ms after the send, read 1 ms after; step:
+        the window's stamps that much later."""
+        pre = [(_bframe(S(h), 0x7F4, k), h + 0.0004 + (0.2 if h == 90
+                                                        else 0.0))
+               for k, h in enumerate(range(50, 151))]
+        win = [(_pframe(S(200.0 + 0.01 * (q - 848) + 0.0005) + step, q),
+                200.0 + 0.01 * (q - 848) + 0.0015) for q in range(848, 1849)]
+        return [pre, win[:-2], win[-2:]]
+
+    def epoch_window(takes):
+        try:
+            mw = _MW(takes)
+            ok, ln = listen_window(_SB(), mw, _SN(slog), 0.0, "idle", None)
+        except Exception as exc:                           # noqa: BLE001
+            mw, ok, ln = None, "an exception", [fail_text(exc)]
+        return mw, ok, ln
+
+    mw, ok, ln = epoch_window(epoch_takes())
+    check(ok is True and mw.window_stamp[:3] == (0, 999, 2)
+          and not mw.window_map.own and mw.window_map.n == 101,
+          "stamp map through window(): stamps on an epoch clock 470 ppm "
+          "fast, mapped by the 101 points read before the window -> %s, %s"
+          % (verdict_word(ok) if ok in (True, False, FAULT) else ok,
+             ln[0] if ln else ""))
+    tk = epoch_takes()
+    old_rows, _i = assign_by_stamp(
+        [], [r for r, _rd in tk[1]], [r for r, _rd in tk[2]],
+        *stamp_bounds(slog, 0.0, 1.0))
+    old_rf = reader_fault(merge_stats(stats_of(tk[1]), stats_of(tk[2])))
+    check(not old_rows and "BEFORE its stamp" in old_rf,
+          "can-fail: the same window on the map before 2026-11-11 (offset "
+          "0, rate 1): %d rows kept, %s" % (len(old_rows), old_rf[:60]))
+    mw, ok, ln = epoch_window(epoch_takes(step=0.05))
+    check(ok is FAULT and "BEFORE its stamp" in (mw.window_stamp_fault
+                                                 if mw else ""),
+          "can-fail: stamp map through window(): the window's stamps 50 ms "
+          "ahead of the map fitted before it -> %s, %s" % (
+              verdict_word(ok) if ok in (True, False, FAULT) else ok,
+              ln[0] if ln else ""))
+    tk = epoch_takes()
+    mw, ok, ln = epoch_window([[]] + tk[1:])
+    check(ok is True and mw.window_map.own and mw.window_map.n >= 10,
+          "stamp map through window(): nothing read before the run's first "
+          "window -> mapped by its own rows (%s) -> %s" % (
+              mw.window_map.describe() if mw else "-",
+              verdict_word(ok) if ok in (True, False, FAULT) else ok))
+
     # a real witness on the fake PCAN: a reader that falls behind, and one
     # that keeps up, in both modes
     for mode, delay, want in (("classic", 0.0, False), ("fast", 0.0, False),
@@ -3994,7 +4444,26 @@ def self_test():
     w.close()
     check("BEFORE its stamp" in rf,
           "can-fail: stamps 50 ms ahead of the reader's clock fault the "
-          "window -> %s" % rf)
+          "window on no map (offset 0, rate 1) -> %s" % rf)
+    # the reader process's bins reach the Witness's stamp map: stamps on an
+    # epoch clock 470 ppm fast; then the same with a 50 ms step ahead
+    for step, want in ((None, False), ((500, 0.05), True)):
+        w = Witness(spec=(1200, (), None, 2000.0, True, 0.0, EP, PPM, step))
+        time.sleep(0.15)
+        w.take()
+        fit = w.stamp_map.frozen()
+        time.sleep(0.35)
+        w.take()
+        rf, rf_old = reader_fault(w.stats, fit), reader_fault(w.stats)
+        nb = len((w.stats or {}).get("bins") or ())
+        w.close()
+        check(fit.n >= 1 and nb >= 1 and bool(rf) == want
+              and "BEFORE its stamp" in (rf if want else rf_old),
+              "%sa real witness, stamps on an epoch clock 470 ppm fast%s: "
+              "%s on the map fitted on its first take (%s); %s on no map"
+              % ("can-fail: " if want else "", ", 50 ms ahead after row 500"
+                 if want else "", "faulted" if rf else "kept",
+                 fit.describe(), "faulted" if rf_old else "kept"))
     w = Witness(spec=(600, ((150, PCAN_QOVERRUN), (450, PCAN_QOVERRUN)),
                       None, 2000.0), mode="fast")
     wins = []
@@ -4064,9 +4533,6 @@ MUTANTS = [
     ("F2: the reader runs in-process",
      "        self.proc = ctx.Process(target=_witness_proc, args=(",
      "        self.proc = threading.Thread(target=_witness_proc, args=("),
-    ("F2: the reader not at ABOVE_NORMAL",
-     "    prio = above_normal()\n    try:\n        reader = _open_witness_reader(",
-     "    prio = None\n    try:\n        reader = _open_witness_reader("),
     # the reader's own classification and decode (2026-10-25)
     ("reader: python-can's order (an overrun with BUSHEAVY a warning)",
      "    if result & (PCAN_OVERRUN | PCAN_QOVERRUN):\n        return \"failure\"\n    if result == PCAN_QRCVEMPTY:\n        return \"empty\"\n    if result & (PCAN_BUSLIGHT | PCAN_BUSHEAVY):\n        return \"warning\"",
@@ -4102,7 +4568,15 @@ MUTANTS = [
      "    return 100.0 * (tot - di) / tot",
      "    return 100.0 * di / tot"),
     ("diag: working set read in bytes",
-     "pmc.ws / 1048576.0", "float(pmc.ws)"),
+     "    return nbytes / 1048576.0", "    return float(nbytes)"),
+    ("diag: Linux idle without iowait",
+     "    idle_all = idle + iowait", "    idle_all = idle"),
+    ("diag: Linux memory load from MemFree",
+     "    load = int(round(100.0 * (m[\"MemTotal\"] - m[\"MemAvailable\"])",
+     "    load = int(round(100.0 * (m[\"MemTotal\"] - m[\"MemFree\"])"),
+    ("diag: Linux working set from VmSize",
+     "              if ln.startswith(\"VmRSS:\")][0]",
+     "              if ln.startswith(\"VmSize:\")][0]"),
     ("diag: host summary ignores the window",
      "    w = [x for x in samples if t0 <= x[0] <= t1]",
      "    w = list(samples)"),
@@ -4167,8 +4641,8 @@ MUTANTS = [
      "        if t_cmd is not None:\n            lo = min(lo, t_cmd)",
      "        if False:\n            lo = min(lo, t_cmd)"),
     ("stamp: every window from the command",
-     "                          t_cmd if from_command else None)",
-     "                          t_cmd)"),
+     "                              t_cmd if from_command else None)",
+     "                              t_cmd)"),
     ("stamp: the stall step not from the command",
      "                              from_command=True)\n",
      "                              from_command=False)\n"),
@@ -4179,11 +4653,51 @@ MUTANTS = [
      "    drained = wit.take()\n    st_drain",
      "    drained = []\n    st_drain"),
     ("reader: a lagging reader passes",
-     "    if st[\"lag_max\"] > READER_LAG_TOL_S:",
-     "    if st[\"lag_max\"] > 1e9:"),
+     "    if lmax > READER_LAG_TOL_S:",
+     "    if lmax > 1e9:"),
     ("reader: stamps ahead of the clock pass",
-     "    if st[\"lag_min\"] < -STAMP_CLOCK_TOL_S:",
-     "    if st[\"lag_min\"] < -1e9:"),
+     "    if lmin < -STAMP_CLOCK_TOL_S:",
+     "    if lmin < -1e9:"),
+    # the stamp map (reviewer, 2026-11-11)
+    ("map: no rate ever fitted",
+     "FIT_RATE_SPAN_S = 30.0", "FIT_RATE_SPAN_S = 1e12"),
+    ("map: the upper envelope (the latest reads)",
+     "                - (hull[-1][1] - hull[-2][1]) * (p[0] - hull[-2][0])) <= 0:",
+     "                - (hull[-1][1] - hull[-2][1]) * (p[0] - hull[-2][0])) >= 0:"),
+    ("map: the line through the least point, not the edge over the mean",
+     "        if x1 >= xm:\n            break",
+     "        if True:\n            break"),
+    ("map: not applied to the window's bounds",
+     "    lo, hi = ((fit.to_stamp(h_lo), fit.to_stamp(h_hi)) if fit is not None\n              else (h_lo, h_hi))",
+     "    lo, hi = h_lo, h_hi"),
+    ("map: not applied to the lag figures",
+     "    if fit is None or not bins:\n        return st[\"lag_min\"], st[\"lag_max\"]",
+     "    if True:\n        return st[\"lag_min\"], st[\"lag_max\"]"),
+    ("map: the window's own rows fitted into its map",
+     "    if fit is not None and not fit.n:\n        fit = smap.frozen(own=True)",
+     "    if fit is not None:\n        fit = smap.frozen(own=True)"),
+    ("map: not fed by the witness's takes",
+     "                self.stamp_map.add(self.stats)\n",
+     "\n"),
+    ("map: the reader keeps no bins",
+     "                                          lag_max, lag, _bins_out(bins))",
+     "                                          lag_max, lag, [])"),
+    ("map: a bin's least lag never updated",
+     "    if lag < cur[1]:\n        cur[0], cur[1] = t, lag",
+     "    if False:\n        cur[0], cur[1] = t, lag"),
+    ("map: a bin's most lag never updated (B3)",
+     "    if lag > cur[3]:\n        cur[2], cur[3] = t, lag",
+     "    if False:\n        cur[2], cur[3] = t, lag"),
+    ("map: a row back in an earlier bin opens it again (B3)",
+     "        cur_b, cur = b, bins.get(b)\n", "        cur_b, cur = b, None\n"),
+    ("map: an equal lag replaces the bin's least (B3)",
+     "    if lag < cur[1]:\n        cur[0], cur[1] = t, lag",
+     "    if lag <= cur[1]:\n        cur[0], cur[1] = t, lag"),
+    ("map: the reader bins no rows (B3)",
+     "                cur_b, cur = bin_row(bins, cur_b, cur, t, lag)\n", "\n"),
+    ("map: stamps to host and back inverted",
+     "        return (h - self.a + self.b * self.s0) / (1.0 + self.b)",
+     "        return (h + self.a + self.b * self.s0) / (1.0 + self.b)"),
     ("reader: witness_fault ignores the stamp fault",
      "    sf = getattr(wit, \"window_stamp_fault\", \"\")",
      "    sf = \"\""),
@@ -4206,6 +4720,25 @@ MUTANTS = [
      "               (\"WITNESS FAULT: \" + wf) if wf else \"witness complete\",",
      "               \"witness complete\","),
 ]
+# The priority mutant runs where its code runs (the reviewer, 2026-11-11):
+# F2's ABOVE_NORMAL on Windows; on Linux (F2's Linux form, the reviewer,
+# 2026-11-12), the reader claiming bench.slice without placing itself there,
+# which its cgroup, read from outside, gives away. Run from a process that
+# is itself in bench.slice, the Linux mutant would not show: the self-test
+# runs in build.slice (the harness's placement) or a terminal's app.slice.
+PRIO_MUTANT = {
+    "nt": ("F2: the reader not at ABOVE_NORMAL",
+           "    prio = above_normal()\n    try:\n        reader = _open_witness_reader(",
+           "    prio = None\n    try:\n        reader = _open_witness_reader("),
+    "posix": ("F2 (Linux): the reader claims bench.slice without placing itself",
+              "    if os.name != \"nt\":\n        return place_in_slice(BENCH_SLICE)",
+              "    if os.name != \"nt\":\n        return BENCH_SLICE"),
+}
+PRIO_SKIPPED = {
+    "nt": "F2's Linux mutant (Linux code only)",
+    "posix": "F2's ABOVE_NORMAL mutant (Windows code only)",
+}
+MUTANTS.append(PRIO_MUTANT["nt" if os.name == "nt" else "posix"])
 
 
 def main():
@@ -4263,6 +4796,8 @@ def main():
         return self_test()
     if args.can_fail:
         import script_can_fail
+        print("not run on this system: %s"
+              % PRIO_SKIPPED["nt" if os.name == "nt" else "posix"])
         return script_can_fail.run(__file__, MUTANTS)
     try:
         listen_arm_keys(args.listen_arms)

@@ -65,7 +65,7 @@ COLLISION = "COLLISION"
 BUILD_PAGE_ID = 0x7F7
 # spec 8.2: the image's project name is interposer_<variant>, one of these
 PROJECT_PREFIX = "interposer_"
-VARIANTS = ("bridge", "witness", "truck", "selftest", "diag", "slcan")
+VARIANTS = ("bridge", "witness", "truck", "selftest", "diag")
 WITNESS_VARIANT = "witness"
 
 

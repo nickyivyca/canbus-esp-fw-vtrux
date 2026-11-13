@@ -29,6 +29,15 @@ looks like.
 - Do not discuss failures with the implementor. If you changed the harness, tell the implementor only that it changed and where.
 - If the spec is ambiguous while you write a case, ask the reviewer. Do not choose a reading yourself, and do not take it to the user yourself; it is ruled on in the reviewer's session.
 
+**Triage a timing failure before you report it** (AGENTS.md, "Parallel
+work on the shared machine", point 2). Other work runs beside yours by
+default, so read the resource record over the failed check's window
+first:
+- starved: re-run it, and report it as starved, with the window, not as a
+  result;
+- clean: report it as observed vs spec;
+- unclear: re-run once.
+
 **Commit on your topic branch, `<project>/<role>/<topic>`, in your own
 worktree.** Never push, and never touch `<project>/main`. Tell the reviewer
 the branch and the range. If the reviewer sends back a conflict, merge

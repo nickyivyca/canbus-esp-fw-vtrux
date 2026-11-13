@@ -1,5 +1,5 @@
 # main: the interposer's own code (port plan layers 3 and 4), built as one of
-# six variants (spec 8.2), chosen by the top CMakeLists.txt's INTP_VARIANT.
+# five variants (spec 8.2), chosen by the top CMakeLists.txt's INTP_VARIANT.
 #
 # Each variant has exactly one *_main.cpp: two would each define setup() and
 # loop(), and the link fails. The bridge's three images, bridge, witness and
@@ -20,10 +20,6 @@ elseif(INTP_VARIANT STREQUAL "selftest")
     set(srcs selftest_main.cpp ${ports})
 elseif(INTP_VARIANT STREQUAL "diag")
     set(srcs diag_main.cpp ${ports})
-elseif(INTP_VARIANT STREQUAL "slcan")
-    # The generator-inhibit bench's SLCAN transmitter, on CAN1 only: it never
-    # touches the charger segment, so no MCP2515.
-    set(srcs slcan_main.cpp ${vehicle})
 endif()
 
 idf_component_register(SRCS ${srcs}

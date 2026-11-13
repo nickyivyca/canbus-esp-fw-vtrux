@@ -86,6 +86,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+from bench_usb_host import unwrap_us32   # noqa: E402  (gs_usb's 32-bit us stamp)
 
 BITRATE = 500000
 ID = 0x18FFDEC0
@@ -133,6 +135,17 @@ def pct(xs, q):
 
 
 # --- the verdict, pure --------------------------------------------------------
+
+def filler_echoes(chg, t_id0, t_id1):
+    """The filler's echoes on the charger wire in the run window (host
+    [t_id0, t_id1]): their device stamps in s, sorted. chg is in arrival
+    order, so the Innomaker's 32-bit microsecond stamps are unwrapped first
+    (they wrap every 71.6 min; the reviewer's E3, 2026-11-12): sorted
+    wrapped, the frames after a wrap would come first."""
+    dev = unwrap_us32([r[0] for r in chg])
+    return sorted(d for d, r in zip(dev, chg) if r[2] == FILLER and r[3]
+                  and not r[6] and t_id0 <= r[1] <= t_id1)
+
 
 def judge(veh, chg, serial, dump, t_pre0, t_pre1, t_id0, t_id1,
           flight=False, t_fgo=None):
@@ -205,8 +218,7 @@ def judge(veh, chg, serial, dump, t_pre0, t_pre1, t_id0, t_id1,
             void.append("identifier mean %.1f fps in the run, not within 5 %% "
                         "of %.0f" % (rate, ID_RATE))
     # the filler on the charger wire (the Innomaker's echoes)
-    fe = sorted(r[0] for r in chg if r[2] == FILLER and r[3] and not r[6]
-                and t_id0 <= r[1] <= t_id1)
+    fe = filler_echoes(chg, t_id0, t_id1)
     fdl = sorted(set(r[4] for r in chg if r[2] == FILLER and not r[6]))
     if len(fe) < 2:
         void.append("no filler echoes in the run window")
@@ -711,6 +723,26 @@ def self_test():
     check(v == "PASS", "--flight: no dump read, order and drops only -> PASS")
     v, lines = run(flight=True, swap=5)
     check(v == "FAIL", "--flight can-fail: a swapped pair still FAILS")
+    # the reviewer's E3 (2026-11-12): the Innomaker's stamp wraps inside a
+    # filler burst in the run window; rows in arrival order (host time)
+    veh, chg, serial, dump, a0, a1, t0, t1 = _synth()
+    chg = sorted(chg, key=lambda r: r[1])
+    fil = [i for i, r in enumerate(chg) if r[2] == FILLER and t0 <= r[1] <= t1]
+    i = fil[len(fil) // 2]
+    while chg[i + 1][0] - chg[i][0] > 0.001 or chg[i + 1][2] != FILLER:
+        i += 1                                    # two frames of one burst
+    wrap = 2 ** 32 / 1e6
+    off = wrap - (chg[i][0] + chg[i + 1][0]) / 2.0
+    shifted = [(r[0] + off,) + tuple(r[1:]) for r in chg]
+    wrapped = [((r[0] + off) % wrap,) + tuple(r[1:]) for r in chg]
+    fe_s, fe_w = filler_echoes(shifted, t0, t1), filler_echoes(wrapped, t0, t1)
+    span = fe_w[-1] - fe_w[0]
+    check(len(fe_w) == len(fe_s) and all(abs(a - b) < 1e-6 for a, b in zip(fe_s, fe_w))
+          and span < t1 - t0 + 0.01,
+          "a planted wrap inside a filler burst: the echoes, unwrapped, are the "
+          "unwrapped run's (%d frames over %.3f s)" % (len(fe_w), span))
+    v, lines = judge(veh, wrapped, serial, dump, a0, a1, t0, t1, t_fgo=a1)
+    check(v == "PASS", "... and the run across the wrap still judges PASS -> %s" % v)
     gate_self_test(check)
     print("\nbench_hold12 self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
@@ -967,7 +999,7 @@ def run_bench(a):
             log("12 entry 2 (witness build): VOID")
             out.close()
             return 1
-    kv = can.Bus(interface="kvaser", channel=0, bitrate=BITRATE)
+    kv = adapter_fixes.bus(interface="kvaser", channel=0, bitrate=BITRATE)
     veh, vlock, vhalt = [], threading.Lock(), threading.Event()
 
     def vrx():
@@ -1087,6 +1119,8 @@ MUTANTS = [
      '                    or "no status line"))\n    return True, lines'),
     ("gate: the reset never sent",
      "    t_r = now()\n    reset()\n", "    t_r = now()\n"),
+    ("filler echoes: the device stamps not unwrapped",
+     "    dev = unwrap_us32([r[0] for r in chg])", "    dev = [r[0] for r in chg]"),
 ]
 
 

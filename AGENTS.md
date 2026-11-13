@@ -113,6 +113,13 @@ and tell the user.
   `shared/<component>/<topic>` (see "Shared code").
 - **Always merge, never rebase.** Manifests, `VERIFICATION.md` entries and run records
   name commits, and a rebase would rewrite them.
+- **Unpushed history is corrected, not patched over** (user, 2026-11-11).
+  Commits on no origin branch may be re-made, amended or rebased, for
+  example to keep a pre-push hit out of history. Re-make them on a new
+  branch name, never push the old branch, and in the same go correct
+  every note, tracker entry or record that names one of the old commits
+  to its new hash. Once a commit is on origin, the merge-only rule above
+  holds.
 
 **Skills follow the branch.** Each worktree has the role skills of the branch
 it has checked out. Each branch keeps
@@ -258,7 +265,13 @@ out. The interposer's ESP-IDF project is `charge-interposer/firmware/`,
 since port step 2a. **No path in the tree may have a branch's name.** An IDF
 `main/` directly in a project folder would make `<project>/main` both a
 branch and a path, and git then refuses the bare branch name in `log`,
-`show`, `diff` and `reset`.
+`show`, `diff` and `reset`. **Beside the project folder, a project
+branch's root holds only the files every branch shares:** `.claude/`,
+`.gitattributes`, `.gitignore`, `AGENTS.md`, `CLAUDE.md`, `LICENSE`,
+`README.md`, `local-paths.template.md` and `session_pause.sh`. Upstream
+WiCAN's root tree, its `.github/` included, is removed from both project
+branches (user, 2026-11-11: the interposer's root tree in the interposer
+reviewer's session, `.github/` in the methodology owner's).
 
 ### Shared code
 
@@ -435,7 +448,9 @@ The machine names `NICKY-XPS`, `madhouse-debian` and `NICKYDESKTOP` are
 accepted (user, 2026-10-23). So are WiCAN firmware defaults such as its
 hotspot addresses `192.168.80.1` (device) and `192.168.80.2` (laptop), which
 are not home-network details (user, 2026-10-20). So is `~/.espressif`,
-ESP-IDF's default tools folder, as the whole path only (user, 2026-11-03).
+ESP-IDF's default tools folder, as the whole path only (user, 2026-11-03),
+and so are `~/esp/esp-idf` and `~/esp/esp-idf-v<version>`, its default
+install folder, as whole paths (user, 2026-11-11).
 So is bare `madhouse`, in prose and in file names, though it is also a
 bench WiFi SSID (user, 2026-11-07).
 
@@ -476,6 +491,48 @@ state, are in `$REVERSE_IT_DIR/firmware/bench-holder.md`. Both files stay
 out of git: they change at every hand-off, and they record home-bench
 details.
 
+**The bench host is `madhouse-debian`** from port plan step 3 (the hardware
+moved on 2026-11-11; it was `NICKY-XPS` before). Its lock is native Linux,
+in `shared/main` from tag `2026.11.11.2` (SPEC section 4); the testers'
+pinned `shared/bench` version must include it before they take the lock
+there.
+- **The move to a new host** (SPEC section 4): on the old host, a role that
+  may take runs `bench_lock.py retire --to <new host> --reason ...` while
+  the lock is free, which renames the log aside as
+  `bench-log.<old host>.<date>.jsonl`. The new host runs `init` only once
+  that renamed copy has synced there and no `bench-log.jsonl` is left;
+  `init` refuses otherwise.
+- **The lock is a mutex, not a hand-over guarantee** (user, 2026-11-13, in
+  the Git based CANBus Android development session). A free lock is taken
+  without asking: `take` checks and claims it in one step, and the take
+  and release messages are notices. The holder does to the bench what its
+  work needs, including flashing and rebooting either board, moving
+  adapters between drivers and sending on either bus. At release nothing
+  it started is still running on the bench, and its note reports the
+  state of everything it touched; nothing is put back. The next holder
+  sets up what it needs. Details: SPEC sections 6 and 8 (`shared/main`
+  from `9342bf8b`).
+- **Besides the testers and their loans,** two roles may take the bench by
+  hand, with no run: `android`, the Android sessions' runs that touch the
+  bench adapters, and `can-tools`, the CAN replay tooling session (SPEC
+  section 8). They build images as the images' owners' tooling does and
+  do not change their source (user, 2026-11-12, in the CAN replay tooling
+  session).
+- **`canmain`, CAN1's Innomaker, is for the Android app's two-bus tests**
+  and is kept down during ESP runs. A run that needs the bench brings it
+  down itself through `canctl` if it is up, and records that (SPEC section
+  8, user, 2026-11-13). The chain runner does this for every suite from
+  `shared/main` tag `2026.11.13.2` (`344eef05`), after its own take and
+  at every resume, before the start hooks. A `canctl` failure, or
+  `canmain` still up after it, stops the bench: the groups that need it
+  are NOT-RUN. A pin older than that tag still refuses to start unless
+  its settings' `canmain_check` shows `canmain` down
+  (`shared/bench/README.md`).
+- **Root operations on the CAN adapters** (links up and down, an
+  Innomaker's driver binding) go through `canctl`, run as `sudo -n
+  /usr/local/sbin/canctl ...`. It is the CAN replay tooling session's, and
+  its README is `$REVERSE_IT_DIR/tools/bench/canctl/README.md`.
+
 ### Build tooling
 
 **Build tooling is specified.** gen-inhibit's release builds are made by
@@ -503,7 +560,7 @@ listed in `charge-interposer/firmware/vtrux_build.json`. Like
 gen-inhibit's, they need not meet the release rules. The tooling's
 environment check (R32) runs first. A bench build made with `idf.py`
 directly, such as a flash, runs
-`py -3.14 -B charge-interposer/vtrux_tools.py check-env` first. No interposer
+`<python> -B charge-interposer/vtrux_tools.py check-env` first. No interposer
 release build is made during the port, since no mid-port build goes on
 the truck (user, 2026-11-03).
 
@@ -513,78 +570,124 @@ folder, so `IDF_TOOLS_PATH` is set before the export. Run a build only in a
 shell exported for it. The shared tooling's `check-env` (shared/tools R32)
 checks that. Release builds and the tooling's dev builds (R31) run it
 themselves. gen-inhibit's `idf.py` / `ninja` bench and dev builds run
-`py -3.14 -B gen-inhibit/vtrux_tools.py check-env` first. A bench or dev
+`<python> -B gen-inhibit/vtrux_tools.py check-env` first, with the Python
+command `local-paths.md` names. A bench or dev
 build under another IDF is not refused (R33, R14): the other IDF rewrites
 `dependencies.lock` and builds, so a changed lock in `git status` after a
 configure is the sign (user, 2026-11-04). The v5.4.1 install stays only for
 branches from before 1d (user, 2026-11-04). Each machine's recipe is in
 `local-paths.md` and `$REVERSE_IT_DIR/tools-reference.md`.
 
-### Builds during wall-clock tests
+### Parallel work on the shared machine
 
-**Wall-clock tests** are tests whose stimulus is sent by the wall clock on the
-shared machine: the interposer's simulator scenarios and gen-inhibit's bench
-runs. Emulated-time suites are not affected. On 2026-10-15, interposer
-scenario #12 was voided when `charger_sim` stalled under load. The load was a
-full-speed six-environment build together with the tester's own re-scoring.
-The cause was never isolated (user, 2026-10-15, for all of this section):
+**Parallel work is allowed by default** (user, 2026-11-12). Builds,
+emulated-time suites, mutant runs, wall-clock tests, bench runs, other
+sessions' work and the local LLM all run at the same time. Nobody waits
+for other work to end, asks for a window, or holds work back for someone
+else's (user, 2026-11-11, in the Local LLM hosting session: "run
+alongside, never hold"). Only two things are exclusive, and both are
+physical, not resource limits: the bench hardware, through the bench lock
+(see "The shared bench"), and a simulator bench's virtual-bus groups and
+ports (see "One simulator bench per set of ports"). Contention for CPU,
+memory and disk is handled by where work runs (point 1), and a failure
+contention could explain is triaged (point 2).
 
-1. **One rule for both projects** (user, 2026-10-16). While a wall-clock test
-   of either project is running, every build on the shared machine, of either
-   project, is throttled (point 3). A full-speed build waits until no
-   wall-clock test is running. The tester's own heavy local work counts the
-   same. Before a build, check `bench_lock.py status`, the "No builds" line
-   in `$REVERSE_IT_DIR/firmware/bench-holder.md`, and the process list for
-   running simulators.
-2. **The trials behind it** (2026-10-15/16). Interposer: a full-speed build
-   failed (about 128 `charger_sim` STALLs a minute, worst 461 ms, a staleness
-   trip). A throttled build passed (one STALL of 48 ms in 672 s) but took 3.3
-   times as long (661 s against 200 s). gen-inhibit: a full-speed build passed
-   (worst stimulus gap 35 ms, against 8.9 ms with no build). A new project, or
-   a new build machine, runs the same trial before its tests allow builds: (a)
-   a full-speed control, then (b) throttled, with pass marks set in its test
-   plan. So does a project whose build tool changes. Until the interposer's
-   ESP-IDF build has passed (b), interposer builds wait until no wall-clock
-   test is running (user, 2026-11-03).
-3. **The throttled form on `NICKY-XPS`.** From a PowerShell exported for the
-   project's IDF, set the shell's priority class to Idle with
-   `(Get-Process -Id $PID).PriorityClass = 'Idle'`. Then build, from the
-   repo root: for a release build,
-   `py -3.14 -B <project>/vtrux_tools.py release --jobs 1` (no interposer
-   release build is made during the port); for a gen-inhibit bench or dev
-   build, `py -3.14 -B gen-inhibit/vtrux_tools.py check-env`, then
-   `ninja -C gen-inhibit/firmware/build -j 1`; for an interposer
-   bench or dev build,
-   `py -3.14 -B charge-interposer/vtrux_tools.py build <variant> --jobs 1`,
-   the shared tooling's dev build (R31), which reconfigures
-   `charge-interposer/firmware/build/<variant>` with the variant's options
-   from `vtrux_build.json`, then runs `ninja -j 1` there. The processes
-   the build starts inherit the class. Idle lowers CPU priority only, not
-   disk priority. It also does not reach Windows Defender, which scans
-   fresh build output in its own process. If (b) still disturbs the test,
-   the next suspect is Defender, and excluding the build folders from it
-   is the user's call.
-   **When a project's build command changes,** this point changes with
-   it, as soon as it can (see "Docs change with the tooling").
-4. **Testers raise their simulators** to above-normal priority, never High or
-   Realtime, which can starve the USB stack the CAN adapters need.
-5. **The tester's own timing checks** still decide whether a run counts. A
-   tester can mark a particularly expensive run "no builds" on the "No
-   builds" line of `$REVERSE_IT_DIR/firmware/bench-holder.md`, set when the
-   run starts and cleared at its release. The bench log has no place for
-   it.
-6. **HTTP round trips to the device are slowed by load too.** Under the build,
-   gen-inhibit's arm POST took 39 ms instead of 18 ms. Testers time windows
-   from when a request was sent, not from when it returned.
-7. **On `madhouse-debian`, work runs alongside the local LLM's load, never
-   after it** (user, 2026-11-11, in the Local LLM hosting session, its
-   `lcc/llm-load/README.md` in the Infrastructure library, "Standing rule:
-   run alongside, never hold"). Nobody waits for an LLM load window or a
-   trial run to end, or asks for one. A session starting or ending heavy
-   work or a wall-clock test sends its start and end times to the Local
-   LLM hosting session, so its recorders can mark them. A failure under
-   that contention is information about the load controls, not a reason
-   to hold.
+**Wall-clock tests** are tests whose stimulus is sent by the wall clock on
+the shared machine: the interposer's simulator scenarios and gen-inhibit's
+bench runs. Emulated-time suites are not.
+
+1. **Placement on `madhouse-debian`.** Start each heavy job as a scope in
+   its slice:
+   `systemd-run --user --scope --slice=<slice> <command>`. A scope keeps
+   the shell's environment, working folder, output and exit code, so a
+   shell exported for ESP-IDF builds in it; a service sees none of the
+   `IDF_*` variables, and the environment check (shared/tools R32) refuses
+   it (the interposer implementor, checked on madhouse, 2026-11-11). The
+   slices (user, 2026-11-11, in the Local LLM hosting session; read back
+   with `systemctl --user show` on 2026-11-12):
+   - `bench.slice`, CPUWeight 2000: wall-clock tests and everything a run
+     starts for them, such as simulators, witness readers, adapter I/O and
+     the run's own flash or OTA load.
+   - `llm.slice`, CPUWeight 1000: the local LLM server, a user unit since
+     2026-11-11.
+   - `app.slice`, CPUWeight 100: the Claude Code sessions and anything else
+     started from a terminal without a slice.
+   - `build.slice`, CPUWeight idle, MemoryHigh 8G: every build, mutant run
+     and emulated-time suite, of either project and from every session.
+     Builds run at the lowest CPU priority but are free to use every idle
+     core, so they are not held to one job (user, 2026-11-11). If an
+     emulated-time suite's timeout trips under idle, the fallback is a
+     small weight, such as 20 (user, 2026-11-11).
+
+   Read the placement back: `cat /proc/<pid>/cgroup` names the slice, and
+   `systemctl --user show <slice> -p CPUWeight -p MemoryHigh` gives its
+   settings. `nice` only ranks processes inside one cgroup, so it does not
+   replace the slice, and neither does a raised process priority.
+2. **Triage a failure that contention could explain** (user, 2026-11-12).
+   A timing failure, such as a simulator STALL, a stimulus gap, a timeout
+   or a check voided on timing, is judged against the machine's resource
+   record over the failed check's window before it counts either way:
+   - **Starved:** over the window, the record shows the run's slice short
+     of CPU, memory or disk (pressure, major faults or swap growth above
+     the marks), or the simulator's own lateness measure shows it was not
+     scheduled. That is not a product result: the check is re-run, and the
+     finding goes to the Local LLM hosting session as information about
+     the load controls.
+   - **True error:** the record is clean over the window. The failure
+     counts like any other.
+   - **Unclear:** re-run once. A repeat with a clean record is a true
+     error.
+
+   Each project's tester sets its marks from measured quiet data, written
+   in its test plan with the user's approval, as the load trial's marks
+   were. The tester's own timing checks still decide whether a run counts.
+   **The record:** `resource-log`, a user unit on `madhouse-debian`,
+   running since 2026-11-12 (checked by the methodology owner that day).
+   Every 5 s it records each slice's CPU use, CPU, memory and I/O
+   pressure, faults and memory, the same for the whole box, and each
+   NVMe disk's load, from the kernel's own counters. Glances has no
+   per-slice or pressure data, so it is not the source. The record stays
+   on madhouse, one CSV per UTC day in the folder its README names,
+   kept 30 days, out of HA and Seafile unless it turns out to matter
+   (user, 2026-11-12). To judge a failure, run
+   `resource-log window START END` over the failed check's window, with
+   times as epochs or anything `date -d` takes; `--rows` prints every
+   interval. A gap over 10 s in its output means the logger itself was
+   starved or down. It is the Local LLM hosting session's tool
+   (`monitoring/resource-log/README.md` in the Infrastructure library).
+3. **The run guard records, it does not refuse** (user, 2026-11-12).
+   From `shared/main` tag `2026.11.12` (`ee4608aa`), shared/bench's chain
+   runner runs a wall-clock check even when another role holds the bench
+   lock or a process matches its `wallclock_patterns`. It names them in
+   the run record's `wallclock-others` event. A hand-take role's lock
+   (`android`, `can-tools`) does not count as a wall-clock test, and builds
+   keep every core. On Linux, with its `placement` setting, the runner
+   starts wall-clock checks in `bench.slice` and builds in `build.slice`
+   and reads each placement back. A placement that does not read back
+   FAILs that group's placement check, and the group's checks are NOT-RUN.
+   A run with board work refuses to start outside the wall-clock slice and
+   prints the `systemd-run` command. Tag `2026.11.12.2` (`7655aeff`)
+   carries the user's session bus into nested suite runs, so their
+   placement reaches the user's systemd. A NOT-RUN "refused: another
+   wall-clock test" now comes only from a pin older than `2026.11.12`; it
+   is the old guard, not a result.
+4. **The trials behind the slices.** On `NICKY-XPS`, 2026-10-15/16: interposer
+   scenario #12 was voided when `charger_sim` stalled under a full-speed
+   six-environment build. A full-speed build then failed (about 128
+   STALLs a minute, worst 461 ms); a build at Windows Idle priority and
+   one job passed (one STALL of 48 ms in 672 s) but took 3.3 times as
+   long. gen-inhibit passed under a full-speed build (worst stimulus gap
+   35 ms, against 8.9 ms). On `madhouse-debian`, 2026-11-11 (the Local LLM
+   hosting session's `lcc/llm-load/README.md` in the Infrastructure
+   library): with no controls the model was pushed out of memory and its
+   generation collapsed; the 8G memory ceiling stopped the displacement;
+   after the move to the slices above, the model's generation speed held
+   at 0.96 to 1.03 of its baseline through the interposer's emulated run,
+   a lighter load than planned (7 of its 27 simulators ran).
+5. **HTTP round trips to the device are slowed by load too.** Under a build
+   on `NICKY-XPS`, gen-inhibit's arm POST took 39 ms instead of 18 ms.
+   Testers time windows from when a request was sent, not from when it
+   returned.
 
 ## Simulators, virtual CAN buses and background processes
 
@@ -605,10 +708,23 @@ frame goes on the real wire (`ip route get 239.0.2.1` names the LAN NIC).
 **Always pass `hop_limit=0`:** the datagram is looped back to local sockets
 and never transmitted, and delivery between processes on the same host is
 unaffected. Do **not** also pin `IP_MULTICAST_IF` to loopback: `python-can`
-joins the group with `INADDR_ANY`, so receivers would see nothing. TTL 0
-alone is enough. The interposer's `charge-interposer/bus.py` and
-gen-inhibit's `gen-inhibit/tools/gi_vbus.py` do this and verify it at
-startup.
+joins the group with `INADDR_ANY`, so receivers would see nothing. The
+interposer's `charge-interposer/bus.py` and gen-inhibit's
+`gen-inhibit/tools/gi_vbus.py` do this and verify it at startup.
+
+**TTL 0 confines a group only while a socket on this host has joined
+it.** A TTL-0 datagram sent to a group no local socket has joined goes
+out on the LAN NIC like a TTL-1 one, whether the sending socket is bound
+or not and with multicast loopback on or off. Once any socket on the
+host has joined the group, the sender's own or another's, it stays at
+background. Measured on `madhouse-debian` by the gen-inhibit tester,
+2026-11-12, with `eno1`'s counters. The methodology owner checked the
+leak without a member the same day: all 200 sends of each window went
+out. A `python-can` bus always joins its group, so a bus opened with
+`hop_limit=0` is confined. A tool that sends to a group without a bus
+open on it, such as a send-only socket, a replayer or a probe, is not:
+it joins the group itself, as the buses do, and its counters are
+checked as below.
 
 ### Measure, do not assume
 
@@ -688,29 +804,31 @@ anything that transmits, prefer evidence that the traffic stopped over
 evidence that a process is missing (see "Filters that fail silently" in
 `$REVERSE_IT_DIR/AGENTS.md`).
 
-### One simulator run at a time, and one per machine
+### One simulator bench per set of ports
 
-Run long simulations one at a time: concurrent runs multiply the frame
-rate. Two benches on one machine see each other's frames even with
-`hop_limit=0`, so only one simulator run is active per machine at a time
-(user, 2026-10-23).
+Two simulator benches on the same multicast groups and ports see each
+other's frames, even with `hop_limit=0`, so they never run at once (user,
+2026-10-23). Benches on different groups and ports may run together: move
+one with its port option (user, 2026-11-12, replacing "one simulator run
+per machine" of 2026-10-23). With `hop_limit=0` their frames stay on
+loopback, so the cost of two at once is CPU, which the slices handle (see
+"Parallel work on the shared machine").
 
-The shared bench tooling will enforce this before it starts anything that
+The shared bench tooling will check this before it starts anything that
 transmits:
-- **It checks for a running bench:** UDP sockets on the bench ports, and
-  Python processes running the simulator scripts. It refuses if it finds
-  either, and names them.
+- **It checks its own ports:** UDP sockets bound to the groups and ports
+  it is about to use. It refuses if it finds any, and names them.
 - **It listens first.** It opens its own segments and listens before
   starting its simulators. It should hear nothing; any frame means another
-  bench or an orphan is running, and it refuses.
-- **To run two at once deliberately,** move one to other groups and ports
-  with its port option. Both checks still run.
+  bench or an orphan is on those ports, and it refuses.
 
-**Until the shared tooling has this guard, nothing enforces it** (user,
-2026-10-23). Before starting a run, check for a running bench yourself, the
-same two ways. If a check finds one, find out whose it is before you kill
-anything: it may be another session's run. When the guard lands, this
-section changes in the same merge.
+**Until the shared tooling has this check, nothing enforces it** (user,
+2026-10-23). Before starting a run, check your ports yourself, the same two
+ways. If a check finds a bench, find out whose it is before you kill
+anything: it may be another session's run. When the check lands, this
+section changes in the same merge. It is a different check from the chain
+runner's wall-clock guard (see "Parallel work on the shared machine",
+point 3).
 
 ## Working rules
 

@@ -1,0 +1,216 @@
+# Port step 3's emulated baseline, second re-run: the 13 m-sims run 0d88's
+# guard refused (shared/bench ACCEPT-SPEC A2, A13; owned by the
+# charge-interposer reviewer). Drafted by the tester, for the reviewer's
+# approval: a re-run of the user-approved 3-emulated.toml with harness-only
+# changes, as 3-emulated-rerun.toml was (the reviewer's ruling, 2026-11-12:
+# same product, same baselines, harness lines only).
+#
+# Run 0d88 (runs/accept_3_20261112T084805_0d88, from 3-emulated-rerun.toml at
+# 4c2cb758, harness 2d14b2e5, shared/bench 2026.11.11.7) ran its emulated
+# suite whole. 14 of its 27 m-sims PASSed. The other 13, listed in this
+# list's suite run below, are NOT-RUN with "wallclock-refused", all at
+# 13:09:11. That is the old guard's refusal, not a product result
+# (AGENTS.md "Parallel work on the shared machine", point 3). It matched
+# the command line of the tester's Claude Code Bash tool wrapper
+# (/bin/bash -c ... bench_vport.py --can-fail) against bench_[a-z0-9_]+\.py,
+# not a bench run, and since the guard was checked at each wall-clock
+# check's start, every sim after that point was refused in the same second.
+#
+# This list re-runs only those 13, on shared/bench 2026.11.12, where the
+# guard records other wall-clock work (a "wallclock-others" event) and
+# never refuses, so a match like that one is a record entry, not a NOT-RUN.
+# Such entries can name a session's tool wrapper rather than a bench run;
+# triage treats them as possibly false.
+#
+# Re-made after run 2548 (runs/accept_3_20261112T142113_2548, from this list
+# at 58c1f50b, harness 95a21b61), which closed ACCEPTANCE FAIL at once with
+# no product result: m-sims/placement FAILed ("asked for bench.slice, read
+# back None (rc 1)") and the 13 sims were NOT-RUN. The acceptance runner
+# starts a suite run from compile.machine_env(), the OS variables and the
+# adapter's MACHINE_VARS, which held neither XDG_RUNTIME_DIR nor
+# DBUS_SESSION_BUS_ADDRESS, so the nested runner's systemd-run --user could
+# not reach the user manager ("Failed to connect to user scope bus"). The
+# runner's read-back held: the group FAILed rather than run unplaced. The
+# fix, c44a26bd, adds the two to MACHINE_VARS (the charge-interposer
+# reviewer, 2026-11-12, option (a); machine plumbing under ACCEPT-SPEC A7),
+# with accept_adapter_test's test_machine_env_user_bus, which runs the
+# runner's own probe in exactly that environment on madhouse and reads
+# back bench.slice. The record names 2548 (A13: the runner's --earlier
+# accept_3_20261112T142113_2548, which takes one record), and 2548's
+# names 0d88.
+#
+# Placement: on 2026.11.12 with the settings' placement (wallclock and lock
+# in bench.slice, build in build.slice; accept_adapter.PLACEMENT_SLICES,
+# which settings_refusal requires on Linux), each sim starts as a scope in
+# bench.slice, read back before the group's checks. A placement that does
+# not take FAILs m-sims/placement and its checks are NOT-RUN, which would be
+# a NEW line below, so no separate expectation holds the slice. Each
+# result's recorded slice goes into the VERIFICATION.md entry. The runner
+# itself is started in bench.slice, as for the earlier step 3 runs (user,
+# 2026-11-11), and records its own slice at start.
+#
+# Load: other sessions' work and the local LLM run alongside (AGENTS.md
+# "Parallel work on the shared machine"). A timing failure is triaged
+# against resource-log over its window (point 2).
+#
+# Known causes of difference from the Windows records, none of them a list
+# line, as in 3-emulated.toml:
+#   - the m-* groups run on the bench host itself, logic:local (settings
+#     m_lanes_host local; 22b546d6).
+#   - the sims run in bench.slice at its weight, not at Windows'
+#     above-normal priority; run_scenario records each process's slice on
+#     Linux (f2d665a5).
+#
+# Trees:
+#   harness   c44a26bd, on charge-interposer/tester/madhouse-baseline-2:
+#             95a21b61 (merged into charge-interposer/main as 6924ea01),
+#             this list's first draft (2d856be7) and the user-bus fix
+#             (c44a26bd). Since 2d14b2e5 (0d88's tree) it adds canchg_mode
+#             (c53d0ac9), scratch_dir --apply alongside other work
+#             (f2315ae3), bench_vport F2's Linux form (caa0ca5c, 95a21b61),
+#             run_scenario's Linux priority record (f2d665a5), the
+#             methodology picks (952d7924, 0c87a4fd, 81455c65) and the
+#             shared/bench re-pin to 2026.11.12 with the adapter's
+#             WALLCLOCK_PATTERNS and PLACEMENT_SLICES (0b8344d3), and the
+#             adapter's user-bus MACHINE_VARS (c44a26bd). It changes no
+#             product file since f57ca9d3 (premise "digest"; checked
+#             2026-11-12: git diff f57ca9d3 c44a26bd over
+#             bench_suite.product_files, 24 files, is empty). Its
+#             shared/bench pin is 2026.11.12, its can-tools pin fa6c0aea.
+
+[step]
+id = "3"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-12"
+spec = ["2", "2.1", "2.3", "2.4", "8", "8.2", "8.3", "9", "9.1"]
+verification = "the tester's VERIFICATION.md entries for port step 3's emulated baseline: this second re-run, naming records accept_3_20261112T142113_2548 and accept_3_20261112T084805_0d88"
+
+[trees.harness]
+project = "c44a26bd1927a3ebf39388dae89c6c7f5ae99088"
+
+[[premise]]
+id = "digest"
+kind = "product_digest_same_as"
+tree = "harness"
+commit = "f57ca9d38bfae50791564fe0089b337581bdcf12"
+
+# ---- the 13 refused m-sims ---------------------------------------------------
+# All 13 PASSed in b467. m-sims has no group dependency, so the selection
+# runs on its own.
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+checks = [
+  "m-sims/sim.evap-override",
+  "m-sims/sim.evap-override-unplug",
+  "m-sims/sim.evap-override-bms-fault",
+  "m-sims/sim.evap-override-high-cell",
+  "m-sims/sim.evap-override-high-cell-far",
+  "m-sims/sim.evap-override-imbalanced",
+  "m-sims/sim.evap-override-imbalanced-hold",
+  "m-sims/sim.evap-override-above-ceiling",
+  "m-sims/sim.evap-override-16a",
+  "m-sims/sim.balance-hold",
+  "m-sims/sim.charger-silence-after-trip",
+  "m-sims/sim.evap-bypass",
+  "m-sims/sim.hard-ceiling-failsafe",
+]
+
+# ---- the baseline ------------------------------------------------------------
+# The same emulated baseline as 3-emulated.toml's: b467 (harness f57ca9d3),
+# the newest whole Windows run on the f57ca9d3 product.
+[baseline]
+emulated = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-emulated"
+
+# The 13 against b467's same checks: no VERDICT line, so each must PASS as
+# in b467. The 74 MISSING lines are b467's results outside the 13-sim
+# selection, not losses: 69 PASS, the 3 m-build skips (NOT-RUN in b467) and
+# the 2 host_bridge KNOWN-FAILs. Run 0d88 ran all of them on this product
+# (the 14 other m-sims PASSed there; m-host and l-emulated as b467's).
+# Generated from b467's record.json and exact (the reviewer, 2026-11-12:
+# list them all, no comparer change). Any other line, a NEW one included
+# (such as m-sims/placement), is a difference.
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = [
+  "MISSING in b: l-emulated/rebuild-capture-traces (was PASS)",
+  "MISSING in b: m-build/build-check (was NOT-RUN)",
+  "MISSING in b: m-build/manifest-offline-test (was NOT-RUN)",
+  "MISSING in b: m-build/manifest-test (was NOT-RUN)",
+  "MISSING in b: m-host/check-port (was PASS)",
+  "MISSING in b: m-host/host-bridge/capture-pin (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.age-from-queue (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.boot (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.boundary-one-line (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.bridge-ok (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.bridge-ok-diag-failed (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.bridge-ok-diag-refused (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.bridge-ok-rx-missed (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.bridge-ok-rx-overrun (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.bridge-ok-switch-discard (was KNOWN-FAIL)",
+  "MISSING in b: m-host/host-bridge/l2.bridge-ok-switch-discard-diag-only (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.bridge-ok-veh-failed (was KNOWN-FAIL)",
+  "MISSING in b: m-host/host-bridge/l2.bridge-ok-veh-refused (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.busoff-charger (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.busoff-vehicle (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.cadence (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.diag-listen-only (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.failed-start (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.failed-start-noack (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.failed-start-vehicle (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.fake-by-id-knobs (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.fields (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.listen-only-boot (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.listen-only-boot-noack (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.listen-only-revert (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.listen-only-switch (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.replay (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.round-busoff (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.round-busoff-inflight-failed (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.round-count-can-fail (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.rtr-not-forwarded (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.rx-lost-at-recovery (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.rx-overflow-held (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.rx-rollover-midread (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.rx-rollover-order (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.rx-rollover-refill (was PASS)",
+  "MISSING in b: m-host/host-bridge/l2.tx-fail (was PASS)",
+  "MISSING in b: m-host/host-bridge/test-list (was PASS)",
+  "MISSING in b: m-host/host-bridge/test_canport_contract (was PASS)",
+  "MISSING in b: m-host/host-bridge/test_conformance (was PASS)",
+  "MISSING in b: m-host/host-bridge/test_event_layout (was PASS)",
+  "MISSING in b: m-host/host-bridge/test_mcp2515_busoff (was PASS)",
+  "MISSING in b: m-host/host-bridge/test_mcp2515_fake (was PASS)",
+  "MISSING in b: m-host/host-bridge/test_order_witness (was PASS)",
+  "MISSING in b: m-host/host-bridge/test_sameid_hold (was PASS)",
+  "MISSING in b: m-host/host-bridge/test_tx_failed (was PASS)",
+  "MISSING in b: m-host/host-bridge/test_tx_stall_trace (was PASS)",
+  "MISSING in b: m-host/host-bridge/test_tx_throughput (was PASS)",
+  "MISSING in b: m-host/host-diff (was PASS)",
+  "MISSING in b: m-host/host-unit (was PASS)",
+  "MISSING in b: m-host/regress-all (was PASS)",
+  "MISSING in b: m-host/test-invariants (was PASS)",
+  "MISSING in b: m-host/test-machine (was PASS)",
+  "MISSING in b: m-host/test-signals (was PASS)",
+  "MISSING in b: m-host/test-trips (was PASS)",
+  "MISSING in b: m-sims/sim.boot-mid-session (was PASS)",
+  "MISSING in b: m-sims/sim.charger-fault-stop (was PASS)",
+  "MISSING in b: m-sims/sim.charger-fault-stop-flow-first (was PASS)",
+  "MISSING in b: m-sims/sim.fault-during-override (was PASS)",
+  "MISSING in b: m-sims/sim.fault-during-override-flow-first (was PASS)",
+  "MISSING in b: m-sims/sim.hvil-before-flow-drop (was PASS)",
+  "MISSING in b: m-sims/sim.imbalanced-full (was PASS)",
+  "MISSING in b: m-sims/sim.normal-full (was PASS)",
+  "MISSING in b: m-sims/sim.override-ended-by-vcu (was PASS)",
+  "MISSING in b: m-sims/sim.repeat-replaced-by-trip (was PASS)",
+  "MISSING in b: m-sims/sim.repeat-reset-by-pilot-step (was PASS)",
+  "MISSING in b: m-sims/sim.repeat-superseded-by-vcu (was PASS)",
+  "MISSING in b: m-sims/sim.restart-after-standby (was PASS)",
+  "MISSING in b: m-sims/sim.restart-no-standby (was PASS)",
+]

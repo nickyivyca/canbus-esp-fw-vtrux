@@ -6,7 +6,10 @@ in seconds and neither needs hardware or captures, so they are the tests to
 run after every edit; regress.py and run_scenario.py are the slow,
 high-fidelity backstops.
 
-Run:  py -3.12 projects/vtrux/tools/interposer/test_machine.py
+Run, from this repo's root, with the Python command local-paths.md names
+(python3.13 on madhouse-debian, py -3.14 on the Windows machines):
+
+    python3.13 charge-interposer/test_machine.py
 """
 
 import io

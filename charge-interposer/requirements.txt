@@ -18,6 +18,13 @@ msgpack
 # machine.py itself imports nothing.
 cantools>=39
 
+# The X2's USB serial port: run_scenario's SerialTap and board reset,
+# bench_identify and the bench drivers. bench_suite_test's argv probe
+# imports it too, so its suite fails without it, hardware or not. Missing
+# from this file until madhouse-debian, where python3.13 lacked it
+# (installed there with pip --user, pyserial 3.5, user 2026-11-11).
+pyserial
+
 # Only needed for the real-dongle transports (ixxat / kvaser / pcan /
 # socketcan / gs_usb). All but gs_usb auto-detect via
 # canbench.live.receiver; canbench is not installed from here but loaded

@@ -1,34 +1,48 @@
 """The WiCAN as a board of the interposer's bench suite (tester, 2026-10-23;
 the reviewer's plan for the bench-lock cutover, with the gen-inhibit
-reviewer's conditions).
+reviewer's conditions; the USB load 2026-11-12).
 
 Under the bench log (shared/bench SPEC.md section 6) the runner writes every
 release and free_paused with a read of each board in bench_lock.BOARDS, the
 WiCAN included, and it reads a board only through that board's identify or
-end hook. So the bench suite carries the WiCAN as a board it never flashes:
+end hook. So the bench suite carries the WiCAN as a board:
 
-  image     "wican_man" on board "wican". Its expected identity is resolved
-            when the suite is built, read-only, from gen-inhibit's own source
-            for its standing image (both reviewers, 2026-10-23):
-            settings.gi_chain_settings names gen-inhibit's chain settings
-            JSON, whose key gi_images names the folder; <gi_images>/
-            build-tester-man/ must hold exactly one wican-fw_obd_*.bin; the
-            identity is build_lookup.elf_sha256_of_bin() of it. Never a
-            copied hash: the 25f50ac0... in bench-holder.md and the run
-            records are copies.
-  flasher   "wican-never" always refuses, unrecoverable: an interposer
-            worktree never flashes WiCAN firmware (AGENTS.md). The runner
-            then stops the bench (on_flash_failure "stop-bench"), and the
-            refusal names what identify read.
+  image     "wican_man" on board "wican": the WiCAN's pinned image,
+            wican_pin.json (wican_pin.py), a gen-inhibit build pinned as a
+            tool of this harness (AGENTS.md: never anything built from an
+            interposer tree; user, 2026-11-11: the madhouse rebuild of
+            gen-inhibit 7f2d5032 _man). Its expected identity is the pin's
+            image hash, the app descriptor's elf_sha256. Its files are read
+            from the local settings' wican_image_dir, which must be a
+            folder when the suite is built.
+  flasher   "wican-esptool": the USB load, the shared flasher's esptool path,
+            until madhouse has its Wi-Fi adapter (AGENTS.md; user,
+            2026-11-11). It first checks every pinned file in wican_image_dir
+            (size, sha256, md5: wican_pin.check), then calls the core's
+            esptool flasher (vtrux_bench.run.flash.esptool_flash) with the
+            WiCAN's own params (wican_params): the pinned files at their
+            offsets with their md5s, the chip the pin names (ESP32-C3) and
+            the WiCAN's MAC from the local settings (wican_mac), and the
+            WiCAN's own USB device, settings.wican_esptool_device (Linux;
+            on Windows its own port, settings.wican_esptool_port). The
+            image's device takes precedence over settings.esptool.device,
+            which is the X2's (flash.device_port: params first). With no
+            device of its own the flasher runs nothing: it never falls back
+            to the X2's. esptool's command and baud are the core flasher's,
+            settings.esptool.argv and .baud. The reviewer, 2026-11-12: the
+            load first ((b)), identify and the hooks staying on HTTP.
   identify  the elf_sha256 off the WiCAN's page, through gen-inhibit's
             page_state.read_page. A page that cannot be read RAISES, so the
-            runner stops without flashing.
+            runner stops without flashing. madhouse has no Wi-Fi adapter
+            yet, so there a bench run stops at the WiCAN's start hook.
   hooks     on_start runs wican_reboot.py --first wican_man; on_end runs
             --want wican_man (--want-unknown when the run does not know).
             --known names wican_man alone, so a WiCAN on any other image
             fails the start hook and the runner stops the bench before it
             identifies or flashes anything (the gen-inhibit reviewer: no
-            fallback, no retry, no flash). The X2 has no step.
+            fallback, no retry, no flash). The flasher is reached only when
+            the WiCAN reads another image after a clean start hook. The X2
+            has no step.
 
 wican_reboot.py and page_state.py are gen-inhibit's, taken read-only from
 settings.gi_tools (gen-inhibit's tools/gen_inhibit in a checkout on this
@@ -39,7 +53,6 @@ This module joins no Wi-Fi network: the PC must be on the WiCAN's AP. A page
 that cannot be read fails the start hook, saying so.
 """
 
-import glob
 import importlib.util
 import json
 import os
@@ -48,19 +61,14 @@ import subprocess
 import sys
 import time
 
-import build_lookup
+import wican_pin
 
 IMAGE = "wican_man"
 BOARD = "wican"
-FLASHER = "wican-never"
-BUILD_DIR = "build-tester-man"
-# Mirrors gen-inhibit's image_bin() in tools/gen_inhibit/suite_gen_inhibit.py
-# (exactly one match, else refuse). A change to that glob there needs the
-# same change here: it is part of the cross-project dependency (both
-# reviewers, 2026-10-23).
-BIN_GLOB = "wican-fw_obd_*.bin"
+FLASHER = "wican-esptool"
 GI_FILES = ("wican_reboot.py", "page_state.py")
 SHA_RX = re.compile(r"^[0-9a-f]{64}$")
+MAC_RX = re.compile(r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
 PAGE_TIMEOUT_S = 8.0
 REBOOT_TIMEOUT_S = 300
 
@@ -93,43 +101,43 @@ def gi_bench_dir(settings):
     return d
 
 
-def standing_bin(settings):
-    """The one wican-fw_obd_*.bin in <gi_images>/build-tester-man/."""
-    path = _need(settings, "gi_chain_settings")
-    if not os.path.isfile(path):
-        raise WicanSourceError("gen-inhibit's chain settings %s is missing "
-                               "(settings.gi_chain_settings)" % path)
-    try:
-        with open(path, encoding="utf-8") as f:
-            gs = json.load(f)
-    except ValueError as e:
-        raise WicanSourceError("gen-inhibit's chain settings %s is not JSON: "
-                               "%s" % (path, e))
-    gi = gs.get("gi_images") if isinstance(gs, dict) else None
-    if not gi:
-        raise WicanSourceError("%s has no gi_images" % path)
-    folder = os.path.join(gi, BUILD_DIR)
-    if not os.path.isdir(folder):
-        raise WicanSourceError("%s (gi_images in %s) is not a folder"
-                               % (folder, path))
-    got = sorted(glob.glob(os.path.join(folder, BIN_GLOB)))
-    if len(got) != 1:
-        raise WicanSourceError("%d files match %s in %s, want exactly 1%s"
-                               % (len(got), BIN_GLOB, folder,
-                                  (": %s" % ", ".join(os.path.basename(g)
-                                                      for g in got))
-                                  if got else ""))
-    return got[0]
+def image_dir(settings):
+    """settings.wican_image_dir, which must be a folder."""
+    d = _need(settings, "wican_image_dir")
+    if not os.path.isdir(d):
+        raise WicanSourceError("settings.wican_image_dir %s is not a folder" % d)
+    return d
 
 
-def standing_expect(settings):
-    """The ELF SHA-256 the WiCAN's standing image carries."""
-    b = standing_bin(settings)
-    sha = build_lookup.elf_sha256_of_bin(b)
-    if not sha:
-        raise WicanSourceError("%s carries no app descriptor "
-                               "(build_lookup.elf_sha256_of_bin: None)" % b)
-    return sha
+def wican_params(pin, folder, settings, env):
+    """The esptool flasher's params for the pinned image: files, md5, chip
+    and the WiCAN's own device (env "linux") or port (env "windows").
+    WicanSourceError when a setting it needs is missing or malformed."""
+    files, md5 = [], {}
+    for f in pin["image"]["files"]:
+        path = os.path.join(folder, *f["name"].split("/"))
+        files.append([f["offset"], path])
+        md5[path] = f["md5"]
+    mac = settings.get("wican_mac")
+    if not (isinstance(mac, str) and MAC_RX.match(mac)):
+        raise WicanSourceError("settings.wican_mac is %r, not the WiCAN's MAC "
+                               "(aa:bb:cc:dd:ee:ff)" % (mac,))
+    out = {"files": files, "md5": md5,
+           "chip": {"type": pin["image"]["chip"], "mac": mac.lower()}}
+    if env == "windows":
+        port = settings.get("wican_esptool_port")
+        if not port:
+            raise WicanSourceError("settings.wican_esptool_port is not set: the "
+                                   "WiCAN is never loaded through the X2's port")
+        out["port"] = port
+    else:
+        dev = settings.get("wican_esptool_device")
+        if not (isinstance(dev, dict) and dev.get("serial")):
+            raise WicanSourceError("settings.wican_esptool_device is %r, not "
+                                   "{vid, pid, serial, interface}: the WiCAN is "
+                                   "never loaded through the X2's device" % (dev,))
+        out["device"] = dict(dev)
+    return out
 
 
 def _load_page_state(bench_dir):
@@ -145,16 +153,25 @@ def _python(settings):
     return list(py) if py else [sys.executable]
 
 
-def make(settings):
+def _core_flash():
+    from vtrux_bench.run import flash
+    return flash
+
+
+def make(settings, pin=None):
     """{image, flasher, identify, on_start, on_end} for the bench suite.
-    Raises WicanSourceError when anything it rests on is missing."""
+    pin: the pin as wican_pin.load() returns it (default: the committed
+    wican_pin.json; tests pass their own). Raises WicanSourceError when
+    anything it rests on is missing."""
     from vtrux_bench.run import Image
+    pin = pin or wican_pin.load()
     bench_dir = gi_bench_dir(settings)
-    bin_path = standing_bin(settings)
-    expect = standing_expect(settings)
-    image = Image(IMAGE, FLASHER, {"source_bin": bin_path}, expect,
-                  board=BOARD, note="never flashed by this suite; identity "
-                  "from gen-inhibit's build-tester-man (bench_wican.py)")
+    folder = image_dir(settings)
+    expect = pin["image"]["image_hash"]
+    image = Image(IMAGE, FLASHER, {"pin": pin["pin"]}, expect, board=BOARD,
+                  note="the pinned gen-inhibit image %s (wican_pin.json), loaded "
+                  "over USB by the core's esptool flasher (bench_wican.py)"
+                  % pin["pin"])
     last = {"read": None}
 
     def wican_sha():
@@ -174,10 +191,19 @@ def make(settings):
         return wican_sha()
 
     def flasher(img, params, settings_, logdir):
-        return dict(ok=False, phase="refused", recoverable=False,
-                    detail="this suite never flashes the WiCAN (AGENTS.md); "
-                    "it read %s, not %s (%s)" % (
-                        last["read"] or "nothing", img.name, img.expect))
+        bad = wican_pin.check(folder, pin)
+        if bad:
+            return dict(ok=False, phase="pin", recoverable=True,
+                        detail="the pinned image %s's files in %s are not the "
+                        "pin's: %s; nothing run" % (pin["pin"], folder,
+                                                    "; ".join(bad)))
+        core = _core_flash()
+        try:
+            p = wican_params(pin, folder, settings_, core.this_env())
+        except WicanSourceError as e:
+            return dict(ok=False, phase="device", recoverable=True,
+                        detail="%s; nothing run" % e)
+        return core.esptool_flash(img, dict(params, **p), settings_, logdir)
 
     def board_step(step):
         def hook(board, img, ctx, logdir):

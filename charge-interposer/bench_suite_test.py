@@ -20,8 +20,25 @@ suites (tester, 2026-10-18). No hardware, no runner, no ssh.
            refusal (a hand-edited folder, none installed, CAN_TOOLS_DIR
            unset) with the pin still named; the emulated and harness
            suites, which open no dongle, do not
+  m-lanes  settings m_lanes_host: unset (the Windows settings) keeps the
+           m-* groups on madhouse over ssh from the shipped copy, exactly
+           as before; "local" (madhouse-debian, user 2026-11-11) puts them
+           on host local from the worktree, nothing shipped and no {work}
+           path left, with the same checks, argv, class and judge; any
+           other value refused
+  test images  an X2 found on one of shared/x2_test_images' images: the
+           jammer is read as no image identify knows, slcan_spi by its
+           identity (name, version, ELF hash; V and N must agree, the name
+           end _NOT_FOR_VEHICLE), slcan_can1 as its protocol, none as the
+           product or any bench image and none raising; the pinned core's
+           Engine, with the bench suite's identify hook on a fake board,
+           flashes the group's image before its first check, and runs none
+           of its checks if the flash does not take (the charge-interposer
+           reviewer's item 4, 2026-11-13; slcan_spi's identity, its queue
+           after the slcan_can1 move, 2026-11-13)
 
-    py -3.14 charge-interposer/bench_suite_test.py [--can-fail]
+    py -3.14 charge-interposer/bench_suite_test.py [--can-fail]      (Windows)
+    python3.13 charge-interposer/bench_suite_test.py [--can-fail]    (madhouse)
 
 --can-fail runs each test against a mutant of what it tests (a judge that
 passes everything, a suite with its requires dropped, ...) and requires the
@@ -50,6 +67,45 @@ from vtrux_bench.run.model import CheckRun, validate      # noqa: E402
 # this run's scratch_dir folder, made by main() and removed in its finally
 # (2026-10-31: before, a fixed folder in the machine temp folder)
 TMP = None
+
+# No test here runs the real canctl or reads the real sysfs (canchg_mode.py,
+# the bench suite's X2 hooks on Linux): its canctl is a command that changes
+# nothing and exits 9, its sysfs roots a folder that does not exist, and the
+# tests that drive the hooks stub canchg_mode.start and .end (_canchg_stubs).
+B.canchg_mode.CANCTL = [sys.executable, "-B", "-c", "import sys; sys.exit(9)"]
+B.canchg_mode.SYSFS_USB = B.canchg_mode.SYSFS_NET = os.path.join(HERE, "no-such-sysfs")
+B.canchg_mode.BIND_WAIT_S = 0
+# Nor canx2_slcan's (the X2's start hook detaches canx2): the same canctl
+# that exits 9, sysfs and /proc roots that do not exist, and the tests that
+# drive the hooks stub canx2_slcan.start (inside _canchg_stubs).
+B.canx2_slcan.CANCTL = list(B.canchg_mode.CANCTL)
+B.canx2_slcan.SYSFS_NET = B.canx2_slcan.PROC = os.path.join(HERE, "no-such-sysfs")
+B.canx2_slcan.DETACH_WAIT_S = 0
+
+
+def _canchg_stubs(calls):
+    """canchg_mode.start / .end and canx2_slcan.start replaced by stubs
+    recording (step, environ) in calls (canx2's as ("canx2", {})) and
+    returning ok; -> the originals, to put back with _canchg_restore."""
+    M = B.canchg_mode
+    keep = (M.start, M.end, B.canx2_slcan.start)
+
+    def stub(step):
+        def fn(environ, logdir, platform=None):
+            calls.append((step, dict(environ)))
+            return dict(ok=True, detail="canchg %s stub" % step, found={})
+        return fn
+
+    def canx2(logdir, platform=None):
+        calls.append(("canx2", {}))
+        return dict(ok=True, detail="canx2 stub", found={})
+    M.start, M.end = stub("start"), stub("end")
+    B.canx2_slcan.start = canx2
+    return keep
+
+
+def _canchg_restore(keep):
+    B.canchg_mode.start, B.canchg_mode.end, B.canx2_slcan.start = keep
 
 
 class _Chk:
@@ -488,7 +544,8 @@ def _settings():
             f.write(name.encode())
     for v, sha in IMG_SHA.items():
         _idf_build(os.path.join(d, "images"), v, sha)
-    # the WiCAN's sources: bench_wican_test's fake gen-inhibit tree
+    # the WiCAN's sources: bench_wican_test's fake gen-inhibit tools and
+    # its image folder (made-up files, so the committed pin's load refuses)
     import bench_wican_test as WT
     ws, _root = WT.fixture("for-bench-suite-test", TMP)
     return {"interposer_code": HERE,
@@ -496,7 +553,7 @@ def _settings():
             "images_src": IMG_SRC,
             "x2_mac": "02:00:00:00:00:01",
             "gi_tools": ws["gi_tools"],
-            "gi_chain_settings": ws["gi_chain_settings"],
+            "wican_image_dir": ws["wican_image_dir"],
             "hosts": {"local": {}, "madhouse": {}}}
 
 
@@ -504,6 +561,61 @@ def _all():
     s = _settings()
     return s, {"emulated": B.emulated(s), "bench": B.bench(s),
                "harness": B.harness(s)}
+
+
+M_GROUPS = {"emulated": ("m-host", "m-sims"), "harness": ("m-harness", "m-mutants")}
+
+
+def _check_text(c):
+    return " ".join([str(c.cwd)] + [str(a) for a in c.argv]
+                    + ["%s=%s" % kv for kv in sorted((c.env or {}).items())])
+
+
+def test_m_lanes_host():
+    s = _settings()
+    s_loc = dict(s, m_lanes_host="local")
+    for k, make in (("emulated", B.emulated), ("harness", B.harness)):
+        win, loc = make(s), make(s_loc)
+        validate(loc, s_loc, builtin_flashers=("esptool",))
+        wg = {g.name: g for g in win.groups}
+        lg = {g.name: g for g in loc.groups}
+        assert set(wg) == set(lg), (k, sorted(wg), sorted(lg))
+        for n in M_GROUPS[k]:
+            w, l = wg[n], lg[n]
+            # the Windows settings (no m_lanes_host): ssh and the shipped copy
+            assert w.host == "madhouse", (n, w.host)
+            assert w.ship and set(w.ship) == {"code", "canre", "shared"}, (n, w.ship)
+            live = [c for c in w.checks if not c.skip]
+            assert live, n
+            for c in live:
+                assert c.cwd == "{work}/code", (n, c.id, c.cwd)
+                assert (c.env.get("INTERPOSER_CODE"), c.env.get("CANRE_DIR"),
+                        c.env.get("TWAI_FAKE_DIR")) == (
+                    "{work}/code", "{work}/canre", "{work}/shared/twai_port/test"), (n, c.id)
+            # local: the worktree, nothing shipped, no {work} anywhere
+            assert l.host == "local" and not l.ship, (n, l.host, l.ship)
+            for c in l.checks:
+                if c.skip:
+                    continue
+                assert "{work}" not in _check_text(c), (n, c.id, _check_text(c))
+                assert c.cwd == "{interposer_code}", (n, c.id, c.cwd)
+                assert c.env.get("INTERPOSER_CODE") == "{interposer_code}", (n, c.id)
+                assert "CANRE_DIR" not in c.env and "TWAI_FAKE_DIR" not in c.env, (n, c.id)
+                assert c.env.get("L3_STIMULUS") == "{madhouse_artifacts}/l3_stimulus.txt"
+            # the same checks either way
+            assert [(c.id, c.argv, c.cls, c.judge, c.skip, c.python, c.timeout_s)
+                    for c in w.checks] == \
+                   [(c.id, c.argv, c.cls, c.judge, c.skip, c.python, c.timeout_s)
+                    for c in l.checks], n
+        for n in set(wg) - set(M_GROUPS[k]):
+            assert (wg[n].host, [_check_text(c) for c in wg[n].checks]) == \
+                   (lg[n].host, [_check_text(c) for c in lg[n].checks]), n
+    for bad in ("ssh", "", "Local", "madhouse-debian"):
+        try:
+            B.emulated(dict(s, m_lanes_host=bad))
+        except ValueError:
+            continue
+        raise AssertionError("m_lanes_host %r taken" % bad)
 
 
 HARNESS_MARKS = ("mutation", "--can-fail", "--self-test", "canfail",
@@ -603,7 +715,27 @@ def test_suites():
     #      and its -canfail in their place (2a accepted)
     # 247: twai-mutations retired with port_twai.cpp and test_twai_port
     #      (port step 2b; the vehicle port is the shared twai_port)
-    assert len(seen) == 247, "checks across the suites: %d" % len(seen)
+    # 259: sb.* for shared/bench 2026.11.11.2's six new test files
+    #      (test_canmain, test_ota_outcome/policy/preflight/wire, test_wifi),
+    #      each plain and -canfail (re-pin, reviewer 2026-11-11)
+    # 261: serial_open-test and its -canfail (the X2 port's no-reset open on
+    #      Linux, adapter characterisation step 7; reviewer 2026-11-11)
+    # 267: sb.* for shared/bench 2026.11.11.6's three new test files (pin
+    #      since 2026.11.11.7, no new test file)
+    #      (test_canfail_control, test_wican_http, test_serial_dev), each
+    #      plain and -canfail (re-pin, reviewer 2026-11-11)
+    # 269: adapter-fixes-test and its -canfail (the can-tools pin's Linux
+    #      fixes before every Kvaser and gs_usb open; reviewer 2026-11-11)
+    # 271: wican-pin-test and its -canfail (the WiCAN's pinned image, the
+    #      madhouse rebuild of gen-inhibit 7f2d5032 _man; reviewer 2026-11-11)
+    # 273: cf.bench-charger-silent and cf.bench-rx-order (the gs_usb stamp's
+    #      32-bit wrap unwrapped, the reviewer's E3, 2026-11-12)
+    # 275: canchg-mode-test and its -canfail (the bench run sets canchg's
+    #      mode through canctl; the reviewer's canchg-mode batch, 2026-11-12)
+    # 277: canx2-slcan-test and its -canfail (the bench run detaches canx2
+    #      from SLCAN before the X2 is identified or flashed; the reviewer's
+    #      run-start batch, 2026-11-13)
+    assert len(seen) == 277, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -681,7 +813,7 @@ def test_suites():
     # board writes nothing (methodology, 2026-10-20)
     for n, im in su["bench"].images.items():
         if n == B.bench_wican.IMAGE:
-            continue        # never flashed: test_wican_board
+            continue        # its chip is set at the load: bench_wican_test
         assert im.board == "x2" and (im.params or {}).get("chip") == {
             "type": "ESP32-S3", "mac": s["x2_mac"]}, (n, im.params)
     # the public repo holds no MAC: none in the suite's source
@@ -945,10 +1077,13 @@ def _unretire_build_check(s):
 def test_wican_board():
     """The bench suite carries the WiCAN (bench_wican.py; reviewer,
     2026-10-23, for the bench-lock cutover): every bench group that holds
-    the lock names wican_man beside its X2 image; the WiCAN's standing
-    image is wican_man, its identity is the fake gen-inhibit build's, its
-    flasher refuses, its hooks are bench_wican's (the X2 gets no step), and
-    identify sends the WiCAN to its page, not to the X2's identify."""
+    the lock names wican_man beside its X2 image; wican_man is idle-safe
+    and the WiCAN has no idle-safe image of its own (the runner's end pass
+    never loads one), its identity is the committed pin's image hash, its
+    flasher is bench_wican's USB load (2026-11-12), which checks the pinned
+    files first and so runs nothing on the fixture's made-up files, its
+    hooks are bench_wican's (the X2 gets no step), and identify sends the
+    WiCAN to its page, not to the X2's identify."""
     import bench_wican_test as WT
     s, su = _all()
     b = su["bench"]
@@ -959,22 +1094,198 @@ def test_wican_board():
         il = g.image_list
         assert len(il) == 2 and [b.images[x].board for x in il] == [
             "x2", W.BOARD] and il[1] == W.IMAGE, (g.name, il)
-    assert b.standing_images == {"x2": "bridge", W.BOARD: W.IMAGE}, \
-        b.standing_images
+    assert b.images[W.IMAGE].idle_safe and W.BOARD not in b.idle_safe_images, \
+        (b.images[W.IMAGE].idle_safe, b.idle_safe_images)
     im = b.images[W.IMAGE]
     assert (im.board, im.flasher, im.expect) == (W.BOARD, W.FLASHER,
                                                  WT.MAN_SHA), im
     res = b.flashers[W.FLASHER](im, {}, s, TMP)
-    assert res["ok"] is False and res["recoverable"] is False, res
+    assert res["ok"] is False and res["phase"] == "pin" and \
+        "nothing run" in res["detail"], res
     assert b.identify(im, None, TMP) == WT.MAN_SHA
     d = os.path.join(TMP, "wican_hooks")
     os.makedirs(d, exist_ok=True)
-    x2 = b.on_start("x2", b.images["bridge"], None, d)
+    keep = _canchg_stubs([])            # the X2's canchg step: test_canchg_mode_hooks
+    try:
+        x2 = b.on_start("x2", b.images["bridge"], None, d)
+    finally:
+        _canchg_restore(keep)
     assert x2["ok"] is True and "no start step" in x2["detail"], x2
     for hook, flag in ((b.on_start, "--first"), (b.on_end, "--want")):
         out = hook(W.BOARD, im, None, d)
         a = WT.calls(os.path.dirname(os.environ["FAKE_WICAN_ARGV"]))[-1]
         assert out["ok"] is True and a[a.index(flag) + 1] == W.IMAGE, (out, a)
+
+
+def test_canchg_mode_hooks():
+    """The bench suite's hooks set canchg's mode (canchg_mode.py; tester,
+    2026-11-12, the reviewer's canchg-mode batch): on the X2, on_start runs
+    canchg_mode.start and on_end canchg_mode.end, once each, with the
+    settings' canchg_device as VTRUX_CANCHG_DEVICE; on the WiCAN neither
+    runs (bench_wican's hooks alone). The emulated and harness suites have
+    no hooks. canchg_mode_test.py tests the steps themselves, and the end
+    step running whatever the WiCAN's hook returned or raised."""
+    s = _settings()
+    s["canchg_device"] = dict(CHG_DEV)
+    want = _ORIG["canchg_env"](s)
+    assert want, want
+    b = B.bench(s)
+    W = B.bench_wican
+    d = os.path.join(TMP, "canchg_hooks")
+    os.makedirs(d, exist_ok=True)
+    calls = []
+    keep = _canchg_stubs(calls)
+    try:
+        out = b.on_start("x2", b.images["bridge"], None, d)
+        chg = [c for c in calls if c[0] != "canx2"]     # canx2's: test_canx2_slcan_hooks
+        assert out["ok"] is True and chg == [("start", want)], (out, calls)
+        out = b.on_end("x2", b.images["bridge"], None, d)
+        chg = [c for c in calls if c[0] != "canx2"]
+        assert out["ok"] is True and chg == [("start", want), ("end", want)], (out, calls)
+        im = b.images[W.IMAGE]
+        for hook in (b.on_start, b.on_end):
+            hook(W.BOARD, im, None, d)
+        assert len([c for c in calls if c[0] != "canx2"]) == 2, calls
+    finally:
+        _canchg_restore(keep)
+    for su in (B.emulated(s), B.harness(s)):
+        assert su.on_start is None and su.on_end is None, (su.name, su.on_start, su.on_end)
+
+
+def test_canx2_slcan_hooks():
+    """The bench suite's X2 start hook detaches canx2 from the kernel's
+    SLCAN first (canx2_slcan.py; tester, 2026-11-13, the reviewer's
+    run-start batch): on the X2, on_start runs canx2_slcan.start once,
+    before canchg's start step (and so before bench_wican's hook given and
+    before the runner identifies or flashes the X2); its failure makes the
+    X2's start hook fail at once, with nothing more of it run (no canchg
+    step), which stops the bench; on_end runs no canx2 step
+    (nothing put back); on the WiCAN neither hook runs it.
+    canx2_slcan_test.py tests the step itself."""
+    s = _settings()
+    s["canchg_device"] = dict(CHG_DEV)
+    b = B.bench(s)
+    W = B.bench_wican
+    d = os.path.join(TMP, "canx2_hooks")
+    os.makedirs(d, exist_ok=True)
+    calls = []
+    keep = _canchg_stubs(calls)
+    try:
+        out = b.on_start("x2", b.images["bridge"], None, d)
+        steps = [c[0] for c in calls]
+        assert out["ok"] is True and steps == ["canx2", "start"], (out, steps)
+        assert "canx2 stub" in out["detail"], out
+        b.on_end("x2", b.images["bridge"], None, d)
+        assert [c[0] for c in calls] == ["canx2", "start", "end"], calls
+        im = b.images[W.IMAGE]
+        for hook in (b.on_start, b.on_end):
+            hook(W.BOARD, im, None, d)
+        assert [c[0] for c in calls].count("canx2") == 1, calls
+
+        def failed(logdir, platform=None):
+            calls.append(("canx2", {}))
+            return dict(ok=False, detail="canx2 failed stub", found={})
+        B.canx2_slcan.start = failed
+        n = len(calls)
+        out = b.on_start("x2", b.images["bridge"], None, d)
+        assert out["ok"] is False and "canx2 failed stub" in out["detail"] and \
+            "was not run" in out["detail"], out
+        # nothing more of the X2's start hook runs (the reviewer, 2026-11-13)
+        assert [c[0] for c in calls[n:]] == ["canx2"], calls[n:]
+    finally:
+        _canchg_restore(keep)
+
+
+# a made-up Innomaker serial (24 hex digits, the real ones' shape)
+CHG_DEV = {"vid": "1D50", "pid": "606f", "serial": "00CC00DD5555666677778888"}
+
+
+def test_canchg_env():
+    """The reviewer's E2 (tester, 2026-11-12): the settings' canchg_device
+    reaches every check of every bench group as VTRUX_CANCHG_DEVICE
+    "<vid>:<pid>:<serial>", vid and pid lower-cased, and survives the
+    runner's formatting; without the setting no bench check carries it; a
+    malformed entry is refused (ValueError); the emulated and harness
+    suites never carry it."""
+    s = _settings()
+    s["canchg_device"] = dict(CHG_DEV)
+    want = "1d50:606f:" + CHG_DEV["serial"]
+    b = B.bench(s)
+    checks = [c for g in b.groups for c in g.checks]
+    assert len(checks) > 30, len(checks)
+    off = [c.id for c in checks if c.env.get(B.CANCHG_ENV) != want]
+    assert not off, off
+    from vtrux_bench.run.engine import fmt
+    assert fmt(want, {}) == want
+    for k, f in (("emulated", B.emulated), ("harness", B.harness)):
+        assert not [c.id for g in f(s).groups for c in g.checks
+                    if B.CANCHG_ENV in (c.env or {})], k
+    s2 = _settings()
+    assert not [c.id for g in B.bench(s2).groups for c in g.checks
+                if B.CANCHG_ENV in c.env]
+    for bad in ("1d50:606f:" + CHG_DEV["serial"], dict(CHG_DEV, vid="1d5"),
+                dict(CHG_DEV, pid="60zf"), dict(CHG_DEV, serial=""),
+                dict(CHG_DEV, serial="00CC 00DD"), dict(CHG_DEV, serial="{x}")):
+        s2["canchg_device"] = bad
+        try:
+            B.canchg_env(s2)
+        except ValueError:
+            continue
+        raise AssertionError("canchg_device %r not refused" % (bad,))
+
+
+def test_esptool_env():
+    """bench_mcp_reset's esptool is the core flasher's (tester, 2026-11-12;
+    the reviewer, 2026-11-11): the settings' esptool.argv reaches every
+    bench check as VTRUX_ESPTOOL_ARGV, the JSON of the list, which survives
+    the runner's formatting and the driver reads back as the same list;
+    without it no check carries it; a malformed argv is refused."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "bench_mcp_reset", os.path.join(HERE, "bench_drivers", "bench_mcp_reset.py"))
+    mr = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mr)
+    argv = ["/opt/idf/python_env/bin/python", "-m", "esptool"]
+    s = _settings()
+    s["esptool"] = {"argv": list(argv), "baud": 921600}
+    b = B.bench(s)
+    vals = {c.env.get(B.ESPTOOL_ENV) for g in b.groups for c in g.checks}
+    assert len(vals) == 1, vals
+    from vtrux_bench.run.engine import fmt
+    v = fmt(vals.pop(), {})
+    assert mr.esptool_argv({mr.ESPTOOL_ENV: v}, "posix") == argv, v
+    assert B.ESPTOOL_ENV == mr.ESPTOOL_ENV
+    s2 = _settings()
+    assert not [c.id for g in B.bench(s2).groups for c in g.checks
+                if B.ESPTOOL_ENV in c.env]
+    for bad in ("python -m esptool", [], ["python", ""], ["python", 3], ["{x}/python"]):
+        s2["esptool"] = {"argv": bad}
+        try:
+            B.esptool_env(s2)
+        except ValueError:
+            continue
+        raise AssertionError("esptool.argv %r not refused" % (bad,))
+
+
+def test_idle_safe():
+    """shared/bench 2026.11.11.2 (user, 2026-11-11: no end restore): the
+    bench suite names no standing image; exactly witness, c12_bench and
+    vport_bench are marked not safe to leave idle (X2_IDLE_UNSAFE), the
+    bridge, truck and WiCAN images are idle-safe, and the X2's idle-safe
+    image is the bridge (spec 2.3; X2_IDLE_SAFE). The emulated and harness
+    suites have no images to mark."""
+    s, su = _all()
+    b = su["bench"]
+    assert b.standing_image is None and b.standing_images is None, \
+        (b.standing_image, b.standing_images)
+    unsafe = {n for n, im in b.images.items() if not im.idle_safe}
+    assert unsafe == {"witness", "c12_bench", "vport_bench"} == set(B.X2_IDLE_UNSAFE), unsafe
+    assert b.idle_safe_images == {"x2": "bridge"}, b.idle_safe_images
+    for n in ("bridge", "truck", B.bench_wican.IMAGE):
+        assert b.images[n].idle_safe, n
+    validate(b, s, builtin_flashers=("esptool",))
+    for k in ("emulated", "harness"):
+        assert not su[k].images and not su[k].idle_safe_images, k
 
 
 def test_mutant_wiring():
@@ -1069,6 +1380,378 @@ def test_identify():
         assert calls == [], calls
     finally:
         I.read_7f7, I.read_hello, I.read_slcan = saved
+
+
+# ---- the X2's test images (tester, 2026-11-13, the charge-interposer
+# reviewer's item 4) ---------------------------------------------------------
+# Hand takes and the Android session leave the X2 on one of
+# shared/x2_test_images' images (the jammer, the SLCANs), and under the bench
+# lock as a mutex nothing puts it back (shared/bench SPEC section 8). The
+# bench suite must never take such a board for one of its own images:
+# identify reads it as no image of the suite, without raising (a raise
+# stops the bench, test_identify), and the runner flashes the suite's image
+# before the group's first check. What each image answers is its README's,
+# at shared/main tag 2026.11.13.2: jammer/README.md ("Commands": lines end
+# at LF, CR dropped, anything malformed answered "JAMMER ERR <reason>"; the
+# five-line banner at boot), slcan_spi/README.md ("The protocol": lines end
+# at CR, V / N answer "V0100 <identity>" / "N<identity>", anything else BEL;
+# "Console lines": the one boot line) and slcan_can1's, the interposer's
+# slcan variant until the move (V0101 / NF001, bench_identify's docstring).
+X2_JAMMER_BANNER = [
+    "JAMMER vtrux_jammer_x2_NOT_FOR_VEHICLE -- TEST EQUIPMENT, NEVER ON THE TRUCK",
+    "JAMMER build version=2026.11.13 elf=" + "4" * 64 + " idf=v5.4.2",
+    "JAMMER tx=GPIO7(CAN1/TWAI) twai=never_started stops=a+b reset_reason=21 "
+    "uptime_us=300120",
+    "JAMMER mcp2515 canstat=0x80 canctrl=0x87 config_mode=yes",
+    "JAMMER limits w_us=12..50 p_us>=4w..20000 ms<=30000 n<=1000 interval_ms=1..10000"]
+X2_SLCAN_SPI_ID = "slcan_spi_NOT_FOR_VEHICLE 2026.11.13 elf=" + "5" * 64
+# what identify reads off each test image: the jammer, no image at all; for
+# slcan_can1 the protocol (bench_identify's docstring: SLCAN reports no
+# build id); slcan_spi by its identity, which names its build (SPEC T12):
+# "<name>:<version>:<elf sha256>" (tester, 2026-11-13, the charge-interposer
+# reviewer's queue after the slcan_can1 move)
+X2_TEST_READS = {"jammer": None,
+                 "slcan_spi": "slcan_spi_NOT_FOR_VEHICLE:2026.11.13:" + "5" * 64,
+                 "slcan_can1": "slcan:V0101:NF001"}
+
+
+class _FakeX2:
+    """The X2 as bench_identify's three reads see it, on one image: the
+    ACKed boot (bench_powerup_round, run as a subprocess: its log, with the
+    board's serial lines as "serial>" lines, and its witness file) and the
+    USB serial port (HELLO?, then CR, V and N). image: "jammer",
+    "slcan_spi", "slcan_can1", ("app", build id) for an interposer image
+    (0x7F7 and the product's serial lines) or ("hello", name, ELF sha256)
+    for a bench test image. jam_end and jam_err shape the jammer's replies,
+    which its README does not pin down beyond "JAMMER ERR <reason>".
+    spi_v and spi_n are the identities slcan_spi answers V and N with."""
+
+    def __init__(self, image, jam_end=b"\n", jam_err=b"unknown_command",
+                 spi_v=X2_SLCAN_SPI_ID, spi_n=X2_SLCAN_SPI_ID):
+        self.image, self.jam_end, self.jam_err = image, jam_end, jam_err
+        self.spi_v, self.spi_n = spi_v, spi_n
+        self.boots = self.opens = 0
+        self.inbuf, self.out = b"", b""
+
+    def boot_lines(self):
+        im = self.image
+        if im == "jammer":
+            return list(X2_JAMMER_BANNER)
+        if im == "slcan_spi":
+            return ["# NOT FOR VEHICLE slcan_spi"]
+        if im[0] == "app":
+            return REPLY_DIAG.strip().splitlines()
+        return []
+
+    def run(self, cmd, stdout=None, **kw):
+        """bench_powerup_round --mode ack --boots 1 --out OUT."""
+        self.boots += 1
+        out = cmd[cmd.index("--out") + 1]
+        os.makedirs(out, exist_ok=True)
+        rows = []
+        if self.image[0] == "app":
+            data = int(self.image[1], 16).to_bytes(4, "little") + bytes(4)
+            rows.append("0.100000 0.100000 7F7 0 %s" % data.hex())
+        with open(os.path.join(out, "witness_ack_01.txt"), "w") as f:
+            f.write("# t_device t_host id err data -- fake\n")
+            f.write("".join(r + "\n" for r in rows))
+        stdout.write("boot ack_01: fake; segment: fake; WiCAN fake; 0 frame(s)\n")
+        for ln in self.boot_lines():
+            stdout.write("  serial> %s\n" % ln)
+        stdout.write("\n== verdicts\n  ack                 1  PASS\n")
+        return types.SimpleNamespace(returncode=0)
+
+    def open_quiet(self, port, baud, timeout):
+        self.opens += 1
+        self.inbuf = self.out = b""
+        return _FakeX2Port(self)
+
+    def feed(self, data):
+        im = self.image
+        for b in data:
+            ch = bytes([b])
+            if im == "jammer":
+                if ch == b"\r":
+                    continue
+                if ch == b"\n":
+                    self.out += b"JAMMER ERR " + self.jam_err + self.jam_end
+                    self.inbuf = b""
+                    continue
+            elif im in ("slcan_spi", "slcan_can1"):
+                if ch == b"\r":
+                    line, self.inbuf = self.inbuf.strip(b"\n"), b""
+                    if im == "slcan_spi" and line == b"V":
+                        self.out += b"V0100 " + self.spi_v.encode() + b"\r"
+                    elif im == "slcan_spi" and line == b"N":
+                        self.out += b"N" + self.spi_n.encode() + b"\r"
+                    elif im == "slcan_can1" and line in (b"V", b"N"):
+                        self.out += b"V0101\r" if line == b"V" else b"NF001\r"
+                    else:
+                        self.out += b"\x07"
+                    continue
+            elif im[0] == "hello":
+                if ch == b"\n" and self.inbuf.strip() == b"HELLO?":
+                    self.out += ("@HELLO %s version=1 elf_sha256=%s\n"
+                                 % (im[1], im[2])).encode()
+                if ch == b"\n":
+                    self.inbuf = b""
+                    continue
+            self.inbuf += ch
+
+
+class _FakeX2Port:
+    def __init__(self, board):
+        self.board = board
+
+    def write(self, data):
+        self.board.feed(data)
+
+    def read(self, n):
+        got, self.board.out = self.board.out[:n], self.board.out[n:]
+        return got
+
+    def flush(self):
+        pass
+
+    def reset_input_buffer(self):
+        self.board.out = b""
+
+    def close(self):
+        pass
+
+
+class _FakeClock:
+    """bench_identify's time: no real waits (HELLO? waits 5 s for nothing on
+    a test image)."""
+    def __init__(self):
+        self.t = 0.0
+
+    def monotonic(self):
+        self.t += 0.25
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+def _on_board(board):
+    """bench_identify's subprocess, serial port and clock pointed at board;
+    returns what to hand to _off_board."""
+    I = B.bench_identify
+    import serial_open
+    keep = (I.subprocess, I.time, serial_open.open_quiet)
+    I.subprocess = types.SimpleNamespace(run=board.run, STDOUT=subprocess.STDOUT)
+    clock = _FakeClock()
+    I.time = types.SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep)
+    serial_open.open_quiet = board.open_quiet
+    return keep
+
+
+def _off_board(keep):
+    I = B.bench_identify
+    import serial_open
+    I.subprocess, I.time, serial_open.open_quiet = keep
+
+
+def _x2_test_boards():
+    """[(label, board, what identify must read)]: the jammer with its
+    replies ended LF or CRLF, a bare reason or one that echoes the line,
+    and the two SLCANs."""
+    out = []
+    for end in (b"\n", b"\r\n"):
+        for err in (b"unknown_command", b"unknown_command HELLO?"):
+            out.append(("jammer %r %r" % (end, err),
+                        _FakeX2("jammer", end, err), X2_TEST_READS["jammer"]))
+    for im in ("slcan_spi", "slcan_can1"):
+        out.append((im, _FakeX2(im), X2_TEST_READS[im]))
+    return out
+
+
+def test_x2_test_images_identify():
+    """(a) identify on a board left on an X2 test image: the jammer, silent
+    on CAN and answering no read with an identity, is read as None (no
+    image identify knows); slcan_spi by its identity (name, version, ELF
+    hash); slcan_can1 as its protocol,
+    slcan:V0101:NF001. None of them raises, none is read as the product
+    (product-without-0x7F7) and none as any image of the bench suite; the
+    boot capture runs once and the port is opened for HELLO? and SLCAN.
+    Controls on the same fakes: an interposer image is read by its 0x7F7
+    build id with the port never opened, a bench test image by its @HELLO."""
+    I = B.bench_identify
+    s, su = _all()
+    expects = {im.expect for im in su["bench"].images.values()}
+    img = B.Image("bridge", "esptool")
+    st = {"serial_port": "fake-x2"}
+    for label, board, want in _x2_test_boards():
+        keep = _on_board(board)
+        try:
+            got = I.identify(img, {}, TMP, st)
+        finally:
+            _off_board(keep)
+        assert got == want, "%s: read %r, not %r" % (label, got, want)
+        assert got not in expects, "%s read as a bench image: %r" % (label, got)
+        assert got != "product-without-0x7F7", "%s read as the product" % label
+        assert (board.boots, board.opens) == (1, 2), \
+            "%s: %d boot(s), port opened %d time(s)" % (label, board.boots,
+                                                        board.opens)
+    for board, want, opens in (
+            (_FakeX2(("app", "c7c98adc")), "c7c98adc", 0),
+            (_FakeX2(("hello", "c12_bench", "6" * 64)),
+             "c12_bench:" + "6" * 64, 1)):
+        keep = _on_board(board)
+        try:
+            got = I.identify(img, {}, TMP, st)
+        finally:
+            _off_board(keep)
+        assert got == want and board.opens == opens, (board.image, got,
+                                                      board.opens)
+
+
+def test_slcan_spi_identity():
+    """(c) slcan_spi's identity (slcan_spi/README.md, "The protocol" and
+    "Variants", at shared/main tag 2026.11.13.3): identify names the build
+    it reads, "<name>:<version>:<elf sha256>", for the dev image and both
+    test variants, so the run record and the release note name the board's
+    image. Read as no image identify knows: V and N giving different
+    identities, a name not ending _NOT_FOR_VEHICLE, an ELF hash not 64
+    digits, an identity not the whole answer. None is read as the product
+    or as an image of the bench suite, and none raises."""
+    I = B.bench_identify
+    s, su = _all()
+    expects = {im.expect for im in su["bench"].images.values()}
+    img = B.Image("bridge", "esptool")
+    st = {"serial_port": "fake-x2"}
+    elf, other = "a" * 64, "b" * 64
+    cases = []
+    for name in ("slcan_spi_NOT_FOR_VEHICLE", "slcan_spi_a_NOT_FOR_VEHICLE",
+                 "slcan_spi_b_NOT_FOR_VEHICLE"):
+        for ver in ("2026.11.13.3", "2026.11.13.3-2-g4dc0bd00-dirty"):
+            ident = "%s %s elf=%s" % (name, ver, elf)
+            cases.append(("%s %s" % (name, ver), ident, ident,
+                          "%s:%s:%s" % (name, ver, elf)))
+    good = "slcan_spi_NOT_FOR_VEHICLE 2026.11.13.3 elf=" + elf
+    cases += [
+        ("V and N elf differ", good,
+         "slcan_spi_NOT_FOR_VEHICLE 2026.11.13.3 elf=" + other, None),
+        ("V and N version differ", good,
+         "slcan_spi_NOT_FOR_VEHICLE 2026.11.13.2 elf=" + elf, None),
+        ("V and N name differ", good,
+         "slcan_spi_a_NOT_FOR_VEHICLE 2026.11.13.3 elf=" + elf, None),
+        ("no NOT_FOR_VEHICLE", "slcan_spi 2026.11.13.3 elf=" + elf,
+         "slcan_spi 2026.11.13.3 elf=" + elf, None),
+        ("elf 63 digits", good[:-1], good[:-1], None),
+        ("elf 65 digits", good + "a", good + "a", None),
+        ("an identity inside a longer answer", "x " + good, "x " + good, None)]
+    for label, v, n, want in cases:
+        board = _FakeX2("slcan_spi", spi_v=v, spi_n=n)
+        keep = _on_board(board)
+        try:
+            got = I.identify(img, {}, TMP, st)
+        finally:
+            _off_board(keep)
+        assert got == want, "%s: read %r, not %r" % (label, got, want)
+        assert got not in expects, "%s read as a bench image: %r" % (label, got)
+        assert got != "product-without-0x7F7", "%s read as the product" % label
+
+
+def test_x2_test_image_flash_first():
+    """(b) a bench group whose X2 is found on a test image: the runner
+    (the pinned core's Engine, with the bench suite's own identify hook and
+    bench_identify reading the fake board) flashes the group's image first
+    and runs its checks only once identify reads that image back, for every
+    X2 image of the bench suite and each test image; a flash that leaves
+    the board on the test image runs none of the group's checks, all
+    NOT-RUN. The flasher is a fake that puts the image on the fake board;
+    the checks and their placement are recorded, never run."""
+    from vtrux_bench.run.engine import Engine
+    from vtrux_bench.run.record import Recorder
+    s, su = _all()
+    s["serial_port"] = "fake-x2"
+    b = B.bench(s)
+    x2_images = sorted(n for n, im in b.images.items() if im.board == "x2")
+    assert len(x2_images) == 5, x2_images
+    # this call's own run folders (--can-fail runs the test once per mutant)
+    runs = os.path.join(TMP, "flash-first")
+    scratch_dir.remove(runs)
+
+    def engine(tag, board, take=True):
+        eng = Engine(b, s, runs_root=runs)
+        eng.run_id = tag
+        eng.run_dir = os.path.join(runs, tag)
+        os.makedirs(eng.run_dir)
+        eng.rec = Recorder(eng.run_dir, tag)
+        seq = []
+
+        def flasher(image, params, settings, logdir):
+            seq.append(("flash", image.name, board.image))
+            if take:
+                e = image.expect
+                board.image = ("hello",) + tuple(e.split(":", 1)) \
+                    if ":" in e else ("app", e)
+            return dict(ok=True, phase="done", detail="fake flash")
+
+        def run_check(g, c, carried):
+            seq.append(("check", c.id, board.image))
+            return True
+        eng.flashers["esptool"] = flasher
+        eng.run_check = run_check
+        eng.place_group = lambda g, items: None
+        eng.case_gate = lambda: None
+        return eng, seq
+
+    n = 0
+    for label, board, read in _x2_test_boards():
+        start = board.image
+        for name in x2_images:
+            n += 1
+            board.image = start
+            eng, seq = engine("t%03d" % n, board)
+            logdir = os.path.join(eng.run_dir, "_bench")
+            os.makedirs(logdir)
+            keep = _on_board(board)
+            try:
+                ok, why = eng.ensure_image(name, logdir)
+            finally:
+                _off_board(keep)
+                eng.rec.close()
+            assert ok and why.startswith("flashed x2 to %s" % name), \
+                (label, name, ok, why)
+            assert [x[:2] for x in seq] == [("flash", name)], (label, name, seq)
+            fs = [e for e in eng.rec.events if e["kind"] == "flash-start"]
+            assert len(fs) == 1 and fs[0]["read_before"] == read, \
+                (label, name, fs)
+    # at the group level: flash first, then the checks, on the right image;
+    # a flash that does not take runs none of them
+    g = next(x for x in b.groups if x.name == "b-bridge")
+    want = ("app", b.images["bridge"].expect)
+    runnable = [c.id for c in g.checks if not c.skip]
+    assert runnable, g.checks
+    for label, board, read in _x2_test_boards():
+        start = board.image
+        for take in (True, False):
+            n += 1
+            board.image = start
+            eng, seq = engine("g%03d" % n, board, take=take)
+            keep = _on_board(board)
+            try:
+                eng.run_group(g, list(g.checks), {})
+            finally:
+                _off_board(keep)
+                eng.rec.close()
+            flashes = [x for x in seq if x[0] == "flash"]
+            assert [x[:2] for x in flashes] == [("flash", "bridge")] and \
+                seq[0] == flashes[0], (label, take, seq)
+            checks = [x for x in seq if x[0] == "check"]
+            res = [r for r in eng.rec.results if r["group"] == g.name]
+            if take:
+                assert [x[1] for x in checks] == runnable and \
+                    all(x[2] == want for x in checks), (label, seq)
+                continue
+            assert not checks, (label, seq)
+            assert len(res) == len(g.checks) and all(
+                r["verdict"] == Verdict.NOT_RUN and
+                "flashed bridge but identify read" in r["detail"]
+                for r in res), (label, res)
 
 
 # The trees a run imports Python from. Bytecode written there must not make
@@ -1678,7 +2361,11 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_script_coverage, test_shared_bench_tests,
          test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
-         test_scripts_in_tree, test_can_tools_record, test_runner_stage]
+         test_scripts_in_tree, test_can_tools_record, test_runner_stage,
+         test_m_lanes_host, test_idle_safe, test_canchg_env, test_esptool_env,
+         test_canchg_mode_hooks, test_canx2_slcan_hooks,
+         test_x2_test_images_identify, test_slcan_spi_identity,
+         test_x2_test_image_flash_first]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -1847,6 +2534,120 @@ def _identify_ignores_product(image, ctx, logdir, settings):
     return I.read_slcan(settings, logdir, "t")
 
 
+# mutants of the X2 test-image tests (item 4)
+def _slcan_raises(settings, logdir, tag):
+    got = _ORIG["bench_identify.read_slcan"](settings, logdir, tag)
+    if got is None:
+        raise B.bench_identify.IdentifyError("nothing answered V or N")
+    return got
+
+
+def _slcan_unanchored(settings, logdir, tag):
+    """read_slcan with V and N matched anywhere in the reply, not as the
+    whole answer before its CR."""
+    I = B.bench_identify
+    s = I._serial(settings)
+    got = {}
+    try:
+        s.write(b"\r")
+        s.flush()
+        I.time.sleep(0.3)
+        s.read(4096)
+        for cmd in (b"V", b"N"):
+            s.write(cmd + b"\r")
+            s.flush()
+            I.time.sleep(0.4)
+            got[cmd] = s.read(4096)
+    finally:
+        s.close()
+    v = re.search(rb"V(\d{4})", got[b"V"])
+    n = re.search(rb"N(\w{4})", got[b"N"])
+    if v and n:
+        return "slcan:V%s:N%s" % (v.group(1).decode(), n.group(1).decode())
+    return None
+
+
+# mutants of slcan_spi's identity read (test_slcan_spi_identity)
+def _spi_read(v_re, n_re, compare=True, form=lambda g: b":".join(g)):
+    """read_slcan with slcan_spi's identity parsed by v_re and n_re,
+    compared or not, and formed by form; the V0101 read unchanged."""
+    def read(settings, logdir, tag):
+        I = B.bench_identify
+        s = I._serial(settings)
+        got = {}
+        try:
+            s.write(b"\r")
+            s.flush()
+            I.time.sleep(0.3)
+            s.read(4096)
+            for cmd in (b"V", b"N"):
+                s.write(cmd + b"\r")
+                s.flush()
+                I.time.sleep(0.4)
+                got[cmd] = s.read(4096)
+        finally:
+            s.close()
+        v = re.search(v_re, got[b"V"])
+        n = re.search(n_re, got[b"N"])
+        if v and n and (not compare or v.groups() == n.groups()):
+            return form(v.groups()).decode()
+        v = re.search(rb"V(\d{4})\r", got[b"V"])
+        n = re.search(rb"N(\w{4})\r", got[b"N"])
+        if v and n:
+            return "slcan:V%s:N%s" % (v.group(1).decode(), n.group(1).decode())
+        return None
+    return read
+
+
+_SPI_OK = rb"(slcan_spi\w*_NOT_FOR_VEHICLE) (\S+) elf=([0-9a-f]{64})\r"
+_SPI_A = rb"(?:^|[\r\n\x07])"
+_SPI_V_OK, _SPI_N_OK = _SPI_A + rb"V0100 " + _SPI_OK, _SPI_A + rb"N" + _SPI_OK
+_spi_v_only = _spi_read(_SPI_V_OK, _SPI_N_OK, compare=False)
+_spi_any_name = _spi_read(
+    _SPI_A + rb"V0100 (slcan_spi\w*) (\S+) elf=([0-9a-f]{64})\r",
+    _SPI_A + rb"N(slcan_spi\w*) (\S+) elf=([0-9a-f]{64})\r")
+_spi_any_elf = _spi_read(
+    _SPI_A + rb"V0100 (slcan_spi\w*_NOT_FOR_VEHICLE) (\S+) elf=([0-9a-f]+)\r",
+    _SPI_A + rb"N(slcan_spi\w*_NOT_FOR_VEHICLE) (\S+) elf=([0-9a-f]+)\r")
+_spi_unanchored = _spi_read(_SPI_OK, _SPI_OK)
+_spi_name_only = _spi_read(_SPI_V_OK, _SPI_N_OK, form=lambda g: g[0])
+
+
+def _identify_unplaced_expected(image, ctx, logdir, settings):
+    got = _ORIG["bench_identify.identify"](image, ctx, logdir, settings)
+    return image.expect if got is None else got
+
+
+def _identify_unplaced_raises(image, ctx, logdir, settings):
+    got = _ORIG["bench_identify.identify"](image, ctx, logdir, settings)
+    if got is None:
+        raise B.bench_identify.IdentifyError("no image identify knows")
+    return got
+
+
+def _x2_trusts_expect(s):
+    hook = s.identify
+
+    def identify(image, ctx, logdir):
+        if image.board == "x2":
+            return image.expect
+        return hook(image, ctx, logdir)
+    s.identify = identify
+
+
+def _x2_trusts_flash(s):
+    """The X2 read off the board once; every later identify takes the
+    image it is asked about as read (a flash taken as read back)."""
+    hook, seen = s.identify, set()
+
+    def identify(image, ctx, logdir):
+        if image.board == "x2" and ctx.get("run_id") in seen:
+            return image.expect
+        seen.add(ctx.get("run_id"))
+        return hook(image, ctx, logdir)
+    s.identify = identify
+
+
 import re as _re                                          # noqa: E402
 _OLD_PRODUCT_RE = _re.compile(r"serial>.*\b(MODE|spec 2\.3)|^diag st=|"
                               r"\bfw=\d+ schema=\d+")
@@ -1868,8 +2669,129 @@ _ORIG = {n: getattr(B, n) for n in ("script_judge", "recorded_judge",
                                     "host_bridge_judge", "emulated", "bench",
                                     "harness", "product_files")}
 _ORIG["_hb_list"] = B._hb_list
+_ORIG["_Build.mgroup"] = B._Build.mgroup
+_ORIG["_Build.mpy"] = B._Build.mpy
+_ORIG["M_LANES_HOSTS"] = B.M_LANES_HOSTS
+_ORIG["canchg_env"] = B.canchg_env
+_ORIG["esptool_env"] = B.esptool_env
+_ORIG["canchg_mode.hooks"] = B.canchg_mode.hooks
+_ORIG["canx2_slcan.hooks"] = B.canx2_slcan.hooks
+
+
+def _x2_unwired(on_start, on_end, **kw):
+    return on_start, on_end
+
+
+def _x2_after_hook(on_start, on_end, **kw):
+    X = B.canx2_slcan
+
+    def s(b, img, ctx, logdir):
+        if b != X.X2_BOARD:
+            return on_start(b, img, ctx, logdir)
+        theirs = X._call(on_start, b, img, ctx, logdir)
+        return X._both(X.start(logdir), theirs)
+    return s, on_end
+
+
+def _x2_on_wican(on_start, on_end, **kw):
+    return _ORIG["canx2_slcan.hooks"](on_start, on_end, board=B.bench_wican.BOARD, **kw)
+
+
+def _x2_also_at_end(on_start, on_end, **kw):
+    s, _e = _ORIG["canx2_slcan.hooks"](on_start, on_end, **kw)
+    return s, _ORIG["canx2_slcan.hooks"](on_end, on_end, **kw)[0]
+
+
+def _x2_failure_ignored(on_start, on_end, **kw):
+    s, e = _ORIG["canx2_slcan.hooks"](on_start, on_end, **kw)
+
+    def s2(b, img, ctx, logdir):
+        out = s(b, img, ctx, logdir)
+        out["ok"] = True
+        return out
+    return s2, e
+
+
+def _x2_on_start_anyway(on_start, on_end, **kw):
+    """The hook given run after a failed detach too (before the reviewer's
+    fix of e284dd75)."""
+    X = B.canx2_slcan
+
+    def s(b, img, ctx, logdir):
+        if b != X.X2_BOARD:
+            return on_start(b, img, ctx, logdir)
+        mine = X.start(logdir)
+        return X._both(mine, X._call(on_start, b, img, ctx, logdir))
+    return s, on_end
+
+
+def _hooks_start_only(on_start, on_end, environ, **kw):
+    return _ORIG["canchg_mode.hooks"](on_start, on_end, environ, **kw)[0], on_end
+
+
+def _hooks_end_only(on_start, on_end, environ, **kw):
+    return on_start, _ORIG["canchg_mode.hooks"](on_start, on_end, environ, **kw)[1]
+
+
+def _hooks_no_device(on_start, on_end, environ, **kw):
+    return _ORIG["canchg_mode.hooks"](on_start, on_end, {}, **kw)
+
+
+def _hooks_on_wican(on_start, on_end, environ, **kw):
+    return _ORIG["canchg_mode.hooks"](on_start, on_end, environ,
+                                      board=B.bench_wican.BOARD, **kw)
+
+
+def _esptool_unchecked(settings):
+    argv = (settings.get("esptool") or {}).get("argv")
+    return {} if argv is None else {B.ESPTOOL_ENV: json.dumps(argv)}
+
+
+def _esptool_space_joined(settings):
+    out = _ORIG["esptool_env"](settings)
+    return out and {B.ESPTOOL_ENV: " ".join(settings["esptool"]["argv"])}
+
+
+def _canchg_unchecked(settings):
+    d = settings.get("canchg_device")
+    return {} if d is None else {B.CANCHG_ENV: "%s:%s:%s" % (
+        d["vid"].lower(), d["pid"].lower(), d["serial"])}
+
+
+def _canchg_case_kept(settings):
+    d = settings.get("canchg_device")
+    out = _ORIG["canchg_env"](settings)
+    return out and {B.CANCHG_ENV: "%s:%s:%s" % (d["vid"], d["pid"], d["serial"])}
+
+
+def _canchg_dropped_from(group, key=None):
+    def fn(s):
+        for g in s.groups:
+            if g.name == group:
+                for c in g.checks:
+                    c.env.pop(key or B.CANCHG_ENV, None)
+    return fn
+
+
+def _mgroup_always_madhouse(self, name, checks):
+    return B.Group(name, host="madhouse", ship=self.ship, checks=checks)
+
+
+def _mgroup_always_local(self, name, checks):
+    return B.Group(name, host="local", ship=None, checks=checks)
+
+
+def _mgroup_ships_locally(self, name, checks):
+    return B.Group(name, host=self.m_host, ship=self.ship, checks=checks)
+
+
+def _mpy_work_cwd(self, cid, argv, **kw):
+    kw.setdefault("cwd", "{work}/code")
+    return _ORIG["_Build.mpy"](self, cid, argv, **kw)
 _ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
 _ORIG["bench_identify.identify"] = B.bench_identify.identify
+_ORIG["bench_identify.read_slcan"] = B.bench_identify.read_slcan
+_ORIG["bench_identify.SPI_V_RE"] = B.bench_identify.SPI_V_RE
 _ORIG["self._PYCACHE_DROP"] = _PYCACHE_DROP
 _ORIG["self.NO_ARGPARSE"] = NO_ARGPARSE
 _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
@@ -2063,12 +2985,37 @@ def _no_wican_in(group):
     return fn
 
 
-def _no_wican_standing(s):
+def _wican_marked_unsafe(s):
+    s.images[B.bench_wican.IMAGE].idle_safe = False
+
+
+def _vport_left_safe(s):
+    s.images["vport_bench"].idle_safe = True
+
+
+def _bridge_marked_unsafe(s):
+    s.images["bridge"].idle_safe = False
+
+
+def _no_idle_safe_x2(s):
+    s.idle_safe_images = {}
+
+
+def _witness_idle_safe_image(s):
+    s.idle_safe_images = {"x2": "witness"}
+
+
+def _standing_back(s):
     s.standing_images = {"x2": "bridge"}
 
 
 def _no_release_hook(s):
     s.on_end = None
+
+
+def _wican_flasher_not_the_load(s):
+    s.flashers[B.bench_wican.FLASHER] = lambda *a, **k: dict(
+        ok=False, phase="refused", recoverable=False, detail="never flashes")
 
 
 def _wican_identify_off(s):
@@ -2079,15 +3026,74 @@ def _wican_identify_off(s):
 
 
 MUTANTS = {
+    "test_esptool_env": [
+        ("esptool_env", lambda settings: {}, "esptool.argv never passed on"),
+        ("esptool_env", _esptool_unchecked, "a malformed esptool.argv passed on"),
+        ("esptool_env", _esptool_space_joined,
+         "the argv passed space-joined, not as JSON"),
+        ("bench", _wrap_suite("bench", _canchg_dropped_from("b-c12", B.ESPTOOL_ENV)),
+         "one bench group's checks without it")],
+    "test_canchg_env": [
+        ("canchg_env", lambda settings: {}, "canchg_device never passed on"),
+        ("canchg_env", _canchg_unchecked, "a malformed canchg_device passed on"),
+        ("canchg_env", _canchg_case_kept, "vid and pid passed on in the settings' case"),
+        ("bench", _wrap_suite("bench", _canchg_dropped_from("b-c12")),
+         "one bench group's checks without it")],
+    "test_idle_safe": [
+        ("bench", _wrap_suite("bench", _vport_left_safe),
+         "vport_bench left idle-safe"),
+        ("bench", _wrap_suite("bench", _bridge_marked_unsafe),
+         "the bridge marked not idle-safe"),
+        ("bench", _wrap_suite("bench", _no_idle_safe_x2),
+         "no idle-safe image for the X2"),
+        ("bench", _wrap_suite("bench", _witness_idle_safe_image),
+         "the witness named the X2's idle-safe image"),
+        ("bench", _wrap_suite("bench", _standing_back),
+         "a standing image named again")],
+    "test_m_lanes_host": [
+        ("_Build.mgroup", _mgroup_always_madhouse,
+         "m_lanes_host local ignored: the m-lanes still over ssh"),
+        ("_Build.mgroup", _mgroup_always_local,
+         "the Windows settings' m-lanes moved off the ssh route"),
+        ("_Build.mgroup", _mgroup_ships_locally,
+         "a local m-lane still ships the copy"),
+        ("_Build.mpy", _mpy_work_cwd,
+         "a local m-check left in {work}/code"),
+        ("M_LANES_HOSTS", ("madhouse", "local", "ssh", "", "Local", "madhouse-debian"),
+         "any m_lanes_host taken")],
     "test_wican_board": [
         ("bench", _wrap_suite("bench", _no_wican_in("b-vport")),
          "a bench group without the WiCAN"),
-        ("bench", _wrap_suite("bench", _no_wican_standing),
-         "no standing image for the WiCAN"),
+        ("bench", _wrap_suite("bench", _wican_marked_unsafe),
+         "the WiCAN image marked not idle-safe"),
         ("bench", _wrap_suite("bench", _no_release_hook),
          "no release hook (the WiCAN unread at every release)"),
         ("bench", _wrap_suite("bench", _wican_identify_off),
-         "identify never reads the WiCAN")],
+         "identify never reads the WiCAN"),
+        ("bench", _wrap_suite("bench", _wican_flasher_not_the_load),
+         "the WiCAN's flasher is not bench_wican's load")],
+    "test_canchg_mode_hooks": [
+        ("canchg_mode.hooks", _hooks_start_only,
+         "the canchg end step left out of the bench suite's end hook"),
+        ("canchg_mode.hooks", _hooks_end_only,
+         "the canchg start step left out of the bench suite's start hook"),
+        ("canchg_mode.hooks", _hooks_no_device,
+         "the hooks not given the settings' canchg_device"),
+        ("canchg_mode.hooks", _hooks_on_wican,
+         "the canchg step on the WiCAN, not the X2")],
+    "test_canx2_slcan_hooks": [
+        ("canx2_slcan.hooks", _x2_unwired,
+         "the canx2 detach left out of the bench suite's start hook"),
+        ("canx2_slcan.hooks", _x2_after_hook,
+         "the canx2 detach after canchg's step and the WiCAN's hook"),
+        ("canx2_slcan.hooks", _x2_on_wican,
+         "the canx2 detach on the WiCAN, not the X2"),
+        ("canx2_slcan.hooks", _x2_also_at_end,
+         "a canx2 step in the end hook too (nothing is put back)"),
+        ("canx2_slcan.hooks", _x2_failure_ignored,
+         "a failed canx2 detach not failing the X2's start hook"),
+        ("canx2_slcan.hooks", _x2_on_start_anyway,
+         "the rest of the X2's start hook run after a failed canx2 detach")],
     "test_script_judge": [
         ("script_judge", _pass_all, "passes everything"),
         ("script_judge", _rc0_pass,
@@ -2129,7 +3135,7 @@ MUTANTS = {
          "bench_topology's self-test unlisted (4cdb)"),
         ("CAN_FAILS", [n for n in B.CAN_FAILS if n != "bench_switch_loss"],
          "bench_switch_loss's can-fail unlisted"),
-        ("CAN_FAILS", B.CAN_FAILS + ["bench_rx_order"],
+        ("CAN_FAILS", B.CAN_FAILS + ["bench_switch_errors"],
          "a listed can-fail the script does not have"),
         ("harness", _wrap_suite("harness", _drop_harness_check(
             "cf.bench-usb-host")), "listed, but the harness never runs it")],
@@ -2194,6 +3200,37 @@ MUTANTS = {
          "PRODUCT_RE without re.M (the 00:30 form)"),
         ("bench_identify.identify", _identify_ignores_product,
          "identify goes on to SLCAN after a product reply")],
+    "test_x2_test_images_identify": [
+        ("bench_identify.read_slcan", _slcan_raises,
+         "a board that answers no SLCAN read raises (the bench stops)"),
+        ("bench_identify.read_slcan", _slcan_unanchored,
+         "V and N matched anywhere in the reply (slcan_spi read as an SLCAN)"),
+        ("bench_identify.PRODUCT_RE", _re.compile(r"serial> \S"),
+         "any boot serial line taken as the product's (the jammer's banner)"),
+        ("bench_identify.SPI_V_RE", _re.compile(rb"(?!)"),
+         "slcan_spi's identity not read (the read before this change)")],
+    "test_slcan_spi_identity": [
+        ("bench_identify.SPI_V_RE", _re.compile(rb"(?!)"),
+         "slcan_spi's identity not read"),
+        ("bench_identify.read_slcan", _spi_v_only,
+         "the identity taken from V alone, N not compared"),
+        ("bench_identify.read_slcan", _spi_any_name,
+         "a name without _NOT_FOR_VEHICLE taken"),
+        ("bench_identify.read_slcan", _spi_any_elf,
+         "an ELF hash of any length taken"),
+        ("bench_identify.read_slcan", _spi_unanchored,
+         "the identity matched anywhere in the answer"),
+        ("bench_identify.read_slcan", _spi_name_only,
+         "the image named without its version and ELF hash")],
+    "test_x2_test_image_flash_first": [
+        ("bench_identify.identify", _identify_unplaced_expected,
+         "a board identify cannot place taken as the expected image"),
+        ("bench_identify.identify", _identify_unplaced_raises,
+         "a board identify cannot place stops the bench, not flashed"),
+        ("bench", _wrap_suite("bench", _x2_trusts_expect),
+         "the X2 taken to be on the group's image, not read"),
+        ("bench", _wrap_suite("bench", _x2_trusts_flash),
+         "a flash taken as read back (checks run on a flash that did not take)")],
     "test_c12_judge": [
         ("c12_judge", _pass_all, "passes everything"),
         ("c12_judge", _c12_counts_c9, "fails on C9's DATASHEET line")],

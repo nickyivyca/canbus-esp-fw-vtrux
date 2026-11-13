@@ -36,7 +36,10 @@ The helper, on a fixture script that sources it:
      DEPTH. With the limit moved to put the run folder's full path plus
      the depth exactly on it, the folder is made; one character less and
      scratch_run refuses (rc 2), naming the full path and its length, with
-     nothing made.
+     nothing made. The guard is Windows' only (the reviewer's B1,
+     2026-11-12): SCRATCH_RUN_GUARDED as sourced is 1 exactly on Windows,
+     the boundary cases run with it set, and with it 0 (as on Linux) a
+     folder 50 past the limit is made.
  13. The git ceiling (the charge-interposer reviewer, 2026-11-05): in a
      stand-in worktree that is a real git repo, git run in a subfolder of
      the run folder says "not a git repository"; without
@@ -246,6 +249,9 @@ if [ -n "${FX_SLACK:-}" ]; then
   full="$(scratch_root)/cih/${FX_TOOL-fixture}/$_SR_PID-XXXXXX"
   echo "FULL $full"
   SCRATCH_RUN_LIMIT=$(( ${#full} + SCRATCH_RUN_DEPTH + FX_SLACK ))
+  # the guard as sourced on this system, then as FX_GUARD sets it
+  echo "GUARDED ${SCRATCH_RUN_GUARDED-unset}"
+  if [ -n "${FX_GUARD:-}" ]; then SCRATCH_RUN_GUARDED="$FX_GUARD"; fi
 fi
 scratch_run "${FX_TOOL-fixture}" || exit $?
 echo "RUN $SCRATCH_RUN"
@@ -566,14 +572,25 @@ def case_length(base):
     check(got == (scratch_dir.LIMIT, scratch_dir.DEPTH),
           "12. the limit and depth are scratch_dir's (%d, %d) -> %s"
           % (scratch_dir.LIMIT, scratch_dir.DEPTH, got))
+    # B1 (the reviewer, 2026-11-12): the guard is Windows' only. As sourced
+    # it is on exactly on Windows; off, a folder 50 past the limit is made
+    ci = tree(base, "tree0")
+    r = Run(os.path.join(base, "r0"))
+    rc, out = fixture(r, ci, {"FX_SLACK": "-50", "FX_GUARD": "0"})
+    sourced = next((ln[8:] for ln in out.splitlines() if ln.startswith("GUARDED ")), None)
+    check(sourced == ("1" if WIN else "0"),
+          "12. SCRATCH_RUN_GUARDED as sourced is %s on this system -> %s"
+          % ("1" if WIN else "0", sourced))
+    check(rc == 0 and "RUN " in out and "REFUSED" not in out and gone(ci),
+          "12. guard off (not Windows): 50 past the limit, made -> rc %d %s" % (rc, out[-200:]))
     ci = tree(base)
     r = Run(os.path.join(base, "r"))
-    rc, out = fixture(r, ci, {"FX_SLACK": "0"})
+    rc, out = fixture(r, ci, {"FX_SLACK": "0", "FX_GUARD": "1"})
     check(rc == 0 and "RUN " in out and gone(ci),
           "12. full path plus depth exactly at the limit: made -> rc %d %s" % (rc, out[-200:]))
     ci = tree(base, "tree2")        # a fresh one: the first run's cih/ stays
     r = Run(os.path.join(base, "r2"))
-    rc, out = fixture(r, ci, {"FX_SLACK": "-1"})
+    rc, out = fixture(r, ci, {"FX_SLACK": "-1", "FX_GUARD": "1"})
     full = next((ln[5:] for ln in out.splitlines() if ln.startswith("FULL ")), "")
     check(rc == 2 and "REFUSED" in out and "RUN " not in out and r.order() == []
           and not os.path.exists(harness(ci)),
@@ -854,15 +871,22 @@ MUTANTS = [
     ("the run folder named <tool>-<pid>- again", SR,
      'p="$(mktemp -d "$td/$_SR_PID-XXXXXX" 2>/dev/null)" && break',
      'p="$(mktemp -d "$td/$tool-$_SR_PID-XXXXXX" 2>/dev/null)" && break', None),
-    ("no length guard", SR, '  if [ "$n" -gt "$SCRATCH_RUN_LIMIT" ]; then',
+    ("no length guard", SR,
+     '  if [ "$SCRATCH_RUN_GUARDED" = 1 ] && [ "$n" -gt "$SCRATCH_RUN_LIMIT" ]; then',
      "  if false; then", None),
+    ("the guard on every system (B1)", SR,
+     '  if [ "$SCRATCH_RUN_GUARDED" = 1 ] && [ "$n" -gt "$SCRATCH_RUN_LIMIT" ]; then',
+     '  if [ "$n" -gt "$SCRATCH_RUN_LIMIT" ]; then', "posix"),
+    ("the guard sourced on the wrong systems (B1)", SR,
+     'then SCRATCH_RUN_GUARDED=1; else SCRATCH_RUN_GUARDED=0; fi',
+     'then SCRATCH_RUN_GUARDED=0; else SCRATCH_RUN_GUARDED=1; fi', None),
     ("the limit 260", SR, "SCRATCH_RUN_LIMIT=240\n", "SCRATCH_RUN_LIMIT=260\n", None),
     ("the guard leaves the depth out", SR, "  n=$(( ${#full} + SCRATCH_RUN_DEPTH ))\n",
      "  n=${#full}\n", None),
     ("the guard leaves the run folder's own name out", SR,
      '  local full="$td/$_SR_PID-XXXXXX" n\n', '  local full="$td" n\n', None),
     ("the guard refuses at the limit itself", SR,
-     '  if [ "$n" -gt "$SCRATCH_RUN_LIMIT" ]; then', '  if [ "$n" -ge "$SCRATCH_RUN_LIMIT" ]; then',
+     '[ "$n" -gt "$SCRATCH_RUN_LIMIT" ]; then', '[ "$n" -ge "$SCRATCH_RUN_LIMIT" ]; then',
      None),
     ("the refusal without the path", SR, "REFUSED the run folder $full: it is",
      "REFUSED the run folder: it is", None),

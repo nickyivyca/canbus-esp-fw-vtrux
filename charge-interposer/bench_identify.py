@@ -14,12 +14,23 @@ rule 4). Published identities, tried in this order:
      send no status frames): "HELLO?" on the serial port, answered by
      "@HELLO <name> version=.. elf_sha256=<64 hex> ...". Identity:
      "<name>:<elf sha256>".
-  3. SLCAN (the interposer's slcan image, which sends nothing on CAN until
-     a host opens a channel): a bare CR to clear its line buffer, then "V"
-     and "N", answered "V0101" and "NF001". Identity: "slcan:V0101:NF001".
-     SLCAN reports no build id, so this names the protocol, not the build;
-     the build is the verified write of its bin, whose own application
-     descriptor names it (port step 2a: no build manifest).
+  3. SLCAN (shared/x2_test_images' slcan_can1, and gen-inhibit's X2 SLCAN,
+     which send nothing on CAN until a host opens a channel): a bare CR to
+     clear its line buffer, then "V" and "N", answered "V0101" and "NF001".
+     Identity: "slcan:V0101:NF001". These report no build id, so this names
+     the protocol, not the build; the build is the verified write of its
+     bin, whose own application descriptor names it. slcan_can1 moved there
+     from the interposer's slcan variant, which answered the same and is
+     gone since 2026-11-13 (spec 8.2, tracker H).
+     The same reads name shared/x2_test_images' slcan_spi by its build
+     (slcan_spi/README.md, "The protocol"): "V" and "N" answered
+     "V0100 <identity>" and "N<identity>", the identity
+     "<name> <version> elf=<64 hex>" with a name ending _NOT_FOR_VEHICLE
+     (slcan_spi_NOT_FOR_VEHICLE, or a test variant's). Identity:
+     "<name>:<version>:<elf sha256>", only when V and N give the same one.
+     It is test equipment, never put on the truck (SPEC T3a, T14), so it is
+     never read as the product or as an image of the bench suite: the
+     runner flashes over it.
 
 2 and 3 are tried only when the ACKed boot ran, saw no 0x7F7 at all, and
 the board's serial output during it carried none of the product's lines,
@@ -46,6 +57,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths  # noqa: E402
 
 HELLO_RE = re.compile(r"^@HELLO (\S+) .*?elf_sha256=([0-9a-f]{64})")
+# slcan_spi's identity, the whole answer before its CR (docstring, 3)
+_SPI_ID = rb"(slcan_spi\w*_NOT_FOR_VEHICLE) (\S+) elf=([0-9a-f]{64})\r"
+SPI_V_RE = re.compile(rb"(?:^|[\r\n\x07])V0100 " + _SPI_ID)
+SPI_N_RE = re.compile(rb"(?:^|[\r\n\x07])N" + _SPI_ID)
 # The product's serial lines as seen on the bench, matched on any line
 # (re.M): the 1 Hz diag line, its fw/schema tail, the mode lines and the
 # loss summary. 2026-10-18: without re.M, "^diag st=" matched only at the
@@ -118,14 +133,8 @@ def read_7f7(settings, logdir, tag):
 
 
 def _serial(settings):
-    import serial
-    s = serial.Serial()
-    s.port = settings["serial_port"]
-    s.baudrate = 115200
-    s.timeout = 0.2
-    s.dtr = False
-    s.rts = False
-    s.open()
+    import serial_open
+    s = serial_open.open_quiet(settings["serial_port"], 115200, 0.2)
     time.sleep(0.5)
     s.reset_input_buffer()
     return s
@@ -173,6 +182,12 @@ def read_slcan(settings, logdir, tag):
         s.close()
     with open(os.path.join(logdir, "identify_%s_slcan.txt" % tag), "w") as f:
         f.write("V -> %r\nN -> %r\n" % (got.get("V"), got.get("N")))
+    v = SPI_V_RE.search(got.get("V") or b"")
+    n = SPI_N_RE.search(got.get("N") or b"")
+    if v and n:
+        if v.groups() == n.groups():
+            return ":".join(g.decode() for g in v.groups())
+        return None
     v = re.search(rb"V(\d{4})\r", got.get("V") or b"")
     n = re.search(rb"N(\w{4})\r", got.get("N") or b"")
     if v and n:

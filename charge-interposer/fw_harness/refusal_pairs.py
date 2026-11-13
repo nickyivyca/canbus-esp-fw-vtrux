@@ -28,7 +28,7 @@ FAIL on it:
                   and its "bridge" name token
   witness         bridge + INTP_ORDER_WITNESS: the strings, the "witness"
                   token, and the witness's ELF symbols
-  selftest, diag, slcan   the other bench images: each its own name token
+  selftest, diag  the other bench images: each its own name token
   trace           bridge + INTP_TX_TRACE (a link that overflowed DRAM,
                   -Wl,--noinhibit-exec: no runnable image, but an ELF and a
                   .bin): the trace's ELF symbols, and bridge's strings and token
@@ -68,7 +68,6 @@ EXPECT = {
                             "INTP_ORDER_WITNESS": [SYMBOLS]}),
     "selftest": ("selftest", {"INTP_NO_SERIAL": [TOKEN + " selftest"]}),
     "diag": ("diag", {"INTP_NO_SERIAL": [TOKEN + " diag"]}),
-    "slcan": ("slcan", {"INTP_NO_SERIAL": [TOKEN + " slcan"]}),
     "trace": ("bridge", {"INTP_TX_TRACE": [SYMBOLS],
                          "INTP_NO_SERIAL": [STRINGS, TOKEN + " bridge"]}),
     "bridge-release": ("bridge", {"INTP_NO_SERIAL": [TOKEN + " bridge",
