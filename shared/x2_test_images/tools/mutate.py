@@ -1,4 +1,5 @@
-"""Mutants of check_image.py and archive.py: the can-fail of test_tools.py.
+"""Mutants of check_image.py, archive.py and flash_row.py: the can-fail of
+test_tools.py.
 
 TEST EQUIPMENT. Shared harness of x2_test_images (owner: the testers).
 
@@ -6,7 +7,7 @@ Each mutant breaks one check by a text substitution that must match exactly
 once; test_tools.py must FAIL on every mutant and PASS on the unmutated
 files first. Each run gets a copy of the tools folder, laid out as in the
 tree (shared/x2_test_images/tools/, ../jammer/x2_image.json, and
-shared/tools, which is linked, not copied), under
+shared/tools and shared/bench, which are linked, not copied), under
 <worktree>/scratch/x2-tools-mutants/<pid>/, removed at the end, pass or
 fail.
 
@@ -22,7 +23,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SHARED = os.path.normpath(os.path.join(HERE, "..", ".."))
-FILES = ("check_image.py", "archive.py", "test_tools.py")
+FILES = ("check_image.py", "archive.py", "flash_row.py", "test_tools.py")
 TIMEOUT_S = 300
 
 # (name, file, the check it breaks, old text, new text)
@@ -77,6 +78,43 @@ MUTANTS = [
     ("rid-unset", "archive.py", "an unset REVERSE_IT_DIR falls back",
      '    if not rid:\n        raise Refused("REVERSE_IT_DIR is not set")\n',
      '    if not rid:\n        rid = os.path.dirname(os.environ.get("HOME", "/"))\n'),
+    ("fr-size", "flash_row.py", "a file's size is not compared with the row",
+     'for k in ("size", "sha256", "md5"):', 'for k in ("sha256", "md5"):'),
+    ("fr-sha256", "flash_row.py", "a file's sha256 is not compared",
+     'for k in ("size", "sha256", "md5"):', 'for k in ("size", "md5"):'),
+    ("fr-md5", "flash_row.py", "a file's md5 is not compared",
+     'for k in ("size", "sha256", "md5"):', 'for k in ("size", "sha256"):'),
+    ("fr-overlap", "flash_row.py", "overlapping files are flashed",
+     "if a[0] + a[3] > b[0]:", "if False:"),
+    ("fr-bare-name", "flash_row.py", "a file name with a path is followed",
+     'if os.path.basename(name) != name or name in ("", ".", ".."):',
+     "if False:"),
+    ("fr-folder", "flash_row.py", "the row's folder is not the app sha's",
+     "folder != \"builds/%s\" % str(row.get(\"app_sha256\", \"\"))[:16]:",
+     "False:"),
+    ("fr-app-sha", "flash_row.py", "the app file is not the row's app_sha256",
+     'if app[0][4] != row.get("app_sha256"):', "if False:"),
+    ("fr-descriptor", "flash_row.py", "the app's descriptor is not compared",
+     "        if have != want:\n", "        if False:\n"),
+    ("fr-dev", "flash_row.py", "a dev build flashes without --dev",
+     "if not pinnable and not dev:", "if False:"),
+    ("fr-rows-agree", "flash_row.py", "rows naming different files pass",
+     "if _files_key(r) != _files_key(first):", "if False:"),
+    ("fr-chip-type", "flash_row.py", "a settings chip type for another chip",
+     'if sc.get("type") and sc["type"] != typ:', "if False:"),
+    ("fr-lock-role", "flash_row.py", "a lock held by another role is enough",
+     'if h is None or h["who"] != role:', "if h is None:"),
+    ("fr-canx2", "flash_row.py", "an attached canx2 is not looked for",
+     "why = canx2_attached()", "why = None"),
+    ("fr-own-bench", "flash_row.py", "another vtrux_bench is used",
+     "    if got != want:\n", "    if False:\n"),
+    ("fr-files-passed", "flash_row.py", "not every file reaches the flasher",
+     'params = {"files": [["0x%x" % o, p] for o, p, _m in files],',
+     'params = {"files": [["0x%x" % o, p] for o, p, _m in files][1:],'),
+    ("fr-fail-ok", "flash_row.py", "a failed flash exits 0",
+     '    if res["ok"]:\n', "    if True:\n"),
+    ("fr-in-checkout", "flash_row.py", "a log folder in the checkout is used",
+     "return p != top and not p.startswith(top + os.sep)", "return True"),
 ]
 
 
@@ -103,6 +141,7 @@ def layout(d, originals, override=None):
     shutil.copy2(os.path.join(SHARED, "x2_test_images", "jammer", "x2_image.json"),
                  os.path.join(d, "shared", "x2_test_images", "jammer"))
     os.symlink(os.path.join(SHARED, "tools"), os.path.join(d, "shared", "tools"))
+    os.symlink(os.path.join(SHARED, "bench"), os.path.join(d, "shared", "bench"))
     for name, text in originals.items():
         if override and override[0] == name:
             text = override[1]
