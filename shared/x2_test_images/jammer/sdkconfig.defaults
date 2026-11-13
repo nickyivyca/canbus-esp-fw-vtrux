@@ -1,0 +1,37 @@
+# The jammer's options. TEST EQUIPMENT, NOT FOR VEHICLE (x2_test_images
+# SPEC T8). The committed sdkconfig is generated from this file; change this
+# file and regenerate it (README.md). Build variants are CMake options, never
+# Kconfig (shared/tools R20), so every variant shares this configuration.
+
+# ---- The board: shared/boards/x2 sdkconfig.board, every option it names ----
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="managed_components/vtrux__x2/partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+CONFIG_PARTITION_TABLE_MD5=y
+CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM=y
+
+# ---- Required of the project (shared/boards/x2 board.json) ----
+# No ESP-IDF console: the USB Serial/JTAG port carries only this image's own
+# lines, each with the NOT FOR VEHICLE prefix (main/console_usj.h).
+CONFIG_ESP_CONSOLE_NONE=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# The RTC watchdog the bootloader starts is stopped at app start.
+# CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE is not set
+# A hung task panics, and a panic resets: the image boots silent.
+CONFIG_ESP_TASK_WDT_PANIC=y
+# CONFIG_BT_ENABLED is not set
+# CONFIG_SPIRAM is not set
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
+
+# ---- The image ----
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# 1 ms ticks: the jam task's waits are in ms (components/jam_pulse).
+CONFIG_FREERTOS_HZ=1000
+# Nothing from the bootloader or ESP-IDF's log: no console line without NOT
+# FOR VEHICLE (SPEC T8).
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
+CONFIG_LOG_DEFAULT_LEVEL_NONE=y

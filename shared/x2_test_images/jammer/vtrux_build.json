@@ -1,0 +1,9 @@
+{
+  "project": "x2-jammer",
+  "shared_components": ["vtrux/x2"],
+  "variants": {
+    "jammer": {"JAMMER_TEST_STOP": "none"},
+    "stop_a_only": {"JAMMER_TEST_STOP": "a_only"},
+    "stop_b_only": {"JAMMER_TEST_STOP": "b_only"}
+  }
+}

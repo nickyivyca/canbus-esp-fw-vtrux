@@ -1,0 +1,14 @@
+## The jammer's dependencies, recorded in ../dependencies.lock.
+## TEST EQUIPMENT, NOT FOR VEHICLE (x2_test_images SPEC T8).
+dependencies:
+  # The board (shared/boards SPEC B1, B2): the X2's ports and pins, at a
+  # shared/main tag, from git, never through override_path. sdkconfig names
+  # its partition table by this dependency's managed_components/ folder,
+  # vtrux__x2.
+  vtrux/x2:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/boards/x2
+    version: "2026.11.12.2"
+  # ESP-IDF v5.4.2 exactly (x2_test_images SPEC T6, shared/tools R33).
+  idf:
+    version: "5.4.2"

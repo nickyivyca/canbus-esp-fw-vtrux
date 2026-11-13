@@ -1,0 +1,23 @@
+dependencies:
+  idf:
+    source:
+      type: idf
+    version: 5.4.2
+  vtrux/x2:
+    component_hash: addd71bce143d762264756b264e28c18391382be939d1e1c10bc824913b9e0b6
+    dependencies:
+    - name: idf
+      version: '>=5.4'
+    source:
+      git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+      path: shared/boards/x2
+      type: git
+    targets:
+    - esp32s3
+    version: 7655aeff61387282db406311f64b7dba1f23495e
+direct_dependencies:
+- idf
+- vtrux/x2
+manifest_hash: 39f6452f59d161fba7bac01a1aa13f3411b27d858d4c065ed9e4f546ef6accc6
+target: esp32s3
+version: 2.0.0
