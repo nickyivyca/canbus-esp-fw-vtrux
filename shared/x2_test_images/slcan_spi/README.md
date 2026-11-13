@@ -114,6 +114,7 @@ attached and up through a reset, counts one `rx_over_errors` (`attach`).
 | `sdkconfig.defaults`, `sdkconfig` | the options, and the full configuration generated from them (regenerate with `idf.py -B build/dev reconfigure` after deleting `sdkconfig`) |
 | `dependencies.lock` | the Component Manager's lock: the board at its tag |
 | `vtrux_build.json` | the shared tooling's project data (shared/tools R22): the `dev` variant |
+| `VERIFICATION.md` | the test results, by build (the charge-interposer tester's) |
 | `x2_image.json` | what `../tools/check_image.py` and `../tools/archive.py` check of a build (format in `../tools/README.md`): the name, the boot line, no `twai_` symbol, the console and log off, the whole ELF hash in the identity |
 | `main/` | the image's source; see `main/README.md` |
 | `test/` | the protocol layer's host unit tests and their mutants; see `test/README.md` |
