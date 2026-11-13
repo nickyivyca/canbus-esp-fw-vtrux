@@ -1,0 +1,318 @@
+# Port step 3's bench baseline on madhouse-debian, re-run on the Kvaser's
+# kvaser_usb harness (shared/bench ACCEPT-SPEC A2, A13; owned by the
+# charge-interposer reviewer). Drafted by the tester for the reviewer (the
+# reviewer's item 2 after the kvaser-socketcan merge, 2026-11-13: "the whole
+# thing, as before, naming 98d1"). A re-run of the user-approved
+# 3-bench.toml, with the harness changed and the product the same.
+#
+# Run 98d1 (runs/accept_3_20261113T081639_98d1, from 3-bench.toml at
+# 4ad82bbd, harness and product 0691f6f1, shared/bench 2026.11.13.2) was
+# started 2026-11-13 08:16. While its emulated suite ran, canctl's owner
+# moved the bench's Kvaser off linuxcan's leaf onto the kernel's kvaser_usb
+# (canctl's header: Kvaser mode "Absent = socketcan (owner, 2026-11-13,
+# after linuxcan's leaf oopsed)"), and every bench check that opens the
+# Kvaser through CANlib could no longer reach it. On the reviewer's ruling,
+# 98d1's emulated and harness suites run to their end and stand as the
+# Linux baseline of 0691f6f1 in the tester's VERIFICATION.md entry, and
+# its vp1, vp2, vp3 and bench runs are stopped before vp1 takes the lock,
+# by the run's STOP file, written by the tester when the harness suite
+# starts. [TESTER, before merge: replace this sentence with what 98d1's
+# record shows once it ends: those four NOT-RUN "STOP", no lock taken.]
+# This list's record names 98d1 (A13: the runner's --earlier
+# accept_3_20261113T081639_98d1).
+#
+# The product is 0691f6f1's. Checked 2026-11-13: git diff 0691f6f1
+# 742c96f6 over bench_suite.product_files (23 files) is empty, and
+# shared_pins.json is unchanged (shared/bench 2026.11.13.2). The commits
+# between them are the root cleanup (8046cf0f: upstream WiCAN's root tree
+# removed from the branch root, nothing this run reads), 3-bench.toml
+# itself (c2321a6c, 4ad82bbd) and the Kvaser change (79a37976, file map
+# 742c96f6). As in 3-bench.toml, the three bench variants are built from
+# this list's own tree and those builds flashed, with no digest premise;
+# they are dev builds (R31), so their code hashes are not compared with
+# b467's (spec 8.2).
+#
+# Since 0691f6f1, on the harness side (79a37976; each check's judgement
+# change is in its commit message there, as the reviewer ruled):
+#   - every opener of the vehicle segment's Kvaser opens the kernel's
+#     kvaser_usb, SocketCAN netdev kvaser, through kvaser_link.py; a CANlib
+#     opener of it is refused (kvaser_link_test's scan);
+#   - each check sets the Kvaser's link itself through canctl and reads
+#     IFF_UP back in sysfs: up for a check that needs its ACK, down for a
+#     no-ACK check (an UP kvaser_usb link ACKs with no socket open); a link
+#     state it cannot set or read makes the check VOID with the cause;
+#   - the stall rule: a frame the Kvaser sends with no own echo within 100
+#     ms of send() returning, or ENOBUFS, makes the check VOID "kvaser TX
+#     stall"; then the socket is closed and the link brought down, reset
+#     (canctl usbreset kvaser) and up at 500 kbit/s, read back; a recovery
+#     that fails writes the run's STOP file, so the later checks are
+#     NOT-RUN "STOP: kvaser recovery failed";
+#   - every such VOID carries the kernel's USB/CAN lines over its window
+#     (usb 1-3.2*, gs_usb, kvaser_usb, peak_usb, -71/EPROTO, disconnects),
+#     and the tester's entry scans the kernel log over every judged check's
+#     window (klog_windows.py), flagging a PASS or FAIL beside a -71 or a
+#     disconnect; the bench USB hubs are bus-powered (owner, via CAN
+#     replay, 2026-11-13), so such lines may be power faults;
+#   - the judgement changes the reviewer ruled (D1-D6, 2026-11-13):
+#     hold12 and hold12-flight swap roles (the Kvaser sends, its own echoes
+#     counted as sent; the PCAN, in its own reader process, witnesses rate,
+#     gaps, DLC, drops and the 0x7F4 cadence, thresholds unchanged, VOID on
+#     PCAN lost frames); charger-silent judges ages from the PCAN's wire
+#     stamp mapped to the host clock (StampMap), not from send()'s return;
+#     vport-* count a node frame as sent only on its own echo, with the
+#     stall rule suspended in the no-ACK and wrong-rate windows and their
+#     device-queue flush kept out of the next window's share, timing and
+#     settle ("flushed from <window>: n"); switch-loss records the Kvaser
+#     witness's stamp quantisation; the readers run in their own processes
+#     (rx_proc.py);
+#   - keepalive_probe resolves its adapters as the other openers do (no
+#     COM3 or PCAN_USBBUS1 names); bench_rate_feasibility is CANlib-only and
+#     refuses on Linux (a hand-run measurement, in no suite).
+# The bench-side changes 3-bench.toml lists (the native lock, canmain down,
+# canx2 detached, canchg's libusb mode, the adapter fixes, the WiCAN over
+# USB, the slices) all stand, and the entry reads the canmain events, the
+# canx2 found entries and the WiCAN's identify.json records as before.
+#
+# Placement and the bench lock: as 3-bench.toml (the settings' placement;
+# the runner started in bench.slice; the lock not held through the builds,
+# the emulated suite or the harness suite, about 19 h; held for each of
+# vp1, vp2, vp3 and the bench run, taken and released by each, about 22 h
+# in four spells with gaps of about a second; a hand take in a gap makes
+# the next suite run refuse at its take, lock_wait_s 0, its checks NOT-RUN,
+# to be re-run under A13). A timing failure is triaged against resource-log
+# over its window (AGENTS.md "Parallel work on the shared machine", point
+# 2) before it counts. If stall VOIDs take out a large part of the bench
+# run, the tester tells the reviewer before any re-run (the reviewer,
+# 2026-11-13).
+#
+# Trees:
+#   harness   742c96f6, charge-interposer/main after the kvaser-socketcan
+#             merge (79a37976) and its file-map rows. Its shared/bench pin
+#             is 2026.11.13.2, its can-tools pin fa6c0aea, as 0691f6f1's.
+#             The commit before this list's own, as for the earlier step 3
+#             lists.
+#   prod      the same commit: the three bench builds come from it.
+
+[step]
+id = "3"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-13"
+spec = ["2", "2.1", "2.2", "2.3", "2.4", "8", "8.2", "8.3", "9", "9.1", "10", "12"]
+verification = "the tester's VERIFICATION.md entries for port step 3's bench baseline"
+
+[trees.harness]
+project = "742c96f641ccb124ea8390c56b536cc91f901da7"
+
+# ---- the three variants the bench suite flashes ----------------------------
+[[build]]
+id = "bridge"
+tree = "harness"
+target = "idf-build"
+options = { variant = "bridge" }
+
+[[build]]
+id = "witness"
+tree = "harness"
+target = "idf-build"
+options = { variant = "witness" }
+
+[[build]]
+id = "truck"
+tree = "harness"
+target = "idf-build"
+options = { variant = "truck" }
+
+# ---- the emulated suite, whole (the bench suite's requires) ---------------
+# Whole again: the bench suite requires a whole emulated run on the same
+# code in the same record (Suite.requires, requires_whole), and 98d1's is
+# in another record.
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+
+# ---- the harness suite, whole ----------------------------------------------
+[[suite_run]]
+id = "harness"
+tree = "harness"
+suite = "harness"
+after = ["emulated"]
+
+# ---- vport-bitrate judged three times, then the bench suite, whole ----------
+[[suite_run]]
+id = "vp1"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["harness"]
+
+[[suite_run]]
+id = "vp2"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["vp1"]
+
+[[suite_run]]
+id = "vp3"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["vp2"]
+
+# this run's flashes and identifies are the board evidence: each X2 image is
+# the list's own build, read back by its build id; the WiCAN's is the pinned
+# gen-inhibit image (wican_pin.json), read back from its boot slot
+[[suite_run]]
+id = "bench"
+tree = "harness"
+suite = "bench"
+images_from = ["bridge", "witness", "truck"]
+after = ["vp3"]
+
+# ---- the baselines -----------------------------------------------------------
+# As 3-bench.toml: the bench suite, vport-bitrate and the emulated suite
+# from b467, the newest whole Windows bench run (2b, harness and product
+# f57ca9d3); the harness suite from 0d88, the newest whole harness run with
+# a record to compare (step 3's first emulated re-run, harness 2d14b2e5).
+# [TESTER, before merge: if 98d1's emulated and harness suites end as
+# expected, the reviewer may rather name them here; on 0691f6f1 they are
+# the nearer baseline. Left as 3-bench.toml has them until 98d1 ends.]
+[baseline]
+emulated = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-emulated"
+harness = "accept_3_20261112T084805_0d88/runs/accept_3_20261112T084805_0d88-harness"
+bench = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-bench"
+vp1 = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-vp1"
+
+# The emulated suite against b467's: no difference. Its check list is the
+# same (40 checks, 3 declared skips; checked 2026-11-13 from
+# bench_suite.emulated at 742c96f6 against b467's record: no top-level id on
+# one side only; b467's other ids are host-bridge's sub-results). The two
+# host_bridge KNOWN-FAILs are KNOWN-FAIL on both sides; any other FAIL, or a
+# NOT-RUN that is not a declared skip, is a difference. The Kvaser change
+# touches no emulated check (vehicle_sim's kvaser transport is the bench's).
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = []
+
+# The harness suite against 0d88's (141 PASS, 9 declared skips). Checked
+# 2026-11-13: bench_suite.harness at 742c96f6 has 164 ids against 0d88's
+# 150, nothing on 0d88's side only. The four 3-bench.toml listed:
+#   canchg-mode-test      c53d0ac9: canchg_mode.py, canchg in canctl's libusb
+#                         mode for a run and back on gs_usb after, and its
+#                         -canfail (the canchg-mode batch)
+#   canx2-slcan-test      the run-start batch: canx2_slcan.py, canx2 detached
+#                         from the kernel's SLCAN before the X2 is touched,
+#                         and its -canfail
+# and ten from the Kvaser change (79a37976):
+#   kvaser-link-test      kvaser_link.py: the link set and read back, the
+#                         stall rule, the kernel lines, the recovery and its
+#                         STOP file, the opener scan; and its -canfail (37
+#                         mutants)
+#   st./cf.keepalive-probe  keepalive_probe.py's self-test and can-fail
+#                         (rewritten: adapters resolved, link set per arm)
+#   st./cf.rx-proc        rx_proc.py, the readers in their own processes
+#   cf.bench-switch-pending, cf.bench-switch-errors
+#                         their can-fails (the no-ACK phase on a link left
+#                         up must be caught); their self-tests were in 0d88
+#   st./cf.klog-windows   klog_windows.py, the kernel's USB/CAN lines over
+#                         every judged check's window
+# The changed drivers' self-tests and can-fails that 0d88 already had
+# (bench-vport, hold12, charger-silent, switch-loss and the rest) changed
+# their tests, not their ids; every one PASSed in 0d88 and is expected to
+# PASS here. The same holds for bus-gs-usb-test, adapter-fixes-test and
+# bench-suite-test (their cases changed with the Kvaser change).
+[[compare]]
+id = "c-harness"
+comparer = "run-records"
+a = "baseline:harness"
+b = "harness"
+expect = "listed"
+differences = [
+  "NEW in b: m-harness/canchg-mode-test PASS",
+  "NEW in b: m-harness/canchg-mode-test-canfail PASS",
+  "NEW in b: m-harness/canx2-slcan-test PASS",
+  "NEW in b: m-harness/canx2-slcan-test-canfail PASS",
+  "NEW in b: m-harness/kvaser-link-test PASS",
+  "NEW in b: m-harness/kvaser-link-test-canfail PASS",
+  "NEW in b: l-harness/st.keepalive-probe PASS",
+  "NEW in b: l-harness/cf.keepalive-probe PASS",
+  "NEW in b: l-harness/st.rx-proc PASS",
+  "NEW in b: l-harness/cf.rx-proc PASS",
+  "NEW in b: l-harness/cf.bench-switch-pending PASS",
+  "NEW in b: l-harness/cf.bench-switch-errors PASS",
+  "NEW in b: l-harness/st.klog-windows PASS",
+  "NEW in b: l-harness/cf.klog-windows PASS",
+]
+
+# The bench suite against b467's: no listed difference. The check list is
+# the same (83 checks, 17 declared skips; checked 2026-11-13 at 742c96f6:
+# no id on one side only). In b467: 64 PASS, the 17 skips NOT-RUN,
+# b-witness/switch-loss KNOWN-FAIL (spec 12's 2.3 entry), and
+# b-vport/vport-listen-wrong-rate VOID (TEST FAULT; VOID in 6019, 81d8,
+# 0d0d and b467: variance from the known defect, not listed, as in 2b; it
+# shows only if it moves). Unlike 3-bench.toml, some checks now judge
+# differently (D1-D6 above), so the same verdict is still expected but on a
+# changed judgement: a verdict that moves is a difference to judge line by
+# line in the tester's entry, the judgement change and Linux-side causes
+# included. A VOID "kvaser TX stall" or "kvaser link" is a difference too,
+# with the kernel lines its detail carries.
+[[compare]]
+id = "c-bench"
+comparer = "run-records"
+a = "baseline:bench"
+b = "bench"
+expect = "listed"
+differences = []
+
+# The three vport runs, each against the first and against b467's vp1: the
+# same verdicts, no TEST FAULT, no figure tolerance. vport-bitrate's node
+# frames now count as sent on their own echo (D3); the verdicts are still
+# expected to match b467's.
+[[compare]]
+id = "vp1-vp2"
+comparer = "vport-windows"
+a = "vp1"
+b = "vp2"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp1-vp3"
+comparer = "vport-windows"
+a = "vp1"
+b = "vp3"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp1-b467"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp1"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp2-b467"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp2"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp3-b467"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp3"
+expect = "same-verdicts"
+
+# ---- spec 8.3: no ESP-IDF line before setup() -----------------------------
+# In the bench suite run, as in 2b and 3-bench.toml: the truck by
+# b-truck/flight-silence; bridge and witness by b-bridge/idf-log and
+# b-witness/idf-log.
