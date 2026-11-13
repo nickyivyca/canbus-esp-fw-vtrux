@@ -72,6 +72,7 @@ LEAD_S = 0.05        # a count window opens this long before its command's send
 # its margins (stamp_margin), and a check with one under MARGIN_MIN is not run.
 STAMP_ERR_S = 0.0015
 MARGIN_MIN = 10.0
+LEFT_OUT_MAX = 200   # error frames left out (not on the wire) kept with id and data
 
 
 class Void(Exception):
@@ -322,6 +323,7 @@ class Witness(threading.Thread):
         self.host_stamped = 0
         self.state_changes = 0          # error frames left out by CAN_ERR class
         self.non_wire = 0               # neither a state change nor on the wire (CNT alone)
+        self.left_out = []              # (stamp, id, data hex) of each frame left out, the first LEFT_OUT_MAX
         self.failed = None
         self.alive_at_finish = None     # None until finish()
         self.lag = None
@@ -338,6 +340,9 @@ class Witness(threading.Thread):
                     self.host_stamped += 1
                     continue
                 if m.is_error_frame and not on_wire(m.arbitration_id):
+                    if len(self.left_out) < LEFT_OUT_MAX:
+                        self.left_out.append((round(m.timestamp, 4), hex(m.arbitration_id),
+                                              bytes(getattr(m, "data", None) or b"").hex()))
                     if state_only(m.arbitration_id):
                         self.state_changes += 1
                     else:
@@ -383,6 +388,7 @@ class Witness(threading.Thread):
                 "errors": len(self.errors), "frames": len(self.frames),
                 "host_stamped": self.host_stamped,
                 "state_changes": self.state_changes, "non_wire": self.non_wire,
+                "left_out": self.left_out,
                 "failed": self.failed,
                 "alive_at_finish": self.alive_at_finish,
                 "channel": (self.channel_info or {}).get("device_name")}

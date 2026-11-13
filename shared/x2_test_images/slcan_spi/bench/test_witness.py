@@ -231,6 +231,8 @@ def witness_thread_tests(w):
     s = wit.summary()
     check(s["host_stamped"] == 1 and s["frames"] == 1 and s["errors"] == 3
           and s["state_changes"] == 2 and s["non_wire"] == 1, "summary counts %r" % s)
+    check(sorted(x[1] for x in s["left_out"]) == ["0x200", "0x204", "0x40"],
+          "left-out frames not recorded with their ids: %r" % s.get("left_out"))
     check(s["median_lag_s"] is not None and 0 <= s["median_lag_s"] < 0.5,
           "summary lag %r" % s.get("median_lag_s"))
     check(wit.bus.shut, "bus not shut down")
@@ -300,7 +302,8 @@ MUTANTS = [
      "                if False:"),
     ("cnt-alone-counted", "                if m.is_error_frame and not on_wire(m.arbitration_id):",
      "                if m.is_error_frame and state_only(m.arbitration_id):"),
-    ("on-wire-any", "    return bool(can_id & WIRE_CLASSES)\n", "    return True\n"),
+    ("left-out-unrecorded", "if len(self.left_out) < LEFT_OUT_MAX:", "if False:"),
+    ("on-wire-any","    return bool(can_id & WIRE_CLASSES)\n", "    return True\n"),
     ("non-wire-as-state", "                        self.non_wire += 1\n",
      "                        self.state_changes += 1\n"),
     ("wire-errors-skipped", "    return bool(can_id & STATE_CLASSES) and not (can_id & WIRE_CLASSES)",
