@@ -41,8 +41,10 @@ them at a fake canctl and made-up trees.
 
     hooks(on_start, on_end) -> (on_start, on_end)
         the bench suite's board hooks: on the X2, this module's step and
-        then the start hook given; the end hook given unchanged; on any
-        other board the start hook given alone
+        then, only if it succeeded, the start hook given (a failed detach
+        returns at once, saying the rest was not run: the reviewer's
+        review, 2026-11-13); the end hook given unchanged; on any other
+        board the start hook given alone
 """
 
 import os
@@ -184,6 +186,12 @@ def hooks(on_start, on_end, board=X2_BOARD, platform=None):
         if b != board:
             return on_start(b, img, ctx, logdir)
         mine = start(logdir, platform)
+        if not mine.get("ok"):
+            # the reviewer's review of e284dd75: nothing more of the start
+            # hook runs while slcand may still hold the X2's tty
+            return dict(ok=False, detail="%s; the rest of the X2's start hook "
+                        "was not run" % mine.get("detail"),
+                        found={"canx2": mine.get("found")})
         return _both(mine, _call(on_start, b, img, ctx, logdir))
 
     return start_hook, on_end

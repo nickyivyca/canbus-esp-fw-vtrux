@@ -30,7 +30,9 @@ Each case names what it checks:
                     clock, not before
   8. hooks          hooks(): on the X2 the step runs before the start hook
                     given, and the result is not ok when either fails or the
-                    hook given raises; the end hook is the one given,
+                    hook given raises; a failed step (still attached, or
+                    canctl exiting 2) returns without running the hook given
+                    at all, saying so; the end hook is the one given,
                     unchanged; on the WiCAN the start hook given runs alone,
                     its result as it returned it, and no canctl runs
 The fake canctl refuses (exit 2) anything but `slcan detach canx2`, and,
@@ -267,11 +269,15 @@ def case_hooks(M, work):
         assert out["ok"] is False, (name, out)
         if name == "raises":
             assert "inner start raised" in out["detail"], out
-    b = Bench(M, _sub(work, "stepfails"), act=False)
-    s, _e = M.hooks(inner("start"), end, platform="linux")
-    out = s("x2", None, None, b.logdir)
-    assert out["ok"] is False and "still attached" in out["detail"] and \
-        "inner start x2" in out["detail"], out
+    # a failed step: the hook given is not run at all, and the result says so
+    for name, ctl in (("stepfails", dict(act=False)), ("steprc", dict(rc=2, act=False))):
+        b = Bench(M, _sub(work, name), **ctl)
+        s, _e = M.hooks(inner("start"), end, platform="linux")
+        out = s("x2", None, None, b.logdir)
+        assert b.calls() == [CALL], (name, b.calls())
+        assert out["ok"] is False and "was not run" in out["detail"] and \
+            "inner start" not in out["detail"], (name, out)
+        assert out["found"]["canx2"]["attached"] is True, (name, out)
     b = Bench(M, _sub(work, "wican"))
     s, _e = M.hooks(inner("start"), end, platform="linux")
     out = s("wican", None, None, b.logdir)
@@ -283,24 +289,25 @@ CASES = [case_off_linux, case_not_attached, case_detach, case_half_attached,
          case_canctl_rc, case_still_attached, case_poll, case_hooks]
 
 MUTANTS = [
+    ("the hook given run after a failed step",
+     "        if not mine.get(\"ok\"):\n            # the reviewer's",
+     "        if False:\n            # the reviewer's"),
     ("the step skipped (hooks)",
-     "        mine = start(logdir, platform)\n"
-     "        return _both(mine, _call(on_start, b, img, ctx, logdir))",
-     "        return _call(on_start, b, img, ctx, logdir)"),
+     "        mine = start(logdir, platform)\n",
+     "        mine = dict(ok=True, found=None)\n"),
     ("the step after the hook given",
-     "        mine = start(logdir, platform)\n"
-     "        return _both(mine, _call(on_start, b, img, ctx, logdir))",
-     "        theirs = _call(on_start, b, img, ctx, logdir)\n"
-     "        return _both(start(logdir, platform), theirs)"),
+     "        mine = start(logdir, platform)\n",
+     "        _call(on_start, b, img, ctx, logdir)\n"
+     "        mine = start(logdir, platform)\n"),
+    ("a failed step's early return reported ok",
+     "            return dict(ok=False, detail=\"%s; the rest of the X2's start hook \"",
+     "            return dict(ok=True, detail=\"%s; the rest of the X2's start hook \""),
     ("the step on every board", "        if b != board:\n            return on_start(",
      "        if False:\n            return on_start("),
     ("a raising hook not caught",
      "    except Exception as e:                              # noqa: BLE001\n"
      "        return dict(ok=False, detail=\"raised %r\" % (e,))",
      "    except ZeroDivisionError:\n        raise"),
-    ("a failed step ignored in the result",
-     "    return dict(ok=bool(mine.get(\"ok\")) and bool(theirs.get(\"ok\")),",
-     "    return dict(ok=bool(theirs.get(\"ok\")),"),
     ("the hook given's failure ignored in the result",
      "    return dict(ok=bool(mine.get(\"ok\")) and bool(theirs.get(\"ok\")),",
      "    return dict(ok=bool(mine.get(\"ok\")),"),

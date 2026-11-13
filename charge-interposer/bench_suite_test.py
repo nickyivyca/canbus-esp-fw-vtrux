@@ -1148,7 +1148,8 @@ def test_canx2_slcan_hooks():
     run-start batch): on the X2, on_start runs canx2_slcan.start once,
     before canchg's start step (and so before bench_wican's hook given and
     before the runner identifies or flashes the X2); its failure makes the
-    X2's start hook fail, which stops the bench; on_end runs no canx2 step
+    X2's start hook fail at once, with nothing more of it run (no canchg
+    step), which stops the bench; on_end runs no canx2 step
     (nothing put back); on the WiCAN neither hook runs it.
     canx2_slcan_test.py tests the step itself."""
     s = _settings()
@@ -1175,8 +1176,12 @@ def test_canx2_slcan_hooks():
             calls.append(("canx2", {}))
             return dict(ok=False, detail="canx2 failed stub", found={})
         B.canx2_slcan.start = failed
+        n = len(calls)
         out = b.on_start("x2", b.images["bridge"], None, d)
-        assert out["ok"] is False and "canx2 failed stub" in out["detail"], out
+        assert out["ok"] is False and "canx2 failed stub" in out["detail"] and \
+            "was not run" in out["detail"], out
+        # nothing more of the X2's start hook runs (the reviewer, 2026-11-13)
+        assert [c[0] for c in calls[n:]] == ["canx2"], calls[n:]
     finally:
         _canchg_restore(keep)
 
@@ -2209,6 +2214,19 @@ def _x2_failure_ignored(on_start, on_end, **kw):
     return s2, e
 
 
+def _x2_on_start_anyway(on_start, on_end, **kw):
+    """The hook given run after a failed detach too (before the reviewer's
+    fix of e284dd75)."""
+    X = B.canx2_slcan
+
+    def s(b, img, ctx, logdir):
+        if b != X.X2_BOARD:
+            return on_start(b, img, ctx, logdir)
+        mine = X.start(logdir)
+        return X._both(mine, X._call(on_start, b, img, ctx, logdir))
+    return s, on_end
+
+
 def _hooks_start_only(on_start, on_end, environ, **kw):
     return _ORIG["canchg_mode.hooks"](on_start, on_end, environ, **kw)[0], on_end
 
@@ -2573,7 +2591,9 @@ MUTANTS = {
         ("canx2_slcan.hooks", _x2_also_at_end,
          "a canx2 step in the end hook too (nothing is put back)"),
         ("canx2_slcan.hooks", _x2_failure_ignored,
-         "a failed canx2 detach not failing the X2's start hook")],
+         "a failed canx2 detach not failing the X2's start hook"),
+        ("canx2_slcan.hooks", _x2_on_start_anyway,
+         "the rest of the X2's start hook run after a failed canx2 detach")],
     "test_script_judge": [
         ("script_judge", _pass_all, "passes everything"),
         ("script_judge", _rc0_pass,
