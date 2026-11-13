@@ -1,9 +1,24 @@
 """The run's canmain check (SPEC.md section 8, "A run checks CAN1 at its
-start"): beside listening first, a run that needs the bench refuses unless
+start"): beside listening first, a run that needs the bench makes sure
 canmain, CAN1's Innomaker, is down, so a hand release that went wrong, or a
-crash, cannot leave a second ACKing node on CAN1. The runner makes it, for
-every suite, before it takes the lock (the testers' call, which the spec
-leaves to them).
+crash, cannot leave a second ACKing node on CAN1 under checks that need
+none. The runner makes it, for every suite (the testers' call, which the
+spec leaves to them: the charge-interposer and gen-inhibit testers,
+2026-11-13).
+
+Since the lock became a mutex (user, 2026-11-13: a run brings canmain down
+itself instead of refusing; shared/main 9342bf8b), the runner checks only
+the setting before its take (config()), and after its own take, and again
+at every resume before the start hooks, calls bring_down(): a probe made
+then, never an earlier read (the gen-inhibit tester, 2026-11-13: a read
+from before the take is stale); if it shows canmain up (probe link, on
+Linux), `sudo -n /usr/local/sbin/canctl down <iface>`, then the probe again.
+The line it returns names the holder whose run brought canmain down, so
+the next holder sees why it is down. canctl failing, or the probe after it
+still not showing canmain down, raises Refused, and the runner stops the
+bench. Probes unbound and absent have no canctl action: they show canmain
+down or refuse, as before. Before the take nothing is brought down, so a
+run never takes canmain down under another role's lock.
 
 It fails closed. Settings with no canmain_check refuse the run. The setting
 names its probe, and every probe is a check:
@@ -55,6 +70,9 @@ SERIAL_RE = re.compile(r"^\s*(?:[-*]\s+)?canmain serial:\s*`?([A-Za-z0-9._:-]+)`
 IFACE_RE = re.compile(r"[A-Za-z0-9._-]{1,15}\Z")
 IFF_UP = 0x1
 SYS_ROOT = "/sys"          # tests point it at a made-up tree
+CANCTL = ["sudo", "-n", "/usr/local/sbin/canctl"]    # tests point it at a fake
+CANCTL_TIMEOUT_S = 60
+RC_MEANING = {2: "refused", 3: "did not take"}       # canctl's header
 
 
 class Refused(Exception):
@@ -66,7 +84,7 @@ def config(settings):
     c = settings.get(SETTING)
     if c is None:
         raise Refused("the settings have no %s: a run that needs the bench "
-                      "refuses unless canmain is down (SPEC section 8); give "
+                      "makes sure canmain is down (SPEC section 8); give "
                       "its probe (%s) and the reason for it"
                       % (SETTING, ", ".join(PROBES)))
     if not isinstance(c, dict):
@@ -267,10 +285,74 @@ def check(settings, env=None, root=None, ids=None):
         probe, c["reason"], what)
 
 
+def link_is_up(c, root):
+    """True only when probe link's interface exists and its IFF_UP is set:
+    the one state canctl down can fix. Unreadable counts as not up, so the
+    probe's own refusal stands."""
+    try:
+        return os.path.isdir(iface_dir(root, c["iface"])) and \
+            iface_up(root, c["iface"])
+    except (OSError, ValueError):
+        return False
+
+
+def canctl_down(iface):
+    """sudo -n canctl down <iface>. -> (rc or None if it could not run,
+    the command, the last line of its output)."""
+    argv = list(CANCTL) + ["down", iface]
+    try:
+        r = subprocess.run(argv, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, timeout=CANCTL_TIMEOUT_S)
+        out, rc = r.stdout.decode("utf-8", "replace"), r.returncode
+    except subprocess.TimeoutExpired:
+        out, rc = "timed out after %d s" % CANCTL_TIMEOUT_S, None
+    except OSError as e:
+        out, rc = "could not run: %s" % e, None
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    return rc, "canctl down %s" % iface, (lines[-1] if lines else "no output")
+
+
+def bring_down(settings, holder, env=None, root=None, ids=None):
+    """SPEC section 8 (user, 2026-11-13): made by the runner after its own
+    take and at every resume. A probe made now; if it shows canmain up
+    (probe link, on Linux), canctl down, then the probe again. `holder`
+    names whose run it is ("<role>'s run <id>"). Returns (line, info):
+    the line for the start and record.json, info for the run's canmain
+    event (action None when canmain was already down). Raises Refused when
+    canmain is not shown down at the end, saying why."""
+    c = config(settings)
+    env = env or BL.this_env()
+    root = SYS_ROOT if root is None else root
+    try:
+        return check(settings, env=env, root=root, ids=ids), dict(
+            action=None, holder=holder)
+    except Refused as first:
+        if not (c["probe"] == "link" and env == "linux"
+                and link_is_up(c, root)):
+            raise
+        before = str(first)
+    rc, action, last = canctl_down(c["iface"])
+    if rc != 0:
+        raise Refused("canmain was up (%s); `%s` under %s failed (rc %s%s): %s"
+                      % (before, action, holder, rc,
+                         (", %s" % RC_MEANING[rc]) if rc in RC_MEANING else "",
+                         last))
+    try:
+        after = check(settings, env=env, root=root, ids=ids)
+    except Refused as e:
+        raise Refused("canmain was up (%s); after `%s` under %s (rc 0) it is "
+                      "still not shown down: %s" % (before, action, holder, e))
+    return ("canmain check: probe %s (%s): canmain was up (%s); brought down "
+            "under %s by `%s` (rc 0); now: %s" % (
+                c["probe"], c["reason"], before, holder, action, after),
+            dict(action=action, rc=rc, before=before, holder=holder))
+
+
 def plan_line(settings):
     """The plan's line for the check, without running it."""
     c = settings.get(SETTING)
     if not isinstance(c, dict):
         return "first: canmain check, no %s setting: the run refuses" % SETTING
-    return "first: canmain check, probe %s (%s)" % (c.get("probe"),
-                                                    c.get("reason"))
+    return "first: canmain check, probe %s (%s); after the take and at each " \
+           "resume, brought down through canctl if probe link shows it up" % (
+               c.get("probe"), c.get("reason"))

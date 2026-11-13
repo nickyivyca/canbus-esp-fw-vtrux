@@ -61,6 +61,75 @@ CM.SYS_ROOT = CM_ROOT
 CM.pnp_ids = lambda: list(CM_IDS)
 CM_SETTING = {"probe": "absent", "reason": "made-up bench, no canmain",
               "iface": "canmain", "serial_file": CM_FILE}
+# The bring-down after the take (SPEC section 8, user 2026-11-13): no test
+# runs the real canctl. Its command is a fake (this script) acting on a
+# made-up interface CM_LINK in the same tree, which probe absent's "canmain"
+# never sees; until a test sets it up (cm_link), the fake exits 9.
+CM_LINK = "cmlinktest0"
+CM_LINK_SETTING = {"probe": "link", "reason": "made-up link probe",
+                   "iface": CM_LINK}
+CM_CTL = os.path.join(SCRATCH, "_canctl.json")
+CM_CTL_LOG = os.path.join(SCRATCH, "_canctl_calls.txt")
+CM_FAKE = os.path.join(SCRATCH, "_fake_canctl.py")
+with open(CM_FAKE, "w", encoding="utf-8", newline="\n") as _f:
+    _f.write(
+        "import json, sys\n"
+        "try:\n"
+        "    c = json.load(open(sys.argv[1]))\n"
+        "except OSError:\n"
+        "    sys.exit(9)\n"
+        "args = sys.argv[2:]\n"
+        "with open(c['log'], 'a') as f:\n"
+        "    f.write(' '.join(args) + '\\n')\n"
+        "if args != ['down', c['iface']]:\n"
+        "    print('canctl: refused')\n"
+        "    sys.exit(2)\n"
+        "if c.get('act', True):\n"
+        "    with open(c['flags'], 'w') as f:\n"
+        "        f.write('0x1002\\n')\n"
+        "print('%s down' % c['iface'])\n"
+        "sys.exit(c.get('rc', 0))\n")
+CM.CANCTL = [PY, "-B", CM_FAKE, CM_CTL]
+
+
+def _cm_flags():
+    return os.path.join(CM_ROOT, "class", "net", CM_LINK, "flags")
+
+
+def cm_link(up, rc=0, act=True):
+    """CM_LINK present, up or down; the fake canctl told what to do (exit
+    rc; act: take the link down) and its call log emptied."""
+    os.makedirs(os.path.dirname(_cm_flags()), exist_ok=True)
+    with open(_cm_flags(), "w") as f:
+        f.write("0x1003\n" if up else "0x1002\n")
+    with open(CM_CTL, "w") as f:
+        json.dump(dict(log=CM_CTL_LOG, iface=CM_LINK, flags=_cm_flags(),
+                       rc=rc, act=act), f)
+    open(CM_CTL_LOG, "w").close()
+
+
+def cm_set_up(up):
+    """CM_LINK's flags only, the fake and its log as they are."""
+    with open(_cm_flags(), "w") as f:
+        f.write("0x1003\n" if up else "0x1002\n")
+
+
+def cm_up():
+    with open(_cm_flags()) as f:
+        return bool(int(f.read().strip(), 16) & 1)
+
+
+def cm_calls():
+    if not os.path.exists(CM_CTL_LOG):
+        return []
+    with open(CM_CTL_LOG) as f:
+        return [ln.strip() for ln in f if ln.strip()]
+
+
+def cm_events(rec):
+    return [e for e in rec["events"] if e["kind"] == "canmain"]
+
+
 ROLE = "tester (test-suite)"
 # fake_esptool's chip: a locally administered MAC, no real board's
 FAKE_CHIP = {"type": "ESP32-S3", "mac": "02:00:00:00:00:01"}
@@ -2516,7 +2585,7 @@ def test_lost_record():
 
 def _pause_scenario(name, mode="log", during=None, fail_flash=False,
                     second=None, image=("w1", "x2app"), keep_lock=None,
-                    gate_delay=0):
+                    gate_delay=0, settings_kw=None):
     """check 1 writes PAUSE. Another role takes the bench while the run is
     paused (log: once free_paused is in the log; holder: by the Holder
     line, once the run's record shows its pause), `during` runs, the PAUSE
@@ -2531,7 +2600,8 @@ def _pause_scenario(name, mode="log", during=None, fail_flash=False,
     section 7 says, and test_pause_own_lock failed in mode "holder". A
     person waits for the run to stop before editing the Holder line; so
     does the role now. `gate_delay` makes the runner that slow on purpose:
-    it sleeps that long before each case gate."""
+    it sleeps that long before each case gate. `settings_kw` are added to
+    the run's settings (test_canmain_resume: the link probe)."""
     env, p = log_env(name)
     env.set_holder(CI)
     tb = Hooked(env)
@@ -2553,6 +2623,7 @@ def _pause_scenario(name, mode="log", during=None, fail_flash=False,
                                     python=True), second],
                         needs_lock=True, image=list(image))], role=CI)
     st = env.settings(bench_lock_log=p) if mode == "log" else env.settings()
+    st.update(settings_kw or {})
     eng = E.Engine(s, st, out=lambda *a: None, keep_lock=keep_lock)
     if gate_delay:
         real_gate = eng.case_gate
@@ -2955,11 +3026,12 @@ def dead_child():
 
 def test_canmain_check():
     """SPEC section 8: a run checks CAN1 at its start, beside listening
-    first, and refuses unless canmain is down. The setting names the probe;
-    no setting refuses; "absent" checks that no adapter answering to
-    canmain is present; the reason is printed in the start line. A refusal
-    comes before the take: nothing in the log, no run folder. A run with
-    no bench group needs no setting."""
+    first. The setting names the probe; no setting, or a malformed one,
+    refuses, before the take: nothing in the log, no run folder. After the
+    take the probe runs ("absent" checks that no adapter answering to
+    canmain is present; one present stops the bench: test_canmain_stops);
+    the reason is printed in the start line. A run with no bench group
+    needs no setting."""
     env, p = log_env("canmain")
     s = suite([Group("g", [chk("a", "pass")], needs_lock=True)], role=CI)
     base = env.settings(bench_lock_log=p)
@@ -2983,22 +3055,11 @@ def test_canmain_check():
             "is not one of")
     refused(dict(base, canmain_check=dict(CM_SETTING, reason="")),
             "needs reason")
-    dev = os.path.join(CM_ROOT, "bus", "usb", "devices", "1-4")
-    os.makedirs(dev)
-    with open(os.path.join(dev, "serial"), "w") as f:
-        f.write(CM_SERIAL + "\n")
-    CM_IDS.append("USB\\VID_1D50&PID_606F\\" + CM_SERIAL)
-    try:
-        refused(base, "is present" if E.BL.this_env() == "linux"
-                else "carry canmain's serial")
-    finally:
-        shutil.rmtree(dev)
-        CM_IDS.pop()
     out = []
     eng = E.Engine(s, base, out=out.append)
     rec = eng.run()
     assert verdicts(rec) == {"g/a": "PASS"}, verdicts(rec)
-    line = out[0] if out else ""
+    line = ([ln for ln in out if ln.startswith("canmain check")] or [""])[0]
     assert line.startswith("canmain check: probe absent (made-up bench, no "
                            "canmain): canmain is down"), out
     assert CM_SERIAL not in line, "the serial is printed: %s" % line
@@ -3010,6 +3071,177 @@ def test_canmain_check():
                                         if k != "canmain_check"})
     assert verdicts(rec) == {"h/b": "PASS"} and rec["canmain_check"] is None, \
         rec.get("canmain_check")
+
+
+# The bring-down (SPEC section 8, user 2026-11-13: a run brings canmain down
+# itself instead of refusing; placed in the runner and reviewed with the
+# gen-inhibit tester, 2026-11-13). Probe link is Linux only, so on Windows
+# these tests return at once, and their mutants show as STILL PASSES there.
+def _linux():
+    return E.BL.this_env() == "linux"
+
+
+def _cm_run(name, up, rc=0, act=True, settings_kw=None):
+    """A one-check bench run under the bench log with the link probe; CM_LINK
+    up or down and the fake canctl set (cm_link). -> env, p, eng, rec, out."""
+    env, p = log_env(name)
+    cm_link(up, rc=rc, act=act)
+    s = suite([Group("g", [chk("a", "pass")], needs_lock=True)], role=CI)
+    st = env.settings(bench_lock_log=p, canmain_check=dict(CM_LINK_SETTING))
+    st.update(settings_kw or {})
+    out = []
+    eng = E.Engine(s, st, out=out.append)
+    rec = eng.run()
+    return env, p, eng, rec, out
+
+
+def test_canmain_down():
+    """canmain up after the take (probe link) is brought down with `canctl
+    down <iface>` (once, exactly that), probed again, and the run goes on;
+    the start line and record.json's canmain_check say it was up, was
+    brought down and is down now; the run's canmain event names the action
+    and canctl's rc. canmain already down: no canctl, the plain line."""
+    if not _linux():
+        return
+    env, p, eng, rec, out = _cm_run("cm_down", up=True)
+    assert verdicts(rec) == {"g/a": "PASS"}, verdicts(rec)
+    assert cm_calls() == ["down %s" % CM_LINK], cm_calls()
+    assert not cm_up(), "still up"
+    line = rec["canmain_check"] or ""
+    assert line.startswith("canmain check: probe link (made-up link probe): "
+                           "canmain was up (%s is up" % CM_LINK) and \
+        "brought down under" in line and "`canctl down %s` (rc 0)" % CM_LINK \
+        in line and line.endswith("link is down"), line
+    assert line in out, out
+    ev = cm_events(rec)
+    assert len(ev) == 1 and ev[0]["at"] == "start" and \
+        ev[0]["action"] == "canctl down %s" % CM_LINK and ev[0]["rc"] == 0, ev
+    env, p, eng, rec, out = _cm_run("cm_down_already", up=False)
+    assert verdicts(rec) == {"g/a": "PASS"}, verdicts(rec)
+    assert cm_calls() == [], cm_calls()
+    assert rec["canmain_check"].startswith("canmain check: probe link (made-up "
+                                           "link probe): canmain is down"), \
+        rec["canmain_check"]
+    ev = cm_events(rec)
+    assert len(ev) == 1 and ev[0]["action"] is None, ev
+
+
+def test_canmain_holder():
+    """The line and the canmain event name whose run brought canmain down,
+    "<role>'s run <run id>" (the gen-inhibit tester, 2026-11-13: the next
+    holder then sees why canmain is down)."""
+    if not _linux():
+        return
+    env, p, eng, rec, out = _cm_run("cm_holder", up=True)
+    want = "%s's run %s" % (CI, eng.run_id)
+    assert "brought down under %s by" % want in (rec["canmain_check"] or ""), \
+        rec["canmain_check"]
+    ev = cm_events(rec)
+    assert ev and ev[0]["holder"] == want, ev
+
+
+def test_canmain_after_take():
+    """Nothing is brought down before the run's own take is in the log
+    (the gen-inhibit tester, 2026-11-13). Another role holding the lock:
+    the take is refused and canctl never runs, canmain left up. And the
+    probe that decides is made after the take, not before it: canmain up
+    when the run starts but down by the time the take lands is not brought
+    down."""
+    if not _linux():
+        return
+    env, p = log_env("cm_after_take")
+    cm_link(True)
+    BL.take(p, GI, os.getpid(), note="the other role's hand take")
+    s = suite([Group("g", [chk("a", "pass")], needs_lock=True)], role=CI)
+    st = env.settings(bench_lock_log=p, canmain_check=dict(CM_LINK_SETTING))
+    try:
+        E.Engine(s, st, out=lambda *a: None).run()
+    except LockError:
+        pass
+    else:
+        raise AssertionError("ran under another role's lock")
+    assert cm_calls() == [] and cm_up(), (cm_calls(), cm_up())
+    real = E.BL.take
+
+    def take_then_down(*a, **k):
+        r = real(*a, **k)
+        cm_set_up(False)
+        return r
+    E.BL.take = take_then_down
+    try:
+        env, p, eng, rec, out = _cm_run("cm_after_take_stale", up=True)
+    finally:
+        E.BL.take = real
+    assert verdicts(rec) == {"g/a": "PASS"}, verdicts(rec)
+    assert cm_calls() == [], cm_calls()
+    assert "canmain is down" in rec["canmain_check"], rec["canmain_check"]
+
+
+def test_canmain_stops():
+    """canmain not shown down after the take stops the bench: every group
+    that needs the lock is NOT-RUN with the reason, the record's
+    canmain_check opens CANMAIN NOT DOWN, and the run still releases.
+    canctl failing (exit 3), canctl exiting 0 with canmain still up, and
+    probe absent with an adapter answering to canmain present (no canctl
+    action for that probe)."""
+    if not _linux():
+        return
+    for name, kw, want in (
+            ("cm_stop_rc", dict(rc=3, act=False), "failed (rc 3, did not take)"),
+            ("cm_stop_still", dict(act=False), "still not shown down")):
+        env, p, eng, rec, out = _cm_run(name, up=True, **kw)
+        r = [x for x in rec["results"] if x["id"] == "g/a"][0]
+        assert r["verdict"] == "NOT-RUN" and "canmain check at the start" in \
+            r["detail"] and want in r["detail"], (name, r)
+        assert rec["canmain_check"].startswith("CANMAIN NOT DOWN: "), \
+            (name, rec["canmain_check"])
+        assert cm_calls() == ["down %s" % CM_LINK], (name, cm_calls())
+        assert log_events(p)[-1]["event"] == "release", (name, log_events(p)[-1])
+    dev = os.path.join(CM_ROOT, "bus", "usb", "devices", "1-4")
+    os.makedirs(dev)
+    with open(os.path.join(dev, "serial"), "w") as f:
+        f.write(CM_SERIAL + "\n")
+    try:
+        env, p, eng, rec, out = _cm_run("cm_stop_absent", up=False,
+                                        settings_kw={"canmain_check":
+                                                     dict(CM_SETTING)})
+    finally:
+        shutil.rmtree(dev)
+    r = [x for x in rec["results"] if x["id"] == "g/a"][0]
+    assert r["verdict"] == "NOT-RUN" and "is present" in r["detail"], r
+    assert cm_calls() == [], cm_calls()
+
+
+def test_canmain_resume():
+    """At every resume, before the start hooks: canmain brought up by
+    another role during the pause is brought down again, and the run goes
+    on. When that fails, the bench stops before any start hook, identify
+    or flash at the resume: the rest is NOT-RUN with the reason."""
+    if not _linux():
+        return
+    cm_link(False)
+
+    def up(tb, eng, seen):
+        cm_set_up(True)
+    env, p, tb, eng, rec, seen = _pause_scenario(
+        "cm_resume", during=up,
+        settings_kw={"canmain_check": dict(CM_LINK_SETTING)})
+    assert verdicts(rec) == {"a/first": "PASS", "a/second": "PASS"}, \
+        verdicts(rec)
+    assert cm_calls() == ["down %s" % CM_LINK], cm_calls()
+    ev = cm_events(rec)
+    assert [(e["at"], e["action"]) for e in ev] == [
+        ("start", None), ("resume", "canctl down %s" % CM_LINK)], ev
+    cm_link(False, rc=3, act=False)
+    env, p, tb, eng, rec, seen = _pause_scenario(
+        "cm_resume_fail", during=up,
+        settings_kw={"canmain_check": dict(CM_LINK_SETTING)})
+    sec = [r for r in rec["results"] if r["id"] == "a/second"][0]
+    assert sec["verdict"] == "NOT-RUN" and "canmain check at the resume" in \
+        sec["detail"], sec
+    starts = [c for c in tb.calls if c[0] == "on_start"]
+    assert len(starts) == 2, starts
+    assert tb.flashes == [], tb.flashes
 
 
 TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwrite,
@@ -3045,7 +3277,9 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_self_pause, test_pause_hooks, test_resume_identify,
          test_resume_stop, test_resume_stop_kept, test_stop_no_resume,
          test_own_pid, test_take_first, test_folder_release, test_release_end,
-         test_keep_lock, test_canmain_check]
+         test_keep_lock, test_canmain_check, test_canmain_down,
+         test_canmain_holder, test_canmain_after_take, test_canmain_stops,
+         test_canmain_resume]
 
 
 # ---- mutants: each test's rule switched off -----------------------------
@@ -3224,6 +3458,14 @@ MUTANTS = {
     "test_release_end": _rule("release_end"),
     "test_keep_lock": _rule("keep_lock_one_step"),
     "test_canmain_check": _rule("canmain_check"),
+    # the probe alone, as before 2026-11-13: an up canmain stops the bench
+    "test_canmain_down": _rule("canmain_down"),
+    "test_canmain_holder": _rule("canmain_holder"),
+    # the bring-down before the take: under another role's lock, and on a
+    # read the take makes stale
+    "test_canmain_after_take": _rule("canmain_after_take"),
+    "test_canmain_stops": _rule("canmain_stops"),
+    "test_canmain_resume": _rule("canmain_resume"),
 }
 
 

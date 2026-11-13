@@ -47,10 +47,26 @@ record.json, board_state.txt).
 Rules the engine enforces (each has a test in tests/test_run_core.py that
 fails when the rule is switched off through RULES):
   canmain_check   a run that needs the bench refuses to start, before it
-                  takes the lock or makes a folder, unless the settings'
-                  canmain_check shows canmain down (SPEC.md section 8;
-                  canmain.py); no setting refuses too. Its line is printed
-                  at the start, and is in record.json (canmain_check)
+                  takes the lock or makes a folder, unless the settings
+                  have a well-formed canmain_check (SPEC.md section 8;
+                  canmain.py); no setting refuses too. After the take it
+                  makes canmain.bring_down; its line is printed at the
+                  start, and is in record.json (canmain_check)
+  canmain_down    canmain shown up by probe link after the take is brought
+                  down (canctl down) and probed again, not left for the
+                  run to stop on (user, 2026-11-13: it refused before)
+  canmain_after_take  nothing is probed for action or brought down before
+                  the run's own take is in the log, so a run refused the
+                  take (another role holds the lock) runs no canctl
+  canmain_stops   canmain not shown down after the take (canctl failing,
+                  or the probe after it) stops the bench: every group that
+                  needs the lock is NOT-RUN, with the reason
+  canmain_resume  the same at every resume, before the start hooks: a
+                  failure there stops the bench before any hook, identify
+                  or flash
+  canmain_holder  the line and the run's canmain event name whose run it
+                  is ("<role>'s run <id>"), so the next holder sees why
+                  canmain is down
   lock_guard      no bench group runs unless the suite's role holds the
                   lock: refused at the start, checked at each group's start
   lock_each_case  the lock is checked again before every bench case, not
@@ -251,7 +267,8 @@ from .record import (Recorder, compare, load_progress, make_run_id,
                      new_run_dir, stamp, write_record, write_new)
 
 RULES = {k: True for k in (
-    "canmain_check", "lock_guard", "lock_each_case", "pause_own_lock", "lost_record",
+    "canmain_check", "canmain_down", "canmain_after_take", "canmain_stops",
+    "canmain_resume", "canmain_holder", "lock_guard", "lock_each_case", "pause_own_lock", "lost_record",
     "take_first", "folder_release", "self_pause", "release_end",
     "keep_lock_one_step",
     "own_pid", "pause_hooks", "resume_identify", "resume_stop",
@@ -760,6 +777,37 @@ class Engine:
         start = names.index(cur) if cur in names else 0
         return self._first_images(self.bench_work[start:])
 
+    def canmain_start(self, at):
+        """SPEC section 8 (user, 2026-11-13): canmain brought down if it is
+        up, after the run's own take ("start") and after each resume take,
+        before the start hooks ("resume"), through canmain.bring_down,
+        which probes then, not earlier. The line is printed and goes in the
+        run's canmain event (and, at the start, in record.json's
+        canmain_check), naming whose run it is. None when canmain is shown
+        down; else the reason, and the bench is stopped with it."""
+        holder = ("%s's run %s" % (self.suite.role,
+                                   getattr(self, "run_id", None))
+                  if RULES["canmain_holder"] else "this run")
+        why = None
+        try:
+            if RULES["canmain_down"]:
+                line, info = canmain.bring_down(self.settings, holder)
+            else:
+                line, info = canmain.check(self.settings), dict(
+                    action=None, holder=holder)
+        except canmain.Refused as e:
+            why = "canmain check at the %s: %s" % (at, e)
+            line = "CANMAIN NOT DOWN: %s" % why
+            info = dict(action=None, holder=holder, refused=str(e))
+        if at == "start":
+            self.canmain_line = line
+        self.out(line)
+        if getattr(self, "rec", None) is not None:
+            self.rec.event("canmain", at=at, line=line, **info)
+        if why and RULES["canmain_stops"] and not self.bench_stopped:
+            self.bench_stopped = why
+        return why if RULES["canmain_stops"] else None
+
     def resume_check(self):
         """Section 6, after the resume take and before the next case: the
         start hooks again, then every board the remaining cases use is
@@ -775,7 +823,15 @@ class Engine:
         os.makedirs(logdir, exist_ok=True)
         expected = self._expected_images()
         statuses = []
-        if (self.suite.on_start is not None and RULES["board_hooks"]):
+        canmain_why = None
+        if RULES["canmain_check"] and RULES["canmain_resume"]:
+            # SPEC section 8: another role's take during the pause may have
+            # brought canmain up; checked before any hook, identify or flash
+            canmain_why = self.canmain_start("resume")
+            if canmain_why:
+                statuses.append("CANMAIN NOT DOWN: %s" % canmain_why)
+        if (self.suite.on_start is not None and RULES["board_hooks"]
+                and not canmain_why):
             hooks = {}
             for board, name in expected.items():
                 out = self._call_hook("on_start", board,
@@ -2204,14 +2260,16 @@ class Engine:
         if runner.get("refuse"):
             raise SuiteError(runner["refuse"])
         if self.needs_bench() and RULES["canmain_check"]:
-            # SPEC section 8: before the take, so a refusal writes nothing
-            # to the log and makes no folder
+            # SPEC section 8: the setting before the take, so a refusal
+            # writes nothing to the log and makes no folder; canmain itself
+            # only after the take (canmain_start, below)
             try:
-                self.canmain_line = canmain.check(self.settings)
+                canmain.config(self.settings)
             except canmain.Refused as e:
                 raise lockmod.LockError("refusing to start: canmain check: %s"
                                         % e)
-            self.out(self.canmain_line)
+            if not RULES["canmain_after_take"]:
+                self.canmain_start("start")
         if self.needs_bench() and self.lock_log:
             self._take_at_start()
         elif self.needs_bench():
@@ -2259,6 +2317,10 @@ class Engine:
                        code=code, subset=subset, subset_cases=cases)
         self.rec.event("placement", runner=True,
                        **{k: v for k, v in runner.items() if k != "refuse"})
+        if self.needs_bench() and RULES["canmain_check"] and \
+                RULES["canmain_after_take"]:
+            self.canmain_start("start")
+        header["canmain_check"] = self.canmain_line
         lanes = {}
         for g, items in sel:
             lanes.setdefault(g.lane, []).append((g, items))
