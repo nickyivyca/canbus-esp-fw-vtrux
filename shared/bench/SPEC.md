@@ -183,9 +183,11 @@ Board state, what is on each board, stays in
 - The run id the runner checks is its own, the one it took the lock with
   at start (section 8).
 - **At its run's end the runner releases** (user, 2026-10-22), after its end
-  hooks. It restores no board (user, 2026-11-11), except that a board left
-  on an image its suite marks not safe to leave idle first gets that
-  board's idle-safe image (Ruled, below). Each board's read is the
+  hooks. It restores no board (user, 2026-11-11). It may first load a
+  board's idle-safe image when it would leave the board on an image its
+  suite marks not safe to leave idle, and need not (user, 2026-11-13); a
+  release that leaves one opens, with the record and `index.txt`, with
+  `LEFT ON IDLE-UNSAFE IMAGE: <board> on <image>`. Each board's read is the
   one it made at the end, or `not read: <why>`: every board it has an image
   for, identified after its last case, and the WiCAN if an end hook read it.
 - **With `--keep-lock PID`** it instead releases and takes again in one
@@ -258,20 +260,45 @@ way, the Holder is not its own.
   `$REVERSE_IT_DIR/firmware/bench-holder.md`, not here.
   Down means its link is down, or the device unbound if a down link turns
   out still to ACK; step 3's adapter characterisation settles which.
-- **What a hand-take role leaves at its release:** every bench adapter it
-  opened is closed, back on the driver it found it on, and `canmain` is
-  down. The release note says so, and says what it transmitted on which
-  bus. Closed means a SocketCAN interface is down, so the next opener sets
-  its own bit rate and mode, listen-only included, and a vendor-stack or
-  libusb channel is closed. Back on its driver covers a USB passthrough to
-  the Android emulator: the device is bound again to the driver or libusb
-  binding it was on before the passthrough. If an adapter cannot be put
-  back (the Innomaker's probe sometimes times out), the release still
-  happens, and its note opens with
-  `ADAPTER NOT RESTORED: <adapter> on <driver>, <why>`. Its board reads
-  are required as for any release; a board it did not read is
-  `not read: <why>`, which leaves BOARD STATE UNKNOWN until the next run
-  identifies it at its start.
+- **The lock is a mutex, not a hand-over guarantee** (user, 2026-11-13, in
+  the Git based CANBus Android development session: "the goal of the bench
+  lock is a mutex; not to have a guarantee that it's left in a known state
+  when it's handed over"). A free lock is taken without asking anyone:
+  `take` checks and claims it in one locked step, so it is the ask (user,
+  2026-11-13). The messages at a take and a release are notices. While a
+  role holds the lock, it does to the bench what its work needs: flashes the
+  images it needs, resets or reboots either board, brings links up or down,
+  moves adapters between drivers or into the Android emulator, and sends
+  what its work needs on either bus. No release has to put a board or an
+  adapter back. At release, nothing the holder started still has a bench
+  adapter open or is still sending: its processes, replays and emulators
+  have exited. The next holder takes what it needs to know from the release
+  note and the board reads, and checks and sets up the rest itself.
+- **The release note reports the state of everything the holder touched:**
+  each image it flashed, with its pin or build and app sha256; the image
+  each board it touched was left on; the driver or `canctl` mode and link
+  state of each adapter it used, and `canmain`'s; and what it sent on which
+  bus. A board it did not touch is `not read: untouched` in the release's
+  board reads, with no read made for it; the state then shows BOARD STATE
+  UNKNOWN, and every run identifies its boards at its start anyway (user,
+  2026-11-13). BOARD STATE UNKNOWN is a report, never a reason to hold off
+  taking or using the bench. A release that leaves a board on an image its
+  owner marks not safe to leave idle, such as the jammer, opens the note
+  with `LEFT ON IDLE-UNSAFE IMAGE: <board> on <image>`. `bench-holder.md`'s
+  board state follows under that file's own rules; a hand-take role does
+  not edit it.
+- **How a hand-take role flashes.** It builds an image as its owner's
+  tooling builds it and does not change its source (user, 2026-11-12, in
+  the CAN replay tooling session). Until the X2 images move into
+  `shared/x2_test_images`: the jammer through the gen-inhibit tester's
+  custody tool; an SLCAN image as `gen-inhibit/tools/x2_pin.json` pins it,
+  through the shared flasher; after the move, each by its pin under that
+  component's T9-T11. The WiCAN takes a pinned gen-inhibit image through
+  the shared flasher. A whole-flash dump is made only when the holder
+  chooses to put the found image back (user, 2026-11-13); it can hold a
+  board's credentials, so it stays in the run record of the tool that made
+  it, never printed, quoted, committed or copied. If `canx2` is attached as
+  SLCAN, it is detached before a flash.
 - **Transmitting while a run is paused** is allowed, as for any role's
   take between a pause and its resume (section 6). The release note's
   account of what was transmitted lets the paused run's role weigh it; the
@@ -282,41 +309,18 @@ way, the Holder is not its own.
   unbound bench Innomakers, and stops any emulator that holds one.
 - **A run checks CAN1 at its start, and does not trust the note**
   (charge-interposer reviewer's review, 2026-11-11): beside listening
-  first, it refuses unless `canmain` is down, so a hand
-  release that went wrong, or a crash, cannot leave a second ACKing node on
-  CAN1 under checks that need none. Whether the runner or each suite's
+  first, it brings `canmain` down itself through `canctl` if it is up, and
+  records that, so no hand release or crash leaves a second ACKing node on
+  CAN1 under checks that need none (user, 2026-11-13: it refused before).
+  Whether the runner or each suite's
   start hook makes the check is the testers' to settle.
-- **Hand-take roles may flash the X2 with test images** (user, 2026-11-12,
-  in the CAN replay tooling session). `android` and `can-tools` may build
-  and flash the jammer and SLCAN images, but not change them, and may put
-  back the image they found; they flash nothing else. Until the move into
-  `shared/x2_test_images`: the jammer through the gen-inhibit tester's
-  custody tool, whose whole-flash dump stays in the tool's run record,
-  never printed, quoted, committed or copied; the SLCAN on CAN1 as the
-  PlatformIO build `gen-inhibit/tools/x2_pin.json` pins, through the
-  shared flasher. After it, that component's T9-T11. If `canx2` is
-  attached as SLCAN through `canctl`, it is detached before a flash and
-  left at release as they found it.
-- **At release, the X2 is on an idle-safe image**: the one they found, if
-  that was idle-safe, or a test image its owning tester has marked
-  idle-safe in `shared/x2_test_images/README.md` (before the move, in
-  `bench-holder.md`). Until one is marked, only the found image counts.
-  They identify the X2 before the first flash. Otherwise the note opens
-  `LEFT ON IDLE-UNSAFE IMAGE: x2 on <image>, <why>`; leaving the jammer
-  always does.
-- **The release note records the flash:** the image found, each image
-  flashed, with its pin and app sha256, and the image left on. That last
-  is the release's `x2` board read, made by T10 (for the SLCAN images,
-  `verify_flash` against the pin, since their version answer does not
-  name the build). `bench-holder.md`'s board state follows under that
-  file's own rules; the hand-take role does not edit it. What the jammer
-  sent goes in the note's account of what was transmitted.
 - **request:** one queued request per role; the holder cannot request.
 - **lost:** only by the role that took that run, never for the current
   holder's run; it also ends that run's paused state.
 - **Board reads on release and free_paused** (free_paused frees the bench too): one
   `--board NAME=TEXT` for each of `wican` and `x2`, both required; TEXT is the
-  image read off the wire and when, or `not read: <why>`.
+  image read off the wire and when, or `not read: <why>` (`not read:
+  untouched` for a board the holder did not touch, above).
 - **status refuses off the bench host and environment** like the writes, since a synced copy
   elsewhere may be stale.
 - **clear ends the cleared holder's run**, which cannot then be resumed. A
@@ -332,7 +336,8 @@ way, the Holder is not its own.
   consult it.
 - **Release and free_paused carry a fixed per-board read** (user, 2026-10-21),
   as section 8 sets out.
-- **Every release reads both boards**, the X2 included on a gen-inhibit
+- **Every release reads both boards** (changed 2026-11-13, below: a report
+  of both boards), the X2 included on a gen-inhibit
   release (user, 2026-10-21, on the gen-inhibit reviewer's question): a
   release that does not read a board leaves BOARD STATE UNKNOWN. The
   gen-inhibit tester already reads the X2 off the wire at its releases.
@@ -376,7 +381,8 @@ way, the Holder is not its own.
   gen-inhibit reviewer; reviewed and approved by the charge-interposer
   reviewer and the methodology owner (user, 2026-11-11).
 - **Except images not safe to leave idle** (user, 2026-11-11, on the
-  methodology owner's review). A suite marks each image that is not safe to
+  methodology owner's review; the end load changed 2026-11-13, below: it
+  is optional). A suite marks each image that is not safe to
   leave idle on the bench, such as one that floods CAN when nothing ACKs it
   or one that boots armed. It also names an idle-safe image for each board
   it marks one on. A run that would release at its end with a board on a
@@ -393,16 +399,33 @@ way, the Holder is not its own.
   renamed copy (sections 3 and 4, from the gen-inhibit reviewer's review). It gains the hand-take
   roles `android` and `can-tools`: hand takes only, no runs, adapters
   closed and `canmain` down at release with what was transmitted noted,
-  `ADAPTER NOT RESTORED` when an adapter cannot be put back, a clearer's
+  `ADAPTER NOT RESTORED` when an adapter cannot be put back (superseded
+  2026-11-13, below), a clearer's
   check for a detached emulator, and no board flashing until the Android
   bench tests need it (superseded 2026-11-12, below) (section 8, with the Android and CAN replay tooling
   sessions' reviews). A run checks `canmain` itself at its start (the
-  charge-interposer reviewer's review). The user ruled that
+  charge-interposer reviewer's review; changed 2026-11-13, below: it
+  brings `canmain` down instead of refusing). The user ruled that
   the methodology owner drafts this change, and that all of the lock's
   consumers review it: both project reviewers, the CAN replay tooling
   session and the Git based CANBus Android development session.
 - **Hand-take roles may flash the X2 with test images** (user, 2026-11-12:
   flashing in the CAN replay tooling session; the idle-safe release and
   this text in the methodology owner's session, with the lock users'
-  reviews). Reviewed by both project reviewers, the CAN replay tooling
-  session and the Git based CANBus Android development session.
+  reviews; the idle-safe release and the dump at every jammer flash
+  superseded 2026-11-13, below). Reviewed by both project reviewers, the
+  CAN replay tooling session and the Git based CANBus Android development
+  session.
+- **The lock is a mutex** (user, 2026-11-13, in the Git based CANBus
+  Android development session; the details in the methodology owner's
+  session, with the CAN replay tooling and Android sessions' lists). A free
+  lock is taken without asking. The holder does to the bench what its work
+  needs, and its release reports the state it leaves; nothing is put back
+  for the next holder, who sets up what it needs. An untouched board is
+  `not read: untouched`. A whole-flash dump is made only to restore. A run
+  brings `canmain` down itself instead of refusing. This supersedes the
+  restore and release-state parts of the 2026-11-11 and 2026-11-12
+  entries, makes the 2026-11-11 idle-safe load at a run's end optional,
+  and makes the 2026-10-21 "every release reads both boards" a report of
+  both boards. Committed and merged by the gen-inhibit reviewer; read by
+  the charge-interposer reviewer before merge.

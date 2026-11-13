@@ -136,6 +136,14 @@ reviewer's session).
     signature, sent through the SLCAN, which the image acts on and never
     puts on a bus; the tester reports why the fallback was needed. Not
     Wi-Fi: jam timing needs better than Wi-Fi gives (user, 2026-11-12).
+    The fallback is in use: a second USB serial port needs the S3's USB
+    OTG, which takes the pins of the USB Serial/JTAG that flashes and
+    resets the X2 (charge-interposer tester, 2026-11-13). The jammer's
+    replies come back the same way, as frames on a second reserved ID in
+    the host's receive stream, never put on a bus (user, 2026-11-13). The
+    command and reply frames may sit in a capture like any other frame:
+    bench captures are quarantined test logs, and a reply only follows a
+    command the host itself sent.
   - The jamming reuses the jammer's pulse code from `jammer/`, unchanged,
     once `jammer/` holds the ESP-IDF port (T8). Until then `slcan_spi`
     ships without jamming, so the replay is not held up. The gen-inhibit
