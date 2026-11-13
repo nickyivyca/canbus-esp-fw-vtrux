@@ -84,6 +84,24 @@ def base(path):
     return os.path.basename(path)
 
 
+# Where a host half ran: the first line of H's host_run.log and of B15host's output file
+# since 2026-11-12 (host_target.sh; gen-inhibit reviewer: "the run record shows local or
+# remote without anyone opening host_run.log"). The two judges keep it as the figure
+# host_mode, "local" or "remote", and the line itself at the end of their detail. Only
+# the first line counts, so a line the remote prints later can't stand in for it. A file
+# from before has none: host_mode is None and the detail says so; the verdict doesn't
+# turn on it.
+HOST_MODE_RX = re.compile(r"# (local mode|remote): .+")
+
+
+def host_mode(t):
+    first = t.split("\n", 1)[0]          # text() reads with universal newlines: no CR left
+    m = HOST_MODE_RX.fullmatch(first)
+    if not m:
+        return None, "host mode not recorded"
+    return ("local" if m.group(1) == "local mode" else "remote"), first[2:]
+
+
 JUDGES = {}
 
 # Index ids retired by a spec change: no suite runs or judges them, and a run against the
@@ -564,8 +582,11 @@ def b15host(F):
     host = text(F.one(r"B15_diag_decode_check_host_%s\.txt" % C7))
     pages = re.findall(r"pages seen: (.+)$", host, re.M)
     decodes = "all emitted diag frames decode against the DBC" in host and re.search(r"^exit 0$", host, re.M)
-    return [result("B15host", "PASS" if decodes and pages else "FAIL", {"modes_with_pages": fig(len(pages))},
-                   "every emitted diag frame decodes against the DBC" if decodes else "a diag frame does not decode")]
+    mode, line = host_mode(host)
+    return [result("B15host", "PASS" if decodes and pages else "FAIL",
+                   {"modes_with_pages": fig(len(pages)), "host_mode": fig(mode)},
+                   "%s; %s" % ("every emitted diag frame decodes against the DBC" if decodes
+                               else "a diag frame does not decode", line))]
 
 
 @judge("B16", "B")
@@ -853,13 +874,16 @@ def h(F):
         "case26_bound": fig(int(case26.group(1)) if case26 else None),
         "fixture_sha256": fig(fx.group(1)[:8] if fx else None),
     }
+    mode, line = host_mode(t)
+    figs["host_mode"] = fig(mode)
     bad = ["missing step " + s for s in missing] + ["exit != 0: " + s for s in nonzero]
     for name in ("golden_failed", "invariant_violations", "passive_differing", "fuzz_violations", "spec_expect_failed"):
         if figs[name]["value"] != 0:
             bad.append("%s %s" % (name, figs[name]["value"]))
     if case26 and int(case26.group(1)) > int(case26.group(2)):
         bad.append("case 26 over its cap")
-    return [result("H", "FAIL" if bad else "PASS", figs, "; ".join(bad) or "%d steps exit 0" % len(exits))]
+    return [result("H", "FAIL" if bad else "PASS", figs,
+                   "%s; %s" % ("; ".join(bad) or "%d steps exit 0" % len(exits), line))]
 
 
 # ---------------------------------------------------------------- part C

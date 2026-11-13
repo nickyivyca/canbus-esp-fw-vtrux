@@ -338,6 +338,25 @@ B9_CASES = [
 # Port step 1c's switch names (suite_judges.RENAMED): the e3d9437 index's figure name -> today's.
 RENAMED_FROM = {old: new for new, old in J.RENAMED.items()}
 
+# Figures added since the e3d9437 index, with what the baseline's files give for them:
+# host_mode, where H and B15host ran (2026-11-12), which no baseline file records.
+ADDED_SINCE = {"H": {"host_mode": None}, "B15host": {"host_mode": None}}
+
+# Section 2g: the host mode line (host_target.sh, 2026-11-12) on the baseline's own H and
+# B15host files: (label, how the file changes, host_mode, what the detail ends with).
+LOCAL_LINE = "local mode: REMOTE=madhouse-debian names this host, madhouse-debian; the commands run here without ssh"
+REMOTE_LINE = "remote: ssh hosttest, from madhouse-debian"
+HOST_MODE_CASES = [
+    ("local, the first line", lambda t: "# %s\n%s" % (LOCAL_LINE, t), "local", LOCAL_LINE),
+    ("remote, the first line", lambda t: "# %s\n%s" % (REMOTE_LINE, t), "remote", REMOTE_LINE),
+    ("local, CRLF", lambda t: "# %s\r\n%s" % (LOCAL_LINE, t), "local", LOCAL_LINE),
+    ("none", lambda t: t, None, "host mode not recorded"),
+    ("local, on the second line only", lambda t: "x\n# %s\n%s" % (LOCAL_LINE, t), None, "host mode not recorded"),
+    ("a mode word with nothing after it", lambda t: "# local mode: \n%s" % t, None, "host mode not recorded"),
+    ("another word", lambda t: "# locally: %s\n%s" % (LOCAL_LINE, t), None, "host mode not recorded"),
+]
+HOST_MODE_FILES = [("H", "host", "host_run.log"), ("B15host", "bench", "B15_diag_decode_check_host_e3d9437.txt")]
+
 # B19 on files test_only_inert.py writes from port step 1c on, the switches by their new names:
 # (label, {file: text}, check, verdict). A pre-1c name still reads (the baseline's files above).
 B19_PRESENT = {"B19_present_rt.txt": "RESTART_GUARD_TEST         PASS  present: ['reset', 'http_status']\n",
@@ -462,6 +481,7 @@ def main():
         f = figures(res)
         # the index names B19's figures by the switches' names at e3d9437; port step 1c renamed two
         wf = {RENAMED_FROM.get(k, k): v for k, v in want["figures"].items()}
+        wf.update(ADDED_SINCE.get(cid, {}))
         check("%s: every figure is the index's, and no other" % cid, lambda: f == wf,
               {k: (f.get(k), wf.get(k)) for k in set(f) | set(wf) if f.get(k) != wf.get(k)})
 
@@ -587,6 +607,29 @@ def main():
             check("%s, its file named with %s: %s" % (cid, label, want),
                   lambda: [r["verdict"] for r in res] == [want], [(r["verdict"], r["detail"]) for r in res])
     gi_paths.remove_tree(c7)
+
+    # 2g. The host mode line (host_target.sh, 2026-11-12; gen-inhibit reviewer: the run
+    #     record shows local or remote without opening host_run.log). H and B15host keep
+    #     it as the figure host_mode and at the end of their detail, read from the first
+    #     line only; the verdict and the other figures stay the baseline's.
+    hm = os.path.join(scratch, "host_mode")
+    for cid, sub, name in HOST_MODE_FILES:
+        base_t = open(os.path.join(real, sub, name), encoding="utf-8", newline="").read()
+        base_f = figures(got[cid])
+        for label, edit, want_mode, want_end in HOST_MODE_CASES:
+            gi_paths.remove_tree(hm)
+            shutil.copytree(os.path.join(real, sub), hm)
+            open(os.path.join(hm, name), "w", encoding="utf-8", newline="").write(edit(base_t))
+            res = J.judge_one(cid, hm)
+            f = figures(res)
+            check("%s, host mode %s: host_mode %s, the detail ends with it, the verdict and other figures kept"
+                  % (cid, label, want_mode),
+                  lambda: [r["verdict"] for r in res] == [r["verdict"] for r in got[cid]]
+                  and f.get("host_mode", "absent") == want_mode and res[0]["detail"].endswith("; " + want_end)
+                  and {k: v for k, v in f.items() if k != "host_mode"} == {k: v for k, v in base_f.items()
+                                                                          if k != "host_mode"},
+                  [(r["verdict"], r["detail"][-120:], r["figures"].get("host_mode")) for r in res])
+    gi_paths.remove_tree(hm)
 
     # 3. No files, a judge that raises, a judge that returns nothing.
     empty = os.path.join(scratch, "empty")
