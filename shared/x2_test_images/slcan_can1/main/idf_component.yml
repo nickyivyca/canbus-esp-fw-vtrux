@@ -1,0 +1,30 @@
+## slcan_can1's dependencies, recorded in ../dependencies.lock.
+dependencies:
+  # THE SHARED COMPONENTS, ALL THREE AT ONE shared/main TAG, from git, never
+  # through override_path: vtrux/twai_port is taken "with vtrux/can_port and
+  # its board at the same shared/main tag" (its CMakeLists.txt), and both
+  # find the board by its include/board_pins.h. None of the three has a file
+  # changed between 2026.11.12.2 and shared/main 344eef05, and slcan_spi
+  # pins the board at the same tag.
+  #
+  # The board (shared/boards SPEC B1, B2): the X2's ports and pins. sdkconfig
+  # names its partition table by this dependency's managed_components/
+  # folder, vtrux__x2.
+  vtrux/x2:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/boards/x2
+    version: "2026.11.12.2"
+  # The CAN port interface (can_port C1), with twai_port registered as the
+  # backend for index 0.
+  vtrux/can_port:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/can_port
+    version: "2026.11.12.2"
+  # CAN1's driver (twai_port T1), the S3's TWAI controller on board port 0.
+  vtrux/twai_port:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/twai_port
+    version: "2026.11.12.2"
+  # ESP-IDF v5.4.2 exactly (x2_test_images SPEC T6).
+  idf:
+    version: "5.4.2"

@@ -1,0 +1,7 @@
+{
+  "project": "slcan-can1",
+  "shared_components": ["vtrux/x2", "vtrux/can_port", "vtrux/twai_port"],
+  "variants": {
+    "dev": {}
+  }
+}
