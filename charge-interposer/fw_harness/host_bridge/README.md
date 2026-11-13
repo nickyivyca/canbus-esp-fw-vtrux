@@ -185,6 +185,42 @@ The can-fails run the same two predicates on run 7's per-stage numbers
 (188 ms) and on a fresh frame cut short (12 ms), and both are refused. The
 case was also run against the per-stage product (`2a56b90`), where it fails.
 
+### The charger's frames on the vehicle port (`sa-c0-vehicle-port`)
+
+Spec 2, "The charger's frames count only from the charger port" (user,
+2026-11-12; tracker G): a replay onto the vehicle segment of a capture made
+before the interposer existed carries the Bel's own frames (SA `0xC0`), and
+they must change no state. The case sends the charger's status (state 12),
+chargeInfo (16 A) and pilot timer on the VEHICLE port, with the VCU's
+CHARGER and flow bit, the BMS (contactors closed) and the evap flag:
+- **A1, 3 s, nothing on the charger port:** the port stays listen-only, with
+  nothing on the vehicle side and no transmit attempted, and every one of
+  the frames crosses to the charger segment once (`[mode]`, `[forward]`).
+- **A2, 3 s, plus an SA `0xC0` frame on the charger port that the core does
+  not parse** (PGN `0xFF50`, so the port is normal and the status frames can
+  be read): PASSTHROUGH throughout, `chg_seen_charging` 0 and `chg_state`
+  not 12 (`[arm]`), `chg_silent_expected` 1 (`[silent]`), the EVSE cap
+  unknown (`[cap]`).
+- **B, 2 s, the charger's frames on the charger port too** (pilot timer 1
+  there, 5 on the vehicle port): MONITOR, and no other state after it
+  (`[pilot]`: a vehicle-port timer read would step back at every
+  charger-port reading, a spec 6.1 boundary); then silent 0, cap known and
+  `chg_state` 12, so A2's checks could fail.
+- **C, 1 s in MONITOR:** a charger fault frame (mux 3) on the vehicle port
+  does not trip, and is forwarded (`[fault]`, `[forward]`).
+- **D1, 2 s, the charger port carries only the unparsed frame; the vehicle
+  port the state-12 status every 50 ms:** SAFE with "charger frames stale"
+  500 ms to 1 s after the last charger-port status (551 ms when written,
+  timed in 50 ms steps), and every `0x7F5` from 600 ms on silent 1
+  (`[stale]`, `[silent]`).
+- **D2, 2.5 s, nothing on the charger port:** listen-only again (`[mode]`).
+
+Its can-fails are `l2_mutations.sh` Y (main.cpp hands vehicle-port SA `0xC0`
+frames to the core's charger handler instead) and Z (main.cpp also reads them
+as charger frames, forwarding them as before). The reference core's side,
+judged the same way, is `test_trips.py`'s
+`test_sa_c0_counts_only_from_the_charger_port`, with eight wrong cores.
+
 ## Bus-off on the charger port
 
 Added 2026-10-04, completing spec 9.1's bus-off coverage -- the TWAI side
