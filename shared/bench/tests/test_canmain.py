@@ -22,6 +22,7 @@ an edit whose text is not found exactly once is NOT APPLIED and counts as a
 failure. Files go to this run's own folder (_scratch.py).
 """
 
+import json
 import os
 import shutil
 import sys
@@ -270,8 +271,144 @@ def test_line():
                           % REASON) and good_file() in line and
           SERIAL not in line, "the line: %s" % line)
     check(C.plan_line(setting("unbound")) ==
-          "first: canmain check, probe unbound (%s)" % REASON, "plan line")
+          "first: canmain check, probe unbound (%s); after the take and at "
+          "each resume, brought down through canctl if probe link shows it up"
+          % REASON, "plan line")
     check("the run refuses" in C.plan_line({}), "plan line, no setting")
+
+
+# The bring-down (SPEC section 8, user 2026-11-13): canctl is a fake, this
+# script, told by a JSON file what to do; it logs its arguments, takes the
+# made-up link down unless told not to, and exits as told.
+FAKE_CANCTL = (
+    "import json, sys\n"
+    "c = json.load(open(sys.argv[1]))\n"
+    "with open(c['log'], 'a') as f:\n"
+    "    f.write(' '.join(sys.argv[2:]) + '\\n')\n"
+    "if sys.argv[2:] != ['down', 'canmain']:\n"
+    "    print('canctl: refused')\n"
+    "    sys.exit(2)\n"
+    "if c.get('act', True):\n"
+    "    open(c['flags'], 'w').write('0x1002\\n')\n"
+    "print('canmain down')\n"
+    "sys.exit(c.get('rc', 0))\n")
+
+
+class Ctl:
+    """A made-up sysfs with canmain's link up or down, and the fake canctl
+    pointed at it (C.CANCTL; put back by done())."""
+
+    def __init__(self, name, up=True, rc=0, act=True, iface=True):
+        self.s = Sys(name)
+        if iface:
+            self.s.iface("canmain", "0x1003" if up else "0x1002")
+        self.flags = os.path.join(self.s.net, "canmain", "flags")
+        self.log = os.path.join(self.s.root, "calls.txt")
+        open(self.log, "w").close()
+        ctl = os.path.join(self.s.root, "canctl.json")
+        with open(ctl, "w") as f:
+            json.dump(dict(log=self.log, flags=self.flags, rc=rc, act=act), f)
+        script = os.path.join(self.s.root, "fake_canctl.py")
+        with open(script, "w", newline="\n") as f:
+            f.write(FAKE_CANCTL)
+        self.keep = C.CANCTL
+        C.CANCTL = [sys.executable, "-B", script, ctl]
+
+    def calls(self):
+        with open(self.log) as f:
+            return [ln.strip() for ln in f if ln.strip()]
+
+    def up(self):
+        return C.iface_up(self.s.root, "canmain")
+
+    def done(self):
+        C.CANCTL = self.keep
+
+
+HOLDER = "tester (test-suite)'s run t_1"
+
+
+def test_bring_down():
+    """Probe link with canmain up: `canctl down canmain` once, exactly
+    that, then the probe again; the line says it was up, names the holder
+    and the command, and ends with the probe's down line; info has the
+    action, rc 0, the state before and the holder. canmain already down:
+    no canctl, the plain check line, action None."""
+    k = Ctl("bd_up")
+    try:
+        line, info = C.bring_down(setting("link"), HOLDER, env="linux",
+                                  root=k.s.root)
+        check(k.calls() == ["down canmain"], "calls: %s" % k.calls())
+        check(not k.up(), "canmain still up")
+        check(line.startswith("canmain check: probe link (%s): canmain was up "
+                              "(canmain is up" % REASON) and
+              "brought down under %s by `canctl down canmain` (rc 0)" % HOLDER
+              in line and line.endswith("link is down"), "line: %s" % line)
+        check(info["action"] == "canctl down canmain" and info["rc"] == 0 and
+              info["holder"] == HOLDER and "canmain is up" in info["before"],
+              "info: %s" % info)
+    finally:
+        k.done()
+    k = Ctl("bd_down", up=False)
+    try:
+        line, info = C.bring_down(setting("link"), HOLDER, env="linux",
+                                  root=k.s.root)
+        check(k.calls() == [], "calls when down: %s" % k.calls())
+        check(line.startswith("canmain check: probe link (%s): canmain is down"
+                              % REASON), "line when down: %s" % line)
+        check(info == {"action": None, "holder": HOLDER}, "info: %s" % info)
+    finally:
+        k.done()
+
+
+def test_bring_down_fails():
+    """canctl exiting non-zero refuses, naming the command, its rc and what
+    it means; canctl exiting 0 with canmain still up refuses as still not
+    shown down (the probe after the action, not canctl's word)."""
+    for name, kw, want in (
+            ("bd_rc3", dict(rc=3, act=False), "failed (rc 3, did not take)"),
+            ("bd_rc3_took", dict(rc=3), "failed (rc 3, did not take)"),
+            ("bd_rc2", dict(rc=2, act=False), "failed (rc 2, refused)"),
+            ("bd_noop", dict(act=False), "still not shown down")):
+        k = Ctl(name, **kw)
+        try:
+            msg = refused(C.bring_down, setting("link"), HOLDER, env="linux",
+                          root=k.s.root)
+            check(want in msg and "canctl down canmain" in msg and HOLDER in msg,
+                  "%s: %s" % (name, msg))
+            check(k.calls() == ["down canmain"], "%s calls: %s" % (name, k.calls()))
+        finally:
+            k.done()
+
+
+def test_bring_down_only_link():
+    """Only an existing link that is up is acted on. No interface (probe
+    link), probe unbound with canmain bound, probe absent with canmain
+    present, and probe link off Linux: the probe's own refusal, no canctl."""
+    k = Ctl("bd_noiface", iface=False)
+    try:
+        msg = refused(C.bring_down, setting("link"), HOLDER, env="linux",
+                      root=k.s.root)
+        check("no network interface canmain" in msg, "no iface: %s" % msg)
+        k.s.device("1-4", SERIAL)
+        msg = refused(C.bring_down, setting("absent"), HOLDER, env="linux",
+                      root=k.s.root)
+        check("is present" in msg, "absent: %s" % msg)
+        check(k.calls() == [], "calls: %s" % k.calls())
+    finally:
+        k.done()
+    k = Ctl("bd_absent_up")
+    try:
+        msg = refused(C.bring_down, setting("absent"), HOLDER, env="linux",
+                      root=k.s.root)
+        check("is present" in msg and k.calls() == [] and k.up(),
+              "absent with the link up: %s, %s" % (msg, k.calls()))
+        msg = refused(C.bring_down, setting("link"), HOLDER, env="windows",
+                      root=k.s.root, ids=["USB\\ROOT_HUB30\\X"])
+        check("Linux only" in msg and k.calls() == [],
+              "link on windows: %s, %s" % (msg, k.calls()))
+    finally:
+        k.done()
 
 
 @only("linux")
@@ -302,7 +439,8 @@ def test_real_windows():
 
 TESTS = [test_config, test_serial_file, test_link, test_unbound,
          test_absent_linux, test_absent_windows, test_line,
-         test_real_linux, test_real_windows]
+         test_real_linux, test_real_windows, test_bring_down,
+         test_bring_down_fails, test_bring_down_only_link]
 
 
 # ---- mutants ------------------------------------------------------------
@@ -424,6 +562,46 @@ MUTANTS = {
         ("the wrong command",
          _edit("ForEach-Object { $_.PNPDeviceID }", "ForEach-Object { $_.Name }"),
          "windows"),
+    ],
+    "test_bring_down": [
+        ("no action: the probe's refusal stands",
+         _edit("    rc, action, last = canctl_down(c[\"iface\"])\n",
+               "    raise Refused(before)\n    rc, action, last = canctl_down(c[\"iface\"])\n")),
+        ("canctl even when down",
+         _edit("        return check(settings, env=env, root=root, ids=ids), dict(\n"
+               "            action=None, holder=holder)",
+               "        canctl_down(c[\"iface\"])\n"
+               "        return check(settings, env=env, root=root, ids=ids), dict(\n"
+               "            action=None, holder=holder)")),
+        ("the wrong command",
+         _edit("    argv = list(CANCTL) + [\"down\", iface]",
+               "    argv = list(CANCTL) + [\"mode\", iface, \"libusb\"]")),
+        ("the holder not named",
+         _edit("\"under %s by `%s` (rc 0); now: %s\" % (\n"
+               "                c[\"probe\"], c[\"reason\"], before, holder, action, after)",
+               "\"under %s by `%s` (rc 0); now: %s\" % (\n"
+               "                c[\"probe\"], c[\"reason\"], before, \"a run\", action, after)")),
+        ("no state after in the line",
+         _edit("(rc 0); now: %s\" % (", "(rc 0)%.0s\" % (")),
+    ],
+    "test_bring_down_fails": [
+        ("canctl's rc ignored",
+         _edit("    if rc != 0:\n        raise Refused(\"canmain was up",
+               "    if False:\n        raise Refused(\"canmain was up")),
+        ("no probe after the action",
+         _edit("        after = check(settings, env=env, root=root, ids=ids)\n",
+               "        after = \"(not probed)\"\n")),
+    ],
+    "test_bring_down_only_link": [
+        ("acted on for every probe",
+         _edit("        if not (c[\"probe\"] == \"link\" and env == \"linux\"\n"
+               "                and link_is_up(c, root)):",
+               "        if not link_is_up(dict(c, iface=c.get(\"iface\") or \"canmain\"), root):")),
+        ("a missing interface counts as up",
+         _edit("        return os.path.isdir(iface_dir(root, c[\"iface\"])) and \\\n"
+               "            iface_up(root, c[\"iface\"])",
+               "        return not os.path.isdir(iface_dir(root, c[\"iface\"])) or \\\n"
+               "            iface_up(root, c[\"iface\"])")),
     ],
 }
 
