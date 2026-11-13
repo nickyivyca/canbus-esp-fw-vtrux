@@ -60,9 +60,15 @@ MUTANTS = [
     ("any MAC esptool prints is the unit's", "    return True, m.group(1).lower() == EXPECT_MAC\n",
      "    return True, True\n"),
     # DEVICES-SPEC S1/S3 (2026-11-12): the port from GI_WICAN_DEVICE, and the match recorded
-    ("the bootloader read's port a fixed tty, not from GI_WICAN_DEVICE",
-     '"--port", wican_port(), "--baud",\n               "460800", "read_flash", "0x0"',
-     '"--port", "/dev/ttyACM0", "--baud",\n               "460800", "read_flash", "0x0"'),
+    ("esptool's port a fixed tty, not from GI_WICAN_DEVICE", "    port = wican_port()\n    try:\n        info = esptool_info()",
+     '    port = "/dev/ttyACM0"\n    try:\n        info = esptool_info()'),
+    # esptool from gi_esptool (2026-11-12, the reviewer's Linux leftovers item 6)
+    ("a bare esptool.py again", '    cmd = info["argv"] + ["--chip", "esp32c3"', '    cmd = ["esptool.py"] + ["--chip", "esp32c3"'),
+    ("esptool's refusal not caught", '    except GE.Refused as e:\n        return {"ran": False, "cmd": None, "why": "esptool refused',
+     '    except ():\n        return {"ran": False, "cmd": None, "why": "esptool refused'),
+    ("the run file names no esptool version", '"esptool_version": info["version"]}', '"esptool_version": None}'),
+    ("the otadata read at another address", 'esptool_read("0xd000", "0x2000"', 'esptool_read("0xe000", "0x2000"'),
+    ("the bootloader read too short", 'esptool_read("0x0", "0x8000"', 'esptool_read("0x0", "0x7000"'),
     ("the run file keeps no serial_device", 'record["serial_device"] = dict(SERIAL_DEVICE) or None',
      'record["serial_device"] = None'),
     ("an unresolved port is not refused", '            raise SystemExit("REFUSED: %s (nothing run on the board)" % e)\n',

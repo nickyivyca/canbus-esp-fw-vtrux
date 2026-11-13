@@ -2,8 +2,8 @@
 
 Gen-inhibit tester, 2026-10-08. Case plans A, B, C approved by the reviewer
 2026-10-08. The jammer is x2_jammer/ (test equipment, NOT FOR VEHICLE) on the
-X2's CAN1, which is on the WiCAN's segment; it is driven over COM3 through
-x2_jammer.Console. Every time below is on ONE clock: host epoch (time.time()),
+X2's CAN1, which is on the WiCAN's segment; it is driven over the X2's USB serial
+port (GI_X2_DEVICE; COM3 on the old Windows bench) through x2_jammer.Console. Every time below is on ONE clock: host epoch (time.time()),
 with the Kvaser's hardware timestamps, which are on that clock (median receipt
 lag ~1 ms, measured each run and recorded). When they are not on that clock,
 the run is VOID and nothing more is judged: the witness never judges on receipt
@@ -781,16 +781,16 @@ def start_wican_console(a, factory, port_of):
 def console_totals(cc):
     """The session record's console fields, and its printed summary."""
     if cc is None:
-        return {"wican_console": "off (--no-wican-console)"}, "COM4 console off"
+        return {"wican_console": "off (--no-wican-console)"}, "WiCAN console off"
     cc.stop_flag.set()
     cc.join(timeout=3.0)
     return ({"wican_console_events": cc.events, "wican_console_line_count": len(cc.lines),
              "wican_console_banner_lines": cc.banner_lines()},
-            "COM4 lines %d, events %s" % (len(cc.lines), cc.events[:4]))
+            "WiCAN console lines %d, events %s" % (len(cc.lines), cc.events[:4]))
 
 
 def attach_console(arm, t0, t1):
-    """COM4 banner lines and port events between t0 and t1 (epoch)."""
+    """WiCAN console banner lines and port events between t0 and t1 (epoch)."""
     if CC is None:
         arm["wican_console"] = "not captured"
         return
@@ -1034,8 +1034,10 @@ def reset_wican_to_off():
 
 
 def reset_to_off(cc, page, post, now, sleep, timeout_s=40.0):
-    """The reset, with its proof. USB-JTAG through COM4 when the console is open,
-    else POST /system_reboot (the WiCAN's USB has been unplugged since 2026-10-09).
+    """The reset, with its proof. USB-JTAG through the WiCAN's console port (COM4 on the
+    old Windows bench; GI_WICAN_DEVICE now) when the console is open, else POST
+    /system_reboot (the WiCAN's USB has been unplugged since 2026-10-09). The record's
+    "how" named COM4 until 2026-11-12 (the reviewer's Linux leftovers item 6).
 
     2026-10-16: this used to pulse COM4 and return whatever the page said. With
     USB unplugged there was no COM4, nothing reset, and every --reset-wican arm
@@ -1046,10 +1048,10 @@ def reset_to_off(cc, page, post, now, sleep, timeout_s=40.0):
     p0 = page() or {}
     out = {"t": now(), "uptime_before_ms": p0.get("uptime_ms")}
     if cc is not None and getattr(cc, "ser", None) is not None:
-        out["how"] = "usb-jtag (COM4)"
+        out["how"] = "usb-jtag (WiCAN console)"
         out["pulsed"] = cc.pulse_rts(0.2)
     else:
-        out["how"] = "POST /system_reboot (no COM4)"
+        out["how"] = "POST /system_reboot (no WiCAN console)"
         try:
             out["posted"] = post("/system_reboot")
         except Exception as e:
@@ -1083,7 +1085,7 @@ def case_rearm(a, rec, con, wit):
 
     Added 2026-10-08 after case B: on re-arms following a bus-off arm the
     witness saw 16 error frames ~0.12-0.18 s after mode 3, with no command
-    sent to the jammer. --reset-wican resets the WiCAN through its COM4
+    sent to the jammer. --reset-wican resets the WiCAN through its console port's
     USB-JTAG (console_capture.pulse_rts) before the first arm, to tell a
     state that persists across arms from one cleared by a chip reset.
     """
@@ -1426,7 +1428,7 @@ def build_parser():
     ap.add_argument("--want-sha", default=None,
                     help="refuse unless the WiCAN's /gen_inhibit elf_sha256 is this")
     ap.add_argument("--no-wican-console", action="store_true",
-                    help="no COM4 console capture of the WiCAN; resets go by POST /system_reboot")
+                    help="no console capture of the WiCAN; resets go by POST /system_reboot")
     ap.add_argument("--expect", choices=("stays", "reinstalls"), default=None,
                     help="busoff-rearm: 'stays' on the build before the spec 7 change "
                          "(a direct re-arm leaves the controller bus_off), 'reinstalls' after it")

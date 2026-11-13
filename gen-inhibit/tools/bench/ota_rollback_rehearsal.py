@@ -154,6 +154,7 @@ import time
 import urllib.request
 import zlib
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import gi_esptool as GE  # noqa: E402  esptool from the settings, pinned (2026-11-11; here 2026-11-12)
 import image_elf_sha  # noqa: E402  the app descriptor's fields
 
 
@@ -781,26 +782,45 @@ def parse_otadata(blob):
     return {"sectors": out, "boot": boot}
 
 
-def read_otadata(fw_root, out_bin):
-    """esptool read of 0xd000..0xf000. RESETS THE DEVICE.
+_ET = {}
 
-    Run from the IDF environment in PowerShell: esptool is not installed under
-    py -3.14 on this machine (python-executables-reference.md), and the IDF venv
-    has 4.12.0. The command is returned rather than run when esptool is absent,
-    so the caller can say what to run instead of failing obscurely.
-    """
-    cmd = ["esptool.py", "--chip", "esp32c3", "--port", wican_port(), "--baud",
-           "460800", "read_flash", "0xd000", "0x2000", out_bin]
+
+def esptool_info():
+    """esptool's argv and version, checked once per process (gi_esptool.checked): the
+    argv the chain settings name, passed as GI_ESPTOOL_ARGV, at the pinned version.
+    GE.Refused when it is unset, of another form or another version."""
+    if not _ET:
+        _ET.update(GE.checked())
+    return _ET
+
+
+def esptool_read(addr, size, out_bin, timeout):
+    """esptool read_flash of the WiCAN, addr..addr+size into out_bin. RESETS THE DEVICE.
+
+    Until 2026-11-12 this ran a bare `esptool.py` from PATH, which the IDF PowerShell
+    environment had on Windows and nothing has on madhouse-debian; now esptool is the
+    harness's one esptool (gi_esptool.py: GI_ESPTOOL_ARGV, the pinned version), as the
+    X2 tools take it (the reviewer's Linux leftovers item 6). The port is the WiCAN's,
+    from its USB IDs (wican_port), resolved first. Refused or unable to start: ran False
+    with why, and esptool did not run."""
+    port = wican_port()
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        return {"ran": True, "returncode": p.returncode,
-                "stdout": p.stdout[-2000:], "stderr": p.stderr[-2000:],
-                "cmd": " ".join(cmd)}
-    except FileNotFoundError:
-        return {"ran": False, "cmd": " ".join(cmd),
-                "why": "esptool not on PATH for this interpreter; run the cmd "
-                       "from the IDF PowerShell environment, then re-run this "
-                       "phase with --otadata-file"}
+        info = esptool_info()
+    except GE.Refused as e:
+        return {"ran": False, "cmd": None, "why": "esptool refused: %s" % e}
+    cmd = info["argv"] + ["--chip", "esp32c3", "--port", port, "--baud", "460800",
+                          "read_flash", addr, size, out_bin]
+    base = {"cmd": " ".join(cmd), "esptool_argv": info["argv"], "esptool_version": info["version"]}
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return dict(base, ran=False, why="esptool did not run: %s: %s" % (type(e).__name__, e))
+    return dict(base, ran=True, returncode=p.returncode, stdout=p.stdout[-2000:], stderr=p.stderr[-2000:])
+
+
+def read_otadata(fw_root, out_bin):
+    """esptool read of 0xd000..0xf000 (esptool_read). RESETS THE DEVICE."""
+    return esptool_read("0xd000", "0x2000", out_bin, 120)
 
 
 # ---------------------------------------------------------------- phases
@@ -843,21 +863,35 @@ def esptool_unit(res):
     return True, m.group(1).lower() == EXPECT_MAC
 
 
-def connected_bssid(run=subprocess.run):
-    """(bssid, None): the BSSID of the access point this host is joined to, from `netsh wlan
-    show interfaces`, as 12 lower-case hex digits; or (None, why) when there is not exactly
-    one. It is the unit's SoftAP MAC, so it is never printed or recorded (reviewer,
-    2026-10-25)."""
+BSSID_LINUX = ["nmcli", "-t", "-e", "yes", "-f", "ACTIVE,BSSID", "device", "wifi", "list", "--rescan", "no"]
+
+
+def connected_bssid(run=subprocess.run, platform=None):
+    """(bssid, None): the BSSID of the access point this host is joined to, as 12 lower-case
+    hex digits; or (None, why) when there is not exactly one. It is the unit's SoftAP MAC,
+    so it is never printed or recorded (reviewer, 2026-10-25). Windows: `netsh wlan show
+    interfaces`. Elsewhere (2026-11-12, the reviewer's Linux leftovers item 6): nmcli's
+    terse list of access points, the active ones only (BSSID_LINUX; nmcli escapes the
+    BSSID's colons with '\\'); not yet run against a real adapter, since madhouse-debian
+    has none until its USB one arrives."""
+    win = (platform or sys.platform) == "win32"
+    tool = "netsh" if win else "nmcli"
     try:
-        out = run(["netsh", "wlan", "show", "interfaces"], capture_output=True, text=True,
-                  timeout=15).stdout or ""
+        r = run(["netsh", "wlan", "show", "interfaces"] if win else BSSID_LINUX, capture_output=True, text=True,
+                timeout=15)
     except (OSError, subprocess.SubprocessError) as e:
-        return None, "netsh failed (%s)" % type(e).__name__
-    found = [re.sub(r"[^0-9a-f]", "", m.lower())
-             for m in re.findall(r"^\s*(?:AP )?BSSID\s*:\s*(\S+)", out, re.M)]
+        return None, "%s failed (%s)" % (tool, type(e).__name__)
+    out = r.stdout or ""
+    if win:
+        raw = re.findall(r"^\s*(?:AP )?BSSID\s*:\s*(\S+)", out, re.M)
+    elif getattr(r, "returncode", 0) != 0:
+        return None, "nmcli exit %s" % r.returncode
+    else:
+        raw = [ln[len("yes:"):] for ln in out.splitlines() if ln.startswith("yes:")]
+    found = [re.sub(r"[^0-9a-f]", "", m.lower()) for m in raw]
     found = [b for b in found if len(b) == 12]
     if len(found) != 1:
-        return None, "%d BSSIDs read from netsh, not one" % len(found)
+        return None, "%d BSSIDs read from %s, not one" % (len(found), tool)
     return found[0], None
 
 
@@ -950,10 +984,8 @@ def phase_otadata(args):
             os.makedirs(RUNS)
         res = read_otadata(args.fw, out_bin)
         if not res["ran"]:
-            log("  esptool unavailable here. Run this from the IDF PowerShell "
-                "environment:")
-            log("    " + res["cmd"])
-            log("  then: --phase otadata --otadata-file " + out_bin)
+            log("  NOT RUN: %s" % res["why"])
+            log("  (or parse a dump made elsewhere: --phase otadata --otadata-file <dump>)")
             save("otadata", {"esptool": res, "verdict": "NOT_RUN"})
             return 2
     seen, mac_ok = esptool_unit(res)
@@ -966,8 +998,8 @@ def phase_otadata(args):
     else:
         log("  esptool MAC: %s the expected unit's" % ("MATCHES" if mac_ok else "DOES NOT MATCH"))
     if seen and not mac_ok:
-        # Hard stop: a wrong --port most likely means COM3, which is another
-        # session's interposer, and closing its port resets it mid-run.
+        # Hard stop: a wrong port most likely means the X2's (COM3 on the old Windows
+        # bench), another session's interposer, and closing its port resets it mid-run.
         log("  FAIL: this is not the expected unit. Check GI_WICAN_DEVICE.")
         save("otadata", {"esptool": res, "mac_matches": False, "verdict": "FAIL"})
         return 1
@@ -1326,18 +1358,11 @@ def phase_bootloader(args):
     if not args.bootloader_file:
         if not os.path.isdir(RUNS):
             os.makedirs(RUNS)
-        cmd = ["esptool.py", "--chip", "esp32c3", "--port", wican_port(), "--baud",
-               "460800", "read_flash", "0x0", "0x8000", out_bin]
-        try:
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-            res = {"ran": True, "returncode": p.returncode,
-                   "cmd": " ".join(cmd), "stdout": p.stdout[-1500:]}
-        except FileNotFoundError:
-            log("  esptool is not on PATH for this interpreter. Run:")
-            log("    " + " ".join(cmd))
-            log("  then re-run with --bootloader-file " + out_bin)
-            save("bootloader", {"esptool": {"cmd": " ".join(cmd)},
-                                "verdict": "NOT_RUN"})
+        res = esptool_read("0x0", "0x8000", out_bin, 180)
+        if not res["ran"]:
+            log("  NOT RUN: %s" % res["why"])
+            log("  (or parse a dump made elsewhere: --bootloader-file <dump>)")
+            save("bootloader", {"esptool": res, "verdict": "NOT_RUN"})
             return 2
 
     seen, mac_ok = esptool_unit(res)

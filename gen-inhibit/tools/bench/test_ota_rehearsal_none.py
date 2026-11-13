@@ -30,9 +30,13 @@ Made-up identities and images only, in this worktree's scratch/:
                   file, the match recorded, another unit fails (2026-10-30); esptool's
                   port is the WiCAN's by-id link from GI_WICAN_DEVICE on a made-up bench
                   of serial devices, the run file keeps what matched (S3), and with
-                  GI_WICAN_DEVICE unset each phase refuses before esptool (S1, 2026-11-12)
+                  GI_WICAN_DEVICE unset each phase refuses before esptool (S1, 2026-11-12);
+                  esptool is GI_ESPTOOL_ARGV's at the pinned version (gi_esptool), not a
+                  bare esptool.py, reading the right span, the run file naming its argv
+                  and version, and with GI_ESPTOOL_ARGV unset each phase is NOT_RUN,
+                  exit 2, naming it, with nothing run (2026-11-12, Linux leftovers item 6)
 
-    py -3.14 -B gen-inhibit/tools/bench/test_ota_rehearsal_none.py
+    python3.13 -B gen-inhibit/tools/bench/test_ota_rehearsal_none.py
 Mutants: test_ota_rehearsal_none_mutants.py (REHEARSAL_DIR runs another copy).
 Gen-inhibit tester, 2026-10-30.
 """
@@ -366,6 +370,11 @@ def mac_cases(R):
     img = fake_bootloader(b"E (%lu) boot: No bootable app partitions in the partition table\x00")
     real = (R.RUNS, R.log, R.subprocess)
     runs = os.path.join(SCRATCH, "runs_mac")
+    # esptool is the harness's one esptool (gi_esptool: GI_ESPTOOL_ARGV at the pinned version),
+    # 2026-11-12; here its checked argv is filled in, so no version read runs
+    et = {"argv": ["made-up-python", "-m", "esptool"], "version": R.GE.PINNED}
+    R._ET.clear()
+    R._ET.update(et)
     # The WiCAN's port comes from its USB IDs (GI_WICAN_DEVICE, DEVICES-SPEC S1) on a made-up
     # bench of serial devices (_fake_serial.py), 2026-11-12.
     serial_env, ports = FS.fake_bench(os.path.join(SCRATCH, "serial"), x2=False)
@@ -401,6 +410,17 @@ def mac_cases(R):
                 got_port = [c[c.index("--port") + 1] for c in cmds if "--port" in c]
                 check("%s phase, %s: esptool's port is the WiCAN's by-id link, from GI_WICAN_DEVICE" % (phase, label),
                       got_port == [ports["wican"]], got_port)
+                check("%s phase, %s: esptool is GI_ESPTOOL_ARGV's (gi_esptool), not a bare esptool.py, "
+                      "reading flash on the C3" % (phase, label),
+                      len(cmds) == 1 and cmds[0][:3] == et["argv"] and cmds[0][3:5] == ["--chip", "esp32c3"]
+                      and "read_flash" in cmds[0] and "esptool.py" not in cmds[0], cmds)
+                span = cmds[0][cmds[0].index("read_flash") + 1:][:2] if cmds and "read_flash" in cmds[0] else None
+                check("%s phase, %s: esptool reads %s" % (phase, label, "0x0 + 0x8000" if phase == "bootloader"
+                                                          else "0xd000 + 0x2000"),
+                      span == (["0x0", "0x8000"] if phase == "bootloader" else ["0xd000", "0x2000"]), span)
+                check("%s phase, %s: the run file names esptool's argv and version" % (phase, label),
+                      rec and json.loads(rec).get("esptool", {}).get("esptool_argv") == et["argv"]
+                      and json.loads(rec).get("esptool", {}).get("esptool_version") == et["version"], rec[:300])
                 sd = (json.loads(rec).get("serial_device") or {}) if rec else {}
                 check("%s phase, %s: the run file keeps what the lookup matched (S3)" % (phase, label),
                       sd.get("port") == ports["wican"] and sd.get("env") == "GI_WICAN_DEVICE", sd)
@@ -429,7 +449,33 @@ def mac_cases(R):
                 os.environ["GI_WICAN_DEVICE"] = serial_env["GI_WICAN_DEVICE"]
             check("%s phase, GI_WICAN_DEVICE unset: refused naming it, esptool never run" % phase,
                   out.startswith("SystemExit: REFUSED") and "GI_WICAN_DEVICE" in out and not cmds, (out, cmds))
+        # GI_ESPTOOL_ARGV unset (2026-11-12): NOT_RUN, exit 2, naming it; nothing run
+        saved_et = os.environ.pop("GI_ESPTOOL_ARGV", None)
+        for phase in ("bootloader", "otadata"):
+            R._ET.clear()
+            R.SERIAL_DEVICE.clear()
+            cmds, logged = [], []
+            gi_paths.remove_tree(runs)
+            os.makedirs(runs)
+            try:
+                R.RUNS, R.log = runs, logged.append
+                R.subprocess = types.SimpleNamespace(run=lambda cmd, **kw: cmds.append(cmd), SubprocessError=Exception)
+                args = types.SimpleNamespace(fw=os.path.join(SCRATCH, "fw"), bootloader_file=None, otadata_file=None)
+                try:
+                    rc = R.phase_bootloader(args) if phase == "bootloader" else R.phase_otadata(args)
+                except Exception as e:      # noqa: BLE001  a check, not a crash
+                    rc = "raised %s: %s" % (type(e).__name__, e)
+            finally:
+                R.RUNS, R.log, R.subprocess = real
+            recs = sorted(f for f in os.listdir(runs) if f.startswith("rollback_%s_2" % phase))
+            rec = open(os.path.join(runs, recs[-1]), encoding="utf-8").read() if recs else ""
+            check("%s phase, GI_ESPTOOL_ARGV unset: NOT_RUN, exit 2, naming it, esptool never run" % phase,
+                  rc == 2 and not cmds and "GI_ESPTOOL_ARGV" in "\n".join(logged) and '"NOT_RUN"' in rec,
+                  (rc, cmds, logged[-2:], rec[:200]))
+        if saved_et is not None:
+            os.environ["GI_ESPTOOL_ARGV"] = saved_et
     finally:
+        R._ET.clear()
         R.SERIAL_DEVICE.clear()
         for k, v in saved_env.items():
             if v is None:

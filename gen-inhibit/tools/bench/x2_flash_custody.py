@@ -10,7 +10,7 @@ full read-back of its flash, never from a rebuild or from .pio.
                  are parsed, every app partition is sliced out (next to the
                  dump, deleted at once) and its ELF sha256 read with
                  build_lookup.elf_sha256_of_bin. PASS needs a slot carrying
-                 --expect-elf (default 7f197bfd).
+                 --expect-elf, which is required (see below).
   flash-jammer   refuses unless a PASS dump record is given and the dump file
                  still has the recorded sha256; then writes the jammer's
                  bootloader, partition table, otadata and app from one
@@ -46,13 +46,23 @@ or not exactly one, refuses like esptool (exit 1, verdict REFUSED, nothing run).
 flash-jammer and restore records hold the port and serial_device, what was matched (S3);
 check-dump opens no port and records None for both. Linux only.
 
+--expect-elf has no default (gen-inhibit reviewer, 2026-11-12). It was 7f197bfd, the
+interposer image the X2 held when this tool was written; since images are loaded at a
+run's start the X2 holds whatever the last run loaded, and shared/bench SPEC section 8
+lets the android and can-tools hand-take roles run this tool on whatever image they find.
+So dump and check-dump take the ELF sha256 prefix the caller read off the wire (0x7F7)
+or pinned: 8 to 64 hex digits, matched in lower case. Missing, shorter, longer or not
+hex refuses (exit 1, verdict REFUSED, nothing run, no esptool or port touched); the
+record keeps expect_elf. flash-jammer and restore do not read it.
+
 After `dump` and after `restore`, identify the board from the wire with
 interposer-firmware/bench_identify_board.py; this script does not, because
 esptool and the CAN witness are separate steps and each is recorded.
 
-  py -3.14 gen-inhibit/tools/bench/x2_flash_custody.py dump
-  py -3.14 ... flash-jammer --dump-record runs/x2_flash_custody_dump_<stamp>.json --build <md5>
-  py -3.14 ... restore --dump-record runs/x2_flash_custody_dump_<stamp>.json
+  python3.13 gen-inhibit/tools/bench/x2_flash_custody.py dump --expect-elf <8+ hex digits>
+  python3.13 ... check-dump --dump-record runs/x2_flash_custody_dump_<stamp>.json --expect-elf <same>
+  python3.13 ... flash-jammer --dump-record runs/x2_flash_custody_dump_<stamp>.json --build <md5>
+  python3.13 ... restore --dump-record runs/x2_flash_custody_dump_<stamp>.json
 """
 import argparse
 import hashlib
@@ -346,10 +356,25 @@ def sub_restore(a, rec):
     rec["verdict"] = "VERIFIED" if rc2 == 0 else "FAIL"
 
 
+EXPECT_SUBS = ("dump", "check-dump")
+
+
+def expect_elf_why(v):
+    """None when v is an ELF sha256 prefix dump and check-dump may match against
+    (8 to 64 hex digits, either case), else why not (gen-inhibit reviewer, 2026-11-12)."""
+    if not v:
+        return "--expect-elf is required: the ELF sha256 prefix read off the wire (0x7F7) or pinned"
+    if not 8 <= len(v) <= 64 or any(c not in "0123456789abcdef" for c in v.lower()):
+        return "--expect-elf %r is not 8 to 64 hex digits" % v
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("sub", choices=("dump", "flash-jammer", "restore", "check-dump"))
-    ap.add_argument("--expect-elf", default="7f197bfd")
+    ap.add_argument("--expect-elf", default=None,
+                    help="dump, check-dump (required): the app ELF sha256 prefix, 8 to 64 hex "
+                         "digits, that a slot of the dump must carry; no default since 2026-11-12")
     ap.add_argument("--dump-record")
     ap.add_argument("--build", help="jammer app md5 (its builds/ dir name)")
     a = ap.parse_args()
@@ -358,6 +383,14 @@ def main():
            "esptool_argv": None, "esptool_version": None, "port": None, "serial_device": None,
            "build_lookup": BUILD_LOOKUP}
     try:
+        if a.sub in EXPECT_SUBS:
+            rec["expect_elf"] = a.expect_elf
+            why = expect_elf_why(a.expect_elf)
+            if why:
+                rec.update(verdict="REFUSED", why=why)
+                print("REFUSED: %s (nothing run)" % why)
+                return 1
+            a.expect_elf = a.expect_elf.lower()
         if a.sub in ESPTOOL_SUBS:
             _ET.clear()
             try:

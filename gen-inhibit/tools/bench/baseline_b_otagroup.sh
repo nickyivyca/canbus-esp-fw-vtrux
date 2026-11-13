@@ -26,7 +26,7 @@ C=${GI_COMMIT:?set GI_COMMIT}
 D=${GI_OUT:-$DATA/runs/baseline_$C/bench}   # GI_OUT: the chain runner's check folder (2026-10-18)
 mkdir -p "$D"
 STEPS=${*:-rt txabort abortwin rxq rxq_page prod man}
-PWR="12 V on OBD pin 16, USB unplugged (no COM4); X2 756d6714 not held"
+PWR="12 V on OBD pin 16, USB unplugged (no WiCAN console); X2 756d6714 not held"
 export MSYS_NO_PATHCONV=1   # restart_error_frames' /path arguments
 ota() {   # ota <label> <image>
   # GI_NO_OTA=1 (the chain runner, 2026-10-18): the runner has already put the step's

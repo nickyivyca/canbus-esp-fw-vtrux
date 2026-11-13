@@ -22,6 +22,10 @@ TOP="$(git -C "$FW" rev-parse --show-toplevel)" || { echo "$FW is in no git work
 REMOTE="${REMOTE:-madhouse-debian}"
 DEST="gi_baseline_$C"
 PY="${PY:-python3.13}"
+# The Python that runs here, before anything is sent (the gi_diag export, wican_ref.py's tag).
+# python3.13 since the bench host is madhouse-debian and the bench tooling is Linux only (user,
+# 2026-11-12); it was Windows' `py -3.14`, which Linux has not (the reviewer's Linux leftovers).
+LOCAL_PY="${LOCAL_PY:-python3.13}"
 RROOT="${RROOT:?set RROOT to the reverse-it root on the remote}"
 # RROOT as one quoted word of the remote script (the heredoc below is unquoted, so it is
 # pasted in as text): a leading ~/ stays the remote's $HOME, and the rest is quoted, so a
@@ -53,6 +57,10 @@ mkdir -p "$OUT"
 # A commit with only part of the move (one topic of it) has neither layout, and is refused.
 STAGE="$TOP/scratch/baseline-host-stage/$C"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
+# The stage goes when the script ends, sent or refused (AGENTS.md "Removing scratch"; until
+# 2026-11-12 it stayed, found when the Linux leftovers' test run reached it), and the parent
+# with it once empty.
+trap 'rm -rf "$STAGE"; rmdir "$TOP/scratch/baseline-host-stage" 2>/dev/null' EXIT
 tree() { git -C "$TOP" cat-file -e "$C:$1" 2>/dev/null; }
 put() { mkdir -p "$STAGE/$2" && git -C "$TOP" archive "$C:$1" | tar -x -C "$STAGE/$2"; }   # tree $1 of C at $2 in the copy
 if tree gen-inhibit/firmware/main && tree gen-inhibit/test; then
@@ -69,7 +77,7 @@ echo "commit $C: $LAYOUT layout"
 if tree "$BENCH/gi_diag.py"; then
   mkdir -p "$STAGE/$BENCH_AT"
   for f in gi_diag.py pins.json; do git -C "$TOP" show "$C:$BENCH/$f" > "$STAGE/$BENCH_AT/$f" || exit 2; done
-  ${LOCAL_PY:-py -3.14} -B "$TOP/gen-inhibit/tools/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2
+  $LOCAL_PY -B "$TOP/gen-inhibit/tools/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2
 fi
 # CANRE AT THE PINNED COMMIT (the canre-pin step, 2026-10-26). From that step from_capture.py
 # (replays_regen, the long-arm fixture) takes canre only from canre_pin.py's install of the
@@ -110,7 +118,7 @@ WTAG=
 CANSRC='$M/can.c'
 if [ -e "$STAGE/test/gen_inhibit_shim/wican_ref.py" ]; then
   WTAG=$(git -C "$TOP" show "$C:gen-inhibit/firmware/main/idf_component.yml" |
-    ${LOCAL_PY:-py -3.14} -B -c "import sys; sys.path.insert(0, sys.argv[1]); import wican_ref; print(wican_ref.pinned_tag(sys.stdin.read()) or '')" \
+    $LOCAL_PY -B -c "import sys; sys.path.insert(0, sys.argv[1]); import wican_ref; print(wican_ref.pinned_tag(sys.stdin.read()) or '')" \
       "$STAGE/test/gen_inhibit_shim")
   [ -n "$WTAG" ] || { echo "$C pins no vtrux/wican version" >&2; exit 2; }
   SHIP="shared/wican"

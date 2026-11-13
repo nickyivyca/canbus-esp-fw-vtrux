@@ -3,7 +3,11 @@
 must fail on each BY A CHECK. A crash is not a kill, and an edit that does not apply is
 an error.
 
-    py -3.14 -B gen-inhibit/tools/bench/test_x2_flash_custody_mutants.py
+    python3.13 -B gen-inhibit/tools/bench/test_x2_flash_custody_mutants.py
+
+Since 2026-11-12 also the --expect-elf mutants: the old default back, the length, upper
+bound and hex checks dropped, a refusal going on, check-dump unchecked, no lower-casing,
+and the record without expect_elf.
 
 Needs REVERSE_IT_DIR and INTERPOSER_CODE, as the test does. Each mutant is a copy of
 x2_flash_custody.py with one edit, in the worktree's scratch/, imported by the test
@@ -51,6 +55,18 @@ MUTANTS = [
     ("the record has no serial_device", '            rec["serial_device"] = dev\n', "            pass\n"),
     ("a port refusal goes on to the board", "            except (GE.Refused, GS.Refused) as e:\n",
      "            except GE.Refused as e:\n"),
+    # --expect-elf has no default (gen-inhibit reviewer, 2026-11-12)
+    ("the old default back", '    ap.add_argument("--expect-elf", default=None,\n',
+     '    ap.add_argument("--expect-elf", default="7f197bfd",\n'),
+    ("no length check", "    if not 8 <= len(v) <= 64 or any(", "    if any("),
+    ("no upper bound", "    if not 8 <= len(v) <= 64 or any(", "    if not 8 <= len(v) or any("),
+    ("no hex check", ' or any(c not in "0123456789abcdef" for c in v.lower()):', ":"),
+    ("an expect_elf refusal goes on", '                print("REFUSED: %s (nothing run)" % why)\n                return 1\n',
+     '                print("REFUSED: %s (nothing run)" % why)\n'),
+    ("check-dump not checked", 'EXPECT_SUBS = ("dump", "check-dump")', 'EXPECT_SUBS = ("dump",)'),
+    ("matched as given, not in lower case", "            a.expect_elf = a.expect_elf.lower()\n",
+     "            pass\n"),
+    ("the record has no expect_elf", '            rec["expect_elf"] = a.expect_elf\n', "            pass\n"),
 ]
 
 

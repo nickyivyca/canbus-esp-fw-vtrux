@@ -151,7 +151,7 @@ MAIN_HDRS="$(cd "$FW" && ls firmware/main/*.h)"
 # this tree's run identity -- and they go to ~/$DEST/diag_schemas/, replacing the
 # last export, with gi_diag.py and pins.json beside the rest. The export refuses
 # a working-tree DBC that is not HEAD's, which stops the run here.
-LOCAL_PY="${LOCAL_PY:-py -3.14}"
+LOCAL_PY="${LOCAL_PY:-python3.13}"   # Windows' py -3.14 until the reviewer's Linux leftovers (2026-11-12)
 EXPORT_PARENT="$(git -C "$FW" rev-parse --show-toplevel)/scratch/gi-host-export"
 rm -rf "$EXPORT_PARENT"
 mkdir -p "$EXPORT_PARENT"
