@@ -1,0 +1,7 @@
+{
+  "project": "slcan-spi",
+  "shared_components": ["vtrux/x2"],
+  "variants": {
+    "dev": {}
+  }
+}

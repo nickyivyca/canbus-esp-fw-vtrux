@@ -1,0 +1,31 @@
+{
+  "image": "slcan_spi",
+  "owner": "charge-interposer tester",
+  "chip": "esp32s3",
+  "variants": {
+    "dev": {
+      "project_name": "slcan_spi_NOT_FOR_VEHICLE",
+      "pinnable": true
+    }
+  },
+  "not_for_vehicle": true,
+  "required_strings": [
+    "# NOT FOR VEHICLE slcan_spi",
+    "CAN1 (TWAI): never started; no jamming in this build"
+  ],
+  "forbidden_symbol_prefixes": [
+    "twai_"
+  ],
+  "required_symbols": [
+    "app_main",
+    "slcan_input",
+    "can_side_init",
+    "mcp2515_reset"
+  ],
+  "required_config": {
+    "CONFIG_ESP_CONSOLE_NONE": true,
+    "CONFIG_LOG_DEFAULT_LEVEL_NONE": true,
+    "CONFIG_BOOTLOADER_LOG_LEVEL_NONE": true,
+    "CONFIG_APP_RETRIEVE_LEN_ELF_SHA": 64
+  }
+}
