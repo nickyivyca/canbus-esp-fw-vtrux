@@ -33,7 +33,7 @@ arguments and environment and exit with a code the test chooses. Covered:
   reconfigure or ninja exits 1 and is never reported as BUILT;
 - check-env and check_idf_env(): the tooling's R32 refusals, each as exit
   1; check_idf_env() refuses a vtrux_build imported from anywhere else;
-- the variants: vtrux_build.json lists the six CMakeLists.txt's
+- the variants: vtrux_build.json lists the five CMakeLists.txt's
   INTP_VARIANTS line names, in its order, each configured with exactly
   -D INTP_VARIANT=<its name>.
 
@@ -69,7 +69,7 @@ PINS = os.path.join(HERE, "firmware", "shared_pins.json")
 SCRATCH = os.path.join(os.path.dirname(HERE), "scratch",
                        "charge-interposer-vtrux-tools-test")
 TAG = "2026.01.01"
-VARIANTS = ["bridge", "witness", "truck", "selftest", "diag", "slcan"]
+VARIANTS = ["bridge", "witness", "truck", "selftest", "diag"]
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
 IDF_NAMES = ("IDF_TOOLS_PATH", "IDF_PATH", "IDF_PYTHON_ENV_PATH",
@@ -596,7 +596,7 @@ MUTANTS = [
      "            if False: raise SystemExit(\"vtrux_tools: a vtrux_build from "
      "%s is already \"\n"),
     ("a variant missing from the data", "data",
-     ",\n    \"slcan\": {\"INTP_VARIANT\": \"slcan\"}\n", "\n"),
+     ",\n    \"diag\": {\"INTP_VARIANT\": \"diag\"}\n", "\n"),
     ("a variant's option misnamed", "data",
      "\"truck\": {\"INTP_VARIANT\": \"truck\"}",
      "\"truck\": {\"INTP_VARIAN\": \"truck\"}"),
