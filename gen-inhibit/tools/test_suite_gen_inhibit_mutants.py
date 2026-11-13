@@ -106,7 +106,7 @@ MUTANTS = [
      '    "wican_man": "man", "wican_man2": "man2", "wican_rt": "rt",'),
     ("a desk step reads a check that runs after it", 'desk("B2", "B2", ["man_app/B2app", "man_held/B2held"]',
      'desk("B2", "B2", ["man_app/B2app", "man_held/B9"]'),
-    ("a placeholder no setting fills", '"REMOTE": "{gi_host_ssh}"', '"REMOTE": "{gi_hostssh}"'),
+    ("a placeholder no setting fills", '"FW": "{gi_fw}", "REMOTE": "{gi_host_ssh}"', '"FW": "{gi_fw}", "REMOTE": "{gi_hostssh}"'),
     ("the suite's role is not the one the bench lock names", 'ROLE = "tester (gen-inhibit)"',
      'ROLE = "tester (gen-inhibit-x)"'),
     ("the suite names a standing image again (retired 2026-11-11)",
