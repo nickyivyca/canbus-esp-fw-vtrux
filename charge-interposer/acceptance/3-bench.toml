@@ -1,6 +1,7 @@
 # Port step 3's bench baseline on madhouse-debian (shared/bench ACCEPT-SPEC
-# A2; owned by the charge-interposer reviewer). DRAFT by the tester for the
-# reviewer's review (the reviewer's item 3, 2026-11-13); not approved.
+# A2; owned by the charge-interposer reviewer). Drafted by the tester (the
+# reviewer's item 3, 2026-11-13), reviewed by the reviewer 2026-11-13 with
+# its answers written in below, for the user's approval; not yet approved.
 #
 # What it shows: the bench suite, whole, on the bench host from port plan
 # step 3, with the boards, adapters and drivers as madhouse has them, judged
@@ -17,8 +18,18 @@
 # shared/bench pin moved (2026.11.13.2). Checked 2026-11-13: git diff
 # f57ca9d3 0691f6f1 over bench_suite.product_files is those 6 files. So
 # this list builds the three bench variants from its own tree, as 2b did,
-# and flashes those builds; no digest premise. OPEN (Q1 below): how the
-# record ties bridge, witness and truck to b467's builds.
+# and flashes those builds; no digest premise.
+#
+# This is the bench baseline of 0691f6f1's product (the reviewer,
+# 2026-11-13). b467 is the nearest bench record, and the slcan removal is
+# the one product change between them. The tester checked on 2026-11-13
+# (tracker H) that the removal leaves the code hashes of the five variants
+# unchanged: clean builds with and without it, at a fixed compile date
+# (SOURCE_DATE_EPOCH 1767225600, shared/tools R9's; ccache off), gave the
+# same code hash for bridge, witness, truck, selftest and diag, and no byte
+# differences outside the fields R2 blanks. This list's builds are dev
+# builds (R31), which carry their compile time, so their code hashes are
+# not compared with b467's (spec 8.2).
 #
 # Since the Windows records, on the bench side (each a committed change;
 # none is a result line unless listed below):
@@ -50,20 +61,44 @@
 # found entries and the WiCAN's identify.json records from the bench
 # run's record; they are not compare lines.
 #
-# Placement: the acceptance runner is started in bench.slice, as for every
-# step 3 run so far (user, 2026-11-11, for the whole emulated run; OPEN, Q2).
-# Other work runs alongside (AGENTS.md "Parallel work on the shared
+# Placement: the settings' placement (the reviewer, 2026-11-13; the user's
+# whole-run-in-bench.slice ruling of 2026-11-11 was for the step 3 emulated
+# run only). The acceptance runner starts in bench.slice, as a run with
+# board work must. The chain runner places wall-clock checks and the lock's
+# work in bench.slice and builds and emulated-time checks in build.slice,
+# and reads each placement back. If an emulated-time timeout trips under
+# build.slice's idle weight, AGENTS.md's fallback is a small weight, such as
+# 20. Other work runs alongside (AGENTS.md "Parallel work on the shared
 # machine"); a timing failure is triaged against resource-log over its
 # window (point 2) before it counts.
+#
+# The bench lock (shared/bench 2026.11.13.2, read from the code: the
+# acceptance runner's own chain suite has no lock group, and each nested
+# suite run is a chain run that takes the lock at its start only if it has
+# bench groups, and releases it at its end):
+#   - not held through the builds, the emulated suite or the harness suite:
+#     about 19 h on madhouse (the emulated suite whole is about 18 h: run
+#     0d88's 14 sims and m-host took 4.35 h, run 0b3f's other 13 sims
+#     13.77 h; the harness suite about 1.2 h, 0d88's 1.16 h);
+#   - held for each of vp1, vp2 and vp3 (about 7 min each in b467) and the
+#     bench run (21.6 h in b467, nearly all of it its checks' own time,
+#     with no pause), taken and released by each, so about 22 h held in
+#     four spells, with gaps of about a second between them.
+# A hand take (android, can-tools) is possible in the ~19 h before vp1 and
+# in those gaps. One taken in a gap makes the next suite run refuse at its
+# take (the settings' lock_wait_s is 0), and its checks come out NOT-RUN,
+# to be re-run under A13. The runner holds the lock across none of the
+# emulated or harness work.
 #
 # Trees:
 #   harness   0691f6f1, charge-interposer/main with the file map's
 #             cross-project section, after wican-usb (21705c0f), the slcan
 #             removal (b42a3ba5) and the run-start, canchg-mode and re-pin
 #             batches. Its shared/bench pin is 2026.11.13.2, its can-tools
-#             pin fa6c0aea. PLACEHOLDER: the commit this list lands on, or
-#             the harness tip at approval, if more harness changes merge
-#             first.
+#             pin fa6c0aea. The commit before this list's own, as for the
+#             earlier step 3 lists. root-cleanup (ae1c8d09), if it merges
+#             first, changes only the root's upstream tree and .gitignore,
+#             nothing this run reads, so 0691f6f1 stands either way.
 #   prod      the same commit: the three bench builds come from it (one
 #             tree, as in 2b).
 
@@ -255,21 +290,6 @@ expect = "same-verdicts"
 # In the bench suite run, as in 2b: the truck by b-truck/flight-silence;
 # bridge and witness by b-bridge/idf-log and b-witness/idf-log.
 #
-# ---- OPEN for the reviewer ---------------------------------------------------
-# Q1  The product: f57ca9d3 + the slcan removal. b467's build records hold
-#     each build's app and ELF sha256, not its code hash. Options:
-#     (a) the tester's entry compares each new build's code hash (shared/tools
-#         R3, vtrux_tools.py image) with f57ca9d3's same variant, rebuilt or
-#         read from b467's archived files if they are kept, and says
-#         whether the product the bench saw is the same code;
-#     (b) none: the bench baseline is of 0691f6f1's product, compared with
-#         b467 as the nearest bench record, the slcan removal named as the
-#         one product change.
-# (The emulated suite, about five hours with its m-sims, runs whole because
-# the bench suite requires a whole run on the same code, by product digest:
-# 0d88's and 0b3f's are on f57ca9d3's product, so neither can stand in.)
-# Q2  The runner in bench.slice for the whole run, including the emulated
-#     suite's builds above the local LLM, as the user ruled for the step 3
-#     emulated run: does that ruling carry, or does this run follow the
-#     settings' placement alone (lock and wall-clock checks in bench.slice,
-#     builds in build.slice)?
+# The emulated suite runs whole because the bench suite requires a whole
+# run on the same code, by product digest. 0d88's and 0b3f's runs are on
+# f57ca9d3's product, so neither can stand in.
