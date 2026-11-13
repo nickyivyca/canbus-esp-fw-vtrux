@@ -23,13 +23,26 @@ All diag fields are decoded with cantools from the diag DBC. The board's TEC
 is not exposed in any diag field (schema 4), so it is recorded as not
 available.
 
-CLOCKS. Ages are host clock: the send time is when the Kvaser accepted the
-frame, the receive time when the Innomaker delivered it, both
-time.perf_counter() in this process. Both USB paths' latency is inside every
-age, which can only make a frame look OLDER, never younger: a pass is
-conservative, and a fail can be FALSE. So phase A's tagged frames measure
-the path's own latency, and any phase C frame that fails by less than it is
-noted next to the verdict (reviewer, 2026-10-13). Phase B JUDGES the silent
+CLOCKS. Since 2026-11-13 (the charge-interposer reviewer's D2, after the
+kvaser_usb measurement: send() returns before the frame is on the wire, by
+up to 14 ms in a burst) an age starts at the frame's WIRE time: the PCAN,
+the vehicle-side acknowledger, witnesses every tagged frame in a process of
+its own (rx_proc), and its device stamp is mapped to time.perf_counter()
+through bench_vport's StampMap fitted on its own rows (stamp_fit,
+wire_times). The receive time is when the Innomaker delivered the frame,
+perf_counter in this process. A tagged frame the PCAN never saw has no
+start: it is counted, not judged, and if no frame after the reopen was seen
+the check is VOID; a PCAN that did not open, raised recv errors, or with
+kernel lost-frame lines voids it too (rx_proc.witness_void). The Kvaser,
+on kvaser_usb, is brought up and read back first and keeps the stall rule
+(kvaser_link.WatchedBus): a kvaser TX stall makes the check VOID with the
+kernel's lines, and the Kvaser is recovered. Until 2026-11-13 the start
+was when the Kvaser accepted the send.
+The Innomaker's USB path is still inside every age, which can only make a
+frame look OLDER, never younger: a pass is conservative, and a fail can be
+FALSE. So phase A's tagged frames measure the path's own latency, and any
+phase C frame that fails by less than it is noted next to the verdict
+(reviewer, 2026-10-13). Phase B JUDGES the silent
 flag: every 0x7F5 from 500 ms + one status period after the close until the
 reopen must read 1 (spec 2.2).
 
@@ -64,7 +77,7 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import kvaser_link                 # noqa: E402  (the Kvaser on kvaser_usb)
 from bench_usb_host import unwrap_us32   # noqa: E402  (gs_usb's 32-bit us stamp)
 
 AGE_OUT_S = 0.100
@@ -137,6 +150,38 @@ def held_seq_of(witnessed_b):
     return witnessed_b[max(range(len(dev)), key=dev.__getitem__)][1]
 
 
+def stamp_fit(rows):
+    """The PCAN's device stamps -> this host's perf_counter: bench_vport's
+    StampMap (the lower envelope of read lag per FIT_BIN_S of stamps) over
+    the witness's own rows, (t_dev, t_host, ...). -> a StampFit (to_host)."""
+    import bench_vport as V
+    by = {}
+    for r in rows:
+        k = int(r[0] // V.FIT_BIN_S)
+        lag = r[1] - r[0]
+        lo, hi = by.get(k, ((r[0], lag), (r[0], lag)))
+        by[k] = (min(lo, (r[0], lag), key=lambda x: x[1]),
+                 max(hi, (r[0], lag), key=lambda x: x[1]))
+    sm = V.StampMap()
+    sm.add({"bins": [(lo[0], lo[1], hi[0], hi[1]) for lo, hi in by.values()]})
+    return sm.frozen()
+
+
+def wire_times(rows, fit):
+    """{seq: host time} of each tagged frame's FIRST copy the PCAN saw on
+    the vehicle wire, its device stamp mapped to perf_counter through fit
+    (the reviewer's D2, 2026-11-13: an age starts at the frame's wire
+    stamp)."""
+    out = {}
+    for r in rows:
+        if r[2] != TAG_ID or not r[3] or r[7]:
+            continue
+        s = tag_seq(bytes.fromhex(r[5]))
+        if s is not None and s not in out:
+            out[s] = fit.to_host(r[0])
+    return out
+
+
 def diag_value(db, frame_id, data, signal):
     """One diag field as an int. decode_choices=False: 0x7F5's silent flag
     has a value table, and int() of cantools' NamedSignalValue raised in
@@ -147,11 +192,14 @@ def diag_value(db, frame_id, data, signal):
 
 def judge(sent, received, reopen_t, counters, flags, phase_b, phase_c,
           received_a=(), burst_dev=None, held_seq=None):
-    """-> (ok, lines). sent: {seq: host send t}; received: [(host t, seq)]
+    """-> (ok, lines). sent: {seq: host t the frame was on the vehicle
+    wire} (since 2026-11-13 the PCAN's wire stamp, mapped: wire_times; a
+    frame the PCAN never saw is not in it, and is counted, not judged);
+    received: [(host t, seq)]
     on the Innomaker after the reopen; counters: [(host t, tx_fail)];
     flags: [(host t, silent)]; phase_b / phase_c: (t0, t1); received_a:
     [(host t, seq)] on the Innomaker in phase A, for the path's latency."""
-    lines, ok = [], True
+    lines, ok, void = [], True, False
     b0, b1 = phase_b
     c0, c1 = phase_c
     before = [v for t, v in counters if t < b0]
@@ -213,13 +261,21 @@ def judge(sent, received, reopen_t, counters, flags, phase_b, phase_c,
     base = sorted(t - sent[s] for t, s in received_a if s in sent)
     lat = base[-1] if base else None
     if base:
-        lines.append("phase A latency, Kvaser accept -> Innomaker delivery: "
-                     "p50 %.1f ms, max %.1f ms (%d frames)"
+        lines.append("phase A latency, on the vehicle wire (PCAN stamp) -> "
+                     "Innomaker delivery: p50 %.1f ms, max %.1f ms (%d frames)"
                      % (base[len(base) // 2] * 1000, lat * 1000, len(base)))
     ages = []
+    unseen = []
     for t, seq in received:
         if seq in sent:
             ages.append((t - sent[seq], seq, t))
+        else:
+            unseen.append(seq)
+    if unseen:
+        lines.append("%d tagged frame(s) after the reopen never seen on the "
+                     "vehicle wire by the PCAN (seq %s%s): not judged, their age "
+                     "has no start" % (len(unseen), unseen[0],
+                                       "..%d" % unseen[-1] if len(unseen) > 1 else ""))
     # Every frame after the return judged by its AGE since queued, against
     # 100 ms (reviewer, 2026-10-14: 2.2 defines "current" by age, not by
     # count -- the count cap this replaced judged the 50/s stimulus). The
@@ -235,7 +291,11 @@ def judge(sent, received, reopen_t, counters, flags, phase_b, phase_c,
                          "the return, seq %d, was delivered %.1f ms after it "
                          "was queued (judged on that total age)"
                          % (a[1], a[0] * 1000))
-    if not ages:
+    if not ages and unseen:
+        void = True
+        lines.append("VOID: every tagged frame after the reopen (%d) is unseen on "
+                     "the vehicle wire: no age can be judged" % len(unseen))
+    elif not ages:
         ok = False
         lines.append("FAIL: no tagged frame reached the reopened Innomaker")
     elif stale:
@@ -281,6 +341,8 @@ def judge(sent, received, reopen_t, counters, flags, phase_b, phase_c,
         lines.append("0x7F5 intp_chg_silent_expected cleared %.1f s after "
                      "the reopen" % ((t_clear or c0) - c0))
     lines.append("X2 TEC: not exposed in any diag field (schema 4)")
+    if void and ok:
+        return None, lines          # VOID: nothing failed, and the ages were not judged
     return ok, lines
 
 
@@ -299,17 +361,28 @@ def run_bench(args):
     from gs_usb.constants import (GS_CAN_MODE_LISTEN_ONLY,
                                   GS_CAN_MODE_HW_TIMESTAMP)
     import serial
-    veh = adapter_fixes.bus(interface="kvaser", channel=args.kvaser_channel,
-                            bitrate=500000)
+    import rx_proc
+    t_ep0 = time.time()
+    # the Kvaser sends (an ACK check; 2026-11-13, the reviewer's A): its
+    # link up and read back, then netdev kvaser as a WatchedBus, the stall
+    # rule on every send (D5, D6)
+    try:
+        print(kvaser_link.set_link(True))
+    except kvaser_link.LinkError as e:
+        print(kvaser_link.link_void(e, t_ep0, time.time()))
+        return 1
     # An acknowledger on the vehicle segment throughout, as on the truck
-    # (the VCU and the rest never leave): the PCAN in NORMAL mode, drained
-    # and otherwise unused. Without it, once the port goes listen-only 2 s
-    # into phase B nothing on CAN1 ACKs the Kvaser, the vehicle side stops,
-    # and phase B exercises nothing after its first 2 s (2026-10-14 run 3).
-    acker = None
-    if args.vehicle_acker == "pcan":
-        acker = can.Bus(interface="pcan", channel="PCAN_USBBUS1",
-                        bitrate=500000)
+    # (the VCU and the rest never leave): the PCAN in NORMAL mode. Without
+    # it, once the port goes listen-only 2 s into phase B nothing on CAN1
+    # ACKs the Kvaser, the vehicle side stops, and phase B exercises nothing
+    # after its first 2 s (2026-10-14 run 3). Since 2026-11-13 (the
+    # reviewer's D2) it is also the WIRE WITNESS whose stamp starts each
+    # tagged frame's age, read in a process of its own (rx_proc).
+    acker = rx_proc.ProcReader("bench_usb_host", "open_pcan", {"acks": True},
+                               name="pcan")
+    acker.wait_ready()
+    veh = kvaser_link.WatchedBus(kvaser_link.open_bus(receive_own_messages=True))
+    stall = []
     sent, received, counters, flags = {}, [], [], []
     received_a, witnessed_b, errors, tag_errors = [], [], [], []
     ser_lines, ser_counters, ser_flags, damaged = [], [], [], [0]
@@ -343,7 +416,11 @@ def run_bench(args):
 
     def vehicle_rx():
         while not stop.is_set():
-            m = veh.recv(timeout=0.1)
+            try:
+                m = veh.recv(timeout=0.1)
+            except kvaser_link.Stall as st:
+                stall.append(st)
+                return
             if m is None or not m.is_rx:
                 continue
             h = time.perf_counter()
@@ -367,20 +444,22 @@ def run_bench(args):
                 veh.send(can.Message(arbitration_id=TAG_ID,
                                      is_extended_id=True,
                                      data=tag_payload(seq)), timeout=0.1)
-                sent[seq] = time.perf_counter()
+                # when send() returned: recorded, no longer the age's start
+                # (the reviewer's D2: that is the frame's PCAN wire stamp)
+                send_ret[seq] = time.perf_counter()
+            except kvaser_link.Stall as st:
+                # ENOBUFS, or an own echo later than 100 ms: VOID (D5)
+                stall.append(st)
+                return
             except Exception as exc:                       # noqa: BLE001
-                # not accepted by the Kvaser (e.g. nothing on the vehicle
-                # segment acknowledging yet): counted, never recorded as
-                # sent, and the tagger lives on (it died here 2026-10-14)
+                # not accepted (a send that timed out is never queued on
+                # SocketCAN): counted, and the tagger lives on (it died
+                # here 2026-10-14). The CANlib queue flush that followed
+                # (flush_tx_buffer in a bare except) is gone: kvaser_usb
+                # has no such queue to flush and python-can's socketcan
+                # does not implement it, so it only ever raised, silently
+                # (the reviewer's D2, 2026-11-13).
                 tag_errors.append((time.perf_counter(), repr(exc)))
-                # and drop it from the Kvaser's own queue: a timed-out frame
-                # stays there, retried by the hardware, and the whole queue
-                # went out at once when CAN1 next acknowledged -- a "burst"
-                # that was the bench's, not the board's (2026-10-14 run 3)
-                try:
-                    veh.flush_tx_buffer()
-                except Exception:                          # noqa: BLE001
-                    pass
             seq += 1
             nxt += 1.0 / TAG_FPS
             time.sleep(max(0.0, nxt - time.perf_counter()))
@@ -437,24 +516,21 @@ def run_bench(args):
             else:
                 received_a.append(row)
 
-    def acker_rx():
-        while acker is not None and not stop.is_set():
-            try:
-                acker.recv(timeout=0.1)
-            except Exception:                              # noqa: BLE001
-                return
-
+    send_ret = {}
     threads = [threading.Thread(target=f, daemon=True)
-               for f in (serial_rx, vehicle_rx, tagger, charger, charger_rx,
-                         acker_rx)]
+               for f in (serial_rx, vehicle_rx, tagger, charger, charger_rx)]
     try:
         with lock:
             state["chg"] = bcw.open_gs_usb()
         for t in threads:
             t.start()
         for _i in range(20):          # the VCU's page-00 burst, flow 1
-            veh.send(can.Message(arbitration_id=P.CMD_ID, is_extended_id=True,
-                                 data=P.enc_master(1, P.MODE_CHARGER)))
+            try:
+                veh.send(can.Message(arbitration_id=P.CMD_ID, is_extended_id=True,
+                                     data=P.enc_master(1, P.MODE_CHARGER)))
+            except kvaser_link.Stall as st:
+                stall.append(st)
+                break
             time.sleep(0.05)
         time.sleep(sa)
         b0 = time.perf_counter()
@@ -498,20 +574,35 @@ def run_bench(args):
         with lock:
             if state["chg"] is not None:
                 state["chg"].shutdown()
-        veh.shutdown()
-        if acker is not None:
-            acker.shutdown()
+        pres = acker.finish()
+        if not stall:
+            veh.shutdown()
         ser.close()
+    if stall:
+        # not a 2.2 result: VOID with the kernel's lines, the Kvaser
+        # recovered (its socket closed first) before the next case
+        for ln in kvaser_link.stall_lines(stall[0], t_ep0, close=veh.shutdown):
+            print(ln)
+        print("2.2 single-adapter: VOID")
+        return 1
+    wv = rx_proc.witness_void("pcan", pres, t_ep0, time.time())
+    fit = stamp_fit(pres["rows"])
+    sent = wire_times(pres["rows"], fit)
+    print("the PCAN's wire stamps: %s; %d tagged frame(s) on the wire of %d "
+          "send(s) returned (%d never seen there)"
+          % (fit.describe(), len(sent), len(send_ret),
+             len(set(send_ret) - set(sent))))
     if args.out:
         raw = os.path.splitext(args.out)[0] + "_rows.csv"
         with open(raw, "w") as f:
-            f.write("phase,host_t,seq,device_t,in_sent,sent_host_t\n")
+            f.write("phase,host_t,seq,device_t,on_wire,wire_host_t,send_return_t\n")
             for ph, rows in (("A", received_a), ("B", witnessed_b),
                              ("C", received)):
                 for h, sq, d in rows:
-                    f.write("%s,%.6f,%d,%.6f,%d,%s\n" % (
+                    f.write("%s,%.6f,%d,%.6f,%d,%s,%s\n" % (
                         ph, h, sq, d, sq in sent,
-                        "%.6f" % sent[sq] if sq in sent else ""))
+                        "%.6f" % sent[sq] if sq in sent else "",
+                        "%.6f" % send_ret[sq] if sq in send_ret else ""))
         print("raw rows: %s" % raw)
         sraw = os.path.splitext(args.out)[0] + "_serial.txt"
         with open(sraw, "w", encoding="utf-8") as f:
@@ -525,7 +616,7 @@ def run_bench(args):
         if climb:
             print("txf in phase B (s from its start, value): %s"
                   % ", ".join("%.1f:%d" % c for c in climb))
-    print("vehicle-side acknowledger: %s" % args.vehicle_acker)
+    print("vehicle-side acknowledger and wire witness: the PCAN, normal mode")
     # the listen-only witness: how long the board kept retrying each frame
     # toward the charger while nothing acknowledged (spec 2.2: abandoned
     # once held longer than 100 ms). Device clock. Reported, not judged.
@@ -590,7 +681,11 @@ def run_bench(args):
     vp = [(h - b0, x) for h, x in ser_lines if "vehicle port ->" in x]
     for dt, x in vp:
         print("  serial %+.3f s from the phase B start: %s" % (dt, x))
-    print("2.2 single-adapter: %s" % ("PASS" if ok else "FAIL"))
+    if wv and ok is not False:
+        # the wire witness may have missed frames: their ages had no start
+        print(wv)
+        ok = None
+    print("2.2 single-adapter: %s" % {True: "PASS", False: "FAIL", None: "VOID"}[ok])
     return 0 if ok else 1
 
 
@@ -758,6 +853,37 @@ def self_test():
           "the same run judged on CAN frames that stop 2 s into phase B "
           "FAILS (why the serial line carries it) -> %s"
           % [x for x in lines2 if "FAIL" in x])
+    # 2026-11-13, the reviewer's D2: ages start at the PCAN's wire stamp,
+    # mapped to this host's clock; a frame never seen on the wire is counted,
+    # not judged
+    rows = []
+    for k in range(3000):                  # 60 s at 50 fps, device clock 2000 s
+        s = 2000.0 + k * 0.02
+        lag = 0.0004 + (k * 7919 % 13) * 0.0003      # 0.4 .. 4.0 ms read lag
+        data = tag_payload(k).hex()
+        rows.append((s, s + 5000.0 + lag, TAG_ID, True, 8, data, True, False))
+        if k % 50 == 0:                     # a second copy (a retry) later
+            rows.append((s + 0.003, s + 5000.0 + 0.0034, TAG_ID, True, 8, data, True,
+                         False))
+    rows.append((2001.0, 7001.0004, 0x7F4, False, 8, "00" * 8, True, False))
+    rows.append((2001.0, 7001.0004, TAG_ID, True, 8, tag_payload(99999).hex(), True, True))
+    fit = stamp_fit(rows)
+    w = wire_times(rows, fit)
+    err = max(abs(w[k] - (2000.0 + k * 0.02 + 5000.0004)) for k in range(3000))
+    check(len(w) == 3000 and err < 0.0002,
+          "wire times: every tagged frame's first copy, its device stamp mapped to "
+          "the host clock within 0.2 ms (worst %.3f ms; %s)" % (err * 1000, fit.describe()))
+    check(99999 not in w, "wire times: an error frame is never a tagged frame")
+    part = {s: t for s, t in sent.items() if s % 10}
+    ok, lines = judge(part, fresh, 30.0, counters, flags, (20, 30), (30, 40))
+    check(ok and any("never seen on the vehicle wire" in x and "not judged" in x
+                     for x in lines),
+          "frames unseen on the wire are counted, not judged -> %s"
+          % [x for x in lines if "never seen" in x])
+    ok, lines = judge({}, fresh, 30.0, counters, flags, (20, 30), (30, 40))
+    check(ok is None and any(x.startswith("VOID: every tagged frame") for x in lines),
+          "every frame unseen on the wire: VOID, not 'nothing reached' -> %s"
+          % [x for x in lines if "VOID" in x or "FAIL" in x])
     # the reviewer's E3 (2026-11-12): phase B across the device stamp's
     # 32-bit wrap (4294.967296 s); rows in arrival order
     wrap = 2 ** 32 / 1e6
@@ -780,14 +906,9 @@ def main():
                     help="run the self-test on each edit in MUTANTS; each must fail it")
     ap.add_argument("--seconds", default="20,10,10",
                     help="phases A,B,C in seconds")
-    ap.add_argument("--kvaser-channel", type=int, default=0)
     ap.add_argument("--port", default=None,
                     help="the X2's serial port: the phases are judged from "
                     "its diag line (spec 2.3 / 8.3)")
-    ap.add_argument("--vehicle-acker", choices=("pcan", "none"),
-                    default="pcan",
-                    help="a node ACKing on the vehicle segment throughout, as "
-                    "on the truck (default: the PCAN in normal mode)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
     if args.self_test:
@@ -826,6 +947,20 @@ MUTANTS = [
     ("held_seq_of: the first frame seen, not the last",
      "    return witnessed_b[max(range(len(dev)), key=dev.__getitem__)][1]",
      "    return witnessed_b[min(range(len(dev)), key=dev.__getitem__)][1]"),
+    # 2026-11-13, the reviewer's D2
+    ("wire times: the read time, not the mapped wire stamp",
+     "            out[s] = fit.to_host(r[0])", "            out[s] = r[1]"),
+    ("wire times: the last copy, not the first",
+     "        if s is not None and s not in out:", "        if s is not None:"),
+    ("wire times: error frames taken", "        if r[2] != TAG_ID or not r[3] or r[7]:",
+     "        if r[2] != TAG_ID or not r[3]:"),
+    ("stamp map: the most-lagged reads fitted",
+     "    sm.add({\"bins\": [(lo[0], lo[1], hi[0], hi[1]) for lo, hi in by.values()]})",
+     "    sm.add({\"bins\": [(hi[0], hi[1], hi[0], hi[1]) for lo, hi in by.values()]})"),
+    ("unseen frames not counted",
+     "        else:\n            unseen.append(seq)\n", "        else:\n            pass\n"),
+    ("every frame unseen read as nothing received",
+     "    if not ages and unseen:", "    if False:"),
 ]
 
 
