@@ -123,16 +123,17 @@ def part_target(base_env, me, short, full):
                           ("127.0.0.1", "127.0.0.1"), ("::1", "::1"), ("this user at this host", "%s@%s" % (user, me))):
         rc, local, mode = target(remote, base_env)
         check("REMOTE=%s (%s) is local" % (remote.replace(user + "@", "<user>@"), label),
-              rc == "0" and local == "1", (rc, local, mode))
+              rc == "0" and local == "1", (rc, local, mode.replace(user, "<user>")))
     rc, local, mode = target(me, base_env)
     check("the local record says local mode, REMOTE and this host, and without ssh",
           mode == "local mode: REMOTE=%s names this host, %s; the commands run here without ssh" % (me, me), mode)
     for label, remote in (("another user at this host", "not-%s@%s" % (user, me)),
                           ("another host", "nowhere.invalid"), ("this host's name as a prefix", me + "x"),
+                          ("a prefix of this host's name", me[:-1]),
                           ("a host with this host's name in it", "x" + me)):
         rc, local, mode = target(remote, base_env)
         check("REMOTE=%s (%s) is remote" % (remote.replace(user + "@", "<user>@"), label),
-              rc == "0" and local == "0", (rc, local, mode))
+              rc == "0" and local == "0", (rc, local, mode.replace(user, "<user>")))
     rc, local, mode = target("nowhere.invalid", base_env)
     check("the remote record says ssh and REMOTE, and this host", mode == "remote: ssh nowhere.invalid, from %s" % me,
           mode)
@@ -207,7 +208,7 @@ def compare(label, res, me):
           [c["cmd"] for c in ssh_r] == [c["cmd"] for c in sh_l] and len(sh_l) >= 3,
           ([c["cmd"][:60] for c in ssh_r], [c["cmd"][:60] for c in sh_l]))
     check("%s: the same stdin to each command both ways (the archive, the remote script)" % label,
-          [c["in"] for c in ssh_r] == [c["in"] for c in sh_l] or _same_but_tar(ssh_r, sh_l),
+          [stdin_key(c["in"]) for c in ssh_r] == [stdin_key(c["in"]) for c in sh_l],
           [(len(a["in"]), len(b["in"])) for a, b in zip(ssh_r, sh_l)])
     check("%s local: every command runs from $HOME" % label, all(c["cwd"] == home for c in sh_l),
           sorted(set(c["cwd"] for c in sh_l)))
@@ -221,21 +222,22 @@ def compare(label, res, me):
           bool(first_l) and "local mode: REMOTE=%s names this host, %s;" % (me, me) in first_l[0], first_l)
 
 
-def _same_but_tar(a, b):
-    """gzip stamps the time into an archive: the sync's .tgz differs between two runs, so a
-    gzip member is compared unpacked."""
-    import gzip
-    if len(a) != len(b):
-        return False
-    for x, y in zip(a, b):
-        if x["in"] == y["in"]:
-            continue
-        try:
-            if gzip.decompress(x["in"]) != gzip.decompress(y["in"]):
-                return False
-        except OSError:
-            return False
-    return True
+def stdin_key(data):
+    """What a command's stdin carries, for comparing two runs: an archive (tar, or tar.gz) as
+    its members' names, types and contents, since tar stamps times (a folder the stage made a
+    second later differs) and gzip stamps its own; anything else as its bytes. Until
+    2026-11-12 the archives were compared as bytes, and a run whose stage crossed a second
+    failed the check, which once killed a mutant by chance."""
+    import io
+    import tarfile
+    if not data:
+        return ("bytes", data)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as t:
+            return ("tar", tuple(sorted((m.name, m.type, t.extractfile(m).read() if m.isfile() else b"")
+                                        for m in t.getmembers())))
+    except (tarfile.TarError, OSError, EOFError):
+        return ("bytes", data)
 
 
 def part_baseline(base, me):
@@ -299,6 +301,7 @@ MUTANTS = [
     ("host_target.sh", "local keeps this shell's environment",
      'env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" PATH="$PATH" \\\n      LANG="${LANG:-C.UTF-8}" ', ""),
     ("host_target.sh", "local goes over ssh anyway", '  if [ "${HOST_LOCAL:-0}" = 1 ]; then', "  if false; then"),
+    ("host_target.sh", "local drops stdin", '"${HOST_BASH:-bash}" -c "$1")', '"${HOST_BASH:-bash}" -c "$1" < /dev/null)'),
     ("baseline_host_run.sh", "baseline: the log's record line dropped", 'echo "# $HOST_MODE" > "$OUT/host_run.log"\n', ""),
     ("baseline_host_run.sh", "baseline: the log written over the record",
      'on_host "bash -s" >> "$OUT/host_run.log"', 'on_host "bash -s" > "$OUT/host_run.log"'),
