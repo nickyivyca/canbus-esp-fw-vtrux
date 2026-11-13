@@ -2755,6 +2755,291 @@ void caseRxOverflowHeld() {
   assertPathsExercised();
 }
 
+// --- spec 2, "The charger's frames count only from the charger port" (user,
+// 2026-11-12; tracker G; tester, 2026-11-13), through main.cpp: the
+// charger's frames (SA 0xC0) arm (3), set or clear the silent flag (2.2),
+// switch the vehicle port's mode (2.3) and refresh the charger staleness
+// (6) only as received on the charger port; on the vehicle port they are
+// forwarded like any other frame and change no state. The reference core's
+// side is test_trips.py's test_sa_c0_counts_only_from_the_charger_port;
+// this case is the firmware port's, dispatch and all. Judged from the
+// driver's mode, the wire on each side and the status frames (diag DBC).
+//
+// Payloads, from the DBCs (Bel BelInverter-v2, EPRI powertrain, VCU page
+// 00), each as test_trips.Bench encodes it:
+//   status 0x18FFD4C0 mux 0, state 12 (B5), vehicle and EVSE connected;
+//   status 0x18FFD4C0 mux 3, inverterFault (B2 bit 0);
+//   chargeInfo 0x18FFD9C0, maxAvailableChargingCurrent 16 A, vehicleState 3;
+//   pilot 0x18FFD8C0, BELINV_chargePilotOnlineTime in B5-B7 (minutes);
+//   page 00 0x18EFC000, flow bit 1, CHARGER;
+//   0x410/0x420/0x430/0x440 healthy, contactors closed (0x440 mainc 12);
+//   0x649 vcm_evap_active 1.
+const uint32_t SA_C0_STATUS = 0x18FFD4C0;
+const uint32_t SA_C0_INFO = 0x18FFD9C0;
+const uint32_t SA_C0_PILOT = 0x18FFD8C0;
+const uint8_t SA_C0_ST12[8] = {0x00, 0x18, 0, 0, 0, 0x0C, 0, 0};
+const uint8_t SA_C0_FAULT[8] = {0x03, 0, 0x01, 0, 0, 0, 0, 0};
+const uint8_t SA_C0_INFO16[8] = {0x40, 0x01, 0x03, 0, 0, 0, 0, 0};
+const uint8_t VCU_CHARGER_FLOW[8] = {0x00, 0x01, 0x01, 0, 0, 0, 0, 0};
+const uint8_t BMS_430[8] = {0x0d, 0x0c, 0x0d, 0x02, 0x82, 0x7e, 0, 0};
+const uint8_t BMS_420[8] = {0x99, 0x04, 0xb0, 0, 0, 0, 0, 0};
+const uint8_t BMS_440[8] = {0x30, 0, 0, 0, 0, 0x07, 0xd0, 0};
+const uint8_t BMS_410[8] = {0x08, 0, 0, 0xa0, 0x9e, 0x98, 0, 0};
+const uint8_t EVAP_ON[8] = {0x11, 0x22, 0x30, 0x44, 0x80, 0x66, 0x77, 0x88};
+// An SA 0xC0 frame the core does not parse (CHG_FRAME_ID, PGN 0xFF50): it
+// keeps the vehicle port in normal mode (2.3) so the status frames can be
+// read, without being a charger status, chargeInfo or pilot frame.
+const uint8_t ST_STATE_PASSTHROUGH = 0, ST_STATE_MONITOR = 1,
+              ST_STATE_SAFE = 5;                       // diag DBC intp_state
+const uint8_t TRIP_CHG_STALE = 11;                     // intp_trip_reason
+const uint8_t FLAG_CHG_SEEN_CHARGING = 0x02, FLAG_EVSE_CAP_KNOWN = 0x08,
+              FLAG_VCU_FLOW = 0x10;                    // 0x7F4 B4
+const uint8_t OBS_CHG_SILENT = 0x40;                   // 0x7F5 B7 bit 6
+
+void saC0Veh(uint32_t id, const uint8_t* d) { fake().deliver(id, true, d, 8); }
+void saC0Chg(uint32_t id, const uint8_t* d) {
+  mcpfake::CanFrame f;
+  std::memset(&f, 0, sizeof(f));
+  f.id = id;
+  f.ext = true;
+  f.len = 8;
+  std::memcpy(f.data, d, 8);
+  g_chip->deliverFrame(f);
+}
+void saC0Pilot(bool charger_port, uint8_t minutes) {
+  uint8_t d[8] = {0, 0, 0, 0, 0, minutes, 0, 0};
+  if (charger_port) saC0Chg(SA_C0_PILOT, d); else saC0Veh(SA_C0_PILOT, d);
+}
+// The rest of a charge from the vehicle side: the BMS (contactors closed)
+// and the evap flag. Standard ids.
+void saC0Bms() {
+  fake().deliver(0x430, false, BMS_430, 8);
+  fake().deliver(0x420, false, BMS_420, 8);
+  fake().deliver(0x440, false, BMS_440, 8);
+  fake().deliver(0x410, false, BMS_410, 8);
+  fake().deliver(0x649, false, EVAP_ON, 8);
+}
+// The charger's three frames on the VEHICLE port, as a pre-interposer
+// capture replayed there carries them.
+void saC0OnVehicle(uint8_t pilot_min) {
+  saC0Pilot(false, pilot_min);
+  saC0Veh(SA_C0_STATUS, SA_C0_ST12);
+  saC0Veh(SA_C0_INFO, SA_C0_INFO16);
+}
+
+// 0x7F4 frames since `from` whose state byte is not `want`; their states.
+std::string saC0OtherStates(size_t from, uint8_t want) {
+  std::string out;
+  const std::vector<twaifake::Frame>& s = vehSent();
+  for (size_t i = from; i < s.size(); i++)
+    if (s[i].id == DIAG_STATUS && s[i].data[2] != want) {
+      char b[8];
+      std::snprintf(b, sizeof(b), "%s%u", out.empty() ? "" : ",",
+                    s[i].data[2]);
+      out += b;
+    }
+  return out;
+}
+
+void caseSaC0VehiclePort() {
+  boot();
+  // Phase A1, 3 s: the VCU commands CHARGER with the flow bit set, the BMS
+  // reports the contactors closed, the evap flag is up, and the charger's
+  // frames arrive on the vehicle port only. Nothing on the charger port.
+  const size_t w0 = g_chip->wire().size();
+  const uint32_t refused0 = vehTxRefused();
+  const uint32_t lo_tx0 = fake().listenOnlyTxAttempts();
+  saC0Veh(0x18EFC000, VCU_CHARGER_FLOW);
+  runBridge(10);
+  const size_t v0 = vehSent().size();
+  for (int i = 0; i < 30; i++) {
+    saC0OnVehicle(5);
+    saC0Bms();
+    runBridge(100);
+  }
+  const uint32_t refused1 = vehTxRefused();
+  std::printf("  --  A1 (charger frames on the vehicle port only, 3 s): mode "
+              "%d, vehicle side +%u, listen-only tx attempts +%u, tx_refused "
+              "%u -> %u; toward the charger: status %u, chargeInfo %u, pilot "
+              "%u\n", (int)fake().mode(), vehSince(v0),
+              fake().listenOnlyTxAttempts() - lo_tx0, refused0, refused1,
+              chargerWireCount(SA_C0_STATUS, w0),
+              chargerWireCount(SA_C0_INFO, w0),
+              chargerWireCount(SA_C0_PILOT, w0));
+  check(fake().mode() == TWAI_MODE_LISTEN_ONLY && vehSince(v0) == 0 &&
+            fake().listenOnlyTxAttempts() == lo_tx0 &&
+            refused0 != UINT32_MAX && refused1 == refused0,
+        "SA 0xC0 [mode]: the charger's frames on the vehicle port leave it "
+        "listen-only (2.3 switches only on the charger port), nothing on the "
+        "vehicle side, no transmit attempted");
+  check(chargerWireCount(SA_C0_STATUS, w0) == 30 &&
+            chargerWireCount(SA_C0_INFO, w0) == 30 &&
+            chargerWireCount(SA_C0_PILOT, w0) == 30,
+        "SA 0xC0 [forward]: each of the 30 status, chargeInfo and pilot "
+        "frames from the vehicle port reached the charger segment once");
+
+  // Phase A2, 3 s: the same, plus an SA 0xC0 frame on the charger port that
+  // is none of the charger's parsed frames, so the port goes normal and the
+  // status frames can be read. The core must still be PASSTHROUGH, with no
+  // charger state, cap or status heard.
+  const size_t v1 = vehSent().size();
+  for (int i = 0; i < 30; i++) {
+    chargerFrame(CHG_FRAME_ID, true, false, 0x21);
+    saC0OnVehicle(5);
+    saC0Bms();
+    runBridge(100);
+  }
+  const twaifake::Frame* st = lastFrom(DIAG_STATUS);
+  const twaifake::Frame* ob = lastFrom(DIAG_OBSERVED);
+  const bool got_a2 = st && ob && countFrom(DIAG_STATUS, v1) > 0 &&
+                      countFrom(DIAG_OBSERVED, v1) > 0;
+  check(fake().mode() == TWAI_MODE_NORMAL && got_a2,
+        "premise: with the unparsed SA 0xC0 frame on the charger port the "
+        "port is normal and status frames go out");
+  if (!got_a2) return;
+  std::printf("  --  A2: 0x7F4 state %u trip %u flags 0x%02X; 0x7F5 "
+              "chg_state %u evse_cap raw %u B7 0x%02X; other 0x7F4 states "
+              "since A2 began: '%s'\n", st->data[2], st->data[3],
+              st->data[4], ob->data[5], ob->data[6], ob->data[7],
+              saC0OtherStates(v1, ST_STATE_PASSTHROUGH).c_str());
+  check((st->data[4] & FLAG_VCU_FLOW) != 0,
+        "premise: 0x7F4 vcu_flow 1 -- the VCU's flow bit was seen");
+  check(saC0OtherStates(v1, ST_STATE_PASSTHROUGH).empty() &&
+            (st->data[4] & FLAG_CHG_SEEN_CHARGING) == 0 && ob->data[5] != 12,
+        "SA 0xC0 [arm]: PASSTHROUGH throughout, chg_seen_charging 0, "
+        "chg_state not 12 -- the vehicle port's state 12 was not read");
+  check((ob->data[7] & OBS_CHG_SILENT) != 0,
+        "SA 0xC0 [silent]: 0x7F5 chg_silent_expected 1 -- the charger's status "
+        "on the vehicle port does not count as heard");
+  check(ob->data[6] == 255 && (st->data[4] & FLAG_EVSE_CAP_KNOWN) == 0,
+        "SA 0xC0 [cap]: EVSE cap unknown (raw 255, evse_cap_known 0) -- the "
+        "vehicle port's chargeInfo was not read");
+
+  // Phase B, 2 s: the charger's frames on the charger port too, its pilot
+  // timer at 1 (joins, spec 3 A3); the vehicle port's copies at 5. Arms,
+  // and stays armed: a vehicle-port timer read would step back from 5 to 1
+  // at every charger-port reading, a session boundary (6.1).
+  const size_t v2 = vehSent().size();
+  for (int i = 0; i < 20; i++) {
+    saC0Pilot(true, 1);
+    saC0Chg(SA_C0_STATUS, SA_C0_ST12);
+    saC0Chg(SA_C0_INFO, SA_C0_INFO16);
+    saC0OnVehicle(5);
+    saC0Bms();
+    runBridge(100);
+  }
+  st = lastFrom(DIAG_STATUS);
+  ob = lastFrom(DIAG_OBSERVED);
+  size_t first_mon = vehSent().size();
+  for (size_t i = v2; i < vehSent().size(); i++)
+    if (vehSent()[i].id == DIAG_STATUS &&
+        vehSent()[i].data[2] == ST_STATE_MONITOR) {
+      first_mon = i;
+      break;
+    }
+  const std::string drop = saC0OtherStates(first_mon, ST_STATE_MONITOR);
+  std::printf("  --  B: last 0x7F4 state %u flags 0x%02X; 0x7F5 chg_state %u "
+              "B7 0x%02X; 0x7F4 states other than MONITOR after the first "
+              "MONITOR: '%s'\n", st->data[2], st->data[4], ob->data[5],
+              ob->data[7], drop.c_str());
+  const bool armed = st->data[2] == ST_STATE_MONITOR;
+  check(armed && first_mon < vehSent().size() && drop.empty(),
+        "SA 0xC0 [pilot]: armed on the charger port's frames and MONITOR "
+        "throughout after, with the vehicle port's pilot timer at 5 against "
+        "the charger port's 1");
+  if (!armed) return;
+  check((ob->data[7] & OBS_CHG_SILENT) == 0 &&
+            (st->data[4] & FLAG_EVSE_CAP_KNOWN) != 0 && ob->data[5] == 12,
+        "premise: with the charger on the charger port, silent 0, EVSE cap "
+        "known and chg_state 12 -- so A2's checks could fail");
+
+  // Phase C, 1 s in MONITOR: a charger fault frame (mux 3, inverterFault)
+  // on the vehicle port; the charger port healthy.
+  const size_t v3 = vehSent().size();
+  const size_t w3 = g_chip->wire().size();
+  uint64_t t_last = 0;   // when the last charger-port status was delivered
+  for (int i = 0; i < 10; i++) {
+    t_last = g_chip->micros();
+    saC0Chg(SA_C0_STATUS, SA_C0_ST12);
+    saC0Chg(SA_C0_INFO, SA_C0_INFO16);
+    saC0Veh(SA_C0_STATUS, SA_C0_FAULT);
+    saC0Bms();
+    runBridge(100);
+  }
+  st = lastFrom(DIAG_STATUS);
+  std::printf("  --  C: last 0x7F4 state %u trip %u; other states '%s'; "
+              "status frames toward the charger %u\n", st->data[2],
+              st->data[3], saC0OtherStates(v3, ST_STATE_MONITOR).c_str(),
+              chargerWireCount(SA_C0_STATUS, w3));
+  check(st->data[2] == ST_STATE_MONITOR && st->data[3] == 0 &&
+            saC0OtherStates(v3, ST_STATE_MONITOR).empty(),
+        "SA 0xC0 [fault]: a charger fault frame on the vehicle port does not "
+        "trip MONITOR");
+  check(chargerWireCount(SA_C0_STATUS, w3) == 10,
+        "SA 0xC0 [forward]: the 10 vehicle-port fault frames reached the "
+        "charger segment");
+  if (st->data[2] != ST_STATE_MONITOR) return;
+
+  // Phase D1, 2 s: the charger port carries only the unparsed SA 0xC0
+  // frame (port normal, status frames readable); the vehicle port carries
+  // the charger's state-12 status and chargeInfo every 50 ms, the BMS
+  // fresh. The charger staleness trips (spec 6: 500 ms), timed from the
+  // last charger-port status (phase C's last step) to the 50 ms step whose
+  // run put out the SAFE status frame.
+  uint64_t t_safe = 0;
+  uint8_t trip = 0;
+  size_t v_600 = 0;
+  for (int i = 0; i < 40; i++) {
+    if (i % 2 == 0) chargerFrame(CHG_FRAME_ID, true, false, 0x31);
+    saC0Veh(SA_C0_STATUS, SA_C0_ST12);
+    saC0Veh(SA_C0_INFO, SA_C0_INFO16);
+    if (i % 2 == 0) saC0Bms();
+    const size_t before = vehSent().size();
+    runBridge(50);
+    for (size_t k = before; k < vehSent().size() && !t_safe; k++)
+      if (vehSent()[k].id == DIAG_STATUS &&
+          vehSent()[k].data[2] == ST_STATE_SAFE) {
+        t_safe = g_chip->micros();
+        trip = vehSent()[k].data[3];
+      }
+    if (!v_600 && g_chip->micros() >= t_last + 600000) v_600 = vehSent().size();
+  }
+  uint32_t silent_n = 0, silent_set = 0;
+  for (size_t k = v_600; v_600 && k < vehSent().size(); k++)
+    if (vehSent()[k].id == DIAG_OBSERVED) {
+      silent_n++;
+      if (vehSent()[k].data[7] & OBS_CHG_SILENT) silent_set++;
+    }
+  const long dt_ms = t_safe ? (long)((t_safe - t_last) / 1000) : -1;
+  std::printf("  --  D1 (charger port: only the unparsed frame; vehicle "
+              "port: status 12 every 50 ms): SAFE seen %ld ms after the last "
+              "charger-port status (by 50 ms steps), trip %u; 0x7F5 after "
+              "600 ms: %u, silent in %u\n", dt_ms, trip, silent_n,
+              silent_set);
+  check(t_safe && trip == TRIP_CHG_STALE && dt_ms >= 500 && dt_ms <= 1000,
+        "SA 0xC0 [stale]: SAFE, charger frames stale, 500 ms to 1 s after "
+        "the last charger-port status, the vehicle port's copies not "
+        "refreshing it");
+  check(silent_n > 0 && silent_set == silent_n,
+        "SA 0xC0 [silent]: every 0x7F5 from 600 ms on reads "
+        "chg_silent_expected 1");
+
+  // Phase D2, 2.5 s: nothing on the charger port at all; the vehicle port
+  // keeps carrying the charger's frames. Back to listen-only 2 s after the
+  // last charger-port frame (2.3), whatever the vehicle port carries.
+  for (int i = 0; i < 25; i++) {
+    saC0OnVehicle(1);
+    saC0Bms();
+    runBridge(100);
+  }
+  std::printf("  --  D2: mode %d 2.5 s after the last charger-port frame\n",
+              (int)fake().mode());
+  check(fake().mode() == TWAI_MODE_LISTEN_ONLY,
+        "SA 0xC0 [mode]: listen-only 2 s after the last charger-port frame, "
+        "with the charger's frames still arriving on the vehicle port");
+  assertPathsExercised();
+}
+
 struct Case {
   const char* name;
   void (*fn)();
@@ -2797,6 +3082,7 @@ const Case kCases[] = {
     {"boundary-one-line", caseBoundaryOneLine},
     {"age-from-queue", caseAgeFromQueue},
     {"rx-overflow-held", caseRxOverflowHeld},
+    {"sa-c0-vehicle-port", caseSaC0VehiclePort},
 };
 
 }  // namespace

@@ -88,6 +88,19 @@ user 2026-10-09; E5, tester 2026-10-09), the reviewer's cases:
   arming, each caught by its own check; E4's real core against the same
   checks is in SeaDrive e5_arming_controls.py.
 
+Spec 2 "The charger's frames count only from the charger port" (user,
+2026-11-12; tracker G; tester, 2026-11-13): the charger's frames received on
+the VEHICLE port, with everything else a charge needs, neither arm nor read
+as the charger's state or cap, nor switch the vehicle port, nor clear the
+silent flag; are forwarded toward the charger untouched; a vehicle-port pilot
+timer is not read (no step-back boundary); a vehicle-port fault frame does not
+trip MONITOR; and with the charger port quiet, the vehicle port's state-12
+status neither holds off the 500-550 ms staleness trip nor the silent flag
+nor the fall-back to listen-only (test_sa_c0_counts_only_from_the_charger_port,
+judged from the outputs, `listen_only` and the status frames through the diag
+DBC). Can-fail: test_sa_c0_can_fail, eight wrong cores, each caught on its own
+part. The firmware port's side is test_l2_bridge's `sa-c0-vehicle-port`.
+
 Run:  py -3.14 projects/vtrux/tools/interposer/test_trips.py
 """
 
@@ -1866,6 +1879,315 @@ def test_listen_only_can_fail():
                       (RevertsAt1s, "falls back after 1 s")):
         ok(bool(listen_only_problems(cls)),
            "spec 2.3: the judgement fails a core that %s" % what)
+
+
+# --- spec 2, "The charger's frames count only from the charger port" (user,
+# 2026-11-12; tracker G): the charger's frames (SA 0xC0) arm (3), set or
+# clear the silent flag (2.2), switch the vehicle port's mode (2.3) and
+# refresh the charger staleness (6) only as received on the charger port. On
+# the vehicle port they are forwarded like any other frame and change no
+# state. Judged from the core's outputs, its published `listen_only` (2.3)
+# and its status frames decoded through the diag DBC (8.2), never from its
+# internals.
+
+SA_C0_STATUS = 0x18FFD4C0    # BELINV status, multiplexed (Bel DBC)
+SA_C0_INFO = 0x18FFD9C0      # BELINV chargeInfo
+SA_C0_PILOT = 0x18FFD8C0     # BELINV chargePilotOnlineTime
+SA_C0_STALE_MS = (500, 550)  # spec 6, as test_trips judges it above
+SA_C0_TRIP_STALE = 11        # diag DBC intp_trip_reason "charger frames stale"
+SA_C0_STATE = {0: "PASSTHROUGH", 1: "MONITOR", 5: "SAFE"}   # diag DBC
+
+_DIAG_DB = []
+
+
+def _diag_now(core, t_ms):
+    """0x7F4 and 0x7F5 as the core packs them now, decoded raw through the
+    diag DBC (paths.diag_dbc(), the published interface)."""
+    if not _DIAG_DB:
+        import cantools
+        import paths
+        _DIAG_DB.append(cantools.database.load_file(paths.diag_dbc()))
+    db = _DIAG_DB[0]
+    out = {}
+    for fid, data in core.diag_frames(t_ms):
+        if fid in (0x7F4, 0x7F5):
+            out.update(db.decode_message(fid, bytes(data), decode_choices=False,
+                                         scaling=False))
+    return out
+
+
+def _sa_c0_status(state=12):
+    return P.encode(P.BEL, SA_C0_STATUS, {
+        "BELINV_state": state, "BELINV_shutdownSource": 0,
+        "BELINV_vehicleConnected": 1, "BELINV_evseConnected": 1},
+        "BELINV_statusMultiplexer", 0)
+
+
+def _sa_c0_fault():
+    return P.encode(P.BEL, SA_C0_STATUS, {
+        "BELINV_inverterFault": 1, "BELINV_buckBoostFault": 0,
+        "BELINV_hvBatteryOverVoltage": 0, "BELINV_overTemperature": 0},
+        "BELINV_statusMultiplexer", 3)
+
+
+def _sa_c0_info():
+    return P.encode(P.BEL, SA_C0_INFO, {
+        "BELINV_maxAvailableChargingCurrent": 16.0, "BELINV_vehicleState": 3})
+
+
+def _sa_c0_on_vehicle(b, pilot_min=5):
+    """The charger's three frames as a pre-interposer capture carries them,
+    but received on the VEHICLE port: status in state 12, chargeInfo with a
+    16 A cap, and the pilot timer at `pilot_min` (5 by default: read as the
+    first reading after power-up it would keep the core out, spec 3 A3)."""
+    b.veh(SA_C0_PILOT, pilot(pilot_min))
+    b.veh(SA_C0_STATUS, _sa_c0_status(12))
+    b.veh(SA_C0_INFO, _sa_c0_info())
+
+
+def _sa_c0_forward_problem(entries):
+    """Each vehicle-port SA 0xC0 frame in `entries` came out exactly once,
+    toward the charger, byte-identical (spec 2: forwarded like any other
+    frame). -> the first violation, or None."""
+    n = 0
+    for kind, fid, data, out in entries:
+        if kind != "V" or (fid & 0xFF) != 0xC0 or fid <= 0x7FF:
+            continue
+        n += 1
+        mine = [o for o in out if o[0] == M.TO_CHARGER and o[1] == fid]
+        if len(mine) != 1 or bytes(mine[0][3]) != data:
+            return ("vehicle-port 0x%X %s came out toward the charger as %s"
+                    % (fid, data.hex(), [bytes(o[3]).hex() for o in mine]))
+    if n == 0:
+        return "no vehicle-port SA 0xC0 frame was sent (the case did nothing)"
+    return None
+
+
+def sa_c0_vehicle_port_problems(core_cls=None):
+    """-> problems, each tagged with the part it judges:
+    [arm] [mode] [silent] [cap] [forward] (phase A: charger frames on the
+    vehicle port alone, with everything else a charge needs); [pilot] and
+    [premise] (phase B: the same charge with the charger's frames on the
+    charger port arms and stays armed, the vehicle port's pilot timer at 5
+    against the charger port's 1); [fault] (phase C: a vehicle-port fault frame
+    in MONITOR); [stale] [silent] [mode] (phase D: the charger port quiet
+    while the vehicle port keeps carrying a state-12 status)."""
+    b = Bench()
+    if core_cls is not None:
+        b.core = core_cls(b.core.cfg, 0)
+    c = b.core
+    probs = []
+    if not hasattr(c, "listen_only"):
+        return ["[premise] the core has no `listen_only` (spec 2.3)"]
+
+    # Phase A, 5 s: the VCU commands CHARGER with the flow bit set, the BMS
+    # reports the contactors closed, the evap flag is up, and the charger's
+    # frames arrive on the vehicle port only.
+    b.veh(0x18EFC000, P.enc_master(1, P.MODE_CHARGER))
+    a0 = len(b.log)
+    s0 = len(b.states)
+    for _ in range(50):
+        b.t += 100
+        _sa_c0_on_vehicle(b)
+        b.evap(1)
+        b.bms(mainc=12)
+        b.tick()
+    left = sorted(set(s for _t, s in b.states[s0:] if s != "PASSTHROUGH"))
+    if left:
+        probs.append("[arm] the core left PASSTHROUGH (%s) on charger frames "
+                     "received on the vehicle port" % ", ".join(left))
+    if not c.listen_only:
+        probs.append("[mode] the vehicle port left listen-only on charger "
+                     "frames received on the vehicle port")
+    dg = _diag_now(c, b.t)
+    if not (dg["intp_flags"] & 0x10):
+        probs.append("[premise] 0x7F4 vcu_flow is 0 -- the VCU's flow bit "
+                     "was not seen, so the silent flag would read 0 anyway")
+    if dg["intp_chg_silent_expected"] != 1:
+        probs.append("[silent] 0x7F5 chg_silent_expected %d after 5 s of the "
+                     "flow bit with the charger's status on the vehicle port "
+                     "only (want 1: none arrived on the charger port)"
+                     % dg["intp_chg_silent_expected"])
+    if dg["intp_chg_state"] == 12 or (dg["intp_flags"] & 0x02):
+        probs.append("[arm] 0x7F5 chg_state %d, 0x7F4 chg_seen_charging %d: "
+                     "a vehicle-port state 12 was read"
+                     % (dg["intp_chg_state"], (dg["intp_flags"] >> 1) & 1))
+    if dg["intp_evse_cap_x10"] != 255 or (dg["intp_flags"] & 0x08):
+        probs.append("[cap] 0x7F5 evse_cap_x10 raw %d, evse_cap_known %d: a "
+                     "vehicle-port chargeInfo was read (want 255 / 0)"
+                     % (dg["intp_evse_cap_x10"], (dg["intp_flags"] >> 3) & 1))
+    p = _bus_unchanged(b.log[a0:]) or _sa_c0_forward_problem(b.log[a0:])
+    if p:
+        probs.append("[forward] phase A: " + p)
+
+    # Phase B, 2 s: the charger's frames now also on the charger port, its
+    # pilot timer at 1 min (0 or 1 joins, spec 3 A3); the vehicle port keeps
+    # carrying its copies with the timer at 5. The core must arm (the
+    # premise that phase A's charge would have armed it) and stay armed: a
+    # core that also read the vehicle port's timer would see it step back
+    # from 5 to 1 at every charger-port reading, a session boundary each
+    # time (spec 6.1), and drop to PASSTHROUGH.
+    b0 = len(b.log)
+    s0 = len(b.states)
+    for _ in range(20):
+        b.t += 100
+        b.chg(SA_C0_PILOT, pilot(1))
+        b.chg(SA_C0_STATUS, _sa_c0_status(12))
+        b.chg(SA_C0_INFO, _sa_c0_info())
+        _sa_c0_on_vehicle(b, pilot_min=5)
+        b.evap(1)
+        b.bms(mainc=12)
+        b.tick()
+    dg = _diag_now(c, b.t)
+    state_b = SA_C0_STATE.get(dg["intp_state"], str(dg["intp_state"]))
+    seq = [s for _t, s in b.states[s0:]]
+    after = seq[seq.index("MONITOR"):] if "MONITOR" in seq else []
+    dropped = sorted(set(s for s in after if s != "MONITOR"))
+    if state_b != "MONITOR" or dropped:
+        probs.append("[pilot] phase B: 0x7F4 state %s at its end, %s after "
+                     "first arming, with the charger port's pilot timer at 1 "
+                     "and the vehicle port's at 5 (want MONITOR throughout "
+                     "once armed: a vehicle-port reading stepping back is a "
+                     "boundary only if it is read)"
+                     % (state_b, ", ".join(dropped) or "nothing else"))
+    if state_b != "MONITOR" and not after:
+        probs.append("[premise] the charger's frames on the charger port "
+                     "never armed the core")
+    if state_b == "MONITOR":
+        if c.listen_only:
+            probs.append("[premise] still listen-only with the charger on "
+                         "the charger port")
+        if dg["intp_chg_silent_expected"] != 0:
+            probs.append("[premise] 0x7F5 chg_silent_expected 1 with the "
+                         "charger's status on the charger port")
+        if not (dg["intp_flags"] & 0x08):
+            probs.append("[premise] evse_cap_known 0 with chargeInfo on the "
+                         "charger port, so phase A's [cap] check means "
+                         "nothing")
+    p = _sa_c0_forward_problem(b.log[b0:])
+    if p:
+        probs.append("[forward] phase B (MONITOR): " + p)
+    if state_b != "MONITOR":
+        return probs
+
+    # Phase C, 1 s in MONITOR: a charger fault frame (mux 3, inverterFault)
+    # on the vehicle port, the charger port healthy throughout.
+    c0 = len(b.log)
+    for _ in range(10):
+        b.t += 100
+        b.chg(SA_C0_STATUS, _sa_c0_status(12))
+        b.chg(SA_C0_INFO, _sa_c0_info())
+        b.veh(SA_C0_STATUS, _sa_c0_fault())
+        b.bms(mainc=12)
+        b.tick()
+    dg = _diag_now(c, b.t)
+    if dg["intp_state"] != 1 or dg["intp_trip_reason"] != 0:
+        probs.append("[fault] a vehicle-port charger fault frame moved the "
+                     "core to %s, trip reason %d (want MONITOR, 0)"
+                     % (SA_C0_STATE.get(dg["intp_state"], dg["intp_state"]),
+                        dg["intp_trip_reason"]))
+        return probs
+    p = _sa_c0_forward_problem(b.log[c0:])
+    if p:
+        probs.append("[forward] phase C: " + p)
+
+    # Phase D, 2.5 s: the charger port quiet; the vehicle port carries the
+    # charger's state-12 status and chargeInfo every 50 ms, the BMS fresh.
+    t_last = b.t
+    t_trip = None
+    silent_at_600 = None
+    while b.t < t_last + 2500:
+        b.t += 50
+        b.veh(SA_C0_STATUS, _sa_c0_status(12))
+        b.veh(SA_C0_INFO, _sa_c0_info())
+        b.bms(mainc=12)
+        b.tick()
+        dg = _diag_now(c, b.t)
+        if t_trip is None and dg["intp_state"] == 5:
+            t_trip = b.t
+            reason = dg["intp_trip_reason"]
+        if silent_at_600 is None and b.t >= t_last + 600:
+            silent_at_600 = dg["intp_chg_silent_expected"]
+    lo, hi = SA_C0_STALE_MS
+    if t_trip is None:
+        probs.append("[stale] no trip in 2.5 s with the charger port quiet "
+                     "and its status on the vehicle port every 50 ms (want "
+                     "SAFE, charger frames stale, %d-%d ms)" % (lo, hi))
+    elif reason != SA_C0_TRIP_STALE or not lo <= t_trip - t_last <= hi:
+        probs.append("[stale] SAFE %d ms after the last charger-port status, "
+                     "trip reason %d (want %d, charger frames stale, at "
+                     "%d-%d ms)" % (t_trip - t_last, reason, SA_C0_TRIP_STALE,
+                                    lo, hi))
+    if silent_at_600 != 1:
+        probs.append("[silent] 0x7F5 chg_silent_expected %s 600 ms after the "
+                     "last charger-port status, with the vehicle port's "
+                     "copies every 50 ms (want 1)" % silent_at_600)
+    if not c.listen_only:
+        probs.append("[mode] the vehicle port still normal 2.5 s after the "
+                     "last charger-port frame, with the charger's frames on "
+                     "the vehicle port (2.3: listen-only after 2 s)")
+    return probs
+
+
+def test_sa_c0_counts_only_from_the_charger_port():
+    for p in sa_c0_vehicle_port_problems():
+        FAILS.append("spec 2 (charger frames only from the charger port): "
+                     + p)
+
+
+def _sa_c0_wrong(ids, armed_only=False, mux=None, swallow=False,
+                 mode_only=False):
+    """A core that also takes vehicle-port frames with these identifiers as
+    charger frames (its own charger-port handler, output dropped, so the
+    forward is untouched), optionally only once armed or only for one status
+    multiplexer value; or that swallows them; or that only switches the
+    vehicle port to normal on them."""
+    class Wrong(M.InterposerCore):
+        def on_vehicle_frame(self, arb_id, ext, data, t_ms):
+            hit = ext and arb_id in ids
+            if hit and mux is not None and bytes(data)[0] != mux:
+                hit = False
+            if hit and armed_only and self.state == 0:
+                hit = False
+            out = M.InterposerCore.on_vehicle_frame(self, arb_id, ext, data,
+                                                    t_ms)
+            if not hit:
+                return out
+            if swallow:
+                return []
+            if mode_only:
+                self.listen_only = False
+                return out
+            M.InterposerCore.on_charger_frame(self, arb_id, ext, data, t_ms)
+            return out
+    return Wrong
+
+
+def test_sa_c0_can_fail():
+    every = (SA_C0_STATUS, SA_C0_INFO, SA_C0_PILOT)
+    for cls, what, tags in (
+            (_sa_c0_wrong(every), "reads every vehicle-port SA 0xC0 frame",
+             ("[arm]", "[mode]", "[silent]")),
+            (_sa_c0_wrong((SA_C0_STATUS,)), "reads the vehicle-port status",
+             ("[arm]", "[silent]")),
+            (_sa_c0_wrong((SA_C0_INFO,)), "reads the vehicle-port chargeInfo",
+             ("[cap]",)),
+            (_sa_c0_wrong((SA_C0_PILOT,)), "reads the vehicle-port pilot "
+             "timer", ("[pilot]",)),
+            (_sa_c0_wrong((SA_C0_STATUS,), mux=3), "reads vehicle-port "
+             "fault frames", ("[fault]",)),
+            (_sa_c0_wrong((SA_C0_STATUS,), armed_only=True, mux=0),
+             "reads the vehicle-port status once armed", ("[stale]",
+                                                          "[silent]")),
+            (_sa_c0_wrong(every, mode_only=True), "switches the vehicle port "
+             "to normal on vehicle-port SA 0xC0 frames", ("[mode]",)),
+            (_sa_c0_wrong(every, swallow=True), "does not forward "
+             "vehicle-port SA 0xC0 frames", ("[forward]",))):
+        got = sa_c0_vehicle_port_problems(cls)
+        for tag in tags:
+            ok(any(p.startswith(tag) for p in got),
+               "spec 2 SA 0xC0: the judgement fails a core that %s, on %s "
+               "(got %s)" % (what, tag, [p[:60] for p in got]))
 
 
 def main():
