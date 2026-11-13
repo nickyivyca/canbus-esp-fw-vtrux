@@ -96,6 +96,7 @@ test image does.
 | `vtrux_build.json` | the shared tooling's project data (shared/tools R22): the `dev` variant |
 | `main/` | the image's source; see `main/README.md` |
 | `test/` | the protocol layer's host unit tests and their mutants; see `test/README.md` |
+| `bench/` | the checks of a built image and of the image on the bench, each with its can-fail; see `bench/README.md` |
 
 ## Building
 
