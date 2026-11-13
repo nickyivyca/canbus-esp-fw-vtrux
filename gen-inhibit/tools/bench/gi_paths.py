@@ -216,10 +216,16 @@ def remove_tree(path, out=None):
     """Remove path (a folder and everything in it, or a file or link) and return True,
     or print to out (default stderr) what is left and why and return False; never raise
     for what it can't remove (AGENTS.md "Removing scratch", 2026-10-31). Each entry that
-    fails has its read-only flag cleared (git for Windows makes .git/objects read-only)
-    and is tried again, then once more after 0.2 s (a scanner holding it briefly). A
-    path that isn't there is already removed. Never shutil.rmtree's ignore_errors,
-    which leaves the folder without a word."""
+    fails has its read-only flag cleared and is tried again, then once more after 0.2 s
+    (a scanner holding it briefly). The read-only flag is, on Windows, the file's (git
+    for Windows makes .git/objects read-only); elsewhere, a folder's missing write or
+    search bit, which keeps what is in it from going, so the failing entry's folder is
+    made writable too while it is inside path. A link is never chmod-ed, since that
+    would follow it. A folder the walk could not open or list (POSIX rmtree opens each
+    folder by descriptor) is removed by path once it is writable, once only. A path
+    that isn't there is already removed. Never shutil.rmtree's ignore_errors, which
+    leaves the folder without a word. Linux fix 2026-11-12: the retry called the failed
+    function on the path alone, and os.open without flags raised TypeError."""
     import stat
     import time
     out = sys.stderr if out is None else out
@@ -227,16 +233,45 @@ def remove_tree(path, out=None):
     if not os.path.lexists(lp):
         return True
     failed = []
+    walked = set()
+    top = lp.rstrip("/\\")
 
-    def again(fn, p, exc):
+    def inside(p):
+        return p == top or p.startswith(top + os.sep)
+
+    def writable(p):
+        if os.path.islink(p):
+            return
         try:
-            os.chmod(p, stat.S_IWRITE)
+            os.chmod(p, stat.S_IRWXU if os.path.isdir(p) else stat.S_IWRITE)
         except OSError:
             pass
+
+    def rmtree(p):
+        try:
+            shutil.rmtree(p, onexc=again)
+        except TypeError as e:          # Python < 3.12 (WSL's 3.10) has onerror, given (type, value, tb)
+            if "onexc" not in str(e):
+                raise
+            shutil.rmtree(p, onerror=lambda fn, q, ei: again(fn, q, ei[1]))
+
+    def again(fn, p, exc):
+        writable(p)
+        up = os.path.dirname(p)
+        if up != p and inside(up):
+            writable(up)
+        if fn in (os.unlink, os.remove, os.rmdir):
+            retry = lambda: fn(p)       # noqa: E731
+        elif fn is not os.close and p not in walked and os.path.isdir(p) and not os.path.islink(p):
+            walked.add(p)
+            retry = lambda: rmtree(p)   # noqa: E731
+        else:
+            failed.append((p, exc))
+            return
         for wait in (0, 0.2):
             time.sleep(wait)
             try:
-                fn(p)
+                retry()
                 return
             except FileNotFoundError:
                 return
@@ -244,12 +279,7 @@ def remove_tree(path, out=None):
                 exc = e
         failed.append((p, exc))
     if os.path.isdir(lp) and not os.path.islink(lp) and not getattr(os.path, "isjunction", lambda _: False)(lp):
-        try:
-            shutil.rmtree(lp, onexc=again)
-        except TypeError as e:          # Python < 3.12 (WSL's 3.10) has onerror, given (type, value, tb)
-            if "onexc" not in str(e):
-                raise
-            shutil.rmtree(lp, onerror=lambda fn, p, ei: again(fn, p, ei[1]))
+        rmtree(lp)
     else:
         try:
             os.remove(lp)

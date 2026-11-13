@@ -4,7 +4,12 @@ CHECK. A crash is not a kill (a FAIL whose detail starts CRASH does not count), 
 edit that does not apply is an error. Each mutant is a copy of gi_paths.py in this run's
 scratch/ folder with one edit, run through GI_PATHS_DIR. Gen-inhibit tester, 2026-10-31.
 
-    py -3.14 -B test_gi_scratch_mutants.py
+    python3.13 -B test_gi_scratch_mutants.py      (py -3.14 on Windows)
+
+A mutant of one platform's branch (a 4th field, "nt" or "posix") is printed N/A on the
+other and not counted, since that branch never runs there; its edit must still apply
+(2026-11-12, the reviewer's Linux leftovers). The /proc mutants are process_start's
+Linux counterparts of the two Windows ones.
 """
 import os
 import subprocess
@@ -14,16 +19,27 @@ import gi_paths  # noqa: E402  this run's scratch/ folder, and its removal
 HERE = os.path.dirname(os.path.abspath(__file__))
 TARGET = "gi_paths.py"
 MUTANTS = [
-    ("remove_tree with ignore_errors", "        shutil.rmtree(lp, onexc=again)", "        shutil.rmtree(lp, ignore_errors=True)"),
+    ("remove_tree with ignore_errors", "            shutil.rmtree(p, onexc=again)", "            shutil.rmtree(p, ignore_errors=True)"),
     ("no fallback for an rmtree without onexc (Python < 3.12)", '            if "onexc" not in str(e):\n                raise\n',
      "            raise\n"),
-    ("the fallback without the retry", "            shutil.rmtree(lp, onerror=lambda fn, p, ei: again(fn, p, ei[1]))",
-     "            shutil.rmtree(lp, onerror=lambda fn, p, ei: fn(p))"),
-    ("the read-only flag not cleared", "            os.chmod(p, stat.S_IWRITE)", "            pass"),
-    ("no long-path prefix on Windows", '    return "\\\\\\\\?\\\\" + p\n', "    return p\n"),
+    ("the fallback without the retry", "            shutil.rmtree(p, onerror=lambda fn, q, ei: again(fn, q, ei[1]))",
+     "            shutil.rmtree(p, onerror=lambda fn, q, ei: fn(q))"),
+    ("the read-only flag not cleared", "            os.chmod(p, stat.S_IRWXU if os.path.isdir(p) else stat.S_IWRITE)",
+     "            pass"),
+    ("the failing entry's folder not made writable", "        if up != p and inside(up):\n            writable(up)\n", ""),
+    ("the folder above the path made writable too", "        if up != p and inside(up):", "        if up != p:"),
+    ("a link chmod-ed (its target)", "        if os.path.islink(p):\n            return\n        try:\n            os.chmod",
+     "        try:\n            os.chmod"),
+    ("every failed function retried on the path alone (the TypeError of 2026-11-12)",
+     "        if fn in (os.unlink, os.remove, os.rmdir):", "        if True:"),
+    ("a folder the walk couldn't open is not retried by path",
+     "            walked.add(p)\n            retry = lambda: rmtree(p)   # noqa: E731",
+     "            failed.append((p, exc))\n            return"),
+    ("a folder retried by path without limit", "fn is not os.close and p not in walked and", "fn is not os.close and"),
+    ("no long-path prefix on Windows", '    return "\\\\\\\\?\\\\" + p\n', "    return p\n", "nt"),
     ("a failure not printed", '    print("could not remove %s: %d entr%s failed"', '    0 and print("could not remove %s: %d entr%s failed"'),
     ("the failing entries and reasons not printed", "    for p, e in failed[:10]:", "    for p, e in failed[:0]:"),
-    ("a failure raises", "        failed.append((p, exc))", "        raise exc"),
+    ("a failure raises", "                exc = e\n        failed.append((p, exc))", "                exc = e\n        raise exc"),
     ("a failure returns True", "        print(\"  ... and %d more\" % (len(failed) - 10), file=out)\n    return False",
      "        print(\"  ... and %d more\" % (len(failed) - 10), file=out)\n    return True"),
     ("owner_state ignores the start time (a reused pid is running)",
@@ -52,9 +68,15 @@ MUTANTS = [
      "        yield d\n        finish(d, keep)"),
     ("run_dir never removes", "        finally:\n            finish(d, keep)", "        finally:\n            pass"),
     ("process_start: one number for every process", "            return (t[0].dwHighDateTime << 32) | t[0].dwLowDateTime",
-     "            return 1"),
+     "            return 1", "nt"),
     ("process_start: a process that isn't there is running", '            return "?" if ctypes.get_last_error() == 5 else None',
-     '            return "?"'),
+     '            return "?"', "nt"),
+    ("process_start (/proc): one number for every process", "            return int(f[19])               # field 22, starttime",
+     "            return 1", "posix"),
+    ("process_start (/proc): a process that isn't there is running",
+     '        except FileNotFoundError:\n            return None\n        except OSError:\n            return "?"',
+     '        except FileNotFoundError:\n            return "?"\n        except OSError:\n            return "?"', "posix"),
+    ("process_start (/proc): an exited, unreaped one is running", '        if f[:1] == ["Z"]:', "        if False:", "posix"),
 ]
 
 
@@ -82,24 +104,29 @@ def main():
 
 def run(base):
     src = open(os.path.join(HERE, TARGET), encoding="utf-8", newline="").read()
-    killed = errors = 0
+    killed = errors = na = 0
     dead, crashed, fails, rc = run_test(copy_tree(base, "control", src))
     control_ok = rc == 0 and not fails
     print("%s control: the unmutated copy  (exit %d, %d FAIL)%s"
           % ("PASS    " if control_ok else "FAILED  ", rc, len(fails), "".join("\n           " + f[:130] for f in fails[:3])))
-    for n, (name, old, new) in enumerate(MUTANTS, 1):
+    for n, (name, old, new, *where) in enumerate(MUTANTS, 1):
         if src.count(old) != 1:
             print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
             errors += 1
+            continue
+        if where and where[0] != os.name:
+            print("N/A      m%d %s  (%s only; this run is on %s)"
+                  % (n, name, "Windows" if where[0] == "nt" else "POSIX", sys.platform))
+            na += 1
             continue
         dead, crashed, fails, rc = run_test(copy_tree(base, "m%d" % n, src.replace(old, new)))
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL%s)%s" % ("KILLED  " if dead else "SURVIVED", n, name, rc, len(fails),
                                                  ", CRASHED" if crashed else "",
                                                  "".join("\n           " + f[:130] for f in fails[:3])))
-    print("\n%d of %d killed by a check, %d errors; the control %s"
-          % (killed, len(MUTANTS), errors, "passes" if control_ok else "DOES NOT PASS"))
-    return 0 if killed == len(MUTANTS) and not errors and control_ok else 1
+    print("\n%d of %d killed by a check, %d errors, %d not applicable on %s; the control %s"
+          % (killed, len(MUTANTS) - na, errors, na, sys.platform, "passes" if control_ok else "DOES NOT PASS"))
+    return 0 if killed == len(MUTANTS) - na and not errors and control_ok else 1
 
 
 if __name__ == "__main__":

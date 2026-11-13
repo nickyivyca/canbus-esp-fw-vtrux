@@ -6,12 +6,20 @@ scratch()'s removal at exit. Gen-inhibit tester, 2026-10-31.
 On a fake worktree in this run's own scratch/ folder:
 
   1. remove_tree removes a tree holding read-only files and a read-only folder (git for
-     Windows' .git/objects), a lone file and, on Windows, a path past MAX_PATH; a path
-     that isn't there is already removed. An entry it can't remove (a file held open on
-     Windows, a folder without write permission elsewhere) is printed with its path and
-     the reason, the call returns False without raising, and the rest goes.
+     Windows' .git/objects), a lone file, a folder with no permissions at all (mode 000)
+     holding another, and, on Windows, a path past MAX_PATH; a path that isn't there is
+     already removed. An entry it can't remove is printed with its path and the reason,
+     the call returns False without raising, and the rest goes. That entry is a file
+     held open on Windows. Elsewhere a user can't make its own file in its own folder
+     unremovable without root, so os.unlink and os.remove refuse it while the check runs,
+     as Windows refuses a held file: a stand-in injected by this test (held()).
+     Off Windows also (2026-11-12, the Linux fix): a folder the walk can't open even once
+     writable (os.open refused by the test) is printed, False, no exception; a link in a
+     read-only folder is removed without its target being chmod-ed; a folder whose parent
+     isn't writable is not removed, and the parent, outside the path, keeps its mode.
   2. process_start: this process gives a number, the same each time; a child gives
-     another, and None once it has exited; pid 0 and -1 give None.
+     another, and None once it has exited, waited for or not (a zombie on Linux); pid 0
+     and -1 give None.
   3. Owner files: scratch() writes one beside the run folder (nothing inside it), with
      this pid and start time; owner_state says running for it, finished for a pid that
      isn't running or one whose start differs (a reused pid), kept for a kept one, and
@@ -26,10 +34,13 @@ On a fake worktree in this run's own scratch/ folder:
   6. run_dir removes its folder at the end of the block and on an exception, keep=True
      keeps it; finish from another pid (a forked child) leaves the folder.
 
-    py -3.14 -B test_gi_scratch.py           # exit 0 only if every check passes
+    python3.13 -B test_gi_scratch.py        # exit 0 only if every check passes
+                                            # (py -3.14 on Windows)
 
 Its mutants: test_gi_scratch_mutants.py. GI_PATHS_DIR runs another copy of gi_paths.py.
 """
+import contextlib
+import errno
 import io
 import json
 import os
@@ -37,6 +48,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 import gi_paths as real_gi_paths  # noqa: E402  this test's own scratch/ folder
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -88,6 +100,52 @@ def tree(base, ro_dir=True):
     if ro_dir:
         os.chmod(obj, stat.S_IREAD | stat.S_IEXEC)
     return base
+
+
+def _refuse(path, fns, why):
+    """While the block runs, each os function named in fns refuses a path whose last part
+    is path's last part, raising PermissionError(EPERM) as the OS would."""
+    real = {n: getattr(os, n) for n in fns}
+    name = os.path.basename(path)
+
+    def wrap(fn):
+        def refusing(p, *a, **kw):
+            if not isinstance(p, int) and os.path.basename(os.fsdecode(p)) == name:
+                raise PermissionError(errno.EPERM, "Operation not permitted (%s)" % why, p)
+            return fn(p, *a, **kw)
+        return refusing
+
+    @contextlib.contextmanager
+    def cm():
+        for n, fn in real.items():
+            setattr(os, n, wrap(fn))
+        try:
+            yield
+        finally:
+            for n, fn in real.items():
+                setattr(os, n, fn)
+    return cm()
+
+
+@contextlib.contextmanager
+def held(path):
+    """path can't be removed while the block runs: held open on Windows (no
+    FILE_SHARE_DELETE); elsewhere os.unlink and os.remove refuse it (the docstring)."""
+    if os.name == "nt":
+        fh = open(path)
+        try:
+            yield
+        finally:
+            fh.close()
+        return
+    with _refuse(path, ("unlink", "remove"), "refused by the test, standing in for a held file"):
+        yield
+
+
+def unopenable(path):
+    """Off Windows: os.open refuses folder path while the block runs, so the walk can't
+    open it even once it is writable."""
+    return _refuse(path, ("open",), "refused by the test: a folder the walk can't open")
 
 
 def owner(gp, d, pid, start, keep=False):
@@ -167,6 +225,72 @@ def run(work):
         fh.write("x")
     os.chmod(f, stat.S_IREAD)
     check("a lone read-only file is removed", lambda: gp.remove_tree(f, out=buf) and not os.path.lexists(f))
+    z = os.path.join(work, "rm000")
+    deeper = os.path.join(z, "none", "deeper")
+    os.makedirs(deeper)
+    for p in (os.path.join(z, "none", "f.txt"), os.path.join(deeper, "g.txt"), os.path.join(z, "plain.txt")):
+        with open(p, "w") as fh:
+            fh.write("x")
+    os.chmod(deeper, 0)
+    os.chmod(os.path.dirname(deeper), 0)
+    buf = io.StringIO()
+    res, err = call(lambda: gp.remove_tree(z, out=buf))
+    check("a folder with no permissions at all (mode 000) holding files and another such folder is removed, "
+          "True, nothing printed", lambda: err is None and res is True and not os.path.lexists(z) and buf.getvalue() == "",
+          (res, err, buf.getvalue()))
+    if os.path.lexists(z):
+        for p in (os.path.dirname(deeper), deeper):
+            try:
+                os.chmod(p, stat.S_IRWXU)
+            except OSError:
+                pass
+        real_gi_paths.remove_tree(z, out=buf)
+    if os.name != "nt":
+        u = os.path.join(work, "rm-open")
+        locked = os.path.join(u, "locked")
+        os.makedirs(locked)
+        for p in (os.path.join(locked, "f.txt"), os.path.join(u, "plain.txt")):
+            with open(p, "w") as fh:
+                fh.write("x")
+        buf = io.StringIO()
+        with unopenable(locked):
+            res, err = call(lambda: gp.remove_tree(u, out=buf))
+        check("a folder the walk can't open even once writable: False, no exception, printed with its path",
+              lambda: err is None and res is False and locked in buf.getvalue()
+              and not os.path.lexists(os.path.join(u, "plain.txt")), (res, err, buf.getvalue()))
+        check("... and once it opens, it goes", lambda: gp.remove_tree(u, out=buf) and not os.path.lexists(u))
+        target = os.path.join(work, "link-target.txt")
+        with open(target, "w") as fh:
+            fh.write("x")
+        os.chmod(target, stat.S_IREAD)
+        lt = tree(os.path.join(work, "rm-link"), ro_dir=False)
+        obj = os.path.join(lt, ".git", "objects", "ab")
+        os.symlink(target, os.path.join(obj, "link"))
+        os.chmod(obj, stat.S_IREAD | stat.S_IEXEC)
+        buf = io.StringIO()
+        res, err = call(lambda: gp.remove_tree(lt, out=buf))
+        check("a link in a read-only folder is removed, and its target outside keeps its mode (never chmod-ed)",
+              lambda: err is None and res is True and not os.path.lexists(lt) and os.path.exists(target)
+              and stat.S_IMODE(os.stat(target).st_mode) == stat.S_IREAD,
+              (res, err, oct(stat.S_IMODE(os.stat(target).st_mode)), buf.getvalue()))
+        ro_parent = os.path.join(work, "ro-parent")
+        inner = tree(os.path.join(ro_parent, "inner"))
+        os.chmod(ro_parent, stat.S_IREAD | stat.S_IEXEC)
+        buf = io.StringIO()
+        try:
+            res, err = call(lambda: gp.remove_tree(inner, out=buf))
+            mode = stat.S_IMODE(os.stat(ro_parent).st_mode)
+        finally:
+            os.chmod(ro_parent, stat.S_IRWXU)
+        check("a folder whose parent isn't writable: not removed, False, printed, no exception",
+              lambda: err is None and res is False and os.path.isdir(inner) and buf.getvalue().startswith(
+                  "could not remove %s" % inner), (res, err, buf.getvalue()))
+        check("... and the parent, outside the path, keeps its mode (nothing outside it is chmod-ed)",
+              lambda: mode == stat.S_IREAD | stat.S_IEXEC, oct(mode))
+        real_gi_paths.remove_tree(ro_parent, out=buf)
+    else:
+        print("n/a   the walk's open refused, a link's target, an unwritable parent: off Windows only "
+              "(Windows' rmtree walks by path, and a folder's read-only flag doesn't stop removal)")
     # Python before 3.12 (WSL's 3.10, where the C suites' runners run) has no onexc, only onerror
     real_rmtree = gp.shutil.rmtree
 
@@ -185,18 +309,8 @@ def run(work):
         held2 = os.path.join(t2, "held.txt")
         open(held2, "w").close()
         buf = io.StringIO()
-        if os.name == "nt":
-            fh = open(held2)
-            try:
-                res, err = call(lambda: gp.remove_tree(t2, out=buf))
-            finally:
-                fh.close()
-        else:
-            os.chmod(t2, stat.S_IREAD | stat.S_IEXEC)
-            try:
-                res, err = call(lambda: gp.remove_tree(t2, out=buf))
-            finally:
-                os.chmod(t2, stat.S_IRWXU)
+        with held(held2):
+            res, err = call(lambda: gp.remove_tree(t2, out=buf))
         check("... and what it can't remove is printed with the reason, False, no exception",
               lambda: err is None and res is False and "held.txt" in buf.getvalue(), (res, err, buf.getvalue()))
     finally:
@@ -217,28 +331,18 @@ def run(work):
               and gp.long_path("\\\\?\\C:\\a") == "\\\\?\\C:\\a")
     stuck = os.path.join(work, "stuck")
     tree(stuck, ro_dir=False)
-    held = os.path.join(stuck, "sub", "held.txt")
-    os.makedirs(os.path.dirname(held))
-    with open(held, "w") as fh:
+    held_f = os.path.join(stuck, "sub", "held.txt")
+    os.makedirs(os.path.dirname(held_f))
+    with open(held_f, "w") as fh:
         fh.write("x")
     buf = io.StringIO()
-    if os.name == "nt":
-        fh = open(held)                              # no FILE_SHARE_DELETE: can't be removed
-        try:
-            res, err = call(lambda: gp.remove_tree(stuck, out=buf))
-        finally:
-            fh.close()
-    else:
-        os.chmod(os.path.dirname(held), stat.S_IREAD | stat.S_IEXEC)
-        try:
-            res, err = call(lambda: gp.remove_tree(stuck, out=buf))
-        finally:
-            os.chmod(os.path.dirname(held), stat.S_IRWXU)
+    with held(held_f):
+        res, err = call(lambda: gp.remove_tree(stuck, out=buf))
     msg = buf.getvalue()
     check("an entry it can't remove: False, no exception", lambda: err is None and res is False, (res, err))
     check("... printed as 'could not remove <folder>' with the entry's path and reason",
           lambda: msg.startswith("could not remove %s" % stuck) and "held.txt" in msg and "Error" in msg, msg)
-    check("... and the rest is removed", lambda: os.path.exists(held)
+    check("... and the rest is removed", lambda: os.path.exists(held_f)
           and not os.path.exists(os.path.join(stuck, ".git")) and not os.path.exists(os.path.join(stuck, "plain.txt")))
     check("... and once free, it goes", lambda: gp.remove_tree(stuck, out=buf) and not os.path.lexists(stuck))
 
@@ -252,6 +356,22 @@ def run(work):
     check("a running child: another number", lambda: isinstance(kid, int) and kid != me, kid)
     check("the child once it has exited: None", lambda: gp.process_start(p.pid) is None)
     check("pid 0 and -1: None", lambda: gp.process_start(0) is None and gp.process_start(-1) is None)
+    # exited but not yet waited for (2026-11-12): on Linux a zombie, whose /proc entry stays
+    z = subprocess.Popen([sys.executable, "-c", "pass"])
+    for _ in range(100):
+        if os.name == "nt":
+            time.sleep(1.0)
+            break
+        try:
+            with open("/proc/%d/stat" % z.pid) as fh:
+                if fh.read().rsplit(")", 1)[1].split()[0] == "Z":
+                    break
+        except OSError:
+            break
+        time.sleep(0.05)
+    zs = gp.process_start(z.pid)
+    z.wait()
+    check("a child that has exited but not been waited for (a zombie on Linux): None", lambda: zs is None, zs)
 
     print("\n=== owner files ===")
     d, err = call(lambda: gp.scratch("t", start=TOOL, at_exit=False))
@@ -293,23 +413,13 @@ def run(work):
     mk["noowner"] = tree(os.path.join(sib, "noowner"))
     mk["stuck"] = os.path.join(sib, "stuck")
     os.makedirs(os.path.join(mk["stuck"], "sub"))
-    held = os.path.join(mk["stuck"], "sub", "held.txt")
-    open(held, "w").close()
+    held_f = os.path.join(mk["stuck"], "sub", "held.txt")
+    open(held_f, "w").close()
     owner(gp, mk["stuck"], p.pid, kid)
     owner(gp, os.path.join(sib, "orphan"), p.pid, kid)       # an owner file whose folder is gone
     buf = io.StringIO()
-    if os.name == "nt":
-        fh = open(held)
-        try:
-            removed, err = call(lambda: gp.remove_finished_siblings(sib, out=buf))
-        finally:
-            fh.close()
-    else:
-        os.chmod(os.path.dirname(held), stat.S_IREAD | stat.S_IEXEC)
-        try:
-            removed, err = call(lambda: gp.remove_finished_siblings(sib, out=buf))
-        finally:
-            os.chmod(os.path.dirname(held), stat.S_IRWXU)
+    with held(held_f):
+        removed, err = call(lambda: gp.remove_finished_siblings(sib, out=buf))
     names = sorted(os.path.basename(r) for r in removed or [])
     check("remove_finished_siblings raises nothing", lambda: err is None, err)
     check("finished ones removed with their owner files (and an owner file with no folder)",
