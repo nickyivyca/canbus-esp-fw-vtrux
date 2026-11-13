@@ -27,12 +27,15 @@ suites (tester, 2026-10-18). No hardware, no runner, no ssh.
            path left, with the same checks, argv, class and judge; any
            other value refused
   test images  an X2 found on one of shared/x2_test_images' images: the
-           jammer is read as no image identify knows, slcan_spi too,
-           slcan_can1 as its protocol, none as any bench image and none
-           raising; the pinned core's Engine, with the bench suite's
-           identify hook on a fake board, flashes the group's image before
-           its first check, and runs none of its checks if the flash does
-           not take (the charge-interposer reviewer's item 4, 2026-11-13)
+           jammer is read as no image identify knows, slcan_spi by its
+           identity (name, version, ELF hash; V and N must agree, the name
+           end _NOT_FOR_VEHICLE), slcan_can1 as its protocol, none as the
+           product or any bench image and none raising; the pinned core's
+           Engine, with the bench suite's identify hook on a fake board,
+           flashes the group's image before its first check, and runs none
+           of its checks if the flash does not take (the charge-interposer
+           reviewer's item 4, 2026-11-13; slcan_spi's identity, its queue
+           after the slcan_can1 move, 2026-11-13)
 
     py -3.14 charge-interposer/bench_suite_test.py [--can-fail]      (Windows)
     python3.13 charge-interposer/bench_suite_test.py [--can-fail]    (madhouse)
@@ -1402,11 +1405,13 @@ X2_JAMMER_BANNER = [
     "JAMMER mcp2515 canstat=0x80 canctrl=0x87 config_mode=yes",
     "JAMMER limits w_us=12..50 p_us>=4w..20000 ms<=30000 n<=1000 interval_ms=1..10000"]
 X2_SLCAN_SPI_ID = "slcan_spi_NOT_FOR_VEHICLE 2026.11.13 elf=" + "5" * 64
-# what identify reads off each test image: no image at all, or for
+# what identify reads off each test image: the jammer, no image at all; for
 # slcan_can1 the protocol (bench_identify's docstring: SLCAN reports no
-# build id); slcan_spi's identity names its build (SPEC T12), and identify
-# does not read it, so it is no image identify knows either
-X2_TEST_READS = {"jammer": None, "slcan_spi": None,
+# build id); slcan_spi by its identity, which names its build (SPEC T12):
+# "<name>:<version>:<elf sha256>" (tester, 2026-11-13, the charge-interposer
+# reviewer's queue after the slcan_can1 move)
+X2_TEST_READS = {"jammer": None,
+                 "slcan_spi": "slcan_spi_NOT_FOR_VEHICLE:2026.11.13:" + "5" * 64,
                  "slcan_can1": "slcan:V0101:NF001"}
 
 
@@ -1418,10 +1423,13 @@ class _FakeX2:
     "slcan_spi", "slcan_can1", ("app", build id) for an interposer image
     (0x7F7 and the product's serial lines) or ("hello", name, ELF sha256)
     for a bench test image. jam_end and jam_err shape the jammer's replies,
-    which its README does not pin down beyond "JAMMER ERR <reason>"."""
+    which its README does not pin down beyond "JAMMER ERR <reason>".
+    spi_v and spi_n are the identities slcan_spi answers V and N with."""
 
-    def __init__(self, image, jam_end=b"\n", jam_err=b"unknown_command"):
+    def __init__(self, image, jam_end=b"\n", jam_err=b"unknown_command",
+                 spi_v=X2_SLCAN_SPI_ID, spi_n=X2_SLCAN_SPI_ID):
         self.image, self.jam_end, self.jam_err = image, jam_end, jam_err
+        self.spi_v, self.spi_n = spi_v, spi_n
         self.boots = self.opens = 0
         self.inbuf, self.out = b"", b""
 
@@ -1472,9 +1480,10 @@ class _FakeX2:
             elif im in ("slcan_spi", "slcan_can1"):
                 if ch == b"\r":
                     line, self.inbuf = self.inbuf.strip(b"\n"), b""
-                    if im == "slcan_spi" and line in (b"V", b"N"):
-                        self.out += (b"V0100 " if line == b"V" else b"N") + \
-                            X2_SLCAN_SPI_ID.encode() + b"\r"
+                    if im == "slcan_spi" and line == b"V":
+                        self.out += b"V0100 " + self.spi_v.encode() + b"\r"
+                    elif im == "slcan_spi" and line == b"N":
+                        self.out += b"N" + self.spi_n.encode() + b"\r"
                     elif im == "slcan_can1" and line in (b"V", b"N"):
                         self.out += b"V0101\r" if line == b"V" else b"NF001\r"
                     else:
@@ -1561,7 +1570,8 @@ def _x2_test_boards():
 def test_x2_test_images_identify():
     """(a) identify on a board left on an X2 test image: the jammer, silent
     on CAN and answering no read with an identity, is read as None (no
-    image identify knows); slcan_spi likewise; slcan_can1 as its protocol,
+    image identify knows); slcan_spi by its identity (name, version, ELF
+    hash); slcan_can1 as its protocol,
     slcan:V0101:NF001. None of them raises, none is read as the product
     (product-without-0x7F7) and none as any image of the bench suite; the
     boot capture runs once and the port is opened for HELLO? and SLCAN.
@@ -1580,6 +1590,7 @@ def test_x2_test_images_identify():
             _off_board(keep)
         assert got == want, "%s: read %r, not %r" % (label, got, want)
         assert got not in expects, "%s read as a bench image: %r" % (label, got)
+        assert got != "product-without-0x7F7", "%s read as the product" % label
         assert (board.boots, board.opens) == (1, 2), \
             "%s: %d boot(s), port opened %d time(s)" % (label, board.boots,
                                                         board.opens)
@@ -1594,6 +1605,53 @@ def test_x2_test_images_identify():
             _off_board(keep)
         assert got == want and board.opens == opens, (board.image, got,
                                                       board.opens)
+
+
+def test_slcan_spi_identity():
+    """(c) slcan_spi's identity (slcan_spi/README.md, "The protocol" and
+    "Variants", at shared/main tag 2026.11.13.3): identify names the build
+    it reads, "<name>:<version>:<elf sha256>", for the dev image and both
+    test variants, so the run record and the release note name the board's
+    image. Read as no image identify knows: V and N giving different
+    identities, a name not ending _NOT_FOR_VEHICLE, an ELF hash not 64
+    digits, an identity not the whole answer. None is read as the product
+    or as an image of the bench suite, and none raises."""
+    I = B.bench_identify
+    s, su = _all()
+    expects = {im.expect for im in su["bench"].images.values()}
+    img = B.Image("bridge", "esptool")
+    st = {"serial_port": "fake-x2"}
+    elf, other = "a" * 64, "b" * 64
+    cases = []
+    for name in ("slcan_spi_NOT_FOR_VEHICLE", "slcan_spi_a_NOT_FOR_VEHICLE",
+                 "slcan_spi_b_NOT_FOR_VEHICLE"):
+        for ver in ("2026.11.13.3", "2026.11.13.3-2-g4dc0bd00-dirty"):
+            ident = "%s %s elf=%s" % (name, ver, elf)
+            cases.append(("%s %s" % (name, ver), ident, ident,
+                          "%s:%s:%s" % (name, ver, elf)))
+    good = "slcan_spi_NOT_FOR_VEHICLE 2026.11.13.3 elf=" + elf
+    cases += [
+        ("V and N elf differ", good,
+         "slcan_spi_NOT_FOR_VEHICLE 2026.11.13.3 elf=" + other, None),
+        ("V and N version differ", good,
+         "slcan_spi_NOT_FOR_VEHICLE 2026.11.13.2 elf=" + elf, None),
+        ("V and N name differ", good,
+         "slcan_spi_a_NOT_FOR_VEHICLE 2026.11.13.3 elf=" + elf, None),
+        ("no NOT_FOR_VEHICLE", "slcan_spi 2026.11.13.3 elf=" + elf,
+         "slcan_spi 2026.11.13.3 elf=" + elf, None),
+        ("elf 63 digits", good[:-1], good[:-1], None),
+        ("elf 65 digits", good + "a", good + "a", None),
+        ("an identity inside a longer answer", "x " + good, "x " + good, None)]
+    for label, v, n, want in cases:
+        board = _FakeX2("slcan_spi", spi_v=v, spi_n=n)
+        keep = _on_board(board)
+        try:
+            got = I.identify(img, {}, TMP, st)
+        finally:
+            _off_board(keep)
+        assert got == want, "%s: read %r, not %r" % (label, got, want)
+        assert got not in expects, "%s read as a bench image: %r" % (label, got)
+        assert got != "product-without-0x7F7", "%s read as the product" % label
 
 
 def test_x2_test_image_flash_first():
@@ -2306,7 +2364,8 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
          test_m_lanes_host, test_idle_safe, test_canchg_env, test_esptool_env,
          test_canchg_mode_hooks, test_canx2_slcan_hooks,
-         test_x2_test_images_identify, test_x2_test_image_flash_first]
+         test_x2_test_images_identify, test_slcan_spi_identity,
+         test_x2_test_image_flash_first]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -2508,6 +2567,52 @@ def _slcan_unanchored(settings, logdir, tag):
     return None
 
 
+# mutants of slcan_spi's identity read (test_slcan_spi_identity)
+def _spi_read(v_re, n_re, compare=True, form=lambda g: b":".join(g)):
+    """read_slcan with slcan_spi's identity parsed by v_re and n_re,
+    compared or not, and formed by form; the V0101 read unchanged."""
+    def read(settings, logdir, tag):
+        I = B.bench_identify
+        s = I._serial(settings)
+        got = {}
+        try:
+            s.write(b"\r")
+            s.flush()
+            I.time.sleep(0.3)
+            s.read(4096)
+            for cmd in (b"V", b"N"):
+                s.write(cmd + b"\r")
+                s.flush()
+                I.time.sleep(0.4)
+                got[cmd] = s.read(4096)
+        finally:
+            s.close()
+        v = re.search(v_re, got[b"V"])
+        n = re.search(n_re, got[b"N"])
+        if v and n and (not compare or v.groups() == n.groups()):
+            return form(v.groups()).decode()
+        v = re.search(rb"V(\d{4})\r", got[b"V"])
+        n = re.search(rb"N(\w{4})\r", got[b"N"])
+        if v and n:
+            return "slcan:V%s:N%s" % (v.group(1).decode(), n.group(1).decode())
+        return None
+    return read
+
+
+_SPI_OK = rb"(slcan_spi\w*_NOT_FOR_VEHICLE) (\S+) elf=([0-9a-f]{64})\r"
+_SPI_A = rb"(?:^|[\r\n\x07])"
+_SPI_V_OK, _SPI_N_OK = _SPI_A + rb"V0100 " + _SPI_OK, _SPI_A + rb"N" + _SPI_OK
+_spi_v_only = _spi_read(_SPI_V_OK, _SPI_N_OK, compare=False)
+_spi_any_name = _spi_read(
+    _SPI_A + rb"V0100 (slcan_spi\w*) (\S+) elf=([0-9a-f]{64})\r",
+    _SPI_A + rb"N(slcan_spi\w*) (\S+) elf=([0-9a-f]{64})\r")
+_spi_any_elf = _spi_read(
+    _SPI_A + rb"V0100 (slcan_spi\w*_NOT_FOR_VEHICLE) (\S+) elf=([0-9a-f]+)\r",
+    _SPI_A + rb"N(slcan_spi\w*_NOT_FOR_VEHICLE) (\S+) elf=([0-9a-f]+)\r")
+_spi_unanchored = _spi_read(_SPI_OK, _SPI_OK)
+_spi_name_only = _spi_read(_SPI_V_OK, _SPI_N_OK, form=lambda g: g[0])
+
+
 def _identify_unplaced_expected(image, ctx, logdir, settings):
     got = _ORIG["bench_identify.identify"](image, ctx, logdir, settings)
     return image.expect if got is None else got
@@ -2686,6 +2791,7 @@ def _mpy_work_cwd(self, cid, argv, **kw):
 _ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
 _ORIG["bench_identify.identify"] = B.bench_identify.identify
 _ORIG["bench_identify.read_slcan"] = B.bench_identify.read_slcan
+_ORIG["bench_identify.SPI_V_RE"] = B.bench_identify.SPI_V_RE
 _ORIG["self._PYCACHE_DROP"] = _PYCACHE_DROP
 _ORIG["self.NO_ARGPARSE"] = NO_ARGPARSE
 _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
@@ -3100,7 +3206,22 @@ MUTANTS = {
         ("bench_identify.read_slcan", _slcan_unanchored,
          "V and N matched anywhere in the reply (slcan_spi read as an SLCAN)"),
         ("bench_identify.PRODUCT_RE", _re.compile(r"serial> \S"),
-         "any boot serial line taken as the product's (the jammer's banner)")],
+         "any boot serial line taken as the product's (the jammer's banner)"),
+        ("bench_identify.SPI_V_RE", _re.compile(rb"(?!)"),
+         "slcan_spi's identity not read (the read before this change)")],
+    "test_slcan_spi_identity": [
+        ("bench_identify.SPI_V_RE", _re.compile(rb"(?!)"),
+         "slcan_spi's identity not read"),
+        ("bench_identify.read_slcan", _spi_v_only,
+         "the identity taken from V alone, N not compared"),
+        ("bench_identify.read_slcan", _spi_any_name,
+         "a name without _NOT_FOR_VEHICLE taken"),
+        ("bench_identify.read_slcan", _spi_any_elf,
+         "an ELF hash of any length taken"),
+        ("bench_identify.read_slcan", _spi_unanchored,
+         "the identity matched anywhere in the answer"),
+        ("bench_identify.read_slcan", _spi_name_only,
+         "the image named without its version and ELF hash")],
     "test_x2_test_image_flash_first": [
         ("bench_identify.identify", _identify_unplaced_expected,
          "a board identify cannot place taken as the expected image"),
