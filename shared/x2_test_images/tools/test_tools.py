@@ -533,6 +533,28 @@ if "write_flash" in a:
     sys.exit(0)
 sys.exit(2)
 '''
+FAKE_CANCTL = r'''
+import os, shutil, subprocess, sys
+with open(os.environ["FAKE_CANCTL_LOG"], "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+mode = os.environ.get("FAKE_CANCTL_MODE", "ok")
+net = os.path.join(os.environ["FAKE_NET"], "canx2")
+slcand = os.path.join(os.environ["FAKE_PROC"], "4242")
+if mode == "fail":
+    print("canctl: refused")
+    sys.exit(2)
+if mode in ("ok", "late") and os.path.lexists(net):
+    os.remove(net)
+if mode == "ok" and os.path.isdir(slcand):
+    shutil.rmtree(slcand)
+if mode == "late" and os.path.isdir(slcand):
+    subprocess.Popen([sys.executable, "-c",
+                      "import shutil, sys, time; time.sleep(0.4); "
+                      "shutil.rmtree(sys.argv[1])", slcand],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+sys.exit(0)
+'''
 FLASH_ROLE = "tester (charge-interposer)"
 TEST_MAC = "02:00:00:00:00:01"      # locally administered, made up
 
@@ -568,7 +590,8 @@ def test_flash_row(tmp):
     net, proc = os.path.join(tmp, "net"), os.path.join(tmp, "proc")
     os.makedirs(net)
     os.makedirs(proc)
-    saved = (FR.FL.this_env, FR.SYSFS_NET, FR.PROC, FR.BENCH, FR.CHECKOUT)
+    saved = (FR.FL.this_env, FR.SYSFS_NET, FR.PROC, FR.BENCH, FR.CHECKOUT,
+             FR.CANCTL, FR.DETACH_WAIT_S, FR.POLL_S)
     FR.FL.this_env = lambda: "windows"   # the flasher takes a port setting
     FR.SYSFS_NET, FR.PROC = net, proc    # never this machine's canx2
     k = [0]
@@ -719,14 +742,91 @@ def test_flash_row(tmp):
                             chip={"type": "ESP32-C3", "mac": TEST_MAC})}),
             "ESP32-C3")
         refuses("the lock held by another role", go(lock_=lock2), "not held by")
-        os.symlink("/nonexistent", os.path.join(net, "canx2"))
-        refuses("netdev canx2 present", go(), "canctl slcan detach canx2")
-        os.remove(os.path.join(net, "canx2"))
-        os.makedirs(os.path.join(proc, "4242"))
-        with open(os.path.join(proc, "4242", "cmdline"), "wb") as f:
-            f.write(b"/usr/bin/slcand\0-o\0-s6\0ttyACM9\0canx2\0")
-        refuses("slcand attached as canx2", go(), "slcand pid 4242")
-        shutil.rmtree(os.path.join(proc, "4242"))
+
+        # canx2: detached through canctl (a stand-in acting on the made-up
+        # trees), polled until gone, recorded; refused if it stays.
+        def attach(netdev=True, slcand=True):
+            if netdev:
+                os.symlink("/nonexistent", os.path.join(net, "canx2"))
+            if slcand:
+                os.makedirs(os.path.join(proc, "4242"))
+                with open(os.path.join(proc, "4242", "cmdline"), "wb") as f:
+                    f.write(b"/usr/bin/slcand\0-o\0-s6\0ttyACM9\0canx2\0")
+
+        def detach_all():
+            if os.path.lexists(os.path.join(net, "canx2")):
+                os.remove(os.path.join(net, "canx2"))
+            if os.path.isdir(os.path.join(proc, "4242")):
+                shutil.rmtree(os.path.join(proc, "4242"))
+
+        def canctl_calls():
+            if not os.path.exists(clog):
+                return []
+            with open(clog) as f:
+                out = f.read().splitlines()
+            os.remove(clog)
+            return out
+
+        def detaches(what, mode, netdev=True, slcand=True):
+            attach(netdev, slcand)
+            os.environ["FAKE_CANCTL_MODE"] = mode
+            d = logdir()
+            rc, res = FR.run("jammer", build, settings, FLASH_ROLE, d,
+                             archive_dir=arch, lock_log=lock)
+            c, cc = calls(), canctl_calls()
+            CHECK(rc == 0 and res["ok"] and len(c) == 3
+                  and cc == ["slcan detach canx2"]
+                  and res["canx2"]["after"] == "not attached"
+                  and res["canx2"]["canctl"]["rc"] == 0
+                  and res["canx2"]["before"] != "not attached"
+                  and os.path.isfile(os.path.join(d, "canx2_detach.txt")),
+                  "%s: detached, then flashed: rc %s, %s, canctl %s"
+                  % (what, rc, res.get("canx2"), cc))
+            detach_all()
+
+        def stays(what, mode, needle):
+            attach()
+            os.environ["FAKE_CANCTL_MODE"] = mode
+            rc, res = go()
+            cc = canctl_calls()
+            CHECK(rc == 2 and needle in (res.get("detail") or "")
+                  and cc == ["slcan detach canx2"]
+                  and res["canx2"]["after"] != "not attached",
+                  "%s refused naming %r: rc %s, %s, %s"
+                  % (what, needle, rc, res.get("detail"), res.get("canx2")))
+            CHECK(calls() == [], "%s: esptool never ran" % what)
+            detach_all()
+
+        fake_canctl = os.path.join(tmp, "fake_canctl.py")
+        with open(fake_canctl, "w") as f:
+            f.write(FAKE_CANCTL)
+        clog = os.path.join(tmp, "canctl_calls.txt")
+        os.environ.update(FAKE_CANCTL_LOG=clog, FAKE_NET=net, FAKE_PROC=proc)
+        FR.CANCTL = [sys.executable, fake_canctl]
+        FR.DETACH_WAIT_S, FR.POLL_S = 3.0, 0.05
+        rc, res = go()
+        calls()
+        CHECK(rc == 0 and canctl_calls() == []
+              and res["canx2"] == {"before": "not attached", "canctl": None,
+                                   "after": "not attached"},
+              "not attached: no canctl, recorded: %s" % res.get("canx2"))
+        detaches("netdev and slcand", "ok")
+        detaches("netdev alone", "ok", slcand=False)
+        detaches("slcand alone", "ok", netdev=False)
+        detaches("slcand exits after canctl returns", "late")
+        stays("canctl exiting 2", "fail", "exited 2")
+        stays("canctl exiting 0 with canx2 left", "leave", "still attached")
+        os.environ.pop("FAKE_CANCTL_MODE", None)
+
+        # The descriptor's project name and chip.
+        refuses("a project name the app does not have", go(copy(
+            set_key("project_name", "vtrux_jammer_x2_NOT_FOR_VEHICLX"))),
+            "project_name")
+        try:
+            FR.check_files(row, arch, "esp32c3")
+            CHECK(False, "an app for another chip than x2_image.json's passes")
+        except FR.Refused as e:
+            CHECK("chip" in str(e), "another chip refused naming chip: %s" % e)
 
         # Another vtrux_bench than this checkout's.
         FR.BENCH = tmp
@@ -761,10 +861,31 @@ def test_flash_row(tmp):
               "checkout 2: %r" % ((rc0, rc2, rc2b),))
         CHECK(os.path.isfile(os.path.join(tmp, "cli1", "flash_row.json")),
               "cli writes flash_row.json")
+
+        # --check-only needs no --settings or --role; a flash needs both.
+        bare = ["jammer", build, "--archive", arch]
+        outs = []
+        for args in (bare + ["--check-only", "--log-dir",
+                             os.path.join(tmp, "cli2")],
+                     bare + ["--role", FLASH_ROLE, "--lock-log", lock,
+                             "--log-dir", os.path.join(tmp, "cli3")],
+                     bare + ["--settings", sp, "--lock-log", lock,
+                             "--log-dir", os.path.join(tmp, "cli4")]):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                outs.append((FR.main(args), buf.getvalue()))
+        CHECK(outs[0][0] == 0 and outs[0][1].startswith("CHECKED"),
+              "check-only without settings or role: %r" % (outs[0],))
+        CHECK(outs[1][0] == 2 and "--settings required to flash" in outs[1][1]
+              and calls() == [], "a flash without --settings: %r" % (outs[1],))
+        CHECK(outs[2][0] == 2 and "--role required to flash" in outs[2][1]
+              and calls() == [], "a flash without --role: %r" % (outs[2],))
     finally:
-        FR.FL.this_env, FR.SYSFS_NET, FR.PROC, FR.BENCH, FR.CHECKOUT = saved
-        os.environ.pop("FAKE_ESPTOOL_LOG", None)
-        os.environ.pop("FAKE_ESPTOOL_MODE", None)
+        (FR.FL.this_env, FR.SYSFS_NET, FR.PROC, FR.BENCH, FR.CHECKOUT,
+         FR.CANCTL, FR.DETACH_WAIT_S, FR.POLL_S) = saved
+        for v in ("FAKE_ESPTOOL_LOG", "FAKE_ESPTOOL_MODE", "FAKE_CANCTL_LOG",
+                  "FAKE_CANCTL_MODE", "FAKE_NET", "FAKE_PROC"):
+            os.environ.pop(v, None)
 
 
 def _onerror(func, path, exc):

@@ -5,7 +5,9 @@ TEST EQUIPMENT. Shared harness of x2_test_images (owner: the testers, the
 gen-inhibit reviewer's ruling of 2026-11-12), generic over the images.
 
     python3.13 -B flash_row.py IMAGE BUILD --settings FILE --role ROLE \\
-        --log-dir DIR [--dev] [--check-only] [--archive DIR] [--lock-log FILE]
+        --log-dir DIR [--dev] [--archive DIR] [--lock-log FILE]
+    python3.13 -B flash_row.py IMAGE BUILD --check-only --log-dir DIR \\
+        [--dev] [--archive DIR]
 
 IMAGE is the image's folder name (slcan_spi, slcan_can1, jammer). BUILD is
 the app's SHA-256 as archive.py names its build folder: at least its first
@@ -30,7 +32,9 @@ In order, stopping at the first refusal, with nothing written:
      its checksum and SHA verified), must name the row's project, ELF hash
      (image_hash, R1) and code hash (R2), for the chip in the image's own
      x2_image.json.
-  3. --check-only stops here, exit 0.
+  3. --check-only stops here, exit 0. It needs no --settings or --role
+     (no lock, settings or board are read); without --check-only both are
+     required, and a call without either is refused.
   4. the chip the flasher must find (T11, never the WiCAN): its type from
      the image's x2_image.json chip, its MAC from the local settings,
      esptool.chip.mac or else the top-level x2_mac. A settings
@@ -39,9 +43,15 @@ In order, stopping at the first refusal, with nothing written:
   5. the bench lock (AGENTS.md "The shared bench"): the log's holder must
      be ROLE, with its pid alive in the bench environment.
   6. canx2 (shared/bench SPEC section 8: "If canx2 is attached as SLCAN,
-     it is detached before a flash"): netdev canx2, or an slcand attached
-     as canx2, is refused with the canctl command that detaches it. This
-     tool does not detach it itself.
+     it is detached before a flash"; the charge-interposer reviewer,
+     2026-11-13: the tool detaches it, as the holder needs no hand setup):
+     netdev canx2 in /sys/class/net, or an slcand whose last argument is
+     canx2 in /proc, means attached. Then `sudo -n /usr/local/sbin/canctl
+     slcan detach canx2` runs, its output in DIR/canx2_detach.txt, and the
+     state is polled for up to DETACH_WAIT_S until both are gone. canctl
+     exiting non-zero, or either sign still there, refuses. The record's
+     canx2 entry has the state before and after and canctl's exit. Nothing
+     re-attaches it afterwards (the lock is a mutex: nothing is put back).
   7. the flash: shared/bench's esptool flasher (vtrux_bench.run.flash.
      esptool_flash) with the row's files at their offsets and their MD5s,
      which checks them again, finds the X2's port from its USB IDs
@@ -64,7 +74,9 @@ import datetime
 import json
 import os
 import re
+import subprocess
 import sys
+import time
 import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -86,7 +98,12 @@ CANX2 = "canx2"
 SLCAND = "slcand"
 SYSFS_NET = "/sys/class/net"
 PROC = "/proc"
-DETACH = "sudo -n /usr/local/sbin/canctl slcan detach canx2"
+CANCTL = ["sudo", "-n", "/usr/local/sbin/canctl"]
+CANCTL_TIMEOUT_S = 60
+DETACH_WAIT_S = 5.0
+POLL_S = 0.25
+sleep = time.sleep
+monotonic = time.monotonic
 
 
 class Refused(Exception):
@@ -290,6 +307,52 @@ def canx2_attached(net_root=None, proc_root=None):
     return ", ".join(found) or None
 
 
+def detach_canx2(logdir):
+    """Step 6: canx2 found attached is detached through canctl, then polled
+    until both signs are gone (shared/bench SPEC section 8; as the
+    charge-interposer harness's canx2_slcan.py does). -> the record's
+    canx2 entry. Raises Refused when canctl fails or canx2 stays."""
+    before = canx2_attached()
+    rec = {"before": before or "not attached", "canctl": None, "after": None}
+    if before is None:
+        rec["after"] = "not attached"
+        return rec
+    argv = list(CANCTL) + ["slcan", "detach", CANX2]
+    try:
+        p = subprocess.run(argv, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, timeout=CANCTL_TIMEOUT_S)
+        out, rc = p.stdout.decode("utf-8", "replace"), p.returncode
+    except subprocess.TimeoutExpired:
+        out, rc = "timed out after %d s" % CANCTL_TIMEOUT_S, None
+    except OSError as e:
+        out, rc = "could not run: %s" % e, None
+    with open(os.path.join(logdir, "canx2_detach.txt"), "w",
+              encoding="utf-8") as f:
+        f.write("$ %s\n%s\nrc %s\n" % (" ".join(argv), out, rc))
+    rec["canctl"] = {"argv": argv, "rc": rc}
+    after = canx2_attached()
+    t_end = monotonic() + DETACH_WAIT_S
+    while rc == 0 and after is not None and monotonic() < t_end:
+        sleep(POLL_S)
+        after = canx2_attached()
+    rec["after"] = after or "not attached"
+    if rc != 0:
+        raise DetachFailed("canctl slcan detach canx2 exited %s (%s); canx2 "
+                           "was %s" % (rc, out.strip().splitlines()[-1][:160]
+                                       if out.strip() else "no output",
+                                       before), rec)
+    if after is not None:
+        raise DetachFailed("canx2 still attached after canctl's detach and "
+                           "%.0f s: %s" % (DETACH_WAIT_S, after), rec)
+    return rec
+
+
+class DetachFailed(Exception):
+    def __init__(self, msg, rec):
+        Exception.__init__(self, msg)
+        self.rec = rec
+
+
 def note_line(row, pinnable, lines):
     return ("FLASHED x2 %s %s build %s app_sha256 %s (%s, manifest line%s %s)"
             % (row["image"], row.get("variant"), row["folder"],
@@ -336,10 +399,10 @@ def run(image, build, settings, role, logdir, dev=False, check_only=False,
             return 0, res
         chip = want_chip(settings, chip_type(data.get("chip")))
         res["holder"] = check_lock(lock_log or BL.default_log(), role)
-        why = canx2_attached()
-        if why:
-            raise Refused("canx2 is attached as SLCAN (%s): detach it first, "
-                          "%s" % (why, DETACH))
+        res["canx2"] = detach_canx2(logdir)
+    except DetachFailed as e:
+        res.update(canx2=e.rec, ok=False, phase="refused", detail=str(e))
+        return 2, res
     except (Refused, BL.Refused, check_image.Refused) as e:
         res.update(ok=False, phase="refused", detail=str(e))
         return 2, res
@@ -369,11 +432,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("image")
     ap.add_argument("build")
-    ap.add_argument("--settings", required=True,
+    ap.add_argument("--settings",
                     help="local settings JSON: esptool {argv, device, baud, "
-                    "chip}, or x2_mac")
-    ap.add_argument("--role", required=True,
-                    help="the bench lock holder, e.g. 'tester (charge-interposer)'")
+                    "chip}, or x2_mac (required unless --check-only)")
+    ap.add_argument("--role",
+                    help="the bench lock holder, e.g. 'tester "
+                    "(charge-interposer)' (required unless --check-only)")
     ap.add_argument("--log-dir", required=True,
                     help="a new folder outside this checkout")
     ap.add_argument("--dev", action="store_true",
@@ -385,6 +449,12 @@ def main(argv=None):
     ap.add_argument("--lock-log", help="the bench lock log (default from "
                     "REVERSE_IT_DIR)")
     a = ap.parse_args(argv)
+    missing = [n for n, v in (("--settings", a.settings), ("--role", a.role))
+               if not v]
+    if missing and not a.check_only:
+        print("REFUSED: %s required to flash (only --check-only runs "
+              "without them)" % " and ".join(missing))
+        return 2
     if os.path.exists(a.log_dir):
         print("REFUSED: %s exists; give a new folder" % a.log_dir)
         return 2
@@ -392,12 +462,14 @@ def main(argv=None):
         print("REFUSED: %s is inside this checkout, %s" % (a.log_dir,
                                                            CHECKOUT))
         return 2
-    try:
-        with open(a.settings, encoding="utf-8") as f:
-            settings = json.load(f)
-    except (OSError, ValueError) as e:
-        print("REFUSED: settings %s: %s" % (a.settings, e))
-        return 2
+    settings = {}
+    if a.settings:
+        try:
+            with open(a.settings, encoding="utf-8") as f:
+                settings = json.load(f)
+        except (OSError, ValueError) as e:
+            print("REFUSED: settings %s: %s" % (a.settings, e))
+            return 2
     os.makedirs(a.log_dir)
     rc, res = run(a.image, a.build, settings, a.role, a.log_dir, a.dev,
                   a.check_only, a.archive, a.lock_log)
