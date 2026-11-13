@@ -15,7 +15,8 @@ Pure functions (tested by test_x2_jammer.py, no hardware):
   judge_identity(...)       the ESP-IDF port's banner against its archive row
   after_done(...)           witness error frames from DONE to the next command
   judge_pulses(...)         PULSES' verdict: n groups of one, quiet before and after DONE
-  judge_done(...)           DONE's stop_by= / end= against the variant's stop
+  judge_boot_silence(...)   boot-silence's verdict, with its closing pulse as the control
+  judge_done(...)         DONE's stop_by= / end= against the variant's stop
   fold_timeout(...)         the timeout verdict with those two folded in
   judge_can2_isolation(...) CAN2 isolation without the WiCAN
   args_why(a)               the argument refusals
@@ -30,7 +31,12 @@ runs/x2_jammer_<sub>_<stamp>.json and never overwrites):
   id                 ask the board for its banner (no reset); with --expect-name and
                      --expect-elf (the row's project_name and app_elf_sha256), a verdict
   boot-silence       reset the X2 N times; witness must see 0 error frames
-                     from each reset to banner + 5 s
+                     from each reset to banner + 5 s, and then exactly 1 for a closing
+                     PULSES w 1 (the positive control, else INCONCLUSIVE; 2026-11-13)
+
+A witness whose read raised, or whose thread ended before the close, makes the run
+NOT-RUN (WitnessDown): its record is cut short, and a cut-short record reads as a quiet
+bus (2026-11-13).
   pulses             PULSES w n interval_ms with the WiCAN in --wican-mode,
                      page polled ~10 Hz: port check (n=1) and calibration. Verdict
                      (judge_pulses): n groups of exactly one, none in the 4 s before,
@@ -312,6 +318,30 @@ def judge_pulses(err_ts, n_cmd, interval_s, t_send, ack, t_done, obs_end,
     return out
 
 
+def judge_boot_silence(resets, control):
+    """boot-silence's verdict -> (verdict, why). resets: one dict per reset (banner_after_s,
+    witness_err_frames, config_mode); control: the closing pulse (witness_err_frames counted
+    from its send to a second past its DONE, done). FAIL: a reset's window held an error
+    frame, or a reset showed no banner or no MCP2515 configuration mode. INCONCLUSIVE: the
+    closing pulse was not counted exactly once, so the witness may not have been hearing
+    the windows (a deaf witness reports none; 2026-11-13). PASS otherwise."""
+    if not resets:
+        return "INCONCLUSIVE", "no reset made"
+    bad = [r.get("n") for r in resets if r.get("witness_err_frames") != 0]
+    if bad:
+        return "FAIL", "error frames after reset(s) %s" % bad
+    bad = [r.get("n") for r in resets
+           if r.get("banner_after_s") is None or r.get("config_mode") != "yes"]
+    if bad:
+        return "FAIL", "no banner or MCP2515 not in configuration mode after reset(s) %s" % bad
+    if not control or control.get("witness_err_frames") != 1:
+        return "INCONCLUSIVE", "positive control: the witness counted %s for the closing pulse, not 1" % (
+            (control or {}).get("witness_err_frames"))
+    if not control.get("done"):
+        return "INCONCLUSIVE", "positive control: no DONE for the closing pulse"
+    return "PASS", "%d resets silent, closing pulse seen once" % len(resets)
+
+
 def judge_done(done, expect_stop_by=None, expect_end=None):
     """The DONE line's stop_by= and end= against what the variant must show (2026-11-13:
     stop (a) alone on stop_a_only, stop_by=deadline_timer; stop (b) alone on stop_b_only,
@@ -493,22 +523,43 @@ class Console(threading.Thread):
         self.events.append((time.time(), "reset pulsed"))
 
 
+class WitnessDown(RuntimeError):
+    """The witness stopped reading before the check was judged: what it recorded is cut
+    short, and a cut-short record reads as a quiet bus."""
+
+
 class Witness(threading.Thread):
-    """Kvaser in NORMAL mode: records every error frame and the 0x051 count."""
+    """Kvaser in NORMAL mode: records every error frame and the 0x051 count.
+
+    A read that raises ends the thread; run() keeps the exception in .failed (with its
+    time), and times() then raises WitnessDown, as it does when the thread has ended
+    before close(), so no check is judged on a record cut short (2026-11-13, found in the
+    review of the charge-interposer tester's slcan_spi witness: a dead reader thread
+    would have passed boot silence and the "none after" of the stop checks)."""
 
     def __init__(self):
         super().__init__(daemon=True)
         import can
         from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
         self.bus = kvaser_bus(channel=0, bitrate=BITRATE)
+        self._state()
+
+    def _state(self):
         self.stop_flag = threading.Event()
         self.err = []        # (hw_ts, receipt_epoch)
         self.frames = 0
         self.ids = {}
         self.t_open = time.time()
         self.lock = threading.Lock()
+        self.failed = None   # (epoch, "Type: message") when a read raised
 
     def run(self):
+        try:
+            self._read()
+        except Exception as e:      # noqa: BLE001  kept, and every judgement refuses on it
+            self.failed = (time.time(), "%s: %s" % (type(e).__name__, e))
+
+    def _read(self):
         while not self.stop_flag.is_set():
             m = self.bus.recv(timeout=0.05)
             while m is not None:
@@ -521,6 +572,15 @@ class Witness(threading.Thread):
                         k = "0x%03X" % m.arbitration_id
                         self.ids[k] = self.ids.get(k, 0) + 1
                 m = self.bus.recv(timeout=0.0)
+
+    def down(self):
+        """Why the record cannot be judged, or None: a read raised, or the thread ended
+        before close()."""
+        if self.failed:
+            return "witness read failed at %.3f: %s" % self.failed
+        if not self.stop_flag.is_set() and not self.is_alive():
+            return "witness thread not running"
+        return None
 
     def close(self):
         self.stop_flag.set()
@@ -541,7 +601,11 @@ class Witness(threading.Thread):
 
     def times(self):
         """recorded(), for a judgement: raises WC.ReceiptClock on receipt time, so the
-        run is VOID and never judged on it (A2 (b), 2026-11-11)."""
+        run is VOID and never judged on it (A2 (b), 2026-11-11). Raises WitnessDown when
+        down() says the record is cut short (2026-11-13)."""
+        why = self.down()
+        if why:
+            raise WitnessDown(why)
         ts, note = self.recorded()
         WC.require(note)
         return ts, note
@@ -651,9 +715,19 @@ def sub_boot_silence(a, rec, con, wit):
         print("reset %d: banner after %s s, err frames %d, canstat %s"
               % (k, rec["resets"][-1]["banner_after_s"], n,
                  rec["resets"][-1]["canstat"]))
-    ok = all(r["banner_after_s"] is not None and r["witness_err_frames"] == 0
-             and r["config_mode"] == "yes" for r in rec["resets"])
-    rec["verdict"] = "PASS" if ok else "FAIL"
+    # the positive control: one closing pulse after the last window, which the witness must
+    # count exactly once up to a second past its DONE (2026-11-13)
+    time.sleep(1.0)
+    t_c = time.time()
+    con.send("PULSES %d 1 1000" % a.w)
+    done = con.wait(lambda p: p["kind"] == "DONE", 5.0, t_c)
+    time.sleep(1.3)
+    ts, clock = wit.times()
+    end = (done[0] if done else t_c + 5.0) + 1.0
+    rec["control"] = {"done": done[1] if done else None, "clock": clock,
+                      "witness_err_frames": sum(1 for t in ts if t_c - 0.05 <= t <= end)}
+    rec["verdict"], rec["why"] = judge_boot_silence(rec["resets"], rec["control"])
+    print("verdict %s %s" % (rec["verdict"], rec["why"]))
 
 
 def sub_pulses(a, rec, con, wit):
@@ -1013,6 +1087,9 @@ def run_guarded(sub, a, rec, con, wit):
     except WC.ReceiptClock as e:
         WC.void(rec, e.note)
         print(rec["verdict"])
+    except WitnessDown as e:
+        rec["verdict"], rec["why"] = "NOT-RUN", "witness down: %s" % e
+        print(rec["verdict"], rec["why"])
 
 
 def main():
@@ -1077,6 +1154,7 @@ def main():
         if wit is not None:
             rec["witness_frames"] = wit.frames
             rec["witness_err_total"] = len(wit.err)
+            rec["witness_down_at_end"] = wit.down()
             wit.close()
         rec["wican_after"] = NO_WICAN if a.no_wican else wican_snap()
         write_rec(a.sub, rec)

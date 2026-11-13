@@ -10,6 +10,7 @@ Run: py -3.14 gen-inhibit/tools/bench/test_x2_jammer.py
 import os
 import sys
 import time
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -429,6 +430,8 @@ def port_cases(bad):
         check(bad, "args", label, bool(got) is refused, got)
     pulses_no_wican(bad)
     timeout_cases(bad)
+    boot_silence_cases(bad)
+    witness_down_cases(bad)
 
 
 class PulseCon:
@@ -590,6 +593,171 @@ def pulses_no_wican(bad):
     rec, calls = fake_pulses(Args(sub="pulses"))
     check(bad, "pulses", "control: without --no-wican the WiCAN is set and read",
           "mode 0" in calls and "snap" in calls, calls[:4])
+
+
+def resets_ok(n=3):
+    return [{"n": k, "banner_after_s": 0.4, "witness_err_frames": 0, "config_mode": "yes"}
+            for k in range(n)]
+
+
+CONTROL_OK = {"witness_err_frames": 1, "done": {"kind": "DONE"}}
+
+
+class BootCon(PulseCon):
+    """The jammer's console for boot-silence: a reset prints the mcp2515 banner line 0.4 s
+    later; PULSES is answered ACK, PULSE and DONE (PulseCon's)."""
+
+    def __init__(self):
+        super().__init__()
+        self.resets = 0
+
+    def pulse_reset(self):
+        self.resets += 1
+        txt = "JAMMER mcp2515 canstat=0x80 canctrl=0x87 config_mode=yes"
+        self.lines.append((time.time() + 0.4, txt, X.parse_line(txt)))
+
+
+class BootWit:
+    """Error frames: the closing pulse's (when `control`), 2 ms after its PULSE line, and
+    `after_reset` s after each reset's banner."""
+
+    def __init__(self, con, control=True, after_reset=None):
+        self.con, self.control, self.after_reset = con, control, after_reset
+
+    def times(self):
+        ts = []
+        for t, _x, p in self.con.lines:
+            if p and p["kind"] == "PULSE" and self.control:
+                ts.append(t + 0.002)
+            if p and p["kind"] == "INFO" and self.after_reset is not None:
+                ts.append(t + self.after_reset)
+        return sorted(ts), "kvaser_hw (median lag 0.001 s)"
+
+
+def fake_boot(con, wit, resets=3):
+    import threading
+    rec = {}
+    clock, lk = [time.time()], threading.Lock()
+    real_sleep = time.sleep
+    saved = (X.time.sleep, X.time.time)
+
+    def fsleep(s):
+        with lk:
+            clock[0] += s
+        real_sleep(0.0005)
+    X.time.sleep, X.time.time = fsleep, lambda: clock[0]
+    try:
+        X.sub_boot_silence(Args(sub="boot-silence", resets=resets, w=20), rec, con, wit)
+    except Exception as e:      # noqa: BLE001  reported against the case
+        rec["verdict"] = "RAISED %r" % e
+    finally:
+        X.time.sleep, X.time.time = saved
+    return rec
+
+
+def boot_silence_cases(bad):
+    """judge_boot_silence and sub_boot_silence's closing pulse, the positive control
+    (2026-11-13)."""
+    for label, resets, control, want in (
+            ("boot: 3 silent resets, closing pulse once -> PASS", resets_ok(), CONTROL_OK, "PASS"),
+            ("boot: an error frame after a reset -> FAIL",
+             resets_ok()[:2] + [dict(resets_ok()[2], witness_err_frames=1)], CONTROL_OK, "FAIL"),
+            ("boot: an error frame and a deaf control -> FAIL, not INCONCLUSIVE",
+             [dict(resets_ok()[0], witness_err_frames=2)], {"witness_err_frames": 0, "done": {}}, "FAIL"),
+            ("boot: no banner after a reset -> FAIL",
+             [dict(resets_ok()[0], banner_after_s=None)], CONTROL_OK, "FAIL"),
+            ("boot: MCP2515 not in configuration mode -> FAIL",
+             [dict(resets_ok()[0], config_mode="no")], CONTROL_OK, "FAIL"),
+            ("boot: closing pulse not seen (deaf witness) -> INCONCLUSIVE", resets_ok(),
+             dict(CONTROL_OK, witness_err_frames=0), "INCONCLUSIVE"),
+            ("boot: closing pulse seen twice -> INCONCLUSIVE", resets_ok(),
+             dict(CONTROL_OK, witness_err_frames=2), "INCONCLUSIVE"),
+            ("boot: no control record -> INCONCLUSIVE", resets_ok(), None, "INCONCLUSIVE"),
+            ("boot: closing pulse with no DONE -> INCONCLUSIVE", resets_ok(),
+             dict(CONTROL_OK, done=None), "INCONCLUSIVE"),
+            ("boot: no reset made -> INCONCLUSIVE", [], CONTROL_OK, "INCONCLUSIVE")):
+        v, why = X.judge_boot_silence(resets, control)
+        check(bad, "boot", label, v == want, "%s %s" % (v, why))
+    con = BootCon()
+    rec = fake_boot(con, BootWit(con))
+    check(bad, "boot", "sub: 3 resets, then one closing PULSES w 1 -> PASS",
+          rec.get("verdict") == "PASS" and con.resets == 3 and con.sent == ["PULSES 20 1 1000"]
+          and rec.get("control", {}).get("witness_err_frames") == 1,
+          "%s %s sent %s" % (rec.get("verdict"), rec.get("why"), con.sent))
+    con = BootCon()
+    rec = fake_boot(con, BootWit(con, control=False))
+    check(bad, "boot", "sub: a witness that hears nothing -> INCONCLUSIVE",
+          rec.get("verdict") == "INCONCLUSIVE", "%s %s" % (rec.get("verdict"), rec.get("why")))
+    con = BootCon()
+    rec = fake_boot(con, BootWit(con, after_reset=1.0))
+    check(bad, "boot", "sub: an error frame 1 s after a banner -> FAIL",
+          rec.get("verdict") == "FAIL", "%s %s" % (rec.get("verdict"), rec.get("why")))
+
+
+class DyingBus:
+    """A Kvaser bus: `good` error frames, then recv raises (CANlib's error), or None forever."""
+
+    def __init__(self, good=2, raises=True):
+        self.left, self.raises, self.shut = good, raises, False
+
+    def recv(self, timeout=None):
+        if self.left > 0:
+            self.left -= 1
+            m = types.SimpleNamespace(is_error_frame=True, timestamp=time.time(), arbitration_id=0)
+            return m
+        if self.raises:
+            raise RuntimeError("canRead hardware error (-15)")
+        time.sleep(0.005)
+        return None
+
+    def shutdown(self):
+        self.shut = True
+
+
+def bare_witness(bus):
+    """An x2_jammer.Witness on a fake bus, without kvaser_bus (no lock, no adapter)."""
+    import threading
+    w = X.Witness.__new__(X.Witness)
+    threading.Thread.__init__(w, daemon=True)
+    w._state()
+    w.bus = bus
+    return w
+
+
+def witness_down_cases(bad):
+    """A witness whose read raised, or whose thread is not running, is never judged
+    (WitnessDown -> NOT-RUN, 2026-11-13)."""
+    w = bare_witness(DyingBus(good=2, raises=True))
+    w.start()
+    w.join(2.0)
+    try:
+        w.times()
+        got = "no raise"
+    except X.WitnessDown as e:
+        got = str(e)
+    check(bad, "witness", "a read that raised: times() raises WitnessDown",
+          "read failed" in got and "-15" in got and len(w.err) == 2, got)
+    w = bare_witness(DyingBus(good=2, raises=False))
+    w.start()
+    time.sleep(0.05)
+    try:
+        ts, _note = w.times()
+        ok = len(ts) == 2 and w.down() is None
+    except X.WitnessDown as e:
+        ok, ts = False, str(e)
+    w.close()
+    check(bad, "witness", "control: a running witness is judged, and down() is None after close",
+          ok and w.down() is None and w.bus.shut, ts)
+    w = bare_witness(DyingBus(good=0, raises=False))
+    check(bad, "witness", "a thread not running (never started) is down",
+          w.down() == "witness thread not running", w.down())
+
+    def sub(a, rec, con, wit):
+        raise X.WitnessDown("witness read failed at 1.000: RuntimeError: x")
+    rec = {}
+    X.run_guarded(sub, Args(sub="boot-silence"), rec, None, None)
+    check(bad, "witness", "run_guarded: WitnessDown -> NOT-RUN, not a verdict",
+          rec.get("verdict") == "NOT-RUN" and "witness down" in rec.get("why", ""), rec)
 
 
 class FakeJammer:

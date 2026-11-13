@@ -404,10 +404,18 @@ class FakeJamCon:
         return (_time.time(), p) if pred(p) else None
 
 
+def xj_closed(XJ, err):
+    """x2_jammer's Witness without its bus or thread, as after close(): no failed read and
+    the stop flag set, so down() is None (2026-11-13, WitnessDown)."""
+    stop = threading.Event()
+    stop.set()
+    return bare(XJ.Witness, err=list(err), failed=None, stop_flag=stop)
+
+
 def xj_noduration(XJ, err):
     import argparse
     XJ.time = fast_time()
-    wit = bare(XJ.Witness, err=list(err))
+    wit = xj_closed(XJ, err)
     rec = {}
     XJ.run_guarded(XJ.sub_noduration, argparse.Namespace(w=20, p=200), rec, FakeJamCon(), wit)
     return rec
@@ -554,7 +562,7 @@ def checks(work):
 
     # x2_jammer: its witness and noduration through run_guarded
     def xj_wit(err):
-        return bare(XJ.Witness, err=list(err))
+        return xj_closed(XJ, err)
     add("x2_jammer witness: 1 ms lag -> hardware stamps, times() gives them",
         lambda: (lambda r: (WC.judgeable(r[1]) and r[0][0] == 110.001, r[1]))(
             xj_wit(xc_errs(2, False)).times()))
