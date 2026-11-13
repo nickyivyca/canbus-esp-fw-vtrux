@@ -54,14 +54,18 @@ build failed on the import): a commit with both ships gi_paths.py beside canre_p
 byte for byte, and canre_pin imports from the copy's tools/bench/ alone, with no
 retired setting in the environment.
 
-    py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py
-    py -3.14 -B gen-inhibit/tools/bench/test_baseline_host_run.py --mutants
+    python3.13 -B gen-inhibit/tools/bench/test_baseline_host_run.py
+    python3.13 -B gen-inhibit/tools/bench/test_baseline_host_run.py --mutants
 
 --mutants runs the unmutated copy first, as the control (2026-10-29): if it fails, no
-mutant is judged and the run exits 1. Run it from Git Bash: the checks need Git's bash
-first on PATH, and under a PATH whose bash is WSL's every check fails.
+mutant is judged and the run exits 1. On Windows (py -3.14) run it from Git Bash: the
+checks need Git's bash first on PATH, and under a PATH whose bash is WSL's every check
+fails.
 
-Run from the reverse-it root. Gen-inhibit tester.
+On Linux (2026-11-12, the reviewer's Linux leftovers): the fake ssh is made executable,
+else bash passes it over for the real one, and the script's local Python (LOCAL_PY) is
+python3.13 by default, not Windows' py -3.14. Before these, 52 checks and the control
+failed on madhouse-debian. Gen-inhibit tester.
 """
 import hashlib
 import os
@@ -124,6 +128,9 @@ def remote_script(script_dir, tmp, rroot=RROOT, tag="plain", commit=None):
         os.makedirs(bin_)
         with open(os.path.join(bin_, "ssh"), "w", newline="\n") as fh:
             fh.write(FAKE_SSH)
+        # executable, or bash on Linux passes it over for the real ssh on PATH (Git Bash runs a
+        # #! script without the bit): the reviewer's Linux leftovers, 2026-11-12
+        os.chmod(os.path.join(bin_, "ssh"), 0o755)
     cap = os.path.join(tmp, "remote_%s.sh" % tag)
     arc = os.path.join(tmp, "archive_%s.tar" % tag)
     e = dict(os.environ)
@@ -449,7 +456,7 @@ MUTANTS = [
     # the archive and the build-id step (2026-10-25)
     ("gi_diag.py and pins.json not shipped",
      '  for f in gi_diag.py pins.json; do git -C "$TOP" show "$C:$BENCH/$f" > "$STAGE/$BENCH_AT/$f" || exit 2; done\n', ""),
-    ("the export not made", '  ${LOCAL_PY:-py -3.14} -B "$TOP/gen-inhibit/tools/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2\n', ""),
+    ("the export not made", '  $LOCAL_PY -B "$TOP/gen-inhibit/tools/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2\n', ""),
     ("the decode files shipped for every commit", 'if tree "$BENCH/gi_diag.py"; then', 'if true; then'),
     # each commit at its own layout (port step 0d, 2026-10-26)
     ("the project layout never chosen", "if tree gen-inhibit/firmware/main && tree gen-inhibit/test; then", "if false; then"),
