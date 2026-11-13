@@ -1309,6 +1309,15 @@ def feed_replies(reader, joiner):
     joiner.seen_frames = end
 
 
+def open_witness(ctx):
+    """CAN1's witness, or Fail (the check NOT-RUN) if it cannot be the
+    bench's Kvaser: a virtual channel, no canbench, no adapter."""
+    try:
+        return witness.Witness(ctx["can_tools"])
+    except Exception as e:
+        raise Fail("CAN1 witness: %s" % e)
+
+
 class JamSession:
     """canx2 attached and up normal (canchg down: the X2 alone on the
     charger segment), CAN1's witness running, a sender and a reader on
@@ -1322,7 +1331,7 @@ class JamSession:
         attach()
         down(PEER)
         up(X2)
-        self.wit = witness.Witness(ctx["can_tools"])
+        self.wit = open_witness(ctx)
         self.wit.start()
         self.xr = Reader(X2)
         self.xr.start()
@@ -1380,7 +1389,7 @@ def check_jam_boot_silence(ctx, can_fail):
         raise Fail("the jamming checks need --can-tools (a can-tools pin's folder)")
     detach()
     down(PEER)
-    wit = witness.Witness(ctx["can_tools"])
+    wit = open_witness(ctx)
     wit.start()
     windows = []
     s = tty_open(ctx["port"])

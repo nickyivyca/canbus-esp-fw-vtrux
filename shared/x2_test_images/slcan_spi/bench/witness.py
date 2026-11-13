@@ -20,6 +20,7 @@ Pure functions (test_witness.py, with its mutants):
   judge_stop(err_ts, deadline, window_s, quiet_from, quiet_to)
   judge_count(err_ts, t0, t1, want)
   judge_groups(err_ts, t0, t1, n, interval_s)
+  real_channel(info)             refuses CANlib's virtual channels
 """
 
 import importlib.util
@@ -128,6 +129,20 @@ def judge_groups(err_ts, t0, t1, n, interval_s, tol_s=0.05):
     return True, "%d groups %.3f s apart" % (n, interval_s)
 
 
+def real_channel(info):
+    """CANlib's channel info -> (ok, why). With the Leaf missing, CANlib
+    still lists its 'Kvaser Virtual CAN' channels, and channel 0 then opens
+    a virtual channel without a word (the gen-inhibit tester, on the bench,
+    2026-11-13), which would see nothing and read as a silent bus. So a
+    virtual or unnamed channel is refused."""
+    name = (info or {}).get("device_name") or ""
+    if not name.strip():
+        return False, "channel has no device name"
+    if "virtual" in name.lower():
+        return False, "channel is %r, not the bench's Kvaser" % name
+    return True, name
+
+
 # ---------------------------------------------------------------- the Kvaser
 
 class Witness(threading.Thread):
@@ -140,6 +155,11 @@ class Witness(threading.Thread):
         from canbench.live import linux_fixes
         linux_fixes.apply()
         import can
+        from can.interfaces.kvaser import canlib as kvlib
+        self.channel_info = kvlib.get_channel_info(channel)
+        ok, why = real_channel(self.channel_info)
+        if not ok:
+            raise RuntimeError("CAN1 witness refused: %s" % why)
         self.bus = can.Bus(interface="kvaser", channel=channel, bitrate=bitrate)
         self.canbench_file = cb.__file__
         self.errors = []

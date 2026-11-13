@@ -69,10 +69,16 @@ def run_tests(w):
     check(not w.judge_groups(uneven, 9.0, 21.0, 10, 1.0)[0], "a 1.3 s interval passed as 1 s")
     two = ten[:5] + [15.0005] + ten[5:]
     check(not w.judge_groups(two, 9.0, 21.0, 10, 1.0)[0], "a group of 2 passed")
+    # the channel: the Leaf, not CANlib's virtual stand-in
+    check(w.real_channel({"device_name": "Kvaser Leaf Light v2", "serial": 1})[0], "Leaf refused")
+    check(not w.real_channel({"device_name": "Kvaser Virtual CAN Driver"})[0], "virtual accepted")
+    check(not w.real_channel({"device_name": ""})[0], "unnamed accepted")
+    check(not w.real_channel(None)[0], "no info accepted")
     return fails
 
 
 MUTANTS = [
+    ("virtual-accepted", 'if "virtual" in name.lower():', "if False:"),
     ("lag-unbounded", "return -0.1 <= lag < MAX_LAG_S, lag", "return -0.1 <= lag, lag"),
     ("ahead-allowed", "return -0.1 <= lag < MAX_LAG_S, lag", "return lag < MAX_LAG_S, lag"),
     ("one-cluster", "if out and t - out[-1][1] <= gap_s:", "if out:"),
