@@ -15,9 +15,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = "can2_ack_probe.py"
 TEST = "test_can2_ack_probe.py"
 MUTANTS = [
-    ("ACKED despite an ACK-error frame",
-     '    if tx is not None and tx >= 1 and kinds["ack"] == 0:\n', '    if tx is not None and tx >= 1:\n'),
-    ("NO_ACK with no retries seen", '    elif tx == 0 and retried:\n', '    elif tx == 0:\n'),
+    ("ACKED despite an error frame (RX warning)",
+     '    elif tx is not None and tx >= 1 and not any(kinds.values()):\n',
+     '    elif tx is not None and tx >= 1:\n'),
+    ("ACKED with nothing counted sent",
+     '    elif tx is not None and tx >= 1 and not any(kinds.values()):\n',
+     '    elif not any(kinds.values()):\n'),
+    ("the first judge: retries count only when tx did not move (2026-11-13)",
+     '    if retried:\n        # whatever', '    if retried and tx == 0:\n        # whatever'),
+    ("NO_ACK with no retries seen", '    if retried:\n        # whatever', '    if True:\n        # whatever'),
     ("the state not read", 'after.get("state") not in (None, "ERROR-ACTIVE"))', 'False)'),
     ("error_passive not read", '("error_passive rose", (delta("error_passive") or 0) > 0),',
      '("error_passive rose", False),'),

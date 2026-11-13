@@ -53,7 +53,12 @@ def main():
     check("kinds", "an ACK error, a TX passive, an RX warning", got == {"ack": 1, "tx_warn_or_passive": 1, "other": 1}, got)
     for label, before, after, errs, want in (
             ("confirmed, nothing else -> ACKED", L(tx=3), L(tx=4), [], "ACKED"),
-            ("confirmed with an ACK error -> not ACKED", L(tx=3), L(tx=4), [ACK_ERR], "UNCLEAR"),
+            ("counted sent with an ACK error -> NO_ACK", L(tx=3), L(tx=4), [ACK_ERR], "NO_ACK"),
+            # the 2026-11-13 01:08 madhouse reading: canx2 detached, nothing could ACK
+            ("tx +1, ACK error, passive (2026-11-13) -> NO_ACK", L(tx=1), L(tx=2, passive=1, state="ERROR-PASSIVE"),
+             [ACK_ERR], "NO_ACK"),
+            ("tx +1, passive rose, no frame seen -> NO_ACK", L(tx=1), L(tx=2, passive=1), [], "NO_ACK"),
+            ("counted sent with an RX warning -> UNCLEAR, not ACKED", L(tx=3), L(tx=4), [RX_WARN], "UNCLEAR"),
             ("not confirmed, ACK-error frames -> NO_ACK", L(), L(), [ACK_ERR, ACK_ERR], "NO_ACK"),
             ("not confirmed, TX passive frame -> NO_ACK", L(), L(), [TX_PASSIVE], "NO_ACK"),
             ("not confirmed, error_passive rose -> NO_ACK", L(), L(passive=1), [], "NO_ACK"),
@@ -61,7 +66,9 @@ def main():
             ("not confirmed, state ERROR-PASSIVE -> NO_ACK", L(), L(state="ERROR-PASSIVE"), [], "NO_ACK"),
             ("not confirmed, an RX warning only -> UNCLEAR", L(), L(), [RX_WARN], "UNCLEAR"),
             ("not confirmed, nothing counted -> UNCLEAR", L(), L(), [], "UNCLEAR"),
-            ("no tx counter -> UNCLEAR", AP.parse_link([{}]), AP.parse_link([{}]), [ACK_ERR], "UNCLEAR")):
+            ("no counters, nothing seen -> UNCLEAR", AP.parse_link([{}]), AP.parse_link([{}]), [], "UNCLEAR"),
+            ("no counters, an ACK-error frame -> NO_ACK", AP.parse_link([{}]), AP.parse_link([{}]), [ACK_ERR],
+             "NO_ACK")):
         got = AP.judge_probe(before, after, errs)
         check("judge", label, got["verdict"] == want, "%s %s" % (got["verdict"], got["why"]))
     for expect, verdict, want in (("no_ack", "NO_ACK", "PASS"), ("no_ack", "ACKED", "FAIL"),

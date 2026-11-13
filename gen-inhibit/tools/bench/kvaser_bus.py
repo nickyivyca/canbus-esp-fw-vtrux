@@ -9,7 +9,13 @@ canbench comes from gen-inhibit's can-tools pin (tools/can_tools_pin.json, the i
 loaded by file from scratch/can-tools/<commit>/ by can_tools_pin.use(), which refuses a
 canbench imported from anywhere else (AGENTS.md "can-tools").
 
-  kvaser_bus(**kw)     linux_fixes.apply(), then can.Bus(interface="kvaser", **kw)
+  kvaser_bus(**kw)     linux_fixes.apply(), then can.Bus(interface="kvaser", **kw); a channel
+                       whose channel_info names a virtual channel (or gives none) is shut and
+                       VirtualChannel raised. On madhouse, 2026-11-13 01:06, after the Leaf
+                       failed with "canWrite hardware error -15" in another holder's replay,
+                       CANlib listed only its two "Kvaser Virtual CAN" channels, so channel 0
+                       opened a virtual bus that sends and hears nothing on the wire, and a
+                       witness on it would have read an empty bus.
   gs_usb_bus(**kw)     linux_fixes.apply(), then can.Bus(interface="gs_usb", **kw)
   close_gs_usb(bus)    bus.shutdown(), then canbench's release_gs_usb(bus). python-can's
                        GsUsbBus.shutdown() leaves the pyusb handle open, so a second open in
@@ -54,6 +60,10 @@ _fixes = None
 
 
 class BenchNotHeld(RuntimeError):
+    pass
+
+
+class VirtualChannel(RuntimeError):
     pass
 
 
@@ -128,7 +138,13 @@ def kvaser_bus(**kw):
     require_bench()
     fixes()
     import can
-    return can.Bus(interface="kvaser", **kw)
+    b = can.Bus(interface="kvaser", **kw)
+    info = getattr(b, "channel_info", None)
+    if not isinstance(info, str) or "virtual" in info.lower():
+        b.shutdown()
+        raise VirtualChannel("kvaser channel %r is %r, not the bench's Kvaser: CANlib lists only "
+                             "its virtual channels when the Leaf is not presented" % (kw.get("channel"), info))
+    return b
 
 
 def gs_usb_bus(**kw):

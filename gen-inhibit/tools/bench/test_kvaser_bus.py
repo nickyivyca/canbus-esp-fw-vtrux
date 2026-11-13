@@ -103,9 +103,13 @@ def check(name, ok, detail=""):
 class Fakes:
     """A fake can, a fake pin tool and a fake pinned canbench, all logging to one list."""
 
-    def __init__(self, use_raises=False, apply_raises=False, shutdown_raises=False, holder="ours"):
+    LEAF = "Kvaser Leaf Light v2, S/N 1 (#1)"
+
+    def __init__(self, use_raises=False, apply_raises=False, shutdown_raises=False, holder="ours",
+                 kv_info=LEAF):
         """holder: the bench log's holder _lock_holder gives: "ours" (tester (gen-inhibit) with
-        this process's pid), None (free), "raise" (unreadable), or a dict."""
+        this process's pid), None (free), "raise" (unreadable), or a dict. kv_info: the opened
+        bus's channel_info ("absent": no such attribute)."""
         self.holder = {"who": "tester (gen-inhibit)", "pid": os.getpid(), "run": None} if holder == "ours" \
             else holder
         self.log = []
@@ -116,6 +120,8 @@ class Fakes:
         class Bus:
             def __init__(self, **kw):
                 self.kw = kw
+                if kv_info != "absent":
+                    self.channel_info = kv_info
                 log.append(("Bus", kw))
 
             def shutdown(self):
@@ -206,6 +212,27 @@ def unit():
               f.log[-1][1] == {"interface": "kvaser", "channel": 0, "bitrate": 500000, "driver_mode": True}
               and b.kw is f.log[-1][1], f.log[-1])
     case("kvaser_bus: opens", kvaser_open)
+
+    def virtual():
+        # madhouse 2026-11-13 01:06: the Leaf wedged, CANlib listed only its virtual channels
+        for label, info in (("Kvaser Virtual CAN (2026-11-13)", "Kvaser Virtual CAN, S/N 1 (#1)"),
+                            ("a lower-case virtual name", "kvaser virtual can"),
+                            ("no channel_info", "absent"), ("a channel_info that is not text", None)):
+            f = Fakes(kv_info=info)
+            raised = None
+            with f as kb:
+                try:
+                    kb.kvaser_bus(channel=0, bitrate=500000)
+                except Exception as e:      # noqa: BLE001
+                    raised = e
+                vc = kb.VirtualChannel
+            check("kvaser_bus: %s -> VirtualChannel, and the bus it opened is shut" % label,
+                  isinstance(raised, vc) and f.kinds()[-2:] == ["Bus", "shutdown"], (raised, f.log))
+        f = Fakes()
+        with f as kb:
+            kb.kvaser_bus(channel=0, bitrate=500000)
+        check("kvaser_bus: the Leaf's channel_info opens, nothing shut", "shutdown" not in f.kinds(), f.log)
+    case("kvaser_bus: a virtual channel refused", virtual)
 
     def once():
         f = Fakes()
@@ -642,8 +669,17 @@ MUTANTS = [
      '        return {"who": ROLES[0], "pid": os.getpid()}\n        raise BenchNotHeld("vtrux_bench is not importable'),
     ("_ancestors stops at this process", '        pid = int(stat.rsplit(")", 1)[1].split()[1])\n', "        break\n"),
     ("kvaser_bus applies the fixes after the open",
-     '    fixes()\n    import can\n    return can.Bus(interface="kvaser", **kw)\n',
-     '    import can\n    b = can.Bus(interface="kvaser", **kw)\n    fixes()\n    return b\n'),
+     '    fixes()\n    import can\n    b = can.Bus(interface="kvaser", **kw)\n',
+     '    import can\n    b = can.Bus(interface="kvaser", **kw)\n    fixes()\n'),
+    # a virtual channel refused (2026-11-13)
+    ("kvaser_bus: a virtual channel opens", '    if not isinstance(info, str) or "virtual" in info.lower():\n',
+     "    if not isinstance(info, str):\n"),
+    ("kvaser_bus: no channel_info opens", '    if not isinstance(info, str) or "virtual" in info.lower():\n',
+     '    if isinstance(info, str) and "virtual" in info.lower():\n'),
+    ("kvaser_bus: the name compared case-sensitively", '"virtual" in info.lower():\n', '"Virtual" in info:\n'),
+    ("kvaser_bus: the refused bus left open", "        b.shutdown()\n        raise VirtualChannel(",
+     "        raise VirtualChannel("),
+    ("kvaser_bus: a virtual channel returned", "        raise VirtualChannel(", "        return b\n        raise VirtualChannel("),
     ("the fixes are not taken from the pin", "    _pin_tool().use()\n    return importlib.import_module(",
      "    return importlib.import_module("),
     ("the fixes apply on every open", "    if _fixes is None:\n", "    if True:\n"),

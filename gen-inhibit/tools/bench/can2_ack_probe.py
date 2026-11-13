@@ -21,12 +21,17 @@ overwritten):
   4. OBSERVE_S of watching, then the link's counters again, then `canctl down <role>`, which
      also drops the frame if it is still being retried.
 
-THE JUDGE (judge_probe): ACKED when the frame was confirmed (tx packets +1: SocketCAN counts a
-frame only when the controller reports it sent, which needs an ACK) and no ACK-error frame was
-seen. NO_ACK when it was not confirmed and the link shows the retries: an ACK-error frame, a
+THE JUDGE (judge_probe): NO_ACK when the link shows the retries: an ACK-error frame, a
 controller TX warning/passive frame, the error-warning or error-passive counter rising, or the
-state no longer ERROR-ACTIVE. UNCLEAR otherwise (for example nothing confirmed and nothing
-counted: the frame may never have left). check(expect, verdict): PASS when they agree, FAIL
+state no longer ERROR-ACTIVE, whatever the tx counter says. ACKED when the frame was counted
+sent (tx packets +1) with no retries and no error frame of any kind. UNCLEAR otherwise (for
+example nothing counted and nothing seen: the frame may never have left).
+The tx counter alone is not an ACK on canchg's gs_usb: on madhouse, 2026-11-13 01:08, with the
+X2 on slcan_spi and canx2 detached (so nothing on CAN2 could ACK), tx packets rose by 1 while
+the link reported an ACK-error frame and went ERROR-PASSIVE (runs/jammerbench_6fc4067/,
+can2_ack_probe_20261113T010803.json). The first judge counted tx +1 as confirmation and so
+came out UNCLEAR there; the gen-inhibit reviewer's ruling of 2026-11-13 names an ACK error or
+TEC rising as no-ACK evidence on its own. check(expect, verdict): PASS when they agree, FAIL
 when it is the other one, INCONCLUSIVE when UNCLEAR.
 """
 import argparse
@@ -92,10 +97,11 @@ def judge_probe(before, after, err_frames):
     out = {"tx_delta": tx, "kinds": kinds, "retried": retried,
            "error_warning_delta": delta("error_warning"),
            "error_passive_delta": delta("error_passive")}
-    if tx is not None and tx >= 1 and kinds["ack"] == 0:
-        out["verdict"], out["why"] = "ACKED", "confirmed (tx packets +%d), no ACK error" % tx
-    elif tx == 0 and retried:
-        out["verdict"], out["why"] = "NO_ACK", "not confirmed; " + ", ".join(retried)
+    if retried:
+        # whatever the tx counter says: gs_usb counts a frame nobody ACKed (2026-11-13)
+        out["verdict"], out["why"] = "NO_ACK", "retries seen (tx delta %s): %s" % (tx, ", ".join(retried))
+    elif tx is not None and tx >= 1 and not any(kinds.values()):
+        out["verdict"], out["why"] = "ACKED", "confirmed (tx packets +%s), no error frame, no retries" % tx
     else:
         out["verdict"], out["why"] = "UNCLEAR", "tx delta %s, retries seen %s" % (tx, retried)
     return out
