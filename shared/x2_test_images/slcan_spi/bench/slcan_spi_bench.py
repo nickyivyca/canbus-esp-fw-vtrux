@@ -63,11 +63,15 @@ the Kvaser (witness.py), and need --can-tools; jam-stop's expectation
 follows the image on the X2 (dev, slcan_spi_a or slcan_spi_b):
   jam-channel      STATUS, a bad signature, the reply ID from the host, a
                    zero ms, a 1 s TRAIN and STOP, each answered by reply
-                   frames joined into jam_pulse's lines; STATUS with the X2
-                   listen-only too; canchg, listening, sees no jam frame
+                   frames joined into jam_pulse's lines, the TRAIN ended as
+                   the image must end it (STOP_EXPECT); STATUS with the X2
+                   listen-only too, on the raw tty (Linux's slcan sends
+                   nothing while listen-only); canchg, listening, sees no
+                   jam frame
   jam-concurrent   a TRAIN on CAN1 through a whole rate-tx run (at most
                    30 s): every frame arrives in order, none dropped, ACK and
-                   DONE come back, canchg sees no error state
+                   DONE come back, the TRAIN ended as STOP_EXPECT says,
+                   canchg sees no error state
   jam-boot-silence 3 resets: no CAN1 error frame from each to 5 s after the
                    boot line
   jam-port         one pulse: exactly one CAN1 error frame, up to 1 s past
@@ -80,6 +84,12 @@ follows the image on the X2 (dev, slcan_spi_a or slcan_spi_b):
   jam-cap          a 60 s TRAIN: CAPPED, stopped at 30 s as jam-stop judges
   jam-stop-cmd     STOP 3 s into a 20 s TRAIN: stopped within 0.5 s of the
                    host's STOP; DONE end=stopped stop_by=stop_cmd
+Every witness check ends with a closing pulse (PULSES 20 1) after its last
+window, which the witness must count exactly once, else the check is NOT-RUN
+(INCONCLUSIVE); a witness whose thread failed or ended early makes the check
+NOT-RUN too, and every witness check's detail records the witness's median
+lag, counts and host-stamped frames (the gen-inhibit tester's review,
+2026-11-13).
 
 --can-fail <check>: the same check with one condition broken on the bench,
 which the check must then FAIL (the can-fail; exit 0 only if it FAILs):
@@ -1133,17 +1143,46 @@ def jam_frames_on(frames):
     return [(round(t, 3), hex(c), d.hex()) for t, c, d in frames if c in ids]
 
 
+def tty_jam_listen_only(port, cmd_id, data):
+    """One jam command on the raw tty (canx2 detached) with the X2 open
+    listen-only (C, S6, L), then C. Returns (reply lines joined from the
+    reply-ID frames the image wrote, the raw bytes read)."""
+    s = tty_open(port)
+    try:
+        tty_drain(s, 0.3)
+        tty_cmd(s, "C\rS6\rL\r", 0.3)
+        got = tty_cmd(s, "T%08X%d%s\r" % (cmd_id, len(data), data.hex().upper()), 1.0)
+        tty_cmd(s, "C\r", 0.2)
+    finally:
+        s.close()
+    j = jam_host.Joiner()
+    lines = []
+    for m in re.finditer(r"T%08X([0-8])([0-9A-F]*)\r" % jam_host.REPLY_ID,
+                         got.decode("ascii", "replace")):
+        n = int(m.group(1))
+        line = j.feed(bytes.fromhex(m.group(2)[:2 * n]))
+        if line is not None:
+            lines.append(line)
+    return lines, got
+
+
 def check_jam_channel(ctx, can_fail):
     """The jam channel through the kernel's slcan (SPEC T13): each command
     frame is answered by reply frames that join into jam_pulse's lines; a
     frame that does not decode, and a host frame on the reply identifier,
-    are answered ERR; the channel works with the X2 open listen-only too;
-    and no jam frame ever reaches CAN2 (canchg, listening, sees none).
+    are answered ERR; the 1 s TRAIN ends as the image must end it
+    (STOP_EXPECT: on dev, through either stop at the deadline; jammer/README
+    "end=", and a TRAIN that reaches its deadline is never end=complete on
+    the bench); the channel works with the X2 open listen-only too, shown on
+    the raw tty, since Linux's slcan sends nothing while listen-only (seen on
+    the bench 2026-11-13: the command counted in canx2's tx_dropped, no
+    reply; slcan_netdev_xmit's can_dev_dropped_skb()); and no jam frame ever
+    reaches CAN2 (canchg, listening, sees none).
     can-fail: the commands sent on 0x1F4A4D44, beside the command
     identifier: the image must not take them, so no replies come and canchg
     sees them."""
     cmd_id = jam_host.CMD_ID + 1 if can_fail else jam_host.CMD_ID
-    detach()
+    name = image_name(ctx)
     attach()
     up(PEER)
     pr = Reader(PEER)
@@ -1166,20 +1205,20 @@ def check_jam_channel(ctx, can_fail):
         steps["train_1s"] = jam_exchange(sock, xr, j, cmd_id, jam_host.train(20, 1000, 1000),
                                          ("DONE", "ERR"), 5.0)
         steps["stop_idle"] = jam_exchange(sock, xr, j, cmd_id, jam_host.stop(), ("ACK",))
-        sock.close()
-        down(X2)
-        up(X2, listen=True)
-        sock = open_sender(X2)
-        steps["status_listen_only"] = jam_exchange(sock, xr, j, cmd_id, jam_host.status(),
-                                                   ("STATUS",))
     finally:
         sock.close()
         time.sleep(0.5)
-        pr.finish()
         xr.finish()
     d = delta(s0, stats(X2))
     down(X2)
-    down(PEER)
+    detach()
+    try:
+        steps["status_listen_only"], raw_l = tty_jam_listen_only(ctx["port"], cmd_id,
+                                                                 jam_host.status())
+    finally:
+        time.sleep(0.5)
+        pr.finish()
+        down(PEER)
     on_can2 = jam_frames_on(pr.frames)
     expect = {
         "status": reply_of(steps["status"], "STATUS", "idle"),
@@ -1195,10 +1234,12 @@ def check_jam_channel(ctx, can_fail):
     detail = {"command_id": hex(cmd_id), "replies": steps, "joiner_bad": j.bad,
               "jam_frames_on_can2": on_can2[:10], "jam_frames_on_can2_count": len(on_can2),
               "canchg_error_frames": len(pr.errors), "x2_stats": d,
-              "train_done": done}
+              "train_done": done, "image": name,
+              "listen_only_raw_tty": raw_l.decode("ascii", "replace")[:600]}
     problems = ["%s: no %s reply (got %r)" % (k, k, steps[k]) for k, v in expect.items() if not v]
-    if done and done.get("end") != "complete":
-        problems.append("TRAIN 1 s ended %s, not complete" % done.get("end"))
+    if done and not STOP_EXPECT[name](done):
+        problems.append("TRAIN 1 s ended end=%s stop_by=%s, not as %s must" % (
+            done.get("end"), done.get("stop_by"), name))
     if j.bad:
         problems.append("%d reply frames out of form" % j.bad)
     if on_can2:
@@ -1216,7 +1257,7 @@ def check_jam_concurrent(ctx, can_fail):
     TRAIN is ACKed and DONE, and canchg reports no error state (jamming CAN1
     puts nothing on CAN2). can-fail: no TRAIN sent, so no ACK or DONE."""
     seconds = min(ctx["seconds"], 30.0)
-    detach()
+    name = image_name(ctx)
     attach()
     up(PEER)
     up(X2)
@@ -1257,14 +1298,16 @@ def check_jam_concurrent(ctx, can_fail):
               "host_not_sent": lost, "received": len(seqs), "reported_drops": reported,
               "replies": j2.lines, "joiner_bad": j2.bad,
               "canchg_error_frames": len(pr.errors), "canchg_state": peer_state,
-              "jam_frames_on_can2": len(jam_frames_on(pr.frames)), "x2_stats": d}
+              "jam_frames_on_can2": len(jam_frames_on(pr.frames)), "x2_stats": d,
+              "image": name}
     problems = []
     if not reply_of(j2.lines, "ACK", "TRAIN"):
         problems.append("TRAIN not ACKed (replies %r)" % j2.lines)
     if not done:
         problems.append("no DONE TRAIN")
-    elif done.get("end") not in ("complete",):
-        problems.append("TRAIN ended %s" % done.get("end"))
+    elif not STOP_EXPECT[name](done):
+        problems.append("TRAIN ended end=%s stop_by=%s, not as %s must" % (
+            done.get("end"), done.get("stop_by"), name))
     if lost:
         problems.append("%d frames the host could not send" % lost)
     if sent - len(seqs):
@@ -1313,9 +1356,28 @@ def open_witness(ctx):
     """CAN1's witness, or Fail (the check NOT-RUN) if it cannot be the
     bench's Kvaser: a virtual channel, no canbench, no adapter."""
     try:
-        return witness.Witness(ctx["can_tools"])
+        return witness.open_kvaser(ctx["can_tools"])
     except Exception as e:
         raise Fail("CAN1 witness: %s" % e)
+
+
+def wit_errs(wit, closing=None):
+    """The witness's error-frame times, or Fail (the check NOT-RUN) if it
+    did not hear the whole check (Dead), its clock is off (Void), or the
+    closing pulse sent in closing = (t0, t1) was not counted exactly once
+    (INCONCLUSIVE: this run's witness may be deaf)."""
+    try:
+        errs = wit.err_times()
+    except witness.Dead as e:
+        raise Fail("witness dead: %s; %s" % (e, wit.summary()))
+    except witness.Void as e:
+        raise Fail("VOID: %s; %s" % (e, wit.summary()))
+    if closing is None:
+        raise Fail("INCONCLUSIVE: no closing pulse was sent; %s" % wit.summary())
+    ok, why = witness.judge_closing(errs, *closing)
+    if not ok:
+        raise Fail("INCONCLUSIVE: %s; %s" % (why, wit.summary()))
+    return errs
 
 
 class JamSession:
@@ -1337,6 +1399,7 @@ class JamSession:
         self.xr.start()
         self.sock = open_sender(X2)
         self.j = jam_host.Joiner()
+        self.closing_window = None
         time.sleep(0.5)
 
     def cmd(self, data, want, timeout=3.0):
@@ -1364,6 +1427,13 @@ class JamSession:
                 return r
             time.sleep(0.02)
 
+    def closing(self):
+        """The closing pulse, after the check's last window: one PULSES 20 1,
+        counted from its send to 1 s after its DONE."""
+        t, _ = self.cmd(jam_host.pulses(20, 1, 10), ("DONE", "ERR"), 3.0)
+        time.sleep(1.0)
+        self.closing_window = (t - 0.05, time.time())
+
     def finish(self):
         self.sock.close()
         time.sleep(0.3)
@@ -1374,17 +1444,16 @@ class JamSession:
         return self
 
     def errs(self):
-        try:
-            return self.wit.err_times()
-        except witness.Void as e:
-            raise Fail("VOID: %s" % e)
+        return wit_errs(self.wit, self.closing_window)
 
 
 def check_jam_boot_silence(ctx, can_fail):
     """T13 "it boots silent": the X2 reset 3 times through its USB port; CAN1's
     witness sees no error frame from each reset to 5 s after the image's
     boot line. can-fail: one PULSES 20 1 10, sent as a command frame on the
-    raw tty after the third boot line, which the witness must see."""
+    raw tty after the third boot line, which the witness must see. The
+    closing pulse is sent on the raw tty the same way, after the third
+    window."""
     if not ctx.get("can_tools"):
         raise Fail("the jamming checks need --can-tools (a can-tools pin's folder)")
     detach()
@@ -1408,16 +1477,19 @@ def check_jam_boot_silence(ctx, can_fail):
             time.sleep(5.0)
             windows.append((t0, (t_boot or t0 + 5.0) + 5.0, t_boot is not None))
         tty_drain(s, 0.5)
+        # the closing pulse, after the third window
+        tc = time.time()
+        s.write(("T%08X8%s\r" % (jam_host.CMD_ID, jam_host.pulses(20, 1, 10).hex().upper())).encode())
+        tty_drain(s, 1.5)
+        closing = (tc - 0.05, time.time())
     finally:
         s.close()
         wit.finish()
-    try:
-        errs = wit.err_times()
-    except witness.Void as e:
-        raise Fail("VOID: %s" % e)
+    errs = wit_errs(wit, closing)
     counts = [witness.judge_count(errs, a, b, 0)[1] for a, b, _ in windows]
     detail = {"windows": [(round(a, 3), round(b, 3), ok) for a, b, ok in windows],
-              "error_frames": counts, "witness_frames": len(wit.frames)}
+              "error_frames": counts, "closing": [round(x, 3) for x in closing],
+              "witness_record": wit.summary()}
     problems = []
     if not all(ok for _, _, ok in windows):
         problems.append("a reset with no boot line")
@@ -1437,11 +1509,13 @@ def check_jam_port(ctx, can_fail):
         t, lines = js.cmd(jam_host.pulses(20, n, 300), ("DONE", "ERR"), 5.0)
         time.sleep(1.0)
         t_end = time.time()
+        js.closing()
     finally:
         js.finish()
     errs = js.errs()
     ok, got = witness.judge_count(errs, t - 0.05, t_end, 1)
-    detail = {"image": js.name, "pulses_sent": n, "replies": lines, "error_frames": got}
+    detail = {"image": js.name, "pulses_sent": n, "replies": lines, "error_frames": got,
+              "witness_record": js.wit.summary()}
     problems = [] if ok else ["%d error frames for one pulse" % got]
     if not reply_of(lines, "DONE", "PULSES"):
         problems.append("no DONE PULSES")
@@ -1461,6 +1535,7 @@ def check_jam_calibration(ctx, can_fail):
         t2, l2 = js.cmd(jam_host.pulses(20, 9, 1100), ("DONE", "ERR"), 15.0)
         time.sleep(1.0)
         e2 = time.time()
+        js.closing()
     finally:
         js.finish()
     errs = js.errs()
@@ -1469,7 +1544,8 @@ def check_jam_calibration(ctx, can_fail):
     ok2, why2 = witness.judge_groups(errs, t2, e2, 9, 1.1)
     ctl, whyc = witness.judge_groups(errs, t2, e2, 10, 1.0)
     detail = {"image": js.name, "ten_at_1s": why1, "nine_at_1_1s": why2,
-              "control_as_ten": whyc, "replies": l1 + l2}
+              "control_as_ten": whyc, "replies": l1 + l2,
+              "witness_record": js.wit.summary()}
     problems = []
     if not ok1:
         problems.append("10 at 1 s: %s" % why1)
@@ -1495,9 +1571,8 @@ def judge_train_stop(js, t_sent, ms, can_fail, quiet_s=3.0):
     frame within 0.5 s of the deadline and none from then to quiet_s after it
     (past stop_a_only's backstop at deadline + 2 s). can-fail: the deadline
     shifted 2 s early."""
-    deadline = t_sent + ms / 1000.0 - (2.0 if can_fail else 0.0)
-    return witness.judge_stop(js.errs(), deadline, quiet_from=t_sent,
-                              quiet_to=t_sent + ms / 1000.0 + quiet_s)
+    return witness.judge_stop(js.errs(), **witness.stop_windows(
+        t_sent, t_sent + ms / 1000.0, 2.0 if can_fail else 0.0, quiet_s))
 
 
 def check_jam_stop(ctx, can_fail):
@@ -1512,11 +1587,12 @@ def check_jam_stop(ctx, can_fail):
         t, _ = js.cmd(jam_host.train(20, 5000, 3000), ("ACK", "ERR"))
         done = js.wait_for("DONE", "TRAIN", 8.0)
         time.sleep(3.5)
+        js.closing()
     finally:
         js.finish()
     verdict, why = judge_train_stop(js, t, 3000, can_fail)
     detail = {"image": js.name, "witness": verdict, "why": why, "done": done,
-              "replies": js.j.lines}
+              "replies": js.j.lines, "witness_record": js.wit.summary()}
     problems = []
     if verdict != "PASS":
         problems.append("witness %s: %s" % (verdict, why))
@@ -1536,11 +1612,12 @@ def check_jam_cap(ctx, can_fail):
         t, _ = js.cmd(jam_host.train(20, 5000, 60000), ("ACK", "ERR"))
         done = js.wait_for("DONE", "TRAIN", 35.0)
         time.sleep(3.5)
+        js.closing()
     finally:
         js.finish()
     verdict, why = judge_train_stop(js, t, 30000, can_fail)
     detail = {"image": js.name, "witness": verdict, "why": why, "done": done,
-              "replies": js.j.lines}
+              "replies": js.j.lines, "witness_record": js.wit.summary()}
     problems = []
     if verdict != "PASS":
         problems.append("witness %s: %s" % (verdict, why))
@@ -1562,14 +1639,16 @@ def check_jam_stop_cmd(ctx, can_fail):
         time.sleep(3.0)
         t_stop, _ = js.cmd(jam_host.stop(), ("ACK", "ERR"))
         done = js.wait_for("DONE", "TRAIN", 3.0)
-        time.sleep(3.0)
+        time.sleep(3.5)
+        js.closing()
     finally:
         js.finish()
-    deadline = t_stop - (2.0 if can_fail else 0.0)
-    verdict, why = witness.judge_stop(js.errs(), deadline, quiet_from=t, quiet_to=t_stop + 3.0)
+    verdict, why = witness.judge_stop(js.errs(), **witness.stop_windows(
+        t, t_stop, 2.0 if can_fail else 0.0, 3.0))
     ack = reply_of(js.j.lines, "ACK", "STOP")
     detail = {"image": js.name, "witness": verdict, "why": why, "done": done,
-              "ack_stop": ack, "replies": js.j.lines}
+              "ack_stop": ack, "replies": js.j.lines,
+              "witness_record": js.wit.summary()}
     problems = []
     if verdict != "PASS":
         problems.append("witness %s: %s" % (verdict, why))

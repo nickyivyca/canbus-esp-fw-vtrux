@@ -14,13 +14,23 @@ median lag behind host receipt is under MAX_LAG_S, else the check is VOID;
 and state-only error frames stamped by the host, should a canbench backend
 make them, are left out of counts and of the lag.
 
+A witness that stops hearing must never read as a quiet bus (the gen-inhibit
+tester's review, 2026-11-13): the collecting thread keeps any exception,
+err_times() raises Dead if the thread failed, never ran or had ended before
+finish(), and every check ends with one closing pulse the witness must
+count exactly once (judge_closing), so each run shows its own witness heard.
+
 Pure functions (test_witness.py, with its mutants):
   clock_ok(pairs)                (device, host) stamps -> (ok, median lag)
   clusters(ts, gap_s)            error-frame times -> groups, one per pulse
   judge_stop(err_ts, deadline, window_s, quiet_from, quiet_to)
+  stop_windows(t_from, t_stop, shift_s, quiet_s)  judge_stop's windows
   judge_count(err_ts, t0, t1, want)
   judge_groups(err_ts, t0, t1, n, interval_s)
+  judge_closing(err_ts, t0, t1)  the closing pulse: exactly one error frame
   real_channel(info)             refuses CANlib's virtual channels
+Witness(bus) is tested on a fake bus there too; open_kvaser() opens the
+bench's Kvaser for it.
 """
 
 import importlib.util
@@ -37,6 +47,11 @@ GROUP_GAP_S = 0.2    # error frames closer than this are one pulse's
 
 class Void(Exception):
     """The witness's stamps are not on the host's epoch clock."""
+
+
+class Dead(Exception):
+    """The witness did not hear the whole check: its thread failed, never
+    ran, or had ended before finish()."""
 
 
 def load_canbench(folder):
@@ -108,6 +123,23 @@ def judge_stop(err_ts, deadline, window_s=STOP_WINDOW_S, quiet_from=None, quiet_
     return "PASS", "last error frame %+.3f s from the deadline" % (last - deadline)
 
 
+def stop_windows(t_from, t_stop, shift_s=0.0, quiet_s=3.0):
+    """judge_stop's keywords {deadline, quiet_from, quiet_to} for delivery
+    from t_from that must stop at t_stop: the quiet window runs quiet_s past
+    t_stop, past slcan_spi_a's backstop at deadline + 2 s. The can-fail
+    judges the same record against a deadline shift_s early."""
+    return {"deadline": t_stop - shift_s,
+            "quiet_from": t_from,
+            "quiet_to": t_stop + quiet_s}
+
+
+def judge_closing(err_ts, t0, t1):
+    """The closing pulse, sent after a check's last window: exactly one
+    error frame in [t0, t1] shows this run's witness heard CAN1. -> (ok, why)"""
+    n = sum(1 for t in err_ts if t0 <= t <= t1)
+    return n == 1, "%d error frames for the closing pulse" % n
+
+
 def judge_count(err_ts, t0, t1, want):
     """Exactly want error frames in [t0, t1]? -> (ok, n)."""
     n = sum(1 for t in err_ts if t0 <= t <= t1)
@@ -145,52 +177,88 @@ def real_channel(info):
 
 # ---------------------------------------------------------------- the Kvaser
 
-class Witness(threading.Thread):
-    """Collects the Kvaser's frames on CAN1: errors [(device t, host t)] and
-    frames [(device t, host t, id)]."""
+def open_kvaser(canbench_folder, channel=0, bitrate=500000):
+    """The bench's Kvaser on CAN1 as a Witness; refuses a virtual or unnamed
+    CANlib channel (real_channel)."""
+    cb = load_canbench(canbench_folder)
+    from canbench.live import linux_fixes
+    linux_fixes.apply()
+    import can
+    from can.interfaces.kvaser import canlib as kvlib
+    info = kvlib.get_channel_info(channel)
+    ok, why = real_channel(info)
+    if not ok:
+        raise RuntimeError("CAN1 witness refused: %s" % why)
+    bus = can.Bus(interface="kvaser", channel=channel, bitrate=bitrate)
+    return Witness(bus, info, cb.__file__)
 
-    def __init__(self, canbench_folder, channel=0, bitrate=500000):
+
+class Witness(threading.Thread):
+    """Collects a bus's frames on CAN1: errors [(device t, host t)] and
+    frames [(device t, host t, id)]. bus: python-can's, recv() and
+    shutdown()."""
+
+    def __init__(self, bus, channel_info=None, canbench_file=None):
         super().__init__(daemon=True)
-        cb = load_canbench(canbench_folder)
-        from canbench.live import linux_fixes
-        linux_fixes.apply()
-        import can
-        from can.interfaces.kvaser import canlib as kvlib
-        self.channel_info = kvlib.get_channel_info(channel)
-        ok, why = real_channel(self.channel_info)
-        if not ok:
-            raise RuntimeError("CAN1 witness refused: %s" % why)
-        self.bus = can.Bus(interface="kvaser", channel=channel, bitrate=bitrate)
-        self.canbench_file = cb.__file__
+        self.bus = bus
+        self.channel_info = channel_info
+        self.canbench_file = canbench_file
         self.errors = []
         self.frames = []
         self.host_stamped = 0
+        self.failed = None
+        self.alive_at_finish = None     # None until finish()
+        self.lag = None
         self.stop_ev = threading.Event()
 
     def run(self):
-        while not self.stop_ev.is_set():
-            m = self.bus.recv(0.05)
-            if m is None:
-                continue
-            h = time.time()
-            if getattr(m, "host_stamped", False):
-                self.host_stamped += 1
-                continue
-            if m.is_error_frame:
-                self.errors.append((m.timestamp, h))
-            else:
-                self.frames.append((m.timestamp, h, m.arbitration_id))
+        try:
+            while not self.stop_ev.is_set():
+                m = self.bus.recv(0.05)
+                if m is None:
+                    continue
+                h = time.time()
+                if getattr(m, "host_stamped", False):
+                    self.host_stamped += 1
+                    continue
+                if m.is_error_frame:
+                    self.errors.append((m.timestamp, h))
+                else:
+                    self.frames.append((m.timestamp, h, m.arbitration_id))
+        except Exception as e:
+            self.failed = "%s: %s" % (type(e).__name__, e)
 
     def finish(self):
+        """Stops the thread, noting first whether it was still running."""
+        self.alive_at_finish = self.is_alive()
         self.stop_ev.set()
-        self.join(2)
+        if self.alive_at_finish:
+            self.join(2)
         self.bus.shutdown()
         return self
 
     def err_times(self):
-        """The error frames' device times; raises Void if their clock is not
-        the host's epoch clock."""
+        """The error frames' device times. Raises Dead if the witness did
+        not hear the whole check, Void if its clock is not the host's epoch
+        clock."""
+        if self.failed:
+            raise Dead("witness thread failed: %s" % self.failed)
+        if not self.alive_at_finish:
+            raise Dead("witness thread %s" % (
+                "not finished yet" if self.alive_at_finish is None
+                else "had ended before finish() (or never ran)"))
         ok, lag = clock_ok(self.errors + [(d, h) for d, h, _ in self.frames])
+        self.lag = lag
         if not ok:
             raise Void("witness stamps lag host receipt by %.3f s (limit %.1f)" % (lag, MAX_LAG_S))
         return [d for d, _ in self.errors]
+
+    def summary(self):
+        """For every check's detail (gen-inhibit tester's review point 3)."""
+        pairs = self.errors + [(d, h) for d, h, _ in self.frames]
+        lag = clock_ok(pairs)[1]
+        return {"median_lag_s": None if lag is None else round(lag, 4),
+                "errors": len(self.errors), "frames": len(self.frames),
+                "host_stamped": self.host_stamped, "failed": self.failed,
+                "alive_at_finish": self.alive_at_finish,
+                "channel": (self.channel_info or {}).get("device_name")}

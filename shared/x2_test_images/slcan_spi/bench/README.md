@@ -10,8 +10,8 @@ checked off the board by the shared `../../tools/check_image.py` with
 |---|---|
 | `slcan_spi_bench.py` | on the bench, with slcan_spi on the X2: `identity`, `attach`, `silence`, `reset`, `rate-tx`, `rate-rx`, `drops`, `busoff`, `overrun`, and the jamming checks (T13) `jam-channel`, `jam-concurrent`, `jam-boot-silence`, `jam-port`, `jam-calibration`, `jam-stop`, `jam-cap`, `jam-stop-cmd` (its docstring says what each shows); `--can-fail <check>` runs one check with one condition broken on the bench, which it must then FAIL |
 | `jam_host.py` | the jam channel's host side, written from the format (`../main/jam_frame.h`): command frames, the reply joiner, reply parsing |
-| `witness.py` | CAN1's witness, the Kvaser, opened through a can-tools pin's canbench (`--can-tools`), and the pure judges of what it saw: its clock against the host's, pulse groups, stops at a deadline, counts |
-| `test_jam_host.py`, `test_witness.py` | the tests of those two, no hardware, each with `--mutants`, its can-fail (8 and 9 mutants, made in memory) |
+| `witness.py` | CAN1's witness, the Kvaser, opened through a can-tools pin's canbench (`--can-tools`); its collecting thread, which never lets a failed or ended witness read as a quiet bus; and the pure judges of what it saw: its clock against the host's, pulse groups, stops at a deadline and their windows, counts, the closing pulse |
+| `test_jam_host.py`, `test_witness.py` | the tests of those two, no hardware (`test_witness.py` runs the collecting thread on a fake bus), each with `--mutants`, its can-fail (8 and 17 mutants, made in memory) |
 
 ## Running the bench checks
 
@@ -34,7 +34,11 @@ bench's Kvaser, and `--can-tools <worktree>/scratch/can-tools/<commit>`, the
 charge-interposer's can-tools pin installed by its `can_tools_pin.py
 install`. They put pulses on CAN1, where the WiCAN is, and the release note
 says so. `jam-stop` is run once on each image, dev, `stop_a_only` and
-`stop_b_only` (`--elf` the image's), each flashed in turn.
+`stop_b_only` (`--elf` the image's), each flashed in turn. Each witness
+check ends with one closing pulse the witness must count exactly once, so a
+deaf witness (wrong segment, cable off, a CANlib failure mid-check) makes
+the check NOT-RUN instead of passing a quiet window (the gen-inhibit
+tester's review, 2026-11-13).
 
 ## Gaps
 

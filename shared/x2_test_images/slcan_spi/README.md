@@ -87,7 +87,12 @@ re-flashed over USB. So the image uses T13's fallback: a reserved CAN frame
 with a signature, sent by the host through the SLCAN, which the image acts
 on and never puts on a bus. The replies come back as frames on a second
 reserved identifier in the host's receive stream, never put on a bus (user,
-2026-11-13). Both work through the kernel's slcan, with the interface up:
+2026-11-13). Both work through the kernel's slcan, with the interface up
+in normal mode. Linux's slcan sends nothing the host writes while the
+interface is listen-only (seen on the bench 2026-11-13: the command is
+counted in `tx_dropped` and never reaches the image), so a replay that wants
+jamming brings `canx2` up normal. On the raw tty the image takes a jam frame
+open normal, open listen-only or closed alike.
 
     cansend canx2 1F4A4D43#4A4D541400641388     # TRAIN 20 100 5000
     cansend canx2 1F4A4D43#4A4D530000000000     # STOP
