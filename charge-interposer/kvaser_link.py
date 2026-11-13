@@ -67,6 +67,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 NETDEV = "kvaser"
@@ -223,17 +224,30 @@ class EchoWatch:
         self.pending = collections.deque()
         self.calls = self.echoed = self.stray = 0
         self.echo_times = []
+        # one thread may send while another reads (bench_topology's drain)
+        self._lock = threading.Lock()
 
     def send(self, msg, timeout=0.05):
+        # noted BEFORE the send, its time set once send() returns: a reader
+        # on another thread may take the echo before send() has returned
+        entry = [None, _key(msg)]
+        with self._lock:
+            self.pending.append(entry)
         try:
             self.bus.send(msg, timeout=timeout)
         except Exception as e:                          # noqa: BLE001
+            with self._lock:
+                for i, x in enumerate(self.pending):
+                    if x is entry:
+                        del self.pending[i]
+                        break
             if _enobufs(e):
                 t = self.clock()
                 raise Stall("kvaser TX stall: send refused with ENOBUFS (%s)" % e, t)
             raise
-        self.pending.append((self.clock(), _key(msg)))
-        self.calls += 1
+        entry[0] = self.clock()
+        with self._lock:
+            self.calls += 1
 
     def _take(self, m):
         if getattr(m, "is_rx", True) or getattr(m, "is_error_frame", False):
@@ -241,23 +255,28 @@ class EchoWatch:
                 self.on_rx(m, self.clock())
             return
         k = _key(m)
-        for i, (_, pk) in enumerate(self.pending):
-            if pk == k:
-                del self.pending[i]
-                self.echoed += 1
-                self.echo_times.append(self.clock())
-                return
-        self.stray += 1
+        with self._lock:
+            for i, (_, pk) in enumerate(self.pending):
+                if pk == k:
+                    del self.pending[i]
+                    self.echoed += 1
+                    self.echo_times.append(self.clock())
+                    return
+            self.stray += 1
 
     def check(self):
-        if self.pending:
+        with self._lock:
+            ts = [e[0] for e in self.pending if e[0] is not None]
+            oldest = min(ts) if ts else None
+            n_pending, n_echoed = len(self.pending), self.echoed
+        if oldest is not None:
             t = self.clock()
-            age = t - self.pending[0][0]
+            age = t - oldest
             if age > self.stall_s:
                 raise Stall("kvaser TX stall: no own echo %.0f ms after send returned "
                             "(bound %.0f ms; %d sends unechoed, %d echoed)"
-                            % (age * 1000.0, self.stall_s * 1000.0, len(self.pending),
-                               self.echoed), t)
+                            % (age * 1000.0, self.stall_s * 1000.0, n_pending,
+                               n_echoed), t)
 
     def poll(self, timeout=0.0):
         m = self.bus.recv(timeout)

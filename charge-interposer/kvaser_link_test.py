@@ -256,7 +256,8 @@ class FakeBus:
             raise self.send_exc
         if m.data[0] not in self.lose:
             self.queue.append((self.clock() + self.delay, Msg(m.arbitration_id, m.data,
-                                                             is_rx=False)))
+                                                             is_rx=False,
+                                                             ext=m.is_extended_id)))
 
     def offer(self, m, at):
         self.queue.append((at, m))
@@ -320,6 +321,47 @@ def case_echo_watch(M, work):
     assert "ENOBUFS" in e, e
     w = M.EchoWatch(FakeBus(c, send_exc=ValueError("bad frame")), clock=c)
     _raises(ValueError, w.send, Msg(0x7A9, b"\x00"))
+
+
+class ThreadBus:
+    """Echoes every send at once, for two threads: one sends, one reads."""
+
+    def __init__(self):
+        import queue
+        self.q = queue.Queue()
+
+    def send(self, m, timeout=None):
+        self.q.put(Msg(m.arbitration_id, m.data, is_rx=False))
+
+    def recv(self, timeout=None):
+        import queue
+        try:
+            return self.q.get(timeout=timeout or 0.0001)
+        except queue.Empty:
+            return None
+
+
+def case_threads(M, work):
+    """One thread sends while another polls (bench_topology's drain): no
+    error from a deque changed while it is searched, every echo matched."""
+    import threading
+    w = M.EchoWatch(ThreadBus(), stall_s=5.0)
+    errs, stop = [], threading.Event()
+
+    def reader():
+        try:
+            while not stop.is_set():
+                w.poll(0.0005)
+        except Exception as e:                          # noqa: BLE001
+            errs.append(repr(e))
+    t = threading.Thread(target=reader)
+    t.start()
+    for i in range(20000):
+        w.send(Msg(0x7A9, i.to_bytes(3, "big")))
+    stop.set()
+    t.join(10)
+    w.finish()
+    assert not errs and w.echoed == 20000 and w.stray == 0, (errs[:2], w.echoed, w.stray)
 
 
 def case_watched_bus(M, work):
@@ -504,7 +546,7 @@ def case_scan(M, work):
 
 
 CASES = [case_link_state, case_set_up, case_set_down, case_not_taken, case_open_bus,
-         case_echo_watch, case_watched_bus, case_kernel_lines, case_recover, case_stall_lines,
+         case_echo_watch, case_threads, case_watched_bus, case_kernel_lines, case_recover, case_stall_lines,
          case_scan]
 
 MUTANTS = [
@@ -564,6 +606,14 @@ MUTANTS = [
     ("recover: the bench never stopped",
      "            return False, \"kvaser recovery FAILED, %s; %s\" % (why, _stop(why, environ))",
      "            return False, \"kvaser recovery FAILED, %s\" % why"),
+    ("no lock: a send races the reader's search",
+     "        with self._lock:\n            for i, (_, pk) in enumerate(self.pending):",
+     "        if True:\n            for i, (_, pk) in enumerate(list(self.pending)):"),
+    ("a send noted only after it returned (its echo may come first)",
+     "        with self._lock:\n            self.pending.append(entry)\n        try:\n"
+     "            self.bus.send(msg, timeout=timeout)\n",
+     "        try:\n            self.bus.send(msg, timeout=timeout)\n"
+     "            with self._lock:\n                self.pending.append(entry)\n"),
     ("WatchedBus: send not watched", "        self.watch.send(msg, timeout=0.05 if timeout is None else timeout)",
      "        self.bus.send(msg)"),
     ("WatchedBus: a buffered frame skips the bound", "        else:\n            self.watch.check()\n",
