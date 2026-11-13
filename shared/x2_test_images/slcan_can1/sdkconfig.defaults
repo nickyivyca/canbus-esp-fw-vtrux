@@ -1,0 +1,33 @@
+# slcan_can1's options. The committed sdkconfig is generated from this file;
+# change this file and regenerate it (README.md).
+
+# ---- The board: shared/boards/x2 sdkconfig.board, every option it names ----
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="managed_components/vtrux__x2/partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+CONFIG_PARTITION_TABLE_MD5=y
+CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM=y
+
+# ---- Required of the project (shared/boards/x2 board.json) ----
+# No ESP-IDF console: the USB Serial/JTAG port carries the SLCAN only.
+CONFIG_ESP_CONSOLE_NONE=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# The RTC watchdog the bootloader starts is stopped at app start.
+# CONFIG_BOOTLOADER_WDT_DISABLE_IN_USER_CODE is not set
+# A hung task panics, and a panic resets: the image boots silent (SPEC T8a).
+CONFIG_ESP_TASK_WDT_PANIC=y
+# CONFIG_BT_ENABLED is not set
+# CONFIG_SPIRAM is not set
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
+
+# ---- The image ----
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+# Nothing from the bootloader or ESP-IDF's log on the port: it carries the
+# SLCAN replies only.
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
+CONFIG_LOG_DEFAULT_LEVEL_NONE=y

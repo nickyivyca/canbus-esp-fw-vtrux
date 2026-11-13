@@ -1,0 +1,31 @@
+{
+  "image": "slcan_can1",
+  "owner": "charge-interposer tester",
+  "chip": "esp32s3",
+  "variants": {
+    "dev": {
+      "project_name": "slcan_can1",
+      "pinnable": true
+    }
+  },
+  "not_for_vehicle": false,
+  "required_strings": [
+    "V0101\r",
+    "NF001\r",
+    "slcan1 open=%d listen_only=%d accepted=%lu queue_full=%lu rejected=%lu tx=%lu tx_dropped=%lu rx=%lu rx_dropped=%lu bus_errors=%lu bus_off=%d\r\n"
+  ],
+  "forbidden_symbol_prefixes": [],
+  "required_symbols": [
+    "app_main",
+    "slcan1_app_boot",
+    "slcan1_app_step",
+    "slcan1_input",
+    "twai_port_setup",
+    "can_port_register"
+  ],
+  "required_config": {
+    "CONFIG_ESP_CONSOLE_NONE": true,
+    "CONFIG_LOG_DEFAULT_LEVEL_NONE": true,
+    "CONFIG_BOOTLOADER_LOG_LEVEL_NONE": true
+  }
+}

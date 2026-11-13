@@ -1,0 +1,48 @@
+dependencies:
+  idf:
+    source:
+      type: idf
+    version: 5.4.2
+  vtrux/can_port:
+    component_hash: bd1f765fa6ba8f6aff64632d1750e2d7f5e3369fb8b83f7c0959d06c0cafdf0c
+    dependencies:
+    - name: idf
+      version: '>=5.4'
+    source:
+      git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+      path: shared/can_port
+      type: git
+    version: 7655aeff61387282db406311f64b7dba1f23495e
+  vtrux/twai_port:
+    component_hash: ca63b1023762c56eb91c278e74ae9488cf432a0251358268ee4ac8c35dc31e9d
+    dependencies:
+    - name: idf
+      version: '>=5.4'
+    source:
+      git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+      path: shared/twai_port
+      type: git
+    targets:
+    - esp32c3
+    - esp32s3
+    version: 7655aeff61387282db406311f64b7dba1f23495e
+  vtrux/x2:
+    component_hash: addd71bce143d762264756b264e28c18391382be939d1e1c10bc824913b9e0b6
+    dependencies:
+    - name: idf
+      version: '>=5.4'
+    source:
+      git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+      path: shared/boards/x2
+      type: git
+    targets:
+    - esp32s3
+    version: 7655aeff61387282db406311f64b7dba1f23495e
+direct_dependencies:
+- idf
+- vtrux/can_port
+- vtrux/twai_port
+- vtrux/x2
+manifest_hash: fcc213189044a499fab5b14f7e0419c770f7e85fdd7646ffdb0842574884110c
+target: esp32s3
+version: 2.0.0
