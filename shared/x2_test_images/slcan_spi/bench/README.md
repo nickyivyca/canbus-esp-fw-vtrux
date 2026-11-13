@@ -2,11 +2,12 @@
 
 The charge-interposer tester's checks of slcan_spi against
 `../../SPEC.md` section 5 and T8a: committed harness, each with its
-can-fail (AGENTS.md "Spec, validation and verification").
+can-fail (AGENTS.md "Spec, validation and verification"). A built image is
+checked off the board by the shared `../../tools/check_image.py` with
+`../x2_image.json`, whose can-fails are its own tests (`../../tools/`).
 
 | File | What |
 |---|---|
-| `check_image.py` | no board: the image name says NOT FOR VEHICLE (T14), the image's ELF hash is its ELF's (T10, T12), and no TWAI symbol is linked (T13, this build); `--can-fail` runs each on a broken input, an object defining `twai_driver_install` compiled with ESP-IDF's S3 compiler among them |
 | `slcan_spi_bench.py` | on the bench, with slcan_spi on the X2: `identity`, `attach`, `silence`, `reset`, `rate-tx`, `rate-rx`, `drops`, `busoff`, `overrun` (its docstring says what each shows); `--can-fail <check>` runs one check with one condition broken on the bench, which it must then FAIL |
 
 ## Running the bench checks

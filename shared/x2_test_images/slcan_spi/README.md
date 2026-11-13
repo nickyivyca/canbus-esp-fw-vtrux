@@ -184,7 +184,7 @@ attached and up through a reset, counts one `rx_over_errors` (`attach`).
 | `x2_image.json` | what `../tools/check_image.py` and `../tools/archive.py` check of a build (format in `../tools/README.md`): each variant's name and whether it may be pinned, the boot line and the CAN1 banner line, no `twai_` symbol (the TWAI driver; the board layer's pin lookup `board_twai_pins` is not one), the jam engine's symbols, the console and log off, the whole ELF hash in the identity |
 | `main/` | the image's source; see `main/README.md` |
 | `test/` | the protocol layer's host unit tests and their mutants; see `test/README.md` |
-| `bench/` | the checks of a built image and of the image on the bench, each with its can-fail; see `bench/README.md` |
+| `bench/` | the checks of the image on the bench, each with its can-fail; see `bench/README.md` |
 
 ## Building
 
