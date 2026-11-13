@@ -86,7 +86,13 @@ def run_tests(w):
     check(w.state_only(0x04) and w.state_only(0x204) and w.state_only(0x40)
           and w.state_only(0x100), "CRTL / CRTL|CNT / BUSOFF / RESTARTED counted as a pulse")
     check(not w.state_only(0x8C), "CRTL with PROT|BUSERROR (a wire error) skipped")
-    check(not w.state_only(0x200), "CNT alone (no state class) skipped")
+    check(not w.state_only(0x200), "CNT alone (no state class) taken as a state change")
+    # on the wire: only these count (kvaser_usb's CNT-only 0x200 every 512 ms
+    # while not error-active, the tester's capture of 2026-11-13)
+    check(w.on_wire(0x288) and w.on_wire(0x28C) and w.on_wire(0x08) and w.on_wire(0x20),
+          "a wire error (0x288 / 0x28C / PROT / ACK) not taken as on the wire")
+    check(not w.on_wire(0x200) and not w.on_wire(0x204) and not w.on_wire(0x01),
+          "CNT alone / CRTL|CNT / TX_TIMEOUT taken as on the wire")
 
     # the opener: netdev kvaser, IFF_UP read back, refused otherwise
     sysfs = {"/sys/class/net/kvaser/flags": "0x40081\n"}
@@ -147,6 +153,23 @@ def run_tests(w):
     v, _ = w.judge_stop(train, **win)
     check(v == "FAIL", "the can-fail's shifted deadline passed: %s" % v)
 
+    # stamp margins (the gen-inhibit reviewer's ruling, relayed 2026-11-13):
+    # a window at least MARGIN_MIN x the host stamps' error, a gap of two
+    # stamps carrying both errors
+    check(w.stamp_margin("stop", 0.5)["ok"], "a 0.5 s window refused")
+    check(w.stamp_margin("edge", 0.015)["ok"], "a window of exactly 10x the error refused")
+    check(not w.stamp_margin("edge", 0.01)["ok"], "a 10 ms window (6.7x) accepted")
+    check(w.stamp_margin("interval", 0.05, 2)["ok"], "+/-50 ms on a gap of two stamps refused")
+    check(not w.stamp_margin("interval", 0.02, 2)["ok"],
+          "+/-20 ms on a gap of two stamps (6.7x) accepted")
+    e = w.stamp_margin("interval", 0.05, 2)
+    check(e["stamp_error_s"] == 0.003 and e["margin"] == 16.7, "margin entry %r" % e)
+    check(w.margins_ok([w.stamp_margin("a", 0.5), w.stamp_margin("b", 0.05)])[0],
+          "good margins refused")
+    ok, why = w.margins_ok([w.stamp_margin("a", 0.5), w.stamp_margin("tight", 0.005)])
+    check(not ok and "tight" in why, "a tight margin accepted or not named: %s" % why)
+    check(not w.margins_ok([])[0], "no stated margins accepted")
+
     fails.extend(witness_thread_tests(w))
     return fails
 
@@ -197,21 +220,24 @@ def witness_thread_tests(w):
     now = time.time()
     wit = run(FakeBus([msg(now - 0.01, can_id=0x288), msg(now - 0.01, host_stamped=True),
                        msg(now - 0.01, err=False, can_id=0x123), msg(now - 0.01, can_id=0x88),
-                       msg(now - 0.01, can_id=0x204), msg(now - 0.01, can_id=0x40)]))
+                       msg(now - 0.01, can_id=0x204), msg(now - 0.01, can_id=0x40),
+                       msg(now - 0.01, can_id=0x200), msg(now - 0.01, can_id=0x28C)]))
     try:
         errs = wit.err_times()
-        check(len(errs) == 2, "error frames %d, want 2 (host-stamped and state changes "
-              "left out)" % len(errs))
+        check(len(errs) == 3, "error frames %d, want 3 (host-stamped, state changes and "
+              "CNT alone left out)" % len(errs))
     except Exception as e:
         check(False, "a healthy witness raised %r" % e)
     s = wit.summary()
-    check(s["host_stamped"] == 1 and s["frames"] == 1 and s["errors"] == 2
-          and s["state_changes"] == 2, "summary counts %r" % s)
+    check(s["host_stamped"] == 1 and s["frames"] == 1 and s["errors"] == 3
+          and s["state_changes"] == 2 and s["non_wire"] == 1, "summary counts %r" % s)
+    check(sorted(x[1] for x in s["left_out"]) == ["0x200", "0x204", "0x40"],
+          "left-out frames not recorded with their ids: %r" % s.get("left_out"))
     check(s["median_lag_s"] is not None and 0 <= s["median_lag_s"] < 0.5,
           "summary lag %r" % s.get("median_lag_s"))
     check(wit.bus.shut, "bus not shut down")
 
-    wit = run(FakeBus([msg(now - 5.0)]))
+    wit = run(FakeBus([msg(now - 5.0, can_id=0x288)]))
     try:
         wit.err_times()
         check(False, "5 s lag not VOID")
@@ -272,8 +298,14 @@ MUTANTS = [
     ("dead-unchecked", "if not self.alive_at_finish:", "if False:"),
     ("failed-unchecked", "if self.failed:", "if False:"),
     # 2026-11-13: the SocketCAN witness and the CAN_ERR-class skip (C)
-    ("state-changes-counted", "                if m.is_error_frame and state_only(m.arbitration_id):",
+    ("state-changes-counted", "                if m.is_error_frame and not on_wire(m.arbitration_id):",
      "                if False:"),
+    ("cnt-alone-counted", "                if m.is_error_frame and not on_wire(m.arbitration_id):",
+     "                if m.is_error_frame and state_only(m.arbitration_id):"),
+    ("left-out-unrecorded", "if len(self.left_out) < LEFT_OUT_MAX:", "if False:"),
+    ("on-wire-any","    return bool(can_id & WIRE_CLASSES)\n", "    return True\n"),
+    ("non-wire-as-state", "                        self.non_wire += 1\n",
+     "                        self.state_changes += 1\n"),
     ("wire-errors-skipped", "    return bool(can_id & STATE_CLASSES) and not (can_id & WIRE_CLASSES)",
      "    return bool(can_id & (STATE_CLASSES | WIRE_CLASSES))"),
     ("state-with-wire-skipped", "    return bool(can_id & STATE_CLASSES) and not (can_id & WIRE_CLASSES)",
@@ -282,6 +314,12 @@ MUTANTS = [
     ("any-netdev", "    if channel != NETDEV:", "    if False:"),
     ("link-unchecked", "    ok, why = link_up(channel, root, read)\n    if not ok:",
      "    ok, why = link_up(channel, root, read)\n    if False:"),
+    # 2026-11-13: stamp margins
+    ("margin-always-ok", '"ok": margin >= MARGIN_MIN - 1e-9}', '"ok": True}'),
+    ("margin-one-stamp", "    err = stamps * STAMP_ERR_S\n", "    err = STAMP_ERR_S\n"),
+    ("margin-min-lowered", '"ok": margin >= MARGIN_MIN - 1e-9}', '"ok": margin >= 5}'),
+    ("margins-unchecked", "    if low:\n", "    if False:\n"),
+    ("margins-empty-ok", "    if not entries:\n", "    if False:\n"),
 ]
 
 

@@ -1368,6 +1368,20 @@ def open_witness(ctx):
         raise Fail("CAN1 witness: %s" % e)
 
 
+def stamp_margins(*entries):
+    """The check's judged tolerances against the witness's host-stamp error
+    (witness.stamp_margin), the closing pulse's among them, for its detail;
+    Fail (the check NOT-RUN, VOID) if one is under witness.MARGIN_MIN (the
+    gen-inhibit reviewer's ruling, relayed by the charge-interposer reviewer,
+    2026-11-13). Checked before the check touches the bench."""
+    m = list(entries) + [witness.stamp_margin(
+        "the closing pulse's count window opens before its send", witness.LEAD_S)]
+    ok, why = witness.margins_ok(m)
+    if not ok:
+        raise Fail("VOID: %s" % why)
+    return m
+
+
 def wit_errs(wit, closing=None):
     """The witness's error-frame times, or Fail (the check NOT-RUN) if it
     did not hear the whole check (Dead), its clock is off (Void), or the
@@ -1437,7 +1451,7 @@ class JamSession:
         counted from its send to 1 s after its DONE."""
         t, _ = self.cmd(jam_host.pulses(20, 1, 10), ("DONE", "ERR"), 3.0)
         time.sleep(1.0)
-        self.closing_window = (t - 0.05, time.time())
+        self.closing_window = (t - witness.LEAD_S, time.time())
 
     def finish(self):
         self.sock.close()
@@ -1459,6 +1473,8 @@ def check_jam_boot_silence(ctx, can_fail):
     raw tty after the third boot line, which the witness must see. The
     closing pulse is sent on the raw tty the same way, after the third
     window."""
+    margins = stamp_margins(witness.stamp_margin(
+        "each window, from a reset to 5 s after its boot line (the windows abut)", 5.0))
     detach()
     down(PEER)
     wit = open_witness(ctx)
@@ -1484,7 +1500,7 @@ def check_jam_boot_silence(ctx, can_fail):
         tc = time.time()
         s.write(("T%08X8%s\r" % (jam_host.CMD_ID, jam_host.pulses(20, 1, 10).hex().upper())).encode())
         tty_drain(s, 1.5)
-        closing = (tc - 0.05, time.time())
+        closing = (tc - witness.LEAD_S, time.time())
     finally:
         s.close()
         wit.finish()
@@ -1492,7 +1508,7 @@ def check_jam_boot_silence(ctx, can_fail):
     counts = [witness.judge_count(errs, a, b, 0)[1] for a, b, _ in windows]
     detail = {"windows": [(round(a, 3), round(b, 3), ok) for a, b, ok in windows],
               "error_frames": counts, "closing": [round(x, 3) for x in closing],
-              "witness_record": wit.summary()}
+              "stamp_margins": margins, "witness_record": wit.summary()}
     problems = []
     if not all(ok for _, _, ok in windows):
         problems.append("a reset with no boot line")
@@ -1506,6 +1522,8 @@ def check_jam_port(ctx, can_fail):
     (the gen-inhibit tester's port check, asked for slcan_spi itself,
     2026-11-13), counted from the command to 1 s after its DONE (the
     window up to the next command). can-fail: two pulses sent."""
+    margins = stamp_margins(witness.stamp_margin(
+        "the count window opens before the command's send", witness.LEAD_S))
     js = JamSession(ctx)
     n = 2 if can_fail else 1
     try:
@@ -1516,9 +1534,9 @@ def check_jam_port(ctx, can_fail):
     finally:
         js.finish()
     errs = js.errs()
-    ok, got = witness.judge_count(errs, t - 0.05, t_end, 1)
+    ok, got = witness.judge_count(errs, t - witness.LEAD_S, t_end, 1)
     detail = {"image": js.name, "pulses_sent": n, "replies": lines, "error_frames": got,
-              "witness_record": js.wit.summary()}
+              "stamp_margins": margins, "witness_record": js.wit.summary()}
     problems = [] if ok else ["%d error frames for one pulse" % got]
     if not reply_of(lines, "DONE", "PULSES"):
         problems.append("no DONE PULSES")
@@ -1530,6 +1548,11 @@ def check_jam_calibration(ctx, can_fail):
     control, 9 at 1.1 s, which must read as 9 at 1.1 s and not as 10 at 1 s
     (the gen-inhibit tester's short calibration, 2026-11-13). can-fail: the
     10 at 1 s judged as 9 at 1.1 s."""
+    margins = stamp_margins(
+        witness.stamp_margin("each interval within +/- GROUP_TOL_S of the asked one, "
+                             "the gap of two stamps", witness.GROUP_TOL_S, 2),
+        witness.stamp_margin("one pulse's error frames grouped within GROUP_GAP_S, "
+                             "the gap of two stamps", witness.GROUP_GAP_S, 2))
     js = JamSession(ctx)
     try:
         t1, l1 = js.cmd(jam_host.pulses(20, 10, 1000), ("DONE", "ERR"), 15.0)
@@ -1548,7 +1571,7 @@ def check_jam_calibration(ctx, can_fail):
     ctl, whyc = witness.judge_groups(errs, t2, e2, 10, 1.0)
     detail = {"image": js.name, "ten_at_1s": why1, "nine_at_1_1s": why2,
               "control_as_ten": whyc, "replies": l1 + l2,
-              "witness_record": js.wit.summary()}
+              "stamp_margins": margins, "witness_record": js.wit.summary()}
     problems = []
     if not ok1:
         problems.append("10 at 1 s: %s" % why1)
@@ -1569,6 +1592,17 @@ STOP_EXPECT = {
 }
 
 
+def stop_margins(quiet_s=3.0):
+    """jam-stop's, jam-cap's and jam-stop-cmd's stamp margins: the stop
+    window around the deadline (or the host's STOP) and the quiet window
+    after it, each against an edge on the host's clock."""
+    return stamp_margins(
+        witness.stamp_margin("the last error frame within STOP_WINDOW_S of the deadline",
+                             witness.STOP_WINDOW_S),
+        witness.stamp_margin("the quiet window after the stop window",
+                             quiet_s - witness.STOP_WINDOW_S))
+
+
 def judge_train_stop(js, t_sent, ms, can_fail, quiet_s=3.0):
     """The witness's verdict on a TRAIN sent at t_sent for ms: the last error
     frame within 0.5 s of the deadline and none from then to quiet_s after it
@@ -1585,6 +1619,7 @@ def check_jam_stop(ctx, can_fail):
     esp_timer, alone (stop_by=deadline_timer); slcan_spi_b, stop (b), the
     chunk sizing, alone (end=deadline_layer_b). can-fail: the same record
     judged against a deadline 2 s early."""
+    margins = stop_margins()
     js = JamSession(ctx)
     try:
         t, _ = js.cmd(jam_host.train(20, 5000, 3000), ("ACK", "ERR"))
@@ -1595,7 +1630,8 @@ def check_jam_stop(ctx, can_fail):
         js.finish()
     verdict, why = judge_train_stop(js, t, 3000, can_fail)
     detail = {"image": js.name, "witness": verdict, "why": why, "done": done,
-              "replies": js.j.lines, "witness_record": js.wit.summary()}
+              "replies": js.j.lines, "stamp_margins": margins,
+              "witness_record": js.wit.summary()}
     problems = []
     if verdict != "PASS":
         problems.append("witness %s: %s" % (verdict, why))
@@ -1610,6 +1646,7 @@ def check_jam_cap(ctx, can_fail):
     """A TRAIN asked for 60 s is capped at 30 s (T13: every command capped at
     30 s): CAPPED, and the witness's last error frame within 0.5 s of 30 s.
     can-fail: judged against a deadline 2 s early."""
+    margins = stop_margins()
     js = JamSession(ctx)
     try:
         t, _ = js.cmd(jam_host.train(20, 5000, 60000), ("ACK", "ERR"))
@@ -1620,7 +1657,8 @@ def check_jam_cap(ctx, can_fail):
         js.finish()
     verdict, why = judge_train_stop(js, t, 30000, can_fail)
     detail = {"image": js.name, "witness": verdict, "why": why, "done": done,
-              "replies": js.j.lines, "witness_record": js.wit.summary()}
+              "replies": js.j.lines, "stamp_margins": margins,
+              "witness_record": js.wit.summary()}
     problems = []
     if verdict != "PASS":
         problems.append("witness %s: %s" % (verdict, why))
@@ -1636,6 +1674,7 @@ def check_jam_stop_cmd(ctx, can_fail):
     error frame within 0.5 s of when the host sent STOP (not of the reply,
     gen-inhibit tester 2026-11-13) and none for 3 s after; DONE end=stopped
     stop_by=stop_cmd. can-fail: judged against a STOP 2 s earlier."""
+    margins = stop_margins()
     js = JamSession(ctx)
     try:
         t, _ = js.cmd(jam_host.train(20, 5000, 20000), ("ACK", "ERR"))
@@ -1650,7 +1689,7 @@ def check_jam_stop_cmd(ctx, can_fail):
         t, t_stop, 2.0 if can_fail else 0.0, 3.0))
     ack = reply_of(js.j.lines, "ACK", "STOP")
     detail = {"image": js.name, "witness": verdict, "why": why, "done": done,
-              "ack_stop": ack, "replies": js.j.lines,
+              "ack_stop": ack, "replies": js.j.lines, "stamp_margins": margins,
               "witness_record": js.wit.summary()}
     problems = []
     if verdict != "PASS":

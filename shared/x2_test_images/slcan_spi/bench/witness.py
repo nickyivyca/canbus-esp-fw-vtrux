@@ -11,12 +11,16 @@ Its stamps are software stamps on the host's epoch clock, which clock_ok
 accepts as before. An error frame that reports only a controller state
 change, by its CAN_ERR class (state_only: CRTL, BUSOFF or RESTARTED with no
 wire class), is left out of counts and of the lag and counted apart
-(state_changes); kvaser_usb gives one wire-class error frame, 0x288, per
-jam pulse. As the gen-inhibit tester's jammer checks do
+(state_changes), and so is any other error frame with no wire class
+(on_wire; non_wire: kvaser_usb's CAN_ERR_CNT-only frame every 512 ms while
+its controller is not error-active); kvaser_usb gives one wire-class error
+frame, 0x288 (0x28C with a state change), per jam pulse. As the gen-inhibit tester's jammer checks do
 (x2_jammer.py, witness_clock.py, agreed 2026-11-13): delivery is judged
 from what the witness saw, never from what was commanded; the times judged
-are the Kvaser's device stamps (msg.timestamp), accepted only when their
-median lag behind host receipt is under MAX_LAG_S, else the check is VOID;
+are msg.timestamp (on kvaser_usb the kernel's receipt stamp: it has no
+device stamps), accepted only when their median lag behind host receipt is
+under MAX_LAG_S, else the check is VOID, and only in windows at least
+MARGIN_MIN times the stamps' measured error (stamp_margin, 2026-11-13);
 and state-only error frames stamped by the host, should a canbench backend
 make them, are left out of counts and of the lag.
 
@@ -34,8 +38,12 @@ Pure functions (test_witness.py, with its mutants):
   judge_count(err_ts, t0, t1, want)
   judge_groups(err_ts, t0, t1, n, interval_s)
   judge_closing(err_ts, t0, t1)  the closing pulse: exactly one error frame
+  stamp_margin(what, tol_s, stamps), margins_ok(entries)
+                                 a judged tolerance against the host stamps'
+                                 error (STAMP_ERR_S), at least MARGIN_MIN
   real_channel(info)             refuses CANlib's virtual channels (CANlib only)
   state_only(can_id)             a state-change error frame, by CAN_ERR class
+  on_wire(can_id)                an error seen on the wire, the only kind counted
   link_up(netdev, root)          IFF_UP in sysfs
 Witness(bus) is tested on a fake bus there too; open_kvaser() opens the
 bench's Kvaser for it.
@@ -51,6 +59,20 @@ import time
 MAX_LAG_S = 2.0     # witness_clock.py's MAX_LAG_S (gen-inhibit tester)
 STOP_WINDOW_S = 0.5  # last error frame within this of the deadline
 GROUP_GAP_S = 0.2    # error frames closer than this are one pulse's
+GROUP_TOL_S = 0.05   # judge_groups: each interval within this of the asked one
+LEAD_S = 0.05        # a count window opens this long before its command's send
+
+# The stamps judged are host stamps: kvaser_usb has none of its own, and
+# python-can's socketcan gives the kernel's receipt time. Their error, the
+# charge-interposer tester's measurement of kvaser_usb on madhouse-debian
+# (M3/M4, 2026-11-13): about 1.5 ms worst. The ruling (the gen-inhibit
+# reviewer, relayed by the charge-interposer reviewer, 2026-11-13): a window
+# judged on these stamps must be at least MARGIN_MIN times their error;
+# anything tighter goes to the PCAN or to counts. Each check's detail records
+# its margins (stamp_margin), and a check with one under MARGIN_MIN is not run.
+STAMP_ERR_S = 0.0015
+MARGIN_MIN = 10.0
+LEFT_OUT_MAX = 200   # error frames left out (not on the wire) kept with id and data
 
 
 class Void(Exception):
@@ -154,7 +176,32 @@ def judge_count(err_ts, t0, t1, want):
     return n == want, n
 
 
-def judge_groups(err_ts, t0, t1, n, interval_s, tol_s=0.05):
+def stamp_margin(what, tol_s, stamps=1):
+    """One judged tolerance against the host stamps' error: tol_s, the
+    narrowest distance the judgement rests on, read from `stamps` stamps (1:
+    a stamp against an edge on the host's clock; 2: the gap between two
+    stamps, each with its own error). -> the check detail's entry, with ok
+    when the margin (tol_s over the error) is at least MARGIN_MIN."""
+    err = stamps * STAMP_ERR_S
+    margin = tol_s / err
+    return {"what": what, "tolerance_s": tol_s, "stamps": stamps,
+            "stamp_error_s": round(err, 4), "margin": round(margin, 1),
+            "ok": margin >= MARGIN_MIN - 1e-9}
+
+
+def margins_ok(entries):
+    """-> (ok, why): every stamp_margin entry at least MARGIN_MIN; why names
+    those under it. No entries is not ok: a check judged on stamps states
+    what it judged."""
+    if not entries:
+        return False, "no stamp margins stated"
+    low = ["%s: %.1fx" % (e["what"], e["margin"]) for e in entries if not e["ok"]]
+    if low:
+        return False, "stamp margin under %gx: %s" % (MARGIN_MIN, "; ".join(low))
+    return True, "every stamp margin at least %gx (stamp error %.4f s)" % (MARGIN_MIN, STAMP_ERR_S)
+
+
+def judge_groups(err_ts, t0, t1, n, interval_s, tol_s=GROUP_TOL_S):
     """n groups of one error frame each in [t0, t1], interval_s apart
     (within tol_s)? -> (ok, why)."""
     g = clusters([t for t in err_ts if t0 <= t <= t1])
@@ -202,6 +249,17 @@ def state_only(can_id):
     class and no wire class. It is not a pulse on the wire: counted, it
     would make one pulse two, or a pulse where a state only recovered."""
     return bool(can_id & STATE_CLASSES) and not (can_id & WIRE_CLASSES)
+
+
+def on_wire(can_id):
+    """An error frame that reports an error seen on the wire, by its CAN_ERR
+    class: only these are counted as pulses. Besides the state changes
+    (state_only), kvaser_usb sends a frame with CAN_ERR_CNT alone (0x200,
+    the error counters, data all zero) every 512 ms while its controller is
+    not error-active, so after any long train (the charge-interposer
+    tester's capture, 2026-11-13: two of them in jam-stop's closing-pulse
+    window made its count 3); counted, it would be a pulse nobody sent."""
+    return bool(can_id & WIRE_CLASSES)
 
 
 # ---------------------------------------------------------------- the Kvaser
@@ -264,6 +322,8 @@ class Witness(threading.Thread):
         self.frames = []
         self.host_stamped = 0
         self.state_changes = 0          # error frames left out by CAN_ERR class
+        self.non_wire = 0               # neither a state change nor on the wire (CNT alone)
+        self.left_out = []              # (stamp, id, data hex) of each frame left out, the first LEFT_OUT_MAX
         self.failed = None
         self.alive_at_finish = None     # None until finish()
         self.lag = None
@@ -279,8 +339,14 @@ class Witness(threading.Thread):
                 if getattr(m, "host_stamped", False):
                     self.host_stamped += 1
                     continue
-                if m.is_error_frame and state_only(m.arbitration_id):
-                    self.state_changes += 1
+                if m.is_error_frame and not on_wire(m.arbitration_id):
+                    if len(self.left_out) < LEFT_OUT_MAX:
+                        self.left_out.append((round(m.timestamp, 4), hex(m.arbitration_id),
+                                              bytes(getattr(m, "data", None) or b"").hex()))
+                    if state_only(m.arbitration_id):
+                        self.state_changes += 1
+                    else:
+                        self.non_wire += 1
                     continue
                 if m.is_error_frame:
                     self.errors.append((m.timestamp, h))
@@ -321,6 +387,8 @@ class Witness(threading.Thread):
         return {"median_lag_s": None if lag is None else round(lag, 4),
                 "errors": len(self.errors), "frames": len(self.frames),
                 "host_stamped": self.host_stamped,
-                "state_changes": self.state_changes, "failed": self.failed,
+                "state_changes": self.state_changes, "non_wire": self.non_wire,
+                "left_out": self.left_out,
+                "failed": self.failed,
                 "alive_at_finish": self.alive_at_finish,
                 "channel": (self.channel_info or {}).get("device_name")}
