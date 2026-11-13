@@ -2,11 +2,17 @@
 and the pure judges of what it saw. NOT FOR VEHICLE (SPEC T14).
 
 The witness is the bench's Kvaser on CAN1, in NORMAL mode (a silent Kvaser
-reports no error frames whatever happens), opened with python-can's
-"kvaser" interface (linuxcan CANlib) after can-tools'
-canbench.live.linux_fixes.apply(), from a can-tools pin's canbench/ loaded
-by file (AGENTS.md "can-tools"; the charge-interposer tester runs it with
-the interposer's pin). As the gen-inhibit tester's jammer checks do
+reports no error frames whatever happens). Since 2026-11-13 it is the
+kernel's kvaser_usb, netdev kvaser, opened with python-can's socketcan
+after its link reads up in sysfs (open_kvaser, link_up; the
+charge-interposer reviewer's T13 and C). Until then it was python-can's
+"kvaser" interface (linuxcan CANlib) through a can-tools pin's canbench.
+Its stamps are software stamps on the host's epoch clock, which clock_ok
+accepts as before. An error frame that reports only a controller state
+change, by its CAN_ERR class (state_only: CRTL, BUSOFF or RESTARTED with no
+wire class), is left out of counts and of the lag and counted apart
+(state_changes); kvaser_usb gives one wire-class error frame, 0x288, per
+jam pulse. As the gen-inhibit tester's jammer checks do
 (x2_jammer.py, witness_clock.py, agreed 2026-11-13): delivery is judged
 from what the witness saw, never from what was commanded; the times judged
 are the Kvaser's device stamps (msg.timestamp), accepted only when their
@@ -28,7 +34,9 @@ Pure functions (test_witness.py, with its mutants):
   judge_count(err_ts, t0, t1, want)
   judge_groups(err_ts, t0, t1, n, interval_s)
   judge_closing(err_ts, t0, t1)  the closing pulse: exactly one error frame
-  real_channel(info)             refuses CANlib's virtual channels
+  real_channel(info)             refuses CANlib's virtual channels (CANlib only)
+  state_only(can_id)             a state-change error frame, by CAN_ERR class
+  link_up(netdev, root)          IFF_UP in sysfs
 Witness(bus) is tested on a fake bus there too; open_kvaser() opens the
 bench's Kvaser for it.
 """
@@ -166,7 +174,8 @@ def real_channel(info):
     still lists its 'Kvaser Virtual CAN' channels, and channel 0 then opens
     a virtual channel without a word (the gen-inhibit tester, on the bench,
     2026-11-13), which would see nothing and read as a silent bus. So a
-    virtual or unnamed channel is refused."""
+    virtual or unnamed channel is refused. (CANlib only: since 2026-11-13
+    open_kvaser opens the kernel's kvaser_usb, checked by link_up.)"""
     name = (info or {}).get("device_name") or ""
     if not name.strip():
         return False, "channel has no device name"
@@ -175,22 +184,70 @@ def real_channel(info):
     return True, name
 
 
+# SocketCAN's error classes (linux/can/error.h), in an error frame's id
+CAN_ERR_TX_TIMEOUT, CAN_ERR_LOSTARB, CAN_ERR_CRTL = 0x1, 0x2, 0x4
+CAN_ERR_PROT, CAN_ERR_TRX, CAN_ERR_ACK = 0x8, 0x10, 0x20
+CAN_ERR_BUSOFF, CAN_ERR_BUSERROR, CAN_ERR_RESTARTED = 0x40, 0x80, 0x100
+# a controller STATE change: error warning / passive, bus-off, restarted
+STATE_CLASSES = CAN_ERR_CRTL | CAN_ERR_BUSOFF | CAN_ERR_RESTARTED
+# an error SEEN ON THE WIRE, what a jam pulse makes (kvaser_usb reports one
+# 0x288, BUSERROR | PROT | CNT, per pulse: the gen-inhibit tester's probe,
+# 2026-11-13, 11 of 11)
+WIRE_CLASSES = CAN_ERR_LOSTARB | CAN_ERR_PROT | CAN_ERR_TRX | CAN_ERR_ACK | CAN_ERR_BUSERROR
+
+
+def state_only(can_id):
+    """An error frame that reports only a controller state change, by its
+    CAN_ERR class (the charge-interposer reviewer's C, 2026-11-13): a state
+    class and no wire class. It is not a pulse on the wire: counted, it
+    would make one pulse two, or a pulse where a state only recovered."""
+    return bool(can_id & STATE_CLASSES) and not (can_id & WIRE_CLASSES)
+
+
 # ---------------------------------------------------------------- the Kvaser
 
-def open_kvaser(canbench_folder, channel=0, bitrate=500000):
-    """The bench's Kvaser on CAN1 as a Witness; refuses a virtual or unnamed
-    CANlib channel (real_channel)."""
-    cb = load_canbench(canbench_folder)
-    from canbench.live import linux_fixes
-    linux_fixes.apply()
-    import can
-    from can.interfaces.kvaser import canlib as kvlib
-    info = kvlib.get_channel_info(channel)
-    ok, why = real_channel(info)
+NETDEV = "kvaser"
+SYSFS_NET = "/sys/class/net"
+IFF_UP = 0x1
+
+
+def _read(path):
+    with open(path) as f:
+        return f.read()
+
+
+def link_up(netdev=NETDEV, root=SYSFS_NET, read=_read):
+    """-> (ok, why): the netdev's IFF_UP read in sysfs; a missing netdev or
+    unreadable flags is not up. read: a stand-in (test_witness.py)."""
+    p = os.path.join(root, netdev, "flags")
+    try:
+        flags = int(read(p).strip(), 16)
+    except (OSError, ValueError) as e:
+        return False, "%s's link state cannot be read (%s: %s)" % (netdev, p, e)
+    if not flags & IFF_UP:
+        return False, "%s's link reads down in sysfs" % netdev
+    return True, "%s up (IFF_UP read back)" % netdev
+
+
+def open_kvaser(canbench_folder=None, channel=NETDEV, bitrate=500000, root=SYSFS_NET,
+                can_mod=None, read=_read):
+    """The bench's Kvaser on CAN1 as a Witness: the kernel's kvaser_usb,
+    netdev kvaser by name, python-can's socketcan (since 2026-11-13, when
+    canctl's owner moved the Kvaser off linuxcan's leaf; the
+    charge-interposer reviewer's T13: the same SocketCAN path as the
+    interposer's harness). The caller brings the link up, normal mode at
+    500 kbit/s (slcan_spi_bench: canctl up kvaser 500000); IFF_UP is read
+    back here, and a link not up, or any netdev but kvaser, is refused.
+    canbench_folder and bitrate are no longer read."""
+    if channel != NETDEV:
+        raise RuntimeError("CAN1 witness refused: netdev %r, not %r" % (channel, NETDEV))
+    ok, why = link_up(channel, root, read)
     if not ok:
         raise RuntimeError("CAN1 witness refused: %s" % why)
-    bus = can.Bus(interface="kvaser", channel=channel, bitrate=bitrate)
-    return Witness(bus, info, cb.__file__)
+    if can_mod is None:
+        import can as can_mod
+    bus = can_mod.Bus(interface="socketcan", channel=channel, receive_own_messages=False)
+    return Witness(bus, {"device_name": "%s (kvaser_usb, socketcan)" % channel}, None)
 
 
 class Witness(threading.Thread):
@@ -206,6 +263,7 @@ class Witness(threading.Thread):
         self.errors = []
         self.frames = []
         self.host_stamped = 0
+        self.state_changes = 0          # error frames left out by CAN_ERR class
         self.failed = None
         self.alive_at_finish = None     # None until finish()
         self.lag = None
@@ -220,6 +278,9 @@ class Witness(threading.Thread):
                 h = time.time()
                 if getattr(m, "host_stamped", False):
                     self.host_stamped += 1
+                    continue
+                if m.is_error_frame and state_only(m.arbitration_id):
+                    self.state_changes += 1
                     continue
                 if m.is_error_frame:
                     self.errors.append((m.timestamp, h))
@@ -259,6 +320,7 @@ class Witness(threading.Thread):
         lag = clock_ok(pairs)[1]
         return {"median_lag_s": None if lag is None else round(lag, 4),
                 "errors": len(self.errors), "frames": len(self.frames),
-                "host_stamped": self.host_stamped, "failed": self.failed,
+                "host_stamped": self.host_stamped,
+                "state_changes": self.state_changes, "failed": self.failed,
                 "alive_at_finish": self.alive_at_finish,
                 "channel": (self.channel_info or {}).get("device_name")}

@@ -77,6 +77,55 @@ def run_tests(w):
     check(not w.real_channel({"device_name": ""})[0], "unnamed accepted")
     check(not w.real_channel(None)[0], "no info accepted")
 
+    # CAN_ERR classes (the charge-interposer reviewer's C, 2026-11-13): a
+    # state change alone is skipped; a wire error, with or without a state
+    # class beside it, counts; kvaser_usb's per-pulse 0x288 counts
+    check(not w.state_only(0x288), "kvaser_usb's jam pulse (0x288) taken as a state change")
+    check(not w.state_only(0x08) and not w.state_only(0x80) and not w.state_only(0x20),
+          "PROT / BUSERROR / ACK taken as a state change")
+    check(w.state_only(0x04) and w.state_only(0x204) and w.state_only(0x40)
+          and w.state_only(0x100), "CRTL / CRTL|CNT / BUSOFF / RESTARTED counted as a pulse")
+    check(not w.state_only(0x8C), "CRTL with PROT|BUSERROR (a wire error) skipped")
+    check(not w.state_only(0x200), "CNT alone (no state class) skipped")
+
+    # the opener: netdev kvaser, IFF_UP read back, refused otherwise
+    sysfs = {"/sys/class/net/kvaser/flags": "0x40081\n"}
+
+    def read(p):
+        if p not in sysfs:
+            raise OSError(2, "No such file", p)
+        return sysfs[p]
+    opened = []
+
+    class Can:
+        @staticmethod
+        def Bus(**kw):
+            opened.append(kw)
+            return FakeBus([])
+    check(w.link_up("kvaser", read=read)[0], "an UP link read as down")
+    wit = w.open_kvaser(can_mod=Can, read=read)
+    check(opened == [{"interface": "socketcan", "channel": "kvaser",
+                      "receive_own_messages": False}],
+          "the witness not opened as socketcan netdev kvaser: %r" % opened)
+    check("kvaser_usb" in (wit.channel_info or {}).get("device_name", ""),
+          "the channel not named in the summary")
+    for content, what in (("0x40080\n", "a DOWN link"), ("junk\n", "unreadable flags")):
+        sysfs["/sys/class/net/kvaser/flags"] = content
+        del opened[:]
+        try:
+            w.open_kvaser(can_mod=Can, read=read)
+            check(False, "%s accepted" % what)
+        except RuntimeError:
+            check(opened == [], "%s: something opened" % what)
+    sysfs["/sys/class/net/kvaser/flags"] = "0x40081\n"
+    for ch in ("can0", 0, None):
+        try:
+            w.open_kvaser(channel=ch, can_mod=Can, read=read)
+            check(False, "netdev %r accepted" % (ch,))
+        except RuntimeError:
+            pass
+    check(not w.link_up("canmain", read=read)[0], "a missing netdev read as up")
+
     # the closing pulse, every witness check's positive control (gen-inhibit
     # tester's review, 2026-11-13): exactly one error frame
     check(w.judge_closing([5.0], 4.9, 6.0)[0], "closing pulse heard refused")
@@ -146,16 +195,18 @@ def witness_thread_tests(w):
         return wit.finish()
 
     now = time.time()
-    wit = run(FakeBus([msg(now - 0.01), msg(now - 0.01, host_stamped=True),
-                       msg(now - 0.01, err=False, can_id=0x123), msg(now - 0.01)]))
+    wit = run(FakeBus([msg(now - 0.01, can_id=0x288), msg(now - 0.01, host_stamped=True),
+                       msg(now - 0.01, err=False, can_id=0x123), msg(now - 0.01, can_id=0x88),
+                       msg(now - 0.01, can_id=0x204), msg(now - 0.01, can_id=0x40)]))
     try:
         errs = wit.err_times()
-        check(len(errs) == 2, "error frames %d, want 2 (host-stamped left out)" % len(errs))
+        check(len(errs) == 2, "error frames %d, want 2 (host-stamped and state changes "
+              "left out)" % len(errs))
     except Exception as e:
         check(False, "a healthy witness raised %r" % e)
     s = wit.summary()
-    check(s["host_stamped"] == 1 and s["frames"] == 1 and s["errors"] == 2,
-          "summary counts %r" % s)
+    check(s["host_stamped"] == 1 and s["frames"] == 1 and s["errors"] == 2
+          and s["state_changes"] == 2, "summary counts %r" % s)
     check(s["median_lag_s"] is not None and 0 <= s["median_lag_s"] < 0.5,
           "summary lag %r" % s.get("median_lag_s"))
     check(wit.bus.shut, "bus not shut down")
@@ -220,6 +271,17 @@ MUTANTS = [
     ("failure-swallowed", "self.failed = \"%s: %s\" % (type(e).__name__, e)", "pass"),
     ("dead-unchecked", "if not self.alive_at_finish:", "if False:"),
     ("failed-unchecked", "if self.failed:", "if False:"),
+    # 2026-11-13: the SocketCAN witness and the CAN_ERR-class skip (C)
+    ("state-changes-counted", "                if m.is_error_frame and state_only(m.arbitration_id):",
+     "                if False:"),
+    ("wire-errors-skipped", "    return bool(can_id & STATE_CLASSES) and not (can_id & WIRE_CLASSES)",
+     "    return bool(can_id & (STATE_CLASSES | WIRE_CLASSES))"),
+    ("state-with-wire-skipped", "    return bool(can_id & STATE_CLASSES) and not (can_id & WIRE_CLASSES)",
+     "    return bool(can_id & STATE_CLASSES)"),
+    ("link-down-opened", "    if not flags & IFF_UP:", "    if False:"),
+    ("any-netdev", "    if channel != NETDEV:", "    if False:"),
+    ("link-unchecked", "    ok, why = link_up(channel, root, read)\n    if not ok:",
+     "    ok, why = link_up(channel, root, read)\n    if False:"),
 ]
 
 

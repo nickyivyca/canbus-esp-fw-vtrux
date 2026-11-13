@@ -59,7 +59,10 @@ Checks (--checks, default all, in this order):
 The jamming checks (T13; the jam channel is README.md "Jamming", its host
 side jam_host.py). Commands and replies go through the kernel's slcan on
 canx2. The checks from jam-boot-silence on are judged by CAN1's witness,
-the Kvaser (witness.py), and need --can-tools; jam-stop's expectation
+the Kvaser (witness.py: the kernel's kvaser_usb, netdev kvaser, its link
+brought up through canctl and read back; since 2026-11-13 no longer
+CANlib through --can-tools, which is still parsed and not read);
+jam-stop's expectation
 follows the image on the X2 (dev, slcan_spi_a or slcan_spi_b):
   jam-channel      STATUS, a bad signature, the reply ID from the host, a
                    zero ms, a 1 s TRAIN and STOP, each answered by reply
@@ -1354,9 +1357,13 @@ def feed_replies(reader, joiner):
 
 def open_witness(ctx):
     """CAN1's witness, or Fail (the check NOT-RUN) if it cannot be the
-    bench's Kvaser: a virtual channel, no canbench, no adapter."""
+    bench's Kvaser. Since 2026-11-13 the kernel's kvaser_usb: its link
+    brought up here in normal mode at BITRATE through canctl (up(): down
+    first if up, so no earlier opener's listen-only is kept), and
+    witness.open_kvaser reads IFF_UP back before it opens netdev kvaser."""
     try:
-        return witness.open_kvaser(ctx["can_tools"])
+        up(witness.NETDEV)
+        return witness.open_kvaser()
     except Exception as e:
         raise Fail("CAN1 witness: %s" % e)
 
@@ -1387,8 +1394,6 @@ class JamSession:
     (host epoch time it was sent, its reply lines)."""
 
     def __init__(self, ctx):
-        if not ctx.get("can_tools"):
-            raise Fail("the jamming checks need --can-tools (a can-tools pin's folder)")
         self.name = image_name(ctx)
         attach()
         down(PEER)
@@ -1454,8 +1459,6 @@ def check_jam_boot_silence(ctx, can_fail):
     raw tty after the third boot line, which the witness must see. The
     closing pulse is sent on the raw tty the same way, after the third
     window."""
-    if not ctx.get("can_tools"):
-        raise Fail("the jamming checks need --can-tools (a can-tools pin's folder)")
     detach()
     down(PEER)
     wit = open_witness(ctx)
@@ -1706,8 +1709,9 @@ def main():
     ap.add_argument("--can-fail", choices=CHECKS)
     ap.add_argument("--fps", type=float, default=1320.0)
     ap.add_argument("--seconds", type=float, default=60.0)
-    ap.add_argument("--can-tools", help="a can-tools pin's folder (holding canbench/), "
-                    "for CAN1's witness in the jamming checks")
+    ap.add_argument("--can-tools", help="no longer read: CAN1's witness is the kernel's "
+                    "kvaser_usb since 2026-11-13 (witness.open_kvaser); kept so earlier "
+                    "command lines still parse")
     args = ap.parse_args()
 
     out = os.path.abspath(args.out)
