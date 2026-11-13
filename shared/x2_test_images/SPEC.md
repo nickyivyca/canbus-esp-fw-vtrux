@@ -8,7 +8,10 @@ shared component, so that CAN replay tooling and the Android sessions can pin
 a shared tag, then build and flash these images themselves. The ESP sessions
 still develop them. Until the move, no spec covered these images; only the
 jammer's README, `slcan_main.cpp`'s header and the interposer's variant table
-described them.
+described them. Section 5 (T12-T15, `slcan_spi`) was approved by the user on
+2026-11-12, in the charge-interposer reviewer's session, which drafted it
+from the Android session's needs for its two-bus replay; read by the
+gen-inhibit reviewer before merge.
 
 ## 1. What the component holds
 
@@ -19,9 +22,9 @@ described them.
     `gen-inhibit/tools/x2_jammer/`;
   - `slcan_can1/`: the SLCAN on CAN1 (TWAI), from the charge interposer's
     `slcan` variant (`charge-interposer/firmware/main/slcan_main.cpp`);
-  - `slcan_spi/`: the SLCAN on CAN2 (the MCP2515 on SPI), when it is written
-    (port plan step 3, stage (b)). It is written here and is never an
-    interposer variant.
+  - `slcan_spi/`: the SLCAN on CAN2 (the MCP2515 on SPI), with jamming on
+    CAN1 (section 5), written next (user, 2026-11-12). It is written here
+    and is never an interposer variant.
 - **T2. No images in git.** Built images go to Seafile, each build in its own
   folder with an append-only manifest row (T6). Git holds the code only.
 - **T3. Test equipment.** None of these images is product code, and none is
@@ -29,7 +32,8 @@ described them.
 - **T3a. On the truck** (user, 2026-11-12, here). The SLCAN images may go on
   the truck for testing during bring-up and installation. They are never
   flight images. No formal protection enforces this; it is a decision on
-  record. The jammer stays NOT FOR VEHICLE (T8).
+  record. The jammer stays NOT FOR VEHICLE (T8), and so is `slcan_spi`,
+  which jams too (T14): the truck SLCAN is `slcan_can1`.
 
 ## 2. Who owns what
 
@@ -90,6 +94,53 @@ described them.
 - **T11. Flashing** goes through the shared flasher (`shared/bench`), to the
   X2's own port resolved by its USB identifiers (`DEVICES-SPEC.md` S1),
   never the WiCAN's. Who may flash the X2 under a hand take is
-  `shared/bench/SPEC.md` section 8's, still with the user.
-</content>
-</invoke>
+  `shared/bench/SPEC.md` section 8's (`shared/main` from `1e33234d`).
+
+## 5. slcan_spi
+
+Requested by the Android session for its two-bus replay into the app
+emulator: on the bench, the charger segment holds only `canchg` and the X2's
+MCP2515, so the X2 is its only possible sender (owner, 2026-11-12, relayed
+by the Android session). The jamming on CAN1 is the user's addition, and
+the image's primary objective (user, 2026-11-12, in the charge-interposer
+reviewer's session).
+
+- **T12. SLCAN over USB to CAN2.**
+  - 500 kbit/s only (`S6`); any other rate is refused.
+  - Normal mode (`O`) transmits and ACKs; listen-only (`L`) never ACKs;
+    both silent until opened (T8a).
+  - It reports to the host the frames it was asked to send and dropped
+    (transmit queue full), receive overruns, and its bus state
+    (error-active, error-passive, bus-off), in a form Linux 6.12's slcan
+    driver turns into SocketCAN error frames or state, and at minimum the
+    Lawicel `F` status flags. The tester settles the form from the kernel
+    source.
+  - Its version reply (`V`/`N`) names the build, so T10's identity answer
+    is enough without a flash read.
+  - It forwards nothing between CAN1 and CAN2.
+  - It sustains the replay rate with no unreported drop: about 1,320
+    frames/s on average (the Coda's D CAN at 1x, from the Android session;
+    peaks not yet measured).
+- **T13. Jamming on CAN1, in the same image.**
+  - It keeps T8's safety properties and the jammer's pulse limits: the TWAI
+    controller is never started, it sends no CAN frame on CAN1, pulses
+    only, every command with a duration capped at 30 s, two independent
+    stops at the deadline, and it boots silent. T8's MCP2515 property is
+    replaced by T8a's, since CAN2 is the SLCAN's.
+  - Jamming and the SLCAN may run at the same time. Jam commands come over
+    a channel of their own, never inside traffic a replay could carry:
+    first choice a second USB serial port. If the X2 cannot present one
+    without harm to flashing or its console, a reserved CAN frame with a
+    signature, sent through the SLCAN, which the image acts on and never
+    puts on a bus; the tester reports why the fallback was needed. Not
+    Wi-Fi: jam timing needs better than Wi-Fi gives (user, 2026-11-12).
+  - The jamming reuses the jammer's pulse code from `jammer/`, unchanged,
+    once `jammer/` holds the ESP-IDF port (T8). Until then `slcan_spi`
+    ships without jamming, so the replay is not held up. The gen-inhibit
+    tester reviews the jamming checks.
+- **T14. NOT FOR VEHICLE.** Its image name, boot banner and every console
+  line say so. T3a does not cover it.
+- **T15. A network variant later.** A later image or variant taking frames
+  from the network to the TWAI or the MCP2515 is not specified now.
+  `slcan_spi` keeps its host transport apart from its CAN side, so that
+  variant can reuse the CAN side (user, 2026-11-12).
