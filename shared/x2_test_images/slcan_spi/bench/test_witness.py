@@ -147,6 +147,23 @@ def run_tests(w):
     v, _ = w.judge_stop(train, **win)
     check(v == "FAIL", "the can-fail's shifted deadline passed: %s" % v)
 
+    # stamp margins (the gen-inhibit reviewer's ruling, relayed 2026-11-13):
+    # a window at least MARGIN_MIN x the host stamps' error, a gap of two
+    # stamps carrying both errors
+    check(w.stamp_margin("stop", 0.5)["ok"], "a 0.5 s window refused")
+    check(w.stamp_margin("edge", 0.015)["ok"], "a window of exactly 10x the error refused")
+    check(not w.stamp_margin("edge", 0.01)["ok"], "a 10 ms window (6.7x) accepted")
+    check(w.stamp_margin("interval", 0.05, 2)["ok"], "+/-50 ms on a gap of two stamps refused")
+    check(not w.stamp_margin("interval", 0.02, 2)["ok"],
+          "+/-20 ms on a gap of two stamps (6.7x) accepted")
+    e = w.stamp_margin("interval", 0.05, 2)
+    check(e["stamp_error_s"] == 0.003 and e["margin"] == 16.7, "margin entry %r" % e)
+    check(w.margins_ok([w.stamp_margin("a", 0.5), w.stamp_margin("b", 0.05)])[0],
+          "good margins refused")
+    ok, why = w.margins_ok([w.stamp_margin("a", 0.5), w.stamp_margin("tight", 0.005)])
+    check(not ok and "tight" in why, "a tight margin accepted or not named: %s" % why)
+    check(not w.margins_ok([])[0], "no stated margins accepted")
+
     fails.extend(witness_thread_tests(w))
     return fails
 
@@ -282,6 +299,12 @@ MUTANTS = [
     ("any-netdev", "    if channel != NETDEV:", "    if False:"),
     ("link-unchecked", "    ok, why = link_up(channel, root, read)\n    if not ok:",
      "    ok, why = link_up(channel, root, read)\n    if False:"),
+    # 2026-11-13: stamp margins
+    ("margin-always-ok", '"ok": margin >= MARGIN_MIN - 1e-9}', '"ok": True}'),
+    ("margin-one-stamp", "    err = stamps * STAMP_ERR_S\n", "    err = STAMP_ERR_S\n"),
+    ("margin-min-lowered", '"ok": margin >= MARGIN_MIN - 1e-9}', '"ok": margin >= 5}'),
+    ("margins-unchecked", "    if low:\n", "    if False:\n"),
+    ("margins-empty-ok", "    if not entries:\n", "    if False:\n"),
 ]
 
 

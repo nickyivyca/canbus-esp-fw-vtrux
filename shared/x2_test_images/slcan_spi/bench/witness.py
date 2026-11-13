@@ -15,8 +15,10 @@ wire class), is left out of counts and of the lag and counted apart
 jam pulse. As the gen-inhibit tester's jammer checks do
 (x2_jammer.py, witness_clock.py, agreed 2026-11-13): delivery is judged
 from what the witness saw, never from what was commanded; the times judged
-are the Kvaser's device stamps (msg.timestamp), accepted only when their
-median lag behind host receipt is under MAX_LAG_S, else the check is VOID;
+are msg.timestamp (on kvaser_usb the kernel's receipt stamp: it has no
+device stamps), accepted only when their median lag behind host receipt is
+under MAX_LAG_S, else the check is VOID, and only in windows at least
+MARGIN_MIN times the stamps' measured error (stamp_margin, 2026-11-13);
 and state-only error frames stamped by the host, should a canbench backend
 make them, are left out of counts and of the lag.
 
@@ -34,6 +36,9 @@ Pure functions (test_witness.py, with its mutants):
   judge_count(err_ts, t0, t1, want)
   judge_groups(err_ts, t0, t1, n, interval_s)
   judge_closing(err_ts, t0, t1)  the closing pulse: exactly one error frame
+  stamp_margin(what, tol_s, stamps), margins_ok(entries)
+                                 a judged tolerance against the host stamps'
+                                 error (STAMP_ERR_S), at least MARGIN_MIN
   real_channel(info)             refuses CANlib's virtual channels (CANlib only)
   state_only(can_id)             a state-change error frame, by CAN_ERR class
   link_up(netdev, root)          IFF_UP in sysfs
@@ -51,6 +56,19 @@ import time
 MAX_LAG_S = 2.0     # witness_clock.py's MAX_LAG_S (gen-inhibit tester)
 STOP_WINDOW_S = 0.5  # last error frame within this of the deadline
 GROUP_GAP_S = 0.2    # error frames closer than this are one pulse's
+GROUP_TOL_S = 0.05   # judge_groups: each interval within this of the asked one
+LEAD_S = 0.05        # a count window opens this long before its command's send
+
+# The stamps judged are host stamps: kvaser_usb has none of its own, and
+# python-can's socketcan gives the kernel's receipt time. Their error, the
+# charge-interposer tester's measurement of kvaser_usb on madhouse-debian
+# (M3/M4, 2026-11-13): about 1.5 ms worst. The ruling (the gen-inhibit
+# reviewer, relayed by the charge-interposer reviewer, 2026-11-13): a window
+# judged on these stamps must be at least MARGIN_MIN times their error;
+# anything tighter goes to the PCAN or to counts. Each check's detail records
+# its margins (stamp_margin), and a check with one under MARGIN_MIN is not run.
+STAMP_ERR_S = 0.0015
+MARGIN_MIN = 10.0
 
 
 class Void(Exception):
@@ -154,7 +172,32 @@ def judge_count(err_ts, t0, t1, want):
     return n == want, n
 
 
-def judge_groups(err_ts, t0, t1, n, interval_s, tol_s=0.05):
+def stamp_margin(what, tol_s, stamps=1):
+    """One judged tolerance against the host stamps' error: tol_s, the
+    narrowest distance the judgement rests on, read from `stamps` stamps (1:
+    a stamp against an edge on the host's clock; 2: the gap between two
+    stamps, each with its own error). -> the check detail's entry, with ok
+    when the margin (tol_s over the error) is at least MARGIN_MIN."""
+    err = stamps * STAMP_ERR_S
+    margin = tol_s / err
+    return {"what": what, "tolerance_s": tol_s, "stamps": stamps,
+            "stamp_error_s": round(err, 4), "margin": round(margin, 1),
+            "ok": margin >= MARGIN_MIN - 1e-9}
+
+
+def margins_ok(entries):
+    """-> (ok, why): every stamp_margin entry at least MARGIN_MIN; why names
+    those under it. No entries is not ok: a check judged on stamps states
+    what it judged."""
+    if not entries:
+        return False, "no stamp margins stated"
+    low = ["%s: %.1fx" % (e["what"], e["margin"]) for e in entries if not e["ok"]]
+    if low:
+        return False, "stamp margin under %gx: %s" % (MARGIN_MIN, "; ".join(low))
+    return True, "every stamp margin at least %gx (stamp error %.4f s)" % (MARGIN_MIN, STAMP_ERR_S)
+
+
+def judge_groups(err_ts, t0, t1, n, interval_s, tol_s=GROUP_TOL_S):
     """n groups of one error frame each in [t0, t1], interval_s apart
     (within tol_s)? -> (ok, why)."""
     g = clusters([t for t in err_ts if t0 <= t <= t1])
