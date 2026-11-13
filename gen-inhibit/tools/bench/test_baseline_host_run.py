@@ -230,6 +230,8 @@ def checks(script_dir):
     with tempfile.TemporaryDirectory(prefix="gi-host-run-", dir=gi_paths.scratch("tmp", run=False)) as tmp:
         rc, s, out = remote_script(script_dir, tmp)
         check("the script runs to the end with the fake ssh", rc == 0 and s, (rc, out[-300:]))
+        stage = os.path.join(os.path.dirname(os.path.abspath(FW)), "scratch", "baseline-host-stage")
+        check("... and its stage in scratch/ is gone after it (2026-11-12)", not os.path.exists(stage), stage)
         names = archive_names(tmp, "plain")
         check("an old commit (%s): the copy holds main/ and test/, and no tools/ or diag_schemas/" % COMMIT,
               any(n.startswith("main/") for n in names) and any(n.startswith("test/") for n in names)
@@ -342,6 +344,7 @@ def checks(script_dir):
         rc6, s6, out6 = remote_script(script_dir, tmp, tag="part", commit=PART_COMMIT)
         check("a commit with only part of the move (%s) is refused, before anything is sent" % PART_COMMIT,
               rc6 == 2 and not s6 and not archive_names(tmp, "part") and "neither layout" in out6, (rc6, out6[-300:]))
+        check("... and its stage is gone after the refusal too", not os.path.exists(stage), stage)
         # the remote script takes the WiCAN sources from the copy's own layout
         for label, sub, want in (("a project-layout copy", "firmware/main", "firmware/main"), ("a root-layout copy", "main", "main")):
             tree = os.path.join(tmp, "M_" + sub.replace("/", "_"))
@@ -456,6 +459,8 @@ MUTANTS = [
     # the archive and the build-id step (2026-10-25)
     ("gi_diag.py and pins.json not shipped",
      '  for f in gi_diag.py pins.json; do git -C "$TOP" show "$C:$BENCH/$f" > "$STAGE/$BENCH_AT/$f" || exit 2; done\n', ""),
+    ("the stage left in scratch/ (2026-11-12)",
+     "trap 'rm -rf \"$STAGE\"; rmdir \"$TOP/scratch/baseline-host-stage\" 2>/dev/null' EXIT\n", ""),
     ("the export not made", '  $LOCAL_PY -B "$TOP/gen-inhibit/tools/bench/gi_diag.py" export "$STAGE/diag_schemas" >/dev/null || exit 2\n', ""),
     ("the decode files shipped for every commit", 'if tree "$BENCH/gi_diag.py"; then', 'if true; then'),
     # each commit at its own layout (port step 0d, 2026-10-26)
@@ -502,7 +507,9 @@ def main():
     # the unmutated copy runs first as the control: where the checks cannot pass (on 2026-10-29
     # a PATH whose bash was WSL's failed all 40), every mutant would read killed
     killed, control_ok = 0, False
+    stage = os.path.join(os.path.dirname(os.path.abspath(FW)), "scratch", "baseline-host-stage")
     for i, (name, old, new) in enumerate([("the control: the unmutated copy", None, None)] + MUTANTS):
+        gi_paths.remove_tree(stage)     # a mutant that leaves it (m15) must not fail the next one's check
         with tempfile.TemporaryDirectory(prefix="gi-host-run-m%d-" % i, dir=gi_paths.scratch("tmp", run=False)) as tmp:
             src = open(os.path.join(HERE, SCRIPT), encoding="utf-8", newline="").read()
             if old is not None and src.count(old) != 1:

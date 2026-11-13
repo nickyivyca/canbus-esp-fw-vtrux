@@ -57,6 +57,10 @@ mkdir -p "$OUT"
 # A commit with only part of the move (one topic of it) has neither layout, and is refused.
 STAGE="$TOP/scratch/baseline-host-stage/$C"
 rm -rf "$STAGE" && mkdir -p "$STAGE"
+# The stage goes when the script ends, sent or refused (AGENTS.md "Removing scratch"; until
+# 2026-11-12 it stayed, found when the Linux leftovers' test run reached it), and the parent
+# with it once empty.
+trap 'rm -rf "$STAGE"; rmdir "$TOP/scratch/baseline-host-stage" 2>/dev/null' EXIT
 tree() { git -C "$TOP" cat-file -e "$C:$1" 2>/dev/null; }
 put() { mkdir -p "$STAGE/$2" && git -C "$TOP" archive "$C:$1" | tar -x -C "$STAGE/$2"; }   # tree $1 of C at $2 in the copy
 if tree gen-inhibit/firmware/main && tree gen-inhibit/test; then

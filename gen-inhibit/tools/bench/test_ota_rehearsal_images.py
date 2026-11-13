@@ -166,7 +166,12 @@ MUTANTS = [
 
 
 def main():
-    os.makedirs(SCRATCH, exist_ok=True)
+    # this run's own folder in scratch/, removed at exit pass or fail (gi_paths.scratch). Until
+    # 2026-11-12 it was the fixed scratch/ota-rehearsal-images, made and never removed (found
+    # by the Linux leftovers' run, AGENTS.md "Removing scratch")
+    global SCRATCH
+    import gi_paths
+    SCRATCH = gi_paths.scratch("ota-rehearsal-images", start=__file__)
     if "--in-dir" in sys.argv[1:]:
         folder = sys.argv[sys.argv.index("--in-dir") + 1]
         with tempfile.TemporaryDirectory(dir=SCRATCH) as t:
