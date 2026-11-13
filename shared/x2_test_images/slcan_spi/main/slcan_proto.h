@@ -11,7 +11,9 @@
  *   O / L     open in normal mode (transmits and ACKs) / listen-only (never
  *             ACKs); refused unless closed and S6 was given (SPEC T8a, T12)
  *   C         close: back to silent (accepted when already closed)
- *   tiiildd.. / Tiiiiiiiildd.. / riiil / Riiiiiiiil   send a frame
+ *   tiiildd.. / Tiiiiiiiildd.. / riiil / Riiiiiiiil   send a frame; a
+ *             frame for the image itself (the jam channel, jam_frame.h) is
+ *             acted on, open or closed, and never sent
  *   F         status flags, read and cleared: Fxx
  *   V / N     the build's identity (SPEC T12, T10)
  *   B         the banner again (console lines, SPEC T14)
@@ -67,6 +69,11 @@ typedef struct {
     int  (*open)(void *ctx, int listen_only);
     /* Close the CAN side: silent again. */
     void (*close)(void *ctx);
+    /* A frame the host sent to the image itself, never to a bus (the jam
+     * channel, SPEC T13): nonzero if f is one, having acted on it. It is
+     * asked first, open or closed, so such a frame is never sent; the host
+     * gets z / Z. May be NULL. */
+    int  (*local)(void *ctx, const can_frame_t *f);
     /* Queue a frame to send; 0 queued, nonzero dropped. */
     int  (*send)(void *ctx, const can_frame_t *f);
     /* The F flags, read and cleared. */

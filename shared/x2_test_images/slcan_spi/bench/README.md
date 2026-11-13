@@ -2,12 +2,16 @@
 
 The charge-interposer tester's checks of slcan_spi against
 `../../SPEC.md` section 5 and T8a: committed harness, each with its
-can-fail (AGENTS.md "Spec, validation and verification").
+can-fail (AGENTS.md "Spec, validation and verification"). A built image is
+checked off the board by the shared `../../tools/check_image.py` with
+`../x2_image.json`, whose can-fails are its own tests (`../../tools/`).
 
 | File | What |
 |---|---|
-| `check_image.py` | no board: the image name says NOT FOR VEHICLE (T14), the image's ELF hash is its ELF's (T10, T12), and no TWAI symbol is linked (T13, this build); `--can-fail` runs each on a broken input, an object defining `twai_driver_install` compiled with ESP-IDF's S3 compiler among them |
-| `slcan_spi_bench.py` | on the bench, with slcan_spi on the X2: `identity`, `attach`, `silence`, `reset`, `rate-tx`, `rate-rx`, `drops`, `busoff`, `overrun` (its docstring says what each shows); `--can-fail <check>` runs one check with one condition broken on the bench, which it must then FAIL |
+| `slcan_spi_bench.py` | on the bench, with slcan_spi on the X2: `identity`, `attach`, `silence`, `reset`, `rate-tx`, `rate-rx`, `drops`, `busoff`, `overrun`, and the jamming checks (T13) `jam-channel`, `jam-concurrent`, `jam-boot-silence`, `jam-port`, `jam-calibration`, `jam-stop`, `jam-cap`, `jam-stop-cmd` (its docstring says what each shows); `--can-fail <check>` runs one check with one condition broken on the bench, which it must then FAIL |
+| `jam_host.py` | the jam channel's host side, written from the format (`../main/jam_frame.h`): command frames, the reply joiner, reply parsing |
+| `witness.py` | CAN1's witness, the Kvaser, opened through a can-tools pin's canbench (`--can-tools`); its collecting thread, which never lets a failed or ended witness read as a quiet bus; and the pure judges of what it saw: its clock against the host's, pulse groups, stops at a deadline and their windows, counts, the closing pulse |
+| `test_jam_host.py`, `test_witness.py` | the tests of those two, no hardware (`test_witness.py` runs the collecting thread on a fake bus), each with `--mutants`, its can-fail (8 and 17 mutants, made in memory) |
 
 ## Running the bench checks
 
@@ -24,6 +28,17 @@ through the shared flasher (SPEC T11), in `bench.slice`:
 
 The charger segment must hold only `canchg` and the X2's MCP2515. The script
 drives both through `canctl` and leaves `canx2` detached and `canchg` down.
+
+The jamming checks from `jam-boot-silence` on also need CAN1's witness, the
+bench's Kvaser, and `--can-tools <worktree>/scratch/can-tools/<commit>`, the
+charge-interposer's can-tools pin installed by its `can_tools_pin.py
+install`. They put pulses on CAN1, where the WiCAN is, and the release note
+says so. `jam-stop` is run once on each image, dev, `stop_a_only` and
+`stop_b_only` (`--elf` the image's), each flashed in turn. Each witness
+check ends with one closing pulse the witness must count exactly once, so a
+deaf witness (wrong segment, cable off, a CANlib failure mid-check) makes
+the check NOT-RUN instead of passing a quiet window (the gen-inhibit
+tester's review, 2026-11-13).
 
 ## Gaps
 

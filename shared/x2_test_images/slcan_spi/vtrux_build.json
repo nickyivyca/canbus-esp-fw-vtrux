@@ -2,6 +2,8 @@
   "project": "slcan-spi",
   "shared_components": ["vtrux/x2"],
   "variants": {
-    "dev": {}
+    "dev": {"SLCAN_SPI_TEST_STOP": "none"},
+    "stop_a_only": {"SLCAN_SPI_TEST_STOP": "a_only"},
+    "stop_b_only": {"SLCAN_SPI_TEST_STOP": "b_only"}
   }
 }

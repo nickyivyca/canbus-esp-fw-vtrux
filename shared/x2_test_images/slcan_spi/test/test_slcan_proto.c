@@ -29,7 +29,7 @@ static int failures;
 static char out[4096];
 static size_t out_len;
 static int opened, open_listen, closed, sent, dropped, banners;
-static int send_result, open_result;
+static int send_result, open_result, locals;
 static can_frame_t last_sent;
 static uint8_t flags_val;
 
@@ -47,9 +47,15 @@ static void f_write(void *c, const char *s, size_t n)
     if (out_len + n < sizeof out) { memcpy(out + out_len, s, n); out_len += n; out[out_len] = 0; }
 }
 static void f_banner(void *c) { banners++; }
+/* The image's own frames: extended 0x1F4A4D43 here (the jam channel). */
+static int f_local(void *c, const can_frame_t *f)
+{
+    if (f->ext && f->id == 0x1F4A4D43u) { locals++; return 1; }
+    return 0;
+}
 
 static const slcan_ops_t ops = {
-    .open = f_open, .close = f_close, .send = f_send, .flags = f_flags,
+    .open = f_open, .close = f_close, .local = f_local, .send = f_send, .flags = f_flags,
     .dropped = f_dropped, .write = f_write, .banner = f_banner,
     .identity = "slcan_spi_NOT_FOR_VEHICLE v-test elf=0123", .ctx = NULL,
 };
@@ -59,7 +65,7 @@ static slcan_t s;
 static void reset(void)
 {
     out_len = 0; out[0] = 0;
-    opened = open_listen = closed = sent = dropped = banners = 0;
+    opened = open_listen = closed = sent = dropped = banners = locals = 0;
     send_result = 0; open_result = 0; flags_val = 0;
     memset(&last_sent, 0, sizeof last_sent);
     slcan_init(&s, &ops);
@@ -264,8 +270,55 @@ static void test_lines(void)
     CHECK(strcmp(out, "\a") == 0 && closed == 0, "Cx accepted: %s", out);
 }
 
+/* SPEC T13: a frame for the image itself is acted on, open or closed, and
+ * never sent, counted as dropped or refused. */
+static void test_local(void)
+{
+    static const char *jam = "T1F4A4D4384A4D541400641388\r";
+    reset();
+    feed(jam);
+    CHECK(strcmp(out, "Z\r") == 0 && locals == 1, "closed: %s locals=%d", out, locals);
+    CHECK(sent == 0 && dropped == 0, "closed: sent=%d dropped=%d", sent, dropped);
+    feed("S6\rL\r");
+    feed(jam);
+    CHECK(strcmp(out, "Z\r") == 0 && locals == 2, "listen-only: %s locals=%d", out, locals);
+    CHECK(sent == 0 && dropped == 0, "listen-only: sent=%d dropped=%d", sent, dropped);
+    feed("C\rO\r");
+    feed(jam);
+    CHECK(strcmp(out, "Z\r") == 0 && locals == 3, "open: %s locals=%d", out, locals);
+    CHECK(sent == 0 && dropped == 0, "open: sent=%d dropped=%d", sent, dropped);
+    /* send_result nonzero: a full queue does not matter to it */
+    send_result = 1;
+    feed(jam);
+    CHECK(strcmp(out, "Z\r") == 0 && dropped == 0, "queue full: %s dropped=%d", out, dropped);
+    send_result = 0;
+    /* other frames still go to send() */
+    feed("T1F4A4D440\r");
+    CHECK(strcmp(out, "Z\r") == 0 && sent == 1 && locals == 4, "ordinary frame: %s sent=%d", out, sent);
+    CHECK(last_sent.id == 0x1F4A4D44u, "ordinary frame id %lx", (unsigned long)last_sent.id);
+    /* a malformed line is refused before it is asked */
+    feed("T1F4A4D4384A4D\r");
+    CHECK(strcmp(out, "\a") == 0 && locals == 4, "malformed: %s locals=%d", out, locals);
+}
+
+/* Without a local op the protocol is as before. */
+static void test_no_local(void)
+{
+    static const slcan_ops_t ops2 = {
+        .open = f_open, .close = f_close, .send = f_send, .flags = f_flags,
+        .dropped = f_dropped, .write = f_write, .banner = f_banner,
+        .identity = "x", .ctx = NULL,
+    };
+    reset();
+    slcan_init(&s, &ops2);
+    feed("T1F4A4D430\r");
+    CHECK(strcmp(out, "\a") == 0 && sent == 0, "no local, closed: %s", out);
+}
+
 int main(void)
 {
+    test_local();
+    test_no_local();
     test_silent_until_open();
     test_rate();
     test_listen_only();

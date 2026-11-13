@@ -126,6 +126,10 @@ static void frame_cmd(slcan_t *s)
         put(s, BEL);
         return;
     }
+    if (s->ops->local && s->ops->local(s->ops->ctx, &f)) {
+        put(s, f.ext ? "Z" CR : "z" CR);
+        return;
+    }
     if (s->mode == SLCAN_CLOSED) {
         put(s, BEL);
         return;
