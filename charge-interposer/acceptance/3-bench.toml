@@ -1,0 +1,295 @@
+# Port step 3's bench baseline on madhouse-debian (shared/bench ACCEPT-SPEC
+# A2; owned by the charge-interposer reviewer). Drafted by the tester (the
+# reviewer's item 3, 2026-11-13), reviewed by the reviewer 2026-11-13 with
+# its answers written in below, for the user's approval; not yet approved.
+#
+# What it shows: the bench suite, whole, on the bench host from port plan
+# step 3, with the boards, adapters and drivers as madhouse has them, judged
+# against the newest whole Windows bench records (b467, port step 2b on
+# NICKY-XPS). As in 2b, the bench suite needs a whole emulated run on the
+# same code in the same record first (Suite.requires, requires_whole), so
+# the emulated and harness suites run whole too.
+#
+# The product is not f57ca9d3's. Since f57ca9d3 (the product of b467 and of
+# the step 3 emulated runs) the product files changed in one way: the
+# slcan variant left the interposer (spec 8.2, tracker H; dece3c4e, merged
+# at b42a3ba5): firmware/main/slcan_main.cpp removed, the two CMakeLists,
+# vtrux_build.json and vtrux_checks.json without it, and shared_pins.json's
+# shared/bench pin moved (2026.11.13.2). Checked 2026-11-13: git diff
+# f57ca9d3 0691f6f1 over bench_suite.product_files is those 6 files. So
+# this list builds the three bench variants from its own tree, as 2b did,
+# and flashes those builds; no digest premise.
+#
+# This is the bench baseline of 0691f6f1's product (the reviewer,
+# 2026-11-13). b467 is the nearest bench record, and the slcan removal is
+# the one product change between them. The tester checked on 2026-11-13
+# (tracker H) that the removal leaves the code hashes of the five variants
+# unchanged: clean builds with and without it, at a fixed compile date
+# (SOURCE_DATE_EPOCH 1767225600, shared/tools R9's; ccache off), gave the
+# same code hash for bridge, witness, truck, selftest and diag, and no byte
+# differences outside the fields R2 blanks. This list's builds are dev
+# builds (R31), which carry their compile time, so their code hashes are
+# not compared with b467's (spec 8.2).
+#
+# Since the Windows records, on the bench side (each a committed change;
+# none is a result line unless listed below):
+#   - the bench lock is native Linux (shared/bench 2026.11.11.2) and the
+#     runner takes and releases it itself;
+#   - canmain (CAN1's Innomaker, kept down during ESP runs) is brought down
+#     by the runner through canctl if it is up, after its take and at every
+#     resume, before the start hooks (shared/bench 2026.11.13.2, 344eef05;
+#     SPEC section 8): its "canmain" events are in the bench run's record,
+#     and a canctl failure or canmain still up stops the bench, NOT-RUN;
+#   - canx2 is detached from the kernel's SLCAN in the X2's start hook if it
+#     is attached, before the X2 is identified or flashed (canx2_slcan.py,
+#     the reviewer's run-start batch): the hook's found entry "canx2" holds
+#     the state before and after and canctl's exit; nothing re-attaches it;
+#   - canchg is put in canctl's libusb mode in the X2's start hook and back
+#     on gs_usb in its end hook (canchg_mode.py, the canchg-mode batch);
+#   - the canbench adapters open through the can-tools pin's Linux fixes
+#     (adapter_fixes.py, E1), canchg by its USB serial (E2), the X2's port
+#     without a reset (serial_open.py), the Innomaker's 32-bit stamp
+#     unwrapped wherever a run compares it (E3, 864ea995), bench_mcp_reset's
+#     ROM holds on the core flasher's esptool (48935c1f);
+#   - the WiCAN is loaded, identified and reset over its own USB, never
+#     over its AP (bench_wican.py, 8f51b063 and 21705c0f; user 2026-11-12),
+#     so a WiCAN found on another image is loaded with the pinned image,
+#     not stopped at;
+#   - wall-clock checks and the lock's work are placed in bench.slice,
+#     builds in build.slice, each read back (shared/bench 2026.11.12).
+# The tester's VERIFICATION.md entry reads the canmain events, the canx2
+# found entries and the WiCAN's identify.json records from the bench
+# run's record; they are not compare lines.
+#
+# Placement: the settings' placement (the reviewer, 2026-11-13; the user's
+# whole-run-in-bench.slice ruling of 2026-11-11 was for the step 3 emulated
+# run only). The acceptance runner starts in bench.slice, as a run with
+# board work must. The chain runner places wall-clock checks and the lock's
+# work in bench.slice and builds and emulated-time checks in build.slice,
+# and reads each placement back. If an emulated-time timeout trips under
+# build.slice's idle weight, AGENTS.md's fallback is a small weight, such as
+# 20. Other work runs alongside (AGENTS.md "Parallel work on the shared
+# machine"); a timing failure is triaged against resource-log over its
+# window (point 2) before it counts.
+#
+# The bench lock (shared/bench 2026.11.13.2, read from the code: the
+# acceptance runner's own chain suite has no lock group, and each nested
+# suite run is a chain run that takes the lock at its start only if it has
+# bench groups, and releases it at its end):
+#   - not held through the builds, the emulated suite or the harness suite:
+#     about 19 h on madhouse (the emulated suite whole is about 18 h: run
+#     0d88's 14 sims and m-host took 4.35 h, run 0b3f's other 13 sims
+#     13.77 h; the harness suite about 1.2 h, 0d88's 1.16 h);
+#   - held for each of vp1, vp2 and vp3 (about 7 min each in b467) and the
+#     bench run (21.6 h in b467, nearly all of it its checks' own time,
+#     with no pause), taken and released by each, so about 22 h held in
+#     four spells, with gaps of about a second between them.
+# A hand take (android, can-tools) is possible in the ~19 h before vp1 and
+# in those gaps. One taken in a gap makes the next suite run refuse at its
+# take (the settings' lock_wait_s is 0), and its checks come out NOT-RUN,
+# to be re-run under A13. The runner holds the lock across none of the
+# emulated or harness work.
+#
+# Trees:
+#   harness   0691f6f1, charge-interposer/main with the file map's
+#             cross-project section, after wican-usb (21705c0f), the slcan
+#             removal (b42a3ba5) and the run-start, canchg-mode and re-pin
+#             batches. Its shared/bench pin is 2026.11.13.2, its can-tools
+#             pin fa6c0aea. The commit before this list's own, as for the
+#             earlier step 3 lists. root-cleanup (ae1c8d09), if it merges
+#             first, changes only the root's upstream tree and .gitignore,
+#             nothing this run reads, so 0691f6f1 stands either way.
+#   prod      the same commit: the three bench builds come from it (one
+#             tree, as in 2b).
+
+[step]
+id = "3"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-13"
+spec = ["2", "2.1", "2.2", "2.3", "2.4", "8", "8.2", "8.3", "9", "9.1", "10", "12"]
+verification = "the tester's VERIFICATION.md entries for port step 3's bench baseline"
+
+[trees.harness]
+project = "0691f6f10b2d0a54166de33bac344cacc5e0bb99"
+
+# ---- the three variants the bench suite flashes ----------------------------
+[[build]]
+id = "bridge"
+tree = "harness"
+target = "idf-build"
+options = { variant = "bridge" }
+
+[[build]]
+id = "witness"
+tree = "harness"
+target = "idf-build"
+options = { variant = "witness" }
+
+[[build]]
+id = "truck"
+tree = "harness"
+target = "idf-build"
+options = { variant = "truck" }
+
+# ---- the emulated suite, whole (the bench suite's requires) ---------------
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+
+# ---- the harness suite, whole ----------------------------------------------
+[[suite_run]]
+id = "harness"
+tree = "harness"
+suite = "harness"
+after = ["emulated"]
+
+# ---- vport-bitrate judged three times, then the bench suite, whole ----------
+[[suite_run]]
+id = "vp1"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["harness"]
+
+[[suite_run]]
+id = "vp2"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["vp1"]
+
+[[suite_run]]
+id = "vp3"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["vp2"]
+
+# this run's flashes and identifies are the board evidence: each X2 image is
+# the list's own build, read back by its build id; the WiCAN's is the pinned
+# gen-inhibit image (wican_pin.json), read back from its boot slot
+[[suite_run]]
+id = "bench"
+tree = "harness"
+suite = "bench"
+images_from = ["bridge", "witness", "truck"]
+after = ["vp3"]
+
+# ---- the baselines -----------------------------------------------------------
+# Paths under the runs root. The bench suite and vport-bitrate from b467,
+# the newest whole Windows bench run (2b, harness and product f57ca9d3); the
+# emulated suite from b467 too, as every step 3 emulated list; the harness
+# suite from 0d88, the newest whole harness run, on madhouse (step 3's
+# first emulated re-run, harness 2d14b2e5).
+[baseline]
+emulated = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-emulated"
+harness = "accept_3_20261112T084805_0d88/runs/accept_3_20261112T084805_0d88-harness"
+bench = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-bench"
+vp1 = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-vp1"
+
+# The emulated suite against b467's: no difference. Its check list is the
+# same (40 checks, 3 declared skips; checked 2026-11-13 from
+# bench_suite.emulated at 0691f6f1 against b467's record: no id on one side
+# only), and runs 0d88 and 0b3f matched b467 on f57ca9d3's product. The two
+# host_bridge KNOWN-FAILs are KNOWN-FAIL on both sides; any other FAIL, or a
+# NOT-RUN that is not a declared skip, is a difference.
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = []
+
+# The harness suite against 0d88's (141 PASS, 9 declared skips). Since
+# 2d14b2e5 bench_suite.harness gained four checks (checked 2026-11-13: the
+# current suite's 154 ids against 0d88's 150, nothing on 0d88's side only):
+#   canchg-mode-test      c53d0ac9: canchg_mode.py, canchg in canctl's libusb
+#                         mode for a run and back on gs_usb after, and its
+#                         -canfail (the canchg-mode batch)
+#   canx2-slcan-test      the run-start batch: canx2_slcan.py, canx2 detached
+#                         from the kernel's SLCAN before the X2 is touched,
+#                         and its -canfail
+# The re-pins since 0d88 (shared/bench 2026.11.11.7 -> 2026.11.12 ->
+# 2026.11.12.2 -> 2026.11.13.2) change what the sb.* tests run, not their
+# ids; every sb.* check PASSed in 0d88 and is expected to PASS here.
+# bench-wican-test's tests changed with the USB form (21705c0f), not its id.
+[[compare]]
+id = "c-harness"
+comparer = "run-records"
+a = "baseline:harness"
+b = "harness"
+expect = "listed"
+differences = [
+  "NEW in b: m-harness/canchg-mode-test PASS",
+  "NEW in b: m-harness/canchg-mode-test-canfail PASS",
+  "NEW in b: m-harness/canx2-slcan-test PASS",
+  "NEW in b: m-harness/canx2-slcan-test-canfail PASS",
+]
+
+# The bench suite against b467's: no listed difference. The check list is
+# the same (83 checks, 17 declared skips; checked 2026-11-13: no id on one
+# side only). In b467: 64 PASS, the 17 skips NOT-RUN, b-witness/switch-loss
+# KNOWN-FAIL (spec 12's 2.3 entry), and b-vport/vport-listen-wrong-rate VOID
+# (TEST FAULT; VOID in 6019, 81d8, 0d0d and b467: variance from the known
+# defect, not listed, as in 2b; it shows only if it moves). Every change
+# above is on the bench side (adapters, drivers, lock, hooks), none changes
+# what a check judges, so a verdict that moves is a difference to judge
+# line by line in the tester's entry, Linux-side causes included.
+[[compare]]
+id = "c-bench"
+comparer = "run-records"
+a = "baseline:bench"
+b = "bench"
+expect = "listed"
+differences = []
+
+# The three vport runs, each against the first and against b467's vp1: the
+# same verdicts, no TEST FAULT, no figure tolerance
+[[compare]]
+id = "vp1-vp2"
+comparer = "vport-windows"
+a = "vp1"
+b = "vp2"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp1-vp3"
+comparer = "vport-windows"
+a = "vp1"
+b = "vp3"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp1-b467"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp1"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp2-b467"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp2"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp3-b467"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp3"
+expect = "same-verdicts"
+
+# ---- spec 8.3: no ESP-IDF line before setup() -----------------------------
+# In the bench suite run, as in 2b: the truck by b-truck/flight-silence;
+# bridge and witness by b-bridge/idf-log and b-witness/idf-log.
+#
+# The emulated suite runs whole because the bench suite requires a whole
+# run on the same code, by product digest. 0d88's and 0b3f's runs are on
+# f57ca9d3's product, so neither can stand in.
