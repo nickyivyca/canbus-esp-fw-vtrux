@@ -261,7 +261,7 @@ CAN_FAILS = [
     # 2026-11-12, the reviewer's E3: the gs_usb stamp unwrapped
     "bench_charger_silent", "bench_rx_order",
     # 2026-11-13, the reviewer's Kvaser rulings (kvaser_link, rx_proc)
-    "keepalive_probe", "rx_proc",
+    "keepalive_probe", "rx_proc", "bench_switch_pending",
 ]
 
 # Local scripts (they want pyserial or the Windows side).
@@ -466,6 +466,11 @@ def switch_pending_judge(run):
         return Result(Verdict.ERROR, detail="no out file %s (rc=%s)"
                       % (os.path.basename(out), run.rc))
     text = open(out, encoding="utf-8", errors="replace").read()
+    # a phase whose Kvaser link was not as it needs (bench_switch_pending's
+    # phase_link, 2026-11-13): not run, so not judged
+    voids = [ln.strip() for ln in text.splitlines() if ln.startswith("VOID:")]
+    if voids:
+        return Result(Verdict.VOID, detail="; ".join(voids[:2]))
     deltas, cur = {}, None
     for ln in text.splitlines():
         m = SP_PHASE_RE.match(ln)

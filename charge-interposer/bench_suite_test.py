@@ -328,6 +328,11 @@ def test_switch_pending_judge():
         assert _v(r) == [Verdict.FAIL] and has in r.detail, (label, r.detail)
     r = run(_sp_text() + "RESULT: unaccounted NOACK 1, ACK 0\n")
     assert _v(r) == [Verdict.FAIL], "two RESULT lines: FAIL"
+    # the Kvaser's link not as a phase needs (phase_link, 2026-11-13): VOID
+    vline = ("VOID: kvaser link: the kvaser link reads up in sysfs, and this check "
+             "needs it down; kernel USB/CAN lines none in the window 12:00:00..12:00:01")
+    r = run("run at x\n%s\nphase NOACK not run: ...\n" % vline)
+    assert _v(r) == [Verdict.VOID] and "reads up" in r.detail, r.detail
     assert _v(run(None)) == [Verdict.ERROR], "no out file: ERROR"
     assert _v(run(_sp_text(), rc=None)) == [Verdict.ERROR], "killed: ERROR"
     b = B.bench(_settings())
@@ -342,6 +347,14 @@ def _sp_no_result(run):
         with open(out, "a", encoding="utf-8") as f:
             f.write("RESULT: unaccounted NOACK 0, ACK 0\n")
     return _ORIG["switch_pending_judge"](run)
+
+
+def _sp_void_as_fail(run):
+    """A VOID line ignored: the judge reads on to the missing RESULT."""
+    r = _ORIG["switch_pending_judge"](run)
+    if r.verdict == Verdict.VOID:
+        r.verdict = Verdict.FAIL
+    return r
 
 
 def _sp_flip(cond):
@@ -750,7 +763,8 @@ def test_suites():
     #      check, the stall rule; the reviewer's rulings, 2026-11-13)
     # 283: st.rx-proc and cf.rx-proc (readers in their own processes, the
     #      reviewer's M6, 2026-11-13)
-    assert len(seen) == 283, "checks across the suites: %d" % len(seen)
+    # 284: cf.bench-switch-pending (its phases' Kvaser link, 2026-11-13)
+    assert len(seen) == 284, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -3270,7 +3284,8 @@ MUTANTS = {
         ("switch_pending_judge", _sp_flip("bridge= rose"),
          "bridge= above veh tx= not judged"),
         ("switch_pending_judge", _sp_flip("no deltas line"),
-         "a phase's missing deltas not judged")],
+         "a phase's missing deltas not judged"),
+        ("switch_pending_judge", _sp_void_as_fail, "a phase's Kvaser link VOID read as a FAIL")],
     "test_host_bridge_judge": [
         ("host_bridge_judge", _hb_unreported_pass,
          "an unreported L2 case passes"),
@@ -3363,8 +3378,10 @@ MUTANTS = {
          "flight-silence gives --pcan a value (the a25e line)"),
         ("self.NO_ARGPARSE", {"keepalive_probe.py", "bench_topology.py"},
          "a stale NO_ARGPARSE entry"),
-        ("self.NO_ARGPARSE", set(),
-         "a script without argparse left unlisted"),
+        # was set() with keepalive_probe.py listed; it has argparse since
+        # 2026-11-13, so the empty set is the real list now
+        ("self.NO_ARGPARSE", {"keepalive_probe.py"},
+         "keepalive_probe.py still listed without argparse"),
         ("self._ARGV_PROBE", _ARGV_PROBE.replace(
             "_done(_orig(self, args, namespace))", "_done(None)"),
          "the probe never parses"),
