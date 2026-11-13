@@ -456,11 +456,16 @@ class PulseCon:
         return None
 
 
+WITS = []      # every fake witness the sub fakes made, newest last
+
+
 class PulseWit:
     def __init__(self, con):
         self.con = con
+        self.asked = []
 
-    def times(self):
+    def times(self, timing=False):
+        self.asked.append(timing)
         t = self.con.lines[1][0]
         return [t + 0.002], "kvaser_hw (median lag 0.001 s)"
 
@@ -487,7 +492,8 @@ def fake_pulses(a):
     X.time.sleep, X.time.time = fsleep, lambda: clock[0]
     try:
         con = PulseCon()
-        X.sub_pulses(a, rec, con, PulseWit(con))
+        WITS.append(PulseWit(con))
+        X.sub_pulses(a, rec, con, WITS[-1])
     except Exception as e:      # noqa: BLE001  reported against the case
         rec["verdict"] = "RAISED %r" % e
     finally:
@@ -520,8 +526,10 @@ class TrainWit:
     def __init__(self, con, last, extra=()):
         self.con, self.last, self.extra = con, last, extra
         self.t_open = time.time() - 100.0
+        self.asked = []
 
-    def times(self):
+    def times(self, timing=False):
+        self.asked.append(timing)
         t0 = self.con.lines[0][0]
         ts = [t0 + 0.005 * k for k in range(int(self.last / 0.005) + 1)] + [t0 + e for e in self.extra]
         return ts, "kvaser_hw (median lag 0.001 s)"
@@ -541,7 +549,8 @@ def fake_timeout(a, done_fields, last, extra=(), done_at=None):
     X.time.sleep, X.time.time = fsleep, lambda: clock[0]
     try:
         con = TrainCon(done_fields, done_at)
-        X.sub_timeout(a, rec, con, TrainWit(con, last, extra))
+        WITS.append(TrainWit(con, last, extra))
+        X.sub_timeout(a, rec, con, WITS[-1])
     except Exception as e:      # noqa: BLE001  reported against the case
         rec["verdict"] = "RAISED %r" % e
     finally:
@@ -758,6 +767,63 @@ def witness_down_cases(bad):
     X.run_guarded(sub, Args(sub="boot-silence"), rec, None, None)
     check(bad, "witness", "run_guarded: WitnessDown -> NOT-RUN, not a verdict",
           rec.get("verdict") == "NOT-RUN" and "witness down" in rec.get("why", ""), rec)
+    lag_cases(bad)
+
+
+def closed_witness(lag, n=4):
+    """An x2_jammer.Witness after close(), holding n error frames received `lag` s after
+    their hardware stamps."""
+    import threading
+    w = bare_witness(DyingBus(good=0, raises=False))
+    w.stop_flag.set()
+    t = 1000.0      # a small base, so 1000.25 - 1000 is 0.25 exactly
+    w.err = [(t + k, t + k + lag) for k in range(n)]
+    return w
+
+
+def lag_cases(bad):
+    """The timing subs' lag bound (gen-inhibit reviewer, 2026-11-13): pulses and timeout
+    VOID unless the median receipt lag is under TIMING_LAG_S (0.25 s), fixed in the code."""
+    check(bad, "lag", "the bound is 0.25 s, under the judges' 0.3 s margin",
+          X.TIMING_LAG_S == 0.25, X.TIMING_LAG_S)
+    for label, lag, timing, want in (
+            ("lag 0.001 s, timing: judged", 0.001, True, "ok"),
+            ("lag 0.24 s, timing: judged", 0.24, True, "ok"),
+            ("lag 0.25 s, timing: VOID (not under the bound)", 0.25, True, "void"),
+            ("lag 0.3 s, timing: VOID", 0.3, True, "void"),
+            ("lag -0.3 s (stamps ahead), timing: VOID", -0.3, True, "void"),
+            ("lag 1.5 s, not timing: judged (2 s sanity limit only)", 1.5, False, "ok")):
+        try:
+            closed_witness(lag).times(timing=timing)
+            got = "ok"
+        except X.LagVoid as e:
+            got = "void" if abs(e.lag - lag) < 1e-3 else "void, lag %r" % e.lag
+        check(bad, "lag", label, got == want, got)
+    w = bare_witness(DyingBus(good=0, raises=False))
+    w.stop_flag.set()
+    try:
+        ts, note = w.times(timing=True)
+        ok = ts == [] and note == X.WC.NONE
+    except X.LagVoid as e:
+        ok = str(e)
+    check(bad, "lag", "nothing heard, timing: no lag to bound, judged on the counts", ok is True, ok)
+
+    def sub(a, rec, con, wit):
+        wit.times(timing=True)
+    rec = {}
+    X.run_guarded(sub, Args(sub="timeout"), rec, None, closed_witness(0.4))
+    check(bad, "lag", "run_guarded: LagVoid -> VOID with the lag, not a verdict",
+          str(rec.get("verdict", "")).startswith("VOID")
+          and abs((rec.get("timing_lag_void") or 0) - 0.4) < 1e-3, rec)
+    WITS[:] = []
+    fake_pulses(Args(sub="pulses", no_wican=True))
+    check(bad, "lag", "pulses asks for the timing bound", WITS and WITS[-1].asked == [True],
+          WITS and WITS[-1].asked)
+    WITS[:] = []
+    fake_timeout(Args(sub="timeout", w=20, p=5000, ms=2000, expect_ms=0, control_ms=0, host_quiet=False),
+                 "end=stopped stop_by=deadline_timer", 1.99)
+    check(bad, "lag", "timeout asks for the timing bound", WITS and WITS[-1].asked == [True],
+          WITS and WITS[-1].asked)
 
 
 class FakeJammer:

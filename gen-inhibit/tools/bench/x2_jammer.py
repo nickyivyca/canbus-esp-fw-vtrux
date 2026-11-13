@@ -36,7 +36,10 @@ runs/x2_jammer_<sub>_<stamp>.json and never overwrites):
 
 A witness whose read raised, or whose thread ended before the close, makes the run
 NOT-RUN (WitnessDown): its record is cut short, and a cut-short record reads as a quiet
-bus (2026-11-13).
+bus (2026-11-13). pulses and timeout (and their after-DONE count) are VOID (LagVoid) unless
+the witness's median receipt lag is under TIMING_LAG_S, 0.25 s, fixed before any run and
+below the judges' 0.3 s margin (gen-inhibit reviewer, 2026-11-13); the other subs keep
+witness_clock's 2 s sanity limit.
   pulses             PULSES w n interval_ms with the WiCAN in --wican-mode,
                      page polled ~10 Hz: port check (n=1) and calibration. Verdict
                      (judge_pulses): n groups of exactly one, none in the 4 s before,
@@ -528,6 +531,30 @@ class WitnessDown(RuntimeError):
     short, and a cut-short record reads as a quiet bus."""
 
 
+# The timing subs' lag bound (gen-inhibit reviewer, 2026-11-13). A median receipt lag of L
+# may be a stamp offset rather than delivery delay, and an offset moves every frame by L
+# across a window's edge. So pulses, timeout and their after-DONE count are VOID unless the
+# lag is under this bound, fixed before any run and below the smallest judging margin
+# (judge_stop's and after_done's 0.3 s). It is never set from the run it judges: lags near
+# or over it go to the reviewer. witness_clock's MAX_LAG_S (2 s) stays the sanity limit for
+# the other subs (id, boot silence's counts).
+TIMING_LAG_S = 0.25
+
+
+class LagVoid(RuntimeError):
+    def __init__(self, lag):
+        super().__init__("median receipt lag %.3f s is not under the timing bound %.2f s"
+                         % (lag, TIMING_LAG_S))
+        self.lag = lag
+
+
+def require_timing_lag(lag):
+    """Raises LagVoid unless lag (s; None when nothing was heard) is under TIMING_LAG_S
+    either way."""
+    if lag is not None and not abs(lag) < TIMING_LAG_S:
+        raise LagVoid(lag)
+
+
 class Witness(threading.Thread):
     """Kvaser in NORMAL mode: records every error frame and the 0x051 count.
 
@@ -599,15 +626,25 @@ class Witness(threading.Thread):
             return [h for h, _ in e], WC.hw_note(off, 3)
         return [r for _, r in e], "%s: offset %.1f s" % (WC.RECEIPT, off)
 
-    def times(self):
+    def lag(self):
+        """The median receipt lag behind the hardware stamps (s), or None with nothing heard."""
+        with self.lock:
+            e = list(self.err)
+        return statistics.median(r - h for h, r in e) if e else None
+
+    def times(self, timing=False):
         """recorded(), for a judgement: raises WC.ReceiptClock on receipt time, so the
         run is VOID and never judged on it (A2 (b), 2026-11-11). Raises WitnessDown when
-        down() says the record is cut short (2026-11-13)."""
+        down() says the record is cut short (2026-11-13). timing=True (the subs whose
+        judges have margins: pulses, timeout and their after-DONE count) also raises
+        LagVoid unless the median lag is under TIMING_LAG_S (2026-11-13)."""
         why = self.down()
         if why:
             raise WitnessDown(why)
         ts, note = self.recorded()
         WC.require(note)
+        if timing:
+            require_timing_lag(self.lag())
         return ts, note
 
 
@@ -757,7 +794,7 @@ def sub_pulses(a, rec, con, wit):
     if th is not None:
         th.join(timeout=2.0)
         wican_mode(0)
-    ts, clock = wit.times()
+    ts, clock = wit.times(timing=True)   # the PULSES judge's margins (TIMING_LAG_S)
     obs_end = time.time() - 1.0
     ok_ack = ack is not None and ack[1]["kind"] == "ACK"
     j = judge_pulses(ts, a.n, a.interval_ms / 1000.0, t0, ok_ack, done[0] if done else None,
@@ -823,7 +860,7 @@ def sub_timeout(a, rec, con, wit):
         th.join(timeout=2.0)
         wican_mode(0)
     done = con.wait(lambda p: p["kind"] == "DONE", 3.0, t_start)
-    ts, clock = wit.times()
+    ts, clock = wit.times(timing=True)   # judge_stop's 0.3 s margin (TIMING_LAG_S)
     obs_end = time.time() - 1.0
     j = judge_stop(ts, t_start, t_deadline, wit.t_open, obs_end)
     be = [(x["t"], x.get("bus_error")) for x in samples if not x.get("unanswered")]
@@ -1090,6 +1127,10 @@ def run_guarded(sub, a, rec, con, wit):
     except WitnessDown as e:
         rec["verdict"], rec["why"] = "NOT-RUN", "witness down: %s" % e
         print(rec["verdict"], rec["why"])
+    except LagVoid as e:
+        rec["verdict"], rec["why"] = "VOID: %s" % e, "timing lag bound (gen-inhibit reviewer, 2026-11-13)"
+        rec["timing_lag_void"] = e.lag
+        print(rec["verdict"])
 
 
 def main():
