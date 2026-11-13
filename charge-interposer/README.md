@@ -139,13 +139,12 @@ and its test, on `gen-inhibit/main`) imports `build_lookup.py` through
 constant. A change to either name's signature, result or value goes to the
 gen-inhibit reviewer before it lands (reviewer, 2026-10-08).
 
-The other way round, `bench_wican.py` reads from gen-inhibit, read-only,
-never copying anything onto this branch (both reviewers, 2026-10-23/24):
-- `tools/gen_inhibit/bench/wican_reboot.py`, its options `--label`, `--out`,
-  `--known`, `--first`, `--want` and `--want-unknown`, and
-  `page_state.read_page(timeout)`, from a detached worktree at a pinned
-  `gen-inhibit/main` commit (`interposer-tester-gi-tools-<commit>`), named in
-  the tester's local settings as `gi_tools`.
+The other way round, nothing of gen-inhibit's code is read any more. Until
+2026-11-13 `bench_wican.py` read `tools/gen_inhibit/bench/wican_reboot.py`
+and `page_state.read_page` from a pinned gen-inhibit worktree (`gi_tools`;
+both reviewers, 2026-10-23/24). From `21705c0f` the WiCAN is identified
+and reset over USB on its own port (user, 2026-11-12, "build the USB
+form"), and `gi_tools` is gone.
 
 The WiCAN's image is no longer read from gen-inhibit's chain settings (from
 2026-11-12): it is a gen-inhibit build pinned in `wican_pin.json` as a tool
