@@ -692,10 +692,23 @@ frame goes on the real wire (`ip route get 239.0.2.1` names the LAN NIC).
 **Always pass `hop_limit=0`:** the datagram is looped back to local sockets
 and never transmitted, and delivery between processes on the same host is
 unaffected. Do **not** also pin `IP_MULTICAST_IF` to loopback: `python-can`
-joins the group with `INADDR_ANY`, so receivers would see nothing. TTL 0
-alone is enough. The interposer's `charge-interposer/bus.py` and
-gen-inhibit's `gen-inhibit/tools/gi_vbus.py` do this and verify it at
-startup.
+joins the group with `INADDR_ANY`, so receivers would see nothing. The
+interposer's `charge-interposer/bus.py` and gen-inhibit's
+`gen-inhibit/tools/gi_vbus.py` do this and verify it at startup.
+
+**TTL 0 confines a group only while a socket on this host has joined
+it.** A TTL-0 datagram sent to a group no local socket has joined goes
+out on the LAN NIC like a TTL-1 one, whether the sending socket is bound
+or not and with multicast loopback on or off. Once any socket on the
+host has joined the group, the sender's own or another's, it stays at
+background. Measured on `madhouse-debian` by the gen-inhibit tester,
+2026-11-12, with `eno1`'s counters. The methodology owner checked the
+leak without a member the same day: all 200 sends of each window went
+out. A `python-can` bus always joins its group, so a bus opened with
+`hop_limit=0` is confined. A tool that sends to a group without a bus
+open on it, such as a send-only socket, a replayer or a probe, is not:
+it joins the group itself, as the buses do, and its counters are
+checked as below.
 
 ### Measure, do not assume
 
