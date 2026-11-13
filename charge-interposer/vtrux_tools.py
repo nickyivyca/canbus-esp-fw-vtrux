@@ -14,10 +14,12 @@ root, in a shell exported for the interposer's ESP-IDF, v5.4.2, with
 IDF_TOOLS_PATH set before the export: on madhouse-debian a bash shell,
 `export IDF_TOOLS_PATH="$HOME/.espressif-5.4.2"` then
 `. ~/esp/esp-idf-v5.4.2/export.sh`; on Windows a PowerShell (each
-machine's export lines are in its local-paths.md). While a wall-clock test
-is running, follow AGENTS.md "Builds during wall-clock tests": the build
-waits, or runs in the machine's throttled form where that section allows
-one.
+machine's export lines are in its local-paths.md). Builds run alongside
+other work, wall-clock tests included (AGENTS.md "Parallel work on the
+shared machine"). On madhouse-debian start release and build as a scope
+in build.slice, which keeps the exported environment:
+`systemd-run --user --scope --slice=build.slice python3.13 -B
+charge-interposer/vtrux_tools.py build <variant>`.
 
 check-env  the IDF environment check (shared/tools R32): IDF_PATH set and
            not empty, IDF_TOOLS_PATH set, not empty and with no spaces

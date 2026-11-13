@@ -130,7 +130,6 @@ this folder as the project:
 ```powershell
 py -3.14 -B charge-interposer/vtrux_tools.py check-env                 # the IDF environment check (R32)
 py -3.14 -B charge-interposer/vtrux_tools.py build bridge              # dev build, build/bridge
-py -3.14 -B charge-interposer/vtrux_tools.py build bridge --jobs 1     # throttled, from an Idle shell
 py -3.14 -B charge-interposer/vtrux_tools.py release --check-only      # the release refusals only
 py -3.14 -B charge-interposer/vtrux_tools.py image charge-interposer/firmware/build/bridge/interposer_bridge.bin
 ```
@@ -156,21 +155,22 @@ names (R33); none goes on the truck during the port, and the never-flashed
 stand-in the acceptance items use points `REVERSE_IT_DIR` at a stand-in
 folder for its record.
 
-**Before any build, check for wall-clock tests** (AGENTS.md, "Builds during
-wall-clock tests"): the bench lock, the "No builds" line and running
-simulators. Until the tester's build trial on this ESP-IDF build has passed,
-an interposer build waits until none is running, throttled or not. The
-throttled form sets the shell's priority class to Idle, then builds with
-one job, from the repo root:
+**Builds run alongside other work** (AGENTS.md, "Parallel work on the
+shared machine"): wall-clock tests, bench runs, other sessions' work and
+the local LLM. There is no check for wall-clock tests before a build, and
+no throttled form. On `madhouse-debian` every build runs as a scope in
+`build.slice`, at idle CPU weight and free to use every core, from the
+repo root in a shell exported for this project's ESP-IDF, with the Python
+command `local-paths.md` names:
 
-```powershell
-(Get-Process -Id $PID).PriorityClass = 'Idle'
-py -3.14 -B charge-interposer/vtrux_tools.py build bridge --jobs 1
+```bash
+systemd-run --user --scope --slice=build.slice \
+    <python> -B charge-interposer/vtrux_tools.py build bridge
 ```
 
-which is, from `charge-interposer/firmware/` in the same Idle shell, the
-check-env above, then `idf.py -B build/bridge -D INTP_VARIANT=bridge
-reconfigure` and `ninja -C build/bridge -j 1`.
+A scope keeps the shell's environment; a service would see none of the
+`IDF_*` variables, and the R32 check refuses it. `cat /proc/<pid>/cgroup`
+reads the placement back.
 
 **`sdkconfig` and `dependencies.lock` are committed with LF line endings.**
 On Windows ESP-IDF writes both as CRLF when it regenerates them; save them
