@@ -523,6 +523,7 @@ def main():
                 new_src = src.replace(old, new)
             with open(os.path.join(tmp, SCRIPT), "w", encoding="utf-8", newline="") as fh:
                 fh.write(new_src)
+            shutil.copy(os.path.join(HERE, "host_target.sh"), tmp)   # sourced since the local mode (2026-11-12)
             r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), "--in-dir", tmp],
                                capture_output=True, text=True, timeout=600)
             fails = [ln for ln in r.stdout.splitlines() if ln.startswith("FAIL")]

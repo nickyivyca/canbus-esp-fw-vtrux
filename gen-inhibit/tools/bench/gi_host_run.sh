@@ -40,6 +40,13 @@ PY="${PY:-python3.13}"
 
 [ -d "$FW/firmware/main" ] || { echo "no WiCAN tree at $FW/firmware" >&2; exit 1; }
 
+# WHERE THE REMOTE COMMANDS RUN (gen-inhibit reviewer, 2026-11-12). Over ssh, or, when
+# REMOTE names this host, here without ssh: madhouse-debian, the default, cannot ssh to
+# itself. The first line of the output says which (host_target.sh).
+. "$(dirname "${BASH_SOURCE[0]}")/host_target.sh"
+host_target
+echo "--- $HOST_MODE"
+
 mode="suite"
 case "${1:-}" in
   --sync-only)     mode=sync;      shift ;;
@@ -87,7 +94,7 @@ esac
 # Run it immediately after blessing, before anything else.
 if [ "$mode" = pull ]; then
   echo "--- pull $REMOTE:~/$DEST goldens -> $FW"
-  ssh "$REMOTE" "tar -C ~/$DEST -czf - test/gen_inhibit_host/golden" \
+  on_host "tar -C ~/$DEST -czf - test/gen_inhibit_host/golden" \
     | tar -C "$FW" -xzf -
   git -C "$FW" status --short test/gen_inhibit_host/golden | head -50
   exit 0
@@ -223,7 +230,7 @@ tar -C "$FW" -czf - \
     test/gen_inhibit_host/golden \
     -C "$SHARED_ROOT" shared/wican shared/can_port shared/twai_port \
     -C "$EXPORT_PARENT" diag_schemas \
-  | ssh "$REMOTE" "mkdir -p ~/$DEST && $STALE && rm -rf ~/$DEST/diag_schemas ~/$DEST/shared && tar xzf - -C ~/$DEST"
+  | on_host "mkdir -p ~/$DEST && $STALE && rm -rf ~/$DEST/diag_schemas ~/$DEST/shared && tar xzf - -C ~/$DEST"
 
 # project_dir.py WAS MISSING UNTIL 2026-10-26: from_capture.py,
 # replay_stimulus_delta.py and test_signals.py import it, so none of them could run
@@ -248,14 +255,14 @@ tar -C "$FW" -czf - \
 
 # The host and compiler every mode below builds with, first in the run's output
 # (2026-10-24); the run stops here if either is missing.
-ssh "$REMOTE" "bash -s" < "$(dirname "${BASH_SOURCE[0]}")/host_identity.sh"
+on_host "bash -s" < "$(dirname "${BASH_SOURCE[0]}")/host_identity.sh"
 
 case "$mode" in
   sync)
-    ssh "$REMOTE" "cd ~/$DEST && git status >/dev/null 2>&1 || true; ls -l firmware/main test/gen_inhibit_host | head -20"
+    on_host "cd ~/$DEST && git status >/dev/null 2>&1 || true; ls -l firmware/main test/gen_inhibit_host | head -20"
     ;;
   scenarios)
-    ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host && $PY make_scenarios.py"
+    on_host "cd ~/$DEST/test/gen_inhibit_host && $PY make_scenarios.py"
     ;;
   # THE FOUR CHECKERS run_tests.py DOES NOT INVOKE, run in one place with their
   # exit codes propagated.
@@ -266,7 +273,7 @@ case "$mode" in
   # by eye. Mutations that moved the boundary survived every suite. `set -e`
   # above means the first non-zero here stops the run.
   checks)
-    ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host \
+    on_host "cd ~/$DEST/test/gen_inhibit_host \
       && echo '--- invariants' && $PY invariants.py \
       && echo '--- passive_diff' && $PY passive_diff.py \
       && echo '--- fuzz_sequences' && $PY fuzz_sequences.py \
@@ -277,7 +284,7 @@ case "$mode" in
       && echo '--- test_cfg_build_id (0x7F3 build id, port step 0c)' && $PY test_cfg_build_id.py"
     ;;
   margin)
-    ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host && $PY load_margin.py $*"
+    on_host "cd ~/$DEST/test/gen_inhibit_host && $PY load_margin.py $*"
     ;;
   # E1, the shim suite. Builds gen_inhibit.c, gen_inhibit_core.c and gi_sched.c on
   # the host against test/gen_inhibit_shim/mock, with can_port and twai_port (on its
@@ -292,23 +299,23 @@ case "$mode" in
   # the shim's long-arm stimulus is cut with from_capture.py. The sync never touches
   # scratch/. test_gi_host_run_env.py runs both remote commands.
   canre)
-    ssh "$REMOTE" "$PY -B ~/$DEST/tools/bench/canre_pin.py install"
+    on_host "$PY -B ~/$DEST/tools/bench/canre_pin.py install"
     ;;
   shim)
-    ssh "$REMOTE" "${RX}$PY -B ~/$DEST/tools/bench/canre_pin.py install && cd ~/$DEST/test/gen_inhibit_shim && make -s clean && make -s WICANDIR=\$HOME/$DEST/shared/wican && ./shim_test"
+    on_host "${RX}$PY -B ~/$DEST/tools/bench/canre_pin.py install && cd ~/$DEST/test/gen_inhibit_shim && make -s clean && make -s WICANDIR=\$HOME/$DEST/shared/wican && ./shim_test"
     ;;
   # The transmit-scheduler cases (spec 5.2 item 10's emulation half), against
   # fake_buf's calibrated buffer model. Needs main/gi_sched.c from the sync.
   sched)
-    ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_sched && make -s clean && make -s && ./sched_test"
+    on_host "cd ~/$DEST/test/gen_inhibit_sched && make -s clean && make -s && ./sched_test"
     ;;
   asan)
-    ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host && make -s clean && make -s asan && $PY run_tests.py $*"
+    on_host "cd ~/$DEST/test/gen_inhibit_host && make -s clean && make -s asan && $PY run_tests.py $*"
     ;;
   signals)
-    ssh "$REMOTE" "${RX}cd ~/$DEST/test/gen_inhibit_host && make -s clean && make -s && $PY test_signals.py"
+    on_host "${RX}cd ~/$DEST/test/gen_inhibit_host && make -s clean && make -s && $PY test_signals.py"
     ;;
   *)
-    ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host && $PY run_tests.py $*"
+    on_host "cd ~/$DEST/test/gen_inhibit_host && $PY run_tests.py $*"
     ;;
 esac

@@ -102,8 +102,10 @@ def setup(base):
 
 def env_for(base, bindir, extra):
     e = {k: v for k, v in os.environ.items() if k not in ("REVERSE_IT_DIR", "RROOT", "FW", "REMOTE", "DEST", "PY")}
+    # REMOTE another host, so the fake ssh gets the commands: unset, it is madhouse-debian, which
+    # on madhouse-debian is the local mode (host_target.sh, 2026-11-12) and would write the real ~/gi_host
     e.update(PATH=fwd(bindir) + os.pathsep + os.environ.get("PATH", ""), MSYS_NO_PATHCONV="1",
-             LOCAL_PY="fakepy", PY="sigpy", FW=fwd(gi_paths.project_root()),
+             REMOTE="nowhere.invalid", LOCAL_PY="fakepy", PY="sigpy", FW=fwd(gi_paths.project_root()),
              FAKE_WICAN=fwd(os.path.join(base, "sharedco", "shared", "wican")))
     e.update(extra)
     return e
@@ -262,8 +264,8 @@ MUTANTS = [
     ("--canre not a mode", "  --canre)         mode=canre;     shift ;;\n", ""),
     ("--shim make without WICANDIR", "make -s WICANDIR=\\$HOME/$DEST/shared/wican && ./shim_test", "make -s && ./shim_test"),
     ("the last shared export not replaced", "rm -rf ~/$DEST/diag_schemas ~/$DEST/shared && tar", "rm -rf ~/$DEST/diag_schemas && tar"),
-    ("--canre checks instead of installing", '    ssh "$REMOTE" "$PY -B ~/$DEST/tools/bench/canre_pin.py install"\n',
-     '    ssh "$REMOTE" "$PY -B ~/$DEST/tools/bench/canre_pin.py check"\n'),
+    ("--canre checks instead of installing", '    on_host "$PY -B ~/$DEST/tools/bench/canre_pin.py install"\n',
+     '    on_host "$PY -B ~/$DEST/tools/bench/canre_pin.py check"\n'),
     ("the sync keeps what the repo dropped", "mkdir -p ~/$DEST && $STALE && rm -rf", "mkdir -p ~/$DEST && rm -rf"),
     ("the goldens not replaced", " ~/$DEST/test/build_checks ~/$DEST/test/gen_inhibit_host/golden\"", " ~/$DEST/test/build_checks\""),
     ("the shim's scenarios/ dropped too", "-maxdepth 1 ! -name scenarios -exec rm -rf", "-maxdepth 1 -exec rm -rf"),
@@ -292,6 +294,7 @@ def main():
             d = os.path.join(base, "m%d" % n)
             os.makedirs(d)
             shutil.copy(os.path.join(HERE, "host_identity.sh"), d)
+            shutil.copy(os.path.join(HERE, "host_target.sh"), d)     # sourced since the local mode (2026-11-12)
             p = os.path.join(d, "gi_host_run.sh")
             open(p, "w", encoding="utf-8", newline="").write(src.replace(old, new))
             r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__)], capture_output=True, text=True,

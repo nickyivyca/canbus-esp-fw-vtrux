@@ -7,7 +7,9 @@
 #
 #   bash gen-inhibit/tools/bench/baseline_host_run.sh c65c45e   (from the repo root)
 #
-# Remote: ~/gi_baseline_<commit> (made fresh; nothing else touches it).
+# Remote: ~/gi_baseline_<commit> (made fresh; nothing else touches it). REMOTE names the
+#         host (default madhouse-debian); when it names this host, the same commands run
+#         here without ssh, and host_run.log's first line says local mode (host_target.sh).
 # Local:  runs/baseline_<commit>/host/host_run.log, and traces_scenarios_golden.tgz
 #         holding every scenario, every FULL trace (TX lines kept, including the
 #         scenarios with no golden) and the goldens, so a later run can be diffed
@@ -20,6 +22,11 @@ C="${1:?usage: baseline_host_run.sh <commit>}"
 FW="${FW:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"   # default: this project folder; any folder of a worktree will do
 TOP="$(git -C "$FW" rev-parse --show-toplevel)" || { echo "$FW is in no git worktree" >&2; exit 2; }
 REMOTE="${REMOTE:-madhouse-debian}"
+# Where the remote half runs: over ssh, or here in local mode when REMOTE names this host
+# (host_target.sh; gen-inhibit reviewer, 2026-11-12). The log's first line says which.
+. "$(dirname "${BASH_SOURCE[0]}")/host_target.sh" || exit 2
+host_target || exit 2
+echo "$HOST_MODE"
 DEST="gi_baseline_$C"
 PY="${PY:-python3.13}"
 # The Python that runs here, before anything is sent (the gi_diag export, wican_ref.py's tag).
@@ -139,9 +146,10 @@ if [ -e "$STAGE/test/gen_inhibit_shim/wican_ref.py" ]; then
   WICAN=1
   echo "shared components at $WTAG: $SHIP"
 fi
-tar -C "$STAGE" -cf - . | ssh "$REMOTE" "rm -rf ~/$DEST && mkdir -p ~/$DEST && tar xf - -C ~/$DEST"
+tar -C "$STAGE" -cf - . | on_host "rm -rf ~/$DEST && mkdir -p ~/$DEST && tar xf - -C ~/$DEST"
 
-ssh "$REMOTE" "bash -s" > "$OUT/host_run.log" 2>&1 <<EOF
+echo "# $HOST_MODE" > "$OUT/host_run.log"
+on_host "bash -s" >> "$OUT/host_run.log" 2>&1 <<EOF
 cd ~/$DEST
 echo "# baseline host/emulation run: commit $C (git archive), \$(date -Is), \$(hostname)"
 echo "# \$(gcc --version | head -1); $PY \$($PY --version 2>&1)"
@@ -214,6 +222,6 @@ cd ../build_checks
 step config_vs_spec bash -c 'make -s -C . config_probe && $PY config_vs_spec.py'
 EOF
 echo "remote run finished, log $OUT/host_run.log"
-ssh "$REMOTE" "cd ~/$DEST/test/gen_inhibit_host && tar czf - traces scenarios golden" \
+on_host "cd ~/$DEST/test/gen_inhibit_host && tar czf - traces scenarios golden" \
   > "$OUT/traces_scenarios_golden.tgz"
 grep -E "^=== exit|^=== traces" "$OUT/host_run.log"
