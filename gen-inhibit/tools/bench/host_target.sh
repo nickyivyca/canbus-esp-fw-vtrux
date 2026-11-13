@@ -1,5 +1,7 @@
-# host_target.sh -- sourced by baseline_host_run.sh and gi_host_run.sh: where their
-# remote commands run. Gen-inhibit tester, 2026-11-12.
+# host_target.sh -- sourced by baseline_host_run.sh, gi_host_run.sh, shim_wire_probe.sh,
+# shim_7f3_probe.sh and the emulated suite's B15host: where their remote commands run.
+# Gen-inhibit tester, 2026-11-12 (the probes and B15host the same day, gen-inhibit
+# reviewer, after the first two).
 #
 # THE LOCAL MODE (gen-inhibit reviewer, 2026-11-12, approving the Linux leftovers'
 # finding): the bench host is madhouse-debian, both scripts' REMOTE defaults to it,
@@ -20,6 +22,9 @@
 # command where it is needed), so a local run that saw them could pass where the
 # remote one would fail. HOST_BASH names the shell (default bash), so a test can stand
 # in for it.
+#
+# HOST_SSH_BATCH=1 adds -o BatchMode=yes to each ssh (the suite's B15host, which had it
+# before, so a missing key fails at once instead of asking for a password).
 
 # host_target: from $REMOTE, set HOST_LOCAL (1 or 0) and HOST_MODE, the record's line.
 # Returns 2, setting neither, when REMOTE is not a host name.
@@ -51,6 +56,6 @@ on_host() {
     (cd "$HOME" && env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" PATH="$PATH" \
       LANG="${LANG:-C.UTF-8}" "${HOST_BASH:-bash}" -c "$1")
   else
-    ssh "$REMOTE" "$1"
+    ssh ${HOST_SSH_BATCH:+-o BatchMode=yes} "$REMOTE" "$1"
   fi
 }

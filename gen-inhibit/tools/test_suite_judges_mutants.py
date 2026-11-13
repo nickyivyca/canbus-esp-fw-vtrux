@@ -126,6 +126,21 @@ MUTANTS = [
      '        return [result("B10", "VOID", detail="the PCAN\'s clock: %s" % cv.group(1))]', '        pass'),
     ("B10: a VOID arm is FAIL, as before", "    if voided and not notspec:", "    if False:"),
     ("B10: a VOID arm hides a NOT as specified", "    if voided and not notspec:", "    if voided:"),
+    # the host mode line, H and B15host (host_target.sh, 2026-11-12)
+    ("host mode: any line is read, not only the first", '    first = t.split("\\n", 1)[0]  ',
+     '    first = next((l for l in t.splitlines() if HOST_MODE_RX.fullmatch(l)), "")  '),
+    ("host mode: remote reads as local", 'return ("local" if m.group(1) == "local mode" else "remote"), first[2:]',
+     'return "local", first[2:]'),
+    ("host mode: a mode word with nothing after it counts", 'HOST_MODE_RX = re.compile(r"# (local mode|remote): .+")',
+     'HOST_MODE_RX = re.compile(r"# (local mode|remote): .*")'),
+    ("host mode: any word before the colon counts", 'HOST_MODE_RX = re.compile(r"# (local mode|remote): .+")',
+     'HOST_MODE_RX = re.compile(r"# ([\\w ]+): .+")'),
+    ("H: no host_mode figure", '    figs["host_mode"] = fig(mode)\n', ''),
+    ("H: the mode line not in the detail", '"%d steps exit 0" % len(exits), line))]', '"%d steps exit 0" % len(exits), ""))]'),
+    ("B15host: no host_mode figure", '{"modes_with_pages": fig(len(pages)), "host_mode": fig(mode)}',
+     '{"modes_with_pages": fig(len(pages))}'),
+    ("B15host: the mode line not in the detail", 'else "a diag frame does not decode", line))]',
+     'else "a diag frame does not decode", ""))]'),
 ]
 
 

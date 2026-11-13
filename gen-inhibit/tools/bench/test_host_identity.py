@@ -107,7 +107,7 @@ MUTANTS = [
     ("gi_host_run.sh", "gi_host_run records nothing",
      'on_host "bash -s" < "$(dirname "${BASH_SOURCE[0]}")/host_identity.sh"\n', ""),
     ("shim_wire_probe.sh", "shim_wire_probe records nothing",
-     'ID="$(ssh "$REMOTE" "bash -s" < "$HERE/host_identity.sh")"', 'ID=""'),
+     'ID="$(on_host "bash -s" < "$HERE/host_identity.sh")"', 'ID=""'),
     ("baseline_host_run.sh", "baseline_host_run drops its gcc line",
      'echo "# \\$(gcc --version | head -1); $PY \\$($PY --version 2>&1)"\n', ""),
 ]

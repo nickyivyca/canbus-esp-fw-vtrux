@@ -20,13 +20,20 @@
 # distinct payload goes through the synced tree's gi_diag.py, against the diag_schemas/
 # export gi_host_run.sh copies with it, on the schema its own byte states. A schema no
 # DBC in the export states is refused (DECODE REFUSED), never decoded with a fallback.
+#
+# WHERE IT RUNS (host_target.sh, 2026-11-12, gen-inhibit reviewer): over ssh to REMOTE,
+# or, when REMOTE names this host (madhouse-debian, which cannot ssh to itself), here
+# without ssh. The first output line says which.
 set -euo pipefail
 REMOTE="${REMOTE:-madhouse-debian}"
 PY="${PY:-python3.13}"
-ssh "$REMOTE" "bash -s" < "$(dirname "$0")/host_identity.sh"   # host and compiler; stops here if missing
+. "$(dirname "$0")/host_target.sh"
+host_target || exit 2
+echo "$HOST_MODE"
+on_host "bash -s" < "$(dirname "$0")/host_identity.sh"   # host and compiler; stops here if missing
 for dest in "$@"; do
   echo "=== $dest"
-  ssh "$REMOTE" "bash -s" "$dest" "$PY" <<'EOS'
+  on_host "bash -s $(printf '%q %q' "$dest" "$PY")" <<'EOS'
 set -euo pipefail
 dest="$1"
 py="$2"

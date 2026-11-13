@@ -2,8 +2,17 @@
 #
 # Build shim_wire_probe.c on madhouse-debian against a tree synced by
 # gi_host_run.sh --sync-only, replay the named host scenarios through the shim,
-# and save each one's wire listing here under runs/. Gen-inhibit tester,
+# and save each one's wire listing in a run folder. Gen-inhibit tester,
 # 2026-10-16 (reviewer: liveflag-mmode's diag gap, in emulation first).
+#
+# THE RUN FOLDER is GI_OUT, or else reverse-it's gen-inhibit runs/shim_wire_probe_<stamp>
+# (2026-11-12: it was bench/runs/ beside this script while the harness lived in
+# SeaDrive, and no such folder has been here since it moved into the repo).
+#
+# WHERE IT RUNS (host_target.sh, 2026-11-12, gen-inhibit reviewer): over ssh to REMOTE,
+# or, when REMOTE names this host (madhouse-debian, which cannot ssh to itself), here
+# without ssh. Its first output line and each output file's first line say which.
+# The probe source goes over as the stdin of `cat`, the same both ways (scp before).
 #
 # The synced shim folder is copied to <tree>/test/gen_inhibit_shim_wireprobe
 # (a sibling of gen_inhibit_host, so replay_scn finds the host scenarios) and the
@@ -23,11 +32,17 @@ set -euo pipefail
 REMOTE="${REMOTE:-madhouse-debian}"
 DEST="${DEST:?set DEST to the synced tree under ~ on the remote}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+. "$HERE/host_target.sh"
+host_target || exit 2
+echo "$HOST_MODE"
 STAMP="$(date +%Y%m%dT%H%M%S)"
-ID="$(ssh "$REMOTE" "bash -s" < "$HERE/host_identity.sh")"   # host and compiler; stops here if missing
+OUT="${GI_OUT:-${REVERSE_IT_DIR:?set REVERSE_IT_DIR or GI_OUT}/projects/vtrux/notes/artifacts/gen-inhibit/runs/shim_wire_probe_$STAMP}"
+mkdir -p "$OUT"
+printf -v QD %q "$DEST"
+ID="$(on_host "bash -s" < "$HERE/host_identity.sh")"   # host and compiler; stops here if missing
 echo "$ID"
-scp -q "$HERE/shim_wire_probe.c" "$REMOTE:$DEST/test/shim_wire_probe.c"
-ssh "$REMOTE" "bash -s" "$DEST" <<'EOS'
+on_host "cat > $QD/test/shim_wire_probe.c" < "$HERE/shim_wire_probe.c"
+on_host "bash -s $QD" <<'EOS'
 set -euo pipefail
 t="$HOME/$1/test"
 rm -rf "$t/gen_inhibit_shim_wireprobe"
@@ -51,9 +66,10 @@ gcc -std=c11 -O1 -g -Wall -Wno-unused-parameter -Wno-unused-function \
 echo "built"
 EOS
 for name in "$@"; do
-  out="$HERE/runs/shim_wire_probe_${name}_${STAMP}.txt"
-  echo "$ID" > "$out"
-  ssh "$REMOTE" "cd $DEST/test/gen_inhibit_shim_wireprobe && timeout 120 ./shim_wire_probe $name" >> "$out" \
+  printf -v QN %q "$name"
+  out="$OUT/shim_wire_probe_${name}_${STAMP}.txt"
+  { echo "# $HOST_MODE"; echo "$ID"; } > "$out"
+  on_host "cd $QD/test/gen_inhibit_shim_wireprobe && timeout 120 ./shim_wire_probe $QN" >> "$out" \
     || echo "$name: exit $? (124 = the 120 s timeout)"
-  echo "$name -> $out ($(grep -c '^W ' "$out") wire frames; $(sed -n 2p "$out"))"
+  echo "$name -> $out ($(grep -c '^W ' "$out") wire frames; $(sed -n 3p "$out"))"
 done
