@@ -8,9 +8,12 @@
  * so lines from the CAN side's task and the protocol's replies never
  * interleave mid-line, and a full link loses whole lines, counted.
  *
- * This build has no jamming (SPEC T13: until jammer/ holds its ESP-IDF
- * port). CAN1's TWAI driver is not in the image, so the TWAI controller is
- * never started and nothing is sent on CAN1.
+ * Jamming on CAN1 (SPEC T13): the jammer's pulse engine, jam_pulse from
+ * ../jammer/components/, unchanged. CAN1's TXD is driven recessive before
+ * anything else, and CAN1's TWAI driver is not in the image, so the TWAI
+ * controller is never started and no CAN frame is sent on CAN1. Jam
+ * commands come as a reserved frame through the SLCAN (jam_frame.h), which
+ * is never put on a bus.
  */
 #include <stdarg.h>
 #include <stdio.h>
@@ -19,13 +22,17 @@
 #include "esp_app_desc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/ringbuf.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "board.h"
 #include "can_side.h"
 #include "host_usb.h"
+#include "jam_frame.h"
+#include "jam_pulse.h"
 #include "slcan_proto.h"
 
+#define CAN1_PORT       0       /* the board's TWAI port (board.h) */
 #define CAN2_PORT       1       /* the board's SPI CAN port (board.h) */
 #define OUT_RING_SIZE   16384
 #define NFV             "NOT FOR VEHICLE"
@@ -34,10 +41,13 @@ static RingbufHandle_t s_out;
 static slcan_t s_slcan;
 static char s_identity[160];
 static uint8_t s_canstat_boot;
+static gpio_num_t s_jam_tx;              /* CAN1's TXD */
 static uint8_t s_flags;                 /* Lawicel F flags, atomic */
 static uint32_t s_tx_dropped;           /* frames refused (protocol task) */
 static uint32_t s_host_lost;            /* received frames the link lost */
 static uint32_t s_reports_pending;      /* e3ooo lines owed (CAN task) */
+static uint32_t s_jam_replies_lost;     /* jam reply lines the link lost */
+static SemaphoreHandle_t s_jam_mx;      /* jam_reply's buffers */
 
 static void flag(uint8_t bit)
 {
@@ -59,6 +69,20 @@ static void out_task(void *arg)
             vRingbufferReturnItem(s_out, p);
         }
     }
+}
+
+/* jam_pulse's reply callback, from the protocol task and the jam task: the
+ * line as frames on JAM_REPLY_ID (jam_frame.h), all of them in one push, so
+ * one line's frames are never split or interleaved with another's. */
+static void jam_reply(const char *line, void *ctx)
+{
+    static can_frame_t fr[JAM_REPLY_FRAMES_MAX];
+    static char buf[JAM_REPLY_FRAMES_MAX * SLCAN_LINE_MAX];
+    xSemaphoreTake(s_jam_mx, portMAX_DELAY);
+    size_t n = jam_frame_reply(line, fr, JAM_REPLY_FRAMES_MAX), len = 0;
+    for (size_t i = 0; i < n; i++) len += slcan_format_frame(&fr[i], buf + len);
+    if (!out_push(buf, len)) s_jam_replies_lost++;
+    xSemaphoreGive(s_jam_mx);
 }
 
 /* A console line: "\n# NOT FOR VEHICLE | <text>\r" (slcan_proto.h). */
@@ -91,13 +115,20 @@ static void banner(void *ctx)
             "until O (normal) or L (listen-only); C closes");
     console("MCP2515 CANSTAT 0x%02X at boot (0x80: configuration mode, no "
             "transmit, no ACK)", s_canstat_boot);
-    console("CAN1 (TWAI): never started; no jamming in this build");
+    console("CAN1: jam pulses on GPIO%d, TWAI never started, stops=%s",
+            (int)s_jam_tx, jam_stops_text());
+    char lim[120];
+    jam_limits_text(lim, sizeof lim);
+    console("jam %s; commands: frame T%08lX8 (jam_frame.h)", lim,
+            (unsigned long)JAM_CMD_ID);
     console("counters: tx_queued=%lu tx_ok=%lu tx_full=%lu tx_dropped=%lu "
-            "tx_flushed=%lu rx=%lu rx_overrun=%lu host_lost=%lu",
+            "tx_flushed=%lu rx=%lu rx_overrun=%lu host_lost=%lu "
+            "jam_replies_lost=%lu",
             (unsigned long)st.tx_queued, (unsigned long)st.tx_ok,
             (unsigned long)st.tx_full, (unsigned long)s_tx_dropped,
             (unsigned long)st.tx_flushed, (unsigned long)st.rx,
-            (unsigned long)st.rx_overrun, (unsigned long)s_host_lost);
+            (unsigned long)st.rx_overrun, (unsigned long)s_host_lost,
+            (unsigned long)s_jam_replies_lost);
 }
 
 /* ---- the CAN side's callbacks (its task) ---- */
@@ -159,6 +190,21 @@ static void op_close(void *ctx)
     can_side_close();
 }
 
+static int op_local(void *ctx, const can_frame_t *f)
+{
+    char text[JAM_CMD_TEXT_MAX];
+    switch (jam_frame_decode(f, text)) {
+    case JAM_FRAME_NOT_JAM:
+        return 0;
+    case JAM_FRAME_CMD:
+        if (jam_line(text) == JAM_LINE_NOT_MINE) jam_reply("ERR unknown_command", NULL);
+        return 1;
+    default:
+        jam_reply("ERR bad_jam_frame", NULL);
+        return 1;
+    }
+}
+
 static int op_send(void *ctx, const can_frame_t *f)
 {
     return can_side_send(f);
@@ -183,6 +229,7 @@ static void op_write(void *ctx, const char *s, size_t n)
 static slcan_ops_t s_ops = {
     .open = op_open,
     .close = op_close,
+    .local = op_local,
     .send = op_send,
     .flags = op_flags,
     .dropped = op_dropped,
@@ -201,6 +248,11 @@ static void proto_task(void *arg)
 
 void app_main(void)
 {
+    board_twai_pins_t can1;
+    ESP_ERROR_CHECK(board_twai_pins(CAN1_PORT, &can1));
+    s_jam_tx = can1.tx;
+    jam_drive_recessive(s_jam_tx);      /* first (SPEC T13: boots silent) */
+
     const esp_app_desc_t *d = esp_app_get_description();
     char elf[65];
     esp_app_get_elf_sha256(elf, sizeof elf);
@@ -215,6 +267,16 @@ void app_main(void)
 
     ESP_ERROR_CHECK(can_side_init(CAN2_PORT, &s_can_cb, &s_canstat_boot));
     out_push(BOOT_LINE, sizeof BOOT_LINE - 1);
+
+    s_jam_mx = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(s_jam_mx ? ESP_OK : ESP_ERR_NO_MEM);
+    jam_config_t jc;
+    memset(&jc, 0, sizeof jc);
+    jc.tx_gpio = s_jam_tx;
+    jc.reply = jam_reply;
+    jc.core = 1;
+    jc.priority = 10;
+    ESP_ERROR_CHECK(jam_init(&jc));
 
     slcan_init(&s_slcan, &s_ops);
     xTaskCreatePinnedToCore(proto_task, "slcan", 4096, NULL, 12, NULL, 0);

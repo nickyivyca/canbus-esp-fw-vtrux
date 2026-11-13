@@ -6,12 +6,20 @@
     "dev": {
       "project_name": "slcan_spi_NOT_FOR_VEHICLE",
       "pinnable": true
+    },
+    "stop_a_only": {
+      "project_name": "slcan_spi_a_NOT_FOR_VEHICLE",
+      "pinnable": false
+    },
+    "stop_b_only": {
+      "project_name": "slcan_spi_b_NOT_FOR_VEHICLE",
+      "pinnable": false
     }
   },
   "not_for_vehicle": true,
   "required_strings": [
     "# NOT FOR VEHICLE slcan_spi",
-    "CAN1 (TWAI): never started; no jamming in this build"
+    "CAN1: jam pulses on GPIO%d, TWAI never started, stops=%s"
   ],
   "forbidden_symbol_prefixes": [
     "twai_"
@@ -20,7 +28,11 @@
     "app_main",
     "slcan_input",
     "can_side_init",
-    "mcp2515_reset"
+    "mcp2515_reset",
+    "jam_drive_recessive",
+    "jam_init",
+    "jam_frame_decode",
+    "jam_frame_reply"
   ],
   "required_config": {
     "CONFIG_ESP_CONSOLE_NONE": true,

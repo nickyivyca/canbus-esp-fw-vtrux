@@ -9,10 +9,13 @@ Written for the Android session's two-bus replay into its app emulator: on
 the bench the charger segment holds only `canchg` and the X2's MCP2515, so
 the X2 is its only possible sender there (SPEC section 5).
 
-**No jamming in this build.** T13's jamming on CAN1 comes once `jammer/`
-holds the jammer's ESP-IDF port (T8); until then the image ships without it,
-so the replay is not held up. CAN1's TWAI driver is not linked in, so its
-controller is never started and nothing is sent on CAN1.
+**Jamming on CAN1** (T13, the image's primary objective): the jammer's
+pulse engine, `../jammer/components/jam_pulse`, taken unchanged, puts short
+dominant pulses on CAN1's TXD on command, within the jammer's limits and
+with its two stops at the deadline. CAN1's TWAI driver is not linked in, so
+its controller is never started and no CAN frame is sent on CAN1. Jam
+commands and replies go through the SLCAN as reserved frames ("Jamming"
+below), and jamming may run while the SLCAN is open.
 
 ## Using it
 
@@ -48,14 +51,14 @@ source):
 | `S6` | 500 kbit/s; any other `Sn`, and `s`, is refused (BEL) and clears the rate |
 | `O` / `L` | opens normal (transmits, ACKs) / listen-only (never ACKs); refused unless closed and after `S6` |
 | `C` | closes: the MCP2515 is reset into configuration mode, where it neither transmits nor ACKs |
-| `t` `T` `r` `R` | queues a frame (reply `z` / `Z`); refused with BEL when closed |
+| `t` `T` `r` `R` | queues a frame (reply `z` / `Z`); refused with BEL when closed. A frame on a jam identifier is the image's own, open or closed, and never sent ("Jamming") |
 | `F` | the Lawicel status flags, read and cleared |
 | `V` / `N` | the identity: `V0100 <identity>` / `N<identity>` |
 | `B` | the banner again |
 
 | The image sends | Meaning | The kernel |
 |---|---|---|
-| `t` `T` `r` `R` lines | a frame received on CAN2 | a received frame |
+| `t` `T` `r` `R` lines | a frame received on CAN2, or a jam reply frame (`T1F4A4D52`, "Jamming") | a received frame |
 | `e3OOO` | one frame the host asked to send was dropped: the 512-frame transmit queue was full, or the image is open listen-only | an error frame with `CAN_ERR_CRTL_TX_OVERFLOW`; `tx_errors` + 1 |
 | `e3ooo` | a receive overrun: the MCP2515's, or a frame the USB link had no room for | an error frame with `CAN_ERR_CRTL_RX_OVERFLOW`; `rx_errors` and `rx_over_errors` + 1 |
 | `s<a\|w\|p\|b><rec><tec>` | the bus state changed: error-active, warning, error-passive, bus-off, with the receive and transmit error counters | a state change; bus-off takes the interface off the bus |
@@ -72,6 +75,68 @@ records (T6), so it is T10's identity answer without a flash read.
 
 Frames go out in the order the host sent them, one at a time through the
 MCP2515's transmit buffer 0. Received frames reach the host in bus order.
+
+## Jamming
+
+T13 wants jam commands on a channel of their own, never inside traffic a
+replay could carry, first choice a second USB serial port. The X2 cannot
+present one without harm to flashing: the ESP32-S3 offers a second serial
+port only through its USB OTG peripheral, which takes the USB pins from the
+Serial/JTAG that flashes and resets it, so a crashed image could no longer be
+re-flashed over USB. So the image uses T13's fallback: a reserved CAN frame
+with a signature, sent by the host through the SLCAN, which the image acts
+on and never puts on a bus. The replies come back as frames on a second
+reserved identifier in the host's receive stream, never put on a bus (user,
+2026-11-13). Both work through the kernel's slcan, with the interface up:
+
+    cansend canx2 1F4A4D43#4A4D541400641388     # TRAIN 20 100 5000
+    cansend canx2 1F4A4D43#4A4D530000000000     # STOP
+
+`main/jam_frame.h` has the format:
+
+| Identifier (29-bit) | Direction | Data |
+|---|---|---|
+| `0x1F4A4D43` | host to image: a command | `J` `M`, then the command byte and its arguments, DLC 8: `T` TRAIN (byte 3 `w_us`, bytes 4-5 `p_us`, bytes 6-7 `ms`), `P` PULSES (byte 3 `w_us`, bytes 4-5 `n`, bytes 6-7 `interval_ms`), `S` STOP and `?` STATUS (bytes 3-7 zero); numbers big-endian |
+| `0x1F4A4D52` | image to host: a reply | `J` `M`, then byte 2 the frame's index in the reply line (0 first, `0x80` set on the last), then up to 5 characters of the line; DLC 3 + their count |
+
+- **The command** becomes the jammer's own text command (`TRAIN 20 100
+  5000`), and `jam_pulse` decides what runs, by its limits, as in the jammer
+  (`../jammer/README.md`, "Commands"): W 12-50 us, period at least 4 W, every
+  command capped at 30 s, nothing extending a deadline, both stops.
+- **The replies** are `jam_pulse`'s reply lines, `ACK`, `PULSE`, `DONE`,
+  `ERR`, `CAPPED` and `STATUS`, as text, without the jammer's `JAMMER `
+  prefix. The host joins each line's frames back by index. One line's frames
+  go out together, never mixed with another line's; a line the link has no
+  room for is lost whole and counted (`jam_replies_lost` in the banner).
+- **A frame from the host on either identifier** is the image's own: it is
+  never queued for CAN2, decoded or not. One that does not decode is
+  answered `ERR bad_jam_frame`; the reply identifier from the host is
+  always refused so.
+- **The identifiers** have J1939's EDP and DP bits both set, which J1939
+  leaves to ISO 15765-3, and no bench or truck bus uses them (no Coda or
+  Vtrux DBC has one). A frame received from CAN2 on either is passed to the
+  host like any other; it is never acted on.
+- **Boots silent:** CAN1's TXD (the board layer's `board_twai_pins(0)`) is
+  driven recessive before anything else in `app_main`. Before that, through
+  the ROM and bootloader, the pin is an input and the transceiver's TXD
+  pull-up holds the bus recessive (`../jammer/README.md`).
+
+## Variants
+
+Build variants are CMake options (shared/tools R20), listed in
+`vtrux_build.json`. Each has its own project name, which is the image's
+name, so `../tools/` judges the variant from the image itself.
+
+| Variant | `SLCAN_SPI_TEST_STOP` | Project name | Pinnable |
+|---|---|---|---|
+| `dev` | `none` | `slcan_spi_NOT_FOR_VEHICLE` | yes, from a tag |
+| `stop_a_only` | `a_only` | `slcan_spi_a_NOT_FOR_VEHICLE` | never |
+| `stop_b_only` | `b_only` | `slcan_spi_b_NOT_FOR_VEHICLE` | never |
+
+The two test variants are `jam_pulse`'s test builds, as in the jammer: each
+shows one stop at the deadline alone. `stop_a_only` moves stop (b) to the
+deadline plus 2 s, so only stop (a), the `esp_timer`, can end a train at the
+deadline; `stop_b_only` has no deadline timer.
 
 ## Console lines
 
@@ -93,7 +158,8 @@ image's console lines:
   after a boot, and resets the X2 under it.
 - **The full banner, on `B` only,** each line `\n# NOT FOR VEHICLE | ...\r`:
   the identity, the protocol in one line, CANSTAT at boot (0x80,
-  configuration mode), CAN1's state, and the counters. Its lines are longer
+  configuration mode), CAN1's jam pin and stops, the jam limits and command
+  identifier, and the counters. Its lines are longer
   than the kernel takes, and the kernel never sends `B`.
 
 ESP-IDF's console is off and its log level is none, so nothing else from
@@ -110,12 +176,12 @@ attached and up through a reset, counts one `rx_over_errors` (`attach`).
 
 | File | What |
 |---|---|
-| `CMakeLists.txt` | the ESP-IDF project; its name, `slcan_spi_NOT_FOR_VEHICLE`, is the image's name |
+| `CMakeLists.txt` | the ESP-IDF project: `jam_pulse` from `../jammer/components/`, the variant option and its project name, which is the image's name |
 | `sdkconfig.defaults`, `sdkconfig` | the options, and the full configuration generated from them (regenerate with `idf.py -B build/dev reconfigure` after deleting `sdkconfig`) |
 | `dependencies.lock` | the Component Manager's lock: the board at its tag |
-| `vtrux_build.json` | the shared tooling's project data (shared/tools R22): the `dev` variant |
+| `vtrux_build.json` | the shared tooling's project data (shared/tools R22): the three variants |
 | `VERIFICATION.md` | the test results, by build (the charge-interposer tester's) |
-| `x2_image.json` | what `../tools/check_image.py` and `../tools/archive.py` check of a build (format in `../tools/README.md`): the name, the boot line, no `twai_` symbol, the console and log off, the whole ELF hash in the identity |
+| `x2_image.json` | what `../tools/check_image.py` and `../tools/archive.py` check of a build (format in `../tools/README.md`): each variant's name and whether it may be pinned, the boot line and the CAN1 banner line, no `twai_` symbol (the TWAI driver; the board layer's pin lookup `board_twai_pins` is not one), the jam engine's symbols, the console and log off, the whole ELF hash in the identity |
 | `main/` | the image's source; see `main/README.md` |
 | `test/` | the protocol layer's host unit tests and their mutants; see `test/README.md` |
 | `bench/` | the checks of a built image and of the image on the bench, each with its can-fail; see `bench/README.md` |
@@ -127,8 +193,8 @@ v5.4.2 (`local-paths.md`), in `build.slice` on `madhouse-debian`:
 
     PYTHONPATH=<worktrees>/shared-<tag>/shared/tools \
       systemd-run --user --scope --slice=build.slice \
-      python3.13 -B -m vtrux_build build dev
+      python3.13 -B -m vtrux_build build <variant>
 
-The image is `build/dev/slcan_spi_NOT_FOR_VEHICLE.bin`. Such a build is a
+The image is `build/<variant>/<project name>.bin`. Such a build is a
 dev build (T7); only a build from a shared tag's read-only checkout with a
 clean tree is pinned, with its manifest row (T6, T9).

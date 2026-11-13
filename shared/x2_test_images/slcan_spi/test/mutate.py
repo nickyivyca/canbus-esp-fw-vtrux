@@ -1,11 +1,13 @@
-"""Mutants of slcan_spi's protocol layer: the can-fail of its unit tests.
+"""Mutants of slcan_spi's protocol layer and jam channel: the can-fail of
+its unit tests.
 
 NOT FOR VEHICLE (x2_test_images SPEC T14).
 
-Each mutant breaks one behaviour of ../main/slcan_proto.c, by a text
-substitution that must match exactly once. The unit tests
-(test_slcan_proto.c) are built against the mutated copy and must FAIL on
-every mutant; the unmutated file must PASS first. Copies and builds go in
+Each mutant breaks one behaviour of ../main/slcan_proto.c or
+../main/jam_frame.c, by a text substitution that must match exactly once.
+The unit tests (test_slcan_proto.c, test_jam_frame.c) are built against the
+mutated copy and must FAIL on every mutant; the unmutated files must PASS
+first. Copies and builds go in
 <worktree>/scratch/slcan-spi-mutants/<pid>/, removed at the end, pass or
 fail (AGENTS.md "Files and folders").
 
@@ -20,10 +22,13 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(HERE, "..", "main", "slcan_proto.c")
+SRCS = {
+    "slcan_proto.c": ("SRC", os.path.join(HERE, "..", "main", "slcan_proto.c")),
+    "jam_frame.c": ("JSRC", os.path.join(HERE, "..", "main", "jam_frame.c")),
+}
 
-# (name, the behaviour it breaks, old text, new text)
-MUTANTS = [
+# (name, the behaviour it breaks, old text, new text): slcan_proto.c
+PROTO_MUTANTS = [
     ("send-while-closed", "T8a: a frame is sent before an open",
      "    if (s->mode == SLCAN_CLOSED) {\n        put(s, BEL);\n        return;\n    }\n    if (s->mode != SLCAN_OPEN_NORMAL",
      "    if (0) {\n        put(s, BEL);\n        return;\n    }\n    if (s->mode == SLCAN_OPEN_LISTEN"),
@@ -66,7 +71,59 @@ MUTANTS = [
     ("flags-not-read", "the F reply is not the flags",
      "snprintf(out, sizeof out, \"F%02X\\r\", s->ops->flags(s->ops->ctx));",
      "snprintf(out, sizeof out, \"F%02X\\r\", 0);"),
+    ("local-only-when-open", "T13: a jam frame is refused while closed",
+     "    if (s->ops->local && s->ops->local(s->ops->ctx, &f)) {\n        put(s, f.ext ? \"Z\" CR : \"z\" CR);\n        return;\n    }\n    if (s->mode == SLCAN_CLOSED) {\n        put(s, BEL);\n        return;\n    }",
+     "    if (s->mode == SLCAN_CLOSED) {\n        put(s, BEL);\n        return;\n    }\n    if (s->ops->local && s->ops->local(s->ops->ctx, &f)) {\n        put(s, f.ext ? \"Z\" CR : \"z\" CR);\n        return;\n    }"),
+    ("local-sent-too", "T13: a jam frame is also put on CAN2",
+     "    if (s->ops->local && s->ops->local(s->ops->ctx, &f)) {\n        put(s, f.ext ? \"Z\" CR : \"z\" CR);\n        return;\n    }",
+     "    if (s->ops->local) s->ops->local(s->ops->ctx, &f);"),
 ]
+
+# jam_frame.c
+JAM_MUTANTS = [
+    ("sig0-unchecked", "T13: a command without the signature's first byte is acted on",
+     "if (d[0] != JAM_SIG0 || d[1] != JAM_SIG1) return JAM_FRAME_BAD;",
+     "if (d[1] != JAM_SIG1) return JAM_FRAME_BAD;"),
+    ("sig1-unchecked", "T13: a command without the signature's second byte is acted on",
+     "if (d[0] != JAM_SIG0 || d[1] != JAM_SIG1) return JAM_FRAME_BAD;",
+     "if (d[0] != JAM_SIG0) return JAM_FRAME_BAD;"),
+    ("jam-dlc-unchecked", "a short command frame is decoded",
+     "if (f->id != JAM_CMD_ID || f->rtr || f->dlc != 8) return JAM_FRAME_BAD;",
+     "if (f->id != JAM_CMD_ID || f->rtr) return JAM_FRAME_BAD;"),
+    ("rtr-unchecked", "a remote frame is decoded as a command",
+     "if (f->id != JAM_CMD_ID || f->rtr || f->dlc != 8) return JAM_FRAME_BAD;",
+     "if (f->id != JAM_CMD_ID || f->dlc != 8) return JAM_FRAME_BAD;"),
+    ("reply-id-is-command", "T13: a host frame on the reply ID is acted on as a command",
+     "if (f->id != JAM_CMD_ID || f->rtr || f->dlc != 8) return JAM_FRAME_BAD;",
+     "if (f->rtr || f->dlc != 8) return JAM_FRAME_BAD;"),
+    ("reply-id-not-reserved", "T13: a host frame on the reply ID goes to CAN2",
+     "return f->ext && (f->id == JAM_CMD_ID || f->id == JAM_REPLY_ID);",
+     "return f->ext && f->id == JAM_CMD_ID;"),
+    ("std-id-reserved", "an 11-bit frame is taken for the jam channel",
+     "return f->ext && (f->id == JAM_CMD_ID || f->id == JAM_REPLY_ID);",
+     "return (f->id == JAM_CMD_ID || f->id == JAM_REPLY_ID || f->id == (JAM_CMD_ID & 0x7FF));"),
+    ("little-endian", "the arguments read little-endian",
+     "return ((unsigned)p[0] << 8) | p[1];",
+     "return ((unsigned)p[1] << 8) | p[0];"),
+    ("stop-trailing-unchecked", "a STOP or STATUS with stray bytes is acted on",
+     "            if (d[i]) return JAM_FRAME_BAD;\n",
+     ""),
+    ("reply-no-signature", "T13: reply frames without the signature",
+     "        f->data[0] = JAM_SIG0;\n        f->data[1] = JAM_SIG1;\n",
+     ""),
+    ("reply-index-fixed", "reply frames all carry index 0",
+     "        f->data[2] = (uint8_t)n;\n",
+     "        f->data[2] = 0;\n"),
+    ("reply-last-everywhere", "every reply frame marked last",
+     "if (pos >= len || n == max) f->data[2] |= JAM_REPLY_LAST;",
+     "f->data[2] |= JAM_REPLY_LAST;"),
+    ("reply-overruns-max", "a long reply writes past the frames it was given",
+     "    } while (pos < len && n < max);",
+     "    } while (pos < len);"),
+]
+
+MUTANTS = ([("slcan_proto.c",) + m for m in PROTO_MUTANTS]
+           + [("jam_frame.c",) + m for m in JAM_MUTANTS])
 
 
 def worktree_root():
@@ -95,9 +152,11 @@ def remove(path):
         print("could not remove %s" % path)
 
 
-def run_tests(src, out):
-    r = subprocess.run(["make", "-s", "-C", HERE, "SRC=" + src, "OUT=" + out],
-                       capture_output=True, text=True)
+def run_tests(out, var=None, src=None):
+    args = ["make", "-s", "-C", HERE, "OUT=" + out]
+    if var:
+        args.append(var + "=" + src)
+    r = subprocess.run(args, capture_output=True, text=True)
     return r.returncode, r.stdout + r.stderr
 
 
@@ -107,18 +166,21 @@ def main():
     if not ignored(root, scratch):
         print("REFUSED: %s is not ignored by git (scratch/ must be)" % scratch)
         return 1
-    with open(SRC, encoding="utf-8", newline="") as f:
-        original = f.read()
+    originals = {}
+    for fname, (_, path) in SRCS.items():
+        with open(path, encoding="utf-8", newline="") as f:
+            originals[fname] = f.read()
     bad = 0
     try:
         os.makedirs(scratch)
-        rc, text = run_tests(os.path.abspath(SRC), os.path.join(scratch, "original"))
+        rc, text = run_tests(os.path.join(scratch, "original"))
         if rc != 0:
             print("ORIGINAL FAILS: the unit tests must pass on the unmutated file")
             print(text)
             return 1
         print("original                  PASS (as it must)")
-        for name, what, old, new in MUTANTS:
+        for fname, name, what, old, new in MUTANTS:
+            original = originals[fname]
             count = original.count(old)
             if count != 1:
                 print("%-25s BROKEN MUTANT: its text matches %d times, not once" % (name, count))
@@ -126,10 +188,10 @@ def main():
                 continue
             d = os.path.join(scratch, name)
             os.makedirs(d)
-            src = os.path.join(d, "slcan_proto.c")
+            src = os.path.join(d, fname)
             with open(src, "w", encoding="utf-8", newline="") as f:
                 f.write(original.replace(old, new))
-            rc, text = run_tests(src, os.path.join(d, "build"))
+            rc, text = run_tests(os.path.join(d, "build"), SRCS[fname][0], src)
             if rc == 0:
                 print("%-25s SURVIVED: %s" % (name, what))
                 bad += 1
