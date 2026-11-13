@@ -507,10 +507,10 @@ there.
   bench adapters, and `can-tools`, the CAN replay tooling session (SPEC
   section 8). They may build and flash the X2's test images (the jammer
   and the SLCAN images), but do not change them, and flash no other image
-  or board (user, 2026-11-12, in the CAN replay tooling session). Until
-  those images' sources move into `shared/x2_test_images`, they use the
-  archived PlatformIO builds. SPEC section 8 still says they flash no
-  board; its update is drafted, for the lock's users to review. At
+  or board (user, 2026-11-12, in the CAN replay tooling session). How
+  they flash before and after the images move into
+  `shared/x2_test_images`, and what the X2 is left on and recorded as at
+  release, are in SPEC section 8 (`shared/main` from `1e33234d`). At
   release, everything they opened is closed and back on its driver,
   `canmain` is down, and what they transmitted is noted.
 - **`canmain`, CAN1's Innomaker, is for the Android app's two-bus tests**
@@ -644,17 +644,22 @@ bench runs. Emulated-time suites are not.
    interval. A gap over 10 s in its output means the logger itself was
    starved or down. It is the Local LLM hosting session's tool
    (`monitoring/resource-log/README.md` in the Infrastructure library).
-3. **The run guard records, it does not refuse** (user, 2026-11-12). At
-   `shared/main` tag `2026.11.11.7`, shared/bench's chain runner still
-   refuses a wall-clock check, NOT-RUN with "refused: another wall-clock
-   test", when another role holds the bench lock or a process matches its
-   `wallclock_patterns`, and drops builds to one job while it thinks a
-   wall-clock test runs. That is changing, as harness work: the runner
-   records other lock holders and matching processes in the run record
-   and runs anyway, builds keep every core, and a hand-take role's lock
-   (`android`, `can-tools`) does not count as a wall-clock test. Until
-   that lands in a pinned tag, a NOT-RUN of that kind is the guard, not a
-   result.
+3. **The run guard records, it does not refuse** (user, 2026-11-12).
+   From `shared/main` tag `2026.11.12` (`ee4608aa`), shared/bench's chain
+   runner runs a wall-clock check even when another role holds the bench
+   lock or a process matches its `wallclock_patterns`. It names them in
+   the run record's `wallclock-others` event. A hand-take role's lock
+   (`android`, `can-tools`) does not count as a wall-clock test, and builds
+   keep every core. On Linux, with its `placement` setting, the runner
+   starts wall-clock checks in `bench.slice` and builds in `build.slice`
+   and reads each placement back. A placement that does not read back
+   FAILs that group's placement check, and the group's checks are NOT-RUN.
+   A run with board work refuses to start outside the wall-clock slice and
+   prints the `systemd-run` command. Tag `2026.11.12.2` (`7655aeff`)
+   carries the user's session bus into nested suite runs, so their
+   placement reaches the user's systemd. A NOT-RUN "refused: another
+   wall-clock test" now comes only from a pin older than `2026.11.12`; it
+   is the old guard, not a result.
 4. **The trials behind the slices.** On `NICKY-XPS`, 2026-10-15/16: interposer
    scenario #12 was voided when `charger_sim` stalled under a full-speed
    six-environment build. A full-speed build then failed (about 128
