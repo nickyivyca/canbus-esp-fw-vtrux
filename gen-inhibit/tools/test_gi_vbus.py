@@ -14,11 +14,14 @@ it works; this runs it.
      back 0" line, a listener on its segment must count frames flowing, and
      the network counters must stay flat meanwhile: no more than the
      background the same counters showed just before.
-  4. Positive control for 3, so a flat counter means something: 100 datagrams
-     sent deliberately with TTL 1 (to a group no bench uses) must show up on
-     those counters, above the background. Without it, counters that never
-     move would pass 3. 100 small datagrams once is harmless; the 2026-09-01
-     incident was 66,450 per second for twenty minutes.
+  4. Positive control for 3, so a flat counter means something: 300 datagrams
+     sent deliberately with TTL 1 (to a group no bench uses), about 200 a
+     second, must show up on those counters, above the background. Without
+     it, counters that never move would pass 3. 300 small datagrams once is
+     harmless; the 2026-09-01 incident was 66,450 per second for twenty
+     minutes. (100 until 2026-11-12: with madhouse-debian's background at
+     40-96 pps in the first evidence run, 100 passed by 60 against a need of
+     50, too close to the background's own error.)
 
 The counters (5, the judge):
 - Linux: tx_packets in /sys/class/net/<nic>/statistics, for the NIC that
@@ -84,8 +87,9 @@ ROUTE_PROBE = "239.0.2.1"   # AGENTS.md "Measure, do not assume"
 BASE_S = 5.0                # background reading just before each window
 ALLOW_PPS = 40.0            # excess over that background still called flat:
 #                             madhouse-debian's background is 13-35 pps
-#                             (AGENTS.md; 15-35 pps read 2026-11-12)
-CONTROL_N = 100
+#                             (AGENTS.md; 15-35 pps read 2026-11-12, and
+#                             40-96 pps in the first evidence run that day)
+CONTROL_N = 300             # ~1.5 s at 5 ms: seen at an excess of 150
 LEAKY_N, LEAKY_FPS = 600, 200   # --can-fail b: ~3 s, so 600 > twice the allowance
 
 results = []
