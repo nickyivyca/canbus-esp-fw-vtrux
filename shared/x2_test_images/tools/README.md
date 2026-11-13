@@ -13,8 +13,8 @@ variants: everything image-specific is in `<image>/x2_image.json`.
 | `check_image.py` | checks one build against its `x2_image.json`: the image parses, its chip, its variant read from its own `project_name` (exactly one variant's, and the one offered), NOT_FOR_VEHICLE in the name where the image needs it, the banner strings in the `.bin`, the `.elf` hash against the descriptor's, the symbol table (read, non-empty, required symbols), no forbidden symbols, the required config values. Exit 0 PASS, 1 FAIL, 2 REFUSED |
 | `archive.py` | `build`: the git state, the shared tooling's dev build, the git state again, `check_image.py`, then the files and one appended row in Seafile; `pinnable` only for a pinnable variant built at a shared tag from a clean tree whose version is the tag. Exit 0 archived, 2 refused |
 | `flash_row.py` | flashes one archived build onto the bench X2 from its manifest row (SPEC T9-T11): the row, every file's size, SHA-256 and MD5, the offsets and the app's descriptor checked against the row first, then the same checkout's shared/bench esptool flasher. Exit 0 flashed (or checked), 1 the flash failed, 2 refused, nothing written |
-| `test_tools.py` | the three tools' tests on stand-in builds (real formats, small), each check shown failing, the flasher driven through a stand-in esptool; under `<worktree>/scratch/x2-tools-tests/<pid>/`, removed at the end |
-| `mutate.py` | breaks one check at a time (37 mutants) and checks `test_tools.py` fails on each |
+| `test_tools.py` | the three tools' tests on stand-in builds (real formats, small), each check shown failing, the flasher driven through a stand-in esptool and the canx2 detach through a stand-in canctl; under `<worktree>/scratch/x2-tools-tests/<pid>/`, removed at the end |
+| `mutate.py` | breaks one check at a time (44 mutants) and checks `test_tools.py` fails on each |
 
 The tools import `vtrux_build.image` from the same checkout's
 `shared/tools`, so the image is read as the shared tooling reads it (R1,
@@ -84,11 +84,26 @@ rows for the build that disagree; any file whose size, SHA-256 or MD5
 differs from the row, a name with a path, offsets that repeat or overlap;
 an app that is not the row's (its SHA-256, project name, ELF hash, code
 hash, chip); no MAC, or a settings chip type for another chip; a bench lock
-not held by `--role`; and `canx2` attached as SLCAN (shared/bench SPEC
-section 8), with the `canctl` command that detaches it. `--check-only`
-makes the row and file checks alone, with no lock, settings or board. The
-flasher then checks the files' MD5 again, auto-reset and the chip's type
-and MAC before and after, and "Hash of data verified" for every file.
+not held by `--role`. Without `--check-only`, `--settings` and `--role` are
+both required.
+
+Then, if `canx2` is attached as SLCAN (netdev `canx2`, or an `slcand` for
+it), it detaches it (shared/bench SPEC section 8; the charge-interposer
+reviewer, 2026-11-13: no hand setup at the bench): `sudo -n
+/usr/local/sbin/canctl slcan detach canx2`, its output in
+`<log-dir>/canx2_detach.txt`, then the state polled for up to 5 s until
+both signs are gone. canctl exiting non-zero, or `canx2` still attached,
+refuses, with nothing written. The record's `canx2` entry has the state
+before and after and canctl's exit; nothing re-attaches it.
+
+The flasher then checks the files' MD5 again, auto-reset and the chip's
+type and MAC before and after, and "Hash of data verified" for every file.
+
+`--check-only` makes the row and file checks alone, with no lock,
+settings, canx2 or board, and needs neither `--settings` nor `--role`:
+
+    python3.13 -B shared/x2_test_images/tools/flash_row.py <image> <build> \
+      --check-only --log-dir <new folder outside this checkout>
 
 The record is `<log-dir>/flash_row.json`, beside the flasher's logs. The
 line printed before it, `FLASHED x2 <image> <variant> build <folder>
