@@ -9,6 +9,10 @@ Since 2026-11-12 also the --expect-elf mutants: the old default back, the length
 bound and hex checks dropped, a refusal going on, check-dump unchecked, no lower-casing,
 and the record without expect_elf.
 
+Since 2026-11-13 also flash-jammer --row and check-row (each check of a manifest.jsonl row
+dropped or loosened, a refusal going on, the argument rules) and write_rec's names for two
+records in one second.
+
 Needs REVERSE_IT_DIR and INTERPOSER_CODE, as the test does. Each mutant is a copy of
 x2_flash_custody.py with one edit, in the worktree's scratch/, imported by the test
 through CUSTODY_DIR. A few seconds each. Gen-inhibit tester, 2026-10-23.
@@ -67,6 +71,73 @@ MUTANTS = [
     ("matched as given, not in lower case", "            a.expect_elf = a.expect_elf.lower()\n",
      "            pass\n"),
     ("the record has no expect_elf", '            rec["expect_elf"] = a.expect_elf\n', "            pass\n"),
+    # flash-jammer --row and check-row: manifest.jsonl rows of the ESP-IDF port (2026-11-13)
+    ("--row: 15 or 16 digits", 'ROW_RE = re.compile(r"[0-9a-f]{16}")', 'ROW_RE = re.compile(r"[0-9a-f]{15,16}")'),
+    ("--row: upper case taken", 'ROW_RE = re.compile(r"[0-9a-f]{16}")', 'ROW_RE = re.compile(r"[0-9a-fA-F]{16}")'),
+    ("--row: a line not JSON skipped", '                raise RowRefused("%s line %d is not JSON" % (manifest, n))\n',
+     "                continue\n"),
+    ("--row: the first of several rows taken", "    if len(rows) != 1:\n        raise RowRefused(",
+     "    if not rows:\n        raise RowRefused("),
+    ("--row: schema and image not checked", '    if row.get("schema") != 1 or row.get("image") != "jammer":\n',
+     "    if False:\n"),
+    ("--row: the variant not checked", '    if row.get("variant") != a.variant:\n', "    if False:\n"),
+    ("--row: dev rows not checked", '    if row.get("pinnable") is not True and a.dev_builder != row.get("builder"):\n',
+     "    if False:\n"),
+    ("--row: any --dev-builder will do", ' and a.dev_builder != row.get("builder"):\n', " and a.dev_builder is None:\n"),
+    ("--row: a row without pinnable taken as pinnable", 'if row.get("pinnable") is not True and',
+     'if row.get("pinnable") is False and'),
+    ("--row: app_sha256 not matched to the folder", "    if not app_sha.startswith(a.row):\n", "    if False:\n"),
+    ("--row: two files at one offset taken", "    if len(set(offsets)) != len(offsets):\n", "    if False:\n"),
+    ("--row: no offsets required", "    missing = [hex(o) for o in ROW_OFFSETS + (app_off,) if o not in offsets]\n",
+     "    missing = []\n"),
+    ("--row: written in the row's order", "    for off, f in sorted(files, key=lambda x: x[0]):\n",
+     "    for off, f in files:\n"),
+    ("--row: a name with a path part taken",
+     '        if not name or name != os.path.basename(name) or name in (".", "..") or "\\\\" in name:\n',
+     "        if not name:\n"),
+    ("--row: a missing file not named", "        if not os.path.isfile(p):\n", "        if False:\n"),
+    ("--row: size not checked", 'zip(("size", "sha256", "md5"), got, want)', 'zip(("sha256", "md5"), got[1:], want[1:])'),
+    ("--row: sha256 not checked", 'zip(("size", "sha256", "md5"), got, want)',
+     'zip(("size", "md5"), got[::2], want[::2])'),
+    ("--row: md5 not checked", 'zip(("size", "sha256", "md5"), got, want)', 'zip(("size", "sha256"), got, want)'),
+    ("--row: the file at app_offset not matched to app_sha256", "    if sha256_file(app) != app_sha:\n",
+     "    if False:\n"),
+    ("--row: app_elf_sha256 not checked", ' or elf != row.get("app_elf_sha256") or', " or"),
+    ("--row: image_hash not checked", ' or elf != row.get("image_hash"):\n', ":\n"),
+    ("--row: project_name not judged from the image", '    if pn != row.get("project_name"):\n', "    if False:\n"),
+    ("--row: NOT_FOR_VEHICLE not required", '    if not pn or "NOT_FOR_VEHICLE" not in pn:\n', "    if not pn:\n"),
+    ("--row: a refusal goes on to the write",
+     '        print("REFUSED: %s (nothing written)" % e)\n        return\n',
+     '        print("REFUSED: %s (nothing written)" % e)\n'),
+    ("--row: the record has no dev_builder",
+     '    rec["jammer"]["dev_builder"] = a.dev_builder\n    rec["jammer"]["files"] = [{"offset": hex(o), "name": '
+     'os.path.basename(p)} for o, p in files]\n    args',
+     '    rec["jammer"]["files"] = [{"offset": hex(o), "name": os.path.basename(p)} for o, p in files]\n    args'),
+    ("flash-jammer: --build and --row together", "    if (a.build is None) == (a.row is None):\n",
+     "    if a.build is None and a.row is None:\n"),
+    ("flash-jammer: --row without --variant", "    if a.row is not None and not a.variant:\n", "    if False:\n"),
+    ("flash-jammer: --build with --variant or --dev-builder",
+     "    if a.build is not None and (a.variant is not None or a.dev_builder is not None):\n", "    if False:\n"),
+    ("other subcommands take the build arguments",
+     '        return "%s takes no %s" % (a.sub, ", ".join(given)) if given else None\n', "        return None\n"),
+    ("check-row: --build taken", "        if a.build is not None:\n", "        if False:\n"),
+    ("records: a second record of one second crashes again",
+     "        except FileExistsError:\n            n += 1\n", "        except FileExistsError:\n            raise\n"),
+    ("records: a second record of one second overwrites the first",
+     '            with open(path, "x", encoding="ascii", errors="replace") as fh:\n',
+     '            with open(base + ".json", "w", encoding="ascii", errors="replace") as fh:\n'),
+    # --no-dump (shared/bench SPEC section 8; gen-inhibit reviewer, 2026-11-13)
+    ("--no-dump: the dump checked anyway", "    if a.no_dump:\n        # the holder", "    if False:\n        # the holder"),
+    ("--no-dump: not recorded", '    rec["no_dump"] = bool(a.no_dump)\n', "    pass\n"),
+    ("flash-jammer: --dump-record and --no-dump together",
+     "    if bool(a.dump_record) == bool(a.no_dump):\n", "    if not a.dump_record and not a.no_dump:\n"),
+    ("flash-jammer: neither --dump-record nor --no-dump",
+     "    if bool(a.dump_record) == bool(a.no_dump):\n", "    if a.dump_record and a.no_dump:\n"),
+    ("other subcommands take --no-dump",
+     '        return "%s takes no --no-dump" % a.sub if a.no_dump else None\n', "        return None\n"),
+    ("check-row: a refused row reads PASS",
+     '        rec.update(verdict="REFUSED", why=str(e))\n        print("REFUSED: %s" % e)\n',
+     '        rec.update(verdict="PASS", why=str(e))\n        print("REFUSED: %s" % e)\n'),
 ]
 
 

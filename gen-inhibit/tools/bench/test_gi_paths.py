@@ -193,7 +193,11 @@ def main():
     # Each data path is under the reverse-it root, so none lands elsewhere in the repo.
     # (The fake root is in the worktree's scratch/ since 2026-10-24, not the temp folder,
     # so "not under the repo" no longer says it.)
-    data = [gp.runs(), gp.data_dir(), gp.bench_holder(), gp.bench_log(), gp.jammer_builds(), gp.project("projects")]
+    check("x2_test_images() is projects/vtrux/notes/artifacts/x2_test_images (2026-11-13)",
+          lambda: os.path.normcase(gp.x2_test_images("jammer")) == os.path.normcase(os.path.join(
+              root, "projects", "vtrux", "notes", "artifacts", "x2_test_images", "jammer")), gp.x2_test_images())
+    data = [gp.runs(), gp.data_dir(), gp.bench_holder(), gp.bench_log(), gp.jammer_builds(), gp.project("projects"),
+            gp.x2_test_images()]
     check("no data path lands in the repo: each is under the reverse-it root",
           lambda: all(os.path.normcase(p).startswith(os.path.normcase(root) + os.sep) for p in data), data)
     check("project_root holds tools/bench/gi_paths.py",

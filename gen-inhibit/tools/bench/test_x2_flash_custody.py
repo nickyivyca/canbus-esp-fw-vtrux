@@ -26,6 +26,14 @@ restore needs none (its check above runs without one); an upper-case one matches
 in neither slot FAILs, naming it.
 (7f197bfd stays as the synthetic images' made-up hash.)
 
+flash-jammer --row and check-row (gen-inhibit reviewer's jammer-idf merge reply, 2026-11-13):
+row_cases() builds a fake x2_test_images/jammer/ as archive.py lays it out (manifest.jsonl,
+builds/<app sha256[:16]>/ with stand-in app images carrying the descriptor's magic,
+project_name and ELF sha256) and flashes through a fake esptool: the good rows write every
+file in offset order and the record keeps the row; each check of the row refuses with its
+reason and nothing written; --build still flashes the PlatformIO row. esptool_main_cases()
+adds --row through main(), the argument refusals and check-row.
+
 Run: python3.13 gen-inhibit/tools/bench/test_x2_flash_custody.py
 """
 import os
@@ -246,6 +254,255 @@ def record_path_cases():
     return bad
 
 
+X2IMG_FAKE = os.path.join(WORK, "x2img", "jammer")   # stands in for gi_paths.x2_test_images("jammer")
+JAMMER_PN = "vtrux_jammer_x2_NOT_FOR_VEHICLE"
+STOP_A_PN = "jammer_stop_a_NOT_FOR_VEHICLE"
+BUILDER = "gen-inhibit tester"
+
+
+def app_bin(pn, elf):
+    """A stand-in app image: the descriptor magic, project_name and ELF sha256 where an
+    ESP-IDF app has them (esp_app_desc_t at 32)."""
+    app = bytearray(b"\xe9" + b"\0" * 0x3FF)
+    struct.pack_into("<I", app, APP_DESC_AT, C.bl.APP_DESC_MAGIC)
+    pnb = pn.encode()
+    app[C.PROJECT_NAME_AT:C.PROJECT_NAME_AT + len(pnb)] = pnb
+    app[ELF_SHA_AT:ELF_SHA_AT + 32] = bytes.fromhex(elf)
+    return bytes(app)
+
+
+def x2img_fixture(rows=None, variant="jammer", pn=JAMMER_PN, pinnable=True, elf=GOOD, edit=None, tamper=None,
+                  app_pn=None):
+    """A fresh X2IMG_FAKE holding one build as archive.py lays it out (manifest.jsonl, one row;
+    builds/<app sha256[:16]>/). edit(row) changes the row before it is written; tamper(folder)
+    changes the files after; app_pn puts another project_name in the app than the row says;
+    rows, if given, are extra rows written before it. Returns the row as written."""
+    import hashlib
+    import json
+    gi_paths.remove_tree(os.path.dirname(X2IMG_FAKE))
+    app = app_bin(app_pn or pn, elf)
+    app_sha = hashlib.sha256(app).hexdigest()
+    folder = os.path.join(X2IMG_FAKE, "builds", app_sha[:16])
+    os.makedirs(folder)
+    files = []
+    for off, name, data in (("0x0", "bootloader.bin", b"\xe9boot" * 50),
+                            ("0x8000", "partition-table.bin", b"\xaa\x50" * 96),
+                            ("0xe000", "ota_data_initial.bin", b"\xff" * 256),
+                            ("0x10000", pn + ".bin", app)):
+        with open(os.path.join(folder, name), "wb") as fh:
+            fh.write(data)
+        files.append({"offset": off, "name": name, "size": len(data),
+                      "sha256": hashlib.sha256(data).hexdigest(), "md5": hashlib.md5(data).hexdigest()})
+    row = {"schema": 1, "image": "jammer", "variant": variant, "project_name": pn,
+           "folder": "builds/" + app_sha[:16], "app_offset": "0x10000", "app_sha256": app_sha,
+           "app_elf_sha256": elf, "image_hash": elf, "code_hash": "c0de" * 16,
+           "shared_commit": "5ade" * 10, "shared_tag": "2026.11.13" if pinnable else None,
+           "version": "2026.11.13", "pinnable": pinnable, "builder": BUILDER, "files": files}
+    if edit:
+        edit(row)
+    row["files"] = row["files"][::-1]   # out of offset order, so the write's order is the tool's sort
+    with open(os.path.join(X2IMG_FAKE, "manifest.jsonl"), "w", encoding="utf-8") as fh:
+        for r in (rows or []) + [row]:
+            fh.write(json.dumps(r, sort_keys=True) + "\n")
+    if tamper:
+        tamper(folder)
+    return row
+
+
+def row_cases():
+    """flash-jammer --row (2026-11-13; x2_test_images SPEC T6, T7, T9; the variant judged
+    from the image): sub_flash_jammer on a fake esptool and a fake archive. A good row writes
+    every file at its offset in offset order and records the row; each check refuses with
+    its reason and esptool never writes; --build still flashes the PlatformIO row."""
+    import argparse
+    import contextlib
+    import hashlib
+    import io
+    import json
+    bad = []
+    calls = []
+
+    def fake_esptool(port, *args):
+        calls.append(args)
+        return 0, ["Hash of data verified."]
+
+    def check(label, ok, got):
+        print("  %-4s %-48s %s" % ("ok" if ok else "FAIL", label, "" if ok else got))
+        if not ok:
+            bad.append(label)
+
+    saved = C.esptool, C.X2IMG, C.JAMMER
+    C.esptool, C.X2IMG = fake_esptool, X2IMG_FAKE
+    try:
+        with fake_data():
+            dump = os.path.join(C.BACKUPS, "synthetic_dump.bin")
+            with open(dump, "wb") as fh:
+                fh.write(image(OTHER, GOOD, seq=2))
+            record = os.path.join(WORK, "row_dump_record.json")
+
+            def write_dump_record(verdict="PASS"):
+                with open(record, "w", encoding="ascii") as fh:
+                    json.dump({"dump": os.path.relpath(dump, gi_paths.data_dir()), "dump_size": os.path.getsize(dump),
+                               "dump_sha256": C.sha256_file(dump), "verdict": verdict}, fh)
+
+            write_dump_record()
+
+            def flash(row_id, variant="jammer", dev_builder=None, build=None, no_dump=False):
+                del calls[:]
+                rec = {}
+                ns = argparse.Namespace(dump_record=None if no_dump else record, port="FAKE", build=build,
+                                        row=row_id, variant=variant, dev_builder=dev_builder, no_dump=no_dump)
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        C.sub_flash_jammer(ns, rec)
+                except SystemExit as e:
+                    rec.setdefault("exit", str(e))
+                except Exception as e:   # a crash is reported, never passed
+                    rec["crash"] = "%s: %s" % (type(e).__name__, e)
+                return rec
+
+            def rid(row):
+                return row["folder"].split("/")[1]
+
+            row = x2img_fixture()
+            rec = flash(rid(row))
+            folder = os.path.join(X2IMG_FAKE, "builds", rid(row))
+            want = [("write_flash", "0x0", os.path.join(folder, "bootloader.bin"), "0x8000",
+                     os.path.join(folder, "partition-table.bin"), "0xe000",
+                     os.path.join(folder, "ota_data_initial.bin"), "0x10000", os.path.join(folder, JAMMER_PN + ".bin"))]
+            check("--row: a pinnable row, FLASHED, every file at its offset in order",
+                  rec.get("verdict") == "FLASHED" and calls == want, (rec, calls))
+            j = rec.get("jammer") or {}
+            check("--row: the record keeps the row (folder, variant, name, hashes, tag, pinnable, builder)",
+                  j.get("folder") == row["folder"] and j.get("variant") == "jammer" and j.get("project_name") == JAMMER_PN
+                  and j.get("image_hash") == GOOD and j.get("app_sha256") == row["app_sha256"]
+                  and j.get("code_hash") == row["code_hash"] and j.get("shared_commit") == row["shared_commit"]
+                  and j.get("shared_tag") == "2026.11.13" and j.get("pinnable") is True and j.get("builder") == BUILDER
+                  and j.get("dev_builder") is None and [f["offset"] for f in j.get("files", [])]
+                  == ["0x0", "0x8000", "0xe000", "0x10000"] and rec.get("dump_sha256"), j)
+            # the stop_a_only image (the reviewer's can-fail, 2026-11-12)
+            row = x2img_fixture(variant="stop_a_only", pn=STOP_A_PN)
+            rec = flash(rid(row), variant="stop_a_only")
+            check("--row: a stop_a_only row offered as stop_a_only, FLASHED",
+                  rec.get("verdict") == "FLASHED" and len(calls) == 1, rec)
+
+            def refused(label, row, want_why, **kw):
+                rec = flash(rid(row) if isinstance(row, dict) else row, **kw)
+                check(label, rec.get("verdict") == "REFUSED" and want_why in rec.get("why", "") and not calls
+                      and "crash" not in rec and "exit" not in rec,
+                      (rec.get("verdict"), rec.get("why"), rec.get("crash"), calls))
+
+            refused("--row: a stop_a_only row offered as jammer: REFUSED",
+                    x2img_fixture(variant="stop_a_only", pn=STOP_A_PN), "offered as 'jammer'")
+            # dev builds (T7): only with --dev-builder equal to the row's builder
+            refused("--row: a dev row without --dev-builder: REFUSED", x2img_fixture(pinnable=False), "T7")
+            refused("--row: a dev row with another --dev-builder: REFUSED", x2img_fixture(pinnable=False), "T7",
+                    dev_builder="can-tools")
+            refused("--row: a row without pinnable is a dev row: REFUSED",
+                    x2img_fixture(edit=lambda r: r.pop("pinnable")), "T7")
+            row = x2img_fixture(pinnable=False)
+            rec = flash(rid(row), dev_builder=BUILDER)
+            check("--row: a dev row with its builder as --dev-builder, FLASHED, kept in the record",
+                  rec.get("verdict") == "FLASHED" and len(calls) == 1
+                  and (rec.get("jammer") or {}).get("dev_builder") == BUILDER
+                  and (rec.get("jammer") or {}).get("pinnable") is False, rec)
+            # the variant is judged from the image (gen-inhibit reviewer, 2026-11-12)
+            refused("--row: the app's project_name is not the row's: REFUSED",
+                    x2img_fixture(app_pn=STOP_A_PN), "project_name")
+            refused("--row: no NOT_FOR_VEHICLE in the name, app and row agreeing: REFUSED",
+                    x2img_fixture(pn="vtrux_jammer_x2"), "NOT_FOR_VEHICLE")
+            refused("--row: the app's ELF sha256 is not the row's: REFUSED",
+                    x2img_fixture(edit=lambda r: r.update(app_elf_sha256=OTHER, image_hash=OTHER)), "ELF sha256")
+            refused("--row: app_elf_sha256 alone differs from the app's ELF sha256: REFUSED",
+                    x2img_fixture(edit=lambda r: r.update(app_elf_sha256=OTHER)), "ELF sha256")
+            refused("--row: image_hash differs from the app's ELF sha256: REFUSED",
+                    x2img_fixture(edit=lambda r: r.update(image_hash=OTHER)), "image_hash")
+
+            def flip(name):
+                def t(folder):
+                    p = os.path.join(folder, name)
+                    data = bytearray(open(p, "rb").read())
+                    data[5] ^= 1
+                    open(p, "wb").write(bytes(data))
+                return t
+            refused("--row: a file changed since its row (sha256): REFUSED",
+                    x2img_fixture(tamper=flip("partition-table.bin")), "partition-table.bin: sha256")
+            refused("--row: a file of another size: REFUSED",
+                    x2img_fixture(tamper=lambda f: open(os.path.join(f, "bootloader.bin"), "ab").write(b"x")),
+                    "bootloader.bin: size")
+            refused("--row: a file's md5 not the row's: REFUSED",
+                    x2img_fixture(edit=lambda r: r["files"][2].update(md5="0" * 32)), "ota_data_initial.bin: md5")
+            refused("--row: a file missing from the folder: REFUSED",
+                    x2img_fixture(tamper=lambda f: os.remove(os.path.join(f, "ota_data_initial.bin"))), "missing")
+            refused("--row: a file name with a path part: REFUSED",
+                    x2img_fixture(edit=lambda r: r["files"][2].update(name="../ota_data_initial.bin")), "bare name")
+            refused("--row: no file at 0x8000: REFUSED",
+                    x2img_fixture(edit=lambda r: r["files"].pop(1)), "no file at 0x8000")
+            refused("--row: no file at the app offset: REFUSED",
+                    x2img_fixture(edit=lambda r: r.update(app_offset="0x20000")), "no file at 0x20000")
+            refused("--row: two files at one offset: REFUSED",
+                    x2img_fixture(edit=lambda r: r["files"][2].update(offset="0x8000")), "two files at one offset")
+            refused("--row: the file at app_offset is not the app: REFUSED",
+                    x2img_fixture(edit=lambda r: r.update(app_offset="0xe000")), "not the row's app")
+            refused("--row: app_sha256 not starting with the folder name: REFUSED",
+                    x2img_fixture(edit=lambda r: r.update(app_sha256="f" * 64)), "does not start with")
+            refused("--row: image not jammer: REFUSED", x2img_fixture(edit=lambda r: r.update(image="slcan_spi")),
+                    "image 'slcan_spi'")
+            refused("--row: schema 2: REFUSED", x2img_fixture(edit=lambda r: r.update(schema=2)), "schema 2")
+            row = x2img_fixture()
+            refused("--row: 15 hex digits: REFUSED", rid(row)[:15], "not 16 lower-case hex")
+            refused("--row: upper case: REFUSED", rid(row).upper(), "not 16 lower-case hex")
+            refused("--row: no row with that folder: REFUSED", "0123456789abcdef", "got 0")
+            row = x2img_fixture()
+            row = x2img_fixture(rows=[row])
+            refused("--row: two rows with that folder: REFUSED", row, "got 2")
+            refused("--row: a line of the manifest not JSON (after a non-row line): REFUSED", x2img_fixture(
+                rows=["not a dict"], tamper=lambda f: open(os.path.join(X2IMG_FAKE, "manifest.jsonl"), "a")
+                .write("{torn\n")), "is not JSON")
+            gi_paths.remove_tree(os.path.dirname(X2IMG_FAKE))
+            refused("--row: no manifest.jsonl: REFUSED", "0123456789abcdef", "manifest.jsonl")
+            row = x2img_fixture()
+            write_dump_record("FAIL")
+            rec = flash(rid(row))
+            check("--row: a dump record not PASS refuses before any row is read",
+                  "not PASS" in rec.get("exit", "") and not calls and "jammer" not in rec, rec)
+            # --no-dump (shared/bench SPEC section 8, 2026-11-13): no dump read, none recorded
+            rec = flash(rid(row), no_dump=True)
+            check("--row --no-dump: FLASHED with no dump read, no_dump true, dump_record None",
+                  rec.get("verdict") == "FLASHED" and len(calls) == 1 and rec.get("no_dump") is True
+                  and rec.get("dump_record") is None and rec.get("dump_sha256") is None, rec)
+            write_dump_record()
+            rec = flash(rid(row))
+            check("--row with --dump-record: no_dump false, the dump's sha256 recorded",
+                  rec.get("verdict") == "FLASHED" and rec.get("no_dump") is False
+                  and rec.get("dump_sha256") == C.sha256_file(dump), rec)
+            # --build, the PlatformIO jammer, still flashes its manifest.json row
+            C.JAMMER = os.path.join(WORK, "x2_jammer")
+            app = app_bin("vtrux_jammer_x2_NOT_FOR_VEHICLE_bb20e4a37b64", OTHER)
+            md5 = hashlib.md5(app).hexdigest()
+            bdir = os.path.join(C.JAMMER, "builds", md5)
+            os.makedirs(bdir)
+            names = {"app": "j.bin", "bootloader": "bootloader.bin", "partitions": "partitions.bin",
+                     "boot_app0": "boot_app0.bin"}
+            for k, n in names.items():
+                with open(os.path.join(bdir, n), "wb") as fh:
+                    fh.write(app if k == "app" else k.encode() * 8)
+            with open(os.path.join(C.JAMMER, "builds", "manifest.json"), "w", encoding="ascii") as fh:
+                json.dump([{"progname": "j", "app_md5": md5, "elf_sha256": OTHER, "dir": "builds/" + md5,
+                            "files": names, "flash_offsets": {"bootloader": "0x0", "partitions": "0x8000",
+                                                              "boot_app0": "0xe000", "app": "0x10000"}}], fh)
+            rec = flash(None, variant=None, build=md5)
+            check("--build: the PlatformIO row by md5, FLASHED, its four files",
+                  rec.get("verdict") == "FLASHED" and len(calls) == 1
+                  and list(calls[0][1::2]) == ["0x0", "0x8000", "0xe000", "0x10000"]
+                  and (rec.get("jammer") or {}).get("app_md5") == md5, (rec, calls))
+    finally:
+        C.esptool, C.X2IMG, C.JAMMER = saved
+        gi_paths.remove_tree(os.path.dirname(X2IMG_FAKE))
+        gi_paths.remove_tree(os.path.join(WORK, "x2_jammer"))
+    return bad
+
+
 def esptool_main_cases():
     """main() with its own esptool() against the stand-in esptool package (_fake_esptool.py)
     named by GI_ESPTOOL_ARGV (gen-inhibit reviewer, 2026-11-11; gi_esptool.py): the version
@@ -341,6 +598,65 @@ def esptool_main_cases():
               rc == 0 and rec2 and rec2.get("verdict") == "VERIFIED" and rec2.get("esptool_version") == "4.13.0"
               and [c.split()[6:8] for c in cli[1:]] == [["write_flash", "0x0"], ["verify_flash", "0x0"]],
               (rc, rec2 and rec2.get("verdict"), cli))
+        # flash-jammer --row through main (2026-11-13): esptool and the port as for the others
+        saved_x2img, C.X2IMG = C.X2IMG, X2IMG_FAKE
+        try:
+            row = x2img_fixture()
+            rid = row["folder"].split("/")[1]
+            rc, rec9, cli = run(["flash-jammer", "--dump-record", record, "--row", rid, "--variant", "jammer"])
+            check("main flash-jammer --row: the version, then one write_flash of the row, FLASHED",
+                  rc == 0 and rec9 and rec9.get("verdict") == "FLASHED" and cli[:1] == ["version"] and len(cli) == 2
+                  and cli[1].startswith("--chip esp32s3 --port %s --baud 921600 write_flash 0x0 " % port)
+                  and cli[1].split()[7::2] == ["0x0", "0x8000", "0xe000", "0x10000"]
+                  and rec9.get("esptool_version") == "4.13.0" and rec9.get("port") == port,
+                  (rc, rec9 and rec9.get("verdict"), cli))
+            for label, args, want in (
+                    ("neither --build nor --row", [], "exactly one of"),
+                    ("both --build and --row", ["--build", "a89ece8c", "--row", rid, "--variant", "jammer"],
+                     "exactly one of"),
+                    ("--row without --variant", ["--row", rid], "needs --variant"),
+                    ("--build with --variant", ["--build", "a89ece8c", "--variant", "jammer"], "only with --row"),
+                    ("--build with --dev-builder", ["--build", "a89ece8c", "--dev-builder", BUILDER], "only with --row")):
+                rc, rec3, cli = run(["flash-jammer", "--dump-record", record] + args)
+                check("main flash-jammer, %s: REFUSED before esptool and port" % label,
+                      rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and want in rec3.get("why", "")
+                      and not cli and rec3.get("port") is None, (rc, rec3, cli))
+            rc, rec3, cli = run(["flash-jammer", "--no-dump", "--row", rid, "--variant", "jammer"])
+            check("main flash-jammer --no-dump --row: FLASHED, no dump, the port and esptool as for the others",
+                  rc == 0 and rec3 and rec3.get("verdict") == "FLASHED" and rec3.get("no_dump") is True
+                  and rec3.get("dump_record") is None and len(cli) == 2 and rec3.get("port") == port,
+                  (rc, rec3, cli))
+            for label, args, want in (
+                    ("both --dump-record and --no-dump", ["flash-jammer", "--dump-record", record, "--no-dump",
+                                                          "--row", rid, "--variant", "jammer"], "exactly one of --dump"),
+                    ("neither --dump-record nor --no-dump", ["flash-jammer", "--row", rid, "--variant", "jammer"],
+                     "exactly one of --dump"),
+                    ("restore with --no-dump", ["restore", "--dump-record", record, "--no-dump"], "takes no --no-dump")):
+                rc, rec3, cli = run(args)
+                check("main %s: REFUSED before esptool and port" % label,
+                      rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and want in rec3.get("why", "")
+                      and not cli and rec3.get("port") is None, (rc, rec3, cli))
+            rc, rec3, cli = run(["check-row", "--row", rid, "--variant", "jammer"], argv=None, device=None)
+            check("main check-row: PASS, no esptool and no port needed, the row in the record",
+                  rc == 0 and rec3 and rec3.get("verdict") == "PASS" and not cli and rec3.get("port") is None
+                  and rec3.get("esptool_version") is None and (rec3.get("jammer") or {}).get("folder") == row["folder"],
+                  (rc, rec3, cli))
+            rc, rec3, cli = run(["check-row", "--row", rid, "--variant", "stop_a_only"], argv=None, device=None)
+            check("main check-row, the jammer row offered as stop_a_only: REFUSED, exit 1",
+                  rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and "offered as 'stop_a_only'"
+                  in rec3.get("why", "") and not cli, (rc, rec3, cli))
+            for label, args, want in (("--build", ["--build", "a89ece8c"], "takes no --build"),
+                                      ("no --variant", ["--row", rid], "needs --row")):
+                rc, rec3, cli = run(["check-row"] + args)
+                check("main check-row, %s: REFUSED" % label,
+                      rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and want in rec3.get("why", "")
+                      and not cli, (rc, rec3, cli))
+            rc, rec3, cli = run(["dump", "--row", rid] + EXP)
+            check("main dump with --row: REFUSED before esptool and port",
+                  rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and "takes no --row" in rec3.get("why", "")
+                  and not cli and sorted(os.listdir(C.BACKUPS)) == kept, (rc, rec3, cli))
+        finally:
+            C.X2IMG = saved_x2img
         for label, kw, want in (("esptool 5.0.2", {"version": "5.0.2"}, "5.0.2"),
                                 ("GI_ESPTOOL_ARGV unset", {"argv": None}, "GI_ESPTOOL_ARGV"),
                                 ("an argv of another form", {"argv": [sys.executable, "esptool.py"]}, "must be")):
@@ -402,6 +718,36 @@ def esptool_main_cases():
     return bad
 
 
+def record_name_cases():
+    """write_rec: three records of one subcommand in one second get three files, _2 and _3
+    added, the first left as written (2026-11-13: the second check-row of a second crashed)."""
+    import contextlib
+    import io
+    import json
+    bad = []
+    runs = os.path.join(WORK, "runs_names")
+    saved = C.RUNS
+    C.RUNS = runs
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            paths = [C.write_rec("check-row", {"when": "20261113T000000", "k": k}) for k in range(3)]
+        names = sorted(os.listdir(runs))
+        want = ["x2_flash_custody_check-row_20261113T000000%s.json" % s for s in ("", "_2", "_3")]
+        firsts = [json.load(open(os.path.join(runs, n), encoding="ascii"))["k"] for n in want] \
+            if names == want else None
+        ok = names == want and firsts == [0, 1, 2] and [os.path.basename(p) for p in paths] == want
+    except Exception as e:   # a crash is reported, never passed
+        ok, names = False, "%s: %s" % (type(e).__name__, e)
+    finally:
+        C.RUNS = saved
+        gi_paths.remove_tree(runs)
+    print("  %-4s %-48s %s" % ("ok" if ok else "FAIL", "three records in one second: three files, none overwritten",
+                               "" if ok else names))
+    if not ok:
+        bad.append("record names")
+    return bad
+
+
 def import_refusals():
     """build_lookup comes only from $INTERPOSER_CODE: unset or wrong refuses."""
     import subprocess
@@ -455,6 +801,8 @@ def main():
             bad.append("blank")
         bad += check_dump_cases()
         bad += record_path_cases()
+        bad += row_cases()
+        bad += record_name_cases()
         bad += esptool_main_cases()
         bad += import_refusals()
     finally:
