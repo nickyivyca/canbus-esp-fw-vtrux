@@ -521,8 +521,12 @@ there.
 - **`canmain`, CAN1's Innomaker, is for the Android app's two-bus tests**
   and is kept down during ESP runs. A run that needs the bench brings it
   down itself through `canctl` if it is up, and records that (SPEC section
-  8, user, 2026-11-13). Until the testers' code does, a run refuses to
-  start unless its settings' `canmain_check` shows `canmain` down
+  8, user, 2026-11-13). The chain runner does this for every suite from
+  `shared/main` tag `2026.11.13.2` (`344eef05`), after its own take and
+  at every resume, before the start hooks. A `canctl` failure, or
+  `canmain` still up after it, stops the bench: the groups that need it
+  are NOT-RUN. A pin older than that tag still refuses to start unless
+  its settings' `canmain_check` shows `canmain` down
   (`shared/bench/README.md`).
 - **Root operations on the CAN adapters** (links up and down, an
   Innomaker's driver binding) go through `canctl`, run as `sudo -n
