@@ -26,6 +26,13 @@ suites (tester, 2026-10-18). No hardware, no runner, no ssh.
            on host local from the worktree, nothing shipped and no {work}
            path left, with the same checks, argv, class and judge; any
            other value refused
+  test images  an X2 found on one of shared/x2_test_images' images: the
+           jammer is read as no image identify knows, slcan_spi too,
+           slcan_can1 as its protocol, none as any bench image and none
+           raising; the pinned core's Engine, with the bench suite's
+           identify hook on a fake board, flashes the group's image before
+           its first check, and runs none of its checks if the flash does
+           not take (the charge-interposer reviewer's item 4, 2026-11-13)
 
     py -3.14 charge-interposer/bench_suite_test.py [--can-fail]      (Windows)
     python3.13 charge-interposer/bench_suite_test.py [--can-fail]    (madhouse)
@@ -1372,6 +1379,323 @@ def test_identify():
         I.read_7f7, I.read_hello, I.read_slcan = saved
 
 
+# ---- the X2's test images (tester, 2026-11-13, the charge-interposer
+# reviewer's item 4) ---------------------------------------------------------
+# Hand takes and the Android session leave the X2 on one of
+# shared/x2_test_images' images (the jammer, the SLCANs), and under the bench
+# lock as a mutex nothing puts it back (shared/bench SPEC section 8). The
+# bench suite must never take such a board for one of its own images:
+# identify reads it as no image of the suite, without raising (a raise
+# stops the bench, test_identify), and the runner flashes the suite's image
+# before the group's first check. What each image answers is its README's,
+# at shared/main tag 2026.11.13.2: jammer/README.md ("Commands": lines end
+# at LF, CR dropped, anything malformed answered "JAMMER ERR <reason>"; the
+# five-line banner at boot), slcan_spi/README.md ("The protocol": lines end
+# at CR, V / N answer "V0100 <identity>" / "N<identity>", anything else BEL;
+# "Console lines": the one boot line) and slcan_can1's, the interposer's
+# slcan variant until the move (V0101 / NF001, bench_identify's docstring).
+X2_JAMMER_BANNER = [
+    "JAMMER vtrux_jammer_x2_NOT_FOR_VEHICLE -- TEST EQUIPMENT, NEVER ON THE TRUCK",
+    "JAMMER build version=2026.11.13 elf=" + "4" * 64 + " idf=v5.4.2",
+    "JAMMER tx=GPIO7(CAN1/TWAI) twai=never_started stops=a+b reset_reason=21 "
+    "uptime_us=300120",
+    "JAMMER mcp2515 canstat=0x80 canctrl=0x87 config_mode=yes",
+    "JAMMER limits w_us=12..50 p_us>=4w..20000 ms<=30000 n<=1000 interval_ms=1..10000"]
+X2_SLCAN_SPI_ID = "slcan_spi_NOT_FOR_VEHICLE 2026.11.13 elf=" + "5" * 64
+# what identify reads off each test image: no image at all, or for
+# slcan_can1 the protocol (bench_identify's docstring: SLCAN reports no
+# build id); slcan_spi's identity names its build (SPEC T12), and identify
+# does not read it, so it is no image identify knows either
+X2_TEST_READS = {"jammer": None, "slcan_spi": None,
+                 "slcan_can1": "slcan:V0101:NF001"}
+
+
+class _FakeX2:
+    """The X2 as bench_identify's three reads see it, on one image: the
+    ACKed boot (bench_powerup_round, run as a subprocess: its log, with the
+    board's serial lines as "serial>" lines, and its witness file) and the
+    USB serial port (HELLO?, then CR, V and N). image: "jammer",
+    "slcan_spi", "slcan_can1", ("app", build id) for an interposer image
+    (0x7F7 and the product's serial lines) or ("hello", name, ELF sha256)
+    for a bench test image. jam_end and jam_err shape the jammer's replies,
+    which its README does not pin down beyond "JAMMER ERR <reason>"."""
+
+    def __init__(self, image, jam_end=b"\n", jam_err=b"unknown_command"):
+        self.image, self.jam_end, self.jam_err = image, jam_end, jam_err
+        self.boots = self.opens = 0
+        self.inbuf, self.out = b"", b""
+
+    def boot_lines(self):
+        im = self.image
+        if im == "jammer":
+            return list(X2_JAMMER_BANNER)
+        if im == "slcan_spi":
+            return ["# NOT FOR VEHICLE slcan_spi"]
+        if im[0] == "app":
+            return REPLY_DIAG.strip().splitlines()
+        return []
+
+    def run(self, cmd, stdout=None, **kw):
+        """bench_powerup_round --mode ack --boots 1 --out OUT."""
+        self.boots += 1
+        out = cmd[cmd.index("--out") + 1]
+        os.makedirs(out, exist_ok=True)
+        rows = []
+        if self.image[0] == "app":
+            data = int(self.image[1], 16).to_bytes(4, "little") + bytes(4)
+            rows.append("0.100000 0.100000 7F7 0 %s" % data.hex())
+        with open(os.path.join(out, "witness_ack_01.txt"), "w") as f:
+            f.write("# t_device t_host id err data -- fake\n")
+            f.write("".join(r + "\n" for r in rows))
+        stdout.write("boot ack_01: fake; segment: fake; WiCAN fake; 0 frame(s)\n")
+        for ln in self.boot_lines():
+            stdout.write("  serial> %s\n" % ln)
+        stdout.write("\n== verdicts\n  ack                 1  PASS\n")
+        return types.SimpleNamespace(returncode=0)
+
+    def open_quiet(self, port, baud, timeout):
+        self.opens += 1
+        self.inbuf = self.out = b""
+        return _FakeX2Port(self)
+
+    def feed(self, data):
+        im = self.image
+        for b in data:
+            ch = bytes([b])
+            if im == "jammer":
+                if ch == b"\r":
+                    continue
+                if ch == b"\n":
+                    self.out += b"JAMMER ERR " + self.jam_err + self.jam_end
+                    self.inbuf = b""
+                    continue
+            elif im in ("slcan_spi", "slcan_can1"):
+                if ch == b"\r":
+                    line, self.inbuf = self.inbuf.strip(b"\n"), b""
+                    if im == "slcan_spi" and line in (b"V", b"N"):
+                        self.out += (b"V0100 " if line == b"V" else b"N") + \
+                            X2_SLCAN_SPI_ID.encode() + b"\r"
+                    elif im == "slcan_can1" and line in (b"V", b"N"):
+                        self.out += b"V0101\r" if line == b"V" else b"NF001\r"
+                    else:
+                        self.out += b"\x07"
+                    continue
+            elif im[0] == "hello":
+                if ch == b"\n" and self.inbuf.strip() == b"HELLO?":
+                    self.out += ("@HELLO %s version=1 elf_sha256=%s\n"
+                                 % (im[1], im[2])).encode()
+                if ch == b"\n":
+                    self.inbuf = b""
+                    continue
+            self.inbuf += ch
+
+
+class _FakeX2Port:
+    def __init__(self, board):
+        self.board = board
+
+    def write(self, data):
+        self.board.feed(data)
+
+    def read(self, n):
+        got, self.board.out = self.board.out[:n], self.board.out[n:]
+        return got
+
+    def flush(self):
+        pass
+
+    def reset_input_buffer(self):
+        self.board.out = b""
+
+    def close(self):
+        pass
+
+
+class _FakeClock:
+    """bench_identify's time: no real waits (HELLO? waits 5 s for nothing on
+    a test image)."""
+    def __init__(self):
+        self.t = 0.0
+
+    def monotonic(self):
+        self.t += 0.25
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+def _on_board(board):
+    """bench_identify's subprocess, serial port and clock pointed at board;
+    returns what to hand to _off_board."""
+    I = B.bench_identify
+    import serial_open
+    keep = (I.subprocess, I.time, serial_open.open_quiet)
+    I.subprocess = types.SimpleNamespace(run=board.run, STDOUT=subprocess.STDOUT)
+    clock = _FakeClock()
+    I.time = types.SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep)
+    serial_open.open_quiet = board.open_quiet
+    return keep
+
+
+def _off_board(keep):
+    I = B.bench_identify
+    import serial_open
+    I.subprocess, I.time, serial_open.open_quiet = keep
+
+
+def _x2_test_boards():
+    """[(label, board, what identify must read)]: the jammer with its
+    replies ended LF or CRLF, a bare reason or one that echoes the line,
+    and the two SLCANs."""
+    out = []
+    for end in (b"\n", b"\r\n"):
+        for err in (b"unknown_command", b"unknown_command HELLO?"):
+            out.append(("jammer %r %r" % (end, err),
+                        _FakeX2("jammer", end, err), X2_TEST_READS["jammer"]))
+    for im in ("slcan_spi", "slcan_can1"):
+        out.append((im, _FakeX2(im), X2_TEST_READS[im]))
+    return out
+
+
+def test_x2_test_images_identify():
+    """(a) identify on a board left on an X2 test image: the jammer, silent
+    on CAN and answering no read with an identity, is read as None (no
+    image identify knows); slcan_spi likewise; slcan_can1 as its protocol,
+    slcan:V0101:NF001. None of them raises, none is read as the product
+    (product-without-0x7F7) and none as any image of the bench suite; the
+    boot capture runs once and the port is opened for HELLO? and SLCAN.
+    Controls on the same fakes: an interposer image is read by its 0x7F7
+    build id with the port never opened, a bench test image by its @HELLO."""
+    I = B.bench_identify
+    s, su = _all()
+    expects = {im.expect for im in su["bench"].images.values()}
+    img = B.Image("bridge", "esptool")
+    st = {"serial_port": "fake-x2"}
+    for label, board, want in _x2_test_boards():
+        keep = _on_board(board)
+        try:
+            got = I.identify(img, {}, TMP, st)
+        finally:
+            _off_board(keep)
+        assert got == want, "%s: read %r, not %r" % (label, got, want)
+        assert got not in expects, "%s read as a bench image: %r" % (label, got)
+        assert (board.boots, board.opens) == (1, 2), \
+            "%s: %d boot(s), port opened %d time(s)" % (label, board.boots,
+                                                        board.opens)
+    for board, want, opens in (
+            (_FakeX2(("app", "c7c98adc")), "c7c98adc", 0),
+            (_FakeX2(("hello", "c12_bench", "6" * 64)),
+             "c12_bench:" + "6" * 64, 1)):
+        keep = _on_board(board)
+        try:
+            got = I.identify(img, {}, TMP, st)
+        finally:
+            _off_board(keep)
+        assert got == want and board.opens == opens, (board.image, got,
+                                                      board.opens)
+
+
+def test_x2_test_image_flash_first():
+    """(b) a bench group whose X2 is found on a test image: the runner
+    (the pinned core's Engine, with the bench suite's own identify hook and
+    bench_identify reading the fake board) flashes the group's image first
+    and runs its checks only once identify reads that image back, for every
+    X2 image of the bench suite and each test image; a flash that leaves
+    the board on the test image runs none of the group's checks, all
+    NOT-RUN. The flasher is a fake that puts the image on the fake board;
+    the checks and their placement are recorded, never run."""
+    from vtrux_bench.run.engine import Engine
+    from vtrux_bench.run.record import Recorder
+    s, su = _all()
+    s["serial_port"] = "fake-x2"
+    b = B.bench(s)
+    x2_images = sorted(n for n, im in b.images.items() if im.board == "x2")
+    assert len(x2_images) == 5, x2_images
+    # this call's own run folders (--can-fail runs the test once per mutant)
+    runs = os.path.join(TMP, "flash-first")
+    scratch_dir.remove(runs)
+
+    def engine(tag, board, take=True):
+        eng = Engine(b, s, runs_root=runs)
+        eng.run_id = tag
+        eng.run_dir = os.path.join(runs, tag)
+        os.makedirs(eng.run_dir)
+        eng.rec = Recorder(eng.run_dir, tag)
+        seq = []
+
+        def flasher(image, params, settings, logdir):
+            seq.append(("flash", image.name, board.image))
+            if take:
+                e = image.expect
+                board.image = ("hello",) + tuple(e.split(":", 1)) \
+                    if ":" in e else ("app", e)
+            return dict(ok=True, phase="done", detail="fake flash")
+
+        def run_check(g, c, carried):
+            seq.append(("check", c.id, board.image))
+            return True
+        eng.flashers["esptool"] = flasher
+        eng.run_check = run_check
+        eng.place_group = lambda g, items: None
+        eng.case_gate = lambda: None
+        return eng, seq
+
+    n = 0
+    for label, board, read in _x2_test_boards():
+        start = board.image
+        for name in x2_images:
+            n += 1
+            board.image = start
+            eng, seq = engine("t%03d" % n, board)
+            logdir = os.path.join(eng.run_dir, "_bench")
+            os.makedirs(logdir)
+            keep = _on_board(board)
+            try:
+                ok, why = eng.ensure_image(name, logdir)
+            finally:
+                _off_board(keep)
+                eng.rec.close()
+            assert ok and why.startswith("flashed x2 to %s" % name), \
+                (label, name, ok, why)
+            assert [x[:2] for x in seq] == [("flash", name)], (label, name, seq)
+            fs = [e for e in eng.rec.events if e["kind"] == "flash-start"]
+            assert len(fs) == 1 and fs[0]["read_before"] == read, \
+                (label, name, fs)
+    # at the group level: flash first, then the checks, on the right image;
+    # a flash that does not take runs none of them
+    g = next(x for x in b.groups if x.name == "b-bridge")
+    want = ("app", b.images["bridge"].expect)
+    runnable = [c.id for c in g.checks if not c.skip]
+    assert runnable, g.checks
+    for label, board, read in _x2_test_boards():
+        start = board.image
+        for take in (True, False):
+            n += 1
+            board.image = start
+            eng, seq = engine("g%03d" % n, board, take=take)
+            keep = _on_board(board)
+            try:
+                eng.run_group(g, list(g.checks), {})
+            finally:
+                _off_board(keep)
+                eng.rec.close()
+            flashes = [x for x in seq if x[0] == "flash"]
+            assert [x[:2] for x in flashes] == [("flash", "bridge")] and \
+                seq[0] == flashes[0], (label, take, seq)
+            checks = [x for x in seq if x[0] == "check"]
+            res = [r for r in eng.rec.results if r["group"] == g.name]
+            if take:
+                assert [x[1] for x in checks] == runnable and \
+                    all(x[2] == want for x in checks), (label, seq)
+                continue
+            assert not checks, (label, seq)
+            assert len(res) == len(g.checks) and all(
+                r["verdict"] == Verdict.NOT_RUN and
+                "flashed bridge but identify read" in r["detail"]
+                for r in res), (label, res)
+
+
 # The trees a run imports Python from. Bytecode written there must not make
 # the clone dirty, or --resume refuses it (2026-10-20: 20d3's first resume,
 # refused for shared/bench/vtrux_bench/__pycache__). From port step 2a
@@ -1981,7 +2305,8 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
          test_m_lanes_host, test_idle_safe, test_canchg_env, test_esptool_env,
-         test_canchg_mode_hooks, test_canx2_slcan_hooks]
+         test_canchg_mode_hooks, test_canx2_slcan_hooks,
+         test_x2_test_images_identify, test_x2_test_image_flash_first]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -2150,6 +2475,74 @@ def _identify_ignores_product(image, ctx, logdir, settings):
     return I.read_slcan(settings, logdir, "t")
 
 
+# mutants of the X2 test-image tests (item 4)
+def _slcan_raises(settings, logdir, tag):
+    got = _ORIG["bench_identify.read_slcan"](settings, logdir, tag)
+    if got is None:
+        raise B.bench_identify.IdentifyError("nothing answered V or N")
+    return got
+
+
+def _slcan_unanchored(settings, logdir, tag):
+    """read_slcan with V and N matched anywhere in the reply, not as the
+    whole answer before its CR."""
+    I = B.bench_identify
+    s = I._serial(settings)
+    got = {}
+    try:
+        s.write(b"\r")
+        s.flush()
+        I.time.sleep(0.3)
+        s.read(4096)
+        for cmd in (b"V", b"N"):
+            s.write(cmd + b"\r")
+            s.flush()
+            I.time.sleep(0.4)
+            got[cmd] = s.read(4096)
+    finally:
+        s.close()
+    v = re.search(rb"V(\d{4})", got[b"V"])
+    n = re.search(rb"N(\w{4})", got[b"N"])
+    if v and n:
+        return "slcan:V%s:N%s" % (v.group(1).decode(), n.group(1).decode())
+    return None
+
+
+def _identify_unplaced_expected(image, ctx, logdir, settings):
+    got = _ORIG["bench_identify.identify"](image, ctx, logdir, settings)
+    return image.expect if got is None else got
+
+
+def _identify_unplaced_raises(image, ctx, logdir, settings):
+    got = _ORIG["bench_identify.identify"](image, ctx, logdir, settings)
+    if got is None:
+        raise B.bench_identify.IdentifyError("no image identify knows")
+    return got
+
+
+def _x2_trusts_expect(s):
+    hook = s.identify
+
+    def identify(image, ctx, logdir):
+        if image.board == "x2":
+            return image.expect
+        return hook(image, ctx, logdir)
+    s.identify = identify
+
+
+def _x2_trusts_flash(s):
+    """The X2 read off the board once; every later identify takes the
+    image it is asked about as read (a flash taken as read back)."""
+    hook, seen = s.identify, set()
+
+    def identify(image, ctx, logdir):
+        if image.board == "x2" and ctx.get("run_id") in seen:
+            return image.expect
+        seen.add(ctx.get("run_id"))
+        return hook(image, ctx, logdir)
+    s.identify = identify
+
+
 import re as _re                                          # noqa: E402
 _OLD_PRODUCT_RE = _re.compile(r"serial>.*\b(MODE|spec 2\.3)|^diag st=|"
                               r"\bfw=\d+ schema=\d+")
@@ -2292,6 +2685,7 @@ def _mpy_work_cwd(self, cid, argv, **kw):
     return _ORIG["_Build.mpy"](self, cid, argv, **kw)
 _ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
 _ORIG["bench_identify.identify"] = B.bench_identify.identify
+_ORIG["bench_identify.read_slcan"] = B.bench_identify.read_slcan
 _ORIG["self._PYCACHE_DROP"] = _PYCACHE_DROP
 _ORIG["self.NO_ARGPARSE"] = NO_ARGPARSE
 _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
@@ -2700,6 +3094,22 @@ MUTANTS = {
          "PRODUCT_RE without re.M (the 00:30 form)"),
         ("bench_identify.identify", _identify_ignores_product,
          "identify goes on to SLCAN after a product reply")],
+    "test_x2_test_images_identify": [
+        ("bench_identify.read_slcan", _slcan_raises,
+         "a board that answers no SLCAN read raises (the bench stops)"),
+        ("bench_identify.read_slcan", _slcan_unanchored,
+         "V and N matched anywhere in the reply (slcan_spi read as an SLCAN)"),
+        ("bench_identify.PRODUCT_RE", _re.compile(r"serial> \S"),
+         "any boot serial line taken as the product's (the jammer's banner)")],
+    "test_x2_test_image_flash_first": [
+        ("bench_identify.identify", _identify_unplaced_expected,
+         "a board identify cannot place taken as the expected image"),
+        ("bench_identify.identify", _identify_unplaced_raises,
+         "a board identify cannot place stops the bench, not flashed"),
+        ("bench", _wrap_suite("bench", _x2_trusts_expect),
+         "the X2 taken to be on the group's image, not read"),
+        ("bench", _wrap_suite("bench", _x2_trusts_flash),
+         "a flash taken as read back (checks run on a flash that did not take)")],
     "test_c12_judge": [
         ("c12_judge", _pass_all, "passes everything"),
         ("c12_judge", _c12_counts_c9, "fails on C9's DATASHEET line")],
