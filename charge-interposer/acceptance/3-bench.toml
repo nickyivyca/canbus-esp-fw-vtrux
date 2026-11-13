@@ -1,7 +1,8 @@
 # Port step 3's bench baseline on madhouse-debian (shared/bench ACCEPT-SPEC
 # A2; owned by the charge-interposer reviewer). Drafted by the tester (the
 # reviewer's item 3, 2026-11-13), reviewed by the reviewer 2026-11-13 with
-# its answers written in below, for the user's approval; not yet approved.
+# its answers written in below. Approved by the user 2026-11-13, in the
+# reviewer's session: "kick off the emulated run now".
 #
 # What it shows: the bench suite, whole, on the bench host from port plan
 # step 3, with the boards, adapters and drivers as madhouse has them, judged
