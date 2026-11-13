@@ -9,11 +9,14 @@ committed harness now, because a check a VERIFICATION.md entry rests on is
 (AGENTS.md "Spec, validation and verification", 2026-11-01).
 
   1. refusal: a child with CAN_TOOLS_DIR unset gets paths.PathsError naming
-     CAN_TOOLS_DIR from open_bus(kvaser), and imports no canbench;
+     CAN_TOOLS_DIR from open_bus(pcan), and imports no canbench;
   2. the sys.path entries holding a canbench/ (the .pth's clone) are taken
-     off, then open_bus(kvaser) as the vehicle side: canbench must be loaded
+     off, then open_bus(pcan) on the vehicle side: canbench must be loaded
      from scratch/can-tools/<pin>/canbench after the pin's check, and no
-     sys.path entry may hold a canbench/ afterwards;
+     sys.path entry may hold a canbench/ afterwards; then open_bus(kvaser,
+     channel kvaser), which must be bus.open_kvaser's WatchedBus (the
+     Kvaser on kvaser_usb takes no canbench path since 2026-11-13, so the
+     PCAN carries steps 1 and 2, which were the Kvaser's);
   3. open_bus(gs_usb) as the charger side;
   4. quiet: both listen 3 s (counted by ID, not judged: the board is
      listen-only while the charger is silent, spec 2.3);
@@ -64,7 +67,7 @@ sys.path[:] = [p for p in sys.path
                if not os.path.isdir(os.path.join(p or ".", "canbench"))]
 sys.path.insert(0, %r)
 import bus, paths
-ns = argparse.Namespace(transport="kvaser", channel=None, port=0, bitrate=500000)
+ns = argparse.Namespace(transport="pcan", channel=None, port=0, bitrate=500000)
 try:
     b = bus.open_bus(ns)
 except paths.PathsError as e:
@@ -105,19 +108,22 @@ def judge(obs, expect_x2=None):
 
     ref = obs["refusal"]
     say(ref["rc"] == 0 and "REFUSED" in ref["out"],
-        "1 open_bus(kvaser) with CAN_TOOLS_DIR unset is refused: %s"
+        "1 open_bus(pcan) with CAN_TOOLS_DIR unset is refused: %s"
         % ref["out"].replace("\n", " | "))
     say("CAN_TOOLS_DIR" in ref["out"], "  the refusal names CAN_TOOLS_DIR")
     say("canbench imported: False" in ref["out"],
         "  and the refused child imported no canbench")
     pin = obs["pin"]
     say(os.path.normcase(pin["canbench_file"]) == os.path.normcase(pin["want_file"]),
-        "2 kvaser opened (%s); canbench loaded from %s; the pin %s says %s"
-        % (obs["kvaser"]["type"], pin["canbench_file"], pin["commit"],
+        "2 pcan opened (%s); canbench loaded from %s; the pin %s says %s"
+        % (obs["pcan"]["type"], pin["canbench_file"], pin["commit"],
            pin["want_file"]))
     say(not pin["on_path_after"],
         "  no sys.path entry holds a canbench/ after the open (%s)"
         % (pin["on_path_after"] or "none"))
+    say(obs["kvaser"]["type"] == "WatchedBus",
+        "  kvaser opened through bus.open_kvaser, netdev kvaser, no canbench (%s)"
+        % obs["kvaser"]["type"])
     lines.append("3 --   gs_usb opened (%s)" % obs["gs_usb"]["type"])
     lines.append("4 --   quiet 3 s: kvaser heard %s; gs_usb heard %s"
                  % (fmt(obs["quiet"]["kvaser"]), fmt(obs["quiet"]["gs_usb"])))
@@ -186,11 +192,15 @@ def observe():
     p = can_tools_pin.pin()
     folder = can_tools_pin.verify(can_tools_pin.folder(p), p, can_tools_pin.clone())
 
-    def ns(t):
-        return _a.Namespace(transport=t, channel=None, port=0, bitrate=BITRATE)
+    def ns(t, channel=None):
+        return _a.Namespace(transport=t, channel=channel, port=0, bitrate=BITRATE)
     t0 = time.monotonic()
-    vb = bus.open_bus(ns("kvaser"))
-    obs["kvaser"] = {"type": type(vb).__name__, "s": round(time.monotonic() - t0, 2)}
+    # the PCAN takes canbench's path (the pin's detection); the Kvaser on
+    # kvaser_usb no longer does (bus.open_kvaser, 2026-11-13)
+    pb = bus.open_bus(ns("pcan"))
+    obs["pcan"] = {"type": type(pb).__name__, "s": round(time.monotonic() - t0, 2)}
+    vb = bus.open_bus(ns("kvaser", "kvaser"))
+    obs["kvaser"] = {"type": type(vb).__name__}
     obs["pin"] = {
         "commit": p["commit"], "taken_off_path": len(held),
         "canbench_file": os.path.abspath(sys.modules["canbench"].__file__),
@@ -199,7 +209,7 @@ def observe():
                           if os.path.isdir(os.path.join(q or ".", "canbench"))]}
     cb = bus.open_bus(ns("gs_usb"))
     obs["gs_usb"] = {"type": type(cb).__name__}
-    dv, dc = Drain(vb), Drain(cb)
+    dv, dc, dp = Drain(vb), Drain(cb), Drain(pb)
     try:
         time.sleep(3.0)
         obs["quiet"] = {"kvaser": dv.take()[0], "gs_usb": dc.take()[0]}
@@ -221,11 +231,13 @@ def observe():
         time.sleep(3.0)
         obs["after"] = {"kvaser": dv.take()[0], "gs_usb": dc.take()[0]}
     finally:
-        dv.stop = dc.stop = True
+        dv.stop = dc.stop = dp.stop = True
         dv.t.join(1)
         dc.t.join(1)
+        dp.t.join(1)
         vb.shutdown()
         cb.shutdown()
+        pb.shutdown()
     return obs
 
 
@@ -246,7 +258,8 @@ def _good():
                                     "canbench imported: False"},
         "pin": {"commit": "c" * 40, "taken_off_path": 1, "canbench_file": f,
                 "want_file": f, "on_path_after": []},
-        "kvaser": {"type": "KvaserBus", "s": 0.1},
+        "pcan": {"type": "PcanBus", "s": 0.1},
+        "kvaser": {"type": "WatchedBus"},
         "gs_usb": {"type": "GsUsbNoEcho"},
         "quiet": {"kvaser": {}, "gs_usb": {}},
         "up": {"sent": 40, "errs": 0, "kvaser": pages, "gs_usb": {},
@@ -287,6 +300,8 @@ def self_test():
              "Git", "can-tools", "canbench", "__init__.py"))),
         ("a sys.path entry holds a canbench/ after the open",
          lambda o: o["pin"].update(on_path_after=["Git/can-tools"])),
+        ("the kvaser opened by CANlib (KvaserBus), not bus.open_kvaser",
+         lambda o: o["kvaser"].update(type="KvaserBus")),
         ("kvaser heard three diag pages",
          lambda o: o["up"]["kvaser"].pop("0x7F6")),
         ("gs_usb had send errors", lambda o: o["up"].update(errs=2)),
@@ -307,7 +322,7 @@ def self_test():
     r = refusal()
     check(r["rc"] == 0 and "REFUSED" in r["out"] and "CAN_TOOLS_DIR" in r["out"]
           and "canbench imported: False" in r["out"],
-          "open_bus(kvaser) with CAN_TOOLS_DIR unset is refused, naming it, "
+          "open_bus(pcan) with CAN_TOOLS_DIR unset is refused, naming it, "
           "with no canbench imported -> %s" % r["out"].replace("\n", " | ")[:200])
     print("\nbench_canbench_smoke --self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
@@ -375,6 +390,9 @@ MUTANTS = [
      'say(True,'),
     ("--expect-x2 is not compared",
      'say(ids == [expect_x2.lower()],',
+     'say(True,'),
+    ("any kvaser opener passes",
+     'say(obs["kvaser"]["type"] == "WatchedBus",',
      'say(True,'),
 ]
 

@@ -53,8 +53,11 @@ identity, adapters, pins, and each measurement. Its `--self-test` needs no
 hardware.
 
 The Kvaser Leaf Light v2 cannot be the witness: it has no silent mode and
-ACKs even when opened with `driver_mode=False` (bench fact, 2026-10-09). So
-every run starts by proving the witness silent. With only the witness open,
+ACKs even when opened with `driver_mode=False` (bench fact, 2026-10-09).
+On the kernel's kvaser_usb (madhouse, from 2026-11-13) its link ACKs
+whenever it is UP, socket open or not, so "the node closed" is its link
+DOWN, read back in sysfs, before step 0's probe (bench_vport.py's header).
+So every run starts by proving the witness silent. With only the witness open,
 `MODE normal` and `SEND 7EF 1` must leave `STATUS` at `tec` >= 128 (nobody
 ACKed). If not, the run is refused.
 

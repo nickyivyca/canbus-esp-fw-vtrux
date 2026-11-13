@@ -20,7 +20,11 @@ Two transport families:
             dropped (open_gs_usb). On Linux the pinned canbench's
             linux_fixes are applied first (adapter_fixes), so a gs_usb open
             there needs the can-tools pin installed; on Windows it does
-            not.
+            not. kvaser and socketcan are the Kvaser on the kernel's
+            kvaser_usb, Linux only, netdev "kvaser" named with --channel
+            (open_kvaser, kvaser_link; 2026-11-13): the link brought up
+            and read back first, the bus returned keeping the TX stall
+            rule (kvaser_link.WatchedBus).
 
 Segment map for this bench:
 
@@ -205,6 +209,11 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
                            receive_own_messages=receive_own_messages,
                            logger=logger)
 
+    if transport in ("kvaser", "socketcan"):
+        return open_kvaser(channel, bitrate,
+                           receive_own_messages=receive_own_messages,
+                           logger=logger)
+
     import paths
     paths.import_canbench()     # the pinned canbench, nothing on sys.path
     # the Kvaser's linuxcan fix, explicitly, not as the receiver's import
@@ -244,6 +253,36 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
             if logger:
                 logger.debug("pcan reset() at startup failed (non-fatal): %s", e)
     return bus
+
+
+def open_kvaser(channel, bitrate, *, receive_own_messages=False, logger=None,
+                _link=None, _can_mod=None):
+    """The vehicle segment's Kvaser on the kernel's kvaser_usb (tester,
+    2026-11-13, the charge-interposer reviewer's rulings A, D and D6):
+    netdev "kvaser", named (--channel kvaser; none given, which would pick a
+    netdev by position, or any other netdev is refused by
+    kvaser_link.check_channel). The run is an ACK check, so the link is
+    brought up at `bitrate` through canctl and IFF_UP read back
+    (kvaser_link.set_link) before the socket opens. The bus returned keeps
+    the stall rule (kvaser_link.WatchedBus): its own echoes are read and
+    counted, never returned, and kvaser_link.Stall is raised on ENOBUFS or
+    an echo later than 100 ms; the caller reports either as VOID.
+    receive_own_messages True is refused: the echoes are the stall rule's.
+    _link and _can_mod exist only for bus_gs_usb_test."""
+    import kvaser_link
+    link = _link or kvaser_link
+    if receive_own_messages:
+        raise ValueError("the Kvaser's own echoes are kept for the stall rule, "
+                         "never returned (receive_own_messages=True refused)")
+    if bitrate != link.BITRATE:
+        raise ValueError("the Kvaser runs at %d bit/s on this bench, not %d"
+                         % (link.BITRATE, bitrate))
+    ch = link.check_channel(channel)
+    line = link.set_link(True)
+    if logger:
+        logger.info("Opening the Kvaser: %s", line)
+    b = link.open_bus(channel=ch, receive_own_messages=True, can_mod=_can_mod)
+    return link.WatchedBus(b)
 
 
 def _libusb_bootstrap():

@@ -16,6 +16,13 @@ Stimulus, all on the wire:
   - the Kvaser (normal mode) witnesses the vehicle wire, the Innomaker's
     echoes the filler on the charger wire, and the Innomaker receives the
     forwarded identifier.
+  - since 2026-11-13 (the reviewer's A, D4, M6): the Kvaser is netdev
+    kvaser on kvaser_usb, its link brought up and read back first (VOID
+    with the kernel's lines if not), and read in a process of its own
+    (rx_proc); a witness that may have missed frames (rx_proc.witness_void)
+    makes the run VOID. The windows stay on host read time (WIN_S); every
+    verdict records QUANT_LINE, the Kvaser's ~1.4 ms stamp quantisation,
+    not judged and not diagnosed.
 
 Reported per switch (analyse(), pure; --self-test):
   - vehicle -> charger: identifier frames on the vehicle wire within +/-5 ms
@@ -54,7 +61,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
-import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import kvaser_link                 # noqa: E402  (the Kvaser on kvaser_usb)
 
 import bench_hold12 as H                                     # noqa: E402
 
@@ -64,6 +71,15 @@ OFF_S = 2.8
 REVERT_S = 2.0              # spec 2.3: listen-only 2 s after the last frame
 WIN_S = 0.005
 LEAD_S = 2.0
+# the reviewer's D4 (2026-11-13): recorded on every run, not judged and not
+# diagnosed. The kvaser_usb measurement the same day (run 3): the Kvaser's
+# software stamps come two per 1 ms USB frame, 0.32-1.39 ms after the send
+# call, so a frame is placed against a switch to about 1.4 ms.
+QUANT_LINE = ("FIGURE (recorded, not judged): the Kvaser's stamps on kvaser_usb "
+              "are software stamps quantised by its 1 ms USB frames, so a frame's "
+              "place against a switch is known to about 1.4 ms, about 3 identifier "
+              "frames at 2,000 fps; which side of a +/-5 ms window edge such a "
+              "frame falls is not diagnosed")
 MODE_RE = re.compile(r"^\[(\d+)\] \w+\s+vehicle port mode .* a=([01]) ")
 SWITCH_US_RE = re.compile(r"vehicle port -> (normal|LISTEN-ONLY) \((\d+) us\)")
 
@@ -209,6 +225,7 @@ def judge(summ, phases):
     figs.append("FIGURE filler never bridged (not judged by this case): "
                 "control %d of %d; switch phase %d of %d apart from the "
                 "starts' first frames" % (pc[4], pc[3], ps[4] - miss_sw, ps[3]))
+    figs.append(QUANT_LINE)
     void = []
     for kind in KINDS:
         n_sw, n_fr, _n_lo = summ.get(kind, (0, 0, 0))
@@ -401,6 +418,18 @@ def self_test():
     check(rc == 0 and any("control 29 of" in x for x in ln),
           "judge: filler lost in the control is a figure, not a verdict "
           "(rc %d)" % rc)
+    # 2026-11-13, the reviewer's D4 and M6
+    rc, ln = judge(sm, args[5])
+    check(QUANT_LINE in ln and QUANT_LINE.startswith("FIGURE (recorded, not judged)")
+          and "1.4 ms" in QUANT_LINE and "3 identifier frames" in QUANT_LINE,
+          "judge: the Kvaser stamp quantisation line on every verdict, recorded only")
+    _rc, s_void, a_void = verdict(lost_bg=(bg,), lost_at_normal=(3,))
+    rcv, lnv = judge(s_void, a_void[5])
+    check(rcv == 3 and QUANT_LINE in lnv, "...on a VOID verdict too")
+    rows = veh_rows({"rows": [(1.0, 2.0, H.ID, True, 3, "000001", True, False),
+                              (1.1, 2.1, 0x001, False, 8, "00" * 8, True, True)]})
+    check(rows == [(1.0, 2.0, H.ID, True, 3, "000001")],
+          "veh_rows: a reader process's rows as analyse() reads them, error frames out")
     print("\nbench_switch_loss self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -488,21 +517,19 @@ def run_bench(a):
         "0x%08X: %d x (on %.1f s, off %.1f s), then on %.0f s (control)"
         % (datetime.datetime.now().isoformat(), H.ID, H.ID_RATE, total,
            H.FILLER, CYCLES, ON_S, OFF_S, switch_s))
+    import rx_proc
+    t_ep0 = time.time()
+    # the Kvaser witnesses and acknowledges (an ACK check; the reviewer's A):
+    # its link up and read back, then read in a process of its own (rx_proc)
+    try:
+        log(kvaser_link.set_link(True))
+    except kvaser_link.LinkError as e:
+        log(kvaser_link.link_void(e, t_ep0, time.time()))
+        out.close()
+        return 3
     hp = U.HostPort(a.port, base + "_serial.txt")
-    kv = adapter_fixes.bus(interface="kvaser", channel=0, bitrate=H.BITRATE)
-    veh, vlock, vhalt = [], threading.Lock(), threading.Event()
-
-    def vrx():
-        while not vhalt.is_set():
-            m = kv.recv(timeout=0.05)
-            if m is None or m.is_error_frame:
-                continue
-            h = time.perf_counter()
-            with vlock:
-                veh.append((m.timestamp, h, m.arbitration_id,
-                            bool(m.is_extended_id), m.dlc, bytes(m.data).hex()))
-    vt = threading.Thread(target=vrx, daemon=True)
-    vt.start()
+    kv = rx_proc.ProcReader("bench_switch_loss", "open_kvaser_rx", {}, name="kvaser")
+    kv.wait_ready()
     ctx = mp.get_context("spawn")
     go, done = ctx.Event(), ctx.Event()
     fgo, fready, fstop = ctx.Event(), ctx.Event(), ctx.Event()
@@ -542,9 +569,8 @@ def run_bench(a):
     dumps["control"] = dump_now()
     pf.join(60)
     pv.join(10)
-    vhalt.set()
-    vt.join(2.0)
-    kv.shutdown()
+    kres = kv.finish()
+    veh = veh_rows(kres)
     serial = list(hp.stamped)
     hp.close()
     with open(base + "_vehicle_rows.txt", "w") as f:
@@ -567,10 +593,34 @@ def run_bench(a):
     for s in lines:
         log(s)
     rc, verdict = judge(summ, phases)
+    wv = rx_proc.witness_void("kvaser", kres, t_ep0, time.time())
+    if wv:
+        # the witness may have missed frames: a frame it missed would read
+        # as a frame the board lost
+        rc, verdict = 3, verdict + [wv]
     for s in verdict:
         log(s)
     out.close()
     return rc
+
+
+def open_kvaser_rx():
+    """The vehicle witness, opened in its reader process: the Kvaser on
+    kvaser_usb, netdev kvaser (kvaser_link; run_bench has brought the link
+    up), its socket's receive buffer enlarged for 3,000 frames a second."""
+    import socket
+    b = kvaser_link.open_bus(receive_own_messages=False)
+    try:
+        b.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
+    except (AttributeError, OSError):
+        pass
+    return b
+
+
+def veh_rows(res):
+    """rx_proc rows -> the vehicle rows analyse() reads, (t_dev, t_host, id,
+    ext, dlc, hex), error frames left out (as the reader thread did)."""
+    return [tuple(r[:6]) for r in res["rows"] if not r[7]]
 
 
 def reanalyse(base):
@@ -625,6 +675,10 @@ MUTANTS = [
     ("the control's filler figure lost",
      "% (pc[4], pc[3], ps[4] - miss_sw, ps[3])",
      "% (0, pc[3], ps[4] - miss_sw, ps[3])"),
+    # 2026-11-13, the reviewer's D4
+    ("the quantisation line not recorded", "    figs.append(QUANT_LINE)\n", ""),
+    ("veh_rows: error frames kept", "    return [tuple(r[:6]) for r in res[\"rows\"] if not r[7]]",
+     "    return [tuple(r[:6]) for r in res[\"rows\"]]"),
 ]
 
 

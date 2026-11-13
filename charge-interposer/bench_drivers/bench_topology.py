@@ -38,6 +38,17 @@ the port must fall back to listen-only (2 s with no charger frame) and a
 quiet control window must hear no pages, or nothing can be attributed.
 classify_charger_up() decides; phase 2's forwarded probe then confirms.
 
+THE KVASER ON KVASER_USB (tester, 2026-11-13; the charge-interposer
+reviewer's A, D6 and the kernel-log addendum). The adapters acknowledge, so
+the Kvaser's link is brought up and read back before anything opens
+(topology_link; VOID with the kernel's lines if it does not come up). It is
+netdev kvaser, opened as a kvaser_link.WatchedBus: its own echoes are
+consumed by the stall rule and never counted as frames heard. A kvaser TX
+stall, on a send or in its drain, ends the run VOID with the kernel's
+lines, never a topology answer, and the Kvaser is recovered. The sends here
+are slow (10 per second, 40 probes 10 ms apart), so the drains stay
+threads.
+
     py -3.14 charge-interposer/bench_drivers/bench_topology.py
     py -3.14 .../bench_topology.py --self-test | --can-fail
 """
@@ -55,6 +66,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import kvaser_link                 # noqa: E402  (the Kvaser on kvaser_usb)
 
 import can                                                   # noqa: E402
 
@@ -127,10 +139,21 @@ OPENERS = {
     # reachability test into one that cannot fail honestly.
     "pcan": lambda: can.Bus(interface="pcan", channel="PCAN_USBBUS1",
                             bitrate=BITRATE, auto_reset=True),
-    "kvaser": lambda: adapter_fixes.bus(interface="kvaser", channel=0,
-                                        bitrate=BITRATE),
+    # the Kvaser on kvaser_usb, netdev kvaser (2026-11-13): its echoes kept
+    # and consumed by the stall rule, never counted as heard (WatchedBus)
+    "kvaser": lambda: kvaser_link.WatchedBus(kvaser_link.open_bus(receive_own_messages=True)),
     "innomaker": open_gs_usb,
 }
+
+
+def stall_in(drains, exc=None):
+    """The kvaser TX stall that ended a drain or a send, or None."""
+    if isinstance(exc, kvaser_link.Stall):
+        return exc
+    for d in drains.values():
+        if isinstance(d.exc, kvaser_link.Stall):
+            return d.exc
+    return None
 
 
 class Drain(object):
@@ -150,6 +173,7 @@ class Drain(object):
         self.ids = collections.Counter()
         self.errors = 0
         self.total = 0
+        self.exc = None          # what ended the drain early (a kvaser TX stall)
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._run)
         self._t.daemon = True
@@ -158,7 +182,8 @@ class Drain(object):
         while not self._stop.is_set():
             try:
                 m = self.bus.recv(timeout=0.05)
-            except Exception:
+            except Exception as e:
+                self.exc = e
                 return
             if m is None:
                 continue
@@ -182,6 +207,16 @@ class Drain(object):
         self.total = 0
 
 
+def topology_link(link):
+    """-> (ok, line): the Kvaser's link up and read back; not ok is a VOID
+    line with the kernel's USB/CAN lines."""
+    t0 = time.time()
+    try:
+        return True, link.set_link(True)
+    except link.LinkError as e:
+        return False, link.link_void(e, t0, time.time())
+
+
 def talk_as_charger(x, buses, drains, seconds):
     """x sends the charger status frame for `seconds` while every drain
     counts; then the port's fall-back, then a quiet control window."""
@@ -195,6 +230,8 @@ def talk_as_charger(x, buses, drains, seconds):
         try:
             buses[x].send(msg, timeout=0.2)
             sent += 1
+        except kvaser_link.Stall:
+            raise
         except Exception:
             errs += 1
         time.sleep(CHARGER_PERIOD_S)
@@ -252,6 +289,46 @@ def self_test():
                                            ["innomaker"]),
           "the talker's own reception is left out (it is not a vehicle-side "
           "witness of itself)")
+    # 2026-11-13, the reviewer's Kvaser rulings: the link up first, a kvaser
+    # TX stall never counted as a send error or a quiet drain
+    class Link(object):
+        LinkError = kvaser_link.LinkError
+        calls, fail = [], None
+
+        @classmethod
+        def set_link(cls, up):
+            cls.calls.append(up)
+            if cls.fail:
+                raise kvaser_link.LinkError(cls.fail)
+            return "kvaser link up"
+
+        @staticmethod
+        def link_void(e, t0, t1):
+            return kvaser_link.link_void(e, t0, t1, lambda s, u: "")
+    ok, ln = topology_link(Link)
+    check(ok and Link.calls == [True], "link: brought up (the adapters acknowledge)")
+    Link.fail = "the kvaser link reads down in sysfs, and this check needs it up"
+    ok, ln = topology_link(Link)
+    check(not ok and ln.startswith("VOID: kvaser link:"), "link: not up -> a VOID line")
+
+    class Stalls(object):
+        def send(self, msg, timeout=None):
+            raise kvaser_link.Stall("kvaser TX stall: planted", 1.0)
+    global RELISTEN_S, CONTROL_S
+    saved = RELISTEN_S, CONTROL_S
+    RELISTEN_S = CONTROL_S = 0.0
+    try:
+        talk_as_charger("kvaser", {"kvaser": Stalls()}, {}, 0.05)
+        check(False, "talk: a stall on the talker counted as a send error")
+    except kvaser_link.Stall:
+        check(True, "talk: a stall on the talker is raised, not counted as a send error")
+    finally:
+        RELISTEN_S, CONTROL_S = saved
+    d = Drain("kvaser", None)
+    d.exc = kvaser_link.Stall("kvaser TX stall: planted", 1.0)
+    check(stall_in({"kvaser": d, "pcan": Drain("pcan", None)}) is d.exc,
+          "a drain ended by a stall is found")
+    check(stall_in({"pcan": Drain("pcan", None)}) is None, "no stall, none found")
     print("\nbench_topology self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -276,6 +353,13 @@ def main():
         import script_can_fail
         return script_can_fail.run(__file__, MUTANTS)
 
+    # the adapters acknowledge (an ACK check; 2026-11-13, the reviewer's A):
+    # the Kvaser's link up and read back before anything opens
+    t_ep0 = time.time()
+    ok, line = topology_link(kvaser_link)
+    print(line)
+    if not ok:
+        return 2
     buses, drains = {}, {}
     for name, opener in OPENERS.items():
         try:
@@ -365,8 +449,11 @@ def main():
                   "and a %.0f s quiet control"
                   % (CHARGER_ID, CHARGER_PERIOD_S, args.seconds, RELISTEN_S,
                      CONTROL_S))
-            windows = {x: talk_as_charger(x, buses, drains, args.seconds)
-                       for x in sorted(buses)}
+            windows = {}
+            for x in sorted(buses):
+                windows[x] = talk_as_charger(x, buses, drains, args.seconds)
+                if stall_in(drains):
+                    raise stall_in(drains)
             verdict, vehicle, known_charger, lines = classify_charger_up(windows)
             for ln in lines:
                 print(ln)
@@ -399,10 +486,14 @@ def main():
             try:
                 src.send(msg, timeout=0.2)
                 sent += 1
+            except kvaser_link.Stall:
+                raise
             except Exception:
                 errs += 1
             time.sleep(0.01)
         time.sleep(0.5)
+        if stall_in(drains):
+            raise stall_in(drains)
 
         print("  offered %d, send errors %d" % (sent, errs))
         if sent == 0:
@@ -441,6 +532,15 @@ def main():
             un = [n for n in quiet if n not in charger]
             print("  unplaced        : %s" % ", ".join(un))
         return 0
+    except kvaser_link.Stall as st:
+        # not a topology result: VOID with the kernel's lines, the Kvaser
+        # recovered (its socket closed first) before the next case
+        for d in drains.values():
+            d.stop()
+        kv = buses.pop("kvaser", None)
+        for ln in kvaser_link.stall_lines(st, t_ep0, close=kv.shutdown if kv else None):
+            print(ln)
+        return 2
     finally:
         for d in drains.values():
             d.stop()
@@ -471,6 +571,16 @@ MUTANTS = [
     ("no talker still a map",
      "    if not charger:\n        mute",
      "    if False:\n        mute"),
+    # 2026-11-13, the reviewer's Kvaser rulings
+    ("link: never brought up", "        return True, link.set_link(True)",
+     "        return True, \"not set\""),
+    ("link: a failure not VOID", "        return False, link.link_void(e, t0, time.time())",
+     "        return True, str(e)"),
+    ("talk: a stall counted as a send error",
+     "            sent += 1\n        except kvaser_link.Stall:\n            raise\n",
+     "            sent += 1\n"),
+    ("a drain's stall not found", "        if isinstance(d.exc, kvaser_link.Stall):",
+     "        if False:"),
 ]
 
 

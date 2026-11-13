@@ -196,6 +196,7 @@ HARNESS_PY_TESTS = [
     "twai_fake_option_test.py", "scratch_dir_test.py", "scratch_run_test.py",
     "hw_mechanics_test.py", "serial_open_test.py", "adapter_fixes_test.py",
     "wican_pin_test.py", "canchg_mode_test.py", "canx2_slcan_test.py",
+    "kvaser_link_test.py",
 ]
 # The ones of those also run with --can-fail, as <name>-canfail. One list
 # for the harness suite and accept_adapter's catalogue, so they can't drift.
@@ -204,7 +205,7 @@ HARNESS_PY_CANFAILS = [
     "paths_test.py", "twai_fake_option_test.py", "scratch_dir_test.py",
     "scratch_run_test.py", "hw_mechanics_test.py", "serial_open_test.py",
     "adapter_fixes_test.py", "wican_pin_test.py", "canchg_mode_test.py",
-    "canx2_slcan_test.py",
+    "canx2_slcan_test.py", "kvaser_link_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 # settings m_lanes_host: where the m-* groups run (module docstring)
@@ -249,7 +250,7 @@ SELF_TESTS = [
     "bench_innomaker_clock", "bench_switch_loss", "bench_switch_errors",
     "bench_switch_pending", "bench_vport", "bench_c12", "bench_flight_silence",
     "bench_usb_host", "bench_mcp_reset", "bench_hold12", "bench_topology",
-    "bench_canbench_smoke",
+    "bench_canbench_smoke", "keepalive_probe", "rx_proc", "klog_windows",
 ]
 # Bench drivers whose --can-fail runs their self-test against each of their
 # MUTANTS (script_can_fail.py), run locally (test_script_coverage).
@@ -259,6 +260,9 @@ CAN_FAILS = [
     "bench_canbench_smoke",
     # 2026-11-12, the reviewer's E3: the gs_usb stamp unwrapped
     "bench_charger_silent", "bench_rx_order",
+    # 2026-11-13, the reviewer's Kvaser rulings (kvaser_link, rx_proc)
+    "keepalive_probe", "rx_proc", "bench_switch_pending", "bench_switch_errors",
+    "klog_windows",
 ]
 
 # Local scripts (they want pyserial or the Windows side).
@@ -463,6 +467,11 @@ def switch_pending_judge(run):
         return Result(Verdict.ERROR, detail="no out file %s (rc=%s)"
                       % (os.path.basename(out), run.rc))
     text = open(out, encoding="utf-8", errors="replace").read()
+    # a phase whose Kvaser link was not as it needs (bench_switch_pending's
+    # phase_link, 2026-11-13): not run, so not judged
+    voids = [ln.strip() for ln in text.splitlines() if ln.startswith("VOID:")]
+    if voids:
+        return Result(Verdict.VOID, detail="; ".join(voids[:2]))
     deltas, cur = {}, None
     for ln in text.splitlines():
         m = SP_PHASE_RE.match(ln)
@@ -1037,6 +1046,7 @@ def canchg_env(settings):
 # 2026-11-11). Absent, the driver keeps its Windows default and refuses on
 # Linux.
 ESPTOOL_ENV = "VTRUX_ESPTOOL_ARGV"
+KVASER_STOP_ENV = "VTRUX_KVASER_STOP"       # kvaser_link.STOP_ENV
 
 
 def esptool_env(settings):
@@ -1060,7 +1070,8 @@ def bench(settings):
     b = _Build(settings)
     bpy = b.bpy
     board_args = ["--external-interposer", "--serial-port", "{serial_port}",
-                  "--vehicle-transport", "kvaser", "--charger-transport",
+                  "--vehicle-transport", "kvaser", "--vehicle-channel",
+                  "kvaser", "--charger-transport",
                   "gs_usb", "--diag-witness", "{pcan_channel}",
                   "--outdir", "{outdir}"]
 
@@ -1104,7 +1115,9 @@ def bench(settings):
         # charge-interposer reviewer, 2026-11-04)
         bpy("idf-log", "bench_flight_silence.py",
             ["--idf-log", "--port", "{serial_port}", "--out", "{outdir}/idf_log_bridge.txt"]),
-        bpy("keepalive-probe", "keepalive_probe.py", [], judge=recorded_judge),
+        bpy("keepalive-probe", "keepalive_probe.py",
+            ["--port", "{serial_port}", "--pcan-channel", "{pcan_channel}"],
+            judge=recorded_judge),
         bpy("usb-host-baseline-ack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "baseline-boots", "--ack",
              "--wican-state", "{wican_state}", "--out", "{outdir}"]),
@@ -1261,7 +1274,12 @@ def bench(settings):
     # which Innomaker is canchg, for every check that may open it (on Linux
     # by its serial, adapter_fixes.canchg_target; the reviewer's E2), and
     # the core flasher's esptool for a driver that runs esptool itself
+    # and where a check that met a Kvaser TX stall it could not recover
+    # from stops the bench: the run's own STOP file, so every later case is
+    # NOT-RUN "STOP: kvaser recovery failed ..." (kvaser_link.recover; the
+    # charge-interposer reviewer, 2026-11-13)
     env = dict(canchg_env(settings), **esptool_env(settings))
+    env[KVASER_STOP_ENV] = "{run_dir}/STOP"
     for g in (b_bridge, b_witness, b_truck, b_c12, b_vport, truck_only):
         for c in g.checks:
             c.env.update(env)

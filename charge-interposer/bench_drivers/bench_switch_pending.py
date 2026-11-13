@@ -8,12 +8,18 @@ Two phases, each: the Innomaker sends charger frames (extended, SA 0xC0,
 `bench_hold12.FILLER`, DLC 8, a 32-bit counter) at RATE fps for ON_S, so the
 port goes normal and the board bridges them toward the vehicle segment; then
 the charger stops, and 2 s later the port falls back to listen-only.
-  NOACK   nothing on the vehicle segment acknowledges: the Kvaser is NOT
-          opened (it cannot be silent), the PCAN is opened PASSIVE as the
-          witness, the WiCAN (mode 0) does not acknowledge. The board's
-          bridged frames sit retrying, so some are pending at the switch.
-  ACK     the control: the same with the Kvaser open in normal mode, so
+  NOACK   nothing on the vehicle segment acknowledges: the Kvaser's link is
+          DOWN (an UP kvaser_usb link acknowledges with no socket open;
+          since 2026-11-13, the reviewer's A, it is taken down and read back
+          in sysfs, where under CANlib it was simply not opened), the PCAN
+          is opened PASSIVE as the witness, the WiCAN (mode 0) does not
+          acknowledge. The board's bridged frames sit retrying, so some are
+          pending at the switch.
+  ACK     the control: the same with the Kvaser's link UP (read back), so
           every bridged frame is acknowledged and nothing is pending.
+A link not set as the phase needs is a VOID line with the kernel's USB/CAN
+lines and no RESULT line (phase_link); switch_pending_judge reads it as
+VOID.
 The board's serial status block (every 5 s) gives, before and after each
 phase: c2v (frames forwarded toward the vehicle), the LOSS line's vehicle
 tx drops and bridge drops, and the MODE line's suppressed count, switch
@@ -56,7 +62,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
-import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import kvaser_link                 # noqa: E402  (the Kvaser on kvaser_usb)
 
 import bench_hold12 as H                                     # noqa: E402
 
@@ -136,26 +142,54 @@ def self_test():
     c = counters(lines)
     check(c == dict(c2v=42, switches=2, suppressed=5, drained=1, veh_tx=9,
                     veh_err=3, bridge=4), "the status block parses -> %s" % c)
+
+    # 2026-11-13, the reviewer's A: the Kvaser's link per phase
+    class Link(object):
+        LinkError = kvaser_link.LinkError
+        calls, fail = [], None
+
+        @classmethod
+        def set_link(cls, up):
+            cls.calls.append(up)
+            if cls.fail:
+                raise kvaser_link.LinkError(cls.fail)
+            return "kvaser link %s" % ("up" if up else "down")
+
+        @staticmethod
+        def link_void(e, t0, t1):
+            return kvaser_link.link_void(e, t0, t1, lambda s, u: (
+                "2026-11-13T12:00:00.1-08:00 h kernel: usb 1-3.2.1: error -71\n"))
+    ok1, _ = phase_link(False, Link)
+    ok2, _ = phase_link(True, Link)
+    check(ok1 and ok2 and Link.calls == [False, True],
+          "link: NOACK takes it down, ACK brings it up -> %s" % Link.calls)
+    Link.fail = "the kvaser link reads up in sysfs, and this check needs it down"
+    ok, ln = phase_link(False, Link)
+    check(not ok and ln.startswith("VOID: kvaser link: the kvaser link reads up")
+          and "error -71" in ln,
+          "link: an UP link under NOACK is caught, a VOID line with the kernel's lines")
     print("\nbench_switch_pending self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
+
+
+def phase_link(ack, link):
+    """The Kvaser's link for a phase (2026-11-13, the reviewer's A): an UP
+    kvaser_usb link acknowledges with no socket open, so NOACK takes it
+    DOWN and ACK brings it up, each read back in sysfs; nothing else is
+    needed of the Kvaser (no socket). -> (ok, line); not ok is a VOID line
+    with the kernel's USB/CAN lines, and the phase does not run."""
+    t0 = time.time()
+    try:
+        return True, link.set_link(bool(ack))
+    except link.LinkError as e:
+        return False, link.link_void(e, t0, time.time())
 
 
 def phase(name, hp, ack, log, gs):
     import can
     import bench_usb_host as U
     pc = U.Rx(U.open_pcan(False), "pcan")           # passive witness
-    kv = None
-    if ack:
-        kv = adapter_fixes.bus(interface="kvaser", channel=0,
-                               bitrate=H.BITRATE)
-        kstop = threading.Event()
-
-        def kdrain():
-            while not kstop.is_set():
-                kv.recv(timeout=0.05)
-        kt = threading.Thread(target=kdrain, daemon=True)
-        kt.start()
     gstop = threading.Event()
 
     def gdrain():
@@ -187,10 +221,6 @@ def phase(name, hp, ack, log, gs):
     rows = pc.take()
     gstop.set()
     gt.join(1.0)
-    if kv is not None:
-        kstop.set()
-        kt.join(1.0)
-        kv.shutdown()
     pc.close()
     seen = sorted(set(H.seq_of(r[4].hex()[:6]) if False else
                       ((r[4][0] << 24) | (r[4][1] << 16) | (r[4][2] << 8) | r[4][3])
@@ -218,33 +248,60 @@ def run_bench(a):
         out.write(s + "\n")
         out.flush()
     log("run at %s; charger frames 0x%08X at %.0f fps for %.0f s, then the "
-        "2 s fallback; NOACK (Kvaser closed, PCAN passive) then ACK (Kvaser "
-        "open)" % (datetime.datetime.now().isoformat(), H.FILLER, RATE, ON_S))
+        "2 s fallback; NOACK (the Kvaser's link DOWN, PCAN passive) then ACK "
+        "(the Kvaser's link UP)" % (datetime.datetime.now().isoformat(), H.FILLER,
+                                    RATE, ON_S))
     import bench_rate_feasibility as RF
     hp = U.HostPort(a.port, os.path.splitext(a.out)[0] + "_serial.txt")
     # one Innomaker handle for both phases: an in-process gs_usb reopen
     # fails on this host (the first run's ACK phase died on it)
     gs = RF.open_gs_usb()
+    un = {}
     try:
-        un1, _d1 = phase("NOACK", hp, False, log, gs)
-        un2, _d2 = phase("ACK", hp, True, log, gs)
+        for name, ack in (("NOACK", False), ("ACK", True)):
+            ok, line = phase_link(ack, kvaser_link)
+            log(line)
+            if not ok:
+                # no RESULT line: switch_pending_judge reads the VOID line
+                log("phase %s not run: the Kvaser's link is not as the phase needs"
+                    % name)
+                return 0
+            un[name], _d = phase(name, hp, ack, log, gs)
     finally:
         gs.shutdown()
         hp.close()
-    log("RESULT: unaccounted NOACK %d, ACK %d" % (un1, un2))
+        if len(un) < 2:
+            out.close()
+    log("RESULT: unaccounted NOACK %d, ACK %d" % (un["NOACK"], un["ACK"]))
     out.close()
     return 0
+
+
+# --can-fail (script_can_fail.py): each edit must make --self-test fail
+MUTANTS = [
+    ("link: the same for both phases", "        return True, link.set_link(bool(ack))",
+     "        return True, link.set_link(True)"),
+    ("link: never set", "        return True, link.set_link(bool(ack))",
+     "        return True, \"not set\""),
+    ("link: a failure not VOID", "        return False, link.link_void(e, t0, time.time())",
+     "        return True, str(e)"),
+]
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--can-fail", action="store_true",
+                    help="run the self-test under each of MUTANTS")
     ap.add_argument("--port", default="COM3")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     if a.self_test:
         return self_test()
+    if a.can_fail:
+        import script_can_fail
+        return script_can_fail.run(__file__, MUTANTS)
     if not a.out:
         ap.error("--out is required")
     return run_bench(a)

@@ -29,6 +29,17 @@ witness.
 The board's serial c2v counter, read before and after, cross-checks the
 count forwarded against the count offered and the count witnessed.
 
+THE KVASER ON KVASER_USB (tester, 2026-11-13; the charge-interposer
+reviewer's A, M6 and the kernel-log addendum). The witness must
+acknowledge, so the run first brings the Kvaser's link up and reads it back
+(witness_link); a link that does not come up is a VOID line with the
+kernel's USB/CAN lines, and nothing is sent. The witness reads in a
+process of its own (rx_proc, netdev kvaser), not in a thread beside the
+Innomaker's back-to-back sends, and counts the keep-alives live for the
+premise wait. A variant whose witness did not open, raised recv errors, or
+for which the kernel reports lost frames is VOID (rx_proc.witness_void),
+not judged: a frame the witness missed would read as a bridged frame lost.
+
     py -3.14 bench_rx_order.py --self-test        # no hardware
     py -3.14 bench_rx_order.py --can-fail         # each MUTANTS edit fails it
     py -3.14 bench_rx_order.py --port COM3 --bursts 2000
@@ -50,7 +61,7 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import kvaser_link                 # noqa: E402  (the Kvaser on kvaser_usb)
 from bench_usb_host import unwrap_us32   # noqa: E402  (gs_usb's 32-bit us stamp)
 
 BITRATE = 500000
@@ -210,26 +221,30 @@ def last_c2v(lines):
     return None
 
 
-def run_variant(tx, rx, vname, vno, bursts, gap_s, serial_lines):
+def open_kvaser_rx():
+    """The vehicle witness, opened in its reader process: the Kvaser on
+    kvaser_usb, netdev kvaser (kvaser_link; run_bench has brought the link
+    up and read it back)."""
+    import kvaser_link
+    return kvaser_link.open_bus(receive_own_messages=False)
+
+
+def run_variant(tx, vname, vno, bursts, gap_s, serial_lines, reader=None, journal=None):
+    """reader(): a started rx_proc.ProcReader on the vehicle witness, with
+    count_ids holding KEEPALIVE_ID (the Kvaser in a process of its own,
+    2026-11-13, the reviewer's M6: the Innomaker sends back to back in this
+    one). -> the variant's result; res["witness_void"] is the VOID line when
+    the witness may have missed frames."""
     import can
+    import rx_proc
     ids, ext = VARIANTS[vname]
     echoes = Drain(tx, lambda m: not m.is_rx and decode(m.data)
                    and decode(m.data)[0] == vno).start()
-    # ONE reader per bus: two Drain threads on the same handle race for each
-    # frame, and a frame the wrong one takes is dropped by its filter. (The
-    # first keep-alive run had a second Drain for the keep-alives and saw
-    # none of them while the board counted each; 2026-10-14.)
-    rx_all = Drain(rx, lambda m: rx_keep(m, vno)).start()
-
-    class _View(object):
-        def __init__(self, want):
-            self.want = want
-
-        @property
-        def got(self):
-            return [x for x in list(rx_all.got) if self.want(x[1])]
-    seen = _View(lambda m: not is_keepalive(m))
-    ka_seen = _View(is_keepalive)
+    t_ep0 = time.time()
+    rx_all = (reader or (lambda: rx_proc.ProcReader(
+        "bench_rx_order", "open_kvaser_rx", {}, name="kvaser",
+        count_ids=(KEEPALIVE_ID,))))()
+    rx_all.wait_ready()
     c2v0 = last_c2v(serial_lines) if serial_lines is not None else None
     sent, errs, ka_sent = 0, 0, 0
     last_ka = None
@@ -243,9 +258,9 @@ def run_variant(tx, rx, vname, vno, bursts, gap_s, serial_lines):
         last_ka = keepalive()
         ka_sent += 1
         t_end = time.perf_counter() + KEEPALIVE_WAIT_S
-        while not ka_seen.got and time.perf_counter() < t_end:
+        while not rx_all.count() and time.perf_counter() < t_end:
             time.sleep(0.01)
-        if not ka_seen.got:
+        if not rx_all.count():
             # the port did not go normal: do not offer the bursts at all
             bursts = 0
         for b in range(bursts):
@@ -265,21 +280,36 @@ def run_variant(tx, rx, vname, vno, bursts, gap_s, serial_lines):
         time.sleep(1.5)
     finally:
         echoes.stop()
-        rx_all.stop()
+        res = rx_all.finish()
+    kept = [m for m in rx_proc.as_msgs(res) if rx_keep(m, vno)]
+    seen = [m for m in kept if not is_keepalive(m)]
+    ka_seen = [m for m in kept if is_keepalive(m)]
+    wv = rx_proc.witness_void("kvaser", res, t_ep0, time.time(), journal)
     time.sleep(6.0 if serial_lines is not None else 0)   # a status line
     c2v1 = last_c2v(serial_lines) if serial_lines is not None else None
-    arr = [decode(m.data) for _h, m in seen.got]
+    arr = [decode(m.data) for m in seen]
     j = judge(arr, bursts, len(ids))
     # how tight were the bursts on the charger wire, by the echoes' device
     # stamps (single-adapter: the sender's own view)
     spans = echo_spans([(decode(m.data)[1], m.timestamp) for _h, m in echoes.got],
                        len(ids))
     return dict(judge=j, sent=sent, send_errors=errs, echoes=len(echoes.got),
-                offered=bursts, ka_sent=ka_sent, ka_seen=len(ka_seen.got),
-                premise=premise_verdict(ka_sent, len(ka_seen.got)),
+                offered=bursts, ka_sent=ka_sent, ka_seen=len(ka_seen),
+                premise=premise_verdict(ka_sent, len(ka_seen)), witness_void=wv,
                 c2v=(None if c2v0 is None or c2v1 is None else c2v1 - c2v0),
                 echo_span_us_p50=spans[len(spans) // 2] if spans else None,
                 echo_span_us_max=spans[-1] if spans else None)
+
+
+def witness_link(link):
+    """The vehicle witness must acknowledge (an ACK check; 2026-11-13, the
+    reviewer's A): the Kvaser's link up and read back. -> (ok, line); not
+    ok is a VOID line with the kernel's USB/CAN lines."""
+    t0 = time.time()
+    try:
+        return True, link.set_link(True)
+    except link.LinkError as e:
+        return False, link.link_void(e, t0, time.time())
 
 
 def run_bench(args):
@@ -287,9 +317,11 @@ def run_bench(args):
     import bench_charger_witness as bcw
     print("run at %s; MCP2515 path: YES (charger -> vehicle receive)"
           % datetime.datetime.now().isoformat())
+    ok, line = witness_link(kvaser_link)
+    print(line)
+    if not ok:
+        return 2
     tx = bcw.open_gs_usb()
-    rx = adapter_fixes.bus(interface="kvaser", channel=args.kvaser_channel,
-                           bitrate=BITRATE)
     lines = None
     ser = None
     if args.port:
@@ -312,9 +344,15 @@ def run_bench(args):
     rc = 0
     try:
         for vno, vname in enumerate(args.variants.split(",")):
-            r = run_variant(tx, rx, vname, vno, args.bursts, args.gap_ms /
+            r = run_variant(tx, vname, vno, args.bursts, args.gap_ms /
                             1000.0, lines)
             j = r["judge"]
+            if r["witness_void"]:
+                print("\n== %s: the vehicle witness may have missed frames, not judged"
+                      % vname)
+                print(r["witness_void"])
+                rc = rc or 2
+                continue
             print("\n== %s: %d bursts of %d, %d sent (%d send errors), %d "
                   "echoes, %d witnessed on the vehicle side"
                   % (vname, j["bursts"], len(VARIANTS[vname][0]), r["sent"],
@@ -353,7 +391,6 @@ def run_bench(args):
                 print("   every burst arrived complete and in order")
     finally:
         tx.shutdown()
-        rx.shutdown()
         if ser is not None:
             ser.close()
     return rc
@@ -469,6 +506,84 @@ def self_test():
     check(len(sp) == 2 and all(abs(s - 500.0) < 0.01 for s in sp),
           "a planted wrap inside burst 7: both complete bursts span 500 us, "
           "the incomplete burst 9 left out -> %s" % sp)
+    # 2026-11-13, the reviewer's Kvaser rulings: the witness in a reader
+    # process, its keep-alives counted live, its lost frames VOID; the
+    # link up (an ACK check) before anything
+    class Tx(object):
+        def __init__(self):
+            self.sent = []
+
+        def send(self, m, timeout=None):
+            self.sent.append(m)
+
+        def recv(self, timeout=0.05):
+            time.sleep(0.001)
+            return None
+
+    class Reader(object):
+        def __init__(self, tx, bridge=True, errors=(), drop=None):
+            self.tx, self.bridge, self.errors, self.drop = tx, bridge, list(errors), drop
+
+        def wait_ready(self, timeout=None):
+            return True
+
+        def count(self):
+            return sum(1 for m in self.tx.sent if self.bridge and is_keepalive(m))
+
+        def finish(self):
+            rows = [(0.0, 0.0, m.arbitration_id, bool(m.is_extended_id), len(m.data),
+                     bytes(m.data).hex(), True, False)
+                    for i, m in enumerate(self.tx.sent) if self.bridge and i != self.drop]
+            return {"opened": True, "rows": rows, "recv_errors": self.errors, "status": None}
+    quiet = lambda s, u: ""                                         # noqa: E731
+    tx = Tx()
+    r = run_variant(tx, "distinct", 0, 4, 0.0, None, reader=lambda: Reader(tx), journal=quiet)
+    check(r["judge"]["ok"] and r["premise"] == "OK" and r["witness_void"] is None
+          and r["sent"] == 12,
+          "run_variant on a reader process: every burst in order, keep-alives OK, "
+          "witness judged (%s, %s, %s)" % (r["judge"]["ok"], r["premise"], r["witness_void"]))
+    tx = Tx()
+    r = run_variant(tx, "distinct", 0, 4, 0.0, None, reader=lambda: Reader(tx, drop=5),
+                    journal=quiet)
+    check(not r["judge"]["ok"] and r["judge"]["missing"] == 1,
+          "...a frame the witness never got is missing")
+    tx = Tx()
+    r = run_variant(tx, "distinct", 0, 4, 0.0, None, reader=lambda: Reader(tx, bridge=False),
+                    journal=quiet)
+    check(r["offered"] == 0 and r["premise"] == "VOID" and r["sent"] == 0,
+          "...no keep-alive counted live: no bursts offered, VOID")
+    tx = Tx()
+    r = run_variant(tx, "distinct", 0, 4, 0.0, None,
+                    reader=lambda: Reader(tx, errors=[(1.0, "OSError: overflow")]),
+                    journal=quiet)
+    check(r["witness_void"] is not None and r["witness_void"].startswith("VOID:"),
+          "...a witness that raised recv errors -> a VOID line: %s" % r["witness_void"])
+    tx = Tx()
+    r = run_variant(tx, "distinct", 0, 4, 0.0, None, reader=lambda: Reader(tx),
+                    journal=lambda s, u: "2026-11-13T12:00:00.1-08:00 h kernel: kvaser_usb "
+                    "1-3.2.1:1.0 kvaser: rx overflow, lost frames\n")
+    check(r["witness_void"] is not None and "rx overflow" in r["witness_void"],
+          "...a kernel line reporting lost frames -> a VOID line naming it")
+
+    class Link(object):
+        LinkError = kvaser_link.LinkError
+        calls, fail = [], None
+
+        @classmethod
+        def set_link(cls, up):
+            cls.calls.append(up)
+            if cls.fail:
+                raise kvaser_link.LinkError(cls.fail)
+            return "kvaser link up"
+
+        @staticmethod
+        def link_void(e, t0, t1):
+            return kvaser_link.link_void(e, t0, t1, quiet)
+    ok, ln = witness_link(Link)
+    check(ok and Link.calls == [True], "the witness's link brought up (an ACK check)")
+    Link.fail = "the kvaser link reads down in sysfs, and this check needs it up"
+    ok, ln = witness_link(Link)
+    check(not ok and ln.startswith("VOID: kvaser link:"), "a link that does not come up: VOID")
     print("\nbench_rx_order self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -482,7 +597,6 @@ def main():
     ap.add_argument("--port", default=None,
                     help="the board's serial port, for the c2v cross-check "
                     "(opening it resets the board: open it before the run)")
-    ap.add_argument("--kvaser-channel", type=int, default=0)
     ap.add_argument("--bursts", type=int, default=2000)
     ap.add_argument("--gap-ms", type=float, default=5.0,
                     help="pause between bursts")
@@ -522,6 +636,17 @@ MUTANTS = [
     ("echo_spans: an incomplete burst counted",
      "                  if len(v) == per_burst)",
      "                  if len(v) > 1)"),
+    # 2026-11-13, the reviewer's Kvaser rulings
+    ("the witness's lost frames not checked",
+     "    wv = rx_proc.witness_void(\"kvaser\", res, t_ep0, time.time(), journal)",
+     "    wv = None"),
+    ("the keep-alive never counted live", "        if not rx_all.count():", "        if True:"),
+    ("the link never brought up", "        return True, link.set_link(True)",
+     "        return True, \"not set\""),
+    ("the link brought down", "        return True, link.set_link(True)",
+     "        return True, link.set_link(False)"),
+    ("a link failure not VOID", "        return False, link.link_void(e, t0, time.time())",
+     "        return True, str(e)"),
 ]
 
 

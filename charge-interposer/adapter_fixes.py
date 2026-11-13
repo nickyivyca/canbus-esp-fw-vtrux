@@ -30,6 +30,12 @@ goes through here and applies them explicitly:
     adapter_fixes.apply()      # before an open this module does not make
                                # (bus.open_gs_usb's GsUsbBus subclass)
 
+Since 2026-11-13 the Kvaser on madhouse is the kernel's kvaser_usb, opened
+through kvaser_link.py (SocketCAN, netdev kvaser), not CANlib: the only
+CANlib Kvaser opener left is bench_rate_feasibility's hand-run witness,
+CANlib-only and refused on Linux (the reviewer's E). The Kvaser fix stays
+for it and for the Windows bench.
+
 On Linux, apply() loads canbench from the can-tools pin (can_tools_pin.use:
 the pinned commit's canbench/, checked, loaded by file) and calls
 linux_fixes.apply(). Off Linux it does nothing and loads nothing, so the
