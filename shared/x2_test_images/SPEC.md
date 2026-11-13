@@ -74,8 +74,10 @@ gen-inhibit reviewer before merge.
   - it never sends a CAN frame, and its TWAI controller is never started;
   - at boot it resets the MCP2515 into configuration mode, where it neither
     transmits nor ACKs, and reports CANSTAT in its banner;
-  - "NOT FOR VEHICLE" is in its image name, its boot banner and every
-    console line.
+  - "NOT FOR VEHICLE" is in its image name and its boot banner. (Until
+    2026-11-12 also every console line; dropped by the user that day, in
+    the gen-inhibit reviewer's session, as more ceremony than the risk
+    needs.)
 - **T8a. Each SLCAN image is silent until told to open,** as
   `slcan_main.cpp` is today: nothing is transmitted before an open command,
   a reset returns it to silent, and a listen-only open never ACKs.
@@ -138,8 +140,9 @@ reviewer's session).
     once `jammer/` holds the ESP-IDF port (T8). Until then `slcan_spi`
     ships without jamming, so the replay is not held up. The gen-inhibit
     tester reviews the jamming checks.
-- **T14. NOT FOR VEHICLE.** Its image name, boot banner and every console
-  line say so. T3a does not cover it.
+- **T14. NOT FOR VEHICLE.** Its image name and boot banner say so (every
+  console line too until 2026-11-12, dropped as in T8). T3a does not
+  cover it.
 - **T15. A network variant later.** A later image or variant taking frames
   from the network to the TWAI or the MCP2515 is not specified now.
   `slcan_spi` keeps its host transport apart from its CAN side, so that
