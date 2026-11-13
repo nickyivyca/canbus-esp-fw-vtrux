@@ -1,0 +1,40 @@
+{
+  "image": "jammer",
+  "owner": "gen-inhibit tester",
+  "chip": "esp32s3",
+  "variants": {
+    "jammer": {
+      "project_name": "vtrux_jammer_x2_NOT_FOR_VEHICLE",
+      "pinnable": true
+    },
+    "stop_a_only": {
+      "project_name": "jammer_stop_a_NOT_FOR_VEHICLE",
+      "pinnable": false
+    },
+    "stop_b_only": {
+      "project_name": "jammer_stop_b_NOT_FOR_VEHICLE",
+      "pinnable": false
+    }
+  },
+  "not_for_vehicle": true,
+  "required_strings": [
+    "%s -- TEST EQUIPMENT, NEVER ON THE TRUCK",
+    "mcp2515 canstat=0x%02X canctrl=0x%02X config_mode=%s"
+  ],
+  "forbidden_symbol_prefixes": [
+    "twai_driver_install",
+    "twai_start",
+    "twai_transmit",
+    "twai_hal_init"
+  ],
+  "required_symbols": [
+    "app_main",
+    "jam_drive_recessive",
+    "mcp2515_reset_config"
+  ],
+  "required_config": {
+    "CONFIG_ESP_CONSOLE_NONE": true,
+    "CONFIG_LOG_DEFAULT_LEVEL_NONE": true,
+    "CONFIG_BOOTLOADER_LOG_LEVEL_NONE": true
+  }
+}

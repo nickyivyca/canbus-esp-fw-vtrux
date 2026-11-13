@@ -1,0 +1,176 @@
+"""Mutants of check_image.py and archive.py: the can-fail of test_tools.py.
+
+TEST EQUIPMENT. Shared harness of x2_test_images (owner: the testers).
+
+Each mutant breaks one check by a text substitution that must match exactly
+once; test_tools.py must FAIL on every mutant and PASS on the unmutated
+files first. Each run gets a copy of the tools folder, laid out as in the
+tree (shared/x2_test_images/tools/, ../jammer/x2_image.json, and
+shared/tools, which is linked, not copied), under
+<worktree>/scratch/x2-tools-mutants/<pid>/, removed at the end, pass or
+fail.
+
+    python3.13 -B tools/mutate.py
+Exit 0: the original passes and every mutant fails. Exit 1 otherwise.
+"""
+
+import os
+import shutil
+import stat
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SHARED = os.path.normpath(os.path.join(HERE, "..", ".."))
+FILES = ("check_image.py", "archive.py", "test_tools.py")
+TIMEOUT_S = 300
+
+# (name, file, the check it breaks, old text, new text)
+MUTANTS = [
+    ("no-forbidden", "check_image.py", "forbidden symbols pass",
+     "bad = sorted(s for s in syms if any(s.startswith(p) for p in prefixes))",
+     "bad = []"),
+    ("variant-from-arg", "check_image.py", "the offered variant is trusted",
+     'r.add("variant", found == variant,', 'r.add("variant", True,'),
+    ("long-names-ok", "check_image.py", "names over 31 characters pass",
+     'r.add("project_name", found is not None and not long_names,',
+     'r.add("project_name", found is not None,'),
+    ("symbols-min", "check_image.py", "a near-empty symbol table passes",
+     "len(syms) > SYMBOLS_MIN and not req_missing", "not req_missing"),
+    ("elf-hash", "check_image.py", "an ELF hash mismatch passes",
+     'r.add("elf_hash", elf_sha == app.image_hash,', 'r.add("elf_hash", True,'),
+    ("strings", "check_image.py", "missing strings pass",
+     'missing = [s for s in data.get("required_strings", [])\n               if s.encode("ascii") not in app.data]',
+     "missing = []"),
+    ("config", "check_image.py", "a wrong config value passes",
+     "if cfg.get(key) != want:", "if False:"),
+    ("nfv", "check_image.py", "a name without NOT_FOR_VEHICLE passes",
+     '"NOT_FOR_VEHICLE" in app.project_name,', "True,"),
+    ("chip", "check_image.py", "another chip passes",
+     "want_chip is None or app.chip == want_chip,", "True,"),
+    ("variant-pinnable", "archive.py", "a test variant is pinnable",
+     '"variant_pinnable": data["variants"][image_variant]["pinnable"],',
+     '"variant_pinnable": True,'),
+    ("ignored-anywhere", "archive.py", "ignored files anywhere count as clean",
+     'if code == "!!" and path.startswith(allowed):', 'if code == "!!":'),
+    ("no-after", "archive.py", "the status after the build is not read",
+     '"clean_after": not unclean_after,', '"clean_after": True,'),
+    ("tracked", "archive.py", "a changed tracked file is not seen",
+     '"no_tracked_change": (not before["tracked_changed"]',
+     '"no_tracked_change": True or (not before["tracked_changed"]'),
+    ("any-tag", "archive.py", "any tag counts as a shared tag",
+     "tag = tag if rc == 0 and TAG_RE.match(tag) else None",
+     "tag = tag if rc == 0 else None"),
+    ("version", "archive.py", "the version is not compared with the tag",
+     '"version_is_tag": before["tag"] is not None and app.version == before["tag"],',
+     '"version_is_tag": before["tag"] is not None,'),
+    ("archive-failed", "archive.py", "a build check_image fails is archived",
+     "    if not res.ok:\n", "    if False:\n"),
+    ("rewrite", "archive.py", "the manifest is rewritten, not appended",
+     '"manifest.jsonl"), "a",', '"manifest.jsonl"), "w",'),
+    ("inside-tree", "archive.py", "an archive inside the git tree is allowed",
+     'if os.path.realpath(dest).startswith(os.path.realpath(before["top"]) + os.sep):',
+     "if False:"),
+    ("folder-differs", "archive.py", "an existing folder's files are not compared",
+     "if not os.path.isfile(have) or _hashes(have) != _hashes(p):",
+     "if not os.path.isfile(have):"),
+    ("rid-unset", "archive.py", "an unset REVERSE_IT_DIR falls back",
+     '    if not rid:\n        raise Refused("REVERSE_IT_DIR is not set")\n',
+     '    if not rid:\n        rid = os.path.dirname(os.environ.get("HOME", "/"))\n'),
+]
+
+
+def _onerror(func, path, exc):
+    try:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+        func(path)
+    except OSError as e:
+        print("could not remove %s: %s" % (path, e))
+
+
+def remove(path):
+    if os.path.exists(path):
+        shutil.rmtree(path, onerror=_onerror)
+    if os.path.exists(path):
+        print("could not remove %s" % path)
+
+
+def layout(d, originals, override=None):
+    """A copy of the tools folder in the tree's shape; returns its tests."""
+    tools = os.path.join(d, "shared", "x2_test_images", "tools")
+    os.makedirs(tools)
+    os.makedirs(os.path.join(d, "shared", "x2_test_images", "jammer"))
+    shutil.copy2(os.path.join(SHARED, "x2_test_images", "jammer", "x2_image.json"),
+                 os.path.join(d, "shared", "x2_test_images", "jammer"))
+    os.symlink(os.path.join(SHARED, "tools"), os.path.join(d, "shared", "tools"))
+    for name, text in originals.items():
+        if override and override[0] == name:
+            text = override[1]
+        with open(os.path.join(tools, name), "w", encoding="utf-8",
+                  newline="") as f:
+            f.write(text)
+    return os.path.join(tools, "test_tools.py")
+
+
+def run(test):
+    try:
+        r = subprocess.run([sys.executable, "-B", test], capture_output=True,
+                           text=True, timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return 124, "timeout"
+    return r.returncode, r.stdout + r.stderr
+
+
+def main():
+    top = subprocess.run(["git", "-C", HERE, "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True,
+                         check=True).stdout.strip()
+    scratch = os.path.join(top, "scratch", "x2-tools-mutants", str(os.getpid()))
+    if subprocess.run(["git", "-C", top, "check-ignore", "-q",
+                       scratch]).returncode:
+        print("REFUSED: %s is not ignored by git" % scratch)
+        return 1
+    originals = {}
+    for name in FILES:
+        with open(os.path.join(HERE, name), encoding="utf-8", newline="") as f:
+            originals[name] = f.read()
+    bad = 0
+    try:
+        os.makedirs(scratch)
+        rc, text = run(layout(os.path.join(scratch, "original"), originals))
+        if rc != 0:
+            print("ORIGINAL FAILS: test_tools.py must pass unmutated")
+            print(text)
+            return 1
+        print("%-18s PASS (as it must)" % "original")
+        for name, fname, what, old, new in MUTANTS:
+            n = originals[fname].count(old)
+            if n != 1:
+                print("%-18s BROKEN MUTANT: matches %d times in %s"
+                      % (name, n, fname))
+                bad += 1
+                continue
+            test = layout(os.path.join(scratch, name), originals,
+                          (fname, originals[fname].replace(old, new)))
+            rc, _text = run(test)
+            if rc == 0:
+                print("%-18s SURVIVED: %s" % (name, what))
+                bad += 1
+            else:
+                print("%-18s killed    (%s)" % (name, what))
+    finally:
+        remove(scratch)
+        try:
+            os.rmdir(os.path.dirname(scratch))
+        except OSError:
+            pass
+    print()
+    if bad:
+        print("%d of %d mutants survived or are broken" % (bad, len(MUTANTS)))
+        return 1
+    print("all %d mutants killed" % len(MUTANTS))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
