@@ -30,6 +30,13 @@ MUTANTS = [
      '(False, "the connected BSSID %s does not match %s" % (got, want))'),
     ("connected_bssid takes the first of two", '    if len(found) != 1:\n', '    if not found:\n'),
     ("connected_bssid misses the Windows 11 form", r'r"^\s*(?:AP )?BSSID\s*:\s*(\S+)"', r'r"^\s*BSSID\s*:\s*(\S+)"'),
+    # Linux (2026-11-12, the reviewer's Linux leftovers item 6)
+    ("connected_bssid on Linux reads netsh", '    win = (platform or sys.platform) == "win32"\n    tool = "netsh"',
+     '    win = True\n    tool = "netsh"'),
+    ("connected_bssid on Linux takes inactive APs too",
+     '[ln[len("yes:"):] for ln in out.splitlines() if ln.startswith("yes:")]',
+     '[ln.split(":", 1)[1] for ln in out.splitlines() if ":" in ln]'),
+    ("connected_bssid ignores nmcli's exit code", '    elif getattr(r, "returncode", 0) != 0:\n', "    elif False:\n"),
     ("ota_precondition ignores the unit", UNIT_ROW + '        ("mode is 0", state["mode"] == 0),\n        ("not live", state["inhibit_live"] is False),\n        ("bus not ours"',
      '        ("the connected AP is the expected unit (BSSID, value-blind)",\n         True),\n'
      '        ("mode is 0", state["mode"] == 0),\n        ("not live", state["inhibit_live"] is False),\n        ("bus not ours"'),

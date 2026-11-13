@@ -13,7 +13,9 @@ good image's descriptor.
 Made-up identities only: a fake GI_CHAIN_SETTINGS (the module reads it when imported), a
 fake netsh, a fake device whose /check_status answers a made-up value, fake images.
   connected_bssid  one BSSID (Windows 10 and 11 forms) -> it; none, two, a short one, or
-                   netsh failing -> none, with the reason
+                   netsh failing -> none, with the reason. Linux (2026-11-12): nmcli's terse
+                   list, the one active AP's escaped BSSID -> it; none active, two, a short
+                   one, nmcli exiting non-zero or missing -> none, with the reason
   unit_check       a match (any case or separator) -> ok; another unit, no reading, no or a
                    short expectation -> not ok; neither value in the reason, ever
   device_state     asks only /gen_inhibit; keeps unit_matches/unit_why, elf_sha256, mode...;
@@ -24,7 +26,7 @@ fake netsh, a fake device whose /check_status answers a made-up value, fake imag
   source           no string constant outside a docstring names /check_status (a control
                    finds one in a probe file)
 
-    py -3.14 -B gen-inhibit/tools/bench/test_ota_rehearsal_identity.py
+    python3.13 -B gen-inhibit/tools/bench/test_ota_rehearsal_identity.py
 Mutants: test_ota_rehearsal_identity_mutants.py (REHEARSAL_DIR runs another copy).
 Gen-inhibit tester, 2026-10-25.
 """
@@ -77,6 +79,16 @@ def netsh(text=None, raise_=None):
     return run
 
 
+def nmcli(text="", rc=0, raise_=None):
+    def run(cmd, **kw):
+        if not (cmd[0] == "nmcli" and "ACTIVE,BSSID" in cmd and "-t" in cmd):
+            return types.SimpleNamespace(stdout="", returncode=0)     # not the read asked for: no AP
+        if raise_:
+            raise raise_
+        return types.SimpleNamespace(stdout=text, returncode=rc)
+    return run
+
+
 def iface(bssid, label="BSSID"):
     return ("    Name                   : Wi-Fi\n    State                  : connected\n"
             "    SSID                   : made-up-ssid\n    %-22s : %s\n    Signal                 : 99%%\n"
@@ -101,7 +113,18 @@ def bssid_cases(R):
             ("two interfaces, two BSSIDs", netsh(iface(colons(DEVICE_ID)) + iface(colons(OTHER))), None),
             ("a BSSID too short", netsh(iface("02:a1:b2:c3:d4")), None),
             ("netsh failing", netsh(raise_=OSError("no netsh")), None)]:
-        got, why = R.connected_bssid(run)
+        got, why = R.connected_bssid(run, platform="win32")
+        check("connected_bssid: %s" % label, got == want and (why is None) == (want is not None), (got, why))
+        check("connected_bssid: the reason names no value (%s)" % label, not leaks(why), why)
+    esc = lambda h: colons(h).upper().replace(":", "\\:")     # noqa: E731  nmcli's terse escaping
+    for label, run, want in [
+            ("Linux: the one active AP's BSSID", nmcli("no:%s\nyes:%s\n" % (esc(OTHER), esc(DEVICE_ID))), DEVICE_ID),
+            ("Linux: no active AP", nmcli("no:%s\nno:%s\n" % (esc(OTHER), esc(DEVICE_ID))), None),
+            ("Linux: two active", nmcli("yes:%s\nyes:%s\n" % (esc(OTHER), esc(DEVICE_ID))), None),
+            ("Linux: an active BSSID too short", nmcli("yes:02\\:A1\\:B2\\:C3\\:D4\n"), None),
+            ("Linux: nmcli exiting non-zero, even with output", nmcli("yes:%s\n" % esc(DEVICE_ID), rc=10), None),
+            ("Linux: nmcli missing", nmcli(raise_=FileNotFoundError("nmcli")), None)]:
+        got, why = R.connected_bssid(run, platform="linux")
         check("connected_bssid: %s" % label, got == want and (why is None) == (want is not None), (got, why))
         check("connected_bssid: the reason names no value (%s)" % label, not leaks(why), why)
 
