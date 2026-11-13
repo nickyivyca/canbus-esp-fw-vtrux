@@ -148,18 +148,29 @@ def anchor_cases():
     allw = wire + cmd
     pts = pts_from_wire(sorted(allw), epoch0=base)
     anc = WA.anchor(pts)
-    br = WA.bracket(anc, pts, send, done)
+    nxt = base + 104.0
+    br = WA.bracket(anc, pts, send, done, nxt)
     check("anchor", "bracket: the command's 5 frames inside", br["ok"] and br["n"] == 5, br)
     check("anchor", "bracket: margins recorded",
           br["margin_after_send_min_s"] > 0.04 and br["margin_before_receipt_min_s"] >= 0, br)
     late = dict(anc, offset_s=anc["offset_s"] + 0.3)
     check("anchor", "bracket: offset 0.3 s late -> frames outside",
-          not WA.bracket(late, pts, send, done)["ok"], WA.bracket(late, pts, send, done)["n_outside"])
+          not WA.bracket(late, pts, send, done, nxt)["ok"], WA.bracket(late, pts, send, done, nxt)["n_outside"])
     early = dict(anc, offset_s=anc["offset_s"] - 0.3)
     check("anchor", "bracket: offset 0.3 s early -> the first frame before the send",
-          not WA.bracket(early, pts, send, done)["ok"], WA.bracket(early, pts, send, done)["n_outside"])
-    br = WA.bracket(anc, pts, base + 200.0, base + 201.0)
+          not WA.bracket(early, pts, send, done, nxt)["ok"], WA.bracket(early, pts, send, done, nxt)["n_outside"])
+    br = WA.bracket(anc, pts, base + 200.0, base + 201.0, base + 202.0)
     check("anchor", "bracket: frames received outside the window are not the command's", br["n"] == 0, br)
+    # widened (reviewer, 2026-11-13): a frame received after the DONE, before the next send, is
+    # the command's; on the wire after the DONE it is outside
+    d_done = done - anc["offset_s"]
+    extra = sorted(pts + [(d_done + 0.2, done + 0.2005)], key=lambda p: p[1])
+    br = WA.bracket(anc, extra, send, done, nxt)
+    check("anchor", "bracket: a frame received after the DONE, before the next send, counts and breaches",
+          br["n"] == 6 and br["n_outside"] == 1, br)
+    br = WA.bracket(anc, extra, send, None, nxt)
+    check("anchor", "bracket: with no DONE only its own receipt bounds it", br["n"] == 6 and br["ok"]
+          and br["margin_before_done_min_s"] is None, br)
 
 
 # ------------------------------------------------------------------------ sysfs / proc fakes
@@ -462,11 +473,12 @@ class SessionCon:
     ACK, DONE at +ms; TRAIN w p -> ERR; a reset prints the mcp2515 line 0.4 s later. `wire`
     collects the error frames' wire times the fake PCAN will have seen."""
 
-    def __init__(self, stale_at=None):
+    def __init__(self, stale_at=None, after_done=None):
         self.lock = threading.Lock()
         self.lines, self.sent, self.events, self.wire = [], [], [], []
         self.paused = threading.Event()
         self.stale_at = stale_at    # (index of the PULSES command, s before its send): a stale frame
+        self.after_done = after_done    # (index of the PULSES command, s after its DONE): a real frame
 
     def add(self, t, txt):
         self.lines.append((t, txt, X.parse_line(txt)))
@@ -482,6 +494,9 @@ class SessionCon:
                 self.add(t + 0.05 + k * iv, "JAMMER PULSE k=%d t_us=1 rel_us=%d" % (k, k * iv * 1e6))
                 self.wire.append((t + 0.049 + k * iv, None))
             self.add(t + 0.2 + (n - 1) * iv, "JAMMER DONE PULSES end=complete stop_by=none pulses=%d" % n)
+            if self.after_done is not None and sum(1 for s in self.sent if s.startswith("PULSES")) == self.after_done[0]:
+                # on the wire after the DONE: TXD floating at close_channel, say
+                self.wire.append((t + 0.2 + (n - 1) * iv + self.after_done[1], None))
             if self.stale_at is not None and sum(1 for s in self.sent if s.startswith("PULSES")) == self.stale_at[0]:
                 # delivered inside this command's window (before its first pulse's frame, so the
                 # queue stays in order), stamped well before its send
@@ -516,8 +531,10 @@ class SessionCon:
 class SessionPcan:
     """A PCAN witness: device stamps on an uptime base with drift, received after a delivery lag."""
 
-    def __init__(self, con, drift_ppm=-6.0, back_at=None, down_after=None, down_at_end=False, slow_every=0):
+    def __init__(self, con, drift_ppm=-6.0, back_at=None, down_after=None, down_at_end=False, slow_every=0,
+                 extra_lag=0.0, deaf_last=False):
         self.con, self.drift, self.back_at, self.slow_every = con, drift_ppm, back_at, slow_every
+        self.extra_lag, self.deaf_last = extra_lag, deaf_last
         self.t_open = time.time() - 100.0
         self.opens, self.closed, self.calls = 1, False, 0
         self.down_after, self.down_at_end = down_after, down_at_end
@@ -539,13 +556,16 @@ class SessionPcan:
     def points(self):
         e0 = self.t_open
         out, last = [], 0.0
-        for k, (w, rx) in enumerate(sorted(self.con.wire)):
+        wire = sorted(self.con.wire)
+        if self.deaf_last:
+            wire = wire[:-1]
+        for k, (w, rx) in enumerate(wire):
             d = UPTIME + (w - e0) * (1.0 + self.drift * 1e-6)
             if self.back_at is not None and k >= self.back_at:
                 d -= 4000.0
             if rx is None:
                 slow = 0.3 if self.slow_every and k % self.slow_every == 0 else 0.0
-                rx = last = max(last, w + lag(k) + slow)     # one FIFO queue: delivered in wire order
+                rx = last = max(last, w + lag(k) + slow + self.extra_lag)   # one FIFO queue, in wire order
             out.append((d, rx))
         return sorted(out, key=lambda p: p[1])
 
@@ -637,6 +657,27 @@ def session_cases():
     out2, _a, _o, _w, _c = fake_session(SPECS, journal=fake_journal(rc=1))
     check("session", "the kernel log unreadable -> every check VOID",
           all(str(c.get("verdict")).startswith("VOID: USB") for c in out2), [c.get("verdict") for c in out2][:2])
+    # the bracket widened (reviewer, 2026-11-13): every delivery 0.2 s slower than the DONE line,
+    # so every frame is received after its DONE; the anchor holds (a constant lag) and maps every
+    # frame 0.2 s late, past its DONE's receipt
+    out2, anc2, _o, _w, _c = fake_session(SPECS, wit_kw={"extra_lag": 0.2})
+    v = [c.get("verdict") for c in out2]
+    # (by frames outside: the window before the widening saw no frame at all here, and only the
+    # empty-command rule would have VOIDed it)
+    check("session", "deliveries 0.2 s slower than DONE: the anchor holds, every check VOID, frames outside",
+          anc2["void"] is None and all(str(x).startswith("VOID: bracket") and "outside" in str(x) for x in v),
+          (anc2["void"], v))
+    # a real frame on the wire 0.5 s after the pulses' DONE: a FAIL, and it stays a FAIL
+    out2, _a, _o, _w, _c = fake_session(SPECS, con=SessionCon(after_done=(2, 0.5)))
+    v = [c.get("verdict") for c in out2]
+    check("session", "a real frame after DONE: FAIL stays FAIL, the breach kept in the record",
+          v[1] == "FAIL" and "bracket" in out2[1].get("bracket_breach", "") and v[0] == "PASS" and v[2] == "PASS",
+          (v, out2[1].get("bracket_breach")))
+    # the witness misses the last command's only frame (noduration's closing pulse)
+    out2, _a, _o, _w, _c = fake_session(SPECS, wit_kw={"deaf_last": True})
+    v = [c.get("verdict") for c in out2]
+    check("session", "a command with a DONE and no frame -> that check VOID",
+          str(v[5]).startswith("VOID: bracket") and "no frame" in v[5] and v[:5] == ["PASS"] * 5, v)
     # every 20th frame delivered 0.3 s late, and those behind it in the queue: the anchor VOIDs
     # (spread or drift) with an offset, so nothing but the VOID keeps the checks from a judgement
     out, anc, _o, _w, _c = fake_session(SPECS, wit_kw={"slow_every": 20})

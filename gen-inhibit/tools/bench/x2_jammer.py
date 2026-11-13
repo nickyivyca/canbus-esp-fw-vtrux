@@ -1469,11 +1469,37 @@ def usb_fold(rec, record, lo, hi):
     return rec
 
 
+def fold_bracket(c, br):
+    """The brackets into a judged check (P1 (2), widened by the gen-inhibit reviewer,
+    2026-11-13). Every command in `commands` puts frames on the wire (a PULSES, a TRAIN, a
+    closing pulse), so a command with a DONE and no frame at all means the witness missed it.
+    That, or a frame outside its bracket, VOIDs the check, but a FAIL stays a FAIL with the
+    breach kept in the record: a real frame after DONE (close_channel letting TXD float) is a
+    finding, not a clock fault. (A FAIL beside an empty command stays too: the frames that FAILed
+    it were heard; the tester's reading, put to the reviewer.)"""
+    out = sum(b["n_outside"] for b in br)
+    empty = [b["t_send"] for b in br if b["t_done"] is not None and b["n"] == 0]
+    if not out and not empty:
+        return c
+    why = []
+    if out:
+        why.append("%d frames outside their command's bracket (host send < mapped <= min(own receipt, "
+                   "the DONE's receipt))" % out)
+    if empty:
+        why.append("%d command(s) with a DONE and no frame (sent at %s)" % (len(empty), empty))
+    c["bracket_breach"] = "; ".join(why)
+    if c.get("verdict") != "FAIL":
+        c["verdict_before_bracket"] = c.get("verdict")
+        c["verdict"] = "VOID: bracket: %s" % c["bracket_breach"]
+        c["why"] = "P1 (2), the gen-inhibit reviewer's ruling (C), widened 2026-11-13"
+    return c
+
+
 def judge_session(checks, points, anc, clock):
     """Every driven check of the session judged on the anchor (P1 (1)-(3)). checks: dicts with
     "sub", "ns" (its Namespace) and "inp" (its drive's result), or already a "verdict"
-    (NOT-RUN). The anchor VOID makes every check VOID; a frame outside its command's bracket
-    makes that check VOID; otherwise the check is judged on the frames mapped into its span.
+    (NOT-RUN). The anchor VOID makes every check VOID; otherwise the check is judged on the
+    frames mapped into its span, and then its brackets folded in (fold_bracket).
     -> the frames mapped into no check's span (anything there is in the record for the reader)."""
     spans = []
     for c in checks:
@@ -1485,16 +1511,13 @@ def judge_session(checks, points, anc, clock):
             c["verdict"] = "VOID: session anchor: %s" % anc["void"]
             c["why"] = "witness_anchor (P1, gen-inhibit reviewer's ruling (C), 2026-11-13)"
             continue
-        br = [WA.bracket(anc, points, t_send, t_done if t_done is not None else inp["t_end"])
-              for t_send, t_done in inp["commands"]]
+        cmds = inp["commands"]
+        br = [WA.bracket(anc, points, t_send, t_done, cmds[i + 1][0] if i + 1 < len(cmds) else inp["t_end"])
+              for i, (t_send, t_done) in enumerate(cmds)]
         c["bracket"] = br
-        out = sum(b["n_outside"] for b in br)
-        if out:
-            c["verdict"] = "VOID: %d frames outside their command's bracket" % out
-            c["why"] = "host send < mapped <= own receipt and the DONE's receipt (P1 (2))"
-            continue
         ts = [WA.mapped(anc, d) for d, _r in points if inp["t_begin"] <= WA.mapped(anc, d) <= inp["t_end"]]
         c.update(JUDGE[c["sub"]](c["ns"], inp, ts, clock))
+        fold_bracket(c, br)
     if anc["offset_s"] is None:
         return []
     return [round(WA.mapped(anc, d), 4) for d, _r in points

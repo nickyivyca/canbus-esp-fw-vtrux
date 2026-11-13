@@ -31,12 +31,14 @@ THE METHOD (P1 (1)-(3); the record and the run README state it, P1 (6)):
     replug or a controller reset restarts it); the witness reports more than one open of
     its channel in the session, or a different device at the close than at the open.
   mapped(anc, t)        a device stamp on the epoch clock
-  bracket(anc, frames, t_send, t_done)
-                        P1 (2), per command: every frame the host received from the command's
-                        send to its DONE's receipt must map after the send and no later than its
-                        own receipt (and so no later than the DONE's receipt, the bound the
-                        ruling names). Any frame outside makes the check VOID. Its margins go in
-                        the record.
+  bracket(anc, frames, t_send, t_done, t_next)
+                        P1 (2), per command, as widened by the reviewer on 2026-11-13: every
+                        frame the host received from the command's send to the next command's
+                        send, however late after its DONE, must map after the send and no later
+                        than min(its own receipt, the DONE's receipt). x2_jammer.judge_session:
+                        a breach VOIDs any verdict but a FAIL (a FAIL stays, with the breach
+                        kept: a real frame after DONE is a finding), and so does a command with a
+                        DONE but no frame. The margins go in the record.
 
 The bounds are fixed here, before any run, and never set from the run they judge (reviewer,
 2026-11-13). SPREAD_P99_MAX_S is the ruling's 0.25 s, under the judges' 0.3 s margins.
@@ -56,8 +58,9 @@ METHOD = ("one anchor per session: offset = min(receipt - device) over every jud
           "session), VOID when |slope| x span > %g s; VOID unless p99(receipt - mapped) < %g s; "
           "VOID with fewer than %d frames, stamps on the host epoch clock (median lag < %g s), the "
           "device clock going back, or a reopened or replugged channel; per command, every frame "
-          "received from the send to the DONE's receipt must map after the send and no later than "
-          "its own receipt (gen-inhibit reviewer, (C) / P1, 2026-11-13)"
+          "received from its send to the next command's send must map after the send and no later "
+          "than min(its own receipt, the DONE's receipt), and a command with a DONE must have a "
+          "frame (gen-inhibit reviewer, (C) / P1, 2026-11-13, the bracket widened the same day)"
           % (ENVELOPE_BINS, DRIFT_MAX_S, SPREAD_P99_MAX_S, MIN_POINTS, EPOCH_LAG_S))
 BOUNDS = {"spread_p99_max_s": SPREAD_P99_MAX_S, "drift_max_s": DRIFT_MAX_S,
           "min_points": MIN_POINTS, "epoch_lag_min_s": EPOCH_LAG_S, "envelope_bins": ENVELOPE_BINS}
@@ -149,23 +152,31 @@ def anchor(points, opens=1, same_device=True):
     return anc
 
 
-def bracket(anc, frames, t_send, t_done):
-    """P1 (2) for one command. frames: [(device, receipt)] of the session; those received in
-    [t_send, t_done] are the command's (t_done None: no DONE, so up to the check's end, which
-    the caller passes instead). -> {n, outside, margins, ok}."""
-    mine = [(d, r) for d, r in frames if t_send <= r <= t_done]
+def bracket(anc, frames, t_send, t_done, t_next):
+    """P1 (2) for one command (widened by the reviewer, 2026-11-13). frames: [(device, receipt)]
+    of the session; the command's are those the host received from its send up to the next
+    command's send (t_next; the check's end for its last), whenever that was relative to its
+    DONE: if the PCAN delivers slower than the console prints DONE, the frames still count.
+    Each must map after the send and no later than min(its own receipt, the DONE's receipt): the
+    pulse is on the wire before the jammer prints DONE, and the lower envelope maps late, never
+    early, by the fastest delivery's delay. t_done None (no DONE): only its own receipt bounds
+    it. -> {n, outside, margins, ok}; the caller decides what a breach or an empty command does
+    to the check's verdict."""
+    mine = [(d, r) for d, r in frames if t_send <= r < t_next]
     out = []
     after_send, before_rx, before_done = [], [], []
     for d, r in mine:
         m = mapped(anc, d)
+        top = r if t_done is None else min(r, t_done)
         after_send.append(m - t_send)
         before_rx.append(r - m)
-        before_done.append(t_done - m)
-        if not (t_send < m <= min(r, t_done)):
+        if t_done is not None:
+            before_done.append(t_done - m)
+        if not (t_send < m <= top):
             out.append({"mapped": round(m, 6), "receipt": round(r, 6)})
-    return {"t_send": round(t_send, 6), "t_done": round(t_done, 6), "n": len(mine),
-            "outside": out[:10], "n_outside": len(out),
+    return {"t_send": round(t_send, 6), "t_done": None if t_done is None else round(t_done, 6),
+            "t_next": round(t_next, 6), "n": len(mine), "outside": out[:10], "n_outside": len(out),
             "margin_after_send_min_s": round(min(after_send), 6) if mine else None,
             "margin_before_receipt_min_s": round(min(before_rx), 6) if mine else None,
-            "margin_before_done_min_s": round(min(before_done), 6) if mine else None,
+            "margin_before_done_min_s": round(min(before_done), 6) if before_done else None,
             "ok": not out}
