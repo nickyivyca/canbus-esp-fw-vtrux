@@ -14,14 +14,14 @@ rule 4). Published identities, tried in this order:
      send no status frames): "HELLO?" on the serial port, answered by
      "@HELLO <name> version=.. elf_sha256=<64 hex> ...". Identity:
      "<name>:<elf sha256>".
-  3. SLCAN (the interposer's slcan image, which sends nothing on CAN until
-     a host opens a channel): a bare CR to clear its line buffer, then "V"
-     and "N", answered "V0101" and "NF001". Identity: "slcan:V0101:NF001".
-     SLCAN reports no build id, so this names the protocol, not the build;
-     the build is the verified write of its bin, whose own application
-     descriptor names it (port step 2a: no build manifest). slcan_can1
-     (shared/x2_test_images, moved from that image) and gen-inhibit's X2
-     SLCAN answer the same.
+  3. SLCAN (shared/x2_test_images' slcan_can1, and gen-inhibit's X2 SLCAN,
+     which send nothing on CAN until a host opens a channel): a bare CR to
+     clear its line buffer, then "V" and "N", answered "V0101" and "NF001".
+     Identity: "slcan:V0101:NF001". These report no build id, so this names
+     the protocol, not the build; the build is the verified write of its
+     bin, whose own application descriptor names it. slcan_can1 moved there
+     from the interposer's slcan variant, which answered the same and is
+     gone since 2026-11-13 (spec 8.2, tracker H).
      The same reads name shared/x2_test_images' slcan_spi by its build
      (slcan_spi/README.md, "The protocol"): "V" and "N" answered
      "V0100 <identity>" and "N<identity>", the identity

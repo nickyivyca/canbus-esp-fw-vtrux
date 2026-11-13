@@ -6,7 +6,6 @@
     "witness": {"INTP_VARIANT": "witness"},
     "truck": {"INTP_VARIANT": "truck"},
     "selftest": {"INTP_VARIANT": "selftest"},
-    "diag": {"INTP_VARIANT": "diag"},
-    "slcan": {"INTP_VARIANT": "slcan"}
+    "diag": {"INTP_VARIANT": "diag"}
   }
 }

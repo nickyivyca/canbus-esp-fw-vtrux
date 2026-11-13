@@ -40,7 +40,7 @@
   "build_switches": {
     "INTP_VARIANT": {
       "class": "shipping variant",
-      "reason": "the CMake option choosing the image (spec 8.2: bridge, witness, truck, selftest, diag, slcan; project name interposer_<variant>); variants under ESP-IDF are CMake build options (user, 2026-10-25). Only truck is a release image (spec 8.2, 8.3): INTP_NO_SERIAL's name rows refuse the others"
+      "reason": "the CMake option choosing the image (spec 8.2: bridge, witness, truck, selftest, diag; project name interposer_<variant>); variants under ESP-IDF are CMake build options (user, 2026-10-25). Only truck is a release image (spec 8.2, 8.3): INTP_NO_SERIAL's name rows refuse the others"
     },
     "INTP_NO_SERIAL": {
       "class": "test-only",
@@ -50,8 +50,7 @@
         {"project_name_token_absent": "bridge"},
         {"project_name_token_absent": "witness"},
         {"project_name_token_absent": "selftest"},
-        {"project_name_token_absent": "diag"},
-        {"project_name_token_absent": "slcan"}
+        {"project_name_token_absent": "diag"}
       ]
     },
     "INTP_ORDER_WITNESS": {

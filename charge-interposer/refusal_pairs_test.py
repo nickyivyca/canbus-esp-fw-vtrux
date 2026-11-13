@@ -78,7 +78,6 @@ def builds(t):
         "witness": {"outputs": outputs(t, "witness", serial=True, witness=True)},
         "selftest": {"outputs": outputs(t, "selftest")},
         "diag": {"outputs": outputs(t, "diag")},
-        "slcan": {"outputs": outputs(t, "slcan")},
         "trace": {"outputs": outputs(t, "bridge", serial=True, trace=True)},
         "bridge-release": {"outputs": outputs(t, "bridge", serial=True)},
     }
@@ -204,9 +203,9 @@ def test_table_vs_expect(M, SW):
                     "INTP_NEW_PROBE rule elf_symbols_absent is expected to fail")
     t3 = copy.deepcopy(t)
     t3["INTP_NO_SERIAL"]["refusal"] = [r for r in t3["INTP_NO_SERIAL"]["refusal"]
-                                       if r != {"project_name_token_absent": "slcan"}]
+                                       if r != {"project_name_token_absent": "diag"}]
     assert fails_on(M.checks(t3, off, ons, SW.judge_rule),
-                    "slcan: INTP_NO_SERIAL rule project_name_token_absent slcan is in the table")
+                    "diag: INTP_NO_SERIAL rule project_name_token_absent diag is in the table")
     t4 = copy.deepcopy(t)
     t4["INTP_TX_TRACE"]["refusal"] = []
     assert fails_on(M.checks(t4, off, ons, SW.judge_rule), "INTP_TX_TRACE has refusal rules")
@@ -236,7 +235,7 @@ def load_runs(text=None):
 def git_diff(minus, plus, path=CMAKE_REL, extra=""):
     """`git diff --unified=0`'s shape for one hunk of one file"""
     return ("diff --git a/{p} b/{p}\nindex 1111111..2222222 100644\n--- a/{p}\n+++ b/{p}\n"
-            "@@ -22 +22 @@ set(INTP_VARIANTS bridge witness truck selftest diag slcan)\n"
+            "@@ -22 +22 @@ set(INTP_VARIANTS bridge witness truck selftest diag)\n"
             "{m}{pl}{x}").format(p=path, m="".join("-%s\n" % ln for ln in minus),
                                  pl="".join("+%s\n" % ln for ln in plus), x=extra)
 

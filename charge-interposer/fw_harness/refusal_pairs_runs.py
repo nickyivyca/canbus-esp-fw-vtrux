@@ -35,7 +35,7 @@ prune) when the run ends, pass or fail; a leftover is reported:
                                diff against --commit must be exactly that one
                                line, or nothing is built
   interposer-tester-pairsdev   the dev builds (vtrux_tools.py build): bridge,
-                               witness, selftest, diag, slcan; and trace,
+                               witness, selftest, diag; and trace,
                                bridge with -D CMAKE_CXX_FLAGS=-DINTP_TX_TRACE=1
                                and -D CMAKE_EXE_LINKER_FLAGS=-Wl,--noinhibit-exec,
                                whose link must report "overflowed by" (DRAM:
@@ -60,7 +60,7 @@ stand-in, every ON label) must PASS, and each negative must FAIL on its own
 check:
   the bridge build as OFF          -> "OFF is interposer_truck"
   the stand-in as witness's ON     -> witness's ELF-symbol rule
-  slcan left out                   -> "ON build slcan given"
+  diag left out                    -> "ON build diag given"
   the bridge build without its ELF -> "ON bridge read"
 
 <out> gets record.txt (the product and harness commits, the fixture's sha
@@ -91,7 +91,7 @@ CMAKE_REL = "charge-interposer/firmware/CMakeLists.txt"
 FIXTURE_OLD = 'set(INTP_VARIANT "truck" CACHE STRING'
 FIXTURE_NEW = 'set(INTP_VARIANT "bridge" CACHE STRING'
 WORKTREES = ("standin", "r19", "relbridge", "pairsdev")
-DEV = ("bridge", "witness", "selftest", "diag", "slcan")
+DEV = ("bridge", "witness", "selftest", "diag")
 CHECKS = (("switches", []), ("pins", []), ("board", []), ("options", []),
           ("scope", ["--release"]))
 OVERFLOW = "overflowed by"
@@ -402,8 +402,8 @@ def main(argv=None):
              "OFF is interposer_truck"),
             ("truck-as-witness", "the stand-in as witness's ON", b_s,
              dict(ons, witness=b_s), "ON witness: INTP_ORDER_WITNESS rule elf_symbols_absent fails"),
-            ("slcan-left-out", "slcan left out", b_s,
-             {k: v for k, v in ons.items() if k != "slcan"}, "ON build slcan given"),
+            ("diag-left-out", "diag left out", b_s,
+             {k: v for k, v in ons.items() if k != "diag"}, "ON build diag given"),
             ("bridge-no-elf", "the bridge build without its ELF", b_s, ons, "ON bridge read"),
         ]
         for key, what, off, o, want in negatives:

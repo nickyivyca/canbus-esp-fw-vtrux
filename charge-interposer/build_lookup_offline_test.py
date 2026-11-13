@@ -95,8 +95,10 @@ def main():
     check([bl.variant_of("interposer_" + v) for v in bl.VARIANTS]
           == list(bl.VARIANTS),
           "every spec 8.2 variant is read back from interposer_<variant>")
+    # interposer_slcan: the slcan variant, dropped from spec 8.2 on
+    # 2026-11-13 (tracker H; its image is shared/x2_test_images' slcan_can1)
     for odd in ("interposer_", "interposer_bridge2", "bridge", "wican_bridge",
-                "", None):
+                "interposer_slcan", "", None):
         check(bl.variant_of(odd) is None,
               "a project name that is no interposer variant (%r) gives None"
               % (odd,))
