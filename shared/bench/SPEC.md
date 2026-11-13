@@ -286,10 +286,31 @@ way, the Holder is not its own.
   release that went wrong, or a crash, cannot leave a second ACKing node on
   CAN1 under checks that need none. Whether the runner or each suite's
   start hook makes the check is the testers' to settle.
-- **A hand-take role does not flash a board.** When the Android bench
-  tests need a board on a given image (the X2 jammer, or the X2's slcan
-  dongle variant), this section gains how that image is loaded and put
-  back, under the idle-safe rule (Ruled, below).
+- **Hand-take roles may flash the X2 with test images** (user, 2026-11-12,
+  in the CAN replay tooling session). `android` and `can-tools` may build
+  and flash the jammer and SLCAN images, but not change them, and may put
+  back the image they found; they flash nothing else. Until the move into
+  `shared/x2_test_images`: the jammer through the gen-inhibit tester's
+  custody tool, whose whole-flash dump stays in the tool's run record,
+  never printed, quoted, committed or copied; the SLCAN on CAN1 as the
+  PlatformIO build `gen-inhibit/tools/x2_pin.json` pins, through the
+  shared flasher. After it, that component's T9-T11. If `canx2` is
+  attached as SLCAN through `canctl`, it is detached before a flash and
+  left at release as they found it.
+- **At release, the X2 is on an idle-safe image**: the one they found, if
+  that was idle-safe, or a test image its owning tester has marked
+  idle-safe in `shared/x2_test_images/README.md` (before the move, in
+  `bench-holder.md`). Until one is marked, only the found image counts.
+  They identify the X2 before the first flash. Otherwise the note opens
+  `LEFT ON IDLE-UNSAFE IMAGE: x2 on <image>, <why>`; leaving the jammer
+  always does.
+- **The release note records the flash:** the image found, each image
+  flashed, with its pin and app sha256, and the image left on. That last
+  is the release's `x2` board read, made by T10 (for the SLCAN images,
+  `verify_flash` against the pin, since their version answer does not
+  name the build). `bench-holder.md`'s board state follows under that
+  file's own rules; the hand-take role does not edit it. What the jammer
+  sent goes in the note's account of what was transmitted.
 - **request:** one queued request per role; the holder cannot request.
 - **lost:** only by the role that took that run, never for the current
   holder's run; it also ends that run's paused state.
@@ -374,9 +395,14 @@ way, the Holder is not its own.
   closed and `canmain` down at release with what was transmitted noted,
   `ADAPTER NOT RESTORED` when an adapter cannot be put back, a clearer's
   check for a detached emulator, and no board flashing until the Android
-  bench tests need it (section 8, with the Android and CAN replay tooling
+  bench tests need it (superseded 2026-11-12, below) (section 8, with the Android and CAN replay tooling
   sessions' reviews). A run checks `canmain` itself at its start (the
   charge-interposer reviewer's review). The user ruled that
   the methodology owner drafts this change, and that all of the lock's
   consumers review it: both project reviewers, the CAN replay tooling
+  session and the Git based CANBus Android development session.
+- **Hand-take roles may flash the X2 with test images** (user, 2026-11-12:
+  flashing in the CAN replay tooling session; the idle-safe release and
+  this text in the methodology owner's session, with the lock users'
+  reviews). Reviewed by both project reviewers, the CAN replay tooling
   session and the Git based CANBus Android development session.
