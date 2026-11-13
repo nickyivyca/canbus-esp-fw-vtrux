@@ -347,11 +347,11 @@ def row_cases():
 
             write_dump_record()
 
-            def flash(row_id, variant="jammer", dev_builder=None, build=None):
+            def flash(row_id, variant="jammer", dev_builder=None, build=None, no_dump=False):
                 del calls[:]
                 rec = {}
-                ns = argparse.Namespace(dump_record=record, port="FAKE", build=build, row=row_id,
-                                        variant=variant, dev_builder=dev_builder)
+                ns = argparse.Namespace(dump_record=None if no_dump else record, port="FAKE", build=build,
+                                        row=row_id, variant=variant, dev_builder=dev_builder, no_dump=no_dump)
                 try:
                     with contextlib.redirect_stdout(io.StringIO()):
                         C.sub_flash_jammer(ns, rec)
@@ -466,7 +466,16 @@ def row_cases():
             rec = flash(rid(row))
             check("--row: a dump record not PASS refuses before any row is read",
                   "not PASS" in rec.get("exit", "") and not calls and "jammer" not in rec, rec)
+            # --no-dump (shared/bench SPEC section 8, 2026-11-13): no dump read, none recorded
+            rec = flash(rid(row), no_dump=True)
+            check("--row --no-dump: FLASHED with no dump read, no_dump true, dump_record None",
+                  rec.get("verdict") == "FLASHED" and len(calls) == 1 and rec.get("no_dump") is True
+                  and rec.get("dump_record") is None and rec.get("dump_sha256") is None, rec)
             write_dump_record()
+            rec = flash(rid(row))
+            check("--row with --dump-record: no_dump false, the dump's sha256 recorded",
+                  rec.get("verdict") == "FLASHED" and rec.get("no_dump") is False
+                  and rec.get("dump_sha256") == C.sha256_file(dump), rec)
             # --build, the PlatformIO jammer, still flashes its manifest.json row
             C.JAMMER = os.path.join(WORK, "x2_jammer")
             app = app_bin("vtrux_jammer_x2_NOT_FOR_VEHICLE_bb20e4a37b64", OTHER)
@@ -610,6 +619,21 @@ def esptool_main_cases():
                     ("--build with --dev-builder", ["--build", "a89ece8c", "--dev-builder", BUILDER], "only with --row")):
                 rc, rec3, cli = run(["flash-jammer", "--dump-record", record] + args)
                 check("main flash-jammer, %s: REFUSED before esptool and port" % label,
+                      rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and want in rec3.get("why", "")
+                      and not cli and rec3.get("port") is None, (rc, rec3, cli))
+            rc, rec3, cli = run(["flash-jammer", "--no-dump", "--row", rid, "--variant", "jammer"])
+            check("main flash-jammer --no-dump --row: FLASHED, no dump, the port and esptool as for the others",
+                  rc == 0 and rec3 and rec3.get("verdict") == "FLASHED" and rec3.get("no_dump") is True
+                  and rec3.get("dump_record") is None and len(cli) == 2 and rec3.get("port") == port,
+                  (rc, rec3, cli))
+            for label, args, want in (
+                    ("both --dump-record and --no-dump", ["flash-jammer", "--dump-record", record, "--no-dump",
+                                                          "--row", rid, "--variant", "jammer"], "exactly one of --dump"),
+                    ("neither --dump-record nor --no-dump", ["flash-jammer", "--row", rid, "--variant", "jammer"],
+                     "exactly one of --dump"),
+                    ("restore with --no-dump", ["restore", "--dump-record", record, "--no-dump"], "takes no --no-dump")):
+                rc, rec3, cli = run(args)
+                check("main %s: REFUSED before esptool and port" % label,
                       rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and want in rec3.get("why", "")
                       and not cli and rec3.get("port") is None, (rc, rec3, cli))
             rc, rec3, cli = run(["check-row", "--row", rid, "--variant", "jammer"], argv=None, device=None)

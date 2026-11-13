@@ -11,8 +11,13 @@ full read-back of its flash, never from a rebuild or from .pio.
                  dump, deleted at once) and its ELF sha256 read with
                  build_lookup.elf_sha256_of_bin. PASS needs a slot carrying
                  --expect-elf, which is required (see below).
-  flash-jammer   refuses unless a PASS dump record is given and the dump file
-                 still has the recorded sha256; then writes one jammer build,
+  flash-jammer   takes exactly one of --dump-record and --no-dump. With
+                 --dump-record it refuses unless that record is PASS and the dump
+                 file still has the recorded sha256. --no-dump flashes with no
+                 dump: since 2026-11-13 a whole-flash dump is made only when the
+                 holder chooses to put the found image back (shared/bench SPEC
+                 section 8; gen-inhibit reviewer), and the record then has
+                 no_dump true and dump_record None. Then it writes one jammer build,
                  named by exactly one of:
                    --build <md5>   the PlatformIO jammer: one builds/<md5>/ row of
                                    x2_jammer/builds/manifest.json; writes its
@@ -98,6 +103,7 @@ esptool and the CAN witness are separate steps and each is recorded.
   python3.13 ... flash-jammer --dump-record runs/x2_flash_custody_dump_<stamp>.json --build <md5>
   python3.13 ... check-row --row <16 hex> --variant jammer [--dev-builder "<builder>"]
   python3.13 ... flash-jammer --dump-record <same> --row <16 hex> --variant jammer [--dev-builder "<builder>"]
+  python3.13 ... flash-jammer --no-dump --row <16 hex> --variant jammer [--dev-builder "<builder>"]
   python3.13 ... restore --dump-record runs/x2_flash_custody_dump_<stamp>.json
 """
 import argparse
@@ -473,9 +479,15 @@ def flash_row(a, rec):
 
 
 def sub_flash_jammer(a, rec):
-    d, _ = _checked_dump(a)
-    rec["dump_record"] = a.dump_record
-    rec["dump_sha256"] = d["dump_sha256"]
+    rec["no_dump"] = bool(a.no_dump)
+    if a.no_dump:
+        # the holder chose not to put the found image back (shared/bench SPEC section 8,
+        # user 2026-11-13): no dump to check, and none recorded
+        rec["dump_record"] = rec["dump_sha256"] = None
+    else:
+        d, _ = _checked_dump(a)
+        rec["dump_record"] = a.dump_record
+        rec["dump_sha256"] = d["dump_sha256"]
     if a.row is not None:
         return flash_row(a, rec)
     with open(os.path.join(JAMMER, "builds", "manifest.json"), encoding="ascii") as fh:
@@ -551,6 +563,19 @@ def sub_check_row(a, rec):
           % (row["variant"], row["folder"], row["project_name"], row["image_hash"][:16], row.get("pinnable")))
 
 
+def dump_args_why(a):
+    """None when the dump arguments fit the subcommand, else why not: flash-jammer takes
+    exactly one of --dump-record and --no-dump (gen-inhibit reviewer, 2026-11-13: a
+    whole-flash dump only when the holder chooses to restore, shared/bench SPEC section 8);
+    no other subcommand takes --no-dump."""
+    if a.sub != "flash-jammer":
+        return "%s takes no --no-dump" % a.sub if a.no_dump else None
+    if bool(a.dump_record) == bool(a.no_dump):
+        return ("flash-jammer needs exactly one of --dump-record <record> (to restore the found "
+                "image later) and --no-dump (not to)")
+    return None
+
+
 def build_args_why(a):
     """None when flash-jammer's build arguments name one build, else why not: exactly one of
     --build and --row; --row needs --variant; --variant and --dev-builder only with --row.
@@ -582,6 +607,9 @@ def main():
                     help="dump, check-dump (required): the app ELF sha256 prefix, 8 to 64 hex "
                          "digits, that a slot of the dump must carry; no default since 2026-11-12")
     ap.add_argument("--dump-record")
+    ap.add_argument("--no-dump", action="store_true",
+                    help="flash-jammer: flash with no whole-flash dump, when the found image is not to "
+                         "be put back (shared/bench SPEC section 8, 2026-11-13); excludes --dump-record")
     ap.add_argument("--build", help="flash-jammer: the PlatformIO jammer's app md5 (its x2_jammer/builds/ dir name)")
     ap.add_argument("--row", help="flash-jammer: the ESP-IDF port's build, its x2_test_images/jammer/builds/ "
                                   "folder name (16 hex digits)")
@@ -594,7 +622,7 @@ def main():
            "esptool_argv": None, "esptool_version": None, "port": None, "serial_device": None,
            "build_lookup": BUILD_LOOKUP}
     try:
-        why = build_args_why(a)
+        why = dump_args_why(a) or build_args_why(a)
         if why:
             rec.update(verdict="REFUSED", why=why)
             print("REFUSED: %s (nothing run)" % why)
