@@ -124,8 +124,116 @@ pass, T13's stops at the deadline, its 30 s cap as delivered, its boot
 silence on CAN1 and the pulses' delivery are not shown for this build;
 `jam-concurrent` shows the image answering for the TRAIN while the SLCAN
 runs, not that the pulses reached CAN1.
+(They were run on 2026-11-13 12:31-12:55, below.)
 
 After the run the X2 was left on this build (read by `N`/`V` 01:43:2x).
+
+### On the bench, 2026-11-13 12:31-12:55: the checks with CAN1's witness
+
+**The builds.** Archived by `../tools/archive.py` from a worktree detached
+at `shared/main` `63e10898` (dev builds, T7, not pinnable; manifest lines
+2-4), ESP-IDF v5.4.2, in build.slice, each `check_image` PASS in its row:
+
+| Variant | Row (app SHA-256) | ELF SHA-256 | Code hash |
+|---|---|---|---|
+| dev | `a6ea62c9773930a2` | `def7d7092bb52bc757157fb00d4ae1af6d7dd4d4175699877e083d08e8e5e5fa` | `3f77031e0ca534b0426140086a907474a5177a1571506a320b265212f267f0a0` |
+| `stop_a_only` | `4e3fc6de6ae14843` | `830cf5b96d2fd897383c7fd7ae12db966283265edf2394ee6fdd3bc72890f516` | `a8066ca2563b98891727e6a6d563aacd22bec0a4887ab61fcf82118816298f15` |
+| `stop_b_only` | `614aad5e89d87602` | `a2916c07aa608abd94d0c7899dbf75ef11e4d748e0580fbb9ddcd3b38d5baf98` | `eb77c44d704bccb393f0c725bcb1d7c221efef7381292b2a32e6564a9c6e6569` |
+
+The dev build has the code hash of `4dc0bd00`'s above, so the passes of
+both sections carry to each other (shared/tools R3). `stop_a_only` and
+`stop_b_only` are judged by `jam-stop` alone.
+
+**The bench.** Bench lock held by hand by tester (charge-interposer),
+12:31:01-12:55:14. Each image flashed by `../tools/flash_row.py --dev` (T11)
+from the `63e10898` checkout, and read after by its own `N`/`V` (the
+version `2026.11.13.5-2-g63e10898` and the whole ELF hash of its row).
+canx2 attached by the checks, canchg down (the X2 alone on the charger
+segment), canmain down, the WiCAN untouched (it is on CAN1, where the
+pulses went). CAN1's witness, the Kvaser on the kernel's kvaser_usb,
+netdev `kvaser`, its link brought up by each check and read back
+(`bench/witness.py`).
+
+**Harness** `bench/slcan_spi_bench.py` and `bench/witness.py` at `6d6c78b0`
+on `shared/x2_test_images/witness-margin`. Its own tests:
+`bench/test_witness.py` ALL PASS, 32/32 mutants killed;
+`bench/test_jam_host.py` ALL PASS; `bench/klog_scan.py --self-test` ALL
+PASS, `--can-fail` 6/6 mutants caught. Run folder
+`slcan_spi_witness_20261113T1232/`: `harness_6d6c78b0_dev_all/result.json`
+(exit 0), three more `jam-calibration` runs on dev
+(`harness_6d6c78b0_dev_calibration_<1-3>/`, each exit 0), each can-fail in
+`harness_6d6c78b0_dev_canfail_<check>/` (each FAILED, exit 0), and `jam-stop`
+with its can-fail on the other two images
+(`harness_6d6c78b0_<variant>_jam-stop/`,
+`harness_6d6c78b0_<variant>_canfail_jam-stop/`).
+
+| Check | Requirement | Result | Its can-fail |
+|---|---|---|---|
+| `jam-boot-silence` | T13 "it boots silent": 3 resets through the USB port; 0, 0 and 0 CAN1 error frames from each reset to 5 s after its boot line | PASS | a pulse commanded after the third boot line: [0, 0, 1]: FAIL |
+| `jam-port` | one `PULSES 20 1` through the jam channel is exactly one CAN1 error frame, from the command to 1 s after its DONE: 1 | PASS | two pulses: 2: FAIL |
+| `jam-calibration` | 10 pulses at 1 s read as 10 groups of one, 1.000 s apart (+/- 50 ms); 9 at 1.1 s read as 9 groups 1.100 s apart, and not as 10 at 1 s; in each of the 4 runs | PASS | the 10 at 1 s judged as 9 at 1.1 s: FAIL |
+| `jam-stop`, dev | T13's stops at the deadline: a 3 s TRAIN (W 20 us, P 5000 us): last error frame 0.009 s before the deadline, none in the 3 s after; DONE `end=deadline_layer_b stop_by=none` (dev: either stop) | PASS | judged against a deadline 2 s early: 299 frames after it: FAIL |
+| `jam-stop`, `stop_a_only` | stop (a), the esp_timer, alone: last error frame 0.003 s before the deadline, none after; DONE `end=stopped stop_by=deadline_timer` | PASS | the same: 300 frames after: FAIL |
+| `jam-stop`, `stop_b_only` | stop (b), the chunk sizing, alone: last error frame 0.009 s before the deadline, none after; DONE `end=deadline_layer_b stop_by=none` | PASS | the same: 299 frames after: FAIL |
+| `jam-cap` | T13's 30 s cap: a TRAIN asked for 60 s: `CAPPED ms 60000 -> 30000`; last error frame 0.010 s before 30 s, none in the 3 s after | PASS | judged against 28 s: 299 frames after: FAIL |
+| `jam-stop-cmd` | STOP 3 s into a 20 s TRAIN: `ACK STOP busy=1`; last error frame 0.004 s before the host sent STOP, none in the 3 s after; DONE `end=stopped stop_by=stop_cmd` | PASS | judged against a STOP 2 s earlier: 300 frames after: FAIL |
+
+Every check ended with its closing pulse counted exactly once. The
+witness's median lag behind host receipt was 0.1-0.4 ms in every check.
+
+**The stamps' margin** (the gen-inhibit reviewer's ruling, relayed by the
+charge-interposer reviewer, 2026-11-13: a window judged on the Kvaser's
+host stamps at least 10 times their measured error, about 1.5 ms). Each
+check's detail has its `stamp_margins`: the closing pulse's and
+`jam-port`'s 50 ms lead 33x; `jam-calibration`'s +/- 50 ms on the gap of
+two stamps 16.7x and its 0.2 s grouping 66.7x; the stop window 0.5 s 333x
+and the quiet window 2.5 s; `jam-boot-silence`'s 5 s windows. None under
+10x, so none moves to the PCAN or to counts.
+
+**Does the witness go deaf?** (the same relay: gen-inhibit's PCAN went
+error-passive about 128 pulses into a 200/s train and stopped reporting.)
+Measured first, in this hold, by a hand probe (`deaf_probe/`; not a
+check): in a 30 s TRAIN at 200/s the Kvaser's link went ERROR-PASSIVE 0.83
+s in, and the witness still got one wire-class error frame per pulse,
+5,998 for 5,998, 200 in every second, and counted a pulse after the train
+once. A link bounce (canctl down, up 500000) took 0.080 s and returned it
+to ERROR-ACTIVE. So the checks ran with **neither a reopen nor a bounce**;
+the closing pulse after each train shows the witness still heard.
+
+**The kernel log** over every judged check's window, by `bench/klog_scan.py`
+(`klog_scan.json` in each run folder): no USB or CAN line in any of the 51
+windows, the 19 of the runs above and the 32 of the two earlier runs below.
+
+**Two earlier runs in the same hold,** on the same images and run folder:
+
+- **Harness `f29ad2d1`** (`harness_f29ad2d1_*`): `jam-boot-silence`,
+  `jam-port` and `jam-calibration` PASS and their can-fails FAIL, as above;
+  every train check (`jam-stop` on all three images, `jam-cap`,
+  `jam-stop-cmd`) and their can-fails NOT-RUN, "3 error frames for the
+  closing pulse". A capture of every Kvaser error frame (`err_ids_probe/`)
+  showed kvaser_usb sending a CAN_ERR_CNT-only frame (0x200, data all zero)
+  every 512 ms while its controller is not error-active, as after a train;
+  the witness counted them. Fixed in `e7583c19`: only error frames with a
+  wire class are counted (its commit message has the judgement change).
+- **Harness `e7583c19`** (`harness_e7583c19_*`): every check PASS and every
+  can-fail FAIL except `jam-calibration` on dev, FAIL "9 at 1.1 s: 8
+  groups, want 9": 19 error frames counted and one left out as having no
+  wire class, 20 in all, as in every other `jam-calibration` run. One pulse
+  came as an error frame with no wire class; which class is not known, as
+  the witness did not yet keep the frames it leaves out. `6d6c78b0` records
+  them. It did not recur: 38 pulses captured by hand in the same sequence
+  (`cal_ids_probe/`) were all 0x288, and the 4 `jam-calibration` runs at
+  `6d6c78b0` saw no left-out frame. In those runs the only frames left out
+  were the 0x200 frames after trains (14 to 68 in each train check).
+
+**Seen, not judged:** in `jam-stop-cmd` DONE reports `pulses=640` for a
+train of `elapsed_us` 3,020,363, where the witness counted 603 error
+frames in the train (in all four `jam-stop-cmd` runs: 640 against 603 or
+604). For the trains that end at their deadline, DONE's count and the
+witness's agree within 2.
+
+After the hold the X2 was flashed back to the dev build (12:54) and read by
+`N`/`V` at 12:55:00; the Kvaser's link was left down.
 
 ## Gaps
 
@@ -145,3 +253,8 @@ After the run the X2 was left on this build (read by `N`/`V` 01:43:2x).
   reset resets the MCP2515 stays unchecked (`README.md`, "Using it").
 - **`attach`'s can-fail** breaks its expectation, not the bench (`bench/README.md`).
 - **Listen-only reception** is not a check (`bench/README.md`).
+- **One pulse seen as an error frame with no wire class** (run at
+  `e7583c19`, above), class unknown; the witness now records such frames,
+  so a recurrence names it.
+- **DONE's `pulses` after a STOP** is not judged by any check (640 against
+  the witness's 603, above).
