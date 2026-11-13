@@ -502,20 +502,27 @@ there.
   `bench-log.<old host>.<date>.jsonl`. The new host runs `init` only once
   that renamed copy has synced there and no `bench-log.jsonl` is left;
   `init` refuses otherwise.
+- **The lock is a mutex, not a hand-over guarantee** (user, 2026-11-13, in
+  the Git based CANBus Android development session). A free lock is taken
+  without asking: `take` checks and claims it in one step, and the take
+  and release messages are notices. The holder does to the bench what its
+  work needs, including flashing and rebooting either board, moving
+  adapters between drivers and sending on either bus. At release nothing
+  it started is still running on the bench, and its note reports the
+  state of everything it touched; nothing is put back. The next holder
+  sets up what it needs. Details: SPEC sections 6 and 8 (`shared/main`
+  from `9342bf8b`).
 - **Besides the testers and their loans,** two roles may take the bench by
   hand, with no run: `android`, the Android sessions' runs that touch the
   bench adapters, and `can-tools`, the CAN replay tooling session (SPEC
-  section 8). They may build and flash the X2's test images (the jammer
-  and the SLCAN images), but do not change them, and flash no other image
-  or board (user, 2026-11-12, in the CAN replay tooling session). How
-  they flash before and after the images move into
-  `shared/x2_test_images`, and what the X2 is left on and recorded as at
-  release, are in SPEC section 8 (`shared/main` from `1e33234d`). At
-  release, everything they opened is closed and back on its driver,
-  `canmain` is down, and what they transmitted is noted.
+  section 8). They build images as the images' owners' tooling does and
+  do not change their source (user, 2026-11-12, in the CAN replay tooling
+  session).
 - **`canmain`, CAN1's Innomaker, is for the Android app's two-bus tests**
-  and is kept down during ESP runs. Every run that needs the bench refuses
-  to start unless its settings' `canmain_check` shows `canmain` down
+  and is kept down during ESP runs. A run that needs the bench brings it
+  down itself through `canctl` if it is up, and records that (SPEC section
+  8, user, 2026-11-13). Until the testers' code does, a run refuses to
+  start unless its settings' `canmain_check` shows `canmain` down
   (`shared/bench/README.md`).
 - **Root operations on the CAN adapters** (links up and down, an
   Innomaker's driver binding) go through `canctl`, run as `sudo -n
