@@ -144,5 +144,3 @@ reviewer's session).
   from the network to the TWAI or the MCP2515 is not specified now.
   `slcan_spi` keeps its host transport apart from its CAN side, so that
   variant can reuse the CAN side (user, 2026-11-12).
-</content>
-</invoke>
