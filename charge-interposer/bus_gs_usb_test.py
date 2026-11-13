@@ -17,7 +17,14 @@ GsUsbBus and checks each half can fail:
   - a recv() that sees only echoes inside its timeout returns None, not an
     echo and not a hang;
   - gs_usb needs no canbench: it opens with CAN_TOOLS_DIR unset, while
-    kvaser is refused with the PathsError naming the setting;
+    pcan is refused with the PathsError naming the setting;
+  - the Kvaser (transport kvaser or socketcan; 2026-11-13, the
+    charge-interposer reviewer's A, D and D6) never reaches canbench's
+    detection: bus.open_kvaser brings its link up (kvaser_link.set_link)
+    BEFORE it opens netdev "kvaser" with its echoes kept, and returns a
+    kvaser_link.WatchedBus (the stall rule); no channel (a netdev by
+    position), another netdev, echoes asked for, another bit rate, or a
+    link that does not come up is refused with nothing opened;
   - the other brands open what canbench detected, in the shape can-tools
     1cd3942 gives it (charge-interposer tester, 2026-11-01, the pin move):
     an Adapter that unpacks as (interface, channel, desc), with .ids and a
@@ -199,7 +206,7 @@ def run(fix):
     # adapter_fixes_test.py), checked here only as open_gs_usb passes it on
     real_target = adapter_fixes.canchg_target
     adapter_fixes.canchg_target = lambda index=0, *a, **k: real_target(index, "win32")
-    print("CAN_TOOLS_DIR unset: gs_usb opens, kvaser is refused")
+    print("CAN_TOOLS_DIR unset: gs_usb opens, pcan is refused")
     real_open = busmod.open_gs_usb
     busmod.open_gs_usb = lambda ch, br, **kw: real_open(
         ch, br, _bus_cls=FakeGsUsb, **kw)
@@ -215,13 +222,13 @@ def run(fix):
               % (err or FakeGsUsb.opened))
         try:
             busmod.open_bus(types.SimpleNamespace(
-                transport="kvaser", channel=None, port=0, bitrate=500000))
+                transport="pcan", channel=None, port=0, bitrate=500000))
             refused = None
         except Exception as e:
             refused = "%s: %s" % (type(e).__name__, e)
         check(refused is not None and refused.startswith("PathsError")
               and "CAN_TOOLS_DIR is not set" in refused,
-              "kvaser with CAN_TOOLS_DIR unset is refused, naming the "
+              "pcan with CAN_TOOLS_DIR unset is refused, naming the "
               "setting -> %s" % refused)
         check("canbench" not in sys.modules,
               "... and no canbench was imported")
@@ -273,11 +280,11 @@ def run(fix):
     try:
         try:
             busmod.open_bus(types.SimpleNamespace(
-                transport="kvaser", channel=None, port=0, bitrate=500000))
+                transport="pcan", channel=None, port=0, bitrate=500000))
             took_detect = False
         except AssertionError:
             took_detect = True
-        check(took_detect, "kvaser still goes through auto-detection (the "
+        check(took_detect, "pcan still goes through auto-detection (the "
               "guard can fail)")
     finally:
         rcv.detect_all_can_interfaces = real_detect
@@ -302,18 +309,6 @@ def run(fix):
             transport=transport, channel=channel, port=0, bitrate=500000),
             logger=log)
     try:
-        b = real("kvaser")
-        check(FakeBus.opened == [dict(interface="kvaser", channel=0,
-                                      bitrate=500000,
-                                      receive_own_messages=False)],
-              "kvaser: the Adapter unpacks, and the kvaser opens on its "
-              "channel 0, not a channel read from desc or .ids -> %s"
-              % FakeBus.opened)
-        check(asked[-1] == (500000, {"kvaser"}),
-              "detection is asked for that brand alone -> %s" % (asked[-1],))
-        check(any(ln == "Using real interface: kvaser channel 0 "
-                  "[serial:44544#1, serial:44544]" for ln in lines.lines),
-              "the log names the adapter by its whole desc, id list and all")
         b = real("pcan")
         check(FakeBus.opened == [dict(interface="pcan",
                                       channel="PCAN_USBBUS1", bitrate=500000,
@@ -322,6 +317,11 @@ def run(fix):
               "pcan: the first PCAN detected, not the socketcan entry "
               "listed before it, opened by channel with auto_reset -> %s"
               % FakeBus.opened)
+        check(asked[-1] == (500000, {"pcan"}),
+              "detection is asked for that brand alone -> %s" % (asked[-1],))
+        check(any(ln == "Using real interface: pcan PCAN_USBBUS1 [pcan-id:0]"
+                  for ln in lines.lines),
+              "the log names the adapter by its whole desc, id list and all")
         check(b.resets == 1, "... and reset() once at startup -> %d"
               % b.resets)
         b = real("pcan", "PCAN_USBBUS2")
@@ -332,6 +332,73 @@ def run(fix):
         busmod.can.interface.Bus = real_bus
         rcv.detect_all_can_interfaces = real_detect
         log.removeHandler(lines)
+
+    print("the Kvaser: kvaser_usb netdev 'kvaser', link up first, never detection")
+    import kvaser_link
+    calls = []
+
+    class Link:
+        NETDEV, BITRATE = kvaser_link.NETDEV, kvaser_link.BITRATE
+        LinkError, WatchedBus = kvaser_link.LinkError, kvaser_link.WatchedBus
+        check_channel = staticmethod(kvaser_link.check_channel)
+        fail = None
+
+        @staticmethod
+        def set_link(up):
+            calls.append(("set_link", up))
+            if Link.fail:
+                raise kvaser_link.LinkError(Link.fail)
+            return "kvaser link up"
+
+        @staticmethod
+        def open_bus(channel, receive_own_messages, can_mod=None):
+            calls.append(("open_bus", channel, receive_own_messages))
+            return FakeBus(interface="socketcan", channel=channel)
+
+    rcv.detect_all_can_interfaces = no_detect
+    real_kv = busmod.open_kvaser
+    busmod.open_kvaser = lambda ch, br, **kw: real_kv(ch, br, _link=Link, **kw)
+
+    def kv(transport="kvaser", channel="kvaser", bitrate=500000, **kw):
+        del calls[:]
+        try:
+            return busmod.open_bus(types.SimpleNamespace(
+                transport=transport, channel=channel, port=0, bitrate=bitrate), **kw), None
+        except Exception as e:                      # noqa: BLE001
+            return None, "%s: %s" % (type(e).__name__, e)
+    try:
+        b, err = kv()
+        check(err is None and calls == [("set_link", True), ("open_bus", "kvaser", True)],
+              "kvaser: the link brought up, then netdev kvaser opened with its echoes "
+              "kept, no detection -> %s %s" % (err, calls))
+        check(isinstance(b, kvaser_link.WatchedBus),
+              "... and the bus returned keeps the stall rule (WatchedBus) -> %r" % (b,))
+        b, err = kv("socketcan")
+        check(err is None and calls[-1] == ("open_bus", "kvaser", True),
+              "socketcan, channel kvaser: the same opener -> %s %s" % (err, calls))
+        for ch in (None, "can0", "canmain"):
+            b, err = kv(channel=ch)
+            check(err and "LinkError" in err and calls == [],
+                  "channel %r (by position, or another netdev): refused, nothing set "
+                  "or opened -> %s %s" % (ch, err, calls))
+        b, err = kv("socketcan", None)
+        check(err and "LinkError" in err and calls == [],
+              "socketcan with no channel: refused -> %s %s" % (err, calls))
+        b, err = kv(receive_own_messages=True)
+        check(err and "receive_own_messages" in err and calls == [],
+              "echoes asked for: refused (they are the stall rule's) -> %s" % err)
+        b, err = kv(bitrate=250000)
+        check(err and "250000" in err and calls == [],
+              "another bit rate: refused -> %s" % err)
+        Link.fail = "the kvaser link reads down"
+        b, err = kv()
+        check(err and "LinkError" in err and calls == [("set_link", True)],
+              "a link that does not come up: refused, nothing opened -> %s %s"
+              % (err, calls))
+    finally:
+        Link.fail = None
+        busmod.open_kvaser = real_kv
+        rcv.detect_all_can_interfaces = real_detect
 
     print("echoes: drained and dropped by default, kept when asked for")
     b = busmod.open_gs_usb("0", 500000, _bus_cls=FakeGsUsb)
@@ -432,6 +499,23 @@ MUTANTS = [
      '    bus = cls(channel="can%d" % index, bitrate=bitrate, index=index)\n'),
     ("the opened device's serial not checked",
      '    adapter_fixes.check_opened(bus, _target)\n', ''),
+    ("the Kvaser by detection again",
+     '    if transport in ("kvaser", "socketcan"):\n        return open_kvaser(',
+     '    if False:\n        return open_kvaser('),
+    ("the Kvaser's link not brought up", "    line = link.set_link(True)\n",
+     '    line = "not set"\n'),
+    ("the Kvaser opened before its link",
+     "    line = link.set_link(True)\n    if logger:\n"
+     "        logger.info(\"Opening the Kvaser: %s\", line)\n"
+     "    b = link.open_bus(channel=ch, receive_own_messages=True, can_mod=_can_mod)\n",
+     "    b = link.open_bus(channel=ch, receive_own_messages=True, can_mod=_can_mod)\n"
+     "    line = link.set_link(True)\n"),
+    ("the Kvaser by position", "    ch = link.check_channel(channel)\n",
+     "    ch = channel or link.NETDEV\n"),
+    ("the Kvaser without the stall rule", "    return link.WatchedBus(b)\n", "    return b\n"),
+    ("the Kvaser's echoes not kept",
+     "    b = link.open_bus(channel=ch, receive_own_messages=True, can_mod=_can_mod)\n",
+     "    b = link.open_bus(channel=ch, receive_own_messages=False, can_mod=_can_mod)\n"),
 ]
 
 

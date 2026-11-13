@@ -1139,9 +1139,22 @@ def main():
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s veh %(message)s", datefmt="%H:%M:%S")
 
-    b = busmod.open_bus(args, default_channel=busmod.VEHICLE_SEGMENT, logger=log)
+    # The Kvaser (kvaser_link, 2026-11-13; the charge-interposer reviewer's
+    # D6): a link not set or not read back, or a TX stall (ENOBUFS, or an
+    # own echo later than 100 ms), is logged as one "VOID: kvaser ..." line
+    # with the kernel's USB/CAN lines, and after a stall the Kvaser is
+    # recovered; run_scenario reads the line as a failed bench premise, so
+    # the case is NOT EXERCISED (VOID), never PASS or FAIL.
+    import kvaser_link
+    t_open = time.time()
+    try:
+        b = busmod.open_bus(args, default_channel=busmod.VEHICLE_SEGMENT, logger=log)
+    except kvaser_link.LinkError as e:
+        log.info(kvaser_link.link_void(e, t_open, time.time()))
+        sys.exit(3)
     phys = busmod.open_bus(args, prefix="phys-",
                            default_channel=busmod.PHYSICS_SEGMENT, logger=log)
+    closed = []
     try:
         if args.mode == "model":
             run_model(args, b, phys)
@@ -1154,10 +1167,15 @@ def main():
                                  logger=log)
     except KeyboardInterrupt:
         log.info("interrupted")
+    except kvaser_link.Stall as st:
+        for ln in kvaser_link.stall_lines(st, t_open, close=b.shutdown):
+            log.info(ln)
+        closed.append(b)
     finally:
         report_peaks()
         report_vport()
-        b.shutdown()
+        if not closed:
+            b.shutdown()
         phys.shutdown()
 
 

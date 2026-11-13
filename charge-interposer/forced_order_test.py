@@ -15,6 +15,13 @@ this part tests harness logic that stays.
 the order alone, without the 150 ms gap; a premise that did not hold
 ignored by the verdict; a third case given the premise) and requires each
 to fail; exit 0 only if every mutant is caught.
+
+The Kvaser premise (tester, 2026-11-13; the charge-interposer reviewer's
+D6): vehicle_sim's "VOID: kvaser TX stall ..." or "VOID: kvaser link ..."
+line (kvaser_link) makes a case NOT EXERCISED through evaluate(), its line
+(the kernel's USB/CAN lines included) in the reason; three more mutants
+(the line never read, a link VOID not read, the premise ignored by the
+verdict).
 """
 
 import os
@@ -97,7 +104,37 @@ def test_forced_order_premise():
     assert B.PHASE_OFFSETS_S == (0.13, 0.27)
 
 
-TESTS = [test_forced_order_premise]
+def test_kvaser_premise():
+    """vehicle_sim's Kvaser VOID line (kvaser_link: a TX stall or a link
+    not set) makes the case NOT EXERCISED, its line in the reason; a log
+    without one, or with an unrelated VOID, leaves the verdict alone."""
+    from pathlib import Path
+    import scratch_dir
+    stall = ("12:00:00 veh VOID: kvaser TX stall: no own echo 120 ms after send returned "
+             "at 12:00:01.000; kernel USB/CAN lines 1 in the window 12:00:00..12:00:02: "
+             "2026-11-13T12:00:01.5 usb 1-3.2.1: error -71\n")
+    link = "12:00:00 veh VOID: kvaser link: the kvaser link reads down in sysfs\n"
+    with scratch_dir.run("forced-order-test") as d:
+        d = Path(d)
+        logs = [d / "v.log", d / "c.log", d / "i.log"]
+        for p in logs[1:]:
+            p.write_text("")
+        for text, want in ((stall, "kvaser TX stall"), (link, "kvaser link")):
+            logs[0].write_text("12:00:00 veh started\n" + text)
+            res = R.evaluate(R.BY_NAME["normal-full"], *logs, False)
+            v, why = R.verdict_of(res)
+            assert v == "NOT EXERCISED" and want in why, (v, why)
+            if want == "kvaser TX stall":
+                assert "error -71" in why, why
+        for text in ("12:00:00 veh started\n", "12:00:00 veh VOID: something else\n"):
+            logs[0].write_text(text)
+            res = R.evaluate(R.BY_NAME["normal-full"], *logs, False)
+            assert R.verdict_of(res)[0] != "NOT EXERCISED", res["premises"]
+    assert R.kvaser_void("x VOID: kvaser TX stall: y") == "kvaser TX stall: y"
+    assert R.kvaser_void("x VOID: kvaser linked") is None
+
+
+TESTS = [test_forced_order_premise, test_kvaser_premise]
 
 
 # ---- can-fail -------------------------------------------------------------
@@ -124,6 +161,7 @@ def _third_premise():
 _ORIG_PREMISE = R._forced_order
 _ORIG_VERDICT = R.verdict_of
 _ORIG_SCEN = R.SCENARIOS
+_ORIG_KV = R.kvaser_void
 MUTANTS = {
     "test_forced_order_premise": [
         ("_forced_order", lambda: _premise_always, "the premise always held"),
@@ -131,6 +169,12 @@ MUTANTS = {
         ("verdict_of", lambda: _verdict_no_premises,
          "a premise that did not hold ignored by the verdict"),
         ("SCENARIOS", _third_premise, "fault-during-override given a premise")],
+    "test_kvaser_premise": [
+        ("kvaser_void", lambda: (lambda text: None), "the Kvaser's VOID line never read"),
+        ("kvaser_void", lambda: (lambda text: _ORIG_KV(text) if text and "stall" in text
+                                 else None), "a link VOID not read"),
+        ("verdict_of", lambda: _verdict_no_premises,
+         "a Kvaser premise ignored by the verdict")],
 }
 
 
@@ -161,6 +205,7 @@ def main():
                 R._forced_order = _ORIG_PREMISE
                 R.verdict_of = _ORIG_VERDICT
                 R.SCENARIOS = _ORIG_SCEN
+                R.kvaser_void = _ORIG_KV
     print("\n%d of %d %s" % (n - bad, n, "mutants caught" if can_fail else "passed"))
     return 1 if bad else 0
 

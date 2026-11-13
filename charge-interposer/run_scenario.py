@@ -3825,6 +3825,16 @@ def _forced_order(order, first, min_gap_s):
                want_ms, seen))
 
 
+KVASER_VOID = re.compile(r"VOID: kvaser (?:TX stall|link)\b.*")
+
+
+def kvaser_void(veh_text):
+    """vehicle_sim's "VOID: kvaser TX stall ..." or "VOID: kvaser link ..."
+    line (kvaser_link), without the VOID: prefix, or None."""
+    m = KVASER_VOID.search(veh_text or "")
+    return m.group(0)[len("VOID: "):] if m else None
+
+
 def verdict_of(res):
     """-> ("PASS" | "FAIL" | "NOT EXERCISED", why) for a run_one() result:
     a premise that did not hold makes the case NOT EXERCISED, whatever its
@@ -3984,6 +3994,12 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
     results = []
     # premises (forced_order): what must hold before the results count
     premises = []
+    # the Kvaser under vehicle_sim (kvaser_link, 2026-11-13; the
+    # charge-interposer reviewer's D6): a link not set or a TX stall voids
+    # the case, with its line (the kernel's USB/CAN lines on it)
+    kv = kvaser_void(veh)
+    if kv:
+        premises.append((False, "bench premise, the Kvaser: %s" % kv))
     for kind, val in sc.expect:
         if kind == "forced_order":
             ok, why = _forced_order(order, val["first"], val["min_gap_s"])
