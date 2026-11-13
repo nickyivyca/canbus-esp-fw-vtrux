@@ -2302,7 +2302,6 @@ class Engine:
         code.setdefault("code_hash", None)   # pending a user ruling
         header["code"] = code
         header["requires_met"] = self.requires_note
-        header["canmain_check"] = self.canmain_line
         clocks = {"local": time.time()}
         for host in sorted({g.host for g, _ in sel if g.host != "local"}):
             try:
