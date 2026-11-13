@@ -19,12 +19,20 @@ keeps the port and serial_device. GI_X2_DEVICE unset, a tty name or IDs matching
 give a REFUSED record with nothing read; check-dump needs no port. Needs the pinned core's
 shared/bench on PYTHONPATH (2026.11.11.6 or later), and Linux.
 
-Run: py -3.14 gen-inhibit/tools/bench/test_x2_flash_custody.py
+--expect-elf (gen-inhibit reviewer, 2026-11-12): no default any more (it was 7f197bfd).
+main() dump and check-dump, each without it, empty, with 7 digits, a non-hex digit or 65
+digits: a REFUSED record keeping what was given, no esptool call, no port, no dump;
+restore needs none (its check above runs without one); an upper-case one matches; one
+in neither slot FAILs, naming it.
+(7f197bfd stays as the synthetic images' made-up hash.)
+
+Run: python3.13 gen-inhibit/tools/bench/test_x2_flash_custody.py
 """
 import os
 import shutil
 import struct
 import sys
+import time
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -72,6 +80,8 @@ def image(elf0, elf1, seq=None, bad_crc=False):
 
 GOOD = "7f197bfd" + "11" * 28
 OTHER = "f28781c9" + "22" * 28
+NEITHER = "0badc0de" + "33" * 28    # in no slot of any image here
+EXP = ["--expect-elf", GOOD[:8]]    # required since 2026-11-12 (gen-inhibit reviewer)
 
 CASES = [
     # label, image, want boot slot, want hashes by label
@@ -308,7 +318,7 @@ def esptool_main_cases():
         return rc, rec, cli
 
     with fake_data():
-        rc, rec, cli = run(["dump"])
+        rc, rec, cli = run(["dump"] + EXP)
         reads = [c for c in cli if "read_flash" in c]
         check("main dump: the version first, then two read_flash 0 ALL, PASS", rc == 0 and rec
               and rec.get("verdict") == "PASS" and cli[:1] == ["version"] and len(reads) == 2
@@ -334,7 +344,7 @@ def esptool_main_cases():
         for label, kw, want in (("esptool 5.0.2", {"version": "5.0.2"}, "5.0.2"),
                                 ("GI_ESPTOOL_ARGV unset", {"argv": None}, "GI_ESPTOOL_ARGV"),
                                 ("an argv of another form", {"argv": [sys.executable, "esptool.py"]}, "must be")):
-            rc, rec3, cli = run(["dump"], **kw)
+            rc, rec3, cli = run(["dump"] + EXP, **kw)
             check("main dump, %s: REFUSED record, nothing read, no dump" % label,
                   rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and want in rec3.get("why", "")
                   and rec3.get("esptool_version") is None and not [c for c in cli if c != "version"]
@@ -343,19 +353,52 @@ def esptool_main_cases():
                                  ("GI_X2_DEVICE a tty name", "/dev/ttyACM1", "not JSON"),
                                  ("GI_X2_DEVICE matching no device", json.dumps(FS.device("NOSUCHSERIAL")),
                                   "no device matches")):
-            rc, rec3, cli = run(["dump"], device=dev)
+            rc, rec3, cli = run(["dump"] + EXP, device=dev)
             check("main dump, %s: REFUSED record, no port, nothing read, no dump" % label,
                   rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and want in rec3.get("why", "")
                   and rec3.get("port") is None and not [c for c in cli if c != "version"]
                   and sorted(os.listdir(C.BACKUPS)) == kept, (rc, rec3, cli))
-        rc, rec4, cli = run(["check-dump", "--dump-record", record], argv=None)
+        # --expect-elf has no default (gen-inhibit reviewer, 2026-11-12): dump and check-dump
+        # refuse without a usable one before esptool or the port is touched
+        for label, args, want in (("no --expect-elf", [], "is required"),
+                                  ("the old default's 7 digits", ["--expect-elf", GOOD[:7]], "not 8 to 64"),
+                                  ("an empty --expect-elf", ["--expect-elf", ""], "is required"),
+                                  ("a non-hex --expect-elf", ["--expect-elf", GOOD[:7] + "z"], "not 8 to 64"),
+                                  ("65 digits", ["--expect-elf", GOOD + "1"], "not 8 to 64")):
+            for sub in (["dump"], ["check-dump", "--dump-record", record]):
+                rc, rec3, cli = run(sub + args)
+                check("main %s, %s: REFUSED before esptool and port" % (sub[0], label),
+                      rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and want in rec3.get("why", "")
+                      and rec3.get("expect_elf") == (args[1] if args else None)
+                      and not cli and rec3.get("esptool_version") is None and rec3.get("port") is None
+                      and sorted(os.listdir(C.BACKUPS)) == kept, (rc, rec3, cli))
+        rc, rec4, cli = run(["check-dump", "--dump-record", record] + EXP, argv=None)
         check("main check-dump: no esptool, none needed; argv and version None in the record",
               rc == 0 and rec4 and rec4.get("verdict") == "PASS" and not cli
               and rec4.get("esptool_argv") is None and rec4.get("esptool_version") is None, (rc, rec4, cli))
-        rc, rec5, cli = run(["check-dump", "--dump-record", record], device=None)
+        rc, rec5, cli = run(["check-dump", "--dump-record", record] + EXP, device=None)
         check("main check-dump: no port, none needed; port and serial_device None in the record",
               rc == 0 and rec5 and rec5.get("verdict") == "PASS" and not cli
               and rec5.get("port") is None and rec5.get("serial_device") is None, (rc, rec5, cli))
+        check("main dump and check-dump: the record keeps expect_elf",
+              rec and rec.get("expect_elf") == EXP[1] and rec5 and rec5.get("expect_elf") == EXP[1],
+              (rec and rec.get("expect_elf"), rec5 and rec5.get("expect_elf")))
+        rc, rec6, cli = run(["check-dump", "--dump-record", record, "--expect-elf", GOOD[:12].upper()])
+        check("main check-dump: an upper-case --expect-elf is matched in lower case, PASS",
+              rc == 0 and rec6 and rec6.get("verdict") == "PASS" and rec6.get("slots_carrying_expected") == ["app1"],
+              (rc, rec6 and {k: rec6.get(k) for k in ("verdict", "slots_carrying_expected")}))
+        rc, rec7, cli = run(["check-dump", "--dump-record", record, "--expect-elf", NEITHER[:8]])
+        check("main check-dump: an image in neither slot FAILs, naming it",
+              rc == 1 and rec7 and rec7.get("verdict") == "FAIL" and NEITHER[:8] in rec7.get("why", ""),
+              (rc, rec7 and {k: rec7.get(k) for k in ("verdict", "why")}))
+        # dump names its files by the second and refuses to overwrite: wait for the first
+        # dump's second to pass (in a fast run both fall in one second)
+        while rec and time.strftime("%Y%m%dT%H%M%S") <= rec["when"]:
+            time.sleep(0.05)
+        rc, rec8, cli = run(["dump", "--expect-elf", NEITHER[:8]])
+        check("main dump: an image in neither slot FAILs after the two reads",
+              rc == 1 and rec8 and rec8.get("verdict") == "FAIL" and rec8.get("reads_match") is True
+              and NEITHER[:8] in rec8.get("why", ""), (rc, rec8 and {k: rec8.get(k) for k in ("verdict", "why")}))
     return bad
 
 

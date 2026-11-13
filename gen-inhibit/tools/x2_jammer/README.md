@@ -95,8 +95,11 @@ The X2 is the charge interposer's board. Its interposer image (`7f197bfd`)
 cannot be rebuilt, so it goes back by writing back a full read-back of the
 flash. The procedure, agreed with both reviewers and the interposer tester:
 1. read `0x7F7` off the wire (`bench_identify_board.py`);
-2. `x2_flash_custody.py dump`: two reads, matching sha256, and the dump's
-   own partition table must show an app slot carrying `7f197bfd`;
+2. `x2_flash_custody.py dump --expect-elf <prefix>`: two reads, matching
+   sha256, and the dump's own partition table must show an app slot
+   carrying the image read in step 1 (`7f197bfd` when this was written;
+   since 2026-11-12 `--expect-elf` has no default, because the X2 holds
+   whatever the last run loaded, gen-inhibit reviewer);
 3. `flash-jammer`;
 4. the jammer runs;
 5. `restore`: write-flash, then verify-flash;
