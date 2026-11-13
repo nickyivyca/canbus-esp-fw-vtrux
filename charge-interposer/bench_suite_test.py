@@ -544,17 +544,27 @@ def _settings():
             f.write(name.encode())
     for v, sha in IMG_SHA.items():
         _idf_build(os.path.join(d, "images"), v, sha)
-    # the WiCAN's sources: bench_wican_test's fake gen-inhibit tools and
-    # its image folder (made-up files, so the committed pin's load refuses)
+    # the WiCAN's image folder, bench_wican_test's (made-up files, so the
+    # committed pin's load refuses); test_wican_board adds its USB settings
     import bench_wican_test as WT
     ws, _root = WT.fixture("for-bench-suite-test", TMP)
     return {"interposer_code": HERE,
             "images_dir": os.path.join(d, "images"),
             "images_src": IMG_SRC,
             "x2_mac": "02:00:00:00:00:01",
-            "gi_tools": ws["gi_tools"],
             "wican_image_dir": ws["wican_image_dir"],
             "hosts": {"local": {}, "madhouse": {}}}
+
+
+def _wican_usb(s, name):
+    """s with the WiCAN's USB settings from bench_wican_test's made-up
+    boards and fake esptool (the WiCAN on the pinned image) -> (s, root);
+    run what identifies or resets the WiCAN under WT.Linux(root)."""
+    import bench_wican_test as WT
+    ws, root = WT.fixture(name, TMP)
+    s = dict(s, wican_esptool_device=ws["wican_esptool_device"],
+             wican_mac=ws["wican_mac"], esptool=ws["esptool"])
+    return s, root
 
 
 def _all():
@@ -1082,11 +1092,12 @@ def test_wican_board():
     never loads one), its identity is the committed pin's image hash, its
     flasher is bench_wican's USB load (2026-11-12), which checks the pinned
     files first and so runs nothing on the fixture's made-up files, its
-    hooks are bench_wican's (the X2 gets no step), and identify sends the
-    WiCAN to its page, not to the X2's identify."""
+    hooks are bench_wican's USB hard reset (the X2 gets no step), and
+    identify sends the WiCAN to bench_wican's USB read, not to the X2's
+    identify (bench_wican_test's made-up boards and fake esptool)."""
     import bench_wican_test as WT
-    s, su = _all()
-    b = su["bench"]
+    s, wroot = _wican_usb(_settings(), "wican-board")
+    b = B.bench(s)
     W = B.bench_wican
     locked = [g for g in b.groups if g.needs_lock]
     assert len(locked) == 5, [g.name for g in locked]
@@ -1102,19 +1113,24 @@ def test_wican_board():
     res = b.flashers[W.FLASHER](im, {}, s, TMP)
     assert res["ok"] is False and res["phase"] == "pin" and \
         "nothing run" in res["detail"], res
-    assert b.identify(im, None, TMP) == WT.MAN_SHA
     d = os.path.join(TMP, "wican_hooks")
     os.makedirs(d, exist_ok=True)
+    with WT.Linux(wroot):
+        assert b.identify(im, None, d) == WT.MAN_SHA
     keep = _canchg_stubs([])            # the X2's canchg step: test_canchg_mode_hooks
     try:
         x2 = b.on_start("x2", b.images["bridge"], None, d)
     finally:
         _canchg_restore(keep)
     assert x2["ok"] is True and "no start step" in x2["detail"], x2
-    for hook, flag in ((b.on_start, "--first"), (b.on_end, "--want")):
-        out = hook(W.BOARD, im, None, d)
-        a = WT.calls(os.path.dirname(os.environ["FAKE_WICAN_ARGV"]))[-1]
-        assert out["ok"] is True and a[a.index(flag) + 1] == W.IMAGE, (out, a)
+    port = WT.root_ports(wroot)["wican"]
+    for hook in (b.on_start, b.on_end):
+        n = len(WT.esptool_calls(wroot))
+        with WT.Linux(wroot):
+            out = hook(W.BOARD, im, None, d)
+        a = WT.esptool_calls(wroot)[n:]
+        assert out["ok"] is True and a == [["--port", port, "--after", "hard_reset",
+                                            "chip_id"]], (out, a)
 
 
 def test_canchg_mode_hooks():
@@ -1665,8 +1681,11 @@ def test_x2_test_image_flash_first():
     the checks and their placement are recorded, never run."""
     from vtrux_bench.run.engine import Engine
     from vtrux_bench.run.record import Recorder
+    import bench_wican_test as WT
     s, su = _all()
     s["serial_port"] = "fake-x2"
+    # the groups carry the WiCAN too: identified over the fake USB
+    s, wroot = _wican_usb(s, "flash-first-wican")
     b = B.bench(s)
     x2_images = sorted(n for n, im in b.images.items() if im.board == "x2")
     assert len(x2_images) == 5, x2_images
@@ -1734,7 +1753,8 @@ def test_x2_test_image_flash_first():
             eng, seq = engine("g%03d" % n, board, take=take)
             keep = _on_board(board)
             try:
-                eng.run_group(g, list(g.checks), {})
+                with WT.Linux(wroot):
+                    eng.run_group(g, list(g.checks), {})
             finally:
                 _off_board(keep)
                 eng.rec.close()

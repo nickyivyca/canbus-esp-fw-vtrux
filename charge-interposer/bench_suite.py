@@ -33,12 +33,10 @@ project", 2026-10-18):
             the same code and matched its reference (Suite.requires).
             Its boards are the X2 and the WiCAN (bench_wican.py: its
             pinned image loaded over USB by the core's esptool flasher,
-            identified off its page). The WiCAN's start and
-            release reboots are the suite's own hooks, so the hand reboots
-            before and after a run end here (reviewer, 2026-10-23).
-            gen-inhibit's wican_reboot.py disarms a WiCAN that comes up
-            armed, so every run, and every pause, leaves the WiCAN
-            rebooted and disarmed (mode 0).
+            and identified over USB from its boot slot's app descriptor).
+            The WiCAN's start and release resets are the suite's own
+            hooks, a USB hard reset each, with nothing about its state
+            read (reviewer, 2026-10-23; the USB form, user 2026-11-12).
   harness   charge-interposer-harness: the tester's harness tests and
             mutants -- the checks that test the checks. Run when the
             harness changes.
@@ -75,10 +73,10 @@ identified by their @HELLO and ELF sha256.
 Settings beyond the core's (see the NICKY-XPS settings JSON in reverse-it
 interposer-firmware/): interposer_code,
 images_dir, images_src, serial_port, pcan_channel, wican_state,
-madhouse_pio; for the bench suite's WiCAN (bench_wican.py), gi_tools
-(gen-inhibit's tools/gen_inhibit, read-only), wican_image_dir (the pinned
-image's files, wican_pin.json), wican_mac and wican_esptool_device (its USB
-load; wican_esptool_port on Windows); canchg_device (adapter_fixes, and
+madhouse_pio; for the bench suite's WiCAN (bench_wican.py),
+wican_image_dir (the pinned image's files, wican_pin.json), wican_mac and
+wican_esptool_device (its USB load, identify and resets;
+wican_esptool_port on Windows); canchg_device (adapter_fixes, and
 canchg_mode: on Linux the run puts canchg in libusb mode through canctl in
 the X2's start hook and back on gs_usb in its end hook). canx2_slcan, with
 no setting: on Linux the X2's start hook detaches canx2 from the kernel's
@@ -958,16 +956,6 @@ class _Build:
                 else:
                     out["images_src"] = settings["images_src"]
                 out["images"] = {k: v.note for k, v in images.items()}
-                # gen-inhibit's tree the WiCAN's hooks run from (read-only)
-                gi = settings.get("gi_tools")
-                if gi:
-                    out["gi_tools"] = {
-                        "commit": subprocess.run(
-                            ["git", "-C", gi, "rev-parse", "HEAD"],
-                            capture_output=True, text=True).stdout.strip(),
-                        "dirty": bool(subprocess.run(
-                            ["git", "-C", gi, "status", "--porcelain"],
-                            capture_output=True, text=True).stdout.strip())}
                 out["can_tools"] = can_tools_info()
             return out
         return info
@@ -1264,7 +1252,7 @@ def bench(settings):
     for name in X2_IDLE_UNSAFE:
         images[name].idle_safe = False
     # The WiCAN is a board of every bench group (bench_wican.py), so the
-    # runner identifies it, runs its start and release reboots and reads it
+    # runner identifies it, runs its start and release resets and reads it
     # at every release and free_paused (shared/bench SPEC.md section 6).
     wican = bench_wican.make(settings)
     images[bench_wican.IMAGE] = wican["image"]
