@@ -6,13 +6,26 @@ two outages; a clean run is no outage; a poll not in mode 0 is reported. The
 WLAN signal and rates are read as numbers only, never from the SSID or BSSID
 lines, and are logged without changing the verdict. Also --power is required.
 
-  py -3.14 gen-inhibit/tools/bench/test_page_only_baseline.py
+Linux (2026-11-12, the reviewer's Linux leftovers item 6): the WLAN is read with nmcli's
+terse output (made-up lines in its documented form; madhouse-debian has no Wi-Fi adapter
+yet). Connected only with exactly one active access point whose SSID is the WiCAN's; an
+escaped ':' in an SSID is part of it; the signal is the active line's, the rates None; a
+reader that can't run or exits non-zero is not connected and says why; Windows still
+reads netsh; the rejoin goes through the stored profile, nmcli on Linux.
+
+  python3.13 gen-inhibit/tools/bench/test_page_only_baseline.py [--mutants]
+
+--mutants: each mutant of page_only_baseline.py's WLAN reading is a copy in this run's
+scratch/ folder with one edit, run through GI_PAGE_ONLY_DIR; a check must fail on each,
+and the unmutated copy, the control, must pass.
 """
 import os
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.environ.get("GI_PAGE_ONLY_DIR") or HERE)
 import page_only_baseline as P                                  # noqa: E402
 
 
@@ -141,6 +154,125 @@ def link_cases():
     ]
 
 
+# nmcli -t -e yes -f ACTIVE,SSID,SIGNAL device wifi list --rescan no (made-up names)
+NM_UP = "no:Neighbour:40\nyes:AP-X:71\nno:AP-X-5G:20\n"
+NM_OTHER = "yes:Neighbour:80\nno:AP-X:60\n"
+NM_DOWN = "no:AP-X:55\nno:Neighbour:30\n"
+NM_TWO = "yes:AP-X:71\nyes:Neighbour:40\n"
+NM_COLON = "yes:AP\\:X:66\n"               # an SSID with a ':' in it, escaped by nmcli
+NM_ODD = "yes:AP-X:--\n"
+
+
+class FakeRun:
+    def __init__(self, out="", rc=0, raise_=None):
+        self.out, self.rc, self.raise_, self.argv = out, rc, raise_, None
+
+    def __call__(self, argv, **kw):
+        self.argv = argv
+        if self.raise_:
+            raise self.raise_
+        return subprocess.CompletedProcess(argv, self.rc, self.out, "")
+
+
+def call(fn):
+    """fn(), or the exception it raised: a raise is judged by the check, not a crash."""
+    try:
+        return fn()
+    except Exception as e:      # noqa: BLE001
+        return e
+
+
+def nmcli_cases():
+    none = {"wlan_signal": None, "wlan_rx_mbps": None, "wlan_tx_mbps": None}
+    win = FakeRun(NETSH_LINK)
+    lin = FakeRun(NM_UP)
+    rw = P.read_wlan("AP-X", run=lin, platform="linux")
+    rww = P.read_wlan("AP-X", run=win, platform="win32")
+    return [
+        ("nmcli: one active AP with the SSID -> connected", P.parse_nmcli(NM_UP, "AP-X") == (True, "connected")),
+        ("nmcli: the active AP is ANOTHER SSID -> not ok", P.parse_nmcli(NM_OTHER, "AP-X") == (False, "connected")),
+        ("nmcli: the SSID listed but not active -> not ok", P.parse_nmcli(NM_DOWN, "AP-X") == (False, "disconnected")),
+        ("nmcli: two active lines -> not ok, said", P.parse_nmcli(NM_TWO, "AP-X") == (False, "2 active")),
+        ("nmcli: an escaped ':' is part of the SSID", P.parse_nmcli(NM_COLON, "AP:X")[0] is True
+         and P.parse_nmcli(NM_COLON, "AP")[0] is False),
+        ("nmcli: a prefix of the SSID is not it", P.parse_nmcli(NM_UP, "AP")[0] is False),
+        ("nmcli link: the active line's signal, rates None",
+         P.parse_nmcli_link(NM_UP) == dict(none, wlan_signal=71)),
+        ("nmcli link: none active, or two, or a non-number -> all None",
+         P.parse_nmcli_link(NM_DOWN) == none and P.parse_nmcli_link(NM_TWO) == none
+         and P.parse_nmcli_link(NM_ODD) == none),
+        ("read_wlan on Linux runs nmcli's terse ACTIVE,SSID,SIGNAL list, no rescan, and parses it",
+         lin.argv == P.WLAN_LINUX and lin.argv[0] == "nmcli" and "-t" in lin.argv and "--rescan" in lin.argv
+         and rw == (True, "connected", dict(none, wlan_signal=71))),
+        ("read_wlan on Windows runs netsh, as before",
+         win.argv == ["netsh", "wlan", "show", "interfaces"] and rww[:2] == (True, "connected")
+         and rww[2]["wlan_signal"] == 87),
+        ("read_wlan: nmcli missing -> not connected, said, no raise",
+         call(lambda: P.read_wlan("AP-X", run=FakeRun(raise_=FileNotFoundError("nmcli")), platform="linux"))
+         == (False, "nmcli failed (FileNotFoundError)", none)),
+        ("read_wlan: nmcli exiting non-zero -> not connected, with its code, even with output",
+         P.read_wlan("AP-X", run=FakeRun(NM_UP, rc=8), platform="linux") == (False, "nmcli exit 8", none)),
+        ("read_wlan: a timeout -> not connected, said",
+         call(lambda: P.read_wlan("AP-X", run=FakeRun(raise_=subprocess.TimeoutExpired("nmcli", 10)),
+                                  platform="linux")[:2]) == (False, "nmcli failed (TimeoutExpired)")),
+        ("rejoin: nmcli through the stored profile on Linux, netsh on Windows",
+         P.rejoin_argv("AP-X", platform="linux") == ["nmcli", "device", "wifi", "connect", "AP-X"]
+         and P.rejoin_argv("AP-X", platform="win32") == ["netsh", "wlan", "connect", "name=AP-X"]),
+    ]
+
+
+MUTANTS = [
+    ("an SSID's escaped ':' splits it", '        elif ch == "\\\\":\n            esc = True\n', ""),
+    ("any line counts as active", 'if f[0] == "yes" and len(f) >= 3]', "if len(f) >= 3]"),
+    ("two active lines read as connected", "    return (len(act) == 1 and ssid is not None and act[0][1] == ssid), state",
+     "    return (len(act) >= 1 and ssid is not None and act[0][1] == ssid), state"),
+    ("the SSID not compared", "and ssid is not None and act[0][1] == ssid), state", "and ssid is not None), state"),
+    ("the signal not read", '        out["wlan_signal"] = int(act[0][2])\n', "        pass\n"),
+    ("nmcli's exit code ignored", '    if r.returncode != 0:\n        return False, "nmcli exit %d"',
+     '    if False:\n        return False, "nmcli exit %d"'),
+    ("a reader that can't run raises", "    except (OSError, subprocess.SubprocessError) as e:\n        return False, \"%s failed",
+     "    except ():\n        return False, \"%s failed"),
+    ("Linux reads netsh", "    argv = WLAN_WINDOWS if win else WLAN_LINUX", "    argv = WLAN_WINDOWS"),
+    ("Linux rejoins with netsh", '    if (platform or sys.platform) == "win32":\n        return ["netsh", "wlan", "connect"',
+     '    if True:\n        return ["netsh", "wlan", "connect"'),
+    ("nmcli rescans on every poll", '"list", "--rescan", "no"]', '"list"]'),
+]
+
+
+def mutants():
+    import gi_paths
+    src = open(os.path.join(HERE, "page_only_baseline.py"), encoding="utf-8").read()
+    base = gi_paths.scratch("mutants-page_only_baseline", start=__file__)
+    killed = errors = 0
+    control_ok = None
+    for n, (name, old, new) in enumerate([("the control: the unmutated copy", None, None)] + MUTANTS):
+        if old is not None and src.count(old) != 1:
+            print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
+            errors += 1
+            continue
+        d = os.path.join(base, "m%d" % n)
+        os.makedirs(d)
+        with open(os.path.join(d, "page_only_baseline.py"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(src if old is None else src.replace(old, new))
+        r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__)], capture_output=True, text=True,
+                           env=dict(os.environ, GI_PAGE_ONLY_DIR=d), timeout=120)
+        fails = [ln.strip() for ln in r.stdout.splitlines() if ln.strip().startswith("FAIL ")]
+        crashed = "Traceback" in r.stderr
+        if old is None:
+            control_ok = r.returncode == 0 and not fails and not crashed
+            print("%s m0 %s  (exit %d)" % ("PASS    " if control_ok else "FAILED  ", name, r.returncode))
+            if not control_ok:
+                print("\nthe control FAILS: no mutant is judged")
+                return 1
+            continue
+        dead = bool(fails) and not crashed
+        killed += dead
+        print("%s m%d %s  (%d FAIL%s)%s" % ("KILLED  " if dead else "SURVIVED", n, name, len(fails),
+                                            ", CRASHED" if crashed else "", ("; " + fails[0][:100]) if fails else ""))
+    print("\n%d of %d killed by a check, %d errors; the control passes" % (killed, len(MUTANTS), errors))
+    return 0 if killed == len(MUTANTS) and not errors else 1
+
+
 def main():
     clean = [S(t) for t in range(10)]
     reboot_page = [S(0), S(1), S(2, answered=False), S(3, answered=False), S(4)]
@@ -179,7 +311,7 @@ def main():
         ("netsh connected to ANOTHER SSID -> not ok", P.parse_wlan(NETSH_OTHER, "AP-X")[0] is False),
         ("netsh disconnected -> not ok", P.parse_wlan(NETSH_DOWN, "AP-X") == (False, "disconnected")),
         ("BSSID line is not read as SSID", P.parse_wlan(NETSH_UP, "00:00:5e:00:53:02")[0] is False),
-    ] + uptime_cases() + link_cases()
+    ] + uptime_cases() + link_cases() + nmcli_cases()
     try:
         P.build_parser().parse_args([])
         checks.append(("--power required", False))
@@ -195,4 +327,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(mutants() if "--mutants" in sys.argv[1:] else main())

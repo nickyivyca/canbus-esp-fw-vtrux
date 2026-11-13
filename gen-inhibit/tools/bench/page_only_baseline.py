@@ -1,16 +1,17 @@
 """Idle baseline of the WiCAN with NO console: page polls and the WiFi link only.
 
 Gen-inhibit tester, 2026-10-09, for the run with the WiCAN's USB unplugged
-(12 V on OBD pin 16 only; reviewer's request). With USB out there is no COM4,
-so no boot banner, no reset reason and no USB-JTAG reset. Neither the
+(12 V on OBD pin 16 only; reviewer's request). With USB out there is no console
+(COM4 on the old Windows bench), so no boot banner, no reset reason and no USB-JTAG reset. Neither the
 /gen_inhibit page nor /check_status carries an uptime, so a reboot cannot be
 read as "uptime went down". What a reboot does that this CAN see: the device
 stops answering HTTP and its SoftAP goes away, so the laptop's WiFi drops off
 it (a reset of a71b90a took ~6 s to rejoin). So every poll records:
 
   - the page (answered or not, mode, drv null),
-  - the laptop's WLAN state and SSID (netsh wlan show interfaces), and from the same
-    output its signal and receive/transmit rates, numbers only, logged but not judged.
+  - the host's WLAN state and SSID (netsh wlan show interfaces on Windows, nmcli on
+    Linux), and from the same output its signal and, on Windows, its receive/transmit
+    rates, numbers only, logged but not judged.
 
 OUTAGE = a maximal run of polls where the page went unanswered, OR the WLAN was
 not connected to the WiCAN's SSID, OR the poll STALLED (took longer than
@@ -21,8 +22,9 @@ drop -- the request in flight blocked 7.4 s and then answered -- so the first
 version of this tool, without the stall sign, saw no outage at a real reboot. Each outage is a candidate reboot. Without a
 console this cannot tell a reboot from a SoftAP/WiFi outage, so outages are
 reported as outages; 0 outages means no reboot by this test. A mode that is
-not 0 is reported too (nothing posts during the run). Rejoins with netsh after
---rejoin-after s of WLAN loss.
+not 0 is reported too (nothing posts during the run). Rejoins (netsh, or nmcli on
+Linux, through the profile already stored for the SoftAP) after --rejoin-after s of
+WLAN loss.
 
 --watch-wican: records on every poll whether the WiCAN's USB device is present (its USB
 IDs in GI_WICAN_DEVICE, looked up through gi_serial and the core's serial_dev,
@@ -36,8 +38,9 @@ resolved from GI_WICAN_DEVICE, kept in the record as serial_device) at S seconds
 gives one USB-JTAG reset, so the detector can be checked against a reboot that
 is known to happen. The console is never read for counting.
 
-The WLAN state comes from Windows' netsh, so as written this tool runs on Windows only;
-its port lookup is Linux only. A Linux WLAN reading is not part of this change.
+The WLAN state comes from nmcli on Linux (2026-11-12, the reviewer's Linux leftovers
+item 6; read_wlan) and netsh on Windows; its port lookup is Linux only, so the tool runs
+on Linux. The nmcli reading has not met a real adapter yet (see WLAN_LINUX).
 
 UPTIME (spec 11, "Uptime and reset reason are reported", user 2026-10-09; first
 on cc34c80). Every poll also records the page's `uptime_ms` and `reset_reason`,
@@ -63,7 +66,7 @@ outage that was not a reboot.
 the start and at the end of the run, for bring-up 1.5b after an OTA. Never /check_status
 (reviewer, 2026-10-20); until 2026-10-25 this read its `git_version`.
 
-    GI_WICAN_SSID=... py -3.14 gen-inhibit/tools/bench/page_only_baseline.py
+    GI_WICAN_SSID=... python3.13 gen-inhibit/tools/bench/page_only_baseline.py
         --power "..." [--seconds 360] [--period 1.0] [--pulse-rts-at 30]
 Writes runs/page_only_baseline_<stamp>.json.
 """
@@ -116,6 +119,85 @@ def parse_wlan_link(text):
             if m:
                 out[k] = conv(m.group(1))
     return out
+
+
+# Linux (2026-11-12, the reviewer's Linux leftovers item 6): NetworkManager's nmcli, in its
+# terse form, which escapes a ':' or '\' inside a value with '\'. Only the access point this
+# host is joined to (ACTIVE yes) is read; its SSID is compared, never kept, and its BSSID is
+# not asked for. SIGNAL is NetworkManager's percent, as netsh's Signal is. The rates have no
+# nmcli field for the link in use (iw is not installed on madhouse-debian), so on Linux
+# wlan_rx_mbps and wlan_tx_mbps are None. Not yet run against a real adapter: madhouse-debian
+# has no Wi-Fi adapter until the USB one arrives, so the parsing is tested on made-up output
+# in nmcli's documented form.
+WLAN_WINDOWS = ["netsh", "wlan", "show", "interfaces"]
+WLAN_LINUX = ["nmcli", "-t", "-e", "yes", "-f", "ACTIVE,SSID,SIGNAL", "device", "wifi", "list", "--rescan", "no"]
+
+
+def nm_fields(line):
+    """One line of nmcli's terse output, split on unescaped ':' and unescaped."""
+    out, cur, esc = [], "", False
+    for ch in line:
+        if esc:
+            cur += ch
+            esc = False
+        elif ch == "\\":
+            esc = True
+        elif ch == ":":
+            out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    out.append(cur)
+    return out
+
+
+def _nm_active(text):
+    return [f for f in (nm_fields(ln) for ln in text.splitlines() if ln.strip()) if f[0] == "yes" and len(f) >= 3]
+
+
+def parse_nmcli(text, ssid):
+    """(connected_to_ssid, state) from WLAN_LINUX's output: connected to ssid only when
+    exactly one access point is active and its SSID is ssid."""
+    act = _nm_active(text)
+    state = "connected" if len(act) == 1 else "disconnected" if not act else "%d active" % len(act)
+    return (len(act) == 1 and ssid is not None and act[0][1] == ssid), state
+
+
+def parse_nmcli_link(text):
+    """The link fields from WLAN_LINUX's output: the active access point's signal (%);
+    the rates None (above)."""
+    out = {k: None for k, _, _, _ in LINK_FIELDS}
+    act = _nm_active(text)
+    if len(act) == 1 and re.fullmatch(r"\d+", act[0][2]):
+        out["wlan_signal"] = int(act[0][2])
+    return out
+
+
+def read_wlan(ssid, run=subprocess.run, platform=None):
+    """(connected_to_ssid, state, link fields): netsh on Windows, nmcli elsewhere. A
+    reader that can't run, or exits non-zero, is not connected, its state saying why."""
+    win = (platform or sys.platform) == "win32"
+    argv = WLAN_WINDOWS if win else WLAN_LINUX
+    none = {k: None for k, _, _, _ in LINK_FIELDS}
+    try:
+        r = run(argv, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, "%s failed (%s)" % (argv[0], type(e).__name__), none
+    if win:
+        ok, state = parse_wlan(r.stdout, ssid)
+        return ok, state, parse_wlan_link(r.stdout)
+    if r.returncode != 0:
+        return False, "nmcli exit %d" % r.returncode, none
+    ok, state = parse_nmcli(r.stdout, ssid)
+    return ok, state, parse_nmcli_link(r.stdout)
+
+
+def rejoin_argv(ssid, platform=None):
+    """The command that rejoins the WiCAN's SoftAP through the profile this host already
+    has for it (the passphrase stays in the OS's store and is never read here)."""
+    if (platform or sys.platform) == "win32":
+        return ["netsh", "wlan", "connect", "name=%s" % ssid]
+    return ["nmcli", "device", "wifi", "connect", ssid]
 
 
 def link_summary(samples):
@@ -360,9 +442,7 @@ def main():
                     time.sleep(0.05)
                 rec["events"].append([round(time.perf_counter() - t0, 3),
                                       "rts pulsed: %s" % cc.pulse_rts(0.2)])
-            r = subprocess.run(["netsh", "wlan", "show", "interfaces"],
-                               capture_output=True, text=True, timeout=10)
-            wlan_ok, state = parse_wlan(r.stdout, ssid)
+            wlan_ok, state, link = read_wlan(ssid)
             port = None
             if a.watch_wican:
                 try:
@@ -373,7 +453,7 @@ def main():
             tq = time.perf_counter()
             p = LF.page() if wlan_ok else None
             s = {"t": round(t, 3), "tq": round(tq - t0, 3), "wlan_ok": wlan_ok,
-                 "wlan_state": state, **parse_wlan_link(r.stdout),
+                 "wlan_state": state, **link,
                  "dur": round(time.perf_counter() - tq, 3), "port": port,
                  "answered": p is not None,
                  "mode": None if p is None else p.get("mode"),
@@ -386,9 +466,12 @@ def main():
             if not wlan_ok:
                 lost_since = t if lost_since is None else lost_since
                 if t - lost_since >= a.rejoin_after:
-                    r2 = subprocess.run(["netsh", "wlan", "connect", "name=%s" % ssid],
-                                        capture_output=True, text=True, timeout=10)
-                    rec["events"].append([round(t, 3), "rejoin netsh rc %d" % r2.returncode])
+                    argv = rejoin_argv(ssid)
+                    try:
+                        rc = subprocess.run(argv, capture_output=True, text=True, timeout=10).returncode
+                    except (OSError, subprocess.SubprocessError) as e:
+                        rc = type(e).__name__
+                    rec["events"].append([round(t, 3), "rejoin %s rc %s" % (argv[0], rc)])
                     lost_since = t
             else:
                 lost_since = None
