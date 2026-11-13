@@ -4,20 +4,40 @@ The spec's run, as the reviewer ruled it (2026-10-15):
   - the IDENTIFIER: extended 0x18FFDEC0 (read by neither the core nor the
     Bel unit), DLC exactly 3, a 24-bit counter (big-endian) in every
     payload, offered steadily at a mean of 2,000 fps for >= 50,000 frames
-    by the PCAN on the vehicle segment;
+    by the Kvaser on the vehicle segment (since 2026-11-13; the PCAN until
+    then -- see THE ROLES below);
   - the FILLER: extended 0x0CFF01C0 (SA 0xC0, so the board's vehicle port
     goes normal and the filler is bridged onto the vehicle segment, spec
     2.3; higher priority than the identifier; read by nobody), DLC 8, in
     bursts of 8 at a mean of 1,000 fps, by the Innomaker on the charger
     segment, started FIRST and running throughout;
   - measured ON THE WIRE: the identifier's rate, gaps and DLC by the
-    Kvaser (normal mode, device stamps) on the vehicle segment; the
+    PCAN (normal mode, device stamps) on the vehicle segment; the
     filler's rate, burst shape and DLC by the Innomaker's own echoes
     (validated as a wire witness 2026-10-06: they plateau at the wire's
     ceiling); the vehicle segment's load recorded, not judged;
   - the vehicle port NORMAL before the identifier starts and throughout it:
-    the board's 0x7F4 at its 1 Hz cadence on the Kvaser, and no serial
+    the board's 0x7F4 at its 1 Hz cadence on the PCAN, and no serial
     "vehicle port -> LISTEN-ONLY" line in the window. Otherwise VOID.
+
+THE ROLES (the charge-interposer reviewer's D1, 2026-11-13, after the
+kvaser_usb measurement). On the kernel's kvaser_usb the Kvaser's stamps are
+software stamps, two per 1 ms USB frame, so the steadiness rule (median
+gap 0.5 ms +/- 5 %, 99 % under 1.0 ms) FAILS on them for a steady offer
+(68-69 % under 1 ms, run 3). So the roles swap, the thresholds unchanged:
+the Kvaser SENDS the identifier, paced, in a process of its own
+(proc_identifier_kvaser), and its SENT COUNT is its own echoes that came
+back; the PCAN, in a reader process of its own (rx_proc), WITNESSES the
+rate, gaps, DLC, drops and 0x7F4's cadence on its device clock. The basis
+(M4, 2026-11-13 run 2): 60 s at 2,000 fps from the Kvaser on this host,
+120,001 of 120,001 sent, echoed and witnessed by the PCAN, its gaps median
+0.500 ms, p1 0.458, p99 0.542, max 1.651 ms. The Kvaser's link is brought
+up and read back first (an ACK check; VOID with the kernel's lines if
+not). A kvaser TX stall in the sender (ENOBUFS, or an echo later than
+100 ms) is VOID with the kernel's lines, and the Kvaser is recovered
+(sender_void). A PCAN that lost frames (a queue overrun, kernel lost-frame
+lines) voids the run whatever else it shows (judge's witness_void).
+bench_switch_loss keeps the PCAN as its sender (proc_identifier, D4).
 
 JUDGED (judge(), pure; --self-test drives it):
   VOID  (the stimulus is not the specified run): fewer than 50,000
@@ -46,9 +66,10 @@ JUDGED (judge(), pure; --self-test drives it):
   spec 12 Specified 2026-10-15); anywhere else, as unexplained.
 
 Processes: the two senders run in their own processes so neither paces the
-other through the GIL; the Kvaser witness and the board's USB serial
-(bench_usb_host.HostPort: DTR/RTS low, so opening it does not reset the
-board) live in this one. 'W' resets the board's witness window before the
+other through the GIL, and so does the PCAN witness (since 2026-11-13, the
+reviewer's M6: reader threads beside a busy sender lost frames); the
+board's USB serial (bench_usb_host.HostPort: DTR/RTS low, so opening it
+does not reset the board) lives in this one. 'W' resets the board's witness window before the
 identifier starts (so before any traffic), 'w' dumps it after
 (bench_l3_replay's protocol). Until 2026-10-16 W was sent at the run window's
 open, mid-traffic, which made RECONCILE mismatch by construction.
@@ -86,7 +107,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
-import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import kvaser_link                 # noqa: E402  (the Kvaser on kvaser_usb)
 from bench_usb_host import unwrap_us32   # noqa: E402  (gs_usb's 32-bit us stamp)
 
 BITRATE = 500000
@@ -148,20 +169,28 @@ def filler_echoes(chg, t_id0, t_id1):
 
 
 def judge(veh, chg, serial, dump, t_pre0, t_pre1, t_id0, t_id1,
-          flight=False, t_fgo=None):
-    """veh: Kvaser rows (t_dev, t_host, id, ext, dlc, hex); chg: Innomaker
+          flight=False, t_fgo=None, witness_void=None):
+    """veh: the vehicle wire witness's rows (t_dev, t_host, id, ext, dlc,
+    hex): the PCAN since 2026-11-13 (D1), the Kvaser before; witness_void:
+    the VOID line when that witness may have lost frames (rx_proc.
+    witness_void: a PCAN queue overrun, kernel lost-frame lines), which
+    voids the run whatever else it shows; chg: Innomaker
     rows (t_dev, t_host, id, ext, dlc, hex, is_rx); serial: (host, line);
     dump: the board's 'w' lines; [t_pre0, t_pre1]: host window of the
     filler-free pre-phase; [t_id0, t_id1]: host window of the run (the
     filler on, the port normal); t_fgo: host time the filler was started
     (default t_pre1 + 0.05, as run_bench sets t_pre1). -> (verdict, lines)."""
     void, fail, rec = [], [], []
+    if witness_void:
+        void.append(witness_void[len("VOID: "):] if witness_void.startswith("VOID: ")
+                    else witness_void)
     if t_fgo is None:
         t_fgo = t_pre1 + 0.05
     vid = [r for r in veh if r[2] == ID and r[3]]
     vseq = [seq_of(r[5]) for r in vid]
     if len(vid) < 2:
-        return ("VOID", ["the identifier was not seen on the vehicle wire"])
+        return ("VOID", ["the identifier was not seen on the vehicle wire"]
+                + ["VOID: " + x for x in void])
     dlcs = sorted(set(r[4] for r in vid))
     if dlcs != [3]:
         void.append("identifier DLC %s, not 3" % dlcs)
@@ -175,7 +204,7 @@ def judge(veh, chg, serial, dump, t_pre0, t_pre1, t_id0, t_id1,
         pmed = statistics.median(pg)
         punder = sum(1 for g in pg if g < 2 * NOMINAL_GAP_MS) / float(len(pg))
         rec.append("pre-phase, the identifier alone on the vehicle wire "
-                   "(Kvaser, device clock): %d frames over %.2f s, %.1f fps, "
+                   "(PCAN, device clock): %d frames over %.2f s, %.1f fps, "
                    "gaps median %.3f / p99 %.3f / max %.3f ms, %.2f %% under "
                    "%.1f ms" % (len(pre), pspan, (len(pre) - 1) / pspan, pmed,
                                 pct(pg, 0.99), max(pg), punder * 100,
@@ -263,7 +292,7 @@ def judge(veh, chg, serial, dump, t_pre0, t_pre1, t_id0, t_id1,
     longest = max((b - a for a, b in zip(pts, pts[1:])), default=99.0)
     lo = [(h, ln) for h, ln in serial if LISTEN_RE.search(ln)
           and t_id0 - 0.5 <= h <= t_id1]
-    rec.append("vehicle port: %d 0x7F4 on the Kvaser in the window (+ %d in "
+    rec.append("vehicle port: %d 0x7F4 on the PCAN in the window (+ %d in "
                "the 2 s before), longest stretch without one %.2f s; serial "
                "LISTEN-ONLY lines in the window: %d"
                % (len([t for t in win if t >= t_id0]), len(before), longest,
@@ -743,6 +772,42 @@ def self_test():
           "unwrapped run's (%d frames over %.3f s)" % (len(fe_w), span))
     v, lines = judge(veh, wrapped, serial, dump, a0, a1, t0, t1, t_fgo=a1)
     check(v == "PASS", "... and the run across the wrap still judges PASS -> %s" % v)
+    # 2026-11-13, the reviewer's D1: the Kvaser sends, the PCAN witnesses;
+    # a PCAN that lost frames voids the run; a kvaser TX stall voids it
+    planted = ("2026-11-13T12:00:01.0-08:00 madhouse-debian kernel: pcan32: PCAN-USB FD "
+               "CAN1: msg[type=1 id=18ffdec0h l=3] lost: err -28 rxqsize=2000\n"
+               "2026-11-13T12:00:01.5-08:00 madhouse-debian kernel: usb 1-3.2.1: error -71\n")
+    import rx_proc
+    wv = rx_proc.witness_void("pcan", {"opened": True, "rows": [], "recv_errors": []},
+                              0, 1, lambda s, u: planted)
+    veh, chg, serial, dump, a0, a1, t0, t1 = _synth()
+    v, lines = judge(veh, chg, serial, dump, a0, a1, t0, t1, t_fgo=a1, witness_void=wv)
+    check(v == "VOID" and has(lines, "lost-frame line") and has(lines, "error -71"),
+          "can-fail: the PCAN witness lost frames (a planted kernel 'lost' line) -> VOID, "
+          "the kernel's lines named, whatever else the run shows")
+    v, lines = judge(veh, chg, serial, dump, a0, a1, t0, t1, t_fgo=a1,
+                     witness_void="VOID: the pcan reader: 1 recv error(s), first QOVERRUN")
+    check(v == "VOID" and has(lines, "QOVERRUN"), "can-fail: a PCAN queue overrun -> VOID")
+    v, lines = judge(veh[:1], chg, serial, dump, a0, a1, t0, t1, t_fgo=a1, witness_void=wv)
+    check(v == "VOID" and has(lines, "lost-frame line"),
+          "...the witness's loss named even when the identifier was not seen")
+    clean = dict(sent=52000, send_calls=52000, unechoed=0, stall=None)
+    check(sender_void(clean, 0, 1, lambda s, u: "") is None,
+          "sender: every send echoed, no stall -> judged")
+    sv = sender_void(dict(clean, sent=31000, stall="kvaser TX stall: no own echo 101 ms "
+                          "after send returned", stall_epoch=1794590000.25), 0, 1,
+                     lambda s, u: planted)
+    check(sv is not None and sv.startswith("VOID: kvaser TX stall: no own echo")
+          and "error -71" in sv,
+          "can-fail: a kvaser TX stall in the sender -> a VOID line with the kernel's lines")
+    sv = sender_void(dict(clean, unechoed=2), 0, 1, lambda s, u: "")
+    check(sv is not None and "no own echo" in sv, "sends never echoed -> VOID")
+    import inspect
+    src = inspect.getsource(run_bench)
+    check("target=proc_identifier_kvaser" in src and "\"open_pcan\", {\"acks\": True}" in src
+          and "witness_void=wv" in src and "sender_void(" in src,
+          "run_bench: the Kvaser's process sends, the PCAN (normal) witnesses in its own "
+          "process, and both voids reach the verdict")
     gate_self_test(check)
     print("\nbench_hold12 self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
@@ -818,6 +883,71 @@ def proc_identifier(go, done, out_path, seconds):
               open(out_path, "w"))
     bus.shutdown()
     done.set()
+
+
+def proc_identifier_kvaser(go, done, out_path, seconds):
+    """The Kvaser sends the identifier, paced, when `go` is set (the
+    reviewer's D1, 2026-11-13; bench_switch_loss keeps proc_identifier, the
+    PCAN, under D4). netdev kvaser on kvaser_usb, its echoes kept: each send
+    is followed by a read of the echoes waiting (kvaser_link.EchoWatch), so
+    the SENT COUNT is the own echoes that arrived, and a kvaser TX stall
+    (ENOBUFS, or an echo later than 100 ms) stops the offer and is written
+    to the summary: the run is VOID. M4, the basis (2026-11-13 run 2): 60 s
+    at 2,000 fps from this host, 120,001 of 120,001 echoed and witnessed,
+    echo after the send call 0.865 ms median, 1.55 ms max."""
+    import can
+    import bench_pacer
+    prio = above_normal()
+    bus = kvaser_link.open_bus(receive_own_messages=True)
+    watch = kvaser_link.EchoWatch(bus)
+    stall = []
+    msg = can.Message(arbitration_id=ID, is_extended_id=True, data=bytearray(3))
+
+    def seq_writer(k):
+        msg.data = bytearray(((k >> 16) & 255, (k >> 8) & 255, k & 255))
+
+    def send():
+        if stall:
+            return                   # stopped: the pacer runs out its time
+        try:
+            watch.send(msg, timeout=0.05)
+            watch.poll(0.0)
+        except kvaser_link.Stall as st:
+            stall.append(st)
+    go.wait()
+    t0 = time.perf_counter()
+    off = bench_pacer.offer(send, ID_RATE, seconds, seq_writer=seq_writer)
+    t1 = time.perf_counter()
+    if not stall:
+        try:
+            watch.finish()
+        except kvaser_link.Stall as st:
+            stall.append(st)
+    st = stall[0] if stall else None
+    json.dump(dict(sent=watch.echoed, send_calls=watch.calls, unechoed=len(watch.pending),
+                   errs=off.errs, first_err=off.first_err, t0=t0, t1=t1,
+                   max_lag_ms=off.max_lag_ms, priority=prio,
+                   stall=str(st) if st else None,
+                   stall_epoch=kvaser_link.epoch_of(st.t) if st else None,
+                   sender_gaps=gap_stats(off._sender_gaps_ms, NOMINAL_GAP_MS)),
+              open(out_path, "w"))
+    bus.shutdown()
+    done.set()
+
+
+def sender_void(sent, t0, t1, journal=None):
+    """The identifier sender's summary -> the VOID line for a kvaser TX
+    stall, or for sends whose own echo never came (the sent count is the
+    echoes), with the kernel's USB/CAN lines; else None."""
+    if sent.get("stall"):
+        why = "%s at %s" % (sent["stall"], kvaser_link.clock_text(sent["stall_epoch"])
+                            if sent.get("stall_epoch") else "?")
+    elif sent.get("unechoed"):
+        why = ("kvaser TX stall: %d identifier send(s) with no own echo at the end"
+               % sent["unechoed"])
+    else:
+        return None
+    return kvaser_link.void_line(why, t0, t1, journal)
 
 
 def proc_filler(fgo, ready, rows_path, seconds):
@@ -999,20 +1129,22 @@ def run_bench(a):
             log("12 entry 2 (witness build): VOID")
             out.close()
             return 1
-    kv = adapter_fixes.bus(interface="kvaser", channel=0, bitrate=BITRATE)
-    veh, vlock, vhalt = [], threading.Lock(), threading.Event()
-
-    def vrx():
-        while not vhalt.is_set():
-            m = kv.recv(timeout=0.05)
-            if m is None or m.is_error_frame:
-                continue
-            h = time.perf_counter()
-            with vlock:
-                veh.append((m.timestamp, h, m.arbitration_id,
-                            bool(m.is_extended_id), m.dlc, bytes(m.data).hex()))
-    vt = threading.Thread(target=vrx, daemon=True)
-    vt.start()
+    # D1 (the reviewer, 2026-11-13): the Kvaser sends the identifier (its
+    # link up and read back first, an ACK check), the PCAN witnesses the
+    # vehicle wire in NORMAL mode (it acknowledges the identifier while the
+    # port is listen-only) from a reader process of its own (M6)
+    import rx_proc
+    t_ep0 = time.time()
+    try:
+        log(kvaser_link.set_link(True))
+    except kvaser_link.LinkError as e:
+        log(kvaser_link.link_void(e, t_ep0, time.time()))
+        hp.close()
+        log("12 entry 2 (%s): VOID" % ("flight image" if a.flight else "witness build"))
+        out.close()
+        return 1
+    pcr = rx_proc.ProcReader("bench_usb_host", "open_pcan", {"acks": True}, name="pcan")
+    pcr.wait_ready()
     ctx = mp.get_context("spawn")
     go, done = ctx.Event(), ctx.Event()
     fgo, fready = ctx.Event(), ctx.Event()
@@ -1020,7 +1152,7 @@ def run_bench(a):
     pf = ctx.Process(target=proc_filler, args=(
         fgo, fready, base + "_charger_rows.txt",
         LEAD_S + ID_SECONDS + TAIL_S + 2.0))
-    pv = ctx.Process(target=proc_identifier, args=(
+    pv = ctx.Process(target=proc_identifier_kvaser, args=(
         go, done, base + "_identifier_sent.json",
         PRE_S + LEAD_S + ID_SECONDS))
     pf.start()
@@ -1052,9 +1184,7 @@ def run_bench(a):
         fstop.set()
         pf.join(LEAD_S + ID_SECONDS + TAIL_S + 30)
         pv.join(10)
-        vhalt.set()
-        vt.join(2.0)
-        kv.shutdown()
+        pcr.finish()
         hp.close()
         out.close()
         return 3
@@ -1069,24 +1199,33 @@ def run_bench(a):
         dump = [s for h, s in hp.stamped[n0:]]
     pf.join(LEAD_S + ID_SECONDS + TAIL_S + 30)
     pv.join(10)
-    vhalt.set()
-    vt.join(2.0)
-    kv.shutdown()
+    pres = pcr.finish()
+    veh = [tuple(r[:6]) for r in pres["rows"] if not r[7]]
     serial = list(hp.stamped)
     hp.close()
     with open(base + "_vehicle_rows.txt", "w") as f:
-        f.write("# t_dev\tt_host\tid\text\tdlc\thex (Kvaser, normal mode)\n")
+        f.write("# t_dev\tt_host\tid\text\tdlc\thex (PCAN, normal mode)\n")
         for r in veh:
             f.write("%.6f\t%.6f\t%X\t%d\t%d\t%s\n" % r)
     chg = read_rows(base + "_charger_rows.txt", chg=True)
-    log("identifier sender: %s" % json.dumps(sent))
+    log("identifier sender (the Kvaser; sent = its own echoes): %s" % json.dumps(sent))
+    sv = sender_void(sent, t_ep0, time.time())
+    if sv:
+        # a kvaser TX stall: not judged; the sender's process has closed
+        # its socket, so the Kvaser is recovered here
+        log(sv)
+        log(kvaser_link.recover()[1])
+        log("12 entry 2 (%s): VOID" % ("flight image" if a.flight else "witness build"))
+        out.close()
+        return 1
+    wv = rx_proc.witness_void("pcan", pres, t_ep0, time.time())
     log("board dump (%d lines):" % len(dump))
     for s in dump[:12]:
         log("    | %s" % s)
     log("windows (host perf s): pre-phase %.3f-%.3f, filler start %.3f, run "
         "%.3f-%.3f" % (t_pre0, t_pre1, t_fgo, t_id0, t_id1))
     v, lines = judge(veh, chg, serial, dump, t_pre0, t_pre1, t_id0, t_id1,
-                     flight=a.flight, t_fgo=t_fgo)
+                     flight=a.flight, t_fgo=t_fgo, witness_void=wv)
     if not a.flight:
         m = RECONCILE_RE.search("\n".join(dump))
         nv = len([r for r in veh if r[2] == ID and r[3]])
@@ -1121,6 +1260,14 @@ MUTANTS = [
      "    t_r = now()\n    reset()\n", "    t_r = now()\n"),
     ("filler echoes: the device stamps not unwrapped",
      "    dev = unwrap_us32([r[0] for r in chg])", "    dev = [r[0] for r in chg]"),
+    # 2026-11-13, the reviewer's D1
+    ("the PCAN's lost frames ignored", "    if witness_void:\n        void.append(",
+     "    if False:\n        void.append("),
+    ("a kvaser TX stall in the sender judged", "    if sent.get(\"stall\"):",
+     "    if False:"),
+    ("unechoed sends judged", "    elif sent.get(\"unechoed\"):", "    elif False:"),
+    ("the PCAN sends again", "    pv = ctx.Process(target=proc_identifier_kvaser, args=(",
+     "    pv = ctx.Process(target=proc_identifier, args=("),
 ]
 
 
