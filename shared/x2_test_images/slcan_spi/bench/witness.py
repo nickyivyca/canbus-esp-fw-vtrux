@@ -11,8 +11,10 @@ Its stamps are software stamps on the host's epoch clock, which clock_ok
 accepts as before. An error frame that reports only a controller state
 change, by its CAN_ERR class (state_only: CRTL, BUSOFF or RESTARTED with no
 wire class), is left out of counts and of the lag and counted apart
-(state_changes); kvaser_usb gives one wire-class error frame, 0x288, per
-jam pulse. As the gen-inhibit tester's jammer checks do
+(state_changes), and so is any other error frame with no wire class
+(on_wire; non_wire: kvaser_usb's CAN_ERR_CNT-only frame every 512 ms while
+its controller is not error-active); kvaser_usb gives one wire-class error
+frame, 0x288 (0x28C with a state change), per jam pulse. As the gen-inhibit tester's jammer checks do
 (x2_jammer.py, witness_clock.py, agreed 2026-11-13): delivery is judged
 from what the witness saw, never from what was commanded; the times judged
 are msg.timestamp (on kvaser_usb the kernel's receipt stamp: it has no
@@ -41,6 +43,7 @@ Pure functions (test_witness.py, with its mutants):
                                  error (STAMP_ERR_S), at least MARGIN_MIN
   real_channel(info)             refuses CANlib's virtual channels (CANlib only)
   state_only(can_id)             a state-change error frame, by CAN_ERR class
+  on_wire(can_id)                an error seen on the wire, the only kind counted
   link_up(netdev, root)          IFF_UP in sysfs
 Witness(bus) is tested on a fake bus there too; open_kvaser() opens the
 bench's Kvaser for it.
@@ -247,6 +250,17 @@ def state_only(can_id):
     return bool(can_id & STATE_CLASSES) and not (can_id & WIRE_CLASSES)
 
 
+def on_wire(can_id):
+    """An error frame that reports an error seen on the wire, by its CAN_ERR
+    class: only these are counted as pulses. Besides the state changes
+    (state_only), kvaser_usb sends a frame with CAN_ERR_CNT alone (0x200,
+    the error counters, data all zero) every 512 ms while its controller is
+    not error-active, so after any long train (the charge-interposer
+    tester's capture, 2026-11-13: two of them in jam-stop's closing-pulse
+    window made its count 3); counted, it would be a pulse nobody sent."""
+    return bool(can_id & WIRE_CLASSES)
+
+
 # ---------------------------------------------------------------- the Kvaser
 
 NETDEV = "kvaser"
@@ -307,6 +321,7 @@ class Witness(threading.Thread):
         self.frames = []
         self.host_stamped = 0
         self.state_changes = 0          # error frames left out by CAN_ERR class
+        self.non_wire = 0               # neither a state change nor on the wire (CNT alone)
         self.failed = None
         self.alive_at_finish = None     # None until finish()
         self.lag = None
@@ -322,8 +337,11 @@ class Witness(threading.Thread):
                 if getattr(m, "host_stamped", False):
                     self.host_stamped += 1
                     continue
-                if m.is_error_frame and state_only(m.arbitration_id):
-                    self.state_changes += 1
+                if m.is_error_frame and not on_wire(m.arbitration_id):
+                    if state_only(m.arbitration_id):
+                        self.state_changes += 1
+                    else:
+                        self.non_wire += 1
                     continue
                 if m.is_error_frame:
                     self.errors.append((m.timestamp, h))
@@ -364,6 +382,7 @@ class Witness(threading.Thread):
         return {"median_lag_s": None if lag is None else round(lag, 4),
                 "errors": len(self.errors), "frames": len(self.frames),
                 "host_stamped": self.host_stamped,
-                "state_changes": self.state_changes, "failed": self.failed,
+                "state_changes": self.state_changes, "non_wire": self.non_wire,
+                "failed": self.failed,
                 "alive_at_finish": self.alive_at_finish,
                 "channel": (self.channel_info or {}).get("device_name")}
