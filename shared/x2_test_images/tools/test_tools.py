@@ -1,5 +1,8 @@
-"""Tests of check_image.py and archive.py on stand-in builds: the harness's
-own test, each check shown failing as well as passing.
+"""Tests of check_image.py, archive.py and flash_row.py on stand-in builds:
+the harness's own test, each check shown failing as well as passing.
+flash_row.py runs shared/bench's real esptool flasher against a stand-in
+esptool (a script that prints what esptool prints), a lock log of its own,
+and made-up /sys/class/net and /proc trees, never this machine's.
 
 TEST EQUIPMENT. Shared harness of x2_test_images (owner: the testers).
 
@@ -510,6 +513,260 @@ def test_archive(tmp):
         img, "jammer", "t", build_fn=builder()))
 
 
+# ---- flash_row ----
+
+FAKE_ESPTOOL = r'''
+import os, sys
+a = sys.argv[1:]
+with open(os.environ["FAKE_ESPTOOL_LOG"], "a") as f:
+    f.write(" ".join(a) + "\n")
+if "chip_id" in a:
+    print("Chip is ESP32-S3 (QFN56) (revision v0.2)")
+    print("MAC: 02:00:00:00:00:01")
+    sys.exit(0)
+if "write_flash" in a:
+    n = len(a[a.index("write_flash") + 1:]) // 2
+    if os.environ.get("FAKE_ESPTOOL_MODE") == "short":
+        n -= 1
+    for _ in range(n):
+        print("Hash of data verified.")
+    sys.exit(0)
+sys.exit(2)
+'''
+FLASH_ROLE = "tester (charge-interposer)"
+TEST_MAC = "02:00:00:00:00:01"      # locally administered, made up
+
+
+def test_flash_row(tmp):
+    import flash_row as FR
+    rit = os.path.join(tmp, "frit")
+    os.makedirs(os.path.join(rit, archive.ARCHIVE_REL))
+    os.environ["REVERSE_IT_DIR"] = rit
+    img = make_repo(os.path.join(tmp, "fr-repo"))
+    row, folder = archive.run(img, "jammer", "t", build_fn=builder())
+    CHECK(row["pinnable"], "flash_row's stand-in row is pinnable")
+    arch = os.path.dirname(os.path.dirname(folder))
+    build = row["app_sha256"][:16]
+
+    fake = os.path.join(tmp, "fake_esptool.py")
+    with open(fake, "w") as f:
+        f.write(FAKE_ESPTOOL)
+    elog = os.path.join(tmp, "esptool_calls.txt")
+    os.environ["FAKE_ESPTOOL_LOG"] = elog
+    settings = {"esptool": {"argv": [sys.executable, fake], "port": "FAKEPORT",
+                            "baud": 115200, "chip": {"mac": TEST_MAC}}}
+    lockdir = os.path.join(tmp, "lock")
+    os.makedirs(lockdir)
+    lock = os.path.join(lockdir, "bench-log.jsonl")
+    FR.BL.init(lock, FLASH_ROLE)
+    FR.BL.take(lock, FLASH_ROLE, os.getpid())
+    other = os.path.join(tmp, "lock2")
+    os.makedirs(other)
+    lock2 = os.path.join(other, "bench-log.jsonl")
+    FR.BL.init(lock2, "android")
+    FR.BL.take(lock2, "android", os.getpid())
+    net, proc = os.path.join(tmp, "net"), os.path.join(tmp, "proc")
+    os.makedirs(net)
+    os.makedirs(proc)
+    saved = (FR.FL.this_env, FR.SYSFS_NET, FR.PROC, FR.BENCH, FR.CHECKOUT)
+    FR.FL.this_env = lambda: "windows"   # the flasher takes a port setting
+    FR.SYSFS_NET, FR.PROC = net, proc    # never this machine's canx2
+    k = [0]
+
+    def logdir():
+        k[0] += 1
+        d = os.path.join(tmp, "flogs", str(k[0]))
+        os.makedirs(d)
+        return d
+
+    def calls():
+        if not os.path.exists(elog):
+            return []
+        with open(elog) as f:
+            out = f.read().splitlines()
+        os.remove(elog)
+        return out
+
+    def copy(edit_rows=None, edit_files=None):
+        """A copy of the archive, its rows and files edited."""
+        k[0] += 1
+        d = os.path.join(tmp, "farch", str(k[0]))
+        shutil.copytree(arch, d)
+        if edit_rows:
+            with open(os.path.join(d, "manifest.jsonl")) as f:
+                rows = [json.loads(l) for l in f if l.strip()]
+            rows = edit_rows(rows)
+            with open(os.path.join(d, "manifest.jsonl"), "w") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in rows))
+        if edit_files:
+            edit_files(os.path.join(d, row["folder"]))
+        return d
+
+    def go(a=None, settings_=None, build_=None, lock_=None, dev=False,
+           check_only=False):
+        return FR.run("jammer", build_ or build, settings_ or settings,
+                      FLASH_ROLE, logdir(), dev=dev, check_only=check_only,
+                      archive_dir=a or arch, lock_log=lock_ or lock)
+
+    def refuses(what, rc_res, needle):
+        rc, res = rc_res
+        detail = res.get("detail") or ""
+        CHECK(rc == 2 and res["phase"] == "refused" and needle in detail,
+              "%s refused naming %r: rc %s, %s" % (what, needle, rc, detail))
+        CHECK(calls() == [], "%s: esptool never ran" % what)
+
+    try:
+        CHECK(FR.chip_type("esp32s3") == "ESP32-S3"
+              and FR.chip_type("esp32c3") == "ESP32-C3"
+              and FR.chip_type("esp32") == "ESP32", "chip names")
+
+        # The good row: checked, then flashed with exactly its files.
+        rc, res = go(check_only=True)
+        CHECK(rc == 0 and res["phase"] == "checked" and calls() == [],
+              "check-only passes and runs no esptool: %s" % res.get("detail"))
+        CHECK([f[0] for f in res["files"]] == ["0x0", "0x8000", "0xe000",
+                                               "0x10000"], "the row's offsets")
+        rc, res = go()
+        c = calls()
+        want = " ".join("%s %s" % (f["offset"], os.path.join(folder, f["name"]))
+                        for f in row["files"])
+        CHECK(rc == 0 and res["ok"], "the good row flashes: %s"
+              % res.get("detail"))
+        CHECK(len(c) == 3 and c[1].endswith("write_flash " + want),
+              "write_flash got exactly the row's files at their offsets: %s"
+              % c[1:2])
+        CHECK(row["app_sha256"] in res["note"]
+              and "shared tag 2026.01.01" in res["note"]
+              and row["folder"] in res["note"], "note: %s" % res.get("note"))
+        CHECK(res["flash"]["md5"] and "device" not in res["flash"],
+              "the flasher's result kept, without the device")
+
+        # The files differ from the row (T9).
+        def grow(d):
+            with open(os.path.join(d, "ota_data_initial.bin"), "ab") as f:
+                f.write(b"\xff")
+        refuses("a file one byte longer", go(copy(edit_files=grow)), "size")
+
+        def flip(d):
+            p = os.path.join(d, "bootloader.bin")
+            with open(p, "rb") as f:
+                b = bytearray(f.read())
+            b[5] ^= 1
+            with open(p, "wb") as f:
+                f.write(b)
+        refuses("a file with a byte changed", go(copy(edit_files=flip)),
+                "sha256")
+
+        def row_field(name, key, value):
+            def ed(rows):
+                for r in rows:
+                    for f in r["files"]:
+                        if f["name"] == name:
+                            f[key] = value
+                return rows
+            return ed
+        refuses("a row sha256 the file does not have", go(copy(
+            row_field("bootloader.bin", "sha256", "0" * 64))), "sha256")
+        refuses("a row md5 the file does not have", go(copy(
+            row_field("bootloader.bin", "md5", "0" * 32))), "md5")
+        refuses("overlapping offsets", go(copy(
+            row_field("ota_data_initial.bin", "offset", "0x8010"))), "overlaps")
+
+        def dotdot(d):
+            shutil.copy2(os.path.join(d, "ota_data_initial.bin"),
+                         os.path.dirname(d))
+        refuses("a file name with a path", go(copy(
+            row_field("ota_data_initial.bin", "name",
+                      "../ota_data_initial.bin"), dotdot)), "bare name")
+
+        def set_key(key, value):
+            def ed(rows):
+                for r in rows:
+                    r[key] = value
+                return rows
+            return ed
+        refuses("an app_offset at another file", go(copy(
+            set_key("app_offset", "0xe000"))), "app_sha256")
+        refuses("a code hash the app does not have", go(copy(
+            set_key("code_hash", "1" * 64))), "code_hash")
+        refuses("an image hash the app does not have", go(copy(
+            set_key("image_hash", "2" * 64))), "image_hash")
+
+        def other_folder(d):
+            shutil.copytree(d, os.path.join(os.path.dirname(d), "0" * 16))
+        refuses("a folder not named by the app sha", go(copy(
+            set_key("folder", "builds/" + "0" * 16), other_folder)), "folder")
+
+        # The row: not pinnable, ambiguous, absent.
+        a = copy(set_key("pinnable", False))
+        refuses("a dev build without --dev", go(a), "pinnable")
+        rc, res = go(a, dev=True, check_only=True)
+        CHECK(rc == 0 and res["pinnable"] is False, "--dev checks a dev build")
+
+        def two(rows):
+            bad = json.loads(json.dumps(rows[0]))
+            bad["files"][0]["md5"] = "0" * 32
+            return [bad] + rows
+        refuses("rows naming different files", go(copy(two)), "disagree")
+        refuses("no row", go(build_="f" * 16), "no manifest row")
+        refuses("a short build id", go(build_=build[:8]), "16 to 64")
+
+        # The chip, the lock, canx2.
+        refuses("no MAC", go(settings_={"esptool": dict(
+            settings["esptool"], chip={})}), "MAC")
+        refuses("a settings chip type for another chip", go(settings_={
+            "esptool": dict(settings["esptool"],
+                            chip={"type": "ESP32-C3", "mac": TEST_MAC})}),
+            "ESP32-C3")
+        refuses("the lock held by another role", go(lock_=lock2), "not held by")
+        os.symlink("/nonexistent", os.path.join(net, "canx2"))
+        refuses("netdev canx2 present", go(), "canctl slcan detach canx2")
+        os.remove(os.path.join(net, "canx2"))
+        os.makedirs(os.path.join(proc, "4242"))
+        with open(os.path.join(proc, "4242", "cmdline"), "wb") as f:
+            f.write(b"/usr/bin/slcand\0-o\0-s6\0ttyACM9\0canx2\0")
+        refuses("slcand attached as canx2", go(), "slcand pid 4242")
+        shutil.rmtree(os.path.join(proc, "4242"))
+
+        # Another vtrux_bench than this checkout's.
+        FR.BENCH = tmp
+        refuses("a foreign vtrux_bench", go(), "imported from")
+        FR.BENCH = saved[3]
+
+        # The flash itself fails: exit 1.
+        os.environ["FAKE_ESPTOOL_MODE"] = "short"
+        rc, res = go()
+        calls()
+        CHECK(rc == 1 and not res["ok"] and "verified" in res["detail"],
+              "a write not verified for every file: rc %s, %s"
+              % (rc, res.get("detail")))
+        os.environ.pop("FAKE_ESPTOOL_MODE")
+
+        # The command line.
+        sp = os.path.join(tmp, "fsettings.json")
+        with open(sp, "w") as f:
+            json.dump(settings, f)
+        base = ["jammer", build, "--settings", sp, "--role", FLASH_ROLE,
+                "--archive", arch, "--lock-log", lock]
+        FR.CHECKOUT = os.path.join(tmp, "checkout")  # stands in for the tree
+        os.makedirs(FR.CHECKOUT)
+        inside = os.path.join(FR.CHECKOUT, "logs")
+        with redirect_stdout(io.StringIO()):
+            rc0 = FR.main(base + ["--log-dir", os.path.join(tmp, "cli1"),
+                                  "--check-only"])
+            rc2 = FR.main(base + ["--log-dir", os.path.join(tmp, "cli1")])
+            rc2b = FR.main(base + ["--log-dir", inside, "--check-only"])
+        CHECK((rc0, rc2, rc2b) == (0, 2, 2) and not os.path.exists(inside),
+              "cli: check-only 0, existing log dir 2, log dir in the "
+              "checkout 2: %r" % ((rc0, rc2, rc2b),))
+        CHECK(os.path.isfile(os.path.join(tmp, "cli1", "flash_row.json")),
+              "cli writes flash_row.json")
+    finally:
+        FR.FL.this_env, FR.SYSFS_NET, FR.PROC, FR.BENCH, FR.CHECKOUT = saved
+        os.environ.pop("FAKE_ESPTOOL_LOG", None)
+        os.environ.pop("FAKE_ESPTOOL_MODE", None)
+
+
 def _onerror(func, path, exc):
     try:
         os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
@@ -531,6 +788,7 @@ def main():
         os.makedirs(tmp)
         test_check_image(tmp)
         test_archive(tmp)
+        test_flash_row(tmp)
     finally:
         if saved is None:
             os.environ.pop("REVERSE_IT_DIR", None)

@@ -12,7 +12,7 @@ consumer pins them by hash (SPEC T2, T6, T9).
 | `jammer/` | CAN1 error-frame jammer, NOT FOR VEHICLE | gen-inhibit tester |
 | `slcan_can1/` | SLCAN on CAN1 (TWAI): a transmitter, which does not forward what it receives; `S6` (500 kbit/s) and standard `t` frames only; `V`/`N` fixed `V0101`/`NF001`, which name the protocol, not the build, so T10's identity falls back to `verify_flash`; may go on the truck (T3a); see `slcan_can1/README.md` | charge-interposer tester |
 | `slcan_spi/` | SLCAN on CAN2 (MCP2515), with CAN1 jamming (SPEC section 5, T13), NOT FOR VEHICLE; see `slcan_spi/README.md` | charge-interposer tester |
-| `tools/` | not an image: `archive.py` (T6, T7) and `check_image.py`, for every image here, with their tests | the testers, as shared harness: either project's tester changes it on a `shared/x2_test_images/<topic>` branch, and that project's reviewer merges it (gen-inhibit reviewer, 2026-11-12) |
+| `tools/` | not an image: `archive.py` (T6, T7), `check_image.py` and `flash_row.py` (T9-T11), for every image here, with their tests | the testers, as shared harness: either project's tester changes it on a `shared/x2_test_images/<topic>` branch, and that project's reviewer merges it (gen-inhibit reviewer, 2026-11-12) |
 | `SPEC.md` | the specification | gen-inhibit reviewer, which drafted it (user rules on changes) |
 | `README.md` | this file | the testers, each for its own rows; ownership rows by the reviewers |
 
