@@ -7,10 +7,12 @@ scan gen-inhibit's tools for an open that goes round it (gen-inhibit reviewer, 2
             and open nothing when the pin or the fixes refuse; the fixes apply once a process;
             close_gs_usb() shuts the bus down, then releases its pyusb handle through canbench's
             release_gs_usb, also when the shutdown raises; bus() sends kvaser and gs_usb through
-            the two openers, and anything else straight to can.Bus with its arguments
+            the two openers, and anything else straight to can.Bus with its arguments;
+            pcan_witness_bus() (2026-11-13) opens the pinned canbench's CanbenchPcanBus with
+            the caller's arguments and its bus-off reset off, after the guard and the pin
   guard     (reviewer, 2026-11-12) require_bench() runs first: with the lock free, unreadable,
             held by another role, or held under a pid that is neither this process nor an
-            ancestor, kvaser_bus(), gs_usb_bus() and bus(interface="kvaser") raise BenchNotHeld
+            ancestor, kvaser_bus(), gs_usb_bus(), pcan_witness_bus() and bus(interface="kvaser") raise BenchNotHeld
             before the pin, the fixes or an open; held by a gen-inhibit role under this process's
             pid (a runner) or an ancestor's (a hand take's session; the implementor on a loan),
             they open. _ancestors() walks /proc. In a child, the REAL guard: the real kvaser_bus,
@@ -144,9 +146,17 @@ class Fakes:
         lf.apply = apply
         rc = types.ModuleType("canbench.live.receiver")
         rc.release_gs_usb = lambda b: log.append(("release", b))
+        pb = types.ModuleType("canbench.live.pcan_bus")
+
+        class CanbenchPcanBus:
+            def __init__(self, **kw):
+                self.kw = kw
+                log.append(("Pcan", kw))
+        pb.CanbenchPcanBus = CanbenchPcanBus
         self.pinned = {"canbench": types.ModuleType("canbench"),
                        "canbench.live": types.ModuleType("canbench.live"),
-                       "canbench.live.linux_fixes": lf, "canbench.live.receiver": rc}
+                       "canbench.live.linux_fixes": lf, "canbench.live.receiver": rc,
+                       "canbench.live.pcan_bus": pb}
         self.saved = {}
 
     def pin_tool(self):
@@ -313,6 +323,27 @@ def unit():
               f.log and f.log[-1] == ("Bus", cfg) and cfg["interface"] == "pcan", f.log)
     case("bus: routes", router)
 
+    def pcan_witness():
+        # 2026-11-13, the reviewer's ruling (C): the PCAN as the session's timing witness
+        f = Fakes()
+        with f as kb:
+            b = kb.pcan_witness_bus(channel="PCAN_USBBUS1", bitrate=500000)
+        check("pcan_witness_bus: the lock checked first, then the pin loaded, then the pinned CanbenchPcanBus",
+              f.kinds() == ["lock", "use", "Pcan"], f.log)
+        check("pcan_witness_bus: the caller's arguments, and the bus-off reset off",
+              f.log[-1][1] == {"channel": "PCAN_USBBUS1", "bitrate": 500000, "canbench_busoff_reset": False}
+              and b.kw is f.log[-1][1], f.log[-1])
+        f = Fakes(use_raises=True)
+        raised = None
+        with f as kb:
+            try:
+                kb.pcan_witness_bus(channel="PCAN_USBBUS1", bitrate=500000)
+            except Exception as e:      # noqa: BLE001
+                raised = e
+        check("pcan_witness_bus: the pin refuses -> raises, and nothing is opened",
+              raised is not None and "Pcan" not in f.kinds(), (raised, f.log))
+    case("pcan_witness_bus: opens", pcan_witness)
+
     # the bench guard (reviewer, 2026-11-12): no real open without the lock
     me, parent = os.getpid(), os.getppid()
     for label, holder in (
@@ -323,7 +354,8 @@ def unit():
             ("the lock held by tester (gen-inhibit) under a pid that is no ancestor",
              {"who": "tester (gen-inhibit)", "pid": 2 ** 22 + 7, "run": None})):
         for opener, kw in (("kvaser_bus", {"channel": 0, "bitrate": 500000}),
-                           ("gs_usb_bus", {"channel": "can0", "index": 0, "bitrate": 500000})):
+                           ("gs_usb_bus", {"channel": "can0", "index": 0, "bitrate": 500000}),
+                           ("pcan_witness_bus", {"channel": "PCAN_USBBUS1", "bitrate": 500000})):
             def go(label=label, holder=holder, opener=opener, kw=kw):
                 f = Fakes(holder=holder)
                 raised = None
@@ -697,6 +729,15 @@ MUTANTS = [
     ("bus() opens the Innomaker straight", '    if iface == "gs_usb":\n        return gs_usb_bus(**kw)\n', ""),
     ("bus() drops the caller's arguments", "    return can.Bus(interface=iface, **kw)\n",
      "    return can.Bus(interface=iface)\n"),
+    # the PCAN witness (2026-11-13, ruling (C))
+    ("pcan_witness_bus opens without the guard",
+     '    require_bench()\n    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n',
+     '    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n'),
+    ("pcan_witness_bus resets on bus-off", "CanbenchPcanBus(canbench_busoff_reset=False, **kw)",
+     "CanbenchPcanBus(**kw)"),
+    ("pcan_witness_bus: the class not taken from the pin",
+     '    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n',
+     '    mod = importlib.import_module("canbench.live.pcan_bus")\n'),
     ("the pin tool is not the project's", 'PIN_TOOL = os.path.join(os.path.dirname(HERE), "can_tools_pin.py")\n',
      'PIN_TOOL = os.path.join(os.path.dirname(HERE), "can_tools_pin_missing.py")\n'),
 ]

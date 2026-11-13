@@ -412,9 +412,21 @@ def xj_closed(XJ, err):
     return bare(XJ.Witness, err=list(err), failed=None, stop_flag=stop)
 
 
+def adv_time():
+    """A time module whose sleeps advance its own clock (from now), for windows with an end."""
+    clock = [_time.time()]
+
+    def sleep(s):
+        clock[0] += max(s, 0)
+    return types.SimpleNamespace(time=lambda: clock[0], perf_counter=_time.perf_counter,
+                                 strftime=_time.strftime, sleep=sleep)
+
+
 def xj_noduration(XJ, err):
+    """noduration's window ends at its closing pulse since 2026-11-13, so the clock advances
+    with its sleeps (the send at +2 s, the closing pulse at +5 s)."""
     import argparse
-    XJ.time = fast_time()
+    XJ.time = adv_time()
     wit = xj_closed(XJ, err)
     rec = {}
     XJ.run_guarded(XJ.sub_noduration, argparse.Namespace(w=20, p=200), rec, FakeJamCon(), wit)
@@ -575,11 +587,12 @@ def checks(work):
         lambda: (lambda r: (str(r.get("verdict", "")).startswith("VOID")
                             and r.get("witness_clock_void", "").startswith(WC.RECEIPT), r.get("verdict")))(
             xj_noduration(XJ, [(HW0, _time.time())])))
-    add("x2_jammer noduration with nothing heard: PASS (no time to place)",
-        lambda: (lambda r: (r.get("verdict") == "PASS", r.get("verdict")))(xj_noduration(XJ, [])))
-    add("x2_jammer noduration with an error frame on hardware time: FAIL",
+    add("x2_jammer noduration with nothing heard: judged, not VOID (INCONCLUSIVE: closing pulse unheard)",
+        lambda: (lambda r: (r.get("verdict") == "INCONCLUSIVE" and "closing" in r.get("why", ""),
+                            r.get("verdict")))(xj_noduration(XJ, [])))
+    add("x2_jammer noduration with an error frame on hardware time, 1 s after the send: FAIL",
         lambda: (lambda r: (r.get("verdict") == "FAIL", r.get("verdict")))(
-            xj_noduration(XJ, [(_time.time(), _time.time() + 0.001)])))
+            xj_noduration(XJ, [(_time.time() + 3.0, _time.time() + 3.001)])))
 
     # A2 (a): the PCAN's device stamps, mapped onto perf_counter
     def fit_of(**k):

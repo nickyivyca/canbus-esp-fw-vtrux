@@ -54,11 +54,47 @@ witness_clock's 2 s sanity limit.
   can2-check         WiCAN in mode 2 + n pulses; the Kvaser (WiCAN segment)
                      must see pages and pulses, the Innomaker (X2 CAN2, libusb) neither
   can2-isolation     the form without the WiCAN, for madhouse (gen-inhibit reviewer,
-                     2026-11-13, option (i)); needs --no-wican: canchg up through
-                     canctl (SocketCAN, normal, ACKing) while the PCAN sends 50 0x7A0
+                     2026-11-13, option (i)); needs --no-wican: the Kvaser and canchg up
+                     through canctl (SocketCAN, normal, ACKing) while the PCAN sends 50 0x7A0
                      on CAN1 and then the jammer sends n pulses; the Kvaser must see
-                     every 0x7A0 and one group per pulse, canchg nothing; then
-                     can2_ack_probe's probe on canchg must come back NO_ACK
+                     every 0x7A0 and one group per pulse, canchg nothing, then hear its own
+                     unACKed frame; then can2_ack_probe's probe on canchg must come back
+                     NO_ACK. Refused while another process holds the PCAN, and with
+                     --interval-ms under 500 (the groups' fixed 0.1 s gap)
+
+  session            (2026-11-13, the gen-inhibit reviewer's ruling (C)) the PCAN as the timing
+                     witness for a list of checks, `--check "<sub and its args>"` repeated
+                     (boot-silence, pulses, timeout, noduration; never can2-isolation, whose 0x7A0
+                     sender the PCAN is; id needs no witness). One console, one PCAN open
+                     (bench_witness.PcanWitness, refused unless the named PCAN-USB on
+                     PCAN_USBBUS1 with ts_mode 3), every check driven, then all judged at the end
+                     on the session's one anchor (witness_anchor: offset = min(receipt - device),
+                     slope, spread under 0.25 s, the per-command bracket); each check only on the
+                     frames mapped into its own span. The record names the witness per check, and
+                     keeps the anchor, its method and bounds, every bracket's margins and each
+                     check's resource-log window (P1 (5): a check counts only with a clean record
+                     there; gen-inhibit's slice marks are not yet set, so that is read by hand).
+                     One file, runs/x2_jammer_session_<stamp>.json.
+
+WITNESSES since the Kvaser moved to kvaser_usb (2026-11-13, ruling (C)): the session's checks on
+the PCAN; can2-isolation on the Kvaser through SocketCAN (bench_witness.SocketcanWitness: `kvaser`
+only, software stamps used only for the gaps in its groups, counts only, berr off: kvaser_usb_flex
+refuses it); id on none; the single-check subs as before on the Kvaser through CANlib (kvaser_bus),
+which no longer opens while the Kvaser is on kvaser_usb. Every record says which.
+
+EVERY JUDGED SILENCE ENDS WITH A FRAME THE SAME WITNESS MUST COUNT (gen-inhibit reviewer,
+2026-11-13, after CAN replay's degraded-USB advisory): boot silence, pulses' and the timeout's
+window after DONE, the timeout's silence after its stop and no duration's quiet each end at a
+closing PULSES w 1, counted once from its send to a second past its DONE, else a PASS is
+INCONCLUSIVE; can2-isolation's "canchg nothing" ends with a frame canchg sends itself on the same
+socket, whose ACK errors its reader must hear (nothing else on CAN2 can send). A failed read on
+any witness socket, canchg's included, is WitnessDown (NOT-RUN).
+
+THE USB RECORD (same ruling): the hubs are bus-powered, and the GL850G at 1-3.2 holds the Kvaser,
+the PCAN, canmain and the WiCAN console. `journalctl -k` is read over the run (the session's
+whole span, or a single sub's), and an EPROTO, -71, reset or disconnect line naming a 1-3.2.x
+device VOIDs every check whose window holds it, the line kept in the record; a kernel log that
+cannot be read VOIDs too.
 
 --no-wican: no HTTP to the WiCAN at all, the record says "not read: --no-wican" where its
 page would be. madhouse has no Wi-Fi adapter, and there the WiCAN's 192.168.80.1 routes out
@@ -87,6 +123,8 @@ import threading
 import time
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import witness_clock as WC  # noqa: E402  never judged on receipt time (A2 (b), 2026-11-11)
+import witness_anchor as WA  # noqa: E402  the PCAN session's anchor (ruling (C), 2026-11-13)
+from bench_witness import GROUP_GAP_S, MIN_INTERVAL_MS  # noqa: E402  can2-isolation's grouping
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
@@ -731,8 +769,51 @@ def sub_id(a, rec, con, wit):
         print("identity %s %s" % (j["verdict"], j["why"]))
 
 
-def sub_boot_silence(a, rec, con, wit):
-    rec["resets"] = []
+# Each witnessed sub is a drive part and a judge part (2026-11-13, the gen-inhibit reviewer's
+# ruling (C)): drive_<sub>(a, con, t_open) works the jammer and returns what the judge needs,
+# host times only; judge_<sub>(a, inp, ts, clock) judges the witness's error-frame times `ts`
+# (host epoch clock). The per-process subs (sub_<sub>, the Kvaser through CANlib) judge at once
+# on wit.times(); the PCAN session judges every check at its end, on the session's anchor. inp
+# carries t_begin and t_end (the check's span: the session judges only the frames mapped into
+# it) and "commands": [(host send, host receipt of its DONE or None)], the commands that put
+# judged frames on the wire (the session's per-command bracket, witness_anchor.bracket).
+
+# Every silence a check judges ends with a frame the same witness must count (the gen-inhibit
+# reviewer, 2026-11-13, after CAN replay's degraded-USB advisory: a deaf witness reports a quiet
+# bus, and only where silence is the pass does that matter). After boot silence's resets, pulses'
+# and the timeout's window after DONE (and the timeout's silence after its stop) and no
+# duration's quiet: one closing PULSES w 1, counted exactly once from its send to a second past
+# its DONE, else a PASS is INCONCLUSIVE. The silence a check judges ends at the closing send.
+
+def drive_closing(a, con, pre_s=1.0):
+    time.sleep(pre_s)
+    t_c = time.time()
+    con.send("PULSES %d 1 1000" % a.w)
+    done = con.wait(lambda p: p["kind"] == "DONE", 5.0, t_c)
+    time.sleep(1.3)
+    return {"t_send": t_c, "t_done": done[0] if done else None, "done": done[1] if done else None}
+
+
+def closing_count(ts, c):
+    end = (c["t_done"] if c["t_done"] is not None else c["t_send"] + 5.0) + 1.0
+    return {"done": c["done"], "witness_err_frames": sum(1 for t in ts if c["t_send"] - 0.05 <= t <= end)}
+
+
+def fold_closing(verdict, why, ctl):
+    """A PASS stands only with the closing pulse counted once and its DONE; FAIL and
+    INCONCLUSIVE stay (missed frames there are the safe direction)."""
+    if verdict != "PASS":
+        return verdict, why
+    if not ctl or ctl.get("witness_err_frames") != 1:
+        return "INCONCLUSIVE", ("closing pulse: the witness counted %s, not 1 (a deaf witness reports a "
+                                "quiet bus)" % (ctl or {}).get("witness_err_frames"))
+    if not ctl.get("done"):
+        return "INCONCLUSIVE", "closing pulse: no DONE"
+    return verdict, why
+
+
+def drive_boot_silence(a, con, t_open=None):
+    inp = {"t_begin": time.time(), "resets": []}
     for k in range(a.resets):
         time.sleep(1.0)
         t0 = time.time()
@@ -741,36 +822,44 @@ def sub_boot_silence(a, rec, con, wit):
                        15.0, t0)
         t_banner = got[0] if got else None
         time.sleep(5.0)
-        ts, clock = wit.times()
-        end = (t_banner or t0) + 5.0
-        n = sum(1 for t in ts if t0 - 0.3 <= t <= end)
-        rec["resets"].append({"n": k, "banner_after_s": (round(t_banner - t0, 3)
-                                                         if t_banner else None),
+        inp["resets"].append({"n": k, "t0": t0, "t_banner": t_banner,
                               "canstat": got[1].get("canstat") if got else None,
-                              "config_mode": got[1].get("config_mode") if got else None,
-                              "witness_err_frames": n, "clock": clock})
-        print("reset %d: banner after %s s, err frames %d, canstat %s"
-              % (k, rec["resets"][-1]["banner_after_s"], n,
-                 rec["resets"][-1]["canstat"]))
+                              "config_mode": got[1].get("config_mode") if got else None})
+        print("reset %d: banner after %s s, canstat %s"
+              % (k, round(t_banner - t0, 3) if t_banner else None, inp["resets"][-1]["canstat"]))
     # the positive control: one closing pulse after the last window, which the witness must
     # count exactly once up to a second past its DONE (2026-11-13)
-    time.sleep(1.0)
-    t_c = time.time()
-    con.send("PULSES %d 1 1000" % a.w)
-    done = con.wait(lambda p: p["kind"] == "DONE", 5.0, t_c)
-    time.sleep(1.3)
+    inp["control"] = drive_closing(a, con, 1.0)
+    inp["commands"] = [(inp["control"]["t_send"], inp["control"]["t_done"])]
+    inp["t_end"] = time.time()
+    return inp
+
+
+def judge_boot_silence_run(a, inp, ts, clock):
+    resets = []
+    for r in inp["resets"]:
+        t0, tb = r["t0"], r["t_banner"]
+        end = (tb or t0) + 5.0
+        resets.append({"n": r["n"], "banner_after_s": round(tb - t0, 3) if tb else None,
+                       "canstat": r["canstat"], "config_mode": r["config_mode"],
+                       "witness_err_frames": sum(1 for t in ts if t0 - 0.3 <= t <= end), "clock": clock})
+    control = dict(closing_count(ts, inp["control"]), clock=clock)
+    v, why = judge_boot_silence(resets, control)
+    print("verdict %s %s | err frames per reset %s, closing pulse %s"
+          % (v, why, [r["witness_err_frames"] for r in resets], control["witness_err_frames"]))
+    return {"resets": resets, "control": control, "verdict": v, "why": why}
+
+
+def sub_boot_silence(a, rec, con, wit):
+    inp = drive_boot_silence(a, con)
     ts, clock = wit.times()
-    end = (done[0] if done else t_c + 5.0) + 1.0
-    rec["control"] = {"done": done[1] if done else None, "clock": clock,
-                      "witness_err_frames": sum(1 for t in ts if t_c - 0.05 <= t <= end)}
-    rec["verdict"], rec["why"] = judge_boot_silence(rec["resets"], rec["control"])
-    print("verdict %s %s" % (rec["verdict"], rec["why"]))
+    rec.update(judge_boot_silence_run(a, inp, ts, clock))
 
 
-def sub_pulses(a, rec, con, wit):
-    rec["wican_mode"] = a.wican_mode
+def drive_pulses(a, con, t_open=None):
     samples, stop = [], threading.Event()
     th = None
+    t_begin = time.time()
     if not a.no_wican:
         wican_mode(a.wican_mode)
         time.sleep(2.0)
@@ -794,27 +883,47 @@ def sub_pulses(a, rec, con, wit):
     if th is not None:
         th.join(timeout=2.0)
         wican_mode(0)
-    ts, clock = wit.times(timing=True)   # the PULSES judge's margins (TIMING_LAG_S)
-    obs_end = time.time() - 1.0
+    # the window after DONE ends at the closing pulse, which the witness must count (2026-11-13)
+    closing = drive_closing(a, con, 0.0)
+    return {"t_begin": t_begin, "t_send": t0, "ack": ack, "done": done, "t_end": time.time(),
+            "obs_end": closing["t_send"] - 0.05, "closing": closing, "samples": samples,
+            "wican_read": th is not None,
+            "jammer_pulses": [p for t, _x, p in _console_lines(con)
+                              if p and p["kind"] == "PULSE" and t0 <= t < closing["t_send"]],
+            "commands": [(t0, done[0] if done else None), (closing["t_send"], closing["t_done"])]}
+
+
+def judge_pulses_run(a, inp, ts, clock):
+    t0, ack, done, obs_end = inp["t_send"], inp["ack"], inp["done"], inp["obs_end"]
     ok_ack = ack is not None and ack[1]["kind"] == "ACK"
     j = judge_pulses(ts, a.n, a.interval_ms / 1000.0, t0, ok_ack, done[0] if done else None,
                      obs_end, post_s=a.post_s)
-    win = [t for t in ts if t0 - 0.3 <= t <= (done[0] if done else time.time()) + 1.0]
+    win = [t for t in ts if t0 - 0.3 <= t <= (done[0] if done else inp["t_end"]) + 1.0]
     pre = [t for t in ts if t0 - 4.0 <= t < t0 - 0.3]
+    samples = inp["samples"]
     be = [(s["t"], s.get("bus_error"), s.get("req_start")) for s in samples if not s.get("unanswered")]
-    rec.update({"ack": ack[1] if ack else None, "done": done[1] if done else None,
-                "clock": clock, "witness_err_frames_pre_4s": len(pre),
-                "per_pulse": per_pulse(win, a.n, a.interval_ms / 1000.0, be),
-                "judge": j, "verdict": j["verdict"], "why": j["why"],
-                "jammer_pulses": [p for t, _x, p in _console_lines(con)
-                                  if p and p["kind"] == "PULSE" and t >= t0],
-                "wican_samples": samples if th is not None else "not read: --no-wican",
-                "err_ts_rel_t0": [round(t - t0, 4) for t in ts if t >= t0 - 4.0]})
-    pp = rec["per_pulse"]
+    out = {"ack": ack[1] if ack else None, "done": done[1] if done else None,
+           "clock": clock, "witness_err_frames_pre_4s": len(pre),
+           "per_pulse": per_pulse(win, a.n, a.interval_ms / 1000.0, be),
+           "judge": j, "verdict": j["verdict"], "why": j["why"],
+           "jammer_pulses": inp["jammer_pulses"],
+           "wican_samples": samples if inp["wican_read"] else "not read: --no-wican",
+           "err_ts_rel_t0": [round(t - t0, 4) for t in ts if t >= t0 - 4.0]}
+    out["closing"] = closing_count(ts, inp["closing"])
+    out["verdict"], out["why"] = fold_closing(out["verdict"], out["why"], out["closing"])
+    pp = out["per_pulse"]
     print("verdict %s %s | commanded %d, groups %d, per pulse %s, bus_error deltas %s, pre %d, "
-          "after DONE %s in %s s" % (j["verdict"], j["why"], a.n, pp["groups"], pp["per_pulse"],
-                                     pp["bus_error_delta_per_pulse"], len(pre),
-                                     j["after_done"]["n"], j["after_done"]["observed_s"]))
+          "after DONE %s in %s s, closing pulse %s" % (
+              out["verdict"], out["why"], a.n, pp["groups"], pp["per_pulse"], pp["bus_error_delta_per_pulse"],
+              len(pre), j["after_done"]["n"], j["after_done"]["observed_s"], out["closing"]["witness_err_frames"]))
+    return out
+
+
+def sub_pulses(a, rec, con, wit):
+    rec["wican_mode"] = a.wican_mode
+    inp = drive_pulses(a, con)
+    ts, clock = wit.times(timing=True)   # the PULSES judge's margins (TIMING_LAG_S)
+    rec.update(judge_pulses_run(a, inp, ts, clock))
 
 
 def _poller(samples, stop):
@@ -824,10 +933,11 @@ def _poller(samples, stop):
         time.sleep(0.1)
 
 
-def sub_timeout(a, rec, con, wit):
-    rec["wican_mode"] = a.wican_mode
+def drive_timeout(a, con, t_open):
+    """t_open: when the witness opened (judge_stop's observation start)."""
     samples, stop = [], threading.Event()
     th = None
+    t_begin = time.time()
     if a.wican_mode:
         wican_mode(a.wican_mode)
         time.sleep(2.0)
@@ -839,15 +949,15 @@ def sub_timeout(a, rec, con, wit):
     ack = con.wait(lambda p: p["kind"] in ("ACK", "ERR"), 3.0, t_send)
     capped = con.wait(lambda p: p["kind"] == "CAPPED", 0.5, t_send)
     if ack is None or ack[1]["kind"] != "ACK":
-        rec["verdict"] = "INCONCLUSIVE"
-        rec["why"] = "no ACK: %s" % (ack[1] if ack else None)
         stop.set()
-        return
+        return {"t_begin": t_begin, "t_end": time.time(), "no_ack": ack[1] if ack else None,
+                "commands": [(t_send, None)]}
+    inp = {"t_begin": t_begin, "t_send": t_send}
     t_start = ack[0]
     eff_ms = ack[1].get("ms", a.ms)
     if a.host_quiet:
         con.paused.set()
-        rec["host_quiet_from"] = round(time.time() - t_start, 3)
+        inp["host_quiet_from"] = round(time.time() - t_start, 3)
     t_deadline = t_start + (a.expect_ms or eff_ms) / 1000.0
     # Watch past deadline + margin + quiet (judge_stop) with 2 s to spare
     # for the witness's delivery lag. The 01:24 run stopped ~0.5 s short.
@@ -860,9 +970,29 @@ def sub_timeout(a, rec, con, wit):
         th.join(timeout=2.0)
         wican_mode(0)
     done = con.wait(lambda p: p["kind"] == "DONE", 3.0, t_start)
-    ts, clock = wit.times(timing=True)   # judge_stop's 0.3 s margin (TIMING_LAG_S)
-    obs_end = time.time() - 1.0
-    j = judge_stop(ts, t_start, t_deadline, wit.t_open, obs_end)
+    # the silence after the stop (and after DONE) ends at the closing pulse (2026-11-13)
+    closing = drive_closing(a, con, 0.5)
+    inp.update({"ack": ack, "capped": capped, "t_start": t_start, "eff_ms": eff_ms,
+                "t_deadline": t_deadline, "done": done, "t_end": time.time(),
+                "obs_end": closing["t_send"] - 0.05, "closing": closing,
+                "obs_start": t_open, "samples": samples,
+                "commands": [(t_send, done[0] if done else None), (closing["t_send"], closing["t_done"])]})
+    return inp
+
+
+def judge_timeout_run(a, inp, ts, clock):
+    rec = {}
+    if "no_ack" in inp:
+        rec["verdict"] = "INCONCLUSIVE"
+        rec["why"] = "no ACK: %s" % (inp["no_ack"],)
+        return rec
+    if "host_quiet_from" in inp:
+        rec["host_quiet_from"] = inp["host_quiet_from"]
+    ack, capped, done, samples = inp["ack"], inp["capped"], inp["done"], inp["samples"]
+    t_start, t_deadline, eff_ms, obs_end = inp["t_start"], inp["t_deadline"], inp["eff_ms"], inp["obs_end"]
+    closing = closing_count(ts, inp["closing"])
+    ts = [t for t in ts if t <= obs_end]     # the silence judged ends at the closing pulse
+    j = judge_stop(ts, t_start, t_deadline, inp["obs_start"], obs_end)
     be = [(x["t"], x.get("bus_error")) for x in samples if not x.get("unanswered")]
     rec.update({"ack": ack[1], "capped": capped[1] if capped else None,
                 "effective_ms": eff_ms, "done": done[1] if done else None,
@@ -873,7 +1003,7 @@ def sub_timeout(a, rec, con, wit):
     if a.wican_mode:
         rec["judge_wican_bus_error"] = judge_counter_stop(be, t_start, t_deadline)
     if a.control_ms:
-        c = judge_stop(ts, t_start, t_start + a.control_ms / 1000.0, wit.t_open,
+        c = judge_stop(ts, t_start, t_start + a.control_ms / 1000.0, inp["obs_start"],
                        obs_end)
         rec["negative_control"] = {"expect_ms": a.control_ms, "judge": c,
                                    "ok": c["verdict"] == "FAIL"}
@@ -901,6 +1031,8 @@ def sub_timeout(a, rec, con, wit):
     rec["done_check"] = judge_done(done[1] if done else None, a.expect_stop_by, a.expect_end)
     rec["verdict"], rec["why"] = fold_timeout(rec["verdict"], rec["why"], rec["after_done"],
                                               rec["done_check"])
+    rec["closing"] = closing
+    rec["verdict"], rec["why"] = fold_closing(rec["verdict"], rec["why"], closing)
     print("verdict %s | kvaser %s n_in %d n_after %d last_in %s | wican %s | control ok %s | "
           "after DONE %s | done check %s | %s"
           % (rec["verdict"], j["verdict"], j["n_in"], j["n_after"],
@@ -908,22 +1040,50 @@ def sub_timeout(a, rec, con, wit):
              rec.get("judge_wican_bus_error"),
              rec.get("negative_control", {}).get("ok"), rec["after_done"]["n"],
              rec["done_check"], (done[1]["raw"] if done else None)))
+    return rec
 
 
-def sub_noduration(a, rec, con, wit):
+def sub_timeout(a, rec, con, wit):
+    rec["wican_mode"] = a.wican_mode
+    inp = drive_timeout(a, con, wit.t_open)
+    if "no_ack" in inp:
+        rec.update(judge_timeout_run(a, inp, [], None))
+        return
+    ts, clock = wit.times(timing=True)   # judge_stop's 0.3 s margin (TIMING_LAG_S)
+    rec.update(judge_timeout_run(a, inp, ts, clock))
+
+
+def drive_noduration(a, con, t_open=None):
+    t_begin = time.time()
     time.sleep(2.0)
     t0 = time.time()
     con.send("TRAIN %d %d" % (a.w, a.p))
     got = con.wait(lambda p: p["kind"] in ("ACK", "ERR"), 3.0, t0)
     time.sleep(3.0)
-    ts, clock = wit.times()
-    n = sum(1 for t in ts if t >= t0 - 0.3)
-    rec.update({"reply": got[1] if got else None, "witness_err_frames": n,
-                "clock": clock})
-    rec["verdict"] = ("PASS" if got and got[1]["kind"] == "ERR" and n == 0
+    # the quiet ends at the closing pulse (2026-11-13), the only command here that should put a
+    # frame on the wire
+    closing = drive_closing(a, con, 0.0)
+    return {"t_begin": t_begin, "t_send": t0, "reply": got, "t_end": time.time(), "closing": closing,
+            "commands": [(closing["t_send"], closing["t_done"])]}
+
+
+def judge_noduration_run(a, inp, ts, clock):
+    got = inp["reply"]
+    n = sum(1 for t in ts if inp["t_send"] - 0.3 <= t < inp["closing"]["t_send"] - 0.05)
+    out = {"reply": got[1] if got else None, "witness_err_frames": n, "clock": clock,
+           "closing": closing_count(ts, inp["closing"])}
+    out["verdict"] = ("PASS" if got and got[1]["kind"] == "ERR" and n == 0
                       else "FAIL")
-    print("reply %s, err frames %d -> %s" % (got[1]["raw"] if got else None, n,
-                                            rec["verdict"]))
+    out["verdict"], out["why"] = fold_closing(out["verdict"], "", out["closing"])
+    print("reply %s, err frames %d, closing pulse %s -> %s %s" % (
+        got[1]["raw"] if got else None, n, out["closing"]["witness_err_frames"], out["verdict"], out["why"]))
+    return out
+
+
+def sub_noduration(a, rec, con, wit):
+    inp = drive_noduration(a, con)
+    ts, clock = wit.times()
+    rec.update(judge_noduration_run(a, inp, ts, clock))
 
 
 def sub_can2_check(a, rec, con, wit):
@@ -990,7 +1150,8 @@ def sub_can2_check(a, rec, con, wit):
              [x[1:] for x in log if x[0] == "drain"], [x[1:] for x in test], v, why))
 
 
-def judge_can2_isolation(sent, kv_seen, kv_groups, n_pulses, in_frames, in_err, probe_verdict):
+def judge_can2_isolation(sent, kv_seen, kv_groups, n_pulses, in_frames, in_err, probe_verdict,
+                         canchg_alive):
     """CAN2 isolation without the WiCAN (2026-11-13, the gen-inhibit reviewer's option (i)
     for madhouse, which has no Wi-Fi). The positive control on CAN1: the Kvaser saw every one
     of the `sent` 0x7A0 frames the PCAN sent there, and one error-frame group per pulse. On
@@ -999,12 +1160,20 @@ def judge_can2_isolation(sent, kv_seen, kv_groups, n_pulses, in_frames, in_err, 
     INCONCLUSIVE when the positive control failed or the probe was UNCLEAR (or did not run);
     FAIL when canchg saw traffic or its frame was ACKed; PASS otherwise. As on 2026-10-08,
     whether gs_usb reports a bus error as an error frame is not shown (canchg has no
-    BERR-REPORTING), so "0 error frames" there rests on the frame half and the probe."""
+    BERR-REPORTING), so "0 error frames" there rests on the frame half and the probe.
+    canchg_alive (2026-11-13, the reviewer's rule that every judged silence ends with a frame the
+    same witness must count): the error frames canchg's reader heard after the test, for one
+    frame canchg sent itself on the same socket. Nothing else on CAN2 can send (the MCP2515 is
+    held in configuration mode), so canchg's own unACKed frame is the only thing it can be shown
+    hearing. None or 0 makes a PASS INCONCLUSIVE: its reader may have been deaf through the test."""
     if sent < 1 or kv_seen != sent or kv_groups != n_pulses:
         return "INCONCLUSIVE", "positive control failed on the Kvaser (0x7A0 %s of %s, groups %s of %s)" % (
             kv_seen, sent, kv_groups, n_pulses)
     if in_frames or in_err:
         return "FAIL", "canchg saw traffic from CAN1 (%d frames, %d error frames)" % (in_frames, in_err)
+    if not canchg_alive:
+        return "INCONCLUSIVE", ("canchg's reader heard %s error frames for its own unACKed frame after the "
+                                "test: it may not have been hearing" % canchg_alive)
     if probe_verdict == "ACKED":
         return "FAIL", "canchg's probe frame was ACKed on CAN2"
     if probe_verdict != "NO_ACK":
@@ -1016,40 +1185,92 @@ PCAN_FRAMES = 50          # 0x7A0 frames the PCAN sends on CAN1 as the positive 
 PCAN_GAP_S = 0.02
 
 
+def can2_counts(wit_frames, n_pulses):
+    """What the can2-isolation judge takes from the Kvaser's SocketCAN log (2026-11-13, ruling
+    (C)): COUNTS only. wit_frames: SocketcanWitness.frames(("pcan", "pulses")), entries
+    (phase, receipt, sw, can_id, data hex), each tagged with the phase the sub was in when the
+    witness read it. kv_seen: the 0x7A0 data frames read in either phase. groups: the bus-error
+    frames read in the pulses phase, grouped by the gaps between their software stamps
+    (bench_witness.groups, GROUP_GAP_S fixed there). No window or margin is judged on a Kvaser
+    stamp: which frames count is decided by phase, and a stamp is only ever compared with
+    another stamp. A bus-error frame without a software stamp cannot be grouped, so `unstamped`
+    makes the positive control fail."""
+    import bench_witness as BW
+    kv_seen = sum(1 for e in wit_frames if not e[3] & BW.CAN_ERR_FLAG
+                  and (e[3] & BW.CAN_ERR_MASK) == 0x7A0)
+    errs = [e for e in wit_frames if e[0] == "pulses" and e[3] & BW.CAN_ERR_FLAG and BW.is_bus_error(e[3])]
+    unstamped = sum(1 for e in errs if e[2] is None)
+    gs = BW.groups([e[2] for e in errs if e[2] is not None])
+    other = [("%s 0x%08X %s" % (e[0], e[3], e[4])) for e in wit_frames
+             if e[3] & BW.CAN_ERR_FLAG and not (e[0] == "pulses" and BW.is_bus_error(e[3]))]
+    return {"kv_seen": kv_seen, "groups": [len(g) for g in gs], "unstamped": unstamped,
+            "other_error_frames": other[:20], "n_other_error_frames": len(other),
+            "n_groups": len(gs) if not unstamped else -1, "n_pulses": n_pulses}
+
+
 def sub_can2_isolation(a, rec, con, wit):
-    """CAN2 isolation on madhouse (judge_can2_isolation): canchg up through canctl, listened
-    to while the PCAN sends PCAN_FRAMES 0x7A0 on CAN1 and then while the jammer sends n pulses;
-    canchg down; then can2_ack_probe's no-ACK probe on canchg. The PCAN sends before the pulses,
-    never during them, so it is not transmitting under the jammer."""
+    """CAN2 isolation on madhouse (judge_can2_isolation), witnessed by the Kvaser on SocketCAN
+    (2026-11-13, ruling (C); `wit` is unused: no CANlib witness is opened for this sub). The
+    Kvaser up through canctl (normal, no berr), its witness opened (bench_witness's named-netdev
+    refusal), canchg up through canctl and listened to, while the PCAN sends PCAN_FRAMES 0x7A0 on
+    CAN1 (the Kvaser ACKs them) and then while the jammer sends n pulses; canchg and the Kvaser
+    down; then can2_ack_probe's no-ACK probe on canchg. The PCAN sends before the pulses, never
+    during them, so it is not transmitting under the jammer; and it is never this process's
+    witness, so the sub refuses while another process holds it (a session's witness)."""
     import can
     import can2_ack_probe as AP
+    import bench_witness as BW
+    rec["witness"] = WITNESS_KVASER_SC
     rec["canchg_link_at_start"] = AP.link("canchg")
-    if not rec["canchg_link_at_start"] or rec["canchg_link_at_start"].get("operstate") != "DOWN":
-        rec["verdict"], rec["why"] = "INCONCLUSIVE", "canchg not down at the start: %s" % (
-            rec["canchg_link_at_start"],)
+    rec["kvaser_link_at_start"] = AP.link(BW.KVASER_IFACE)
+    for name in ("canchg", "kvaser"):
+        lk = rec["%s_link_at_start" % name]
+        if not lk or lk.get("operstate") != "DOWN":
+            rec["verdict"], rec["why"] = "INCONCLUSIVE", "%s not down at the start: %s" % (name, lk)
+            return
+    holders = BW.pcan_holders()
+    if holders:
+        rec["verdict"], rec["why"] = "NOT-RUN", ("the PCAN is open in pid %s (a session's witness?): it is "
+                                                 "this check's 0x7A0 sender, never at once" % holders)
         return
-    rec["canctl"] = [AP.canctl("up", "canchg", str(BITRATE))]
-    log, phase, stop = [], ["drain"], threading.Event()
-    inno = None
+    rec["canctl"] = [AP.canctl("up", BW.KVASER_IFACE, str(BITRATE))]
+    log, phase, stop, canchg_failed = [], ["drain"], threading.Event(), []
+    inno = kw = th = None
+    t0, done, sent = None, None, 0
     try:
         if rec["canctl"][0]["rc"] != 0:
+            rec["verdict"], rec["why"] = "INCONCLUSIVE", "canctl up kvaser failed"
+            return
+        rec["kvaser_link_up"] = AP.link(BW.KVASER_IFACE)
+        try:
+            kw = BW.SocketcanWitness(BW.KVASER_IFACE)
+        except BW.WitnessRefused as e:
+            rec["verdict"], rec["why"] = "NOT-RUN", "witness refused: %s" % e
+            return
+        rec["witness_describe"] = kw.describe()
+        kw.phase = "drain"
+        kw.start()
+        rec["canctl"].append(AP.canctl("up", "canchg", str(BITRATE)))
+        if rec["canctl"][-1]["rc"] != 0:
             rec["verdict"], rec["why"] = "INCONCLUSIVE", "canctl up canchg failed"
             return
         inno = can.Bus(interface="socketcan", channel="canchg")
 
         def rd():
-            while not stop.is_set():
-                m = inno.recv(timeout=0.05)
-                if m is not None:
-                    log.append((phase[0], round(time.time(), 4), "0x%03X" % m.arbitration_id,
-                                bool(m.is_error_frame), bytes(m.data).hex()))
+            try:
+                while not stop.is_set():
+                    m = inno.recv(timeout=0.05)
+                    if m is not None:
+                        log.append((phase[0], round(time.time(), 4), "0x%03X" % m.arbitration_id,
+                                    bool(m.is_error_frame), bytes(m.data).hex()))
+            except Exception as e:      # noqa: BLE001  canchg is a witness too: a failed read is WitnessDown
+                canchg_failed.append("canchg read failed at %.3f: %s: %s" % (time.time(), type(e).__name__, e))
         th = threading.Thread(target=rd, daemon=True)
         th.start()
         time.sleep(2.0)
         phase[0] = "test"
-        ids0 = dict(wit.ids)
+        kw.phase = "pcan"
         pcan = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
-        sent = 0
         try:
             for k in range(PCAN_FRAMES):
                 pcan.send(can.Message(arbitration_id=0x7A0, is_extended_id=False,
@@ -1059,31 +1280,55 @@ def sub_can2_isolation(a, rec, con, wit):
         finally:
             pcan.shutdown()
         time.sleep(1.0)
+        kw.phase = "pulses"
         t0 = time.time()
         con.send("PULSES %d %d %d" % (a.w, a.n, a.interval_ms))
         done = con.wait(lambda p: p["kind"] == "DONE", a.n * a.interval_ms / 1000.0 + 5.0, t0)
         time.sleep(2.0)
+        kw.phase = "end"
+        # canchg's liveness (2026-11-13): one frame of its own on the same socket, which nothing
+        # on CAN2 ACKs, so its reader must hear the ACK errors; canctl down then ends the retries
+        phase[0] = "liveness"
+        inno.send(can.Message(arbitration_id=AP.PROBE_ID, is_extended_id=False,
+                              data=bytes([0xA2, 0, 0, 0, 0, 0, 0, 0])))
+        time.sleep(1.0)
+        phase[0] = "end"
     finally:
         stop.set()
         if inno is not None:
+            if th is not None:
+                th.join(timeout=1.0)
             inno.shutdown()
-        rec["canctl"].append(AP.canctl("down", "canchg"))
-    ts, clock = wit.times()
-    groups = clusters([t for t in ts if t >= t0 - 0.3], a.interval_ms / 2000.0)
-    kv_seen = wit.ids.get("0x7A0", 0) - ids0.get("0x7A0", 0)
+            rec["canctl"].append(AP.canctl("down", "canchg"))
+        if kw is not None:
+            rec["witness_down_at_end"] = kw.down()
+            kw.close()
+        if len(rec.get("canctl", [])) and rec["canctl"][0]["rc"] == 0:
+            rec["canctl"].append(AP.canctl("down", BW.KVASER_IFACE))
+            rec["kvaser_link_at_end"] = AP.link(BW.KVASER_IFACE)
+    if rec.get("witness_down_at_end"):
+        raise WitnessDown(rec["witness_down_at_end"])
+    if canchg_failed:
+        rec["canchg_down"] = canchg_failed[0]
+        raise WitnessDown(canchg_failed[0])
+    cnt = can2_counts(kw.frames(("pcan", "pulses")), a.n)
     test = [x for x in log if x[0] == "test"]
     in_frames = sum(1 for x in test if not x[3])
     in_err = sum(1 for x in test if x[3])
+    alive = sum(1 for x in log if x[0] == "liveness" and x[3])
+    rec["canchg_alive_error_frames"] = alive
     rec["probe"] = AP.probe("canchg")
     pv = "NOT RUN" if "refused" in rec["probe"] else rec["probe"]["judge"]["verdict"]
-    v, why = judge_can2_isolation(sent, kv_seen, len(groups), a.n, in_frames, in_err, pv)
-    rec.update({"done": done[1] if done else None, "clock": clock, "pcan_sent_0x7A0": sent,
-                "kvaser_0x7A0_seen": kv_seen, "kvaser_err_groups": [len(g) for g in groups],
+    v, why = judge_can2_isolation(sent, cnt["kv_seen"], cnt["n_groups"], a.n, in_frames, in_err, pv, alive)
+    rec.update({"done": done[1] if done else None, "pcan_sent_0x7A0": sent,
+                "kvaser_counts": cnt, "kvaser_0x7A0_seen": cnt["kv_seen"],
+                "kvaser_err_groups": cnt["groups"], "kvaser_log": kw.frames(("drain", "pcan", "pulses", "end")),
                 "canchg_log": log, "canchg_mode": "socketcan, normal (ACKing), no berr",
                 "verdict": v, "why": why})
-    print("pcan sent %d, kvaser saw %d, err groups %s | canchg drain %s test %s | probe %s -> %s %s"
-          % (sent, kv_seen, [len(g) for g in groups], [x[1:] for x in log if x[0] == "drain"],
-             [x[1:] for x in test], pv, v, why))
+    print("pcan sent %d, kvaser saw %d, err groups %s (unstamped %d, other err %d) | canchg drain %s test %s "
+          "| probe %s -> %s %s" % (sent, cnt["kv_seen"], cnt["groups"], cnt["unstamped"],
+                                   cnt["n_other_error_frames"], [x[1:] for x in log if x[0] == "drain"],
+                                   [x[1:] for x in test], pv, v, why))
 
 
 SUBS = {"id": sub_id, "boot-silence": sub_boot_silence, "pulses": sub_pulses,
@@ -1091,7 +1336,272 @@ SUBS = {"id": sub_id, "boot-silence": sub_boot_silence, "pulses": sub_pulses,
         "can2-check": sub_can2_check, "can2-isolation": sub_can2_isolation}
 
 
+# ------------------------------------------------------------- the PCAN session (ruling (C))
+
+WITNESS_PCAN = ("pcan: PCAN-USB FD on PCAN_USBBUS1, normal mode, device stamps placed by the session "
+                "anchor (witness_anchor)")
+WITNESS_KVASER_SC = ("kvaser: kvaser_usb on SocketCAN (netdev kvaser), normal mode, software stamps, "
+                     "counts only, berr off")
+WITNESS_KVASER_CANLIB = "kvaser: CANlib (kvaser_bus), hardware stamps on the epoch clock"
+WITNESS_NONE = "none: id needs no witness"
+SESSION_SUBS = ("boot-silence", "pulses", "timeout", "noduration")
+DRIVE = {"boot-silence": drive_boot_silence, "pulses": drive_pulses, "timeout": drive_timeout,
+         "noduration": drive_noduration}
+JUDGE = {"boot-silence": judge_boot_silence_run, "pulses": judge_pulses_run, "timeout": judge_timeout_run,
+         "noduration": judge_noduration_run}
+RESOURCE_SETTLE_S = 6.0     # resource-log samples every 5 s: wait for the row after a window
+COUNTS = ("only with a clean resource-log record over its window (ruling (C), P1 (5); AGENTS.md "
+          "'Parallel work', point 2): see resource_log")
+
+
+def parse_checks(ap, specs, no_wican):
+    """The session's --check strings -> [(spec, Namespace)], each parsed by the tool's own parser
+    and refused like a command line (args_why). Raises ValueError with the reason."""
+    import shlex
+    out = []
+    for s in specs:
+        words = shlex.split(s)
+        if words and words[0] == "can2-isolation":
+            raise ValueError("check %r: can2-isolation needs the PCAN as its 0x7A0 sender, so it never "
+                             "runs in the PCAN's session (ruling (C)): run it on its own" % s)
+        if not words or words[0] not in SESSION_SUBS:
+            raise ValueError("check %r: a session runs only %s" % (s, ", ".join(SESSION_SUBS)))
+        if no_wican and "--no-wican" not in words:
+            words.append("--no-wican")
+        try:
+            ns = ap.parse_args(words)
+        except SystemExit:
+            raise ValueError("check %r: not arguments of %s" % (s, words[0]))
+        if ns.check:
+            raise ValueError("check %r: no --check inside a check" % s)
+        why = args_why(ns)
+        if why:
+            raise ValueError("check %r: %s" % (s, why))
+        out.append((s, ns))
+    if not out:
+        raise ValueError("a session needs at least one --check")
+    return out
+
+
+def resource_window(t0, t1, run=None):
+    """`resource-log window` over one check's span (P1 (5)), kept raw with the logger's longest
+    gap. The harness can flag only the rule AGENTS.md fixes (a gap over 10 s: the logger itself
+    starved, UNCLEAR); gen-inhibit's marks for the slices are not yet set with the user's
+    approval, so the rest of the triage is read by hand in the run README."""
+    import math
+    import subprocess
+    run = run or subprocess.run
+    out = {"window": [round(t0, 3), round(t1, 3)]}
+    try:
+        p = run(["resource-log", "window", "%d" % math.floor(t0), "%d" % math.ceil(t1)],
+                capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        out.update(error="%s: %s" % (type(e).__name__, e),
+                   triage="UNCLEAR: no resource-log record over the window")
+        return out
+    text = p.stdout or ""
+    m = re.search(r"longest gap ([\d.]+) s", text)
+    gap = float(m.group(1)) if m else None
+    out.update(rc=p.returncode, text=text[-4000:], longest_gap_s=gap,
+               bench_row=next((ln for ln in text.splitlines() if ln.startswith("bench ")), None))
+    if p.returncode != 0 or gap is None:
+        out["triage"] = "UNCLEAR: no resource-log record over the window"
+    elif gap > 10.0:
+        out["triage"] = "UNCLEAR: the logger's own gap %.1f s is over 10 s (it was starved or down)" % gap
+    else:
+        out["triage"] = ("by hand: the record over the window is read in the run README (gen-inhibit's "
+                         "slice marks are not yet set with the user's approval)")
+    return out
+
+
+# The USB record (the gen-inhibit reviewer, 2026-11-13, after CAN replay's degraded-USB
+# advisory): the bench's hubs are bus-powered, and the GL850G at 1-3.2 holds the Kvaser, the
+# PCAN, canmain and the WiCAN console. The kernel log over the run's whole window is read, and
+# any EPROTO, -71, reset or disconnect line naming a 1-3.2.x device VOIDs every check whose
+# window holds it, with the line kept in the record. A kernel log that cannot be read VOIDs too:
+# nothing then shows the hub was clean.
+USB_DEV_RE = re.compile(r"(?<![\d.])1-3\.2(?:\.\d+)*(?!\d)")
+USB_BAD_RE = re.compile(r"EPROTO|-71\b|\breset\b|disconnect", re.I)
+
+
+def usb_record(t0, t1, run=None):
+    """`journalctl -k` over [t0, t1] (epochs): the 1-3.2.x lines that VOID, as (epoch, line)."""
+    import math
+    import subprocess
+    run = run or subprocess.run
+    out = {"window": [round(t0, 3), round(t1, 3)], "hub": "1-3.2 (GL850G, bus-powered)"}
+    try:
+        p = run(["journalctl", "-k", "--since", "@%d" % math.floor(t0), "--until", "@%d" % math.ceil(t1),
+                 "-o", "short-unix", "--no-pager"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        out["error"] = "%s: %s" % (type(e).__name__, e)
+        return out
+    out["rc"] = p.returncode
+    if p.returncode != 0:
+        out["error"] = "journalctl exit %d: %s" % (p.returncode, (p.stderr or "").strip()[-300:])
+        return out
+    hits = []
+    for ln in (p.stdout or "").splitlines():
+        head = ln.split(" ", 1)[0]
+        try:
+            t = float(head)
+        except ValueError:
+            continue
+        if USB_DEV_RE.search(ln) and USB_BAD_RE.search(ln):
+            hits.append((t, ln.strip()[:300]))
+    out["hits"] = hits
+    return out
+
+
+def usb_fold(rec, record, lo, hi):
+    """VOID rec (a check's record) if the USB record holds a line in [lo, hi], or could not be
+    read; a NOT-RUN or a REFUSED stays. The lines go in rec["usb"]."""
+    if "error" in record:
+        lines = ["kernel log not read: %s" % record["error"]]
+    else:
+        lines = [ln for t, ln in record.get("hits", []) if lo <= t <= hi]
+    rec["usb"] = {"window": [round(lo, 3), round(hi, 3)], "lines": lines}
+    v = str(rec.get("verdict"))
+    if lines and v != "NOT-RUN" and not v.startswith("REFUSED"):
+        rec["verdict_before_usb"] = rec.get("verdict")
+        rec["verdict"] = "VOID: USB on the 1-3.2 hub: %d kernel line(s) in the check's window" % len(lines)
+        rec["why"] = lines[0]
+    return rec
+
+
+def judge_session(checks, points, anc, clock):
+    """Every driven check of the session judged on the anchor (P1 (1)-(3)). checks: dicts with
+    "sub", "ns" (its Namespace) and "inp" (its drive's result), or already a "verdict"
+    (NOT-RUN). The anchor VOID makes every check VOID; a frame outside its command's bracket
+    makes that check VOID; otherwise the check is judged on the frames mapped into its span.
+    -> the frames mapped into no check's span (anything there is in the record for the reader)."""
+    spans = []
+    for c in checks:
+        if "inp" not in c:
+            continue
+        inp = c["inp"]
+        spans.append((inp["t_begin"], inp["t_end"]))
+        if anc["void"]:
+            c["verdict"] = "VOID: session anchor: %s" % anc["void"]
+            c["why"] = "witness_anchor (P1, gen-inhibit reviewer's ruling (C), 2026-11-13)"
+            continue
+        br = [WA.bracket(anc, points, t_send, t_done if t_done is not None else inp["t_end"])
+              for t_send, t_done in inp["commands"]]
+        c["bracket"] = br
+        out = sum(b["n_outside"] for b in br)
+        if out:
+            c["verdict"] = "VOID: %d frames outside their command's bracket" % out
+            c["why"] = "host send < mapped <= own receipt and the DONE's receipt (P1 (2))"
+            continue
+        ts = [WA.mapped(anc, d) for d, _r in points if inp["t_begin"] <= WA.mapped(anc, d) <= inp["t_end"]]
+        c.update(JUDGE[c["sub"]](c["ns"], inp, ts, clock))
+    if anc["offset_s"] is None:
+        return []
+    return [round(WA.mapped(anc, d), 4) for d, _r in points
+            if not any(lo <= WA.mapped(anc, d) <= hi for lo, hi in spans)]
+
+
+def run_session(checks, con, wit, settle=time.sleep, resource=resource_window, usb=usb_record):
+    """Drive each (spec, Namespace) in order on one console and one open witness, then judge them
+    all on the session's anchor. wit: an opened, started bench_witness.PcanWitness (or a fake
+    with t_open, down(), close(), points(), opens, same_device()). -> (check records, anchor,
+    frames outside the checks)."""
+    out = []
+    for spec, ns in checks:
+        c = {"spec": spec, "sub": ns.sub, "ns": ns, "witness": WITNESS_PCAN}
+        out.append(c)
+        why = wit.down()
+        if why:
+            c["verdict"], c["why"] = "NOT-RUN", "witness down: %s" % why
+            continue
+        print("== check: %s" % spec)
+        c["inp"] = DRIVE[ns.sub](ns, con, wit.t_open)
+    why = wit.down()
+    wit.close()
+    pts = wit.points()
+    anc = WA.anchor(pts, opens=wit.opens, same_device=wit.same_device())
+    if why:
+        for c in out:
+            if "inp" in c:
+                c["verdict"], c["why"] = "NOT-RUN", "witness down: %s" % why
+                del c["inp"]
+        outside = []
+    else:
+        clock = ("pcan_anchor (offset %s s, slope %s ppm, spread p99 %s s)"
+                 % (anc.get("offset_s"), anc.get("slope_ppm"), anc.get("spread_p99_s")))
+        outside = judge_session(out, pts, anc, clock)
+    driven = [c for c in out if "inp" in c]
+    if driven:
+        settle(max(0.0, driven[-1]["inp"]["t_end"] + RESOURCE_SETTLE_S - time.time()))
+        rec_usb = usb(driven[0]["inp"]["t_begin"], driven[-1]["inp"]["t_end"])
+    for c in driven:
+        c["resource_log"] = resource(c["inp"]["t_begin"], c["inp"]["t_end"])
+        c["counts"] = COUNTS
+        usb_fold(c, rec_usb, c["inp"]["t_begin"], c["inp"]["t_end"])
+    for c in out:
+        c["args"] = vars(c.pop("ns"))
+        if "inp" in c:
+            c["drive"] = c.pop("inp")
+    return out, anc, outside
+
+
+def main_session(a, ap, dev):
+    """`session`: the PCAN as the timing witness for a list of checks (ruling (C))."""
+    try:
+        checks = parse_checks(ap, a.check, a.no_wican)
+    except ValueError as e:
+        print("REFUSED: %s (nothing run, no record)" % e)
+        return 2
+    import bench_witness as BW
+    rec = {"when": time.strftime("%Y%m%dT%H%M%S"), "sub": "session", "args": vars(a),
+           "port": dev["port"], "serial_device": dev, "witness": WITNESS_PCAN,
+           "anchor_method": WA.METHOD, "wican_before": NO_WICAN if a.no_wican else wican_snap()}
+    con = Console(dev["port"])
+    con.start()
+    try:
+        try:
+            wit = BW.PcanWitness()
+        except Exception as e:      # noqa: BLE001  WitnessRefused, BenchNotHeld, an open that failed
+            rec["verdict"], rec["why"] = "NOT-RUN", "witness not opened: %s: %s" % (type(e).__name__, e)
+            print(rec["verdict"], rec["why"])
+            return 0
+        rec["witness_describe"] = wit.describe()
+        wit.start()
+        time.sleep(1.0)
+        try:
+            rec["checks"], rec["anchor"], rec["frames_outside_checks"] = run_session(checks, con, wit)
+        finally:
+            rec["witness_describe"] = wit.describe()
+            rec["witness_frames"] = wit.frames
+            rec["witness_ids"] = wit.ids
+            rec["witness_err_total"] = len(wit.err)
+            rec["witness_other_err"] = [(round(d, 6), round(r, 4), k) for d, r, k in wit.other_err][:200]
+            rec["witness_points"] = [(round(d, 6), round(r, 6)) for d, r in wit.points()]
+        rec["verdicts"] = [(c["spec"], c.get("verdict")) for c in rec["checks"]]
+        for spec, v in rec["verdicts"]:
+            print("%-60s %s" % (spec, v))
+        an = rec["anchor"]
+        print("anchor: n %s, offset %s s, slope %s ppm, drift %s s, spread p50/p99/max %s/%s/%s s, void %s"
+              % (an["n"], an.get("offset_s"), an.get("slope_ppm"), an.get("drift_s"), an.get("spread_p50_s"),
+                 an.get("spread_p99_s"), an.get("spread_max_s"), an["void"]))
+    finally:
+        try:
+            if con.ser is not None:
+                con.send("STOP")
+                time.sleep(0.3)
+        except Exception:
+            pass
+        rec["console"] = _console_dump(con)
+        rec["console_events"] = [(round(t, 4), e) for t, e in con.events]
+        con.stop_flag.set()
+        con.join(timeout=2.0)
+        rec["wican_after"] = NO_WICAN if a.no_wican else wican_snap()
+        write_rec("session", rec)
+    return 0
+
+
 NO_WICAN = "not read: --no-wican"
+WITNESSLESS = ("id", "can2-isolation")   # main() opens no CANlib witness for these
 NEEDS_WICAN = ("can2-check",)       # its positive control is the WiCAN's pages (mode 2)
 NO_WICAN_ONLY = ("can2-isolation",)  # the WiCAN-free form, for madhouse
 
@@ -1113,6 +1623,14 @@ def args_why(a):
         return "id needs both --expect-name and --expect-elf, or neither"
     if (a.expect_stop_by or a.expect_end) and a.sub != "timeout":
         return "--expect-stop-by/--expect-end go only with timeout"
+    # 2026-11-13, ruling (C)
+    if a.sub == "session" and not a.check:
+        return "session needs at least one --check"
+    if a.check and a.sub != "session":
+        return "--check goes only with session"
+    if a.sub == "can2-isolation" and a.interval_ms < MIN_INTERVAL_MS:
+        return ("can2-isolation groups by a fixed %g s gap, so --interval-ms must be at least %d"
+                % (GROUP_GAP_S, MIN_INTERVAL_MS))
     return None
 
 
@@ -1135,7 +1653,7 @@ def run_guarded(sub, a, rec, con, wit):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("sub", choices=sorted(SUBS))
+    ap.add_argument("sub", choices=sorted(list(SUBS) + ["session"]))
     ap.add_argument("--resets", type=int, default=3)
     ap.add_argument("--w", type=int, default=20)
     ap.add_argument("--p", type=int, default=200)
@@ -1156,6 +1674,8 @@ def main():
     ap.add_argument("--expect-end", default=None, help="timeout: DONE's end= must be this")
     ap.add_argument("--post-s", type=float, default=3.0,
                     help="pulses: watch this long after DONE (error frames there FAIL)")
+    ap.add_argument("--check", action="append", default=[],
+                    help="session: one check, as its own arguments (e.g. \"pulses --n 1\"); repeat")
     a = ap.parse_args()
     why = args_why(a)
     if why:
@@ -1170,6 +1690,8 @@ def main():
     except GS.Refused as e:
         print("REFUSED: %s (nothing run, no record)" % e)
         return 2
+    if a.sub == "session":
+        return main_session(a, ap, dev)
     rec = {"when": time.strftime("%Y%m%dT%H%M%S"), "sub": a.sub, "args": vars(a),
            "port": dev["port"], "serial_device": dev,
            "wican_before": NO_WICAN if a.no_wican else wican_snap()}
@@ -1177,10 +1699,21 @@ def main():
     con.start()
     wit = None
     try:
-        wit = Witness()
-        wit.start()
+        # id needs no witness; can2-isolation opens its own (the Kvaser on SocketCAN); the rest
+        # keep the Kvaser through CANlib (2026-11-13, ruling (C))
+        rec["witness"] = {"id": WITNESS_NONE, "can2-isolation": WITNESS_KVASER_SC}.get(
+            a.sub, WITNESS_KVASER_CANLIB)
+        t_run0 = time.time()
+        if a.sub not in WITNESSLESS:
+            wit = Witness()
+            wit.start()
         time.sleep(1.0)
         run_guarded(SUBS[a.sub], a, rec, con, wit)
+        # the USB record over the run (2026-11-13): a 1-3.2.x error line in it VOIDs the check
+        time.sleep(1.0)
+        usb_fold(rec, usb_record(t_run0, time.time()), t_run0, time.time())
+        if "usb" in rec and rec["usb"]["lines"]:
+            print(rec["verdict"], "|", rec["why"])
     finally:
         try:
             if con.ser is not None:

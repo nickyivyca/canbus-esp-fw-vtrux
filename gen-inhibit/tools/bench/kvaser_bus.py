@@ -42,7 +42,10 @@ canbench imported from anywhere else (AGENTS.md "can-tools").
                        real Kvaser through this module (2026-11-12, test_e4_rawpost.py): a
                        host test fakes this module, or its _lock_holder, and never needs the
                        lock. The PCAN and other interfaces opened straight through can.Bus are
-                       not guarded here.
+                       not guarded here; the PCAN as a witness is (pcan_witness_bus).
+  pcan_witness_bus(**kw)  (2026-11-13) the guard, then the pinned canbench's CanbenchPcanBus
+                       with its bus-off reset off: x2_jammer's session witness
+                       (bench_witness.PcanWitness)
 
 Every harness file opens these adapters through this module; test_kvaser_bus.py scans for a
 can.Bus that opens either directly, or with an interface named at run time. The tools import
@@ -160,6 +163,19 @@ def close_gs_usb(b):
     finally:
         _pin_tool().use()
         importlib.import_module("canbench.live.receiver").release_gs_usb(b)
+
+
+def pcan_witness_bus(**kw):
+    """The PCAN as a timing witness (2026-11-13, the gen-inhibit reviewer's ruling (C)): the
+    bench guard first, then the pinned canbench's CanbenchPcanBus, which hands up PCAN-Basic's
+    status messages and bus states as controller-state error frames instead of data frames or
+    an exception (python-can 4.6.1 raises on a bus-passive Read). canbench_busoff_reset=False:
+    a witness never resets its own controller, so its device clock runs on through the
+    session (a reset would also restart it)."""
+    require_bench()
+    _pin_tool().use()
+    mod = importlib.import_module("canbench.live.pcan_bus")
+    return mod.CanbenchPcanBus(canbench_busoff_reset=False, **kw)
 
 
 def bus(**kw):

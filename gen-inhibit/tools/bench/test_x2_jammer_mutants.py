@@ -114,9 +114,32 @@ MUTANTS = [
     ("pulses: the WiCAN set and read under --no-wican",
      '    if not a.no_wican:\n        wican_mode(a.wican_mode)\n', '    if True:\n        wican_mode(a.wican_mode)\n'),
     ("pulses: no verdict in the record",
-     '                "judge": j, "verdict": j["verdict"], "why": j["why"],\n', '                "judge": j,\n'),
-    ("pulses: watched only a second past DONE",
-     '    time.sleep(a.post_s + 0.3 + 1.0 + 0.2)\n', '    time.sleep(a.post_s + 1.0)\n'),
+     '           "judge": j, "verdict": j["verdict"], "why": j["why"],\n', '           "judge": j,\n'),
+    # (2026-11-13: the window after DONE now ends at the closing pulse, so "watched only a second
+    # past DONE" left post_s + 0.65 s watched, enough: an equivalent mutant. Shorter than post_s is not.)
+    ("pulses: watched less than post_s past DONE",
+     '    time.sleep(a.post_s + 0.3 + 1.0 + 0.2)\n', '    time.sleep(a.post_s - 0.5)\n'),
+    # every judged silence ends with a closing pulse (gen-inhibit reviewer, 2026-11-13)
+    ("closing: pulses not folded", '    out["verdict"], out["why"] = fold_closing(out["verdict"], out["why"], out["closing"])\n', ""),
+    ("closing: timeout not folded", '    rec["verdict"], rec["why"] = fold_closing(rec["verdict"], rec["why"], closing)\n', ""),
+    ("closing: noduration not folded", '    out["verdict"], out["why"] = fold_closing(out["verdict"], "", out["closing"])\n',
+     '    out["why"] = ""\n'),
+    ("closing: counted twice passes", '    if not ctl or ctl.get("witness_err_frames") != 1:\n',
+     '    if not ctl or ctl.get("witness_err_frames") < 1:\n'),
+    ("closing: no DONE passes", '    if not ctl.get("done"):\n        return "INCONCLUSIVE", "closing pulse: no DONE"\n', ""),
+    ("closing: the timeout judged on frames past the closing send",
+     "    ts = [t for t in ts if t <= obs_end]     # the silence judged ends at the closing pulse\n", ""),
+    ("closing: noduration counts the closing pulse as a frame",
+     '    n = sum(1 for t in ts if inp["t_send"] - 0.3 <= t < inp["closing"]["t_send"] - 0.05)\n',
+     '    n = sum(1 for t in ts if inp["t_send"] - 0.3 <= t)\n'),
+    ("closing: the window after DONE runs past the closing send",
+     '            "obs_end": closing["t_send"] - 0.05, "closing": closing, "samples": samples,\n',
+     '            "obs_end": closing["t_send"] + 2.0, "closing": closing, "samples": samples,\n'),
+    ("closing: never sent after pulses",
+     "    closing = drive_closing(a, con, 0.0)\n    return {\"t_begin\": t_begin, \"t_send\": t0, \"ack\": ack,",
+     "    closing = {\"t_send\": time.time(), \"t_done\": None, \"done\": None}\n"
+     "    return {\"t_begin\": t_begin, \"t_send\": t0, \"ack\": ack,"),
+    ("can2: canchg's liveness not judged", "    if not canchg_alive:\n", "    if False:\n"),
     # boot-silence's positive control and the witness that went down (2026-11-13)
     ("boot: error frames after a reset ignored",
      '    bad = [r.get("n") for r in resets if r.get("witness_err_frames") != 0]\n',
@@ -135,8 +158,8 @@ MUTANTS = [
      '    if not resets:\n        return "INCONCLUSIVE", "no reset made"\n', ''),
     ("boot: no closing pulse sent", '    con.send("PULSES %d 1 1000" % a.w)\n', ''),
     ("boot: the old verdict, no control",
-     '    rec["verdict"], rec["why"] = judge_boot_silence(rec["resets"], rec["control"])\n',
-     '    rec["verdict"], rec["why"] = judge_boot_silence(rec["resets"], {"witness_err_frames": 1, "done": 1})\n'),
+     '    v, why = judge_boot_silence(resets, control)\n',
+     '    v, why = judge_boot_silence(resets, {"witness_err_frames": 1, "done": 1})\n'),
     ("witness: a failed read not kept",
      '            self.failed = (time.time(), "%s: %s" % (type(e).__name__, e))\n',
      '            pass\n'),
@@ -181,6 +204,8 @@ def run(base, label, text):
     shutil.copy(os.path.join(HERE, TEST), d)
     shutil.copy(os.path.join(HERE, "gi_paths.py"), d)   # the moved tool imports it
     shutil.copy(os.path.join(HERE, "witness_clock.py"), d)   # and this, since 2026-11-11 (A2 (b))
+    for f in ("witness_anchor.py", "bench_witness.py"):      # and these, since 2026-11-13 (ruling (C))
+        shutil.copy(os.path.join(HERE, f), d)
     r = subprocess.run([sys.executable, "-B", os.path.join(d, TEST)], cwd=d, capture_output=True, text=True)
     fails = [l.strip() for l in r.stdout.splitlines() if l.strip().startswith("FAIL ")]
     crash = r.stderr.strip().splitlines()[-1][:120] if "Traceback" in r.stderr else ""
