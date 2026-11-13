@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Tests ota_guard_raw_probe.py (--body, raw_post's ending) and ota_guard_pcap_join.py.
 
-    REVERSE_IT_DIR=<reverse-it root> py -3.14 test_ota_guard_probe.py
+    REVERSE_IT_DIR=<reverse-it root> python3.13 test_ota_guard_probe.py [--mutants]
+    (py -3.14 on Windows)
 
 raw_post is run against a local server that answers 403 and then either closes
 cleanly after reading the whole request (FIN) or aborts with unread bytes and
@@ -13,6 +14,15 @@ full-image run's safety refusal), raw_post's reader thread (a server that answer
 403 at once and only then drains an 8 MB body through small socket buffers: the 403 must be timed before
 the send completes), and pcap_join's no-RST expectation. --mutants runs the
 mutants of both files; each must make a check fail.
+
+A mutant of one platform's code (a 5th field, "nt" or "posix") is printed N/A on the
+other and not counted; its edit must still apply (2026-11-12, the reviewer's Linux
+leftovers item 4). "One send of the whole request" is Windows only: raw_post sends in
+SEND_CHUNK pieces because one big send() is taken whole on Windows, so t_sent would come
+before the body is drained (killed there, 14 of 14 on 2026-10-16, VERIFICATION.md). On
+Linux sendall() blocks while the socket's send buffer is full in either form, so t_sent
+is when the last bytes enter the buffer, one chunk apart at most: the mutant is
+equivalent there, and survived on madhouse-debian with the slowdrain check passing.
 """
 import os
 import shutil
@@ -226,7 +236,7 @@ MUTANTS = [
     ("ota_guard_pcap_join.py", "first close always the device",
      'c["first_close"] = "device" if src == device else "client"', 'c["first_close"] = "device"'),
     ("ota_guard_raw_probe.py", "one send of the whole request",
-     "            s.sendall(req[k:k + SEND_CHUNK])", "            s.sendall(req) if k == 0 else None"),
+     "            s.sendall(req[k:k + SEND_CHUNK])", "            s.sendall(req) if k == 0 else None", "nt"),
     ("ota_guard_raw_probe.py", "check_image accepts anything",
      "    if have != image_sha:", "    if False:"),
     ("ota_guard_raw_probe.py", "multipart_file drops the closing boundary",
@@ -237,15 +247,21 @@ MUTANTS = [
 
 def mutants():
     base = gi_paths.scratch("mutants-ota_guard_probe_mutants")   # the worktree's scratch/ (AGENTS.md)
-    killed = errors = 0
+    killed = errors = na = 0
     for n, m in enumerate(MUTANTS, 1):
         fname, name = m[0], m[1]
         edits = m[2] if len(m) == 3 else [(m[2], m[3])]    # one edit, or a list of them
+        where = m[4] if len(m) == 5 else None               # one platform's mutant
         src = open(os.path.join(HERE, fname), encoding="utf-8").read()
         bad = [old for old, _new in edits if src.count(old) != 1]
         if bad:
             print("ERROR    m%d %s: an edit matched %d times" % (n, name, src.count(bad[0])))
             errors += 1
+            continue
+        if where and where != os.name:                      # the edit still has to apply (above)
+            print("N/A      m%d %s  (%s only; this run is on %s)"
+                  % (n, name, "Windows" if where == "nt" else "POSIX", sys.platform))
+            na += 1
             continue
         for old, new in edits:
             src = src.replace(old, new)
@@ -265,8 +281,9 @@ def mutants():
                                (" (%d FAIL)" % len(fails)) if fails else
                                (", CRASHED" if "Traceback" in r.stderr else "")))
     gi_paths.remove_tree(base)
-    print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
-    return 0 if killed == len(MUTANTS) and not errors else 1
+    print("\n%d of %d killed by a check, %d errors, %d not applicable on %s"
+          % (killed, len(MUTANTS) - na, errors, na, sys.platform))
+    return 0 if killed == len(MUTANTS) - na and not errors else 1
 
 
 if __name__ == "__main__":
