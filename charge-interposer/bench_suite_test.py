@@ -65,21 +65,37 @@ TMP = None
 B.canchg_mode.CANCTL = [sys.executable, "-B", "-c", "import sys; sys.exit(9)"]
 B.canchg_mode.SYSFS_USB = B.canchg_mode.SYSFS_NET = os.path.join(HERE, "no-such-sysfs")
 B.canchg_mode.BIND_WAIT_S = 0
+# Nor canx2_slcan's (the X2's start hook detaches canx2): the same canctl
+# that exits 9, sysfs and /proc roots that do not exist, and the tests that
+# drive the hooks stub canx2_slcan.start (inside _canchg_stubs).
+B.canx2_slcan.CANCTL = list(B.canchg_mode.CANCTL)
+B.canx2_slcan.SYSFS_NET = B.canx2_slcan.PROC = os.path.join(HERE, "no-such-sysfs")
+B.canx2_slcan.DETACH_WAIT_S = 0
 
 
 def _canchg_stubs(calls):
-    """canchg_mode.start / .end replaced by stubs recording (step, environ)
-    in calls and returning ok; -> the originals, to put back."""
+    """canchg_mode.start / .end and canx2_slcan.start replaced by stubs
+    recording (step, environ) in calls (canx2's as ("canx2", {})) and
+    returning ok; -> the originals, to put back with _canchg_restore."""
     M = B.canchg_mode
-    keep = (M.start, M.end)
+    keep = (M.start, M.end, B.canx2_slcan.start)
 
     def stub(step):
         def fn(environ, logdir, platform=None):
             calls.append((step, dict(environ)))
             return dict(ok=True, detail="canchg %s stub" % step, found={})
         return fn
+
+    def canx2(logdir, platform=None):
+        calls.append(("canx2", {}))
+        return dict(ok=True, detail="canx2 stub", found={})
     M.start, M.end = stub("start"), stub("end")
+    B.canx2_slcan.start = canx2
     return keep
+
+
+def _canchg_restore(keep):
+    B.canchg_mode.start, B.canchg_mode.end, B.canx2_slcan.start = keep
 
 
 class _Chk:
@@ -706,7 +722,10 @@ def test_suites():
     #      32-bit wrap unwrapped, the reviewer's E3, 2026-11-12)
     # 275: canchg-mode-test and its -canfail (the bench run sets canchg's
     #      mode through canctl; the reviewer's canchg-mode batch, 2026-11-12)
-    assert len(seen) == 275, "checks across the suites: %d" % len(seen)
+    # 277: canx2-slcan-test and its -canfail (the bench run detaches canx2
+    #      from SLCAN before the X2 is identified or flashed; the reviewer's
+    #      run-start batch, 2026-11-13)
+    assert len(seen) == 277, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -1080,7 +1099,7 @@ def test_wican_board():
     try:
         x2 = b.on_start("x2", b.images["bridge"], None, d)
     finally:
-        B.canchg_mode.start, B.canchg_mode.end = keep
+        _canchg_restore(keep)
     assert x2["ok"] is True and "no start step" in x2["detail"], x2
     for hook, flag in ((b.on_start, "--first"), (b.on_end, "--want")):
         out = hook(W.BOARD, im, None, d)
@@ -1108,17 +1127,63 @@ def test_canchg_mode_hooks():
     keep = _canchg_stubs(calls)
     try:
         out = b.on_start("x2", b.images["bridge"], None, d)
-        assert out["ok"] is True and calls == [("start", want)], (out, calls)
+        chg = [c for c in calls if c[0] != "canx2"]     # canx2's: test_canx2_slcan_hooks
+        assert out["ok"] is True and chg == [("start", want)], (out, calls)
         out = b.on_end("x2", b.images["bridge"], None, d)
-        assert out["ok"] is True and calls == [("start", want), ("end", want)], (out, calls)
+        chg = [c for c in calls if c[0] != "canx2"]
+        assert out["ok"] is True and chg == [("start", want), ("end", want)], (out, calls)
         im = b.images[W.IMAGE]
         for hook in (b.on_start, b.on_end):
             hook(W.BOARD, im, None, d)
-        assert len(calls) == 2, calls
+        assert len([c for c in calls if c[0] != "canx2"]) == 2, calls
     finally:
-        B.canchg_mode.start, B.canchg_mode.end = keep
+        _canchg_restore(keep)
     for su in (B.emulated(s), B.harness(s)):
         assert su.on_start is None and su.on_end is None, (su.name, su.on_start, su.on_end)
+
+
+def test_canx2_slcan_hooks():
+    """The bench suite's X2 start hook detaches canx2 from the kernel's
+    SLCAN first (canx2_slcan.py; tester, 2026-11-13, the reviewer's
+    run-start batch): on the X2, on_start runs canx2_slcan.start once,
+    before canchg's start step (and so before bench_wican's hook given and
+    before the runner identifies or flashes the X2); its failure makes the
+    X2's start hook fail at once, with nothing more of it run (no canchg
+    step), which stops the bench; on_end runs no canx2 step
+    (nothing put back); on the WiCAN neither hook runs it.
+    canx2_slcan_test.py tests the step itself."""
+    s = _settings()
+    s["canchg_device"] = dict(CHG_DEV)
+    b = B.bench(s)
+    W = B.bench_wican
+    d = os.path.join(TMP, "canx2_hooks")
+    os.makedirs(d, exist_ok=True)
+    calls = []
+    keep = _canchg_stubs(calls)
+    try:
+        out = b.on_start("x2", b.images["bridge"], None, d)
+        steps = [c[0] for c in calls]
+        assert out["ok"] is True and steps == ["canx2", "start"], (out, steps)
+        assert "canx2 stub" in out["detail"], out
+        b.on_end("x2", b.images["bridge"], None, d)
+        assert [c[0] for c in calls] == ["canx2", "start", "end"], calls
+        im = b.images[W.IMAGE]
+        for hook in (b.on_start, b.on_end):
+            hook(W.BOARD, im, None, d)
+        assert [c[0] for c in calls].count("canx2") == 1, calls
+
+        def failed(logdir, platform=None):
+            calls.append(("canx2", {}))
+            return dict(ok=False, detail="canx2 failed stub", found={})
+        B.canx2_slcan.start = failed
+        n = len(calls)
+        out = b.on_start("x2", b.images["bridge"], None, d)
+        assert out["ok"] is False and "canx2 failed stub" in out["detail"] and \
+            "was not run" in out["detail"], out
+        # nothing more of the X2's start hook runs (the reviewer, 2026-11-13)
+        assert [c[0] for c in calls[n:]] == ["canx2"], calls[n:]
+    finally:
+        _canchg_restore(keep)
 
 
 # a made-up Innomaker serial (24 hex digits, the real ones' shape)
@@ -1916,7 +1981,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
          test_m_lanes_host, test_idle_safe, test_canchg_env, test_esptool_env,
-         test_canchg_mode_hooks]
+         test_canchg_mode_hooks, test_canx2_slcan_hooks]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -2112,6 +2177,54 @@ _ORIG["M_LANES_HOSTS"] = B.M_LANES_HOSTS
 _ORIG["canchg_env"] = B.canchg_env
 _ORIG["esptool_env"] = B.esptool_env
 _ORIG["canchg_mode.hooks"] = B.canchg_mode.hooks
+_ORIG["canx2_slcan.hooks"] = B.canx2_slcan.hooks
+
+
+def _x2_unwired(on_start, on_end, **kw):
+    return on_start, on_end
+
+
+def _x2_after_hook(on_start, on_end, **kw):
+    X = B.canx2_slcan
+
+    def s(b, img, ctx, logdir):
+        if b != X.X2_BOARD:
+            return on_start(b, img, ctx, logdir)
+        theirs = X._call(on_start, b, img, ctx, logdir)
+        return X._both(X.start(logdir), theirs)
+    return s, on_end
+
+
+def _x2_on_wican(on_start, on_end, **kw):
+    return _ORIG["canx2_slcan.hooks"](on_start, on_end, board=B.bench_wican.BOARD, **kw)
+
+
+def _x2_also_at_end(on_start, on_end, **kw):
+    s, _e = _ORIG["canx2_slcan.hooks"](on_start, on_end, **kw)
+    return s, _ORIG["canx2_slcan.hooks"](on_end, on_end, **kw)[0]
+
+
+def _x2_failure_ignored(on_start, on_end, **kw):
+    s, e = _ORIG["canx2_slcan.hooks"](on_start, on_end, **kw)
+
+    def s2(b, img, ctx, logdir):
+        out = s(b, img, ctx, logdir)
+        out["ok"] = True
+        return out
+    return s2, e
+
+
+def _x2_on_start_anyway(on_start, on_end, **kw):
+    """The hook given run after a failed detach too (before the reviewer's
+    fix of e284dd75)."""
+    X = B.canx2_slcan
+
+    def s(b, img, ctx, logdir):
+        if b != X.X2_BOARD:
+            return on_start(b, img, ctx, logdir)
+        mine = X.start(logdir)
+        return X._both(mine, X._call(on_start, b, img, ctx, logdir))
+    return s, on_end
 
 
 def _hooks_start_only(on_start, on_end, environ, **kw):
@@ -2468,6 +2581,19 @@ MUTANTS = {
          "the hooks not given the settings' canchg_device"),
         ("canchg_mode.hooks", _hooks_on_wican,
          "the canchg step on the WiCAN, not the X2")],
+    "test_canx2_slcan_hooks": [
+        ("canx2_slcan.hooks", _x2_unwired,
+         "the canx2 detach left out of the bench suite's start hook"),
+        ("canx2_slcan.hooks", _x2_after_hook,
+         "the canx2 detach after canchg's step and the WiCAN's hook"),
+        ("canx2_slcan.hooks", _x2_on_wican,
+         "the canx2 detach on the WiCAN, not the X2"),
+        ("canx2_slcan.hooks", _x2_also_at_end,
+         "a canx2 step in the end hook too (nothing is put back)"),
+        ("canx2_slcan.hooks", _x2_failure_ignored,
+         "a failed canx2 detach not failing the X2's start hook"),
+        ("canx2_slcan.hooks", _x2_on_start_anyway,
+         "the rest of the X2's start hook run after a failed canx2 detach")],
     "test_script_judge": [
         ("script_judge", _pass_all, "passes everything"),
         ("script_judge", _rc0_pass,

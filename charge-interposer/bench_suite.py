@@ -80,7 +80,10 @@ madhouse_pio; for the bench suite's WiCAN (bench_wican.py), gi_tools
 image's files, wican_pin.json), wican_mac and wican_esptool_device (its USB
 load; wican_esptool_port on Windows); canchg_device (adapter_fixes, and
 canchg_mode: on Linux the run puts canchg in libusb mode through canctl in
-the X2's start hook and back on gs_usb in its end hook). The diag DBC
+the X2's start hook and back on gs_usb in its end hook). canx2_slcan, with
+no setting: on Linux the X2's start hook detaches canx2 from the kernel's
+SLCAN through canctl if it is attached, before the X2 is identified or
+flashed. The diag DBC
 is the git copy (paths.diag_dbc()); interposer_dbc is retired and refused
 (bench_identify).
 
@@ -115,6 +118,7 @@ from vtrux_bench.run import (Check, Figure, Group, Image, KnownFail,  # noqa: E4
 import bench_identify  # noqa: E402
 import bench_wican  # noqa: E402
 import canchg_mode  # noqa: E402
+import canx2_slcan  # noqa: E402
 import canre_pin  # noqa: E402
 import can_tools_pin  # noqa: E402
 import scratch_dir  # noqa: E402
@@ -193,7 +197,7 @@ HARNESS_PY_TESTS = [
     "bus_gs_usb_test.py", "canre_pin_test.py", "can_tools_pin_test.py",
     "twai_fake_option_test.py", "scratch_dir_test.py", "scratch_run_test.py",
     "hw_mechanics_test.py", "serial_open_test.py", "adapter_fixes_test.py",
-    "wican_pin_test.py", "canchg_mode_test.py",
+    "wican_pin_test.py", "canchg_mode_test.py", "canx2_slcan_test.py",
 ]
 # The ones of those also run with --can-fail, as <name>-canfail. One list
 # for the harness suite and accept_adapter's catalogue, so they can't drift.
@@ -202,6 +206,7 @@ HARNESS_PY_CANFAILS = [
     "paths_test.py", "twai_fake_option_test.py", "scratch_dir_test.py",
     "scratch_run_test.py", "hw_mechanics_test.py", "serial_open_test.py",
     "adapter_fixes_test.py", "wican_pin_test.py", "canchg_mode_test.py",
+    "canx2_slcan_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 # settings m_lanes_host: where the m-* groups run (module docstring)
@@ -1286,6 +1291,13 @@ def bench(settings):
     # (canchg_mode.py). The WiCAN keeps bench_wican's hooks alone.
     on_start, on_end = canchg_mode.hooks(wican["on_start"], wican["on_end"],
                                          canchg_env(settings))
+    # Before that, on the X2 (tester, 2026-11-13, the reviewer's run-start
+    # batch; shared/bench SPEC section 8, the lock as a mutex): canx2
+    # detached from the kernel's SLCAN through canctl if it is attached,
+    # before the start pass identifies or flashes the X2 on the same tty,
+    # at start and at every resume; no end step, nothing is put back
+    # (canx2_slcan.py).
+    on_start, on_end = canx2_slcan.hooks(on_start, on_end)
 
     return Suite(
         name="charge-interposer-bench", role=ROLE,
