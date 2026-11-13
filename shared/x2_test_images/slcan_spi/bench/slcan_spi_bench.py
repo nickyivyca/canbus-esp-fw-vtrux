@@ -18,15 +18,19 @@ Checks (--checks, default all, in this order):
             the ELF sha256 of the image built (--elf); B's banner lines all
             say NOT FOR VEHICLE, CANSTAT 0x80; no other line the image sent
             is a console line without it (T10, T12, T14)
-  silence   canchg sends one frame per phase and watches for its ACK:
-            closed (attached, down): no ACK; L: no ACK; O: ACKed, and the
-            X2 hands the frame to the host and sends one host frame; after
-            C: no ACK (T8a, T12)
+  silence   canchg sends one frame per phase and watches for its ACK
+            (probe_ack: canchg reports an unACKed frame as an error frame
+            with CAN_ERR_ACK): closed (attached, down): no ACK; L: no ACK;
+            O: ACKed, and the X2 hands the frame to the host and sends one
+            host frame; after C: no ACK (T8a, T12)
   reset     raw tty: S6, O, canchg's frames ACKed; then the X2 reset through
             its USB port (RTS); canchg's frames unACKed once it is back
-            (T8a "a reset returns it to silent"). Records when ACKs stopped
-            relative to the reset, and the boot output (the banner; the
-            ROM's own lines, a gap)
+            (T8a "a reset returns it to silent"). The boot output, read on
+            the open tty: the image's boot line, NOT FOR VEHICLE and within
+            the kernel's 33 characters (T14), and the ROM's own lines, a
+            gap. Records when the boot line came and when canchg first
+            reported an ACK error; canchg reports error states on a timer
+            of about 1 s, so the latter bounds nothing finer
   rate-tx   host -> canx2 -> canchg at --fps for --seconds: every frame
             sent arrives, in order; drops reported = 0 (T12)
   rate-rx   canchg -> X2 -> host at --fps for --seconds: every frame canchg
@@ -36,8 +40,9 @@ Checks (--checks, default all, in this order):
             reported (e3OOO: kernel tx_errors and TX_OVERFLOW error
             frames); canchg up again: the queue drains, and received +
             reported == sent, and the state comes back to active (T12)
-  busoff    canchg at 250 kbit/s destroys the X2's frames: bus-off reported
-            (kernel CAN_ERR_BUSOFF) (T12)
+  busoff    canchg at 250 kbit/s destroys the X2's frames, taken down and up
+            to reset its own counters until the X2 is bus-off: bus-off
+            reported (kernel CAN_ERR_BUSOFF) (T12)
   overrun   raw tty, not read for a while during canchg's frames at --fps:
             the frames the USB link had no room for are reported, one e3ooo
             each, and frames + reports == frames canchg sent; F shows the
@@ -235,6 +240,7 @@ class Reader(threading.Thread):
         self.sock = open_sock(name)
         self.frames = []        # (t, can_id, data)
         self.errors = []        # (t, can_id, data)
+        self.sock_errors = []   # (t, errno): ENETDOWN once per link down
         self.stop = threading.Event()
 
     def run(self):
@@ -243,7 +249,13 @@ class Reader(threading.Thread):
                 raw = self.sock.recv(CAN_SIZE)
             except socket.timeout:
                 continue
-            except OSError:
+            except OSError as e:
+                # the socket reports ENETDOWN once when its link goes down
+                # (canctl's up of a link that was up goes through down); it
+                # keeps receiving once the link is up again
+                self.sock_errors.append((time.monotonic(), e.errno))
+                if e.errno == 100 and len(self.sock_errors) < 100:
+                    continue
                 break
             t = time.monotonic()
             can_id, data = unpack(raw)
@@ -288,10 +300,23 @@ def tty_open(port):
     s.port = port
     s.baudrate = 115200
     s.timeout = 0.05
-    s.dtr = False       # set before open: RTS without DTR resets the S3
+    # The ESP32-S3's USB Serial/JTAG resets the chip while RTS is high and
+    # DTR low. The tty's open raises both; pyserial then sets DTR, then RTS.
+    # DTR low first would pass through that state and reset the X2 (seen on
+    # the bench, 2026-11-12), so DTR stays high and RTS goes low: no reset.
+    s.dtr = True
     s.rts = False
     s.open()
     return s
+
+
+def tty_reset(s):
+    """Reset the X2 through its USB port, as esptool's hard reset does: DTR
+    low, RTS high for 100 ms, then both low, so it boots its app."""
+    s.dtr = False
+    s.rts = True
+    time.sleep(0.1)
+    s.rts = False
 
 
 def tty_cmd(s, text, wait=0.3):
@@ -378,10 +403,17 @@ def boot_problems(image_text, need_boot_line):
 
 # ---------------------------------------------------------------- probes
 
-def probe_ack(window=1.0, x2_reader=None):
+def probe_ack(window=1.0):
     """canchg, fresh, sends one frame and watches for its ACK. Returns
-    {acked, ack_errors, tx_packets}."""
-    up(PEER, berr=True)
+    {acked, ack_errors, state, tx_packets}.
+
+    canchg's gs_usb refuses bus-error reporting (berr), and counts
+    tx_packets for its frame whether or not it was ACKed (both seen on the
+    bench, 2026-11-12). An unACKed frame is retransmitted until canchg goes
+    error-warning and error-passive, and each state change comes up as an
+    error frame carrying CAN_ERR_ACK. So: not ACKed = an error frame with
+    CAN_ERR_ACK; ACKed = none, and canchg still error-active at the end."""
+    up(PEER)
     r = Reader(PEER)
     r.start()
     s0 = stats(PEER)
@@ -391,10 +423,11 @@ def probe_ack(window=1.0, x2_reader=None):
     sock.close()
     r.finish()
     d = delta(s0, stats(PEER))
+    state = can_state(PEER)
     down(PEER)
     acks = err_count(r.errors, ERR_ACK)
-    return {"acked": bool(d["tx_packets"]), "tx_packets": d["tx_packets"],
-            "ack_errors": acks}
+    return {"acked": not acks and state == "ERROR-ACTIVE", "ack_errors": acks,
+            "state": state, "tx_packets": d["tx_packets"]}
 
 
 # ---------------------------------------------------------------- checks
@@ -496,32 +529,37 @@ def check_reset(ctx, can_fail):
     detach()
     port = ctx["port"]
     s = tty_open(port)
+    r = sock = None
+    t_reset = None
+    sent = 0
     try:
         tty_cmd(s, "C\r")
         rep = tty_cmd(s, "S6\rO\r")
-    except Exception:
-        s.close()
-        raise
-    detail = {"open_reply": rep.decode("ascii", "replace")}
-    # canchg sends a frame every 5 ms from before the reset to after it.
-    up(PEER, berr=True)
-    r = Reader(PEER)
-    r.start()
-    sock = open_sock(PEER)
-    sock.setblocking(False)
-    t_reset = None
-    t_end = time.monotonic() + 6.0
-    s0 = stats(PEER)
-    sent = 0
-    reset_at = time.monotonic() + 1.0
-    try:
+        detail = {"open_reply": rep.decode("ascii", "replace")}
+        # canchg sends a frame every 5 ms from before the reset to after it.
+        up(PEER)
+        r = Reader(PEER)
+        r.start()
+        sock = open_sock(PEER)
+        sock.setblocking(False)
+        t_end = time.monotonic() + 6.0
+        s0 = stats(PEER)
+        reset_at = time.monotonic() + 1.0
+        # The USB link stays up through the chip reset (rst:0x15,
+        # USB_UART_CHIP_RESET), so the boot output arrives on this open tty
+        # and is read here, with the time each piece came.
+        s.timeout = 0
+        chunks = []
         while time.monotonic() < t_end:
             if t_reset is None and time.monotonic() >= reset_at:
+                s.read(65536)           # the frame lines from before
                 t_reset = time.monotonic()
                 if not can_fail:
-                    s.rts = True        # DTR low, RTS high: the S3 resets
-                    time.sleep(0.1)
-                    s.rts = False
+                    tty_reset(s)
+            if t_reset is not None:
+                got = s.read(65536)
+                if got:
+                    chunks.append((time.monotonic() - t_reset, got))
             try:
                 sock.send(pack(ID_PROBE, struct.pack("<I", sent)))
                 sent += 1
@@ -529,40 +567,49 @@ def check_reset(ctx, can_fail):
                 pass
             time.sleep(0.005)
     finally:
-        sock.close()
-        try:
-            s.close()
-        except Exception:
-            pass
-    r.finish()
-    # The frames canchg got back as echoes are not in its socket; its
-    # tx_packets counts the ACKed ones, its ACK errors the rest. Find when
-    # the ACK errors began after the reset.
+        for c in (sock, s):
+            try:
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
+        if r is not None:
+            r.finish()
+    # canchg's ACK errors come up with its state changes (probe_ack): the
+    # first after the reset is when its frames stopped being ACKed.
     d = delta(s0, stats(PEER))
     ack_err_times = [t for t, cid, _ in r.errors if cid & ERR_ACK]
     after = [t - t_reset for t in ack_err_times if t >= t_reset]
     before = [t for t in ack_err_times if t < t_reset]
     detail.update({"peer_tx_packets": d["tx_packets"], "sent_attempts": sent,
                    "ack_errors_before_reset": len(before),
+                   "ack_errors_after_reset": len(after),
+                   "peer_state": can_state(PEER),
                    "first_ack_error_after_reset_s": round(after[0], 3) if after else None})
     down(PEER)
     # Once back, silent: a fresh probe gets no ACK.
     time.sleep(2.0)
     detail["after_reset"] = probe_ack()
-    # The boot output, which waited in the image's buffers for the host.
-    try:
-        ctx["port"] = resolve_port(ctx)
-        s = tty_open(ctx["port"])
-        boot = tty_drain(s, 1.0)
-        s.close()
-        detail["boot_output"] = boot.decode("ascii", "replace")
-    except Exception as e:
-        detail["boot_output"] = "unread: %s" % e
-    rom, boot_text = split_boot(detail["boot_output"])
+    boot = b"".join(c for _, c in chunks).decode("ascii", "replace")
+    detail["boot_output"] = boot
+    t_line = None
+    acc = ""
+    for t, c in chunks:
+        acc += c.decode("ascii", "replace")
+        if BOOT_LINE in acc:
+            t_line = round(t, 3)
+            break
+    detail["boot_line_after_reset_s"] = t_line
+    rom, boot_text = split_boot(boot)
+    # frame lines still in flight at the reset are not the ROM's
+    detail["frame_lines_before_boot"] = [ln for ln in rom if REPLY_RE.match(ln)]
+    rom = [ln for ln in rom if not REPLY_RE.match(ln)]
     detail["rom_lines_gap"] = rom
     problems = boot_problems(boot_text, need_boot_line=True)
     if not d["tx_packets"]:
-        problems.append("canchg's frames were never ACKed while the X2 was open")
+        problems.append("canchg sent nothing while the X2 was open")
+    if not after:
+        problems.append("canchg's frames were still ACKed after the reset")
     if before:
         problems.append("%d ACK errors before the reset, while the X2 was open" % len(before))
     if detail["after_reset"]["acked"]:
@@ -729,11 +776,13 @@ def check_drops(ctx, can_fail):
     time.sleep(3.0)
     held_state = can_state(X2)
     d_held = delta(s0, stats(X2))
-    # Now an ACKer: what the X2 held drains to canchg.
-    if not can_fail:
-        up(PEER)
+    # Now an ACKer: what the X2 held drains to canchg. The reader is bound
+    # before canchg comes up, or the first frames drain before it listens
+    # (10 of 513 missed so on the bench, 2026-11-12).
     pr = Reader(PEER)
     pr.start()
+    if not can_fail:
+        up(PEER)
     try:
         wait_quiet(pr, 2.0, 30.0)
     except Fail:
@@ -774,22 +823,36 @@ def check_drops(ctx, can_fail):
 def check_busoff(ctx, can_fail):
     detach()
     attach()
-    up(PEER, bitrate=BITRATE if can_fail else 250000, berr=True)
+    # canchg at the wrong rate flags errors in the X2's frames (X2 TEC +8
+    # each) until its own receive errors make it error-passive, after which
+    # its error flags no longer destroy anything (seen on the bench,
+    # 2026-11-12: the X2 stopped at error-passive). Taking canchg down and up
+    # resets its counters, so each cycle destroys more of the X2's frames
+    # while the X2's TEC, with no frame sent successfully, only climbs.
+    rate = BITRATE if can_fail else 250000
     up(X2)
     xr = Reader(X2)
     xr.start()
     sock = open_sock(X2)
     t0 = time.monotonic()
-    for i in range(5):
+    for i in range(20):
         send(sock, ID_HOST, bytes([i]))
-    time.sleep(3.0)
+    cycles = 0
+    for cycles in range(1, 13):
+        up(PEER, bitrate=rate)
+        time.sleep(0.3)
+        down(PEER)
+        if any(cid & ERR_BUSOFF for _, cid, _ in xr.errors):
+            break
+    time.sleep(1.0)
     sock.close()
     xr.finish()
     busoff = [t - t0 for t, cid, _ in xr.errors if cid & ERR_BUSOFF]
     state = can_state(X2)
     down(X2)
     down(PEER)
-    detail = {"busoff_reports": len(busoff),
+    detail = {"busoff_reports": len(busoff), "peer_rate": rate,
+              "peer_cycles": cycles,
               "first_busoff_s": round(busoff[0], 3) if busoff else None,
               "state": state, "error_frames": len(xr.errors)}
     problems = []
