@@ -226,7 +226,12 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
 
     kwargs = dict(bitrate=bitrate, receive_own_messages=receive_own_messages)
     if iface == "pcan":
-        # see canbench/live/pcan-busoff-recovery.md
+        # see canbench/live/pcan-busoff-recovery.md. On Linux PCAN-Basic
+        # 9.3.3, auto_reset alone does not clear a bus-off: the reset only
+        # flushes the queues unless PCAN_HARD_RESET_STATUS is on, and the
+        # write path's auto-reset never fires (that note at can-tools
+        # 521eb24). Recovery there needs canbench's own PCAN class
+        # (backends.install()), which this harness does not use.
         kwargs["auto_reset"] = True
     if isinstance(ch, dict):
         bus = can.interface.Bus(interface=iface, **kwargs, **ch)
