@@ -7,12 +7,19 @@ L2 already shows the arithmetic, through a read-only accessor; this checks
 the PRINTED count against what a witness captured, and the parts only
 silicon has:
 
+THE KVASER'S LINK (tester, 2026-11-13; the reviewer's A): an UP kvaser_usb
+link acknowledges with no socket open, so each mode sets it and reads it
+back before its boots (mode_link): UP for ack, DOWN for noack and the com3
+boots, which is what "Kvaser closed" meant under CANlib. A link not as the
+mode needs is a VOID line with the kernel's USB/CAN lines, and no boot
+runs (exit 1).
+
   ack     PCAN NORMAL (it ACKs and witnesses) opened BEFORE the reset; the
-          Kvaser and Innomaker closed. round= must be 4, the capture must
+          Kvaser's link up, the Innomaker closed. round= must be 4, the capture must
           hold 0x7F4-0x7F7 once each, and round= must equal the frames
           captured. Nothing more from the board afterwards (the charger is
           silent, so the port stays listen-only).
-  noack   PCAN LISTEN-ONLY, Kvaser closed: nothing ACKs (the WiCAN in mode
+  noack   PCAN LISTEN-ONLY, the Kvaser's link DOWN: nothing ACKs (the WiCAN in mode
           0 does not, bench-holder.md 2026-10-13). round= must be 0. The
           witness sees the head frame RETRIED until the switch -- those are
           unacknowledged attempts, not sent frames -- and their span, first
@@ -400,6 +407,24 @@ def serial_lines_since(path, start_line):
         return f.read().splitlines()[start_line:]
 
 
+def mode_acks(mode):
+    """Whether the Kvaser's link is up for this mode: ack only. noack and
+    the com3 boots keep it DOWN, as the closed CANlib Kvaser was (an UP
+    kvaser_usb link acknowledges with no socket open)."""
+    return mode == "ack"
+
+
+def mode_link(mode, link):
+    """The Kvaser's link for a mode, set and read back (2026-11-13, the
+    reviewer's A). -> (ok, line); not ok is a VOID line with the kernel's
+    USB/CAN lines, and the mode's boots do not run."""
+    t0 = time.time()
+    try:
+        return True, link.set_link(mode_acks(mode))
+    except link.LinkError as e:
+        return False, link.link_void(e, t0, time.time())
+
+
 def run_boot(args, out_dir, n, mode):
     """One boot. Returns (ok_or_None, lines, record)."""
     import run_scenario as R
@@ -412,7 +437,8 @@ def run_boot(args, out_dir, n, mode):
     elif mode in ("noack", "com3_pcan_listen"):
         wit = Witness(acks=False)
     if wit:
-        adapters = "PCAN %s; Kvaser, Innomaker closed" % wit.mode
+        adapters = "PCAN %s; Kvaser link %s, Innomaker closed" % (
+            wit.mode, "up" if mode_acks(mode) else "down")
     time.sleep(1.0)
     pre = wit.take() if wit else []
     tap = R.SerialTap(args.port, 115200, log)
@@ -478,7 +504,13 @@ def run_bench(args):
     modes = {"ack": ["ack"], "noack": ["noack"],
              "com3": ["com3_none", "com3_pcan_normal", "com3_pcan_listen"]}
     verdicts = []
+    import kvaser_link
     for mode in modes[args.mode]:
+        ok, line = mode_link(mode, kvaser_link)
+        print(line)
+        if not ok:
+            print("%s: no boot run, the Kvaser's link is not as the mode needs" % mode)
+            return 1
         for n in range(1, args.boots + 1):
             ok, lines = run_boot(args, out_dir, n, mode)
             for ln in lines:
@@ -724,6 +756,34 @@ def self_test():
           "noack CAN-FAIL: an epoch capture end against boot-relative row "
           "times is REFUSED, not a 1.76e9 s 'quiet'")
 
+    # 2026-11-13, the reviewer's A: the Kvaser's link per mode
+    import kvaser_link
+
+    class Link(object):
+        LinkError = kvaser_link.LinkError
+        calls, fail = [], None
+
+        @classmethod
+        def set_link(cls, up):
+            cls.calls.append(up)
+            if cls.fail:
+                raise kvaser_link.LinkError(cls.fail)
+            return "kvaser link %s" % ("up" if up else "down")
+
+        @staticmethod
+        def link_void(e, t0, t1):
+            return kvaser_link.link_void(e, t0, t1, lambda s, u: (
+                "2026-11-13T12:00:00.1-08:00 h kernel: usb 1-3.2.1: error -71\n"))
+    for mode in ("ack", "noack", "com3_none", "com3_pcan_normal", "com3_pcan_listen"):
+        mode_link(mode, Link)
+    check(Link.calls == [True, False, False, False, False],
+          "link: up for ack only; noack and every com3 boot down -> %s" % Link.calls)
+    Link.fail = "the kvaser link reads up in sysfs, and this check needs it down"
+    ok, ln = mode_link("noack", Link)
+    check(not ok and ln.startswith("VOID: kvaser link: the kvaser link reads up")
+          and "error -71" in ln,
+          "link: an UP link under noack is caught, a VOID line with the kernel's lines")
+
     print("\nbench_powerup_round self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -775,6 +835,12 @@ MUTANTS = [
     ("--strict-port defaults on",
      "    ap.add_argument(\"--strict-port\", action=\"store_true\",",
      "    ap.add_argument(\"--strict-port\", action=\"store_false\","),
+    # 2026-11-13, the reviewer's A
+    ("link: up for every mode", "    return mode == \"ack\"", "    return True"),
+    ("link: up for the com3 boots too", "    return mode == \"ack\"",
+     "    return mode == \"ack\" or mode.startswith(\"com3\")"),
+    ("link: a failure not VOID", "        return False, link.link_void(e, t0, time.time())",
+     "        return True, str(e)"),
 ]
 
 
