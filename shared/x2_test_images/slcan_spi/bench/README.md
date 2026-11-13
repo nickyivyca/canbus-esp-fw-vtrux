@@ -35,4 +35,6 @@ drives both through `canctl` and leaves `canx2` detached and `canchg` down.
   charger segment to ACK canchg's frames, canchg's own error flag destroys
   each frame for every receiver. `silence` shows what T12 requires of `L`,
   that it never ACKs.
-- **The ROM's boot lines** (`../README.md`): `reset` records them.
+- **The ROM's boot lines** (`../README.md`): `reset` and `identity` record
+  them apart from the image's output, which starts at its boot line and is
+  judged.

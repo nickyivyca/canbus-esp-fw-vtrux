@@ -340,6 +340,42 @@ def console_violations(text):
     return bad
 
 
+# Linux 6.12 slcan's SLCAN_MTU: a longer line counts one rx_over_error
+# (slcan-core.c slcan_unesc), so nothing the image sends unprompted, which
+# may reach the kernel, is longer. The leading LF counts.
+UNPROMPTED_MAX = 33
+BOOT_LINE = "\n# NOT FOR VEHICLE slcan_spi\r"
+
+
+def split_boot(text):
+    """Output read after a boot: (the ROM's lines, the image's output). The
+    image's output starts at its boot line; what comes before it is the
+    ESP32-S3 ROM's (a gap: README.md, 'Console lines')."""
+    i = text.find(BOOT_LINE)
+    if i < 0:
+        return [ln for ln in lines_of(text) if ln], ""
+    return [ln for ln in lines_of(text[:i]) if ln], text[i:]
+
+
+def boot_problems(image_text, need_boot_line):
+    """The image's unprompted output after a boot: its boot line says NOT FOR
+    VEHICLE, no line is longer than the kernel takes, and every line is a
+    reply form or a NOT FOR VEHICLE console line (T14)."""
+    problems = []
+    if need_boot_line and not image_text.startswith(BOOT_LINE):
+        problems.append("no boot line %r" % BOOT_LINE)
+    long_ = [p for p in re.split(r"(?<=[\r\a])", image_text)
+             if len(p.rstrip("\r\a")) > UNPROMPTED_MAX]
+    if long_:
+        problems.append("unprompted lines longer than %d characters (the kernel "
+                        "counts each as an rx_over_error): %r" % (UNPROMPTED_MAX, long_[:3]))
+    bad = console_violations(image_text)
+    if bad:
+        problems.append("unprompted lines that are neither replies nor NOT FOR "
+                        "VEHICLE console lines: %r" % bad[:5])
+    return problems
+
+
 # ---------------------------------------------------------------- probes
 
 def probe_ack(window=1.0, x2_reader=None):
@@ -370,19 +406,24 @@ def check_identity(ctx, can_fail):
         expect = ("0" if expect[0] != "0" else "1") + expect[1:]
     s = tty_open(ctx["port"])
     try:
-        first = tty_cmd(s, "\r", 0.5)
+        pending = tty_drain(s, 0.5)     # whatever waited: a boot's output
+        first = tty_cmd(s, "\r", 0.3)
         n = tty_cmd(s, "N\r")
         v = tty_cmd(s, "V\r")
         b = tty_cmd(s, "B\r", 0.6)
     finally:
         s.close()
+    rom, boot_text = split_boot(pending.decode("ascii", "replace"))
     text = (first + n + v + b).decode("ascii", "replace")
     nm = re.search(r"N(slcan_spi_NOT_FOR_VEHICLE \S+ elf=[0-9a-f]{64})\r", n.decode("ascii", "replace"))
     vm = re.search(r"V0100 (slcan_spi_NOT_FOR_VEHICLE \S+ elf=[0-9a-f]{64})\r", v.decode("ascii", "replace"))
     banner = re.findall(r"\n(# [^\r\n]*)\r", b.decode("ascii", "replace"))
     detail = {"N": n.decode("ascii", "replace"), "V": v.decode("ascii", "replace"),
-              "banner": banner, "expect_elf": expect}
-    problems = []
+              "banner": banner, "expect_elf": expect,
+              "waiting_at_open": {"rom_lines_gap": rom, "image": boot_text}}
+    problems = boot_problems(boot_text, need_boot_line=False)
+    if rom and not boot_text:
+        problems.append("output waiting at open with no boot line: %r" % rom[:5])
     if not nm:
         problems.append("no N identity reply")
     else:
@@ -517,7 +558,9 @@ def check_reset(ctx, can_fail):
         detail["boot_output"] = boot.decode("ascii", "replace")
     except Exception as e:
         detail["boot_output"] = "unread: %s" % e
-    problems = []
+    rom, boot_text = split_boot(detail["boot_output"])
+    detail["rom_lines_gap"] = rom
+    problems = boot_problems(boot_text, need_boot_line=True)
     if not d["tx_packets"]:
         problems.append("canchg's frames were never ACKed while the X2 was open")
     if before:
@@ -831,7 +874,9 @@ def preflight(args, settings):
                         "--log", settings["bench_lock_log"], "status"],
                        capture_output=True, text=True,
                        env=dict(os.environ, PYTHONPATH=args.shared_bench))
-    if "holder: tester (charge-interposer)" not in r.stdout:
+    # bench_lock status prints "holder: held by <who>, pid ..." (shared/bench
+    # 2026.11.12.2, read on madhouse-debian 2026-11-12)
+    if not re.search(r"^holder: held by tester \(charge-interposer\),", r.stdout, re.M):
         raise Fail("the bench lock is not held by tester (charge-interposer):\n" + r.stdout)
     if iface_up("canmain"):
         raise Fail("canmain is up: it is kept down during ESP runs")

@@ -73,6 +73,15 @@ static void console(const char *fmt, ...)
     if (n > 0) out_push(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
 }
 
+/* The boot banner: one console line short enough for the kernel's slcan
+ * (slcan_proto.h, SLCAN_UNPROMPTED_MAX), since it waits in the USB buffers
+ * for whoever opens the port next, the kernel included. */
+#define BOOT_LINE "\n# " NFV " slcan_spi\r"
+_Static_assert(sizeof BOOT_LINE - 2 <= SLCAN_UNPROMPTED_MAX,
+               "the boot line would count as an rx_over_error in the kernel");
+
+/* The full banner, on B only: its lines are longer than the kernel's slcan
+ * takes, and B comes only from a terminal, never from the kernel. */
 static void banner(void *ctx)
 {
     can_side_stats_t st;
@@ -205,7 +214,7 @@ void app_main(void)
     xTaskCreatePinnedToCore(out_task, "host_out", 3072, NULL, 10, NULL, 0);
 
     ESP_ERROR_CHECK(can_side_init(CAN2_PORT, &s_can_cb, &s_canstat_boot));
-    banner(NULL);
+    out_push(BOOT_LINE, sizeof BOOT_LINE - 1);
 
     slcan_init(&s_slcan, &s_ops);
     xTaskCreatePinnedToCore(proto_task, "slcan", 4096, NULL, 12, NULL, 0);

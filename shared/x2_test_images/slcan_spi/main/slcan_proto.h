@@ -28,9 +28,14 @@
  * repeats its one code three times ("e1O" would be dropped unread). It
  * counts tx_errors, rx_errors and rx_over_errors once per line, so one line
  * per event keeps the host's counters exact.
- * Console lines (the banner) start "\n# NOT FOR VEHICLE" and end in CR: the
- * kernel drops them unread, and the leading LF puts them on their own line
- * in a terminal without leaving a stray LF ahead of the next frame line.
+ * Console lines start "\n# NOT FOR VEHICLE" and end in CR; the leading LF
+ * puts them on their own line in a terminal without leaving a stray LF ahead
+ * of the next frame line. The kernel buffers at most SLCAN_UNPROMPTED_MAX
+ * characters of a line (its SLCAN_MTU) and counts one rx_over_error for
+ * any longer line, so a line the image sends unprompted, which may reach
+ * the kernel, is no longer than that: the boot line. A line starting with
+ * LF is otherwise dropped unread. The full banner's lines are longer and go
+ * out only on B, which the kernel never sends.
  */
 #ifndef SLCAN_PROTO_H
 #define SLCAN_PROTO_H
@@ -50,6 +55,11 @@
 /* The longest line the image writes, CR and NUL included, banner lines
  * aside. */
 #define SLCAN_LINE_MAX 40
+
+/* The longest line, CR not counted, that Linux 6.12's slcan takes without
+ * counting an rx_over_error: its SLCAN_MTU,
+ * sizeof("T1111222281122334455667788EA5F\r") + 1. */
+#define SLCAN_UNPROMPTED_MAX 33
 
 /* What the protocol asks of the rest of the image. */
 typedef struct {

@@ -75,16 +75,29 @@ MCP2515's transmit buffer 0. Received frames reach the host in bus order.
 
 ## Console lines
 
-The image's console lines are its banner, at boot and on `B`, each
-`\n# NOT FOR VEHICLE | ...\r` (T14): the identity, the protocol in one line,
-CANSTAT at boot (0x80, configuration mode), CAN1's state, and the counters.
-The kernel drops them unread. ESP-IDF's console is off and its log level is
-none, so nothing else from the image reaches the port.
+The image's console lines (T14):
+
+- **The boot banner,** one line at boot: `\n# NOT FOR VEHICLE slcan_spi\r`.
+  It waits in the USB buffers for whoever opens the port next, the kernel
+  included, so it is kept within the 33 characters Linux 6.12's slcan
+  buffers per line (its `SLCAN_MTU`): the kernel counts one
+  `rx_over_errors` for any longer line, and drops a line starting with LF
+  unread.
+- **The full banner, on `B` only,** each line `\n# NOT FOR VEHICLE | ...\r`:
+  the identity, the protocol in one line, CANSTAT at boot (0x80,
+  configuration mode), CAN1's state, and the counters. Its lines are longer
+  than the kernel takes, and the kernel never sends `B`.
+
+ESP-IDF's console is off and its log level is none, so nothing else from
+the image reaches the port.
 
 **Gap: the ROM's boot lines.** The ESP32-S3's ROM prints its own boot lines
 on the USB port before any image runs; they are the ROM's, not this image's,
 and carry no NOT FOR VEHICLE. Turning them off is an eFuse burn, which no
-test image does.
+test image does. They wait in the USB buffers like the boot banner, and one
+of them (`rst:... boot:...`) is longer than 33 characters, so if the kernel
+is the next to open the port after a reset, its `rx_over_errors` counts
+one.
 
 ## Files
 
