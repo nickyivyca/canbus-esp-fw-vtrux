@@ -40,7 +40,8 @@ a pointer, until nothing reads them. Since the move:
 | `bench_topology.py` | Which interposer segment each adapter is on, separated, not guessed |
 | `bench_usb_host.py` | Spec 8.3: output a USB host is not reading is dropped, never held. Its `unwrap_us32` (gs_usb's 32-bit microsecond stamp, which wraps every 71.6 min) is the one `bench_charger_silent`, `bench_hold12` and `bench_rx_order` import (2026-11-12) |
 | `bench_vport.py` | Spec 9's vehicle-port measurements, with the vport_bench image |
+| `rx_proc.py` | A CAN reader in a process of its own, for a check that reads one adapter while it sends busily on another (the reviewer's M6, 2026-11-13: reader threads beside a busy sender lost frames); `witness_void` (a witness that did not open, raised recv errors, or for which the kernel reports lost frames voids the check, with the kernel's lines) and `lost_lines`; `--self-test`, `--can-fail` |
 | `reset_check.py` | Step 4 item 5: boot-mid-session's board reset verified on the bench; `--serial-log` names its serial log |
-| `keepalive_probe.py` | Step 4 item 3: where the rx-order keep-alive goes, recorded |
+| `keepalive_probe.py` | Step 4 item 3: where the rx-order keep-alive goes, recorded. Since 2026-11-13 the port and the PCAN channel come from `--port` / `--pcan-channel` (were COM3 / PCAN_USBBUS1), the Kvaser's link is brought up and read back first; `--self-test`, `--can-fail` |
 | `script_can_fail.py` | Runs a driver's self-test against each of its `MUTANTS`, from a copy in a `scratch_dir` run folder (removed in a finally; before 2026-10-31, the machine temp folder) |
 | `script_can_fail_test.py` | Test for `script_can_fail.py` |

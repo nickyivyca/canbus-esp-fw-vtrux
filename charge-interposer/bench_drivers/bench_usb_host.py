@@ -46,6 +46,19 @@ used as a clock. Which clock was used is printed with every result.
 
 Reset over USB only (RTS pulse or a port close). No buttons, no replug.
 
+THE KVASER ON KVASER_USB (tester, 2026-11-13; the charge-interposer
+reviewer's rulings A, D6, M6 and the kernel-log addendum). An UP kvaser_usb
+link ACKs with no socket open, so each case sets it first and reads it back
+(set_case_link): up for the bridge and every --ack case, down for every
+--noack case; a link not set or not read back is a VOID line with the
+kernel's USB/CAN lines, and the case does not run (exit 3). In the bridge
+the injector keeps the stall rule (kvaser_link.EchoWatch, no timing
+change): a kvaser TX stall stops it and the case is VOID, with the kernel's
+lines, and the Kvaser is recovered. Its two witnesses, the PCAN and the
+Innomaker, each read in a process of their own (rx_proc), not in threads
+beside the injector; a witness that did not open, raised recv errors, or
+for which the kernel reports lost frames voids the case (witness_void).
+
     py -3.14 bench_usb_host.py --self-test
     py -3.14 bench_usb_host.py --can-fail
     py -3.14 bench_usb_host.py --port COM3 --case baseline-boots --ack --out D
@@ -96,6 +109,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import kvaser_link                  # noqa: E402  (the Kvaser on kvaser_usb)
 import scratch_dir                  # noqa: E402
 
 INJECT_ID = 0x6A2          # clear of the truck, the WiCAN, the interposer
@@ -626,8 +640,9 @@ def open_pcan(acks):
 
 
 def open_kvaser():
-    import can
-    return adapter_fixes.bus(interface="kvaser", channel=0, bitrate=500000)
+    """The Kvaser on kvaser_usb, netdev kvaser, its echoes kept for the
+    stall rule (kvaser_link; the link already up: main() sets it)."""
+    return kvaser_link.open_bus(receive_own_messages=True)
 
 
 def open_innomaker():
@@ -642,10 +657,15 @@ def open_innomaker():
 
 class Injector(object):
     """0x6A2 every PERIOD_S on the Kvaser, payload = 24-bit seq + 5 fixed
-    bytes. Records (seq, host send time); send errors counted."""
+    bytes. Records (seq, host send time); send errors counted. `watch` is a
+    kvaser_link.EchoWatch on the Kvaser (2026-11-13, the reviewer's D6: the
+    stall rule, no timing change): its own echoes are read between sends,
+    and a kvaser TX stall (ENOBUFS, or an echo later than 100 ms) stops the
+    injection and is kept in .stall, so the case is VOID, never judged."""
 
-    def __init__(self, bus):
-        self.bus, self.sent, self.errs = bus, [], 0
+    def __init__(self, watch):
+        self.watch, self.sent, self.errs = watch, [], 0
+        self.stall = None
         self.stop_ev = threading.Event()
         self.t = threading.Thread(target=self._run, daemon=True)
 
@@ -655,24 +675,31 @@ class Injector(object):
     def _run(self):
         import can
         seq, nxt = 0, time.perf_counter()
-        while not self.stop_ev.is_set():
-            nxt += PERIOD_S
-            while True:
-                d = nxt - time.perf_counter()
-                if d <= 0:
-                    break
-                if d > 0.0015:
-                    time.sleep(d - 0.001)
-            data = bytes([(seq >> 16) & 0xFF, (seq >> 8) & 0xFF, seq & 0xFF,
-                          0xA5, 0x5A, 0x83, 0x00, 0x00])
-            try:
-                self.bus.send(can.Message(arbitration_id=INJECT_ID,
-                                          is_extended_id=False, data=data),
-                              timeout=0.05)
-                self.sent.append((seq, time.perf_counter()))
-            except Exception:                          # noqa: BLE001
-                self.errs += 1
-            seq += 1
+        try:
+            while not self.stop_ev.is_set():
+                nxt += PERIOD_S
+                while True:
+                    d = nxt - time.perf_counter()
+                    if d <= 0:
+                        break
+                    if d > 0.0015:
+                        time.sleep(d - 0.001)
+                data = bytes([(seq >> 16) & 0xFF, (seq >> 8) & 0xFF, seq & 0xFF,
+                              0xA5, 0x5A, 0x83, 0x00, 0x00])
+                try:
+                    self.watch.send(can.Message(arbitration_id=INJECT_ID,
+                                                is_extended_id=False, data=data),
+                                    timeout=0.05)
+                    self.sent.append((seq, time.perf_counter()))
+                except kvaser_link.Stall:
+                    raise
+                except Exception:                      # noqa: BLE001
+                    self.errs += 1
+                seq += 1
+                self.watch.poll(0.0)
+            self.watch.finish()
+        except kvaser_link.Stall as st:
+            self.stall = st
 
     def stop(self):
         self.stop_ev.set()
@@ -815,12 +842,42 @@ def case_close_boots(a, out):
     return verdict_rc(oks), lines
 
 
+def case_acks(a):
+    """Whether the case is an ACK check: the bridge (the PCAN acks, the
+    Kvaser sends) and every --ack case; a --noack case is not."""
+    return a.case == "bridge" or bool(a.ack)
+
+
+def set_case_link(a, link):
+    """The Kvaser's link per case (2026-11-13, the reviewer's A: an UP
+    kvaser_usb link ACKs with no socket open): up for an ACK case, down for
+    a no-ACK one, read back in sysfs. -> (ok, line); not ok is a VOID line
+    with the kernel's USB/CAN lines, and the case does not run."""
+    t0 = time.time()
+    try:
+        return True, link.set_link(case_acks(a))
+    except link.LinkError as e:
+        return False, link.link_void(e, t0, time.time())
+
+
+def proc_rows(res):
+    """rx_proc rows -> Rx's (stamp, host, id, err, data)."""
+    return [(r[0], r[1], r[2], r[7], bytes.fromhex(r[5])) for r in res["rows"]]
+
+
 def case_bridge(a, out):
+    """The Kvaser injects; the PCAN and the Innomaker witness, each in a
+    reader process of its own (2026-11-13, the reviewer's M6), so the
+    injector's pacing cannot starve them."""
+    import rx_proc
     tag = "bridge_%s" % a.com3
-    pc = Rx(open_pcan(acks=True), "pcan")
-    ino = Rx(open_innomaker(), "innomaker")
+    t_ep0 = time.time()
+    pc = rx_proc.ProcReader("bench_usb_host", "open_pcan", {"acks": True}, name="pcan")
+    ino = rx_proc.ProcReader("bench_usb_host", "open_innomaker", {}, name="innomaker")
+    pc.wait_ready()
+    ino.wait_ready()
     kv = open_kvaser()
-    inj = Injector(kv)
+    inj = Injector(kvaser_link.EchoWatch(kv))
     hp, stops, reads = None, [], []
     if a.com3 == "cycles":
         hp = HostPort(a.port, os.path.join(out, "serial_%s.stamped" % tag),
@@ -850,12 +907,19 @@ def case_bridge(a, out):
         r0 = time.perf_counter()
         time.sleep(8.0)
         reads.append((r0, time.perf_counter()))
-    vrows, crows = pc.take(), ino.take()
-    pc.close()
-    ino.close()
-    kv.shutdown()
+    pres, ires = pc.finish(), ino.finish()
+    vrows, crows = proc_rows(pres), proc_rows(ires)
     if hp:
         hp.close()                      # lines low: no reset
+    if inj.stall is not None:
+        lines = kvaser_link.stall_lines(inj.stall, t_ep0, close=kv.shutdown)
+        lines.insert(0, "%s: injector %d sent, stopped by a kvaser TX stall" % (tag, len(inj.sent)))
+        return verdict_rc([None]), lines
+    kv.shutdown()
+    voids = [v for v in (rx_proc.witness_void("pcan", pres, t_ep0, time.time()),
+                         rx_proc.witness_void("innomaker", ires, t_ep0, time.time())) if v]
+    if voids:
+        return verdict_rc([None]), ["%s: injector %d sent" % (tag, len(inj.sent))] + voids
     write_rows(os.path.join(out, "vehicle_%s.txt" % tag), vrows,
                "PCAN normal, device stamp")
     write_rows(os.path.join(out, "charger_%s.txt" % tag), crows,
@@ -1285,6 +1349,69 @@ def self_test():
     finally:
         scratch_dir.remove(tdir)
 
+    # 2026-11-13, the reviewer's Kvaser rulings: the link per case, the
+    # stall rule in the injector, the witnesses' lost frames VOID
+    planted = ("2026-11-13T12:00:00.5-08:00 madhouse-debian kernel: usb 1-3.2.1: error -71\n"
+               "2026-11-13T12:00:01.0-08:00 madhouse-debian kernel: pcan32: PCAN-USB FD "
+               "CAN1: msg[type=1 id=6a2h l=8] lost: err -28 rxqsize=2000\n")
+
+    class Link(object):
+        LinkError = kvaser_link.LinkError
+        fail, calls = None, []
+
+        @classmethod
+        def set_link(cls, up):
+            cls.calls.append(up)
+            if cls.fail:
+                raise kvaser_link.LinkError(cls.fail)
+            return "kvaser link %s" % ("up" if up else "down")
+
+        @staticmethod
+        def link_void(e, t0, t1):
+            return kvaser_link.link_void(e, t0, t1, lambda s, u: planted)
+    for case, ack, want in (("bridge", False, True), ("baseline-boots", True, True),
+                            ("noread-boots", True, True), ("close-boots", False, False),
+                            ("baseline-boots", False, False)):
+        Link.calls = []
+        ok, ln = set_case_link(argparse.Namespace(case=case, ack=ack, noack=not ack), Link)
+        check(ok and Link.calls == [want],
+              "link: %s %s -> %s" % (case, "--ack" if ack else "--noack",
+                                     "up" if want else "down"))
+    Link.fail = "the kvaser link reads up in sysfs, and this check needs it down"
+    ok, ln = set_case_link(argparse.Namespace(case="close-boots", ack=False, noack=True), Link)
+    check(not ok and ln.startswith("VOID: kvaser link: the kvaser link reads up")
+          and "error -71" in ln,
+          "link: an UP link under a no-ACK case is a VOID line with the kernel's lines")
+
+    class Watch(object):
+        def __init__(self, stall_at):
+            self.n, self.stall_at, self.polls = 0, stall_at, 0
+
+        def send(self, msg, timeout=None):
+            self.n += 1
+            if self.n == self.stall_at:
+                raise kvaser_link.Stall("kvaser TX stall: planted", time.perf_counter())
+            if self.n == 2:
+                raise ValueError("a send error")
+
+        def poll(self, timeout=0.0):
+            self.polls += 1
+
+        def finish(self):
+            pass
+    inj = Injector(Watch(5))
+    inj.start()
+    inj.t.join(5.0)
+    check(inj.stall is not None and len(inj.sent) == 3 and inj.errs == 1
+          and not inj.t.is_alive(),
+          "injector: a stall stops it and is kept (sent %d, errors %d, stall %s)"
+          % (len(inj.sent), inj.errs, inj.stall))
+    check(inj.watch.polls >= 3, "injector: echoes read between sends (%d polls)"
+          % inj.watch.polls)
+    check(proc_rows({"rows": [(1.5, 2.5, 0x6A2, False, 8, "0001020304050607", True, False)]})
+          == [(1.5, 2.5, 0x6A2, False, bytes(range(8)))],
+          "rows from a reader process in the form the scorers read")
+
     print("\nbench_usb_host self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -1338,6 +1465,15 @@ MUTANTS = [
     ("unwrap: a late frame from before a wrap taken as a second wrap",
      "        elif ref is not None and c > ref + WRAP_S / 2:\n",
      "        elif False:\n"),
+    # 2026-11-13, the reviewer's Kvaser rulings
+    ("link: every case an ACK case", "    return a.case == \"bridge\" or bool(a.ack)",
+     "    return True"),
+    ("link: a link failure not VOID", "        return False, link.link_void(e, t0, time.time())",
+     "        return True, str(e)"),
+    ("injector: a stall taken for a send error",
+     "                except kvaser_link.Stall:\n                    raise\n", ""),
+    ("injector: echoes never read", "                seq += 1\n                self.watch.poll(0.0)\n",
+     "                seq += 1\n"),
 ]
 
 
@@ -1406,6 +1542,10 @@ def main():
                                                   "noack"),
                               datetime.datetime.now().isoformat()))
     print(wican_usb_figure(usb_ports(), a.port))
+    ok, line = set_case_link(a, kvaser_link)
+    print(line)
+    if not ok:
+        return 3
     rc, lines = fn(a, a.out)
     for ln in lines:
         print(ln)

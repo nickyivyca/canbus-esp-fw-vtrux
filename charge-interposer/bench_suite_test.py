@@ -748,7 +748,9 @@ def test_suites():
     # 281: kvaser-link-test and its -canfail, st.keepalive-probe and
     #      cf.keepalive-probe (the Kvaser on kvaser_usb: link state per
     #      check, the stall rule; the reviewer's rulings, 2026-11-13)
-    assert len(seen) == 281, "checks across the suites: %d" % len(seen)
+    # 283: st.rx-proc and cf.rx-proc (readers in their own processes, the
+    #      reviewer's M6, 2026-11-13)
+    assert len(seen) == 283, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -2055,8 +2057,8 @@ def test_script_coverage():
             continue
         src = open(os.path.join(art, n), encoding="utf-8",
                    errors="replace").read()
-        # keepalive_probe has one since 2026-11-13 (kvaser_link)
-        if (n.startswith("bench_") or n == "keepalive_probe.py") \
+        # keepalive_probe and rx_proc have one since 2026-11-13 (kvaser_link)
+        if (n.startswith("bench_") or n in ("keepalive_probe.py", "rx_proc.py")) \
                 and '"--self-test"' in src:
             st.add(n[:-3])
         if "script_can_fail.run(" in src and n != "script_can_fail.py":
