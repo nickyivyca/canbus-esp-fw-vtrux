@@ -29,8 +29,9 @@ CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
 # ---- The image ----
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_FREERTOS_HZ=1000
-# Nothing from the bootloader or ESP-IDF's log: no console line without NOT
-# FOR VEHICLE (SPEC T14).
+# Nothing from the bootloader or ESP-IDF's log: the port carries the SLCAN
+# and the image's own lines only, none of which the kernel's slcan misreads
+# (README.md, "Console lines").
 CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
 CONFIG_LOG_DEFAULT_LEVEL_NONE=y
 # The whole ELF SHA-256 in the V and N identity (SPEC T10, T12); ESP-IDF's

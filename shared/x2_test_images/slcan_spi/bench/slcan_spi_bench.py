@@ -15,9 +15,17 @@ role. At the end canx2 is detached and down, canchg is down, as found.
 
 Checks (--checks, default all, in this order):
   identity  raw tty: N and V give slcan_spi_NOT_FOR_VEHICLE, a version and
-            the ELF sha256 of the image built (--elf); B's banner lines all
-            say NOT FOR VEHICLE, CANSTAT 0x80; no other line the image sent
-            is a console line without it (T10, T12, T14)
+            the ELF sha256 of the image built (--elf); B's banner shows
+            CANSTAT 0x80 (T8); every line the image sent is a protocol
+            reply or a console line ("# ...") (T10, T12). T14 puts NOT FOR
+            VEHICLE in the image name and boot banner only (every console
+            line until 2026-11-12, x2_test_images 5f835b93)
+  attach    the boot banner in the kernel's slcan stream (charge-interposer
+            reviewer, 2026-11-12): the kernel attached after a boot counts
+            nothing; attached and up through a boot, it counts the ROM's
+            one long line as one rx_over_errors and makes no frame, error
+            or error frame of the boot banner; the link works after each
+            (check_attach's docstring)
   silence   canchg sends one frame per phase and watches for its ACK
             (probe_ack: canchg reports an unACKed frame as an error frame
             with CAN_ERR_ACK): closed (attached, down): no ACK; L: no ACK;
@@ -51,7 +59,10 @@ Checks (--checks, default all, in this order):
 --can-fail <check>: the same check with one condition broken on the bench,
 which the check must then FAIL (the can-fail; exit 0 only if it FAILs):
   identity  the expected ELF sha256 altered
-  silence   the "closed" phase run with canx2 up normal (the X2 open)
+  attach    the ROM's long line not allowed for: the line the kernel counts
+            fails it (no bench condition makes the image itself send a long
+            unprompted line)
+  silence  the "closed" phase run with canx2 up normal (the X2 open)
   reset     no reset sent
   rate-tx   canchg listen-only: nobody ACKs the X2's frames
   rate-rx   canx2 listen-only: the X2 ACKs none of canchg's frames
@@ -103,9 +114,8 @@ CRTL_ACTIVE = 0x40
 ID_PROBE = 0x123
 ID_HOST = 0x456
 ID_SEQ = 0x18FECA00 | EFF
-NFV = "NOT FOR VEHICLE"
-CHECKS = ("identity", "silence", "reset", "rate-tx", "rate-rx", "drops",
-          "busoff", "overrun")
+CHECKS = ("identity", "attach", "silence", "reset", "rate-tx", "rate-rx",
+          "drops", "busoff", "overrun")
 
 LOG = []
 
@@ -353,13 +363,15 @@ def lines_of(text):
 
 
 def console_violations(text):
-    """Lines that are neither a protocol reply nor a console line saying
-    NOT FOR VEHICLE."""
+    """Lines that are neither a protocol reply nor one of the image's
+    console lines ("# ..."). T14 puts NOT FOR VEHICLE only in the image name
+    and the boot banner (every console line until 2026-11-12, dropped by the
+    user, x2_test_images 5f835b93)."""
     bad = []
     for ln in lines_of(text):
         if REPLY_RE.match(ln):
             continue
-        if ln.startswith("# ") and NFV in ln:
+        if ln.startswith("# "):
             continue
         bad.append(ln)
     return bad
@@ -383,9 +395,9 @@ def split_boot(text):
 
 
 def boot_problems(image_text, need_boot_line):
-    """The image's unprompted output after a boot: its boot line says NOT FOR
-    VEHICLE, no line is longer than the kernel takes, and every line is a
-    reply form or a NOT FOR VEHICLE console line (T14)."""
+    """The image's unprompted output after a boot: its boot line, the boot
+    banner, says NOT FOR VEHICLE (T14), no line is longer than the kernel
+    takes, and every line is a reply form or a console line."""
     problems = []
     if need_boot_line and not image_text.startswith(BOOT_LINE):
         problems.append("no boot line %r" % BOOT_LINE)
@@ -396,8 +408,8 @@ def boot_problems(image_text, need_boot_line):
                         "counts each as an rx_over_error): %r" % (UNPROMPTED_MAX, long_[:3]))
     bad = console_violations(image_text)
     if bad:
-        problems.append("unprompted lines that are neither replies nor NOT FOR "
-                        "VEHICLE console lines: %r" % bad[:5])
+        problems.append("unprompted lines that are neither replies nor "
+                        "console lines: %r" % bad[:5])
     return problems
 
 
@@ -468,13 +480,130 @@ def check_identity(ctx, can_fail):
         problems.append("V does not give the same identity as N")
     if len(banner) < 5:
         problems.append("banner has %d lines, not 5" % len(banner))
-    if any(NFV not in ln for ln in banner):
-        problems.append("a banner line without NOT FOR VEHICLE")
     if not any("CANSTAT 0x80" in ln for ln in banner):
         problems.append("banner does not show CANSTAT 0x80")
     bad = console_violations(text)
     if bad:
-        problems.append("lines that are neither replies nor NOT FOR VEHICLE console lines: %r" % bad[:5])
+        problems.append("lines that are neither replies nor console lines: %r" % bad[:5])
+    return problems, detail
+
+
+def link_works():
+    """canx2 up (C, S6, O from the kernel), canchg up: canchg's frame
+    reaches the host through the X2 and the host's reaches canchg. The X2
+    reader also sees the host's own frame by local loopback, so only
+    canchg's ID counts there."""
+    up(X2)
+    xr = Reader(X2)
+    xr.start()
+    up(PEER)
+    pr = Reader(PEER)
+    pr.start()
+    ps = open_sock(PEER)
+    send(ps, ID_PROBE, b"ATTACHED")
+    time.sleep(0.3)
+    xs = open_sock(X2)
+    send(xs, ID_HOST, b"HOST->X2")
+    time.sleep(0.5)
+    ps.close()
+    xs.close()
+    pr.finish()
+    xr.finish()
+    down(PEER)
+    return {"host_got_peer_frame": any(c == ID_PROBE for _, c, _ in xr.frames),
+            "peer_got_host_frame": any(c == ID_HOST for _, c, _ in pr.frames),
+            "x2_error_frames": len(xr.errors), "state": can_state(X2)}
+
+
+def reset_under_kernel(port):
+    """Reset the X2 while the kernel's slcan holds its tty: a second open
+    of the tty, with no termios change and no flush, sets the modem lines
+    as tty_reset does, then puts them back as the kernel's open left them
+    (DTR and RTS high). Its close is not the tty's last, so it drops
+    nothing."""
+    import fcntl
+    import termios
+    fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    try:
+        def mset(on, off):
+            if on:
+                fcntl.ioctl(fd, termios.TIOCMBIS, struct.pack("I", on))
+            if off:
+                fcntl.ioctl(fd, termios.TIOCMBIC, struct.pack("I", off))
+        mset(0, termios.TIOCM_DTR)
+        mset(termios.TIOCM_RTS, 0)
+        time.sleep(0.1)
+        mset(0, termios.TIOCM_RTS)
+        time.sleep(1.5)                 # booted
+        mset(termios.TIOCM_DTR | termios.TIOCM_RTS, 0)
+    finally:
+        os.close(fd)
+
+
+def check_attach(ctx, can_fail):
+    """The boot banner shares the kernel's slcan stream (README.md,
+    'Console lines'; charge-interposer reviewer, 2026-11-12):
+
+    after: the X2 reset with nobody on the port, then the kernel attached
+      and up. Output written while no host holds the port does not reach
+      the next opener (seen on the bench, 2026-11-12), so the kernel's
+      counters stay 0 and the link works.
+    through: the kernel attached and up (it drops input while down), then
+      the X2 reset under it. The boot output lands in the kernel's stream:
+      the ROM's one long line counts one rx_over_errors (the gap), the boot
+      banner nothing: no frame, no rx_errors, no error frame. Exactly one
+      also shows the boot output reached the kernel. The X2 is closed after
+      its boot (T8a), so canx2 is taken down and up, and the link works.
+
+    --can-fail: the ROM's long line is not allowed for, so the line the
+    kernel counts must fail it: a long line in its stream is seen."""
+    detail = {}
+    problems = []
+    # after
+    detach()
+    s = tty_open(ctx["port"])
+    try:
+        tty_cmd(s, "C\r")
+        tty_reset(s)
+    finally:
+        s.close()
+    time.sleep(2.0)
+    attach()
+    up(X2)
+    time.sleep(1.0)
+    after = stats(X2)           # a new netdev: its counters start at attach
+    detail["after_boot"] = {"x2_stats": after}
+    if after["rx_over_errors"] or after["rx_errors"] or after["rx_packets"]:
+        problems.append("after: the kernel counted %r from before it attached" % after)
+    link = link_works()
+    detail["after_boot"]["link"] = link
+    if not (link["host_got_peer_frame"] and link["peer_got_host_frame"]):
+        problems.append("after: the link does not work: %r" % link)
+    # through
+    xr = Reader(X2)
+    xr.start()
+    s0 = stats(X2)
+    reset_under_kernel(ctx["port"])
+    time.sleep(0.5)
+    xr.finish()
+    d = delta(s0, stats(X2))
+    allowed = 0 if can_fail else 1      # the ROM's rst:... line
+    detail["through_boot"] = {"x2_stats": d, "rom_long_lines_allowed": allowed,
+                              "frames": [(hex(c), dd.hex()) for _, c, dd in xr.frames][:10],
+                              "error_frames": [(hex(c), dd.hex()) for _, c, dd in xr.errors][:10]}
+    if d["rx_over_errors"] != allowed:
+        problems.append("through: rx_over_errors %s, not the ROM's %d long line"
+                        % (d["rx_over_errors"], allowed))
+    if d["rx_errors"] or d["rx_packets"] or xr.frames or xr.errors:
+        problems.append("through: the kernel made frames, errors or error frames of "
+                        "the boot output: %r" % detail["through_boot"])
+    down(X2)
+    link = link_works()
+    detail["through_boot"]["link"] = link
+    if not (link["host_got_peer_frame"] and link["peer_got_host_frame"]):
+        problems.append("through: the link does not work after down and up: %r" % link)
+    down(X2)
+    detach()
     return problems, detail
 
 
@@ -914,7 +1043,8 @@ def check_overrun(ctx, can_fail):
     return problems, detail
 
 
-RUNNERS = {"identity": check_identity, "silence": check_silence,
+RUNNERS = {"identity": check_identity, "attach": check_attach,
+           "silence": check_silence,
            "reset": check_reset, "rate-tx": check_rate_tx,
            "rate-rx": check_rate_rx, "drops": check_drops,
            "busoff": check_busoff, "overrun": check_overrun}

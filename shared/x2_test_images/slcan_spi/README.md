@@ -75,14 +75,22 @@ MCP2515's transmit buffer 0. Received frames reach the host in bus order.
 
 ## Console lines
 
-The image's console lines (T14):
+T14 puts NOT FOR VEHICLE in the image name and the boot banner (every
+console line until 2026-11-12). SLCAN replies are plain protocol. The
+image's console lines:
 
 - **The boot banner,** one line at boot: `\n# NOT FOR VEHICLE slcan_spi\r`.
-  It waits in the USB buffers for whoever opens the port next, the kernel
-  included, so it is kept within the 33 characters Linux 6.12's slcan
-  buffers per line (its `SLCAN_MTU`): the kernel counts one
-  `rx_over_errors` for any longer line, and drops a line starting with LF
-  unread.
+  It shares the one USB port with the SLCAN: the S3 presents a second
+  serial port only through its USB OTG peripheral, which takes the USB pins
+  from the Serial/JTAG that flashes it. Output written while no host holds
+  the port does not reach the next opener (seen on the bench, 2026-11-12),
+  so the line reaches only a host holding the port at boot, which may be
+  the kernel's slcan, up. So it is made for the kernel's stream: it starts
+  with LF, and Linux 6.12's slcan parses a line only by its first character
+  (`t T r R e s`), dropping any other unread; and it is within the 33
+  characters the kernel buffers per line (its `SLCAN_MTU`), past which it
+  counts one `rx_over_errors`. The `attach` bench check attaches the kernel
+  after a boot, and resets the X2 under it.
 - **The full banner, on `B` only,** each line `\n# NOT FOR VEHICLE | ...\r`:
   the identity, the protocol in one line, CANSTAT at boot (0x80,
   configuration mode), CAN1's state, and the counters. Its lines are longer
@@ -92,12 +100,11 @@ ESP-IDF's console is off and its log level is none, so nothing else from
 the image reaches the port.
 
 **Gap: the ROM's boot lines.** The ESP32-S3's ROM prints its own boot lines
-on the USB port before any image runs; they are the ROM's, not this image's,
-and carry no NOT FOR VEHICLE. Turning them off is an eFuse burn, which no
-test image does. They wait in the USB buffers like the boot banner, and one
-of them (`rst:... boot:...`) is longer than 33 characters, so if the kernel
-is the next to open the port after a reset, its `rx_over_errors` counts
-one.
+on the USB port before any image runs; they are the ROM's, not this image's.
+Turning them off is an eFuse burn, which no test image does. They reach a
+host holding the port at boot, like the boot banner, and one of them
+(`rst:... boot:...`) is longer than 33 characters, so the kernel's slcan,
+attached and up through a reset, counts one `rx_over_errors` (`attach`).
 
 ## Files
 
