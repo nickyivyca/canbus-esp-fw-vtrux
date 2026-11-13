@@ -41,7 +41,7 @@ MUTANTS = [
     ("no uptime before still counts as shown",
      '                and out["uptime_before_ms"] is not None\n',
      ''),
-    ("always POSTs, even with COM4 open",
+    ("always POSTs, even with the WiCAN console open",
      'if cc is not None and getattr(cc, "ser", None) is not None:',
      'if False:'),
     ("any mode after the reset is accepted",

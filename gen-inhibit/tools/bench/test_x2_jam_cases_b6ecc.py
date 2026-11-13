@@ -169,7 +169,7 @@ def console_checks(C):
     out = tried(lambda: C.reset_to_off(None, iter([{"uptime_ms": 900, "mode": 0}, {"uptime_ms": 5, "mode": 0}]).__next__,
                                       lambda path: (200, ""), iter(range(1000)).__next__, lambda s: None))
     check("with no capture the reset is POST /system_reboot", isinstance(out, dict) and
-          out.get("how") == "POST /system_reboot (no COM4)" and out.get("ok") is True, out)
+          out.get("how") == "POST /system_reboot (no WiCAN console)" and out.get("ok") is True, out)
 
 
 def checks(C):
@@ -411,7 +411,7 @@ MUTANTS = [
      '    cc = factory("/dev/ttyACM0")\n'),
     ("main makes its own capture", "    CC = start_wican_console(a, ConsoleCapture, port_of)",
      "    CC = ConsoleCapture()\n    CC.start()"),
-    ("the totals read a capture that is not there", '    if cc is None:\n        return {"wican_console": "off (--no-wican-console)"}, "COM4 console off"\n', ""),
+    ("the totals read a capture that is not there", '    if cc is None:\n        return {"wican_console": "off (--no-wican-console)"}, "WiCAN console off"\n', ""),
     ("the capture is not stopped", "    cc.stop_flag.set()\n    cc.join(timeout=3.0)\n", ""),
     ("the gate is never applied", '        if getattr(a, "ecc_gate", False) and k == 0:\n', "        if False:\n"),
     ("the gate is on every arm", '        if getattr(a, "ecc_gate", False) and k == 0:\n', '        if getattr(a, "ecc_gate", False):\n'),

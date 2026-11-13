@@ -234,7 +234,7 @@ def reset_cases():
                                         "abort_reason": "error-frame rate exceeded" if lat else ""}
     out = []
     r, posts = reset_case([pg(5000000, 3, True), pg(5001000, 3, True), pg(900)])
-    out.append(("no COM4: POSTs /system_reboot, ok on a lower uptime, mode 0, unlatched",
+    out.append(("no WiCAN console: POSTs /system_reboot, ok on a lower uptime, mode 0, unlatched",
                 r["ok"] and posts == ["/system_reboot"] and r["how"].startswith("POST"), r["why"]))
     r, _ = reset_case([pg(5000000), pg(5001000)])
     out.append(("no reset seen (uptime never drops), even unlatched: not ok", r["ok"] is False, r["why"]))
@@ -249,8 +249,8 @@ def reset_cases():
                 r["ok"] is True and "OSError" in str(r["posted"]), r["why"]))
     cc = FakeCC()
     r, posts = reset_case([pg(5000000, 0, True), pg(800)], cc=cc)
-    out.append(("COM4 open: USB-JTAG pulse, no POST", r["ok"] and cc.pulses == 1 and posts == [],
-                r["how"]))
+    out.append(("WiCAN console open: USB-JTAG pulse, no POST, said", r["ok"] and cc.pulses == 1 and posts == []
+                and r["how"] == "usb-jtag (WiCAN console)", r["how"]))
     # case_threshold must not arm when the reset was not shown.
     saved = (C.reset_wican_to_off, C.arm_live)
     called = []

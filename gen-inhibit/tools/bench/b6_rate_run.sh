@@ -29,7 +29,7 @@ export GI_OUT=${GI_OUT:-$DATA/runs/b6_rate_${C}_$stamp}
 export GI_RUNS_DIR=$GI_OUT
 case "$GI_RUNS_DIR" in *" "*) echo "GI_RUNS_DIR has a space: $GI_RUNS_DIR"; exit 2;; esac
 mkdir -p "$GI_OUT"
-PW="12 V on OBD pin 16, USB unplugged (no COM4); WiCAN $C _man; X2 jammer a89ece8c (custody)"
+PW="12 V on OBD pin 16, USB unplugged (no WiCAN console); WiCAN $C _man; X2 jammer a89ece8c (custody)"
 echo "== $(date +%H:%M:%S) custody -> $GI_OUT"
 bash $A/baseline_b_jam.sh custody || { echo "custody failed: stop (X2 state: see $GI_OUT/x2)"; exit 1; }
 rec=$(ls -t "$GI_RUNS_DIR"/x2_flash_custody_dump_*.json | head -1)

@@ -27,7 +27,7 @@ D=${GI_OUT:-$DATA/runs/baseline_$C/bench}   # GI_OUT: the chain runner's check f
 X=$D/x2
 JAMMER_MD5=a89ece8c467f90723a3ac26e72924aa8
 mkdir -p "$X"
-PW="12 V on OBD pin 16, USB unplugged (no COM4); WiCAN $C _man; X2 jammer a89ece8c (custody)"
+PW="12 V on OBD pin 16, USB unplugged (no WiCAN console); WiCAN $C _man; X2 jammer a89ece8c (custody)"
 case ${1:?custody, jam or restore} in
   custody)
     $PY -B $A/x2_flash_custody.py dump --expect-elf 756d6714 > "$X/custody_dump.txt" 2>&1; echo "dump exit $?"
