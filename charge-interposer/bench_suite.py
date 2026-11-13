@@ -261,7 +261,7 @@ CAN_FAILS = [
     # 2026-11-12, the reviewer's E3: the gs_usb stamp unwrapped
     "bench_charger_silent", "bench_rx_order",
     # 2026-11-13, the reviewer's Kvaser rulings (kvaser_link, rx_proc)
-    "keepalive_probe", "rx_proc", "bench_switch_pending",
+    "keepalive_probe", "rx_proc", "bench_switch_pending", "bench_switch_errors",
 ]
 
 # Local scripts (they want pyserial or the Windows side).

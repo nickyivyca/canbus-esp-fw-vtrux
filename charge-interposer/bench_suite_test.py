@@ -764,7 +764,8 @@ def test_suites():
     # 283: st.rx-proc and cf.rx-proc (readers in their own processes, the
     #      reviewer's M6, 2026-11-13)
     # 284: cf.bench-switch-pending (its phases' Kvaser link, 2026-11-13)
-    assert len(seen) == 284, "checks across the suites: %d" % len(seen)
+    # 285: cf.bench-switch-errors (its phases' Kvaser link, 2026-11-13)
+    assert len(seen) == 285, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
