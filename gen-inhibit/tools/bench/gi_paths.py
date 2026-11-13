@@ -15,7 +15,8 @@ One setting, an environment variable:
                    (projects/vtrux/logs/), the vehicle DBCs, the bench lock
                    (firmware/bench-log.jsonl) and bench-holder.md, the run folders and fixtures
                    (projects/vtrux/notes/artifacts/gen-inhibit/runs/), the X2 jammer's
-                   build binaries. No default: unset is an error, never a guess. The
+                   build binaries, and the shared X2 test images' archive
+                   (projects/vtrux/notes/artifacts/x2_test_images/). No default: unset is an error, never a guess. The
                    root still holds canre/, which marks it, but canre is not taken
                    from there (below).
 
@@ -521,6 +522,15 @@ def jammer_builds(*parts):
     a file given is checked against its pin."""
     p = data_dir("x2_jammer", "builds", *parts)
     return verify(p) if parts else p
+
+
+def x2_test_images(*parts):
+    """The archive of the shared X2 test images' builds (TEST EQUIPMENT; x2_test_images
+    SPEC T2, T6), projects/vtrux/notes/artifacts/x2_test_images/: one folder per image,
+    each with its manifest.jsonl and builds/<app sha256, 16 digits>/ (written only by
+    shared/x2_test_images/tools/archive.py). Not pinned here: each row carries every
+    file's size and hashes, and x2_flash_custody checks them (tester, 2026-11-13)."""
+    return project("projects", "vtrux", "notes", "artifacts", "x2_test_images", *parts)
 
 
 def use_canre():

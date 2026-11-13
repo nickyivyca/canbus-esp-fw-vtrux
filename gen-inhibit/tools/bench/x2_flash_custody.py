@@ -12,14 +12,24 @@ full read-back of its flash, never from a rebuild or from .pio.
                  build_lookup.elf_sha256_of_bin. PASS needs a slot carrying
                  --expect-elf, which is required (see below).
   flash-jammer   refuses unless a PASS dump record is given and the dump file
-                 still has the recorded sha256; then writes the jammer's
-                 bootloader, partition table, otadata and app from one
-                 builds/<md5>/ row of x2_jammer/builds/manifest.json, after
-                 checking the app's md5 and ELF sha256 against that row.
+                 still has the recorded sha256; then writes one jammer build,
+                 named by exactly one of:
+                   --build <md5>   the PlatformIO jammer: one builds/<md5>/ row of
+                                   x2_jammer/builds/manifest.json; writes its
+                                   bootloader, partition table, otadata and app
+                                   after checking the app's md5 and ELF sha256
+                                   against that row;
+                   --row <16 hex> --variant <v> [--dev-builder <who>]
+                                   the ESP-IDF port in shared/x2_test_images: the
+                                   one row of x2_test_images/jammer/manifest.jsonl
+                                   whose folder is builds/<16 hex> (see below).
   restore        write_flash 0x0 <dump>, then verify_flash 0x0 <dump>.
   check-dump     no board: re-checks a saved dump against its record (size and
                  sha256), then repeats dump's analysis on it. The dry run that
                  proves the ELF-hash path works before the board is touched.
+  check-row      no board, no dump: flash-jammer --row's checks on a row
+                 (--row, --variant, --dev-builder as there), nothing written;
+                 PASS or REFUSED with the reason (2026-11-13).
 
 BUILD_LOOKUP COMES FROM THE INTERPOSER'S CLONE (2026-10-08). The SeaDrive copy
 in projects/vtrux/tools/interposer/ is retired; $INTERPOSER_CODE must point at
@@ -55,6 +65,30 @@ or pinned: 8 to 64 hex digits, matched in lower case. Missing, shorter, longer o
 hex refuses (exit 1, verdict REFUSED, nothing run, no esptool or port touched); the
 record keeps expect_elf. flash-jammer and restore do not read it.
 
+flash-jammer --row (gen-inhibit reviewer's jammer-idf merge reply, 2026-11-13; x2_test_images
+SPEC T6, T7, T9). The ported jammer's builds are in gi_paths.x2_test_images("jammer"), written
+only by shared/x2_test_images/tools/archive.py: manifest.jsonl, one JSON row per build, and
+builds/<app sha256, first 16 hex digits>/. --row names that folder; --variant, required, is the
+variant the caller means to flash (jammer, stop_a_only, stop_b_only). Before anything is
+written, each of these must hold, or the record is REFUSED with the reason and esptool never
+writes:
+  - --row is 16 lower-case hex digits, and exactly one row has folder builds/<row>;
+  - the row is schema 1, image "jammer", and its variant is --variant;
+  - the row's app_sha256 starts with --row;
+  - every file of the row is a bare name in that folder with the row's size, sha256 and md5,
+    at a distinct offset, the offsets including 0x0, 0x8000 and the row's app_offset;
+  - the file at app_offset has the row's app_sha256, and the ELF sha256 in its app descriptor
+    (build_lookup) is the row's app_elf_sha256 and image_hash;
+  - the project_name in its app descriptor is the row's project_name and holds
+    NOT_FOR_VEHICLE (the variant is judged from the image, gen-inhibit reviewer, 2026-11-12);
+  - a row with pinnable not true is a dev build, "for its builder's own bench work only"
+    (T7): it needs --dev-builder equal to the row's builder. A pinnable row needs none.
+Then every file of the row is written at its offset, in offset order, in one write_flash. The
+record keeps the row's folder, variant, project_name, image hash, code hash, shared commit and
+tag, pinnable, builder and the --dev-builder given. --build and --row exclude each other, one
+is required, and --variant and --dev-builder are refused without --row: REFUSED in main,
+before esptool or the port.
+
 After `dump` and after `restore`, identify the board from the wire with
 interposer-firmware/bench_identify_board.py; this script does not, because
 esptool and the CAN witness are separate steps and each is recorded.
@@ -62,12 +96,15 @@ esptool and the CAN witness are separate steps and each is recorded.
   python3.13 gen-inhibit/tools/bench/x2_flash_custody.py dump --expect-elf <8+ hex digits>
   python3.13 ... check-dump --dump-record runs/x2_flash_custody_dump_<stamp>.json --expect-elf <same>
   python3.13 ... flash-jammer --dump-record runs/x2_flash_custody_dump_<stamp>.json --build <md5>
+  python3.13 ... check-row --row <16 hex> --variant jammer [--dev-builder "<builder>"]
+  python3.13 ... flash-jammer --dump-record <same> --row <16 hex> --variant jammer [--dev-builder "<builder>"]
   python3.13 ... restore --dump-record runs/x2_flash_custody_dump_<stamp>.json
 """
 import argparse
 import hashlib
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -82,6 +119,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 BACKUPS = gi_paths.data_dir("board-backups")
 JAMMER = gi_paths.data_dir("x2_jammer")
+X2IMG = gi_paths.x2_test_images("jammer")   # the ESP-IDF port's builds (--row, 2026-11-13)
 ESPTOOL_SUBS = ("dump", "flash-jammer", "restore")   # the subcommands that run esptool
 _ET = {}    # {"argv", "version"}, checked in main before a board subcommand runs
 
@@ -197,10 +235,20 @@ def app_hashes(img, parts, workdir):
 
 
 def write_rec(sub, rec):
+    """runs/x2_flash_custody_<sub>_<when>.json, or with _2, _3, ... before .json when a record
+    of that second exists (2026-11-13: two check-row calls in one second crashed on the second
+    record, its check already done). Never overwrites."""
     os.makedirs(RUNS, exist_ok=True)
-    path = os.path.join(RUNS, "x2_flash_custody_%s_%s.json" % (sub, rec["when"]))
-    with open(path, "x", encoding="ascii", errors="replace") as fh:
-        json.dump(rec, fh, indent=1)
+    base = os.path.join(RUNS, "x2_flash_custody_%s_%s" % (sub, rec["when"]))
+    n = 1
+    while True:
+        path = base + (".json" if n == 1 else "_%d.json" % n)
+        try:
+            with open(path, "x", encoding="ascii", errors="replace") as fh:
+                json.dump(rec, fh, indent=1)
+            break
+        except FileExistsError:
+            n += 1
     print("wrote", path)
     return path
 
@@ -310,10 +358,126 @@ def _checked_dump(a):
     return d, p
 
 
+APP_DESC_AT = 32                            # esp_app_desc_t after the image and segment headers
+PROJECT_NAME_AT = APP_DESC_AT + 4 + 4 + 8 + 32   # magic, secure_version, reserv1, version[32]
+ROW_RE = re.compile(r"[0-9a-f]{16}")
+ROW_OFFSETS = (0x0, 0x8000)                 # a bootloader and a partition table, besides the app
+
+
+class RowRefused(Exception):
+    """A manifest.jsonl row that may not be flashed; nothing has been written."""
+
+
+def app_project_name(path):
+    """project_name from an app image's descriptor, or None without the descriptor magic."""
+    with open(path, "rb") as fh:
+        head = fh.read(PROJECT_NAME_AT + 32)
+    if len(head) < PROJECT_NAME_AT + 32 or struct.unpack_from("<I", head, APP_DESC_AT)[0] != bl.APP_DESC_MAGIC:
+        return None
+    return head[PROJECT_NAME_AT:PROJECT_NAME_AT + 32].split(b"\0")[0].decode("ascii", "replace")
+
+
+def jsonl_row(a):
+    """(row, folder, [(offset, path)] in offset order) for --row, checked as the module
+    docstring lists, else RowRefused naming the first check that fails."""
+    if not ROW_RE.fullmatch(a.row or ""):
+        raise RowRefused("--row %r is not 16 lower-case hex digits (a builds/ folder name)" % a.row)
+    manifest = os.path.join(X2IMG, "manifest.jsonl")
+    rows = []
+    with open(manifest, encoding="utf-8") as fh:
+        for n, line in enumerate(fh, 1):
+            if not line.strip():
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                raise RowRefused("%s line %d is not JSON" % (manifest, n))
+            if isinstance(r, dict) and r.get("folder") == "builds/" + a.row:
+                rows.append(r)
+    if len(rows) != 1:
+        raise RowRefused("need exactly one manifest.jsonl row with folder builds/%s, got %d" % (a.row, len(rows)))
+    row = rows[0]
+    if row.get("schema") != 1 or row.get("image") != "jammer":
+        raise RowRefused("row is schema %r, image %r; want schema 1, image 'jammer'"
+                         % (row.get("schema"), row.get("image")))
+    if row.get("variant") != a.variant:
+        raise RowRefused("row is variant %r, offered as %r" % (row.get("variant"), a.variant))
+    if row.get("pinnable") is not True and a.dev_builder != row.get("builder"):
+        raise RowRefused("row is a dev build (pinnable %r), for its builder's own bench work only "
+                         "(x2_test_images SPEC T7): builder %r, --dev-builder %r"
+                         % (row.get("pinnable"), row.get("builder"), a.dev_builder))
+    app_sha = row.get("app_sha256") or ""
+    if not app_sha.startswith(a.row):
+        raise RowRefused("row's app_sha256 %s does not start with its folder name %s" % (app_sha[:16], a.row))
+    folder = os.path.join(X2IMG, "builds", a.row)
+    try:
+        app_off = int(row["app_offset"], 16)
+        files = [(int(f["offset"], 16), f) for f in row["files"]]
+    except (KeyError, TypeError, ValueError) as e:
+        raise RowRefused("row's offsets cannot be read: %s: %s" % (type(e).__name__, e))
+    offsets = [o for o, _ in files]
+    if len(set(offsets)) != len(offsets):
+        raise RowRefused("row has two files at one offset: %s" % [hex(o) for o in offsets])
+    missing = [hex(o) for o in ROW_OFFSETS + (app_off,) if o not in offsets]
+    if missing:
+        raise RowRefused("row has no file at %s" % ", ".join(missing))
+    out = []
+    for off, f in sorted(files, key=lambda x: x[0]):
+        name = f.get("name") or ""
+        if not name or name != os.path.basename(name) or name in (".", "..") or "\\" in name:
+            raise RowRefused("row's file name %r is not a bare name in its folder" % name)
+        p = os.path.join(folder, name)
+        if not os.path.isfile(p):
+            raise RowRefused("%s is missing from builds/%s" % (name, a.row))
+        got = (os.path.getsize(p), sha256_file(p), md5_file(p))
+        want = (f.get("size"), f.get("sha256"), f.get("md5"))
+        for what, g, w in zip(("size", "sha256", "md5"), got, want):
+            if g != w:
+                raise RowRefused("%s: %s %s, row %s" % (name, what, g, w))
+        out.append((off, p))
+    app = dict(out)[app_off]
+    if sha256_file(app) != app_sha:
+        raise RowRefused("the file at app_offset %s is not the row's app (app_sha256)" % hex(app_off))
+    elf = bl.elf_sha256_of_bin(app)
+    if not elf or elf != row.get("app_elf_sha256") or elf != row.get("image_hash"):
+        raise RowRefused("app descriptor ELF sha256 %s; row app_elf_sha256 %s, image_hash %s"
+                         % (elf, row.get("app_elf_sha256"), row.get("image_hash")))
+    pn = app_project_name(app)
+    if pn != row.get("project_name"):
+        raise RowRefused("app descriptor project_name %r, row %r" % (pn, row.get("project_name")))
+    if not pn or "NOT_FOR_VEHICLE" not in pn:
+        raise RowRefused("app descriptor project_name %r has no NOT_FOR_VEHICLE" % pn)
+    return row, folder, out
+
+
+def flash_row(a, rec):
+    """--row: the ESP-IDF port's build from manifest.jsonl, every file at its offset."""
+    try:
+        row, folder, files = jsonl_row(a)
+    except (RowRefused, OSError) as e:
+        rec.update(verdict="REFUSED", why=str(e))
+        print("REFUSED: %s (nothing written)" % e)
+        return
+    rec["jammer"] = {k: row.get(k) for k in (
+        "folder", "variant", "project_name", "image_hash", "app_sha256", "code_hash", "shared_commit",
+        "shared_tag", "version", "pinnable", "builder")}
+    rec["jammer"]["dev_builder"] = a.dev_builder
+    rec["jammer"]["files"] = [{"offset": hex(o), "name": os.path.basename(p)} for o, p in files]
+    args = ["write_flash"]
+    for off, p in files:
+        args += [hex(off), p]
+    rc, tail = esptool(a.port, *args)
+    rec.update({"rc": rc, "esptool_tail": tail, "verdict": "FLASHED" if rc == 0 else "FAIL"})
+    print("%s %s (%s): write_flash rc %d" % (row["variant"], row["folder"], row["project_name"], rc))
+    print("\n".join(tail))
+
+
 def sub_flash_jammer(a, rec):
     d, _ = _checked_dump(a)
     rec["dump_record"] = a.dump_record
     rec["dump_sha256"] = d["dump_sha256"]
+    if a.row is not None:
+        return flash_row(a, rec)
     with open(os.path.join(JAMMER, "builds", "manifest.json"), encoding="ascii") as fh:
         rows = [r for r in json.load(fh) if r["app_md5"] == a.build]
     if len(rows) != 1:
@@ -369,20 +533,72 @@ def expect_elf_why(v):
     return None
 
 
+def sub_check_row(a, rec):
+    """Board-free: flash-jammer --row's checks on a manifest.jsonl row, nothing written. The
+    dry run before the board is touched, as check-dump is for a dump (2026-11-13)."""
+    try:
+        row, _folder, files = jsonl_row(a)
+    except (RowRefused, OSError) as e:
+        rec.update(verdict="REFUSED", why=str(e))
+        print("REFUSED: %s" % e)
+        return
+    rec["jammer"] = {k: row.get(k) for k in ("folder", "variant", "project_name", "image_hash", "pinnable",
+                                             "builder")}
+    rec["jammer"]["dev_builder"] = a.dev_builder
+    rec["jammer"]["files"] = [{"offset": hex(o), "name": os.path.basename(p)} for o, p in files]
+    rec["verdict"] = "PASS"
+    print("%s %s (%s, image %s, pinnable %s): every check PASS, nothing written"
+          % (row["variant"], row["folder"], row["project_name"], row["image_hash"][:16], row.get("pinnable")))
+
+
+def build_args_why(a):
+    """None when flash-jammer's build arguments name one build, else why not: exactly one of
+    --build and --row; --row needs --variant; --variant and --dev-builder only with --row.
+    check-row takes --row and --variant, --dev-builder for a dev row, and no --build. Other
+    subcommands take none of them (2026-11-13)."""
+    given = [n for n, v in (("--build", a.build), ("--row", a.row), ("--variant", a.variant),
+                            ("--dev-builder", a.dev_builder)) if v is not None]
+    if a.sub == "check-row":
+        if a.build is not None:
+            return "check-row takes no --build: it checks a manifest.jsonl row (--row)"
+        if a.row is None or not a.variant:
+            return "check-row needs --row <16 hex> and --variant"
+        return None
+    if a.sub != "flash-jammer":
+        return "%s takes no %s" % (a.sub, ", ".join(given)) if given else None
+    if (a.build is None) == (a.row is None):
+        return "flash-jammer needs exactly one of --build <md5> and --row <16 hex>"
+    if a.row is not None and not a.variant:
+        return "--row needs --variant: the variant meant (jammer, stop_a_only, stop_b_only)"
+    if a.build is not None and (a.variant is not None or a.dev_builder is not None):
+        return "--variant and --dev-builder go only with --row"
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("sub", choices=("dump", "flash-jammer", "restore", "check-dump"))
+    ap.add_argument("sub", choices=("dump", "flash-jammer", "restore", "check-dump", "check-row"))
     ap.add_argument("--expect-elf", default=None,
                     help="dump, check-dump (required): the app ELF sha256 prefix, 8 to 64 hex "
                          "digits, that a slot of the dump must carry; no default since 2026-11-12")
     ap.add_argument("--dump-record")
-    ap.add_argument("--build", help="jammer app md5 (its builds/ dir name)")
+    ap.add_argument("--build", help="flash-jammer: the PlatformIO jammer's app md5 (its x2_jammer/builds/ dir name)")
+    ap.add_argument("--row", help="flash-jammer: the ESP-IDF port's build, its x2_test_images/jammer/builds/ "
+                                  "folder name (16 hex digits)")
+    ap.add_argument("--variant", help="flash-jammer --row (required): the variant meant; the row's must match")
+    ap.add_argument("--dev-builder", help="flash-jammer --row: for a dev build (pinnable false), its builder "
+                                          "as the row names it (x2_test_images SPEC T7)")
     a = ap.parse_args()
     a.port = None
     rec = {"when": time.strftime("%Y%m%dT%H%M%S"), "sub": a.sub,
            "esptool_argv": None, "esptool_version": None, "port": None, "serial_device": None,
            "build_lookup": BUILD_LOOKUP}
     try:
+        why = build_args_why(a)
+        if why:
+            rec.update(verdict="REFUSED", why=why)
+            print("REFUSED: %s (nothing run)" % why)
+            return 1
         if a.sub in EXPECT_SUBS:
             rec["expect_elf"] = a.expect_elf
             why = expect_elf_why(a.expect_elf)
@@ -404,10 +620,10 @@ def main():
             a.port = rec["port"] = dev["port"]
             rec["serial_device"] = dev
         {"dump": sub_dump, "flash-jammer": sub_flash_jammer,
-         "restore": sub_restore, "check-dump": sub_check_dump}[a.sub](a, rec)
+         "restore": sub_restore, "check-dump": sub_check_dump, "check-row": sub_check_row}[a.sub](a, rec)
     finally:
         write_rec(a.sub, rec)
-    return 0 if rec.get("verdict") in ("PASS", "FLASHED", "VERIFIED") else 1
+    return 0 if rec.get("verdict") in ("PASS", "FLASHED", "VERIFIED") else 1   # check-row's PASS too
 
 
 if __name__ == "__main__":

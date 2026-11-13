@@ -27,7 +27,7 @@ back and printed in the banner.
 | `src/main.cpp` | The firmware. The header comment has the safety design and the command set. |
 | `jammer_name.py` | Pre-build script. Names the image `vtrux_jammer_x2_NOT_FOR_VEHICLE_<digest12>` after a sha256 of `platformio.ini`, both scripts and `src/`, and compiles the full digest into the banner. This folder is not in git, so the digest stands in for a commit. It identifies the **sources**, not the image. |
 | `jammer_archive.py` | Post-build script. Copies the app `.bin`/`.elf`, bootloader, partition table and `boot_app0` into `builds/<app md5>/`, and **appends** a row to `builds/manifest.json` with the md5, the app sha256, the ELF sha256 and the flash offsets. Builds are not reproducible, so rows are keyed by md5 and never replaced. |
-| `builds/` (in SeaDrive) | Archived images and `manifest.json`. Flash only from here, by md5, via `../x2_flash_custody.py flash-jammer`. |
+| `builds/` (in SeaDrive) | Archived images and `manifest.json`. Flash only from here, by md5, via `../x2_flash_custody.py flash-jammer --build`. The ESP-IDF port in `shared/x2_test_images/jammer/` (`shared/main` from `da0d5c44`) has its own archive, `artifacts/x2_test_images/jammer/` with `manifest.jsonl`, flashed by row with `flash-jammer --row` (2026-11-13); gen-inhibit keeps this PlatformIO build until the port passes its bench checks (x2_test_images SPEC T8). |
 
 Host side, in `../bench/`: `x2_jammer.py` (control, witness, judges and bench
 subcommands), `x2_flash_custody.py` (dump, flash the jammer, restore) and their
@@ -100,7 +100,8 @@ flash. The procedure, agreed with both reviewers and the interposer tester:
    carrying the image read in step 1 (`7f197bfd` when this was written;
    since 2026-11-12 `--expect-elf` has no default, because the X2 holds
    whatever the last run loaded, gen-inhibit reviewer);
-3. `flash-jammer`;
+3. `flash-jammer` (`--build <md5>` for this PlatformIO build, `--row` for the
+   ESP-IDF port's, after `check-row`);
 4. the jammer runs;
 5. `restore`: write-flash, then verify-flash;
 6. a wire read again.
