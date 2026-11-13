@@ -141,6 +141,16 @@ WITNESS_NAME = "kvaser"
 
 
 def open_witness():
+    """CANlib only (the charge-interposer reviewer's E, 2026-11-13): this
+    hand-run measurement judges rates on the witness's own stamps, which
+    were CANlib's device stamps. On Linux the Kvaser is the kernel's
+    kvaser_usb (software stamps, two per 1 ms USB frame), so the witness is
+    refused there rather than measured on a clock it was not written for.
+    The other drivers import this file only for open_gs_usb."""
+    if sys.platform.startswith("linux"):
+        raise RuntimeError("bench_rate_feasibility's witness is CANlib-only: on Linux the "
+                           "Kvaser is kvaser_usb (software stamps); not ported (reviewer's E, "
+                           "2026-11-13)")
     return adapter_fixes.bus(interface="kvaser", channel=0, bitrate=BITRATE,
                              receive_own_messages=False)
 

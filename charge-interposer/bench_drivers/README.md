@@ -32,7 +32,7 @@ a pointer, until nothing reads them. Since the move:
 | `bench_mcp_reset.py` | Whether the X2's MCP2515 keeps ACKing on the charger segment while the ESP32 is down. Its ROM holds run the core flasher's esptool, the settings' `esptool.argv` passed as `VTRUX_ESPTOOL_ARGV` (2026-11-12); unset, PlatformIO's esptool.py on Windows as before, refused on Linux |
 | `bench_pacer.py` | The pacer every driver that offers frames at a stated rate uses |
 | `bench_powerup_round.py` | Spec 2.3's power-up round on the board; also run by `../bench_identify.py` to read 0x7F7 |
-| `bench_rate_feasibility.py` | Whether this host can offer the rates spec 12 entry 2 asks for; imported for its rate helpers |
+| `bench_rate_feasibility.py` | Whether this host can offer the rates spec 12 entry 2 asks for; imported for its rate helpers (`open_gs_usb`). **CANlib-only** (the reviewer's E, 2026-11-13): its Kvaser witness judges rates on CANlib's device stamps, so on Linux, where the Kvaser is the kernel's kvaser_usb with software stamps, `open_witness` refuses; not ported, hand-run only. The one harness file the Kvaser scan (`kvaser_link_test.py`) lets open the CANlib `kvaser` interface |
 | `bench_rx_order.py` | Step 4 item 4: receive order on silicon, charger to vehicle. The reported echo span per burst uses the Innomaker's device stamps unwrapped (`echo_spans`, 2026-11-12); `--can-fail` since then |
 | `bench_switch_errors.py` | Spec 2.3: vehicle-side bus errors from a mode switch with an acknowledger present |
 | `bench_switch_loss.py` | Spec 2 / 2.3: frames lost when the vehicle port switches mode |

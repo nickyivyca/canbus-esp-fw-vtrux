@@ -74,7 +74,8 @@ if HERE not in sys.path:
 import scratch_dir                                      # noqa: E402
 
 MODULE = os.path.join(HERE, "kvaser_link.py")
-MIN_OPENERS = 12
+MIN_OPENERS = 8     # keepalive, usb_host, rx_order, topology, charger_silent,
+                    # switch_loss, hold12, vport (bus.open_kvaser calls it as link.)
 
 FAKE_CANCTL = r'''
 import json, os, sys
@@ -481,6 +482,12 @@ def _named(node, attr, mod):
             and f.value.id == mod)
 
 
+# the one file that may still open CANlib's "kvaser" interface: a hand-run
+# measurement, CANlib-only and refused on Linux (the reviewer's E,
+# 2026-11-13; bench_drivers/README.md)
+CANLIB_ONLY = {"bench_rate_feasibility.py"}
+
+
 def scan(paths):
     """-> (hits ["path:line what"], kvaser_link.open_bus calls seen)."""
     hits, n = [], 0
@@ -488,6 +495,7 @@ def scan(paths):
         with open(p, encoding="utf-8") as f:
             tree = ast.parse(f.read(), p)
         mine = os.path.basename(p) == "kvaser_link.py"
+        canlib_ok = os.path.basename(p) in CANLIB_ONLY
         for node in ast.walk(tree):
             pairs = []
             if isinstance(node, ast.Call):
@@ -500,7 +508,7 @@ def scan(paths):
             for k, v in pairs:
                 if k != "interface" or not isinstance(v, ast.Constant):
                     continue
-                if v.value == "kvaser":
+                if v.value == "kvaser" and not canlib_ok:
                     hits.append("%s:%d interface='kvaser' (CANlib, linuxcan's leaf)"
                                 % (p, node.lineno))
                 elif v.value == "socketcan" and not mine:
@@ -543,6 +551,13 @@ def case_scan(M, work):
     hits, n = scan([planted])
     lines = sorted(int(h.split(":")[1].split()[0]) for h in hits)
     assert lines == [2, 3, 4, 5] and n == 1, (hits, n)
+    # the CANlib-only file may open "kvaser", and nothing else may
+    only = os.path.join(work, "bench_rate_feasibility.py")
+    with open(only, "w", encoding="utf-8") as f:
+        f.write("a = adapter_fixes.bus(interface='kvaser', channel=0)\n"
+                "b = can.Bus(interface='socketcan', channel='kvaser')\n")
+    hits, n = scan([only])
+    assert [int(h.split(":")[1].split()[0]) for h in hits] == [2], hits
 
 
 CASES = [case_link_state, case_set_up, case_set_down, case_not_taken, case_open_bus,
