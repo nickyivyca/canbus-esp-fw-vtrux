@@ -16,8 +16,18 @@
 # Linux baseline of 0691f6f1 in the tester's VERIFICATION.md entry, and
 # its vp1, vp2, vp3 and bench runs are stopped before vp1 takes the lock,
 # by the run's STOP file, written by the tester when the harness suite
-# starts. [TESTER, before merge: replace this sentence with what 98d1's
-# record shows once it ends: those four NOT-RUN "STOP", no lock taken.]
+# starts. 98d1's record, read 2026-11-14: the STOP file written 02:28:22,
+# as the harness suite started; the emulated suite ended 02:28:21 (PASS
+# 83, KNOWN-FAIL 2, the 3 declared skips NOT-RUN) and the harness suite
+# 03:44:08 (PASS 145, the 9 declared skips NOT-RUN); vp1, vp2, vp3 and
+# bench NOT-RUN "STOP while waiting for <the suite before>", 03:44:08; no
+# bench lock taken by the run (bench-log.jsonl). Its compares: c-harness
+# held; c-emulated differs on one line, "NEW in b:
+# m-host/host-bridge/l2.sa-c0-vehicle-port PASS", a host_bridge case the
+# tester added at d2af5e71 (spec 2, "The charger's frames count only from
+# the charger port", tracker G) after b467 and that 3-bench.toml did not
+# list; every id b467 has kept its verdict. The rest differ only because
+# the bench-side runs were stopped.
 # This list's record names 98d1 (A13: the runner's --earlier
 # accept_3_20261113T081639_98d1).
 #
@@ -175,23 +185,24 @@ images_from = ["bridge", "witness", "truck"]
 after = ["vp3"]
 
 # ---- the baselines -----------------------------------------------------------
-# As 3-bench.toml: the bench suite, vport-bitrate and the emulated suite
-# from b467, the newest whole Windows bench run (2b, harness and product
-# f57ca9d3); the harness suite from 0d88, the newest whole harness run with
-# a record to compare (step 3's first emulated re-run, harness 2d14b2e5).
-# [TESTER, before merge: if 98d1's emulated and harness suites end as
-# expected, the reviewer may rather name them here; on 0691f6f1 they are
-# the nearer baseline. Left as 3-bench.toml has them until 98d1 ends.]
+# The emulated and harness suites from 98d1, the Linux baseline of
+# 0691f6f1: the same product (product digest 07266c74... over the same 23
+# files, see above) on the same machine, so these compares show only the
+# Kvaser change's lines (the reviewer, 2026-11-13: 98d1's suites become the
+# baselines if they held against b467 and 0d88; see the header for its one
+# unlisted line against b467, which the reviewer ruled on before merge).
+# The bench suite and vport-bitrate as 3-bench.toml: from b467, the newest
+# whole bench run (2b, harness and product f57ca9d3, on Windows), since
+# 98d1's were stopped.
 [baseline]
-emulated = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-emulated"
-harness = "accept_3_20261112T084805_0d88/runs/accept_3_20261112T084805_0d88-harness"
+emulated = "accept_3_20261113T081639_98d1/runs/accept_3_20261113T081639_98d1-emulated"
+harness = "accept_3_20261113T081639_98d1/runs/accept_3_20261113T081639_98d1-harness"
 bench = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-bench"
 vp1 = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-vp1"
 
-# The emulated suite against b467's: no difference. Its check list is the
-# same (40 checks, 3 declared skips; checked 2026-11-13 from
-# bench_suite.emulated at 742c96f6 against b467's record: no top-level id on
-# one side only; b467's other ids are host-bridge's sub-results). The two
+# The emulated suite against 98d1's: no difference. Its check list is the
+# same (40 checks, 3 declared skips; bench_suite.emulated is unchanged
+# between 0691f6f1 and 742c96f6), and the product is the same. The two
 # host_bridge KNOWN-FAILs are KNOWN-FAIL on both sides; any other FAIL, or a
 # NOT-RUN that is not a declared skip, is a difference. The Kvaser change
 # touches no emulated check (vehicle_sim's kvaser transport is the bench's).
@@ -203,16 +214,11 @@ b = "emulated"
 expect = "listed"
 differences = []
 
-# The harness suite against 0d88's (141 PASS, 9 declared skips). Checked
-# 2026-11-13: bench_suite.harness at 742c96f6 has 164 ids against 0d88's
-# 150, nothing on 0d88's side only. The four 3-bench.toml listed:
-#   canchg-mode-test      c53d0ac9: canchg_mode.py, canchg in canctl's libusb
-#                         mode for a run and back on gs_usb after, and its
-#                         -canfail (the canchg-mode batch)
-#   canx2-slcan-test      the run-start batch: canx2_slcan.py, canx2 detached
-#                         from the kernel's SLCAN before the X2 is touched,
-#                         and its -canfail
-# and ten from the Kvaser change (79a37976):
+# The harness suite against 98d1's (145 PASS, 9 declared skips: 154 ids,
+# 0d88's 150 and the four 3-bench.toml listed, canchg-mode-test and
+# canx2-slcan-test with their -canfail, all PASS). Checked 2026-11-13:
+# bench_suite.harness at 742c96f6 has 164 ids, nothing on the baseline's
+# side only. The ten NEW are the Kvaser change's (79a37976):
 #   kvaser-link-test      kvaser_link.py: the link set and read back, the
 #                         stall rule, the kernel lines, the recovery and its
 #                         STOP file, the opener scan; and its -canfail (37
@@ -225,9 +231,9 @@ differences = []
 #                         up must be caught); their self-tests were in 0d88
 #   st./cf.klog-windows   klog_windows.py, the kernel's USB/CAN lines over
 #                         every judged check's window
-# The changed drivers' self-tests and can-fails that 0d88 already had
+# The changed drivers' self-tests and can-fails that 98d1 already had
 # (bench-vport, hold12, charger-silent, switch-loss and the rest) changed
-# their tests, not their ids; every one PASSed in 0d88 and is expected to
+# their tests, not their ids; every one PASSed in 98d1 and is expected to
 # PASS here. The same holds for bus-gs-usb-test, adapter-fixes-test and
 # bench-suite-test (their cases changed with the Kvaser change).
 [[compare]]
@@ -237,10 +243,6 @@ a = "baseline:harness"
 b = "harness"
 expect = "listed"
 differences = [
-  "NEW in b: m-harness/canchg-mode-test PASS",
-  "NEW in b: m-harness/canchg-mode-test-canfail PASS",
-  "NEW in b: m-harness/canx2-slcan-test PASS",
-  "NEW in b: m-harness/canx2-slcan-test-canfail PASS",
   "NEW in b: m-harness/kvaser-link-test PASS",
   "NEW in b: m-harness/kvaser-link-test-canfail PASS",
   "NEW in b: l-harness/st.keepalive-probe PASS",
