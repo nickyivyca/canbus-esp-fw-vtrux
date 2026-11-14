@@ -12,7 +12,10 @@ with no crash first. The ruling names two of them: the offset shifted 0.3 s late
 (m1, m2), and a can2-isolation judge that judges a window on a Kvaser stamp must be caught
 (the "window on a stamp" mutants). Ruling (3) names three: the witness opened at the train's
 start, a lead over the 0.4 s bound, and a check judged on another open's anchor (the "train:"
-and "per open:" mutants).
+and "per open:" mutants). The take from f0c6e03d (2026-11-13 18:31) adds the state frame read
+by its data[1]: the PCAN's "error active" frame at each open must not put it down, warning,
+passive, an overflow, unspecified or bus-off must, and a NOT-RUN train keeps its drive in the
+record.
 
 Not mutants (equivalent, so no test can kill them): dropping anchor()'s own "maps after its
 receipt" check alone (with the offset taken as the minimum no frame can map after its receipt;
@@ -125,7 +128,7 @@ MUTANTS = [
     (XJ, "session: a down open's checks judged anyway", '        if o["down"]:\n', "        if False:\n"),
     (XJ, "session: can2-isolation let into the session", '        if words and words[0] == "can2-isolation":\n',
      "        if False:\n"),
-    (XJ, "session: no resource-log window", '        c["resource_log"] = resource(c["inp"]["t_begin"], c["inp"]["t_end"])\n',
+    (XJ, "session: no resource-log window", '        c["resource_log"] = resource(drv(c)["t_begin"], drv(c)["t_end"])\n',
      '        c["resource_log"] = {"window": [None, None]}\n'),
     (XJ, "session: the witness not named", '        c = {"spec": spec, "sub": ns.sub, "ns": ns, "witness": WITNESS_PCAN}\n',
      '        c = {"spec": spec, "sub": ns.sub, "ns": ns, "witness": WITNESS_KVASER_CANLIB}\n'),
@@ -144,7 +147,7 @@ MUTANTS = [
      "        lines = []\n"),
     (XJ, "usb: lines outside the window VOID", "        lines = [ln for t, ln in record.get(\"hits\", []) if lo <= t <= hi]\n",
      "        lines = [ln for t, ln in record.get(\"hits\", [])]\n"),
-    (XJ, "usb: the session never folds it", '        usb_fold(c, rec_usb, c["inp"]["t_begin"], c["inp"]["t_end"])\n', ""),
+    (XJ, "usb: the session never folds it", '        usb_fold(c, rec_usb, drv(c)["t_begin"], drv(c)["t_end"])\n', ""),
     # a fresh open per train, one anchor per open (the gen-inhibit reviewer, 2026-11-13); the ruling
     # names three: the witness opened at the train's start, a lead over the bound, a check judged on
     # another open's anchor
@@ -182,9 +185,26 @@ MUTANTS = [
     (XJ, "down: a down with no time judged",
      '                if "inp" in c and (o["t_fail"] is None or c["inp"]["t_end"] >= o["t_fail"]):\n',
      '                if "inp" in c and (o["t_fail"] is not None and c["inp"]["t_end"] >= o["t_fail"]):\n'),
-    (BWF, "pcan: a state frame not WitnessDown", "                            if m.arbitration_id & STATE_BITS and self.failed is None:\n",
+    (BWF, "pcan: a state frame not WitnessDown",
+     '                            if state_down(m.arbitration_id, getattr(m, "data", None)) and self.failed is None:\n',
      "                            if False:\n"),
-    (BWF, "pcan: bus-off not a state frame", "STATE_BITS = CAN_ERR_CRTL | CAN_ERR_BUSOFF\n", "STATE_BITS = CAN_ERR_CRTL\n"),
+    (BWF, "pcan: bus-off not a state frame", "    if aid & CAN_ERR_BUSOFF:\n        return True\n", ""),
+    # by data[1] (the take from f0c6e03d, 2026-11-13: the PCAN's "error active" frame at each open)
+    (BWF, "pcan: every CAN_ERR_CRTL down (error active too)",
+     "    return not (len(d) > 1 and d[1] == CAN_ERR_CRTL_ACTIVE)\n", "    return True\n"),
+    (BWF, "pcan: down on warning or passive only (an overflow, unspecified, no data not)",
+     "    return not (len(d) > 1 and d[1] == CAN_ERR_CRTL_ACTIVE)\n", "    return len(d) > 1 and bool(d[1] & 0x3C)\n"),
+    (BWF, "pcan: the active bit masks a warning beside it",
+     "    return not (len(d) > 1 and d[1] == CAN_ERR_CRTL_ACTIVE)\n",
+     "    return not (len(d) > 1 and d[1] & CAN_ERR_CRTL_ACTIVE)\n"),
+    (BWF, "pcan: no data[1] taken as error active",
+     "    return not (len(d) > 1 and d[1] == CAN_ERR_CRTL_ACTIVE)\n",
+     "    return not (len(d) < 2 or d[1] == CAN_ERR_CRTL_ACTIVE)\n"),
+    (BWF, "pcan: the frame's data not passed",
+     '                            if state_down(m.arbitration_id, getattr(m, "data", None)) and self.failed is None:\n',
+     "                            if state_down(m.arbitration_id, None) and self.failed is None:\n"),
+    (XJ, "down: a NOT-RUN check's drive dropped from the record", '                    c["inp_unjudged"] = c.pop("inp")\n',
+     '                    del c["inp"]\n'),
 ]
 
 

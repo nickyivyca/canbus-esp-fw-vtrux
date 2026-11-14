@@ -1652,7 +1652,9 @@ def run_session(checks, con, open_witness, settle=time.sleep, resource=resource_
             for c in o["checks"]:
                 if "inp" in c and (o["t_fail"] is None or c["inp"]["t_end"] >= o["t_fail"]):
                     c["verdict"], c["why"] = "NOT-RUN", "witness down (open %d): %s" % (o["id"], o["down"])
-                    del c["inp"]
+                    # never judged, but its drive stays in the record (a train's send, ACKed ms,
+                    # open_at and open lag: the run README states them, 2026-11-13)
+                    c["inp_unjudged"] = c.pop("inp")
         clock = ("pcan_anchor of open %d (offset %s s, slope %s ppm, spread p99 %s s)"
                  % (o["id"], anc.get("offset_s"), anc.get("slope_ppm"), anc.get("spread_p99_s")))
         for c in o["checks"]:
@@ -1662,18 +1664,24 @@ def run_session(checks, con, open_witness, settle=time.sleep, resource=resource_
         if "inp" in c and "open" not in c:
             # a train that never opened its witness (no ACK, so no stop to watch)
             c.update(JUDGE[c["sub"]](c["ns"], c["inp"], [], None))
-    driven = [c for c in out if "inp" in c]
+    def drv(c):
+        return c.get("inp") or c.get("inp_unjudged")
+
+    driven = [c for c in out if drv(c)]
     if driven:
-        settle(max(0.0, driven[-1]["inp"]["t_end"] + RESOURCE_SETTLE_S - time.time()))
-        rec_usb = usb(driven[0]["inp"]["t_begin"], driven[-1]["inp"]["t_end"])
+        settle(max(0.0, drv(driven[-1])["t_end"] + RESOURCE_SETTLE_S - time.time()))
+        rec_usb = usb(drv(driven[0])["t_begin"], drv(driven[-1])["t_end"])
     for c in driven:
-        c["resource_log"] = resource(c["inp"]["t_begin"], c["inp"]["t_end"])
+        c["resource_log"] = resource(drv(c)["t_begin"], drv(c)["t_end"])
         c["counts"] = COUNTS
-        usb_fold(c, rec_usb, c["inp"]["t_begin"], c["inp"]["t_end"])
+        usb_fold(c, rec_usb, drv(c)["t_begin"], drv(c)["t_end"])
     for c in out:
         c["args"] = vars(c.pop("ns"))
         if "inp" in c:
             c["drive"] = c.pop("inp")
+        elif "inp_unjudged" in c:
+            c["drive"] = c.pop("inp_unjudged")
+            c["drive_judged"] = False
     for o in opens:
         o["checks"] = [c["spec"] for c in o["checks"]]
     return out, opens, outside

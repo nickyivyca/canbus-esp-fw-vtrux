@@ -11,6 +11,8 @@ probe of 10:07-10:10: 2987 frames, ts[2] 0 on every one) and refuses berr-report
                     frame (CAN_ERR_CRTL warning or passive, CAN_ERR_BUSOFF) puts it down from
                     its receipt (t_fail): in session 1 of the jammer pass (2026-11-13) the PCAN
                     went error passive ~128 pulses into a train and reported nothing after.
+                    A CAN_ERR_CRTL frame saying only "error active", which the PCAN sends at
+                    each open, does not (state_down()).
   SocketcanWitness  the Kvaser, on SocketCAN, for can2-isolation only: that check COUNTS (every
                     0x7A0 seen, one error group per pulse) and times nothing, so software
                     stamps are enough, and they are used only for the gaps between frames in
@@ -58,7 +60,23 @@ CAN_ERR_MASK = 0x1FFFFFFF
 CAN_ERR_PROT = 0x008
 CAN_ERR_CRTL = 0x004     # controller state: error warning, error passive
 CAN_ERR_BUSOFF = 0x040
-STATE_BITS = CAN_ERR_CRTL | CAN_ERR_BUSOFF
+CAN_ERR_CRTL_ACTIVE = 0x40   # data[1] of a CAN_ERR_CRTL frame: (back to) error active
+
+
+def state_down(aid, data):
+    """Whether an error frame puts the PCAN witness down (the gen-inhibit reviewer's ruling (3),
+    2026-11-13: warning, passive or bus-off): CAN_ERR_BUSOFF, or CAN_ERR_CRTL whose data[1] is
+    anything but CAN_ERR_CRTL_ACTIVE alone (warning, passive, an overflow, unspecified, or no
+    data byte to say). A CAN_ERR_CRTL frame that says only "error active" does not: the PCAN
+    sends one at every open (the take from f0c6e03d, 2026-11-13 18:31, one at each of three
+    opens, 0.3-0.6 ms after it, with no warning or passive frame after); it is kept with the
+    state frames."""
+    if aid & CAN_ERR_BUSOFF:
+        return True
+    if not aid & CAN_ERR_CRTL:
+        return False
+    d = bytes(data or b"")
+    return not (len(d) > 1 and d[1] == CAN_ERR_CRTL_ACTIVE)
 
 PCAN_CHANNEL = "PCAN_USBBUS1"
 PCAN_SYSFS = "/sys/class/pcan/pcanusbfd32"
@@ -167,7 +185,7 @@ class PcanWitness(threading.Thread):
                                 self.err.append((m.timestamp, now))
                             else:
                                 self.other_err.append((m.timestamp, now, "0x%03X" % m.arbitration_id))
-                            if m.arbitration_id & STATE_BITS and self.failed is None:
+                            if state_down(m.arbitration_id, getattr(m, "data", None)) and self.failed is None:
                                 # a controller-state frame: from here the PCAN may stop reporting
                                 # bus errors (error passive after ~128 pulses in session 1,
                                 # 2026-11-13), so the witness is down from this moment

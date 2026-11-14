@@ -206,8 +206,9 @@ def pcan_sysfs(name, adapter="PCAN-USB FD", ts_mode="3", bitrate="500000", usb="
 
 
 class Msg:
-    def __init__(self, ts, aid, err=False):
+    def __init__(self, ts, aid, err=False, data=b""):
         self.timestamp, self.arbitration_id, self.is_error_frame = ts, aid, err
+        self.data = bytearray(data)
 
 
 class FakePcanBus:
@@ -277,6 +278,36 @@ def pcan_cases():
               (w.down() or "").startswith("witness down at") and "controller-state" in (w.down() or "")
               and w.t_fail is not None and w.t_fail >= t0 and len(w.err) == (3 if aid & 0x008 else 2),
               (w.down(), w.t_fail, len(w.err)))
+    # by data[1] (ruling (3): warning, passive or bus-off): the PCAN's "error active" frame at
+    # each open (CAN_ERR_CRTL, data[1] 0x40 alone; the take from f0c6e03d, 2026-11-13 18:31) is
+    # kept with the state frames and does not put it down; warning, passive, an overflow or an
+    # unspecified state does
+    for label, aid, data, want_down in (
+            ("error active 0x004 00 40", 0x004, b"\x00\x40" + b"\x00" * 6, False),
+            ("error active with PROT 0x00C 00 40", 0x00C, b"\x00\x40" + b"\x00" * 6, False),
+            ("rx warning 0x004 00 04", 0x004, b"\x00\x04" + b"\x00" * 6, True),
+            ("tx warning 0x004 00 08", 0x004, b"\x00\x08" + b"\x00" * 6, True),
+            ("rx passive 0x004 00 10", 0x004, b"\x00\x10" + b"\x00" * 6, True),
+            ("tx passive 0x004 00 20", 0x004, b"\x00\x20" + b"\x00" * 6, True),
+            ("rx overflow 0x004 00 01", 0x004, b"\x00\x01" + b"\x00" * 6, True),
+            ("unspecified 0x004 00 00", 0x004, b"\x00" * 8, True),
+            ("active and warning 0x004 00 48", 0x004, b"\x00\x48" + b"\x00" * 6, True),
+            ("one data byte 0x004 40", 0x004, b"\x40", True),
+            ("bus-off 0x040 00 40", 0x040, b"\x00\x40" + b"\x00" * 6, True)):
+        sysfs = pcan_sysfs("statedata_%s" % abs(hash(label)))
+        w = BW.PcanWitness(opener=lambda **kw: FakePcanBus([Msg(10.0, aid, True, data), Msg(10.5, 0x088, True),
+                                                            Msg(11.0, 0x088, True)]), sysfs=sysfs)
+        w.start()
+        time.sleep(0.1)
+        w.close()
+        n_err = 3 if aid & 0x008 else 2
+        if want_down:
+            check("pcan", "%s -> down" % label, "controller-state" in (w.down() or "") and len(w.err) == n_err,
+                  (w.down(), len(w.err)))
+        else:
+            check("pcan", "%s -> not down, kept with the state frames, bus errors still counted" % label,
+                  w.down() is None and w.t_fail is None and len(w.err) == n_err
+                  and len(w.other_err) == (0 if aid & 0x008 else 1), (w.down(), len(w.err), w.other_err))
     sysfs = pcan_sysfs("dying")
     w = BW.PcanWitness(opener=lambda **kw: FakePcanBus([Msg(1.0, 0x088, True)], raise_after=True), sysfs=sysfs)
     w.start()
@@ -817,6 +848,10 @@ def session_cases():
     check("session", "a state frame mid-train -> the train NOT-RUN, the rest judged",
           v[TM] == "NOT-RUN" and "controller-state" in (out[TM].get("why") or "")
           and v[:TM] + v[TM + 1:] == ["PASS"] * 5, (v, out[TM].get("why")))
+    dn = out[TM].get("drive") or {}
+    check("session", "the NOT-RUN train keeps its drive, marked unjudged: send, ACKed ms, open_at, open lag",
+          out[TM].get("drive_judged") is False and all(k in dn for k in ("t_send", "eff_ms", "open_at", "open_lag_s"))
+          and "judge" not in out[TM] and "resource_log" in out[TM], (sorted(dn), out[TM].get("drive_judged")))
     # the witness opened at the train's start must not PASS: the PCAN reports warning at ~96
     # pulses (a state frame: NOT-RUN), or goes deaf at ~128 without one (the closing pulse)
     saved = X.train_open_at
