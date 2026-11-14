@@ -6,8 +6,11 @@ probe of 10:07-10:10: 2987 frames, ts[2] 0 on every one) and refuses berr-report
   PcanWitness       the PCAN carries the TIMED checks (boot silence, pulses with the port
                     check and calibration, the timeout set, no duration, after-DONE). Its
                     stamps are its device time; x2_jammer's session places them on the epoch
-                    clock with witness_anchor (one anchor per session), so this class only
-                    records (device, receipt) pairs and says what it opened.
+                    clock with witness_anchor (one anchor per open), so this class only
+                    records (device, receipt) pairs and says what it opened. A controller-state
+                    frame (CAN_ERR_CRTL warning or passive, CAN_ERR_BUSOFF) puts it down from
+                    its receipt (t_fail): in session 1 of the jammer pass (2026-11-13) the PCAN
+                    went error passive ~128 pulses into a train and reported nothing after.
   SocketcanWitness  the Kvaser, on SocketCAN, for can2-isolation only: that check COUNTS (every
                     0x7A0 seen, one error group per pulse) and times nothing, so software
                     stamps are enough, and they are used only for the gaps between frames in
@@ -53,6 +56,9 @@ CAN_ERR_FLAG = 0x20000000
 CAN_EFF_FLAG = 0x80000000
 CAN_ERR_MASK = 0x1FFFFFFF
 CAN_ERR_PROT = 0x008
+CAN_ERR_CRTL = 0x004     # controller state: error warning, error passive
+CAN_ERR_BUSOFF = 0x040
+STATE_BITS = CAN_ERR_CRTL | CAN_ERR_BUSOFF
 
 PCAN_CHANNEL = "PCAN_USBBUS1"
 PCAN_SYSFS = "/sys/class/pcan/pcanusbfd32"
@@ -161,20 +167,32 @@ class PcanWitness(threading.Thread):
                                 self.err.append((m.timestamp, now))
                             else:
                                 self.other_err.append((m.timestamp, now, "0x%03X" % m.arbitration_id))
+                            if m.arbitration_id & STATE_BITS and self.failed is None:
+                                # a controller-state frame: from here the PCAN may stop reporting
+                                # bus errors (error passive after ~128 pulses in session 1,
+                                # 2026-11-13), so the witness is down from this moment
+                                self.failed = (now, "controller-state frame 0x%03X data %s" % (
+                                    m.arbitration_id, bytes(getattr(m, "data", b"") or b"").hex()))
                         else:
                             self.frames += 1
                             k = "0x%03X" % m.arbitration_id
                             self.ids[k] = self.ids.get(k, 0) + 1
                     m = self.bus.recv(timeout=0.0)
         except Exception as e:      # noqa: BLE001  kept; every judgement refuses on it
-            self.failed = (time.time(), "%s: %s" % (type(e).__name__, e))
+            if self.failed is None:
+                self.failed = (time.time(), "%s: %s" % (type(e).__name__, e))
 
     def down(self):
         if self.failed:
-            return "witness read failed at %.3f: %s" % self.failed
+            return "witness down at %.3f: %s" % self.failed
         if not self.stop_flag.is_set() and not self.is_alive():
             return "witness thread not running"
         return None
+
+    @property
+    def t_fail(self):
+        """When the witness went down (receipt time), or None."""
+        return self.failed[0] if self.failed else None
 
     def close(self):
         self.stop_flag.set()

@@ -10,8 +10,10 @@ session the (device, receipt) pairs, and the session gives them here. Kept apart
 adapter's own code by the ruling.
 
 THE METHOD (P1 (1)-(3); the record and the run README state it, P1 (6)):
-  anchor(points, ...)   points: [(device_s, receipt_epoch_s)] for every judged frame of the
-                        session, in receipt order.
+  anchor(points, ...)   points: [(device_s, receipt_epoch_s)] for every judged frame of one
+                        PCAN open, in receipt order (one anchor per open since the reviewer's
+                        ruling of 2026-11-13: x2_jammer opens the PCAN afresh for each train,
+                        because it stops reporting bus errors once error passive).
     offset   = min(receipt - device) over all of them: the frame that reached the host
                fastest is taken as delivered at once, so mapped(t) = t + offset and no judged
                frame maps after its own receipt.
@@ -52,8 +54,8 @@ DRIFT_MAX_S = 0.05
 MIN_POINTS = 10
 EPOCH_LAG_S = 2.0
 ENVELOPE_BINS = 10
-METHOD = ("one anchor per session: offset = min(receipt - device) over every judged frame of the "
-          "session's checks; mapped = device + offset; slope by least squares of (receipt - device) "
+METHOD = ("one anchor per PCAN open (a fresh open for each train, 2026-11-13): offset = min(receipt - "
+          "device) over every judged frame of the open's checks; mapped = device + offset; slope by least squares of (receipt - device) "
           "on device over the lower envelope (the fastest frame in each of %d equal stretches of the "
           "session), VOID when |slope| x span > %g s; VOID unless p99(receipt - mapped) < %g s; "
           "VOID with fewer than %d frames, stamps on the host epoch clock (median lag < %g s), the "

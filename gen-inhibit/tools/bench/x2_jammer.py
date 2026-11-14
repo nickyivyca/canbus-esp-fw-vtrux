@@ -65,16 +65,30 @@ witness_clock's 2 s sanity limit.
   session            (2026-11-13, the gen-inhibit reviewer's ruling (C)) the PCAN as the timing
                      witness for a list of checks, `--check "<sub and its args>"` repeated
                      (boot-silence, pulses, timeout, noduration; never can2-isolation, whose 0x7A0
-                     sender the PCAN is; id needs no witness). One console, one PCAN open
+                     sender the PCAN is; id needs no witness). One console; PCAN opens
                      (bench_witness.PcanWitness, refused unless the named PCAN-USB on
-                     PCAN_USBBUS1 with ts_mode 3), every check driven, then all judged at the end
-                     on the session's one anchor (witness_anchor: offset = min(receipt - device),
-                     slope, spread under 0.25 s, the per-command bracket); each check only on the
-                     frames mapped into its own span. The record names the witness per check, and
-                     keeps the anchor, its method and bounds, every bracket's margins and each
-                     check's resource-log window (P1 (5): a check counts only with a clean record
-                     there; gen-inhibit's slice marks are not yet set, so that is read by hand).
-                     One file, runs/x2_jammer_session_<stamp>.json.
+                     PCAN_USBBUS1 with ts_mode 3), every check driven, then each judged at the end
+                     on its OPEN's anchor (witness_anchor: offset = min(receipt - device), slope,
+                     spread under 0.25 s, the per-command bracket); each check only on the frames
+                     of its open mapped into its own span.
+                     PER-OPEN ANCHORS (gen-inhibit reviewer's ruling of 2026-11-13, after session 1
+                     at e61f4030: the PCAN in normal mode stops reporting bus errors once error
+                     passive, after ~128 pulses of one open, and listen-only reports none):
+                     consecutive boot-silence, pulses and noduration checks share one open, each
+                     timeout check (a train) gets its own, opened afresh LEAD_S (fixed, at most
+                     LEAD_MAX_S) before its expected stop, the effective ms from the host's send,
+                     and kept through its closing pulse; a timeout whose period puts more than
+                     LEAD_PULSES_MAX pulses in the lead is refused. A train judged from a late
+                     open sees its end, not its start: judge_stop with start_observed False drops
+                     the quiet-before-start rule and keeps the rest (frames up to the deadline,
+                     none after it plus the margin, watched quiet_s beyond). One anchor per open
+                     (a second open within one still refuses); a controller-state frame on an
+                     open is WitnessDown from its receipt, and every check of that open not over
+                     by then is NOT-RUN. Each check names its open and the open's anchor.
+                     The record keeps every open (anchor, method, bounds, frames), every
+                     bracket's margins and each check's resource-log window (P1 (5): a check
+                     counts only with a clean record there; gen-inhibit's slice marks are not yet
+                     set, so that is read by hand). One file, runs/x2_jammer_session_<stamp>.json.
 
 WITNESSES since the Kvaser moved to kvaser_usb (2026-11-13, ruling (C)): the session's checks on
 the PCAN; can2-isolation on the Kvaser through SocketCAN (bench_witness.SocketcanWitness: `kvaser`
@@ -162,7 +176,7 @@ def parse_line(text):
 
 
 def judge_stop(err_ts, t_start, t_deadline, obs_start, obs_end,
-               margin_s=0.3, quiet_s=5.0, pre_s=2.0, seen_s=0.5):
+               margin_s=0.3, quiet_s=5.0, pre_s=2.0, seen_s=0.5, start_observed=True):
     """Did the witness's error frames stop by the deadline?
 
     err_ts: witness error-frame times, same clock as the other arguments.
@@ -175,19 +189,22 @@ def judge_stop(err_ts, t_start, t_deadline, obs_start, obs_end,
       deadline (the witness may have stopped seeing -- the Kvaser reported
       nothing for 1.5 s mid-train on 2026-10-08 01:24 -- so "none after" would
       be vacuous).
+    start_observed False (a train's fresh PCAN open LEAD_S before its stop, the gen-inhibit
+      reviewer, 2026-11-13): the witness saw the train's end, not its start, so the quiet before
+      the start is not judged; every other rule stands.
     """
     pre = [t for t in err_ts if t_start - pre_s <= t < t_start - margin_s]
     inside = [t for t in err_ts if t_start - margin_s <= t <= t_deadline + margin_s]
     after = [t for t in err_ts if t > t_deadline + margin_s]
     out = {"n_pre": len(pre), "n_in": len(inside), "n_after": len(after),
-           "margin_s": margin_s,
+           "margin_s": margin_s, "start_observed": start_observed,
            "last_in_rel_deadline_s": (round(max(inside) - t_deadline, 4)
                                       if inside else None),
            "first_after_rel_deadline_s": (round(min(after) - t_deadline, 4)
                                           if after else None)}
     if after:
         out["verdict"], out["why"] = "FAIL", "error frames after the deadline"
-    elif obs_start > t_start - pre_s or obs_end < t_deadline + margin_s + quiet_s:
+    elif (start_observed and obs_start > t_start - pre_s) or obs_end < t_deadline + margin_s + quiet_s:
         out["verdict"], out["why"] = "INCONCLUSIVE", "not observed long enough"
     elif pre:
         out["verdict"], out["why"] = "INCONCLUSIVE", "bus not quiet before start"
@@ -933,8 +950,11 @@ def _poller(samples, stop):
         time.sleep(0.1)
 
 
-def drive_timeout(a, con, t_open):
-    """t_open: when the witness opened (judge_stop's observation start)."""
+def drive_timeout(a, con, t_open, open_witness=None):
+    """t_open: when the witness opened (judge_stop's observation start). open_witness: the
+    session's per-train open (2026-11-13): called at train_open_at(), it returns the started
+    witness, whose t_open is then the observation start and the train judged with
+    start_observed False; inp["witness"] holds it for the caller to judge and close."""
     samples, stop = [], threading.Event()
     th = None
     t_begin = time.time()
@@ -959,6 +979,15 @@ def drive_timeout(a, con, t_open):
         con.paused.set()
         inp["host_quiet_from"] = round(time.time() - t_start, 3)
     t_deadline = t_start + (a.expect_ms or eff_ms) / 1000.0
+    if open_witness is not None:
+        inp["open_at"] = train_open_at(t_send, eff_ms)
+        while time.time() < inp["open_at"]:
+            time.sleep(min(0.01, max(0.0, inp["open_at"] - time.time())))
+        t_call = time.time()
+        wit = open_witness()
+        inp.update(witness=wit, open_called=t_call, open_lag_s=round(wit.t_open - inp["open_at"], 4),
+                   start_observed=False)
+        t_open = wit.t_open
     # Watch past deadline + margin + quiet (judge_stop) with 2 s to spare
     # for the witness's delivery lag. The 01:24 run stopped ~0.5 s short.
     end = t_start + eff_ms / 1000.0 + 0.3 + 5.0 + 2.0
@@ -992,7 +1021,8 @@ def judge_timeout_run(a, inp, ts, clock):
     t_start, t_deadline, eff_ms, obs_end = inp["t_start"], inp["t_deadline"], inp["eff_ms"], inp["obs_end"]
     closing = closing_count(ts, inp["closing"])
     ts = [t for t in ts if t <= obs_end]     # the silence judged ends at the closing pulse
-    j = judge_stop(ts, t_start, t_deadline, inp["obs_start"], obs_end)
+    seen_start = inp.get("start_observed", True)
+    j = judge_stop(ts, t_start, t_deadline, inp["obs_start"], obs_end, start_observed=seen_start)
     be = [(x["t"], x.get("bus_error")) for x in samples if not x.get("unanswered")]
     rec.update({"ack": ack[1], "capped": capped[1] if capped else None,
                 "effective_ms": eff_ms, "done": done[1] if done else None,
@@ -1004,7 +1034,7 @@ def judge_timeout_run(a, inp, ts, clock):
         rec["judge_wican_bus_error"] = judge_counter_stop(be, t_start, t_deadline)
     if a.control_ms:
         c = judge_stop(ts, t_start, t_start + a.control_ms / 1000.0, inp["obs_start"],
-                       obs_end)
+                       obs_end, start_observed=seen_start)
         rec["negative_control"] = {"expect_ms": a.control_ms, "judge": c,
                                    "ok": c["verdict"] == "FAIL"}
         if a.wican_mode:
@@ -1338,8 +1368,32 @@ SUBS = {"id": sub_id, "boot-silence": sub_boot_silence, "pulses": sub_pulses,
 
 # ------------------------------------------------------------- the PCAN session (ruling (C))
 
-WITNESS_PCAN = ("pcan: PCAN-USB FD on PCAN_USBBUS1, normal mode, device stamps placed by the session "
+WITNESS_PCAN = ("pcan: PCAN-USB FD on PCAN_USBBUS1, normal mode, device stamps placed by its open's "
                 "anchor (witness_anchor)")
+# A train's open (the gen-inhibit reviewer, 2026-11-13): LEAD_S before its expected stop, at most
+# LEAD_MAX_S, and never more than LEAD_PULSES_MAX pulses inside it (the PCAN reported warning at
+# +0.46 s and passive at +0.62 s of a 5 ms train in session 1, about 96 and 128 pulses).
+LEAD_S = 0.4
+LEAD_MAX_S = 0.4
+LEAD_PULSES_MAX = 90
+SHARED_SETTLE_S = 1.0       # a shared open is read this long before its first check
+
+
+def lead_why(ns):
+    """Why a timeout check's train cannot be judged from a fresh open LEAD_S before its stop, or
+    None."""
+    if LEAD_S > LEAD_MAX_S:
+        return "the train's open lead %g s is over the bound %g s" % (LEAD_S, LEAD_MAX_S)
+    if ns.p <= 0 or LEAD_S * 1e6 / ns.p > LEAD_PULSES_MAX:
+        return ("--p %d puts %.0f pulses in the %g s lead before the stop, over %d: the PCAN would go "
+                "error passive inside it" % (ns.p, LEAD_S * 1e6 / max(ns.p, 1), LEAD_S, LEAD_PULSES_MAX))
+    return None
+
+
+def train_open_at(t_send, eff_ms):
+    """When a train's witness opens: LEAD_S before its expected stop, the effective ms counted
+    from the host's send of TRAIN; at the send when the train is shorter than the lead."""
+    return max(t_send, t_send + eff_ms / 1000.0 - LEAD_S)
 WITNESS_KVASER_SC = ("kvaser: kvaser_usb on SocketCAN (netdev kvaser), normal mode, software stamps, "
                      "counts only, berr off")
 WITNESS_KVASER_CANLIB = "kvaser: CANlib (kvaser_bus), hardware stamps on the epoch clock"
@@ -1374,7 +1428,7 @@ def parse_checks(ap, specs, no_wican):
             raise ValueError("check %r: not arguments of %s" % (s, words[0]))
         if ns.check:
             raise ValueError("check %r: no --check inside a check" % s)
-        why = args_why(ns)
+        why = args_why(ns) or (lead_why(ns) if ns.sub == "timeout" else None)
         if why:
             raise ValueError("check %r: %s" % (s, why))
         out.append((s, ns))
@@ -1495,11 +1549,12 @@ def fold_bracket(c, br):
     return c
 
 
-def judge_session(checks, points, anc, clock):
-    """Every driven check of the session judged on the anchor (P1 (1)-(3)). checks: dicts with
-    "sub", "ns" (its Namespace) and "inp" (its drive's result), or already a "verdict"
-    (NOT-RUN). The anchor VOID makes every check VOID; otherwise the check is judged on the
-    frames mapped into its span, and then its brackets folded in (fold_bracket).
+def judge_session(checks, points, anc, clock, open_id=0):
+    """Every driven check of one open judged on that open's anchor (P1 (1)-(3), one anchor per
+    open since 2026-11-13). checks: dicts with "sub", "ns" (its Namespace) and "inp" (its drive's
+    result), or already a "verdict" (NOT-RUN). The anchor VOID makes every check VOID; otherwise
+    the check is judged on the open's frames mapped into its span, and then its brackets folded
+    in (fold_bracket).
     -> the frames mapped into no check's span (anything there is in the record for the reader)."""
     spans = []
     for c in checks:
@@ -1508,7 +1563,7 @@ def judge_session(checks, points, anc, clock):
         inp = c["inp"]
         spans.append((inp["t_begin"], inp["t_end"]))
         if anc["void"]:
-            c["verdict"] = "VOID: session anchor: %s" % anc["void"]
+            c["verdict"] = "VOID: anchor of open %s: %s" % (open_id, anc["void"])
             c["why"] = "witness_anchor (P1, gen-inhibit reviewer's ruling (C), 2026-11-13)"
             continue
         cmds = inp["commands"]
@@ -1524,35 +1579,89 @@ def judge_session(checks, points, anc, clock):
             if not any(lo <= WA.mapped(anc, d) <= hi for lo, hi in spans)]
 
 
-def run_session(checks, con, wit, settle=time.sleep, resource=resource_window, usb=usb_record):
-    """Drive each (spec, Namespace) in order on one console and one open witness, then judge them
-    all on the session's anchor. wit: an opened, started bench_witness.PcanWitness (or a fake
-    with t_open, down(), close(), points(), opens, same_device()). -> (check records, anchor,
-    frames outside the checks)."""
-    out = []
+def _close_open(o):
+    """Close one open, keeping why it was down (if it was) and when, before the close."""
+    w = o["wit"]
+    o["down"] = w.down()
+    o["t_fail"] = getattr(w, "t_fail", None) if o["down"] else None
+    w.close()
+    o["t_close"] = time.time()
+
+
+def run_session(checks, con, open_witness, settle=time.sleep, resource=resource_window, usb=usb_record):
+    """Drive each (spec, Namespace) in order on one console, each on a PCAN open (module doc,
+    PER-OPEN ANCHORS), then judge every check on its own open's anchor. open_witness(): opens and
+    starts a bench_witness.PcanWitness (or a fake with t_open, down(), t_fail, close(), points(),
+    opens, same_device()). -> (check records, opens, frames outside the checks); each open as
+    {"id", "kind" (shared | train), "wit", "checks", "anchor", "down", "t_fail", ...}."""
+    out, opens = [], []
+    cur = None
+
+    def new_open(kind):
+        o = {"id": len(opens), "kind": kind, "wit": open_witness(), "checks": []}
+        o["t_open"] = o["wit"].t_open
+        opens.append(o)
+        return o
+
     for spec, ns in checks:
         c = {"spec": spec, "sub": ns.sub, "ns": ns, "witness": WITNESS_PCAN}
         out.append(c)
-        why = wit.down()
+        if ns.sub == "timeout":
+            if cur is not None:
+                _close_open(cur)
+                cur = None
+            got = []
+            print("== check: %s (its own open, %g s before its stop)" % (spec, LEAD_S))
+            try:
+                c["inp"] = DRIVE[ns.sub](ns, con, None, open_witness=lambda: got.append(new_open("train"))
+                                         or got[-1]["wit"])
+            except Exception as e:     # noqa: BLE001  the open refused or failed: nothing judged
+                c["verdict"], c["why"] = "NOT-RUN", "witness not opened: %s: %s" % (type(e).__name__, e)
+                c.pop("inp", None)
+            if got:
+                got[0]["checks"].append(c)
+                c["open"] = got[0]["id"]
+                c.get("inp", {}).pop("witness", None)
+                _close_open(got[0])
+            continue
+        if cur is None:
+            try:
+                cur = new_open("shared")
+            except Exception as e:     # noqa: BLE001
+                c["verdict"], c["why"] = "NOT-RUN", "witness not opened: %s: %s" % (type(e).__name__, e)
+                continue
+            settle(SHARED_SETTLE_S)
+        why = cur["wit"].down()
         if why:
             c["verdict"], c["why"] = "NOT-RUN", "witness down: %s" % why
             continue
-        print("== check: %s" % spec)
-        c["inp"] = DRIVE[ns.sub](ns, con, wit.t_open)
-    why = wit.down()
-    wit.close()
-    pts = wit.points()
-    anc = WA.anchor(pts, opens=wit.opens, same_device=wit.same_device())
-    if why:
-        for c in out:
-            if "inp" in c:
-                c["verdict"], c["why"] = "NOT-RUN", "witness down: %s" % why
-                del c["inp"]
-        outside = []
-    else:
-        clock = ("pcan_anchor (offset %s s, slope %s ppm, spread p99 %s s)"
-                 % (anc.get("offset_s"), anc.get("slope_ppm"), anc.get("spread_p99_s")))
-        outside = judge_session(out, pts, anc, clock)
+        print("== check: %s (open %d)" % (spec, cur["id"]))
+        c["inp"] = DRIVE[ns.sub](ns, con, cur["wit"].t_open)
+        cur["checks"].append(c)
+        c["open"] = cur["id"]
+    if cur is not None:
+        _close_open(cur)
+    outside = []
+    for o in opens:
+        w = o["wit"]
+        pts = w.points()
+        o["anchor"] = anc = WA.anchor(pts, opens=w.opens, same_device=w.same_device())
+        if o["down"]:
+            # down from t_fail (None: no time known, so from the open): every check of this open
+            # not over by then is NOT-RUN
+            for c in o["checks"]:
+                if "inp" in c and (o["t_fail"] is None or c["inp"]["t_end"] >= o["t_fail"]):
+                    c["verdict"], c["why"] = "NOT-RUN", "witness down (open %d): %s" % (o["id"], o["down"])
+                    del c["inp"]
+        clock = ("pcan_anchor of open %d (offset %s s, slope %s ppm, spread p99 %s s)"
+                 % (o["id"], anc.get("offset_s"), anc.get("slope_ppm"), anc.get("spread_p99_s")))
+        for c in o["checks"]:
+            c["anchor"] = "open %d" % o["id"]
+        outside += judge_session(o["checks"], pts, anc, clock, o["id"])
+    for c in out:
+        if "inp" in c and "open" not in c:
+            # a train that never opened its witness (no ACK, so no stop to watch)
+            c.update(JUDGE[c["sub"]](c["ns"], c["inp"], [], None))
     driven = [c for c in out if "inp" in c]
     if driven:
         settle(max(0.0, driven[-1]["inp"]["t_end"] + RESOURCE_SETTLE_S - time.time()))
@@ -1565,7 +1674,9 @@ def run_session(checks, con, wit, settle=time.sleep, resource=resource_window, u
         c["args"] = vars(c.pop("ns"))
         if "inp" in c:
             c["drive"] = c.pop("inp")
-    return out, anc, outside
+    for o in opens:
+        o["checks"] = [c["spec"] for c in o["checks"]]
+    return out, opens, outside
 
 
 def main_session(a, ap, dev):
@@ -1581,32 +1692,43 @@ def main_session(a, ap, dev):
            "anchor_method": WA.METHOD, "wican_before": NO_WICAN if a.no_wican else wican_snap()}
     con = Console(dev["port"])
     con.start()
+    made = []
+
+    def open_witness():
+        # WitnessRefused, BenchNotHeld or a failed open raise here; run_session makes the check
+        # NOT-RUN with the reason
+        w = BW.PcanWitness()
+        made.append(w)
+        w.start()
+        return w
+
+    opens = []
     try:
         try:
-            wit = BW.PcanWitness()
-        except Exception as e:      # noqa: BLE001  WitnessRefused, BenchNotHeld, an open that failed
-            rec["verdict"], rec["why"] = "NOT-RUN", "witness not opened: %s: %s" % (type(e).__name__, e)
-            print(rec["verdict"], rec["why"])
-            return 0
-        rec["witness_describe"] = wit.describe()
-        wit.start()
-        time.sleep(1.0)
-        try:
-            rec["checks"], rec["anchor"], rec["frames_outside_checks"] = run_session(checks, con, wit)
+            rec["checks"], opens, rec["frames_outside_checks"] = run_session(checks, con, open_witness)
         finally:
-            rec["witness_describe"] = wit.describe()
-            rec["witness_frames"] = wit.frames
-            rec["witness_ids"] = wit.ids
-            rec["witness_err_total"] = len(wit.err)
-            rec["witness_other_err"] = [(round(d, 6), round(r, 4), k) for d, r, k in wit.other_err][:200]
-            rec["witness_points"] = [(round(d, 6), round(r, 6)) for d, r in wit.points()]
+            for w in made:
+                if not w.stop_flag.is_set():
+                    w.close()
+            rec["opens"] = []
+            for k, w in enumerate(made):
+                o = dict(opens[k]) if k < len(opens) else {"id": k}
+                o.pop("wit", None)
+                o.update(witness_describe=w.describe(), witness_frames=w.frames, witness_ids=w.ids,
+                         witness_err_total=len(w.err),
+                         witness_other_err=[(round(d, 6), round(r, 4), x) for d, r, x in w.other_err][:200],
+                         witness_points=[(round(d, 6), round(r, 6)) for d, r in w.points()])
+                rec["opens"].append(o)
         rec["verdicts"] = [(c["spec"], c.get("verdict")) for c in rec["checks"]]
         for spec, v in rec["verdicts"]:
             print("%-60s %s" % (spec, v))
-        an = rec["anchor"]
-        print("anchor: n %s, offset %s s, slope %s ppm, drift %s s, spread p50/p99/max %s/%s/%s s, void %s"
-              % (an["n"], an.get("offset_s"), an.get("slope_ppm"), an.get("drift_s"), an.get("spread_p50_s"),
-                 an.get("spread_p99_s"), an.get("spread_max_s"), an["void"]))
+        for o in rec["opens"]:
+            an = o.get("anchor") or {}
+            print("open %s (%s, checks %s, down %s): anchor n %s, offset %s s, slope %s ppm, drift %s s, "
+                  "spread p50/p99/max %s/%s/%s s, void %s"
+                  % (o["id"], o.get("kind"), o.get("checks"), o.get("down"), an.get("n"), an.get("offset_s"),
+                     an.get("slope_ppm"), an.get("drift_s"), an.get("spread_p50_s"), an.get("spread_p99_s"),
+                     an.get("spread_max_s"), an.get("void")))
     finally:
         try:
             if con.ser is not None:

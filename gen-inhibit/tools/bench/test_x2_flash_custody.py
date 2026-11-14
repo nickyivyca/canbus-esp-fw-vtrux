@@ -272,7 +272,7 @@ def app_bin(pn, elf):
 
 
 def x2img_fixture(rows=None, variant="jammer", pn=JAMMER_PN, pinnable=True, elf=GOOD, edit=None, tamper=None,
-                  app_pn=None):
+                  app_pn=None, pt=b"\xaa\x50" * 96):
     """A fresh X2IMG_FAKE holding one build as archive.py lays it out (manifest.jsonl, one row;
     builds/<app sha256[:16]>/). edit(row) changes the row before it is written; tamper(folder)
     changes the files after; app_pn puts another project_name in the app than the row says;
@@ -286,7 +286,7 @@ def x2img_fixture(rows=None, variant="jammer", pn=JAMMER_PN, pinnable=True, elf=
     os.makedirs(folder)
     files = []
     for off, name, data in (("0x0", "bootloader.bin", b"\xe9boot" * 50),
-                            ("0x8000", "partition-table.bin", b"\xaa\x50" * 96),
+                            ("0x8000", "partition-table.bin", pt),
                             ("0xe000", "ota_data_initial.bin", b"\xff" * 256),
                             ("0x10000", pn + ".bin", app)):
         with open(os.path.join(folder, name), "wb") as fh:
@@ -307,6 +307,126 @@ def x2img_fixture(rows=None, variant="jammer", pn=JAMMER_PN, pinnable=True, elf=
     if tamper:
         tamper(folder)
     return row
+
+
+JAMMER_PT = (pt_entry(1, 2, 0x9000, 0x5000, "nvs") + pt_entry(1, 0, 0xE000, 0x2000, "otadata")
+             + pt_entry(0, 0x10, 0x10000, 0x330000, "app0") + pt_entry(0, 0x11, 0x340000, 0x330000, "app1")
+             + pt_entry(1, 0x82, 0x670000, 0x180000, "spiffs") + b"\xff" * 32)   # the jammer's layout
+
+
+def ota_blob(entries=(), size=0x2000):
+    """An otadata partition: entries [(index, seq, state, bad_crc)], the rest erased."""
+    b = bytearray(b"\xff" * size)
+    for k, seq, state, bad in entries:
+        e = bytearray(b"\xff" * 32)
+        struct.pack_into("<I", e, 0, seq)
+        struct.pack_into("<I", e, 24, state)
+        struct.pack_into("<I", e, 28, zlib.crc32(bytes(e[0:4]), 0xFFFFFFFF) ^ (1 if bad else 0))
+        b[k * 0x1000:k * 0x1000 + 32] = e
+    return bytes(b)
+
+
+def otadata_cases():
+    """read-otadata (gen-inhibit reviewer, 2026-11-13): otadata_select picks the app as the
+    bootloader does, and sub_read_otadata reads only the otadata partition the row's table
+    names, PASSes only for the row's app offset, and records both entries."""
+    import argparse
+    import contextlib
+    import io
+    bad = []
+
+    def check(label, ok, got):
+        print("  %-4s %-48s %s" % ("ok" if ok else "FAIL", label, "" if ok else got))
+        if not ok:
+            bad.append(label)
+
+    parts = C.partitions(b"\xff" * C.PT_AT + JAMMER_PT)
+    U = 0xFFFFFFFF
+    for label, blob, want, state in (
+            ("blank: no factory -> the first OTA slot", ota_blob(), "app0", None),
+            ("seq 1 -> app0", ota_blob([(0, 1, U, False)]), "app0", U),
+            ("seq 2 -> app1", ota_blob([(0, 2, U, False)]), "app1", U),
+            ("seq 1 and seq 2 -> the higher, app1", ota_blob([(0, 1, 2, False), (1, 2, 2, False)]), "app1", 2),
+            ("seq 3 with a bad crc is skipped -> seq 1, app0", ota_blob([(0, 1, 2, False), (1, 3, 2, True)]), "app0", 2),
+            ("seq 4 in entry 1 -> app1", ota_blob([(1, 4, 0, False)]), "app1", 0),
+            ("seq 0xFFFFFFFF is erased, not valid -> app0", ota_blob([(1, U, 2, False)]), "app0", None)):
+        s = C.otadata_select(blob, parts)
+        check("select: %s" % label, (s["selected"] or {}).get("label") == want and s["selecting_state"] == state, s)
+    fparts = parts + [(0, 0x00, 0x700000, 0x10000, "factory")]
+    s = C.otadata_select(ota_blob(), fparts)
+    check("select: blank with a factory app -> factory", (s["selected"] or {}).get("label") == "factory", s)
+    e = C.otadata_entries(ota_blob([(0, 7, 3, False), (1, 9, 2, True)]))
+    check("entries: seq, state name, crc_ok and valid per entry",
+          e[0]["ota_seq"] == 7 and e[0]["state_name"] == "INVALID" and e[0]["valid"] and e[0]["crc_ok"]
+          and e[1]["ota_seq"] == 9 and not e[1]["crc_ok"] and not e[1]["valid"], e)
+
+    calls = []
+    plan = {}
+
+    def fake_esptool(port, *args):
+        calls.append(args)
+        if plan.get("rc", 0) == 0:
+            with open(args[-1], "wb") as fh:
+                fh.write(plan["blob"])
+        return plan.get("rc", 0), ["Read %d bytes" % len(plan.get("blob", b""))]
+
+    saved = C.esptool, C.X2IMG, C.RUNS
+    C.esptool, C.X2IMG, C.RUNS = fake_esptool, X2IMG_FAKE, os.path.join(WORK, "otadata_runs")
+    try:
+        row = x2img_fixture(pt=JAMMER_PT)
+        rid = row["folder"].split("/")[1]
+
+        def read(blob, rc=0):
+            del calls[:]
+            plan.clear()
+            plan.update(blob=blob, rc=rc)
+            rec = {"when": "20261113T000000"}
+            ns = argparse.Namespace(port="FAKE", row=rid, variant="jammer", dev_builder=None, build=None)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    C.sub_read_otadata(ns, rec)
+            except Exception as ex:   # a crash is reported, never passed
+                rec["crash"] = "%s: %s" % (type(ex).__name__, ex)
+            return rec
+
+        rec = read(ota_blob())
+        check("read: erased otadata -> PASS, equals the initial file, app0",
+              rec.get("verdict") == "PASS" and rec["otadata"]["equals_initial"] is True
+              and rec["selected"]["label"] == "app0", rec)
+        check("read: only the otadata partition, at the table's offset and size",
+              len(calls) == 1 and calls[0][:3] == ("read_flash", "0xe000", "0x2000"), calls)
+        check("read: the bytes are kept beside the record, hashed",
+              os.path.basename(calls[0][3]) == rec["otadata"]["file"] and len(rec["otadata"]["sha256"]) == 64, rec)
+        rec = read(ota_blob([(0, 1, U, False)]))
+        check("read: seq 1 (differs from initial) -> PASS, both entries recorded",
+              rec.get("verdict") == "PASS" and rec["otadata"]["equals_initial"] is False
+              and rec["entries"][0]["valid"] and not rec["entries"][1]["valid"], rec)
+        rec = read(ota_blob([(0, 2, U, False)]))
+        check("read: seq 2 selects app1 -> OTHER-SLOT", rec.get("verdict") == "OTHER-SLOT", rec)
+        rec = read(ota_blob([(0, 1, 3, False)]))
+        check("read: app0 by an INVALID entry -> OTHER-SLOT", rec.get("verdict") == "OTHER-SLOT", rec)
+        rec = read(ota_blob([(0, 1, 4, False)]))
+        check("read: app0 by an ABORTED entry -> OTHER-SLOT", rec.get("verdict") == "OTHER-SLOT", rec)
+        rec = read(ota_blob(), rc=2)
+        check("read: esptool failed -> ERROR", rec.get("verdict") == "ERROR", rec)
+        rec = read(ota_blob(size=0x1000))
+        check("read: a short read -> ERROR", rec.get("verdict") == "ERROR", rec)
+        x2img_fixture()   # the old, unparseable table
+        rec = read(ota_blob())
+        check("read: a row table with no otadata -> REFUSED, nothing read",
+              rec.get("verdict") == "REFUSED" and calls == [], (rec, calls))
+    finally:
+        C.esptool, C.X2IMG, C.RUNS = saved
+    for label, kw, want in (("no --row", {"row": None, "variant": "jammer"}, "needs --row"),
+                            ("--build", {"row": "a" * 16, "variant": "jammer", "build": "b" * 32}, "no --build"),
+                            ("good", {"row": "a" * 16, "variant": "jammer"}, None)):
+        ns = argparse.Namespace(sub="read-otadata", build=None, row=None, variant=None, dev_builder=None)
+        for k, v in kw.items():
+            setattr(ns, k, v)
+        why = C.build_args_why(ns)
+        check("args: read-otadata %s" % label, (why is None) if want is None else (why and want in why), why)
+    check("read-otadata runs esptool (its tool checks and port)", "read-otadata" in C.ESPTOOL_SUBS, C.ESPTOOL_SUBS)
+    return bad
 
 
 def row_cases():
@@ -802,6 +922,7 @@ def main():
         bad += check_dump_cases()
         bad += record_path_cases()
         bad += row_cases()
+        bad += otadata_cases()
         bad += record_name_cases()
         bad += esptool_main_cases()
         bad += import_refusals()

@@ -35,6 +35,13 @@ full read-back of its flash, never from a rebuild or from .pio.
   check-row      no board, no dump: flash-jammer --row's checks on a row
                  (--row, --variant, --dev-builder as there), nothing written;
                  PASS or REFUSED with the reason (2026-11-13).
+  read-otadata   board, no dump: esptool read_flash of the otadata partition only, at the
+                 offset and size the row's own partition table gives (--row, --variant,
+                 --dev-builder as check-row), kept beside the record (it holds no
+                 credentials); decodes both entries (ota_seq, state, crc) and the app they
+                 select as ESP-IDF's bootloader does. PASS when that is the row's app
+                 offset; OTHER-SLOT otherwise (gen-inhibit reviewer, 2026-11-13: T10's
+                 verify_flash found the board's otadata differing from ota_data_initial.bin).
 
 BUILD_LOOKUP COMES FROM THE INTERPOSER'S CLONE (2026-10-08). The SeaDrive copy
 in projects/vtrux/tools/interposer/ is retired; $INTERPOSER_CODE must point at
@@ -105,6 +112,7 @@ esptool and the CAN witness are separate steps and each is recorded.
   python3.13 ... flash-jammer --dump-record <same> --row <16 hex> --variant jammer [--dev-builder "<builder>"]
   python3.13 ... flash-jammer --no-dump --row <16 hex> --variant jammer [--dev-builder "<builder>"]
   python3.13 ... restore --dump-record runs/x2_flash_custody_dump_<stamp>.json
+  python3.13 ... read-otadata --row <16 hex> --variant jammer [--dev-builder "<builder>"]
 """
 import argparse
 import hashlib
@@ -126,7 +134,7 @@ RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 BACKUPS = gi_paths.data_dir("board-backups")
 JAMMER = gi_paths.data_dir("x2_jammer")
 X2IMG = gi_paths.x2_test_images("jammer")   # the ESP-IDF port's builds (--row, 2026-11-13)
-ESPTOOL_SUBS = ("dump", "flash-jammer", "restore")   # the subcommands that run esptool
+ESPTOOL_SUBS = ("dump", "flash-jammer", "restore", "read-otadata")   # the subcommands that run esptool
 _ET = {}    # {"argv", "version"}, checked in main before a board subcommand runs
 
 
@@ -197,6 +205,29 @@ def partitions(img):
     return out
 
 
+OTA_STATES = {0: "NEW", 1: "PENDING_VERIFY", 2: "VALID", 3: "INVALID", 4: "ABORTED",
+              0xFFFFFFFF: "UNDEFINED"}   # esp_ota_img_states_t
+
+
+def otadata_entries(blob):
+    """Both entries of an otadata partition's bytes (esp_ota_select_entry_t at 0 and 0x1000:
+    uint32 ota_seq, uint8 seq_label[20], uint32 ota_state, uint32 crc over ota_seq). An entry is
+    valid when ota_seq is not 0xFFFFFFFF and its crc matches."""
+    out = []
+    for k in range(2):
+        e = blob[k * 0x1000:k * 0x1000 + 32]
+        if len(e) < 32:
+            out.append({"entry": k, "valid": False, "why": "short: %d bytes" % len(e)})
+            continue
+        seq, state, crc = (struct.unpack_from("<I", e, at)[0] for at in (0, 24, 28))
+        crc_ok = zlib.crc32(e[0:4], 0xFFFFFFFF) == crc
+        out.append({"entry": k, "ota_seq": seq, "ota_state": state,
+                    "state_name": OTA_STATES.get(state, "unknown"), "crc": "0x%08x" % crc,
+                    "crc_ok": crc_ok, "valid": seq != 0xFFFFFFFF and crc_ok,
+                    "seq_label_hex": e[4:24].hex()})
+    return out
+
+
 def boot_slot(img, parts):
     """Which OTA slot otadata selects, or a reason it cannot be told."""
     ota = [p for p in parts if p[0] == 1 and p[1] == 0]
@@ -205,19 +236,39 @@ def boot_slot(img, parts):
     if not ota or not slots:
         return None, "no otadata or no OTA slots"
     base = ota[0][2]
-    seqs = []
-    for k in range(2):
-        e = img[base + k * 0x1000:base + k * 0x1000 + 32]
-        seq = struct.unpack_from("<I", e, 0)[0]
-        crc = struct.unpack_from("<I", e, 28)[0]
-        if seq == 0xFFFFFFFF:
-            continue
-        if zlib.crc32(e[0:4], 0xFFFFFFFF) != crc:
-            continue
-        seqs.append(seq)
+    seqs = [e["ota_seq"] for e in otadata_entries(img[base:base + 0x2000]) if e["valid"]]
     if not seqs:
         return None, "otadata empty or no valid entry (boots factory or ota_0)"
     return slots[(max(seqs) - 1) % len(slots)][4], "otadata seq %d" % max(seqs)
+
+
+def otadata_select(blob, parts):
+    """The app partition an otadata partition's bytes select under parts (the row's table), as
+    ESP-IDF's bootloader picks it: the valid entry with the highest ota_seq selects OTA slot
+    (ota_seq - 1) mod the number of OTA slots; with no valid entry, the factory app if the table
+    has one, else the first OTA slot. -> {entries, selected {label, offset}, selected_offset,
+    by, selecting_state}. The bootloader's rollback skip (INVALID, ABORTED) is not modelled:
+    the selecting entry's state is returned for the caller to judge."""
+    ents = otadata_entries(blob)
+    slots = sorted((p for p in parts if p[0] == 0 and 0x10 <= p[1] <= 0x1F), key=lambda p: p[1])
+    factory = [p for p in parts if p[0] == 0 and p[1] == 0]
+    valid = [e for e in ents if e["valid"]]
+    state = None
+    if valid and slots:
+        top = max(valid, key=lambda e: e["ota_seq"])
+        p = slots[(top["ota_seq"] - 1) % len(slots)]
+        state = top["ota_state"]
+        by = "entry %d, ota_seq %d (state %s): OTA slot %d of %d" % (
+            top["entry"], top["ota_seq"], top["state_name"], (top["ota_seq"] - 1) % len(slots), len(slots))
+    elif factory:
+        p, by = factory[0], "no valid entry: the factory app"
+    elif slots:
+        p, by = slots[0], "no valid entry and no factory app: the first OTA slot"
+    else:
+        return {"entries": ents, "selected": None, "selected_offset": None, "by": "no app partition",
+                "selecting_state": None}
+    return {"entries": ents, "selected": {"label": p[4], "offset": "0x%x" % p[2]}, "selected_offset": p[2],
+            "by": by, "selecting_state": state}
 
 
 def app_hashes(img, parts, workdir):
@@ -563,6 +614,64 @@ def sub_check_row(a, rec):
           % (row["variant"], row["folder"], row["project_name"], row["image_hash"][:16], row.get("pinnable")))
 
 
+def sub_read_otadata(a, rec):
+    """Which app the X2's otadata selects, for a row's build (gen-inhibit reviewer, 2026-11-13,
+    when verify_flash found the board's otadata differing from the row's ota_data_initial.bin).
+    Reads the otadata partition only, at the offset and size the row's own partition table
+    gives (it holds no credentials; never a whole-flash dump), keeps it beside the record,
+    decodes both entries and the slot they select (otadata_select). PASS when the selected app
+    is at the row's app_offset and the selecting entry, if any, is not INVALID or ABORTED;
+    OTHER-SLOT otherwise; ERROR when the read failed."""
+    try:
+        row, _folder, files = jsonl_row(a)
+    except (RowRefused, OSError) as e:
+        rec.update(verdict="REFUSED", why=str(e))
+        print("REFUSED: %s (nothing read)" % e)
+        return
+    by_off = dict(files)
+    if PT_AT not in by_off:
+        rec.update(verdict="REFUSED", why="the row has no partition table at 0x%x" % PT_AT)
+        print("REFUSED: %s" % rec["why"])
+        return
+    with open(by_off[PT_AT], "rb") as fh:
+        parts = partitions(b"\xff" * PT_AT + fh.read())
+    ota = [p for p in parts if p[0] == 1 and p[1] == 0]
+    if len(ota) != 1:
+        rec.update(verdict="REFUSED", why="the row's partition table has %d otadata partitions, not 1" % len(ota))
+        print("REFUSED: %s" % rec["why"])
+        return
+    off, size = ota[0][2], ota[0][3]
+    app_off = int(row["app_offset"], 16)
+    rec["row"] = {k: row.get(k) for k in ("folder", "variant", "project_name", "app_elf_sha256", "app_offset")}
+    rec["partitions"] = [{"type": t, "subtype": "0x%02x" % s, "offset": "0x%x" % o, "size": "0x%x" % z, "label": l}
+                         for t, s, o, z, l in parts]
+    os.makedirs(RUNS, exist_ok=True)
+    out = os.path.join(RUNS, "x2_otadata_%s_%s.bin" % (a.row, rec["when"]))
+    rc, tail = esptool(a.port, "read_flash", "0x%x" % off, "0x%x" % size, out)
+    rec["esptool"] = {"rc": rc, "tail": tail}
+    if rc != 0 or not os.path.exists(out) or os.path.getsize(out) != size:
+        rec.update(verdict="ERROR", why="read_flash rc %s, %s bytes, wanted %d" % (
+            rc, os.path.getsize(out) if os.path.exists(out) else "no", size))
+        print("ERROR: %s" % rec["why"])
+        return
+    with open(out, "rb") as fh:
+        blob = fh.read()
+    rec["otadata"] = {"offset": "0x%x" % off, "size": "0x%x" % size, "file": os.path.basename(out),
+                      "sha256": hashlib.sha256(blob).hexdigest()}
+    if off in by_off:
+        with open(by_off[off], "rb") as fh:
+            init = fh.read()
+        rec["otadata"]["initial_file"] = os.path.basename(by_off[off])
+        rec["otadata"]["equals_initial"] = blob[:len(init)] == init and blob[len(init):] == b"\xff" * (size - len(init))
+    sel = otadata_select(blob, parts)
+    rec.update(sel)
+    ok = sel["selected_offset"] == app_off and sel["selecting_state"] not in (3, 4)
+    rec["verdict"] = "PASS" if ok else "OTHER-SLOT"
+    rec["why"] = "selects %s (%s), the row's app at 0x%x%s" % (
+        (sel["selected"] or {}).get("label"), sel["by"], app_off, "" if ok else ": NOT it, or its entry is rejected")
+    print("%s: %s" % (rec["verdict"], rec["why"]))
+
+
 def dump_args_why(a):
     """None when the dump arguments fit the subcommand, else why not: flash-jammer takes
     exactly one of --dump-record and --no-dump (gen-inhibit reviewer, 2026-11-13: a
@@ -583,11 +692,11 @@ def build_args_why(a):
     subcommands take none of them (2026-11-13)."""
     given = [n for n, v in (("--build", a.build), ("--row", a.row), ("--variant", a.variant),
                             ("--dev-builder", a.dev_builder)) if v is not None]
-    if a.sub == "check-row":
+    if a.sub in ("check-row", "read-otadata"):
         if a.build is not None:
-            return "check-row takes no --build: it checks a manifest.jsonl row (--row)"
+            return "%s takes no --build: it reads a manifest.jsonl row (--row)" % a.sub
         if a.row is None or not a.variant:
-            return "check-row needs --row <16 hex> and --variant"
+            return "%s needs --row <16 hex> and --variant" % a.sub
         return None
     if a.sub != "flash-jammer":
         return "%s takes no %s" % (a.sub, ", ".join(given)) if given else None
@@ -602,7 +711,7 @@ def build_args_why(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("sub", choices=("dump", "flash-jammer", "restore", "check-dump", "check-row"))
+    ap.add_argument("sub", choices=("dump", "flash-jammer", "restore", "check-dump", "check-row", "read-otadata"))
     ap.add_argument("--expect-elf", default=None,
                     help="dump, check-dump (required): the app ELF sha256 prefix, 8 to 64 hex "
                          "digits, that a slot of the dump must carry; no default since 2026-11-12")
@@ -648,7 +757,8 @@ def main():
             a.port = rec["port"] = dev["port"]
             rec["serial_device"] = dev
         {"dump": sub_dump, "flash-jammer": sub_flash_jammer,
-         "restore": sub_restore, "check-dump": sub_check_dump, "check-row": sub_check_row}[a.sub](a, rec)
+         "restore": sub_restore, "check-dump": sub_check_dump, "check-row": sub_check_row,
+         "read-otadata": sub_read_otadata}[a.sub](a, rec)
     finally:
         write_rec(a.sub, rec)
     return 0 if rec.get("verdict") in ("PASS", "FLASHED", "VERIFIED") else 1   # check-row's PASS too

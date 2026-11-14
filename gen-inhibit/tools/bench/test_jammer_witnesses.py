@@ -252,23 +252,37 @@ def pcan_cases():
             check("pcan", "refused: %s, the bus shut" % label, got is not None and want in got and bus.shut, got)
     # counting
     sysfs = pcan_sysfs("count")
-    msgs = [Msg(10.0, 0x088 | 0x200, True), Msg(10.5, 0x004, True), Msg(11.0, 0x200, True),
+    msgs = [Msg(10.0, 0x088 | 0x200, True), Msg(10.5, 0x200, True), Msg(11.0, 0x200, True),
             Msg(11.5, 0x7A8), Msg(12.0, 0x088, True)]
     bus = FakePcanBus(msgs)
     w = BW.PcanWitness(opener=lambda **kw: bus, sysfs=sysfs)
     w.start()
     time.sleep(0.1)
     w.close()
-    check("pcan", "bus-error frames counted, state/counter frames apart, data by id",
+    check("pcan", "bus-error frames counted, counter frames apart, data by id",
           [d for d, _r in w.points()] == [10.0, 12.0] and len(w.other_err) == 2 and w.ids == {"0x7A8": 1},
           (w.points(), w.other_err, w.ids))
     check("pcan", "closed cleanly: not down, same device", w.down() is None and w.same_device(), w.down())
+    # a controller-state frame (warning/passive 0x004, bus-off 0x040) is WitnessDown from its
+    # receipt (gen-inhibit reviewer, 2026-11-13: the PCAN went deaf at error passive)
+    for label, aid in (("warning/passive 0x004", 0x004), ("bus-off 0x040", 0x040), ("with PROT 0x00C", 0x00C)):
+        sysfs = pcan_sysfs("state_%x" % aid)
+        t0 = time.time()
+        w = BW.PcanWitness(opener=lambda **kw: FakePcanBus([Msg(10.0, 0x088, True), Msg(10.5, aid, True),
+                                                            Msg(11.0, 0x088, True)]), sysfs=sysfs)
+        w.start()
+        time.sleep(0.1)
+        w.close()
+        check("pcan", "a state frame (%s) -> down from its receipt, frames still recorded" % label,
+              (w.down() or "").startswith("witness down at") and "controller-state" in (w.down() or "")
+              and w.t_fail is not None and w.t_fail >= t0 and len(w.err) == (3 if aid & 0x008 else 2),
+              (w.down(), w.t_fail, len(w.err)))
     sysfs = pcan_sysfs("dying")
     w = BW.PcanWitness(opener=lambda **kw: FakePcanBus([Msg(1.0, 0x088, True)], raise_after=True), sysfs=sysfs)
     w.start()
     w.join(1.0)
-    check("pcan", "a read that raised: down() says so", (w.down() or "").startswith("witness read failed"),
-          w.down())
+    check("pcan", "a read that raised: down() says so", (w.down() or "").startswith("witness down at")
+          and "RuntimeError" in (w.down() or ""), w.down())
     sysfs = pcan_sysfs("replug")
     w = BW.PcanWitness(opener=lambda **kw: FakePcanBus(), sysfs=sysfs)
     w.start()
@@ -444,13 +458,38 @@ def parse_cases():
             ("a check inside a check", ["pulses --check noduration"], "no --check"),
             ("a check's own refusal", ["timeout --expect-name x"], "go only with id"),
             ("not arguments", ["pulses --bogus"], "not arguments"),
-            ("no checks", [], "at least one")):
+            ("no checks", [], "at least one"),
+            # a train's open (2026-11-13): no more than 90 pulses in the 0.4 s lead
+            ("a train at p 4000 (100 pulses in the lead)", ["timeout --p 4000 --ms 2000"], "over 90")):
         try:
             X.parse_checks(ap, specs, True)
             got = None
         except ValueError as e:
             got = str(e)
         check("session", "refused: %s" % label, got is not None and want in got, got)
+    check("session", "the train's lead is fixed at no more than 0.4 s, 90 pulses",
+          X.LEAD_S <= 0.4 and X.LEAD_MAX_S <= 0.4 and X.LEAD_PULSES_MAX <= 90, (X.LEAD_S, X.LEAD_MAX_S))
+    try:
+        X.parse_checks(ap, ["timeout --p 4445 --ms 2000"], True)
+        got = None
+    except ValueError as e:
+        got = str(e)
+    check("session", "control: a train at p 4445 (89.99 pulses in the lead) is taken", got is None, got)
+    saved = X.LEAD_S
+    X.LEAD_S = 0.5
+    try:
+        try:
+            X.parse_checks(ap, ["timeout --p 20000 --ms 2000"], True)
+            got = None
+        except ValueError as e:
+            got = str(e)
+    finally:
+        X.LEAD_S = saved
+    check("session", "refused: a lead over the 0.4 s bound (even at 25 pulses)", got is not None and "over the bound" in got,
+          got)
+    check("session", "train_open_at: the lead before the stop from the host's send; the send for a short train",
+          abs(X.train_open_at(100.0, 2000) - 101.6) < 1e-9 and X.train_open_at(100.0, 300) == 100.0
+          and abs(X.train_open_at(100.0, 30000) - 129.6) < 1e-9, X.train_open_at(100.0, 2000))
 
     class A:
         def __init__(self, **kw):
@@ -528,44 +567,71 @@ class SessionCon:
         self.add(time.time() + 0.4, "JAMMER mcp2515 canstat=0x80 canctrl=0x87 config_mode=yes")
 
 
-class SessionPcan:
-    """A PCAN witness: device stamps on an uptime base with drift, received after a delivery lag."""
+E0 = time.time()     # the fake device clock's epoch origin, the same for every open
 
-    def __init__(self, con, drift_ppm=-6.0, back_at=None, down_after=None, down_at_end=False, slow_every=0,
-                 extra_lag=0.0, deaf_last=False):
-        self.con, self.drift, self.back_at, self.slow_every = con, drift_ppm, back_at, slow_every
-        self.extra_lag, self.deaf_last = extra_lag, deaf_last
-        self.t_open = time.time() - 100.0
-        self.opens, self.closed, self.calls = 1, False, 0
-        self.down_after, self.down_at_end = down_after, down_at_end
+
+class SessionPcan:
+    """One PCAN open (2026-11-13: a fresh one per train): device stamps on an uptime base with
+    drift, received after a delivery lag, of the frames on the wire while it is open. Like the
+    bench's PCAN in normal mode, it reports a controller-state frame at its warn_at-th bus error
+    of the open (error warning; session 1 at e61f4030: ~96) and nothing after its passive_at-th
+    (error passive, ~128); state_frames False: deaf at passive_at without saying so. dev_step: a
+    device clock that restarts at each open, so one open's anchor misplaces another's frames."""
+
+    def __init__(self, con, idx=0, drift_ppm=-6.0, back_at=None, down_after=None, no_time=False,
+                 slow_every=0, extra_lag=0.0, deaf_last=False, dev_step=0.0, warn_at=96, passive_at=128,
+                 state_frames=True, opens=1):
+        self.con, self.idx, self.drift, self.back_at, self.slow_every = con, idx, drift_ppm, back_at, slow_every
+        self.extra_lag, self.deaf_last, self.dev_step = extra_lag, deaf_last, dev_step
+        self.warn_at, self.passive_at, self.state_frames = warn_at, passive_at, state_frames
+        self.t_open, self.t_close = time.time(), None
+        self.opens, self.calls = opens, 0
+        self.down_after, self.no_time = down_after, no_time
+        self.failed = None
+
+    def _seen(self, upto):
+        """(wire, rx) of the frames this open received up to `upto`, FIFO receipts, in wire order;
+        the device stops reporting after passive_at."""
+        out, last = [], 0.0
+        wire = sorted(w for w in self.con.wire if w[0] >= self.t_open)
+        for k, (w, rx) in enumerate(wire):
+            if rx is None:
+                slow = 0.3 if self.slow_every and k % self.slow_every == 0 else 0.0
+                rx = last = max(last, w + lag(k) + slow + self.extra_lag)   # one FIFO queue, in wire order
+            if rx <= upto:
+                out.append((w, rx))
+        return out[:self.passive_at]
 
     def down(self):
         self.calls += 1
-        if self.down_after is not None and self.calls > self.down_after:
-            return "witness read failed at 1.000: RuntimeError: planted"
-        if self.down_at_end and self.closed is False and self.calls > 4:
-            return "witness read failed at 2.000: RuntimeError: planted at the end"
-        return None
+        now = time.time() if self.t_close is None else self.t_close
+        if self.failed is None and self.down_after is not None and self.calls > self.down_after:
+            self.failed = (None if self.no_time else now, "RuntimeError: planted")
+        if self.failed is None and self.state_frames:
+            seen = self._seen(now)
+            if len(seen) >= self.warn_at:
+                self.failed = (seen[self.warn_at - 1][1], "controller-state frame 0x004 data 0008")
+        return None if self.failed is None else "witness down at %s: %s" % self.failed
+
+    @property
+    def t_fail(self):
+        return self.failed[0] if self.failed else None
 
     def close(self):
-        self.closed = True
+        self.t_close = time.time()
 
     def same_device(self):
         return True
 
     def points(self):
-        e0 = self.t_open
-        out, last = [], 0.0
-        wire = sorted(self.con.wire)
+        out = []
+        seen = self._seen(self.t_close if self.t_close is not None else time.time())
         if self.deaf_last:
-            wire = wire[:-1]
-        for k, (w, rx) in enumerate(wire):
-            d = UPTIME + (w - e0) * (1.0 + self.drift * 1e-6)
+            seen = seen[:-1]
+        for k, (w, rx) in enumerate(seen):
+            d = UPTIME + self.idx * self.dev_step + (w - E0) * (1.0 + self.drift * 1e-6)
             if self.back_at is not None and k >= self.back_at:
                 d -= 4000.0
-            if rx is None:
-                slow = 0.3 if self.slow_every and k % self.slow_every == 0 else 0.0
-                rx = last = max(last, w + lag(k) + slow + self.extra_lag)   # one FIFO queue, in wire order
             out.append((d, rx))
         return sorted(out, key=lambda p: p[1])
 
@@ -583,7 +649,9 @@ def fake_journal(lines_at=(), rc=0):
     return run
 
 
-def fake_session(specs, con=None, wit_kw=None, journal=None):
+def fake_session(specs, con=None, wit_kw=None, journal=None, open_kw=None):
+    """run_session on a fake clock, SessionCon and one SessionPcan per open: wit_kw for every
+    open, open_kw {open index: kw} for one. -> (checks, opens, outside, windows, con)."""
     ap, checks = session_args(specs)
     con = con or SessionCon()
     clock, lk = [time.time()], threading.Lock()
@@ -595,32 +663,55 @@ def fake_session(specs, con=None, wit_kw=None, journal=None):
             clock[0] += s
         real_sleep(0.0002)
     X.time.sleep, X.time.time = fsleep, lambda: clock[0]
-    windows = []
+    windows, made = [], []
+
+    def opener():
+        kw = dict(wit_kw or {})
+        kw.update((open_kw or {}).get(len(made), {}))
+        made.append(SessionPcan(con, len(made), **kw))
+        return made[-1]
     try:
-        wit = SessionPcan(con, **(wit_kw or {}))
         jr = journal or fake_journal()
-        out, anc, outside = X.run_session(checks, con, wit, settle=lambda s: None,
-                                          resource=lambda a, b: windows.append((a, b)) or {"window": [a, b]},
-                                          usb=lambda a, b: X.usb_record(a, b, run=jr))
+        out, opens, outside = X.run_session(checks, con, opener, settle=lambda s: None,
+                                            resource=lambda a, b: windows.append((a, b)) or {"window": [a, b]},
+                                            usb=lambda a, b: X.usb_record(a, b, run=jr))
     finally:
         X.time.sleep, X.time.time = saved
-    return out, anc, outside, windows, con
+    return out, opens, outside, windows, con
 
 
-# The timeout before two pulse checks: its judge counts every frame after the deadline, so a
-# check judged on frames outside its own span would FAIL there.
-SPECS = ["boot-silence --resets 2", "pulses --n 1", "timeout --p 5000 --ms 2000 --control-ms 1000",
-         "pulses --n 10 --interval-ms 1000", "pulses --n 9 --interval-ms 1100", "noduration"]
+# Opens (2026-11-13): 0 shared (boot silence, pulses 10, pulses 1: 14 frames), 1 the train's own
+# (opened 0.4 s before its stop: ~80 frames and its closing pulse), 2 shared (pulses 9, no
+# duration: 11 frames). The train before two pulse checks: its judge counts every frame after
+# the deadline, so a check judged on frames outside its own span would FAIL there.
+SPECS = ["boot-silence --resets 2", "pulses --n 10 --interval-ms 1000", "pulses --n 1",
+         "timeout --p 5000 --ms 2000 --control-ms 1000", "pulses --n 9 --interval-ms 1100", "noduration"]
+TM = 3      # the timeout's index
 
 
 def session_cases():
-    out, anc, outside, windows, con = fake_session(SPECS)
+    out, opens, outside, windows, con = fake_session(SPECS)
     v = [c.get("verdict") for c in out]
     check("session", "six checks on the PCAN: all PASS", v == ["PASS"] * 6, [(c["spec"], c.get("verdict"), c.get("why"))
                                                                          for c in out])
-    check("session", "the anchor holds (drift -6 ppm, lag 0.5-2.9 ms)", anc["void"] is None and anc["n"] > 300,
-          (anc["void"], anc["n"], anc.get("spread_p99_s")))
-    tm = out[2]
+    check("session", "three opens: shared, the train's own, shared",
+          [o["kind"] for o in opens] == ["shared", "train", "shared"] and [c.get("open") for c in out] == [0, 0, 0, 1, 2, 2]
+          and opens[1]["checks"] == [SPECS[TM]], ([o["kind"] for o in opens], [c.get("open") for c in out]))
+    check("session", "each check names its open's anchor", all(c.get("anchor") == "open %d" % c["open"] for c in out),
+          [c.get("anchor") for c in out])
+    check("session", "every open's anchor holds, each on its own frames (14, ~80, 11)",
+          all(o["anchor"]["void"] is None for o in opens) and opens[0]["anchor"]["n"] == 14
+          and 70 <= opens[1]["anchor"]["n"] <= 90 and opens[2]["anchor"]["n"] == 11,
+          [(o["anchor"]["void"], o["anchor"]["n"]) for o in opens])
+    tm = out[TM]
+    d = tm.get("drive") or {}
+    check("session", "the train's open: 0.4 s before its stop, from the host's send",
+          abs(d.get("open_at", 0) - (d.get("t_send", 0) + 1.6)) < 1e-6 and abs(opens[1]["t_open"] - d.get("open_at", 0)) < 0.02,
+          (d.get("open_at"), d.get("t_send"), opens[1]["t_open"]))
+    check("session", "the train judged on its end: start not observed, frames up to the deadline",
+          tm.get("judge", {}).get("start_observed") is False and tm["judge"]["verdict"] == "PASS"
+          and tm["judge"]["last_in_rel_deadline_s"] is not None and tm["judge"]["last_in_rel_deadline_s"] > -0.05,
+          tm.get("judge"))
     check("session", "timeout's control (1 s against a 2 s train) FAILs",
           tm.get("negative_control", {}).get("ok") is True
           and tm["negative_control"]["judge"]["verdict"] == "FAIL", tm.get("negative_control"))
@@ -632,76 +723,125 @@ def session_cases():
                                                            for c in out[1:5] for b in c["bracket"]),
           [c.get("bracket") for c in out[1:2]])
     check("session", "pulses 10 @ 1000: ten groups of one",
-          out[3]["per_pulse"]["exactly_one_each"] and out[3]["per_pulse"]["groups"] == 10, out[3].get("per_pulse"))
+          out[1]["per_pulse"]["exactly_one_each"] and out[1]["per_pulse"]["groups"] == 10, out[1].get("per_pulse"))
     check("session", "boot silence: closing pulse counted once, resets silent",
           out[0]["control"]["witness_err_frames"] == 1 and all(r["witness_err_frames"] == 0 for r in out[0]["resets"]),
           out[0].get("control"))
     check("session", "no frame outside the checks", outside == [], outside[:5])
     check("session", "the timed checks' args are in the record, not a Namespace",
           all(isinstance(c["args"], dict) for c in out), "")
-    # a stale frame inside the 2nd PULSES command's window, stamped 0.5 s before its send
-    out, anc, _o, _w, _c = fake_session(SPECS, con=SessionCon(stale_at=(2, 0.5)))
+    # a stale frame inside the 2nd PULSES command's window (pulses 10), stamped 0.5 s before its
+    # send: in a shared open of 15 frames its p99 spread is its maximum, so the open's anchor VOIDs
+    # (the bracket alone is tested in anchor_cases); the other opens stand
+    out, _op, _o, _w, _c = fake_session(SPECS, con=SessionCon(stale_at=(2, 0.5)))
     v = [c.get("verdict") for c in out]
-    check("session", "a stale frame inside a command's window -> that check VOID by the bracket",
-          str(v[1]).startswith("VOID") and "bracket" in v[1] and v[0] == "PASS" and v[2] == "PASS", v)
+    check("session", "a stale frame inside a command's window -> its open's checks VOID, the other opens PASS",
+          all(str(x).startswith("VOID") for x in v[:TM]) and v[TM:] == ["PASS"] * 3, v)
     check("session", "the USB record read once, over the whole session, nothing in it",
           all(c.get("usb", {}).get("lines") == [] for c in out), [c.get("usb") for c in out][:1])
     # the USB record (2026-11-13): a made-up -71 line on the 1-3.2 hub in the timeout's window
-    t_to = out[2]["drive"]["t_begin"] - out[0]["drive"]["t_begin"] + 3.0
-    out2, _a, _o, _w, _c = fake_session(SPECS, journal=fake_journal(
+    t_to = out[TM]["drive"]["t_begin"] - out[0]["drive"]["t_begin"] + 3.0
+    out2, _op, _o, _w, _c = fake_session(SPECS, journal=fake_journal(
         [(t_to, "usb 1-3.2.3: can't set config #1, error -71")]))
     v = [c.get("verdict") for c in out2]
     check("session", "can-fail: a -71 line on 1-3.2.3 in a check's window -> that check VOID, kept",
-          str(v[2]).startswith("VOID: USB") and "error -71" in (out2[2].get("usb", {}).get("lines") or [""])[0]
-          and v[:2] == ["PASS", "PASS"] and v[3:] == ["PASS"] * 3, v)
-    out2, _a, _o, _w, _c = fake_session(SPECS, journal=fake_journal(rc=1))
+          str(v[TM]).startswith("VOID: USB") and "error -71" in (out2[TM].get("usb", {}).get("lines") or [""])[0]
+          and v[:TM] == ["PASS"] * TM and v[TM + 1:] == ["PASS"] * 2, v)
+    out2, _op, _o, _w, _c = fake_session(SPECS, journal=fake_journal(rc=1))
     check("session", "the kernel log unreadable -> every check VOID",
           all(str(c.get("verdict")).startswith("VOID: USB") for c in out2), [c.get("verdict") for c in out2][:2])
     # the bracket widened (reviewer, 2026-11-13): every delivery 0.2 s slower than the DONE line,
-    # so every frame is received after its DONE; the anchor holds (a constant lag) and maps every
+    # so every frame is received after its DONE; each anchor holds (a constant lag) and maps every
     # frame 0.2 s late, past its DONE's receipt
-    out2, anc2, _o, _w, _c = fake_session(SPECS, wit_kw={"extra_lag": 0.2})
+    out2, op2, _o, _w, _c = fake_session(SPECS, wit_kw={"extra_lag": 0.2})
     v = [c.get("verdict") for c in out2]
-    # (by frames outside: the window before the widening saw no frame at all here, and only the
-    # empty-command rule would have VOIDed it)
-    check("session", "deliveries 0.2 s slower than DONE: the anchor holds, every check VOID, frames outside",
-          anc2["void"] is None and all(str(x).startswith("VOID: bracket") and "outside" in str(x) for x in v),
-          (anc2["void"], v))
+    check("session", "deliveries 0.2 s slower than DONE: the anchors hold, every check VOID, frames outside",
+          all(o["anchor"]["void"] is None for o in op2)
+          and all(str(x).startswith("VOID: bracket") and "outside" in str(x) for x in v),
+          ([o["anchor"]["void"] for o in op2], v))
     # a real frame on the wire 0.5 s after the pulses' DONE: a FAIL, and it stays a FAIL
-    out2, _a, _o, _w, _c = fake_session(SPECS, con=SessionCon(after_done=(2, 0.5)))
+    out2, _op, _o, _w, _c = fake_session(SPECS, con=SessionCon(after_done=(2, 0.5)))
     v = [c.get("verdict") for c in out2]
     check("session", "a real frame after DONE: FAIL stays FAIL, the breach kept in the record",
           v[1] == "FAIL" and "bracket" in out2[1].get("bracket_breach", "") and v[0] == "PASS" and v[2] == "PASS",
           (v, out2[1].get("bracket_breach")))
-    # the witness misses the last command's only frame (noduration's closing pulse)
-    out2, _a, _o, _w, _c = fake_session(SPECS, wit_kw={"deaf_last": True})
+    # the last open misses its last command's only frame (noduration's closing pulse)
+    out2, _op, _o, _w, _c = fake_session(SPECS, open_kw={2: {"deaf_last": True}})
     v = [c.get("verdict") for c in out2]
     check("session", "a command with a DONE and no frame -> that check VOID",
           str(v[5]).startswith("VOID: bracket") and "no frame" in v[5] and v[:5] == ["PASS"] * 5, v)
-    # every 20th frame delivered 0.3 s late, and those behind it in the queue: the anchor VOIDs
+    # every 20th frame delivered 0.3 s late, and those behind it in the queue: each anchor VOIDs
     # (spread or drift) with an offset, so nothing but the VOID keeps the checks from a judgement
-    out, anc, _o, _w, _c = fake_session(SPECS, wit_kw={"slow_every": 20})
-    check("session", "slow deliveries -> the anchor VOID (with an offset), every check VOID",
-          anc["offset_s"] is not None and anc["void"]
-          and all(str(c.get("verdict")).startswith("VOID: session anchor: ") for c in out),
-          (anc["void"], [c.get("verdict") for c in out][:2]))
-    # the device clock went back
-    out, anc, _o, _w, _c = fake_session(SPECS, wit_kw={"back_at": 200})
+    out, op, _o, _w, _c = fake_session(SPECS, wit_kw={"slow_every": 20})
+    check("session", "slow deliveries -> every anchor VOID (with an offset), every check VOID",
+          all(o["anchor"]["offset_s"] is not None and o["anchor"]["void"] for o in op)
+          and all(str(c.get("verdict")).startswith("VOID: anchor of open %d: " % c["open"]) for c in out),
+          ([o["anchor"]["void"] for o in op], [c.get("verdict") for c in out][:2]))
+    # the device clock went back, in every open
+    out, _op, _o, _w, _c = fake_session(SPECS, wit_kw={"back_at": 5})
     check("session", "the device clock went back -> every check VOID (REFUSED)",
-          all(str(c.get("verdict")).startswith("VOID: session anchor: REFUSED") for c in out),
+          all(str(c.get("verdict")).startswith("VOID: anchor of open %d: REFUSED" % c["open"]) for c in out),
           [c.get("verdict") for c in out][:2])
-    # a session with too few frames (boot silence only: one closing pulse)
-    out, anc, _o, _w, _c = fake_session(["boot-silence --resets 1"])
+    # an open with too few frames (boot silence only: one closing pulse)
+    out, _op, _o, _w, _c = fake_session(["boot-silence --resets 1"])
     check("session", "too few frames to anchor -> VOID, not PASS", str(out[0].get("verdict")).startswith("VOID"),
           out[0].get("verdict"))
-    # witness down before the 3rd check
-    out, anc, _o, _w, _c = fake_session(SPECS, wit_kw={"down_after": 2})
+    # a planted read failure in every open from its 3rd down() call: down from that moment, so in
+    # open 0 boot silence (over before it) is judged, pulses 10 (over at that very moment) and
+    # pulses 1 are NOT-RUN; the train's open is asked once (at its close) and holds; open 2 goes
+    # down at its close: pulses 9 was over before, no duration ends at that moment
+    out, _op, _o, _w, _c = fake_session(SPECS, wit_kw={"down_after": 2})
     v = [c.get("verdict") for c in out]
-    check("session", "witness down before a check -> NOT-RUN for every check",
-          all(x == "NOT-RUN" for x in v), v)
-    out, anc, _o, _w, _c = fake_session(SPECS, wit_kw={"down_at_end": True, "down_after": None})
+    check("session", "witness down in an open -> NOT-RUN from that moment, other opens judged",
+          v == ["PASS", "NOT-RUN", "NOT-RUN", "PASS", "PASS", "NOT-RUN"], v)
+    out, _op, _o, _w, _c = fake_session(SPECS, open_kw={0: {"down_after": 3, "no_time": True}})
     v = [c.get("verdict") for c in out]
-    check("session", "witness down at the end -> NOT-RUN for every driven check", all(x == "NOT-RUN" for x in v), v)
+    check("session", "an open down with no time known -> every check of that open NOT-RUN, the rest judged",
+          v == ["NOT-RUN"] * 3 + ["PASS"] * 3, v)
+    # ---- the train's own open (gen-inhibit reviewer, 2026-11-13)
+    # judge_stop: watched from 1 s before a 2 s train's deadline, frames to the deadline, quiet after
+    ts = [10.0, 10.5, 10.99]
+    j1 = X.judge_stop(ts, 9.0, 11.0, 10.0, 20.0)
+    j2 = X.judge_stop(ts, 9.0, 11.0, 10.0, 20.0, start_observed=False)
+    j3 = X.judge_stop(ts + [11.5], 9.0, 11.0, 10.0, 20.0, start_observed=False)
+    j4 = X.judge_stop(ts, 9.0, 11.0, 10.0, 15.0, start_observed=False)
+    check("session", "judge_stop: the start unwatched -> INCONCLUSIVE when it is judged, PASS on the end alone",
+          j1["verdict"] == "INCONCLUSIVE" and j2["verdict"] == "PASS" and j2["start_observed"] is False,
+          (j1, j2))
+    check("session", "judge_stop on the end alone: a frame after the deadline FAILs, a short watch is INCONCLUSIVE",
+          j3["verdict"] == "FAIL" and j4["verdict"] == "INCONCLUSIVE", (j3, j4))
+    # a state frame in the train's open (warning at its 30th bus error): WitnessDown, NOT-RUN
+    out, _op, _o, _w, _c = fake_session(SPECS, open_kw={1: {"warn_at": 30}})
+    v = [c.get("verdict") for c in out]
+    check("session", "a state frame mid-train -> the train NOT-RUN, the rest judged",
+          v[TM] == "NOT-RUN" and "controller-state" in (out[TM].get("why") or "")
+          and v[:TM] + v[TM + 1:] == ["PASS"] * 5, (v, out[TM].get("why")))
+    # the witness opened at the train's start must not PASS: the PCAN reports warning at ~96
+    # pulses (a state frame: NOT-RUN), or goes deaf at ~128 without one (the closing pulse)
+    saved = X.train_open_at
+    X.train_open_at = lambda t_send, eff_ms: t_send
+    try:
+        out, _op, _o, _w, _c = fake_session(SPECS)
+        v1 = [c.get("verdict") for c in out]
+        out, _op, _o, _w, _c = fake_session(SPECS, open_kw={1: {"state_frames": False}})
+        v2 = [c.get("verdict") for c in out]
+    finally:
+        X.train_open_at = saved
+    check("session", "can-fail: the train's open at its start, with the state frame -> NOT-RUN",
+          v1[TM] == "NOT-RUN" and v1[:TM] + v1[TM + 1:] == ["PASS"] * 5, v1)
+    check("session", "can-fail: the train's open at its start, deaf with no state frame -> not PASS",
+          v2[TM] != "PASS" and v2[:TM] + v2[TM + 1:] == ["PASS"] * 5, v2)
+    # a device clock that restarts at each open: one anchor per open places each open's frames;
+    # judging a check on another open's anchor would misplace them by 500 s
+    out, op, _o, _w, _c = fake_session(SPECS, wit_kw={"dev_step": 500.0})
+    v = [c.get("verdict") for c in out]
+    check("session", "device clocks 500 s apart per open: each check on its own open's anchor, all PASS",
+          v == ["PASS"] * 6 and abs((op[0]["anchor"]["offset_s"] - op[1]["anchor"]["offset_s"]) - 500.0) < 0.01, v)
+    # a second open within one anchor still refuses
+    out, _op, _o, _w, _c = fake_session(SPECS, open_kw={1: {"opens": 2}})
+    v = [c.get("verdict") for c in out]
+    check("session", "a reopened channel within one open's anchor -> that open's check VOID (REFUSED)",
+          str(v[TM]).startswith("VOID: anchor of open 1: REFUSED") and v[:TM] + v[TM + 1:] == ["PASS"] * 5, v)
 
 
 def usb_cases():
