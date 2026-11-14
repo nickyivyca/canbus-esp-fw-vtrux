@@ -17,6 +17,13 @@ Since 2026-11-13 (later) also read-otadata: the crc, an erased seq, the highest 
 index, the factory fallback, the selecting state and ABORTED, the offset compared, the read's
 extent, size and rc, and the esptool checks.
 
+Since 2026-11-13 (later still) also verify-row: the esptool checks and its row arguments, a
+refused row going on, otadata judged by verify_flash, the app not judged, a FAILED or another
+version's line read as OK, a file with no result line or esptool's exit not matching its lines
+let through, the whole output not kept, otadata not read, its verdict ignored or not required
+to PASS, no run, run's exit ignored, run before the otadata read, a FAIL reading ERROR, and the
+otadata table check dropped.
+
 Needs REVERSE_IT_DIR and INTERPOSER_CODE, as the test does. Each mutant is a copy of
 x2_flash_custody.py with one edit, in the worktree's scratch/, imported by the test
 through CUSTODY_DIR. A few seconds each. Gen-inhibit tester, 2026-10-23.
@@ -161,8 +168,49 @@ MUTANTS = [
      "    if rc != 0 or not os.path.exists(out) or os.path.getsize(out) != size:\n",
      "    if not os.path.exists(out) or os.path.getsize(out) != size:\n"),
     ("otadata: read-otadata without the esptool checks",
-     'ESPTOOL_SUBS = ("dump", "flash-jammer", "restore", "read-otadata")',
-     'ESPTOOL_SUBS = ("dump", "flash-jammer", "restore")'),
+     'ESPTOOL_SUBS = ("dump", "flash-jammer", "restore", "read-otadata", "verify-row")',
+     'ESPTOOL_SUBS = ("dump", "flash-jammer", "restore", "verify-row")'),
+    # verify-row (gen-inhibit reviewer, 2026-11-13: T10's identity with committed harness)
+    ("verify-row: without the esptool checks",
+     'ESPTOOL_SUBS = ("dump", "flash-jammer", "restore", "read-otadata", "verify-row")',
+     'ESPTOOL_SUBS = ("dump", "flash-jammer", "restore", "read-otadata")'),
+    ("verify-row: its row arguments not taken", '    if a.sub in ("check-row", "read-otadata", "verify-row"):\n',
+     '    if a.sub in ("check-row", "read-otadata"):\n'),
+    ("verify-row: a refused row goes on to the board",
+     '        print("REFUSED: %s (nothing run)" % e)\n        return\n    with open(dict(files)[PT_AT]',
+     '        print("REFUSED: %s (nothing run)" % e)\n    with open(dict(files)[PT_AT]'),
+    ("verify-row: otadata judged too", "    judged = [(o, p) for o, p in files if o != ota_off]\n",
+     "    judged = list(files)\n"),
+    ("verify-row: the app not judged", "    judged = [(o, p) for o, p in files if o != ota_off]\n",
+     '    judged = [(o, p) for o, p in files if o not in (ota_off, int(row["app_offset"], 16))]\n'),
+    ("verify-row: a FAILED line read as OK", '"OK" if nxt == GE.VERIFY_OK else "FAILED" if nxt == VERIFY_FAILED else None',
+     '"OK" if nxt in (GE.VERIFY_OK, VERIFY_FAILED) else None'),
+    ("verify-row: any result line read as OK", '"OK" if nxt == GE.VERIFY_OK else',
+     '"OK" if nxt.startswith("-- verify OK") else'),
+    ("verify-row: a file with no result line not refused", "    if None in results:\n", "    if False:\n"),
+    ("verify-row: esptool's exit not matched to its lines",
+     "    elif (rc == 0) != all(r == \"OK\" for r in results):\n", "    elif False:\n"),
+    ("verify-row: the whole output not kept", "    rc, _tail = esptool(a.port, *args, log=log)\n",
+     "    rc, _tail = esptool(a.port, *args)\n"),
+    ("verify-row: otadata not read", "    sub_read_otadata(a, orec)\n", '    orec["verdict"] = "PASS"\n'),
+    ("verify-row: otadata's verdict ignored", '    if vv == "FAIL" or ov == "OTHER-SLOT":\n',
+     '    if vv == "FAIL":\n'),
+    ("verify-row: otadata not required to PASS", '    elif vv != "PASS" or ov != "PASS":\n',
+     '    elif vv != "PASS":\n'),
+    ("verify-row: no run", '    rrc, rtail = esptool(a.port, "run")\n', '    rrc, rtail = 0, []\n'),
+    ("verify-row: run's exit ignored", "    elif rrc != 0:\n", "    elif False:\n"),
+    ("verify-row: run before the otadata read",
+     '    orec = {"when": rec["when"]}\n    sub_read_otadata(a, orec)\n    rec["otadata_read"] = orec\n'
+     '    rrc, rtail = esptool(a.port, "run")\n',
+     '    rrc, rtail = esptool(a.port, "run")\n    orec = {"when": rec["when"]}\n    sub_read_otadata(a, orec)\n'
+     '    rec["otadata_read"] = orec\n'),
+    ("verify-row: a FAIL reads ERROR", '        rec["verdict"] = "FAIL"\n        rec["why"] = "the X2 does not hold',
+     '        rec["verdict"] = "ERROR"\n        rec["why"] = "the X2 does not hold'),
+    ("verify-row: the otadata table check dropped", "    if len(ota) != 1:\n        rec.update(verdict=\"REFUSED\", "
+     "why=\"the row's partition table has %d otadata partitions, not 1\" % len(ota))\n        print(\"REFUSED: %s "
+     "(nothing run)\"", "    if False:\n        rec.update(verdict=\"REFUSED\", "
+     "why=\"the row's partition table has %d otadata partitions, not 1\" % len(ota))\n        print(\"REFUSED: %s "
+     "(nothing run)\""),
 ]
 
 
