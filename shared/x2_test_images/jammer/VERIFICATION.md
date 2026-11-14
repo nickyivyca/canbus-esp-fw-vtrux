@@ -59,19 +59,20 @@ So the banner does not name the build, every `id --expect-elf` verdict is
 FAIL on that field alone, and identity falls back to esptool's
 `verify_flash` against the row's files plus the otadata read (gen-inhibit
 reviewer, ruling (a), 2026-11-13). Every name line, `version=`,
-`twai=never_started` and `config_mode=yes` matched. The `verify_flash`
-reads ran through a scratch glue (`x2_verify_row.py`) over the committed
-`x2_flash_custody.jsonl_row` and `suite_gen_inhibit.x2_verify`. The glue
-itself is not committed harness.
+`twai=never_started` and `config_mode=yes` matched. Identity is the
+committed `x2_flash_custody.py verify-row` read of each row, below ("On the
+bench, 2026-11-13 19:18-19:19: identity"). The `verify_flash` reads in the
+two entries between ran through a scratch glue (`x2_verify_row.py`), which
+is not committed harness, so they are context only.
 
 ## On the bench, 2026-11-13 11:30-11:41: the untimed checks (harness `e61f4030`)
 
 The X2 on the `jammer` row since 10:08 (flashed by `x2_flash_custody.py
 flash-jammer --no-dump`, not flashed again before this hold). Hand take
 by the gen-inhibit tester. Run folder `jammerbench_e61f403/` (its README
-and SHA256SUMS). Identity: `verify_flash` 11:39:11, bootloader, partition
-table and app digests matched; otadata differs from `ota_data_initial.bin`
-(read and decoded on the same row in the entry below).
+and SHA256SUMS). Context only (scratch glue, above): `verify_flash`
+11:39:11, bootloader, partition table and app digests matched; otadata
+differs from `ota_data_initial.bin`. Identity: the 19:18 entry below.
 
 | Check | Requirement | Result | Its can-fail |
 |---|---|---|---|
@@ -104,7 +105,8 @@ Each row flashed by `x2_flash_custody.py flash-jammer --no-dump` (esptool
 rc 0), then otadata read by `read-otadata` (PASS each: selects app0, entry
 0, ota_seq 1, VALID, the row's app at `0x10000`), the banner, its session,
 and `verify_flash` last (bootloader, partition table and app digests
-matched for each row; otadata differs, the VALID entry the app writes).
+matched for each row; otadata differs, the VALID entry the app writes;
+context only, scratch glue). Identity: the next entry.
 
 | Check | Row | Requirement | Result | Its can-fail |
 |---|---|---|---|---|
@@ -122,6 +124,49 @@ none VOID. Over each check's window the resource record showed
 bench.slice at 0.8 cores, its CPU pressure 0.2 % at most and 0-0.5 major
 faults/s (each window's figures are in the run README). No kernel USB line
 appeared for the adapters' hub.
+
+## On the bench, 2026-11-13 19:18-19:19: identity (harness `5a35ebcb`)
+
+T10's identity for the three rows above, with committed harness (gen-inhibit
+reviewer, 2026-11-13): `x2_flash_custody.py verify-row` runs esptool
+`verify_flash` of every file of the row (each must match except the one at
+the row's otadata partition, which the app marks VALID at first boot), then
+`read-otadata` (which must select the row's app), then esptool `run`. Its
+test (`test_x2_flash_custody.py`, 147 checks) includes the can-fail: another
+row's build on the flash FAILs; its mutants are 90 of 90 killed. Hand take
+by the gen-inhibit tester; esptool only, nothing sent on any bus. Run folder
+`jammeridentity_5a35ebc/` (its README and SHA256SUMS).
+
+| Row | Variant | Flashed (`flash-jammer --no-dump`) | `read-otadata` | `verify-row` |
+|---|---|---|---|---|
+| `cb5cab143a23f645` | `jammer` | 19:18:41 | PASS: app0 at `0x10000`, ota_seq 1, VALID | PASS: bootloader, partition table, app matched; otadata selects the row's app; `run` exit 0 |
+| `345ac249ca297e1e` | `stop_a_only` | 19:18:55 | PASS, the same | PASS, the same |
+| `185f22b8726ecc32` | `stop_b_only` | 19:19:02 | PASS, the same | PASS, the same |
+
+The can-fail on the bench, 19:19:18: `verify-row` of the jammer row with the
+X2 on the stop_b row: FAIL (bootloader and app differ). Each row's
+`verify_flash` output is kept whole in the run folder.
+
+## The tag's builds (`2026.11.13.7`): the passes above carry by code hash
+
+Built by `../tools/archive.py build . <variant> --builder "gen-inhibit
+tester"` (T6, T7), in a worktree of the gen-inhibit tester's own detached
+at tag `2026.11.13.7` (`feaced29`) with a clean tree, ESP-IDF v5.4.2, on
+madhouse-debian, 2026-11-14 03:03-03:05 UTC, version `2026.11.13.7`. Rows
+in the same manifest:
+
+| Variant | Row | ELF SHA-256 | Code hash | Pinnable |
+|---|---|---|---|---|
+| `jammer` | `ea762c62044cb5c6` | `ae2783e25ad536ab5f56cb3725d4d205fd5ee42f47543e5a4e9996e0f2cf3fc9` | `4d1241e5026e00a554623a9d6167f449ed1010aaae55094f7bdf868d28f55d3c` | yes: every pinnable check true |
+| `stop_a_only` | `badac5b632f4a142` | `c4f6a637c21ab8a3649de327ef1501238159a5d24064205950856e8aa9577999` | `c4b0398c98a19f7d0e8e64e0bdb11d72b1991ae615ffdf69e5946d246a565949` | no: the variant is never pinnable (`README.md`); every other check true |
+| `stop_b_only` | `075ce70c5de105ed` | `8b04eee7871599dce130f6766520d741a68849438be003dd61e8b9494ea2430c` | `b5f5cbbf1756581b6e79a1c21c621bc72cbf08ce306f9494efc20ef521f1805b` | no: as `stop_a_only` |
+
+`check_image.py` at archive time: PASS, all eleven checks, in each row. Each
+row's code hash equals its variant's `9e017baa` row's (table at the top), so
+every pass above carries to it (shared/tools R3, gen-inhibit reviewer
+2026-11-13), and nothing was run on the bench for these rows. Their ELF and
+image hashes differ from the `9e017baa` rows': the image hash includes the
+version string, which the code hash blanks (R1, R2, R5).
 
 ## Not yet shown
 
