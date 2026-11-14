@@ -69,8 +69,10 @@ deadline; `stop_b_only` has no deadline timer.
 - Replies go through `jam_pulse`'s callback, and `main/` prints them with
   the same `JAMMER ` prefix, so `gen-inhibit/tools/bench/x2_jammer.py`
   reads them unchanged.
-- The banner names the build (`build version=<git describe> elf=<ELF
-  SHA-256> idf=<IDF>`, SPEC T10) where the source digest was.
+- The banner names the build (`build version=<git describe> elf=<the ELF
+  SHA-256's first 9 hex digits> idf=<IDF>`) where the source digest was.
+  Nine digits are not the whole hash, so identity (SPEC T10) rests on
+  esptool's `verify_flash` against the row's files (below, the banner).
 - A STOP that arrives between a command's acceptance and its start is
   kept (before, the task cleared it).
 - PULSES has stop (b) too (before, only its pulse count bounded it).
@@ -93,17 +95,39 @@ Lines end at LF; CR is dropped; a line over 63 characters is cut.
 `end=` is `complete`, `stopped`, `deadline_layer_b` (stop (b)),
 `backstop_layer_b` (stop (b) at deadline + 2 s, `stop_a_only` only),
 `tx_refused` or `chunk_timeout`. `stop_by=` is `deadline_timer` (stop (a)),
-`stop_cmd` or `none`. `pulses=` counts pulses **queued**, not delivered:
-delivery is judged from the independent witness only.
+`stop_cmd` or `none`. `pulses=` is not a count of what reached the wire;
+delivery is judged from the independent witness only:
+
+- **TRAIN** counts every pulse of every chunk it started, a chunk a stop
+  cuts included in full. After a stop mid-chunk (`stop_by=stop_cmd`, or
+  `stop_by=deadline_timer`, stop (a)) it can exceed the pulses on the wire
+  by up to one chunk, `JAM_CHUNK_US / p_us` pulses (`JAM_CHUNK_US` is
+  200000 us, `components/jam_pulse/include/jam_pulse.h`: 40 at
+  `p_us=5000`).
+- **PULSES** counts a pulse once its transmission ends with no stop noted,
+  so it is never above the wire's count, and a stop that lands during a
+  pulse can leave that pulse on the wire uncounted.
 
 The banner, at boot after 300 ms and on `ID`, five lines in the PlatformIO
 jammer's order:
 
     JAMMER <project name> -- TEST EQUIPMENT, NEVER ON THE TRUCK
-    JAMMER build version=<git describe> elf=<64 hex> idf=<IDF version>
+    JAMMER build version=<git describe> elf=<9 hex> idf=<IDF version>
     JAMMER tx=GPIO7(CAN1/TWAI) twai=never_started stops=<a+b|a_only(...)|b_only> reset_reason=<n> uptime_us=<n>
     JAMMER mcp2515 canstat=0x80 canctrl=0x87 config_mode=yes
     JAMMER limits w_us=12..50 p_us>=4w..20000 ms<=30000 n<=1000 interval_ms=1..10000
+
+`elf=` is the first 9 hex digits of the app's ELF SHA-256, not all 64.
+ESP-IDF's `esp_app_get_elf_sha256()` gives the hash as text cut to
+`CONFIG_APP_RETRIEVE_LEN_ELF_SHA` characters, whatever the buffer, and
+`sdkconfig` has ESP-IDF's default, 9 (ESP-IDF v5.4.2,
+`components/esp_app_format`: the text is kept in RAM at that length so
+the panic handler can print it with the cache off). The whole hash is in
+the manifest row, so a consumer can match the 9 digits against a row's
+`app_elf_sha256`, but identity (SPEC T10) is esptool's `verify_flash`
+against the row's files and the otadata read: gen-inhibit's
+`x2_flash_custody.py verify-row` (gen-inhibit reviewer, 2026-11-13). The
+host tests take the length from `sdkconfig` and check that it is 9.
 
 ESP-IDF's console is off and its log level is none, so nothing else from
 the image reaches the port. The ESP32-S3 ROM prints its own boot lines on
@@ -147,7 +171,8 @@ detached at a shared tag, with a clean tree.
 On the fakes they show each stop ending a train at the deadline on its own
 (the timer on `stop_a_only` and with a late task, the chunk sizing with a
 broken timer and on `stop_b_only`), the pin recessive after every command,
-the MCP2515 sent only RESET and READ, and the banner.
+the MCP2515 sent only RESET and READ, the banner with its 9-digit `elf=`,
+and what `pulses=` counts.
 
 ## Bench checks the port must pass (SPEC T8)
 

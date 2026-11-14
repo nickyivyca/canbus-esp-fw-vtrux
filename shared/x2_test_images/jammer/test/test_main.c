@@ -10,7 +10,8 @@
  *    form the gen-inhibit harness parses (x2_jammer.py parse_line);
  *  - the boot banner: the image name with NOT_FOR_VEHICLE and "TEST
  *    EQUIPMENT, NEVER ON THE TRUCK" (SPEC T8: the image name and the boot
- *    banner, user 2026-11-12), the build (version and ELF hash, SPEC T10),
+ *    banner, user 2026-11-12), the build (version and ELF hash, SPEC T10;
+ *    the hash cut to sdkconfig's CONFIG_APP_RETRIEVE_LEN_ELF_SHA digits),
  *    CANSTAT with config_mode, the stops and the limits;
  *  - the line handling: ID, unknown words, line ends, an over-long line.
  */
@@ -104,9 +105,17 @@ static void test_start(void)
                                 "TEST EQUIPMENT, NEVER ON THE TRUCK\r\n";
     CHECK(!strncmp(fake_out, first, sizeof first - 1),
           "the banner's first line is not the name line: %.80s", fake_out);
-    CHECK(has(PREFIX "build version=2026.11.12.2-1-gabcdef0 elf="
-              "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-              " idf=v5.4.2\r\n"), "banner build line");
+    /* elf= is the hash's first CONFIG_APP_RETRIEVE_LEN_ELF_SHA digits, the
+     * image's sdkconfig value, as ESP-IDF cuts it; README.md says 9. */
+    CHECK(CONFIG_APP_RETRIEVE_LEN_ELF_SHA == 9,
+          "sdkconfig's CONFIG_APP_RETRIEVE_LEN_ELF_SHA is %d, README.md says "
+          "the banner gives 9 digits", CONFIG_APP_RETRIEVE_LEN_ELF_SHA);
+    char build[128];
+    snprintf(build, sizeof build,
+             PREFIX "build version=2026.11.12.2-1-gabcdef0 elf=%.*s "
+             "idf=v5.4.2\r\n", CONFIG_APP_RETRIEVE_LEN_ELF_SHA,
+             fake_elf_sha256_hex);
+    CHECK(has(build), "banner build line, not '%s'", build);
     CHECK(has(PREFIX "tx=GPIO7(CAN1/TWAI) twai=never_started stops=a+b "
               "reset_reason=1 uptime_us="), "banner tx line");
     CHECK(has(PREFIX "mcp2515 canstat=0x80 canctrl=0x87 config_mode=yes\r\n"),

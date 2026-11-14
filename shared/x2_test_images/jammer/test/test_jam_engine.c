@@ -18,6 +18,9 @@
  *    alone: (a) the deadline timer, shown on the a_only build and with a
  *    late task; (b) the chunk sizing, shown with a broken timer and on the
  *    b_only build; and with the task hung, the wire stops within one chunk.
+ * And what DONE's pulses= counts (README.md, "Commands"): TRAIN at least
+ * the wire's and at most one chunk more, above it after a STOP mid-chunk;
+ * PULSES never above the wire's, at most one below.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -208,6 +211,19 @@ static void test_refusals(void)
     CHECK(!run_queued(), "STOP queued a command");
 }
 
+/* TRAIN's DONE pulses= (README.md, "Commands"): every pulse of every chunk
+ * started, a chunk a stop cuts counted in full, so at least the wire's and
+ * at most one chunk (JAM_CHUNK_US / p_us, p_us 5000 here) more. Returns how
+ * many more. */
+static long long check_train_count(int i, const char *what)
+{
+    long long over = lfield(i, "pulses") - fake_wire_pulses;
+    CHECK(over >= 0 && over <= JAM_CHUNK_US / 5000,
+          "[%s] %s: DONE pulses=%s, the wire %ld: not within one chunk "
+          "above the wire", BUILD, what, field(i, "pulses"), fake_wire_pulses);
+    return over;
+}
+
 /* TRAIN 20 5000 2000 to its end; returns its deadline (t0 + 2 s). */
 static int64_t train_2s(void)
 {
@@ -258,8 +274,7 @@ static void test_train_both_or_one(void)
 #endif
     CHECK(fake_timer_starts == HAVE_A, "[%s] timer started %d times", BUILD,
           fake_timer_starts);
-    CHECK(lfield(i, "pulses") >= fake_wire_pulses,
-          "DONE pulses= counts queued pulses, at least the wire's");
+    check_train_count(i, "train");
 }
 
 /* Stop (b) alone: the timer never fires. */
@@ -341,9 +356,16 @@ static void test_timer_disables_alone(void)
     CHECK(!strcmp(field(i, "end"), "deadline_layer_b"),
           "[b_only] late task: ended %s", field(i, "end"));
 #endif
+    long long over = check_train_count(i, "timer alone");
 #if !HAVE_B_AT_DEADLINE
     CHECK(fake_tx_end_max_us > d, "[a_only] the batch did not span the "
           "deadline, so the timer's disable was not what stopped it");
+    /* The timer cut that batch, and it is counted in full. */
+    CHECK(over > 0, "[a_only] timer alone: DONE pulses=%s equals the wire's "
+          "%ld: the cut chunk was not counted in full", field(i, "pulses"),
+          fake_wire_pulses);
+#else
+    (void)over;
 #endif
     check_end_state("timer alone");
 }
@@ -362,6 +384,11 @@ static void test_stop_mid_train(void)
     CHECK(fake_wire_last_us < at && fake_wire_last_us >= at - 5000,
           "STOP: last pulse %lld us from the STOP",
           (long long)(fake_wire_last_us - at));
+    /* The STOP falls mid-chunk, so the chunk it cuts is counted in full:
+     * pulses= is above the wire's. */
+    CHECK(check_train_count(i, "STOP") > 0,
+          "STOP: DONE pulses=%s equals the wire's %ld: the cut chunk was not "
+          "counted in full", field(i, "pulses"), fake_wire_pulses);
     check_end_state("stop");
 }
 
@@ -450,6 +477,12 @@ static void test_pulses_stop(void)
           && !strcmp(field(i, "stop_by"), "stop_cmd"),
           "PULSES STOP: ended %s by %s", field(i, "end"), field(i, "stop_by"));
     CHECK(fake_wire_pulses == 4, "PULSES STOP: %ld pulses", fake_wire_pulses);
+    /* PULSES counts a pulse once it ends with no stop noted (README.md):
+     * never above the wire, at most one below. */
+    CHECK(lfield(i, "pulses") <= fake_wire_pulses
+          && lfield(i, "pulses") >= fake_wire_pulses - 1,
+          "PULSES STOP: DONE pulses=%s, the wire %ld", field(i, "pulses"),
+          fake_wire_pulses);
     check_end_state("pulses stop");
 }
 
