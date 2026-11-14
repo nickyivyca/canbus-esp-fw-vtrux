@@ -13,6 +13,10 @@ Since 2026-11-13 also flash-jammer --row and check-row (each check of a manifest
 dropped or loosened, a refusal going on, the argument rules) and write_rec's names for two
 records in one second.
 
+Since 2026-11-13 (later) also read-otadata: the crc, an erased seq, the highest seq, the slot
+index, the factory fallback, the selecting state and ABORTED, the offset compared, the read's
+extent, size and rc, and the esptool checks.
+
 Needs REVERSE_IT_DIR and INTERPOSER_CODE, as the test does. Each mutant is a copy of
 x2_flash_custody.py with one edit, in the worktree's scratch/, imported by the test
 through CUSTODY_DIR. A few seconds each. Gen-inhibit tester, 2026-10-23.
@@ -138,6 +142,27 @@ MUTANTS = [
     ("check-row: a refused row reads PASS",
      '        rec.update(verdict="REFUSED", why=str(e))\n        print("REFUSED: %s" % e)\n',
      '        rec.update(verdict="PASS", why=str(e))\n        print("REFUSED: %s" % e)\n'),
+    # read-otadata (gen-inhibit reviewer, 2026-11-13)
+    ("otadata: the crc not checked", '"valid": seq != 0xFFFFFFFF and crc_ok,', '"valid": seq != 0xFFFFFFFF,'),
+    ("otadata: an erased seq taken", '"valid": seq != 0xFFFFFFFF and crc_ok,', '"valid": crc_ok,'),
+    ("otadata: the lowest seq selects", "        top = max(valid, key=", "        top = min(valid, key="),
+    ("otadata: slot index off by one", '        p = slots[(top["ota_seq"] - 1) % len(slots)]\n',
+     '        p = slots[top["ota_seq"] % len(slots)]\n'),
+    ("otadata: the factory app ignored", "    elif factory:\n", "    elif False:\n"),
+    ("otadata: the selecting state not judged", ' and sel["selecting_state"] not in (3, 4)\n', "\n"),
+    ("otadata: ABORTED not rejected", 'sel["selecting_state"] not in (3, 4)', 'sel["selecting_state"] not in (3,)'),
+    ("otadata: the offset not compared", '    ok = sel["selected_offset"] == app_off and',
+     '    ok = sel["selected_offset"] is not None and'),
+    ("otadata: the whole flash read", '"read_flash", "0x%x" % off, "0x%x" % size, out)', '"read_flash", "0", "ALL", out)'),
+    ("otadata: the read's size not checked",
+     "    if rc != 0 or not os.path.exists(out) or os.path.getsize(out) != size:\n",
+     "    if rc != 0 or not os.path.exists(out):\n"),
+    ("otadata: esptool's rc not checked",
+     "    if rc != 0 or not os.path.exists(out) or os.path.getsize(out) != size:\n",
+     "    if not os.path.exists(out) or os.path.getsize(out) != size:\n"),
+    ("otadata: read-otadata without the esptool checks",
+     'ESPTOOL_SUBS = ("dump", "flash-jammer", "restore", "read-otadata")',
+     'ESPTOOL_SUBS = ("dump", "flash-jammer", "restore")'),
 ]
 
 

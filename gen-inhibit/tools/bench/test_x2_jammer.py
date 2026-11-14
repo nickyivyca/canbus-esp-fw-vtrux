@@ -10,6 +10,7 @@ Run: py -3.14 gen-inhibit/tools/bench/test_x2_jammer.py
 import os
 import sys
 import time
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -279,8 +280,656 @@ def main():
     print("  %-4s ini      %-60s" % ("ok" if ok else "FAIL", "control: a bare platform line is read as it is"))
     if not ok:
         bad.append("platform control")
+    port_cases(bad)
     print("\n=== %s ===" % ("PASS" if not bad else "FAIL: " + "; ".join(bad)))
     return 1 if bad else 0
+
+
+# ---- the ESP-IDF port's bench pass (2026-11-13) ----------------------------------------
+PN = "vtrux_jammer_x2_NOT_FOR_VEHICLE"
+ELF = "ab" * 32
+
+
+def port_banner(name=PN, elf=ELF, twai="never_started", cfg="yes", uptime=3600 * 10 ** 6):
+    """The port's five banner lines (shared/x2_test_images/jammer/README.md, "The banner")."""
+    return ["JAMMER %s -- TEST EQUIPMENT, NEVER ON THE TRUCK" % name,
+            "JAMMER build version=2026.11.12.2-6-g9e017baa elf=%s idf=v5.4.2" % elf,
+            "JAMMER tx=GPIO7(CAN1/TWAI) twai=%s stops=a+b reset_reason=1 uptime_us=%d" % (twai, uptime),
+            "JAMMER mcp2515 canstat=0x80 canctrl=0x87 config_mode=%s" % cfg,
+            "JAMMER limits w_us=12..50 p_us>=4w..20000 ms<=30000 n<=1000 interval_ms=1..10000"]
+
+
+def check(bad, group, label, ok, got=""):
+    print("  %-4s %-8s %-60s %s" % ("ok" if ok else "FAIL", group, label[:60], got))
+    if not ok:
+        bad.append(label)
+
+
+class Args:
+    def __init__(self, **kw):
+        d = dict(sub="id", no_wican=False, wican_mode=0, expect_name=None, expect_elf=None,
+                 expect_stop_by=None, expect_end=None, post_s=3.0, w=20, n=1, interval_ms=1000,
+                 check=[])
+        d.update(kw)
+        self.__dict__.update(d)
+
+
+def port_cases(bad):
+    parsed = lambda lines: [X.parse_line(x) for x in lines]   # noqa: E731
+    for label, lines, name, elf, want in (
+            ("identity: the port's banner, the row's name and elf", port_banner(), PN, ELF, "PASS"),
+            ("identity: a different elf", port_banner(elf="cd" * 32), PN, ELF, "FAIL"),
+            ("identity: a different name", port_banner(name="jammer_stop_a_NOT_FOR_VEHICLE"), PN, ELF, "FAIL"),
+            ("identity: a name without NOT_FOR_VEHICLE, both sides", port_banner(name="vtrux_jammer_x2"),
+             "vtrux_jammer_x2", ELF, "FAIL"),
+            ("identity: twai started", port_banner(twai="started"), PN, ELF, "FAIL"),
+            ("identity: mcp2515 not in config mode", port_banner(cfg="no"), PN, ELF, "FAIL"),
+            ("identity: no name line", port_banner()[1:], PN, ELF, "FAIL"),
+            ("identity: no build line", port_banner()[:1] + port_banner()[2:], PN, ELF, "FAIL"),
+            ("identity: no expected elf given", port_banner(), PN, None, "FAIL")):
+        got = X.judge_identity(parsed(lines), name, elf)
+        check(bad, "identity", label, got["verdict"] == want, "%s %s" % (got["verdict"], got["why"]))
+    # sub_id with the expectations, through the fake console
+    for label, kw, want in (("id: the port's banner -> identity PASS", {}, "PASS"),
+                            ("id: the port booted after the open -> FAIL", {"uptime_us": 500000}, "FAIL"),
+                            ("id: the wrong elf -> FAIL", {"elf": "cd" * 32}, "FAIL")):
+        rec = {}
+        try:
+            jam = FakeJammer("", kw.get("uptime_us", 3600 * 10 ** 6),
+                             banner=port_banner(elf=kw.get("elf", ELF), uptime=kw.get("uptime_us", 3600 * 10 ** 6)))
+            X.sub_id(Args(expect_name=PN, expect_elf=ELF), rec, FakeCon(jam), None)
+        except Exception as e:      # noqa: BLE001  a crash is reported against the case
+            rec["verdict"] = "RAISED %r" % e
+        check(bad, "id", label, rec.get("verdict") == want, rec.get("verdict"))
+    rec = {}
+    X.sub_id(Args(), rec, FakeCon(FakeJammer("", banner=port_banner())), None)
+    check(bad, "id", "id without expectations writes no verdict", "verdict" not in rec, rec.get("verdict"))
+    # after_done: (t_done, obs_end) with frames at the given times
+    for label, ts, t_done, obs_end, want_n, want_enough in (
+            ("after DONE: quiet for 3.7 s", [99.0], 100.0, 104.0, 0, True),
+            ("after DONE: one frame 0.5 s after", [99.0, 100.5], 100.0, 104.0, 1, True),
+            ("after DONE: a frame within the margin is not after", [100.2], 100.0, 104.0, 0, True),
+            ("after DONE: a frame at the end of the window counts", [104.0], 100.0, 104.0, 1, True),
+            ("after DONE: watched 2 s only", [], 100.0, 102.3, 0, False),
+            ("after DONE: no DONE", [], None, 104.0, None, False)):
+        got = X.after_done(ts, t_done, obs_end)
+        check(bad, "after", label, got["n"] == want_n and got["enough"] is want_enough, got)
+    # judge_pulses(err_ts, n, interval_s, t_send, ack, t_done, obs_end)
+    one = [100.05]
+    ten = [100.05 + k for k in range(10)]
+    for label, ts, n, iv, ack, t_done, obs_end, want in (
+            ("pulses: port, 1 pulse 1 frame, quiet around", one, 1, 1.0, True, 100.2, 104.0, "PASS"),
+            ("pulses: calibration, 10 at 1 s, 1 each", ten, 10, 1.0, True, 109.2, 113.0, "PASS"),
+            ("pulses: 9 at 1.1 s, 1 each", [100.05 + 1.1 * k for k in range(9)], 9, 1.1, True, 109.0, 112.5, "PASS"),
+            ("pulses: a frame 1 s after DONE", one + [101.2], 1, 1.0, True, 100.2, 104.0, "FAIL"),
+            ("pulses: a frame just before the window's end", one + [103.9], 1, 1.0, True, 100.2, 104.0, "FAIL"),
+            ("pulses: one pulse gave two frames", one + [100.0503], 1, 1.0, True, 100.2, 104.0, "FAIL"),
+            ("pulses: 9 groups for 10", ten[:9], 10, 1.0, True, 109.2, 113.0, "FAIL"),
+            ("pulses: nothing delivered", [], 1, 1.0, True, 100.2, 104.0, "FAIL"),
+            ("pulses: a frame 2 s before the send", [98.0] + one, 1, 1.0, True, 100.2, 104.0, "INCONCLUSIVE"),
+            ("pulses: no DONE", one, 1, 1.0, True, None, 104.0, "INCONCLUSIVE"),
+            ("pulses: no ACK", one, 1, 1.0, False, 100.2, 104.0, "INCONCLUSIVE"),
+            ("pulses: watched 2 s after DONE", one, 1, 1.0, True, 100.2, 102.4, "INCONCLUSIVE")):
+        got = X.judge_pulses(ts, n, iv, 100.0, ack, t_done, obs_end)
+        check(bad, "judge_p", label, got["verdict"] == want, "%s %s" % (got["verdict"], got["why"]))
+    # judge_done
+    done_a = {"stop_by": "deadline_timer", "end": "stopped"}
+    done_b = {"stop_by": "none", "end": "deadline_layer_b"}
+    for label, done, sb, end, want in (
+            ("done: nothing expected", None, None, None, True),
+            ("done: stop (a) alone shows deadline_timer", done_a, "deadline_timer", None, True),
+            ("done: stop (a) expected, stop (b) ended it", done_b, "deadline_timer", None, False),
+            ("done: stop (b) alone, end and stop_by match", done_b, "none", "deadline_layer_b", True),
+            ("done: stop (b) expected, the timer stopped it", done_a, "none", "deadline_layer_b", False),
+            ("done: end expected, stop_by matches only", {"stop_by": "none", "end": "backstop_layer_b"},
+             "none", "deadline_layer_b", False),
+            ("done: expected, no DONE line", None, "deadline_timer", None, None)):
+        got = X.judge_done(done, sb, end)
+        check(bad, "done", label, got[0] is want, got)
+    # fold_timeout
+    clean = {"n": 0}
+    for label, v, post, dc, want in (
+            ("fold: PASS, quiet after, DONE matches", "PASS", clean, (True, ""), "PASS"),
+            ("fold: PASS but a frame after DONE", "PASS", {"n": 1}, (True, ""), "FAIL"),
+            ("fold: PASS but DONE does not match", "PASS", clean, (False, "x"), "FAIL"),
+            ("fold: PASS with no DONE to judge", "PASS", clean, (None, "x"), "INCONCLUSIVE"),
+            ("fold: INCONCLUSIVE with a frame after DONE", "INCONCLUSIVE", {"n": 2}, (True, ""), "FAIL"),
+            ("fold: INCONCLUSIVE stays with no DONE", "INCONCLUSIVE", clean, (None, "x"), "INCONCLUSIVE"),
+            ("fold: FAIL stays FAIL", "FAIL", clean, (True, ""), "FAIL"),
+            ("fold: no DONE time (n None) is not a frame after", "PASS", {"n": None}, (True, ""), "PASS")):
+        got = X.fold_timeout(v, "", post, dc)
+        check(bad, "fold", label, got[0] == want, got)
+    # judge_can2_isolation(sent, kv_seen, kv_groups, n, in_frames, in_err, probe, canchg_alive)
+    for label, args, want in (
+            ("isolation: all seen on CAN1, nothing on canchg, no ACK", (50, 50, 5, 5, 0, 0, "NO_ACK", 3), "PASS"),
+            ("isolation: canchg saw a 0x7A0", (50, 50, 5, 5, 1, 0, "NO_ACK", 3), "FAIL"),
+            ("isolation: canchg saw an error frame", (50, 50, 5, 5, 0, 1, "NO_ACK", 3), "FAIL"),
+            ("isolation: canchg's frame was ACKed", (50, 50, 5, 5, 0, 0, "ACKED", 3), "FAIL"),
+            ("isolation: the probe was unclear", (50, 50, 5, 5, 0, 0, "UNCLEAR", 3), "INCONCLUSIVE"),
+            ("isolation: the probe did not run", (50, 50, 5, 5, 0, 0, "NOT RUN", 3), "INCONCLUSIVE"),
+            ("isolation: the Kvaser missed one 0x7A0", (50, 49, 5, 5, 0, 0, "NO_ACK", 3), "INCONCLUSIVE"),
+            ("isolation: the PCAN sent nothing", (0, 0, 5, 5, 0, 0, "NO_ACK", 3), "INCONCLUSIVE"),
+            ("isolation: 4 groups for 5 pulses", (50, 50, 4, 5, 0, 0, "NO_ACK", 3), "INCONCLUSIVE"),
+            # canchg's liveness (2026-11-13): its own unACKed frame heard after the test
+            ("isolation: canchg heard nothing of its own frame", (50, 50, 5, 5, 0, 0, "NO_ACK", 0), "INCONCLUSIVE"),
+            ("isolation: canchg's liveness not read", (50, 50, 5, 5, 0, 0, "NO_ACK", None), "INCONCLUSIVE"),
+            ("isolation: canchg saw traffic, deaf after: still FAIL", (50, 50, 5, 5, 1, 0, "NO_ACK", 0), "FAIL")):
+        got = X.judge_can2_isolation(*args)
+        check(bad, "iso", label, got[0] == want, got)
+    # args_why
+    for label, kw, refused in (
+            ("args: pulses --no-wican", dict(sub="pulses", no_wican=True), False),
+            ("args: --no-wican with --wican-mode 2", dict(sub="pulses", no_wican=True, wican_mode=2), True),
+            ("args: can2-check with --no-wican", dict(sub="can2-check", no_wican=True), True),
+            ("args: can2-check without it", dict(sub="can2-check"), False),
+            ("args: can2-isolation with --no-wican", dict(sub="can2-isolation", no_wican=True), False),
+            ("args: can2-isolation without --no-wican", dict(sub="can2-isolation"), True),
+            ("args: id with both expectations", dict(expect_name=PN, expect_elf=ELF), False),
+            ("args: id with the name only", dict(expect_name=PN), True),
+            ("args: id with the elf only", dict(expect_elf=ELF), True),
+            ("args: --expect-name with pulses", dict(sub="pulses", expect_name=PN, expect_elf=ELF), True),
+            ("args: timeout --expect-stop-by", dict(sub="timeout", expect_stop_by="deadline_timer"), False),
+            ("args: --expect-end with pulses", dict(sub="pulses", expect_end="deadline_layer_b"), True),
+            ("args: --expect-stop-by with id", dict(expect_stop_by="none"), True)):
+        got = X.args_why(Args(**kw))
+        check(bad, "args", label, bool(got) is refused, got)
+    pulses_no_wican(bad)
+    closing_cases(bad)
+    timeout_cases(bad)
+    boot_silence_cases(bad)
+    witness_down_cases(bad)
+
+
+class PulseCon:
+    """A console that answers PULSES with ACK, one PULSE, DONE (times t+0.01..0.2)."""
+
+    def __init__(self):
+        import threading
+        self.lock = threading.Lock()
+        self.lines, self.sent = [], []
+
+    def send(self, line):
+        t = time.time()
+        self.sent.append(line)
+        for dt, txt in ((0.01, "JAMMER ACK PULSES w_us=20 n=1 interval_ms=1000 deadline_ms=1100"),
+                        (0.05, "JAMMER PULSE k=0 t_us=1 rel_us=0"), (0.2, "JAMMER DONE PULSES pulses=1")):
+            self.lines.append((t + dt, txt, X.parse_line(txt)))
+
+    def wait(self, pred, timeout, since):
+        for t, _x, p in self.lines:
+            if t >= since and p and pred(p):
+                return t, p
+        return None
+
+
+WITS = []      # every fake witness the sub fakes made, newest last
+
+
+class PulseWit:
+    def __init__(self, con):
+        self.con = con
+        self.asked = []
+
+    def times(self, timing=False):
+        # one error frame per PULSE line: the command's and the closing pulse's (2026-11-13)
+        self.asked.append(timing)
+        return ([t + 0.002 for t, _x, p in self.con.lines if p and p["kind"] == "PULSE"],
+                "kvaser_hw (median lag 0.001 s)")
+
+
+class DeafAtTheEnd:
+    """Wraps a fake witness: the last error frame (the closing pulse's) is not heard."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.t_open = getattr(inner, "t_open", 0.0)
+        self.asked = []
+
+    def times(self, timing=False):
+        ts, note = self.inner.times(timing)
+        return sorted(ts)[:-1], note
+
+
+def fake_pulses(a, deaf_at_end=False):
+    """sub_pulses on PulseCon with a fake clock (sleep advances it) and the WiCAN calls
+    recorded instead of made. -> (rec, calls)."""
+    import threading
+    calls, rec = [], {}
+    clock, lk = [time.time()], threading.Lock()
+    real_sleep = time.sleep
+    saved = (X.wican_snap, X.wican_mode, X.time.sleep, X.time.time)
+
+    def fsleep(s):
+        with lk:
+            clock[0] += s
+        real_sleep(0.0005)
+
+    def snap():
+        if len(calls) < 50:
+            calls.append("snap")
+    X.wican_snap = snap
+    X.wican_mode = lambda n: calls.append("mode %d" % n)
+    X.time.sleep, X.time.time = fsleep, lambda: clock[0]
+    try:
+        con = PulseCon()
+        WITS.append(PulseWit(con))
+        X.sub_pulses(a, rec, con, DeafAtTheEnd(WITS[-1]) if deaf_at_end else WITS[-1])
+    except Exception as e:      # noqa: BLE001  reported against the case
+        rec["verdict"] = "RAISED %r" % e
+    finally:
+        X.wican_snap, X.wican_mode, X.time.sleep, X.time.time = saved
+    return rec, calls
+
+
+class TrainCon(PulseCon):
+    """Answers TRAIN with ACK at +0.01 s and DONE at +ms/1000 with the given fields."""
+
+    def __init__(self, done_fields, done_at=None):
+        super().__init__()
+        self.done_fields, self.done_at = done_fields, done_at
+        self.paused = __import__("threading").Event()
+
+    def send(self, line):
+        if line.startswith("PULSES"):      # the closing pulse (2026-11-13)
+            return PulseCon.send(self, line)
+        t = time.time()
+        self.sent.append(line)
+        ms = int(line.split()[3])
+        at = self.done_at if self.done_at is not None else ms / 1000.0
+        for dt, txt in ((0.01, "JAMMER ACK TRAIN w_us=20 p_us=5000 ms=%d t0_us=1" % ms),
+                        (at, "JAMMER DONE TRAIN %s pulses=1 chunks=1" % self.done_fields)):
+            self.lines.append((t + dt, txt, X.parse_line(txt)))
+
+
+class TrainWit:
+    """Error frames every 5 ms from the ACK to `last` s after it, plus any `extra` (s after
+    the ACK); t_open well before."""
+
+    def __init__(self, con, last, extra=()):
+        self.con, self.last, self.extra = con, last, extra
+        self.t_open = time.time() - 100.0
+        self.asked = []
+
+    def times(self, timing=False):
+        self.asked.append(timing)
+        t0 = self.con.lines[0][0]
+        ts = [t0 + 0.005 * k for k in range(int(self.last / 0.005) + 1)] + [t0 + e for e in self.extra]
+        ts += [t + 0.002 for t, _x, p in self.con.lines if p and p["kind"] == "PULSE"]   # the closing pulse
+        return sorted(ts), "kvaser_hw (median lag 0.001 s)"
+
+
+def fake_timeout(a, done_fields, last, extra=(), done_at=None, deaf_at_end=False):
+    import threading
+    rec = {}
+    clock, lk = [time.time()], threading.Lock()
+    real_sleep = time.sleep
+    saved = (X.time.sleep, X.time.time)
+
+    def fsleep(s):
+        with lk:
+            clock[0] += s
+        real_sleep(0.0005)
+    X.time.sleep, X.time.time = fsleep, lambda: clock[0]
+    try:
+        con = TrainCon(done_fields, done_at)
+        WITS.append(TrainWit(con, last, extra))
+        X.sub_timeout(a, rec, con, DeafAtTheEnd(WITS[-1]) if deaf_at_end else WITS[-1])
+    except Exception as e:      # noqa: BLE001  reported against the case
+        rec["verdict"] = "RAISED %r" % e
+    finally:
+        X.time.sleep, X.time.time = saved
+    return rec
+
+
+def timeout_cases(bad):
+    """sub_timeout with the DONE line judged and the window after DONE (2026-11-13)."""
+    a_done = "end=stopped stop_by=deadline_timer"
+    b_done = "end=deadline_layer_b stop_by=none"
+    for label, kw, done, last, extra, want in (
+            ("timeout: stop (a) alone, DONE stop_by=deadline_timer", dict(expect_stop_by="deadline_timer"),
+             a_done, 1.99, (), "PASS"),
+            ("timeout: stop (a) expected, DONE from stop (b)", dict(expect_stop_by="deadline_timer"),
+             b_done, 1.99, (), "FAIL"),
+            ("timeout: stop (b) alone, end and stop_by", dict(expect_stop_by="none", expect_end="deadline_layer_b"),
+             b_done, 1.99, (), "PASS"),
+            ("timeout: stop (b) expected, the timer ended it", dict(expect_stop_by="none",
+                                                                    expect_end="deadline_layer_b"),
+             a_done, 1.99, (), "FAIL"),
+            ("timeout: nothing expected, clean stop", {}, a_done, 1.99, (), "PASS"),
+            ("timeout: a frame 4 s after DONE", {}, a_done, 1.99, (6.0,), "FAIL"),
+            ("timeout: the can-fail, control 1 s against a 2 s train", dict(control_ms=1000),
+             a_done, 1.99, (), "PASS")):
+        args = Args(sub="timeout", w=20, p=5000, ms=2000, expect_ms=0, control_ms=0, host_quiet=False)
+        args.__dict__.update(kw)
+        rec = fake_timeout(args, done, last, extra)
+        ok = rec.get("verdict") == want
+        if "control_ms" in kw:
+            ok = ok and rec.get("negative_control", {}).get("ok") is True
+        check(bad, "timeout", label, ok, "%s %s" % (rec.get("verdict"), rec.get("why")))
+    # DONE early (a STOP, say) with error frames 0.5 s past it but inside the train's window:
+    # judge_stop alone would call it INCONCLUSIVE (stopped seeing early); after DONE FAILs it.
+    args = Args(sub="timeout", w=20, p=5000, ms=2000, expect_ms=0, control_ms=0, host_quiet=False)
+    rec = fake_timeout(args, "end=stopped stop_by=stop_cmd", 1.5, done_at=1.0)
+    check(bad, "timeout", "timeout: frames after an early DONE, inside the window -> FAIL",
+          rec.get("verdict") == "FAIL" and rec.get("after_done", {}).get("n", 0) > 0,
+          "%s %s" % (rec.get("verdict"), rec.get("why")))
+
+
+class NoDurCon(PulseCon):
+    """Answers TRAIN w p (no ms) with ERR no_duration; PULSES as PulseCon."""
+
+    def send(self, line):
+        if line.startswith("PULSES"):
+            return PulseCon.send(self, line)
+        self.sent.append(line)
+        self.lines.append((time.time() + 0.01, "JAMMER ERR no_duration", X.parse_line("JAMMER ERR no_duration")))
+
+
+def fake_noduration(deaf_at_end=False, extra_at=None):
+    import threading
+    rec = {}
+    clock, lk = [time.time()], threading.Lock()
+    real_sleep = time.sleep
+    saved = (X.time.sleep, X.time.time)
+
+    def fsleep(s):
+        with lk:
+            clock[0] += s
+        real_sleep(0.0005)
+    X.time.sleep, X.time.time = fsleep, lambda: clock[0]
+    try:
+        con = NoDurCon()
+        wit = PulseWit(con)
+        if extra_at is not None:
+            inner = wit
+
+            class Extra:
+                def times(self, timing=False):
+                    ts, note = inner.times(timing)
+                    return sorted(ts + [con.lines[0][0] + extra_at]), note
+            wit = Extra()
+        X.sub_noduration(Args(sub="noduration", p=200), rec, con, DeafAtTheEnd(wit) if deaf_at_end else wit)
+    except Exception as e:      # noqa: BLE001  reported against the case
+        rec["verdict"] = "RAISED %r" % e
+    finally:
+        X.time.sleep, X.time.time = saved
+    return rec
+
+
+def closing_cases(bad):
+    """Every judged silence ends with a closing pulse the same witness must count once
+    (gen-inhibit reviewer, 2026-11-13): a witness deaf to it makes a PASS INCONCLUSIVE, and a
+    FAIL stays a FAIL."""
+    rec, _c = fake_pulses(Args(sub="pulses", no_wican=True), deaf_at_end=True)
+    check(bad, "closing", "pulses: the closing pulse not heard -> INCONCLUSIVE",
+          rec.get("verdict") == "INCONCLUSIVE" and "closing" in rec.get("why", ""),
+          "%s %s" % (rec.get("verdict"), rec.get("why")))
+    rec, _c = fake_pulses(Args(sub="pulses", no_wican=True))
+    check(bad, "closing", "pulses: the closing pulse heard once -> PASS, counted in the record",
+          rec.get("verdict") == "PASS" and rec.get("closing", {}).get("witness_err_frames") == 1,
+          "%s %s" % (rec.get("verdict"), rec.get("closing")))
+    ta = dict(sub="timeout", w=20, p=5000, ms=2000, expect_ms=0, control_ms=0, host_quiet=False)
+    rec = fake_timeout(Args(**ta), "end=stopped stop_by=deadline_timer", 1.99, deaf_at_end=True)
+    check(bad, "closing", "timeout: the closing pulse not heard -> INCONCLUSIVE",
+          rec.get("verdict") == "INCONCLUSIVE" and "closing" in rec.get("why", ""),
+          "%s %s" % (rec.get("verdict"), rec.get("why")))
+    rec = fake_timeout(Args(**ta), "end=stopped stop_by=deadline_timer", 1.99)
+    check(bad, "closing", "timeout: the closing pulse is not a frame after the deadline -> PASS",
+          rec.get("verdict") == "PASS" and rec.get("judge", {}).get("n_after") == 0,
+          "%s %s" % (rec.get("verdict"), rec.get("judge", {}).get("n_after")))
+    rec = fake_timeout(Args(**ta), "end=stopped stop_by=deadline_timer", 1.99, extra=(4.0,), deaf_at_end=True)
+    check(bad, "closing", "timeout: a frame after the deadline and a deaf end -> FAIL stays",
+          rec.get("verdict") == "FAIL", "%s %s" % (rec.get("verdict"), rec.get("why")))
+    rec = fake_noduration()
+    check(bad, "closing", "noduration: refused, quiet, closing pulse heard -> PASS",
+          rec.get("verdict") == "PASS", "%s %s" % (rec.get("verdict"), rec.get("why")))
+    rec = fake_noduration(deaf_at_end=True)
+    check(bad, "closing", "noduration: the closing pulse not heard -> INCONCLUSIVE",
+          rec.get("verdict") == "INCONCLUSIVE", "%s %s" % (rec.get("verdict"), rec.get("why")))
+    rec = fake_noduration(extra_at=1.0)
+    check(bad, "closing", "noduration: an error frame 1 s after the send -> FAIL",
+          rec.get("verdict") == "FAIL", "%s %s" % (rec.get("verdict"), rec.get("why")))
+    for label, ctl, want in (("counted twice", {"witness_err_frames": 2, "done": {"k": 1}}, "INCONCLUSIVE"),
+                             ("no DONE", {"witness_err_frames": 1, "done": None}, "INCONCLUSIVE"),
+                             ("no control", None, "INCONCLUSIVE"),
+                             ("once with DONE", {"witness_err_frames": 1, "done": {"k": 1}}, "PASS")):
+        check(bad, "closing", "fold_closing: %s -> %s" % (label, want),
+              X.fold_closing("PASS", "", ctl)[0] == want, X.fold_closing("PASS", "", ctl))
+    check(bad, "closing", "fold_closing: a FAIL stays a FAIL", X.fold_closing("FAIL", "x", None) == ("FAIL", "x"), "")
+
+
+def pulses_no_wican(bad):
+    """sub_pulses with --no-wican: no WiCAN call at all, and the verdict in the record."""
+    rec, calls = fake_pulses(Args(sub="pulses", no_wican=True))
+    check(bad, "pulses", "pulses --no-wican: no WiCAN call", calls == [], calls)
+    check(bad, "pulses", "pulses --no-wican: the verdict is in the record",
+          rec.get("verdict") == "PASS" and rec.get("wican_samples") == X.NO_WICAN,
+          "%s %s" % (rec.get("verdict"), rec.get("why")))
+    rec, calls = fake_pulses(Args(sub="pulses"))
+    check(bad, "pulses", "control: without --no-wican the WiCAN is set and read",
+          "mode 0" in calls and "snap" in calls, calls[:4])
+
+
+def resets_ok(n=3):
+    return [{"n": k, "banner_after_s": 0.4, "witness_err_frames": 0, "config_mode": "yes"}
+            for k in range(n)]
+
+
+CONTROL_OK = {"witness_err_frames": 1, "done": {"kind": "DONE"}}
+
+
+class BootCon(PulseCon):
+    """The jammer's console for boot-silence: a reset prints the mcp2515 banner line 0.4 s
+    later; PULSES is answered ACK, PULSE and DONE (PulseCon's)."""
+
+    def __init__(self):
+        super().__init__()
+        self.resets = 0
+
+    def pulse_reset(self):
+        self.resets += 1
+        txt = "JAMMER mcp2515 canstat=0x80 canctrl=0x87 config_mode=yes"
+        self.lines.append((time.time() + 0.4, txt, X.parse_line(txt)))
+
+
+class BootWit:
+    """Error frames: the closing pulse's (when `control`), 2 ms after its PULSE line, and
+    `after_reset` s after each reset's banner."""
+
+    def __init__(self, con, control=True, after_reset=None):
+        self.con, self.control, self.after_reset = con, control, after_reset
+
+    def times(self):
+        ts = []
+        for t, _x, p in self.con.lines:
+            if p and p["kind"] == "PULSE" and self.control:
+                ts.append(t + 0.002)
+            if p and p["kind"] == "INFO" and self.after_reset is not None:
+                ts.append(t + self.after_reset)
+        return sorted(ts), "kvaser_hw (median lag 0.001 s)"
+
+
+def fake_boot(con, wit, resets=3):
+    import threading
+    rec = {}
+    clock, lk = [time.time()], threading.Lock()
+    real_sleep = time.sleep
+    saved = (X.time.sleep, X.time.time)
+
+    def fsleep(s):
+        with lk:
+            clock[0] += s
+        real_sleep(0.0005)
+    X.time.sleep, X.time.time = fsleep, lambda: clock[0]
+    try:
+        X.sub_boot_silence(Args(sub="boot-silence", resets=resets, w=20), rec, con, wit)
+    except Exception as e:      # noqa: BLE001  reported against the case
+        rec["verdict"] = "RAISED %r" % e
+    finally:
+        X.time.sleep, X.time.time = saved
+    return rec
+
+
+def boot_silence_cases(bad):
+    """judge_boot_silence and sub_boot_silence's closing pulse, the positive control
+    (2026-11-13)."""
+    for label, resets, control, want in (
+            ("boot: 3 silent resets, closing pulse once -> PASS", resets_ok(), CONTROL_OK, "PASS"),
+            ("boot: an error frame after a reset -> FAIL",
+             resets_ok()[:2] + [dict(resets_ok()[2], witness_err_frames=1)], CONTROL_OK, "FAIL"),
+            ("boot: an error frame and a deaf control -> FAIL, not INCONCLUSIVE",
+             [dict(resets_ok()[0], witness_err_frames=2)], {"witness_err_frames": 0, "done": {}}, "FAIL"),
+            ("boot: no banner after a reset -> FAIL",
+             [dict(resets_ok()[0], banner_after_s=None)], CONTROL_OK, "FAIL"),
+            ("boot: MCP2515 not in configuration mode -> FAIL",
+             [dict(resets_ok()[0], config_mode="no")], CONTROL_OK, "FAIL"),
+            ("boot: closing pulse not seen (deaf witness) -> INCONCLUSIVE", resets_ok(),
+             dict(CONTROL_OK, witness_err_frames=0), "INCONCLUSIVE"),
+            ("boot: closing pulse seen twice -> INCONCLUSIVE", resets_ok(),
+             dict(CONTROL_OK, witness_err_frames=2), "INCONCLUSIVE"),
+            ("boot: no control record -> INCONCLUSIVE", resets_ok(), None, "INCONCLUSIVE"),
+            ("boot: closing pulse with no DONE -> INCONCLUSIVE", resets_ok(),
+             dict(CONTROL_OK, done=None), "INCONCLUSIVE"),
+            ("boot: no reset made -> INCONCLUSIVE", [], CONTROL_OK, "INCONCLUSIVE")):
+        v, why = X.judge_boot_silence(resets, control)
+        check(bad, "boot", label, v == want, "%s %s" % (v, why))
+    con = BootCon()
+    rec = fake_boot(con, BootWit(con))
+    check(bad, "boot", "sub: 3 resets, then one closing PULSES w 1 -> PASS",
+          rec.get("verdict") == "PASS" and con.resets == 3 and con.sent == ["PULSES 20 1 1000"]
+          and rec.get("control", {}).get("witness_err_frames") == 1,
+          "%s %s sent %s" % (rec.get("verdict"), rec.get("why"), con.sent))
+    con = BootCon()
+    rec = fake_boot(con, BootWit(con, control=False))
+    check(bad, "boot", "sub: a witness that hears nothing -> INCONCLUSIVE",
+          rec.get("verdict") == "INCONCLUSIVE", "%s %s" % (rec.get("verdict"), rec.get("why")))
+    con = BootCon()
+    rec = fake_boot(con, BootWit(con, after_reset=1.0))
+    check(bad, "boot", "sub: an error frame 1 s after a banner -> FAIL",
+          rec.get("verdict") == "FAIL", "%s %s" % (rec.get("verdict"), rec.get("why")))
+
+
+class DyingBus:
+    """A Kvaser bus: `good` error frames, then recv raises (CANlib's error), or None forever."""
+
+    def __init__(self, good=2, raises=True):
+        self.left, self.raises, self.shut = good, raises, False
+
+    def recv(self, timeout=None):
+        if self.left > 0:
+            self.left -= 1
+            m = types.SimpleNamespace(is_error_frame=True, timestamp=time.time(), arbitration_id=0)
+            return m
+        if self.raises:
+            raise RuntimeError("canRead hardware error (-15)")
+        time.sleep(0.005)
+        return None
+
+    def shutdown(self):
+        self.shut = True
+
+
+def bare_witness(bus):
+    """An x2_jammer.Witness on a fake bus, without kvaser_bus (no lock, no adapter)."""
+    import threading
+    w = X.Witness.__new__(X.Witness)
+    threading.Thread.__init__(w, daemon=True)
+    w._state()
+    w.bus = bus
+    return w
+
+
+def witness_down_cases(bad):
+    """A witness whose read raised, or whose thread is not running, is never judged
+    (WitnessDown -> NOT-RUN, 2026-11-13)."""
+    w = bare_witness(DyingBus(good=2, raises=True))
+    w.start()
+    w.join(2.0)
+    try:
+        w.times()
+        got = "no raise"
+    except X.WitnessDown as e:
+        got = str(e)
+    check(bad, "witness", "a read that raised: times() raises WitnessDown",
+          "read failed" in got and "-15" in got and len(w.err) == 2, got)
+    w = bare_witness(DyingBus(good=2, raises=False))
+    w.start()
+    time.sleep(0.05)
+    try:
+        ts, _note = w.times()
+        ok = len(ts) == 2 and w.down() is None
+    except X.WitnessDown as e:
+        ok, ts = False, str(e)
+    w.close()
+    check(bad, "witness", "control: a running witness is judged, and down() is None after close",
+          ok and w.down() is None and w.bus.shut, ts)
+    w = bare_witness(DyingBus(good=0, raises=False))
+    check(bad, "witness", "a thread not running (never started) is down",
+          w.down() == "witness thread not running", w.down())
+
+    def sub(a, rec, con, wit):
+        raise X.WitnessDown("witness read failed at 1.000: RuntimeError: x")
+    rec = {}
+    X.run_guarded(sub, Args(sub="boot-silence"), rec, None, None)
+    check(bad, "witness", "run_guarded: WitnessDown -> NOT-RUN, not a verdict",
+          rec.get("verdict") == "NOT-RUN" and "witness down" in rec.get("why", ""), rec)
+    lag_cases(bad)
+
+
+def closed_witness(lag, n=4):
+    """An x2_jammer.Witness after close(), holding n error frames received `lag` s after
+    their hardware stamps."""
+    import threading
+    w = bare_witness(DyingBus(good=0, raises=False))
+    w.stop_flag.set()
+    t = 1000.0      # a small base, so 1000.25 - 1000 is 0.25 exactly
+    w.err = [(t + k, t + k + lag) for k in range(n)]
+    return w
+
+
+def lag_cases(bad):
+    """The timing subs' lag bound (gen-inhibit reviewer, 2026-11-13): pulses and timeout
+    VOID unless the median receipt lag is under TIMING_LAG_S (0.25 s), fixed in the code."""
+    check(bad, "lag", "the bound is 0.25 s, under the judges' 0.3 s margin",
+          X.TIMING_LAG_S == 0.25, X.TIMING_LAG_S)
+    for label, lag, timing, want in (
+            ("lag 0.001 s, timing: judged", 0.001, True, "ok"),
+            ("lag 0.24 s, timing: judged", 0.24, True, "ok"),
+            ("lag 0.25 s, timing: VOID (not under the bound)", 0.25, True, "void"),
+            ("lag 0.3 s, timing: VOID", 0.3, True, "void"),
+            ("lag -0.3 s (stamps ahead), timing: VOID", -0.3, True, "void"),
+            ("lag 1.5 s, not timing: judged (2 s sanity limit only)", 1.5, False, "ok")):
+        try:
+            closed_witness(lag).times(timing=timing)
+            got = "ok"
+        except X.LagVoid as e:
+            got = "void" if abs(e.lag - lag) < 1e-3 else "void, lag %r" % e.lag
+        check(bad, "lag", label, got == want, got)
+    w = bare_witness(DyingBus(good=0, raises=False))
+    w.stop_flag.set()
+    try:
+        ts, note = w.times(timing=True)
+        ok = ts == [] and note == X.WC.NONE
+    except X.LagVoid as e:
+        ok = str(e)
+    check(bad, "lag", "nothing heard, timing: no lag to bound, judged on the counts", ok is True, ok)
+
+    def sub(a, rec, con, wit):
+        wit.times(timing=True)
+    rec = {}
+    X.run_guarded(sub, Args(sub="timeout"), rec, None, closed_witness(0.4))
+    check(bad, "lag", "run_guarded: LagVoid -> VOID with the lag, not a verdict",
+          str(rec.get("verdict", "")).startswith("VOID")
+          and abs((rec.get("timing_lag_void") or 0) - 0.4) < 1e-3, rec)
+    WITS[:] = []
+    fake_pulses(Args(sub="pulses", no_wican=True))
+    check(bad, "lag", "pulses asks for the timing bound", WITS and WITS[-1].asked == [True],
+          WITS and WITS[-1].asked)
+    WITS[:] = []
+    fake_timeout(Args(sub="timeout", w=20, p=5000, ms=2000, expect_ms=0, control_ms=0, host_quiet=False),
+                 "end=stopped stop_by=deadline_timer", 1.99)
+    check(bad, "lag", "timeout asks for the timing bound", WITS and WITS[-1].asked == [True],
+          WITS and WITS[-1].asked)
 
 
 class FakeJammer:
@@ -289,8 +938,8 @@ class FakeJammer:
     (its uptime, unless uptime_us is None) and its mcp2515 line, any other word is
     unknown_command."""
 
-    def __init__(self, pending="", uptime_us=3600 * 10 ** 6):
-        self.buf, self.out, self.uptime_us = pending, [], uptime_us
+    def __init__(self, pending="", uptime_us=3600 * 10 ** 6, banner=None):
+        self.buf, self.out, self.uptime_us, self.banner = pending, [], uptime_us, banner
 
     def feed(self, data, t):
         for ch in data:
@@ -302,7 +951,9 @@ class FakeJammer:
             words, self.buf = self.buf.split(), ""
             if not words:
                 continue
-            if words[0] == "ID":
+            if words[0] == "ID" and self.banner is not None:
+                lines = list(self.banner)       # the ESP-IDF port's five lines
+            elif words[0] == "ID":
                 up = "" if self.uptime_us is None else " uptime_us=%d" % self.uptime_us
                 lines = ["JAMMER src_digest=0123abcd tx=GPIO7(CAN1/TWAI) reset_reason=1" + up,
                          "JAMMER mcp2515 canstat=0x80 canctrl=0x87 config_mode=yes"]
@@ -316,9 +967,15 @@ class FakeCon:
     """The console: opened 1 s before it is made, then `events` after the open."""
 
     def __init__(self, jam, events=()):
+        import threading
         self.jam = jam
+        self.lock = threading.Lock()
         t = time.time()
         self.events = [(t - 1.0, "open")] + [(t - 0.5, e) for e in events]
+
+    @property
+    def lines(self):
+        return self.jam.out
 
     def send(self, line):
         self.jam.feed(line + "\n", time.time())

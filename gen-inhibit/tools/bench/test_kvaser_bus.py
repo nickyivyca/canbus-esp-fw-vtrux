@@ -7,10 +7,12 @@ scan gen-inhibit's tools for an open that goes round it (gen-inhibit reviewer, 2
             and open nothing when the pin or the fixes refuse; the fixes apply once a process;
             close_gs_usb() shuts the bus down, then releases its pyusb handle through canbench's
             release_gs_usb, also when the shutdown raises; bus() sends kvaser and gs_usb through
-            the two openers, and anything else straight to can.Bus with its arguments
+            the two openers, and anything else straight to can.Bus with its arguments;
+            pcan_witness_bus() (2026-11-13) opens the pinned canbench's CanbenchPcanBus with
+            the caller's arguments and its bus-off reset off, after the guard and the pin
   guard     (reviewer, 2026-11-12) require_bench() runs first: with the lock free, unreadable,
             held by another role, or held under a pid that is neither this process nor an
-            ancestor, kvaser_bus(), gs_usb_bus() and bus(interface="kvaser") raise BenchNotHeld
+            ancestor, kvaser_bus(), gs_usb_bus(), pcan_witness_bus() and bus(interface="kvaser") raise BenchNotHeld
             before the pin, the fixes or an open; held by a gen-inhibit role under this process's
             pid (a runner) or an ancestor's (a hand take's session; the implementor on a loan),
             they open. _ancestors() walks /proc. In a child, the REAL guard: the real kvaser_bus,
@@ -103,9 +105,13 @@ def check(name, ok, detail=""):
 class Fakes:
     """A fake can, a fake pin tool and a fake pinned canbench, all logging to one list."""
 
-    def __init__(self, use_raises=False, apply_raises=False, shutdown_raises=False, holder="ours"):
+    LEAF = "Kvaser Leaf Light v2, S/N 1 (#1)"
+
+    def __init__(self, use_raises=False, apply_raises=False, shutdown_raises=False, holder="ours",
+                 kv_info=LEAF):
         """holder: the bench log's holder _lock_holder gives: "ours" (tester (gen-inhibit) with
-        this process's pid), None (free), "raise" (unreadable), or a dict."""
+        this process's pid), None (free), "raise" (unreadable), or a dict. kv_info: the opened
+        bus's channel_info ("absent": no such attribute)."""
         self.holder = {"who": "tester (gen-inhibit)", "pid": os.getpid(), "run": None} if holder == "ours" \
             else holder
         self.log = []
@@ -116,6 +122,8 @@ class Fakes:
         class Bus:
             def __init__(self, **kw):
                 self.kw = kw
+                if kv_info != "absent":
+                    self.channel_info = kv_info
                 log.append(("Bus", kw))
 
             def shutdown(self):
@@ -138,9 +146,17 @@ class Fakes:
         lf.apply = apply
         rc = types.ModuleType("canbench.live.receiver")
         rc.release_gs_usb = lambda b: log.append(("release", b))
+        pb = types.ModuleType("canbench.live.pcan_bus")
+
+        class CanbenchPcanBus:
+            def __init__(self, **kw):
+                self.kw = kw
+                log.append(("Pcan", kw))
+        pb.CanbenchPcanBus = CanbenchPcanBus
         self.pinned = {"canbench": types.ModuleType("canbench"),
                        "canbench.live": types.ModuleType("canbench.live"),
-                       "canbench.live.linux_fixes": lf, "canbench.live.receiver": rc}
+                       "canbench.live.linux_fixes": lf, "canbench.live.receiver": rc,
+                       "canbench.live.pcan_bus": pb}
         self.saved = {}
 
     def pin_tool(self):
@@ -206,6 +222,27 @@ def unit():
               f.log[-1][1] == {"interface": "kvaser", "channel": 0, "bitrate": 500000, "driver_mode": True}
               and b.kw is f.log[-1][1], f.log[-1])
     case("kvaser_bus: opens", kvaser_open)
+
+    def virtual():
+        # madhouse 2026-11-13 01:06: the Leaf wedged, CANlib listed only its virtual channels
+        for label, info in (("Kvaser Virtual CAN (2026-11-13)", "Kvaser Virtual CAN, S/N 1 (#1)"),
+                            ("a lower-case virtual name", "kvaser virtual can"),
+                            ("no channel_info", "absent"), ("a channel_info that is not text", None)):
+            f = Fakes(kv_info=info)
+            raised = None
+            with f as kb:
+                try:
+                    kb.kvaser_bus(channel=0, bitrate=500000)
+                except Exception as e:      # noqa: BLE001
+                    raised = e
+                vc = kb.VirtualChannel
+            check("kvaser_bus: %s -> VirtualChannel, and the bus it opened is shut" % label,
+                  isinstance(raised, vc) and f.kinds()[-2:] == ["Bus", "shutdown"], (raised, f.log))
+        f = Fakes()
+        with f as kb:
+            kb.kvaser_bus(channel=0, bitrate=500000)
+        check("kvaser_bus: the Leaf's channel_info opens, nothing shut", "shutdown" not in f.kinds(), f.log)
+    case("kvaser_bus: a virtual channel refused", virtual)
 
     def once():
         f = Fakes()
@@ -286,6 +323,27 @@ def unit():
               f.log and f.log[-1] == ("Bus", cfg) and cfg["interface"] == "pcan", f.log)
     case("bus: routes", router)
 
+    def pcan_witness():
+        # 2026-11-13, the reviewer's ruling (C): the PCAN as the session's timing witness
+        f = Fakes()
+        with f as kb:
+            b = kb.pcan_witness_bus(channel="PCAN_USBBUS1", bitrate=500000)
+        check("pcan_witness_bus: the lock checked first, then the pin loaded, then the pinned CanbenchPcanBus",
+              f.kinds() == ["lock", "use", "Pcan"], f.log)
+        check("pcan_witness_bus: the caller's arguments, and the bus-off reset off",
+              f.log[-1][1] == {"channel": "PCAN_USBBUS1", "bitrate": 500000, "canbench_busoff_reset": False}
+              and b.kw is f.log[-1][1], f.log[-1])
+        f = Fakes(use_raises=True)
+        raised = None
+        with f as kb:
+            try:
+                kb.pcan_witness_bus(channel="PCAN_USBBUS1", bitrate=500000)
+            except Exception as e:      # noqa: BLE001
+                raised = e
+        check("pcan_witness_bus: the pin refuses -> raises, and nothing is opened",
+              raised is not None and "Pcan" not in f.kinds(), (raised, f.log))
+    case("pcan_witness_bus: opens", pcan_witness)
+
     # the bench guard (reviewer, 2026-11-12): no real open without the lock
     me, parent = os.getpid(), os.getppid()
     for label, holder in (
@@ -296,7 +354,8 @@ def unit():
             ("the lock held by tester (gen-inhibit) under a pid that is no ancestor",
              {"who": "tester (gen-inhibit)", "pid": 2 ** 22 + 7, "run": None})):
         for opener, kw in (("kvaser_bus", {"channel": 0, "bitrate": 500000}),
-                           ("gs_usb_bus", {"channel": "can0", "index": 0, "bitrate": 500000})):
+                           ("gs_usb_bus", {"channel": "can0", "index": 0, "bitrate": 500000}),
+                           ("pcan_witness_bus", {"channel": "PCAN_USBBUS1", "bitrate": 500000})):
             def go(label=label, holder=holder, opener=opener, kw=kw):
                 f = Fakes(holder=holder)
                 raised = None
@@ -642,8 +701,17 @@ MUTANTS = [
      '        return {"who": ROLES[0], "pid": os.getpid()}\n        raise BenchNotHeld("vtrux_bench is not importable'),
     ("_ancestors stops at this process", '        pid = int(stat.rsplit(")", 1)[1].split()[1])\n', "        break\n"),
     ("kvaser_bus applies the fixes after the open",
-     '    fixes()\n    import can\n    return can.Bus(interface="kvaser", **kw)\n',
-     '    import can\n    b = can.Bus(interface="kvaser", **kw)\n    fixes()\n    return b\n'),
+     '    fixes()\n    import can\n    b = can.Bus(interface="kvaser", **kw)\n',
+     '    import can\n    b = can.Bus(interface="kvaser", **kw)\n    fixes()\n'),
+    # a virtual channel refused (2026-11-13)
+    ("kvaser_bus: a virtual channel opens", '    if not isinstance(info, str) or "virtual" in info.lower():\n',
+     "    if not isinstance(info, str):\n"),
+    ("kvaser_bus: no channel_info opens", '    if not isinstance(info, str) or "virtual" in info.lower():\n',
+     '    if isinstance(info, str) and "virtual" in info.lower():\n'),
+    ("kvaser_bus: the name compared case-sensitively", '"virtual" in info.lower():\n', '"Virtual" in info:\n'),
+    ("kvaser_bus: the refused bus left open", "        b.shutdown()\n        raise VirtualChannel(",
+     "        raise VirtualChannel("),
+    ("kvaser_bus: a virtual channel returned", "        raise VirtualChannel(", "        return b\n        raise VirtualChannel("),
     ("the fixes are not taken from the pin", "    _pin_tool().use()\n    return importlib.import_module(",
      "    return importlib.import_module("),
     ("the fixes apply on every open", "    if _fixes is None:\n", "    if True:\n"),
@@ -661,6 +729,15 @@ MUTANTS = [
     ("bus() opens the Innomaker straight", '    if iface == "gs_usb":\n        return gs_usb_bus(**kw)\n', ""),
     ("bus() drops the caller's arguments", "    return can.Bus(interface=iface, **kw)\n",
      "    return can.Bus(interface=iface)\n"),
+    # the PCAN witness (2026-11-13, ruling (C))
+    ("pcan_witness_bus opens without the guard",
+     '    require_bench()\n    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n',
+     '    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n'),
+    ("pcan_witness_bus resets on bus-off", "CanbenchPcanBus(canbench_busoff_reset=False, **kw)",
+     "CanbenchPcanBus(**kw)"),
+    ("pcan_witness_bus: the class not taken from the pin",
+     '    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n',
+     '    mod = importlib.import_module("canbench.live.pcan_bus")\n'),
     ("the pin tool is not the project's", 'PIN_TOOL = os.path.join(os.path.dirname(HERE), "can_tools_pin.py")\n',
      'PIN_TOOL = os.path.join(os.path.dirname(HERE), "can_tools_pin_missing.py")\n'),
 ]

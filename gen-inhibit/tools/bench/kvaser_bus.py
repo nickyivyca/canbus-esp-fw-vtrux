@@ -9,7 +9,13 @@ canbench comes from gen-inhibit's can-tools pin (tools/can_tools_pin.json, the i
 loaded by file from scratch/can-tools/<commit>/ by can_tools_pin.use(), which refuses a
 canbench imported from anywhere else (AGENTS.md "can-tools").
 
-  kvaser_bus(**kw)     linux_fixes.apply(), then can.Bus(interface="kvaser", **kw)
+  kvaser_bus(**kw)     linux_fixes.apply(), then can.Bus(interface="kvaser", **kw); a channel
+                       whose channel_info names a virtual channel (or gives none) is shut and
+                       VirtualChannel raised. On madhouse, 2026-11-13 01:06, after the Leaf
+                       failed with "canWrite hardware error -15" in another holder's replay,
+                       CANlib listed only its two "Kvaser Virtual CAN" channels, so channel 0
+                       opened a virtual bus that sends and hears nothing on the wire, and a
+                       witness on it would have read an empty bus.
   gs_usb_bus(**kw)     linux_fixes.apply(), then can.Bus(interface="gs_usb", **kw)
   close_gs_usb(bus)    bus.shutdown(), then canbench's release_gs_usb(bus). python-can's
                        GsUsbBus.shutdown() leaves the pyusb handle open, so a second open in
@@ -36,7 +42,10 @@ canbench imported from anywhere else (AGENTS.md "can-tools").
                        real Kvaser through this module (2026-11-12, test_e4_rawpost.py): a
                        host test fakes this module, or its _lock_holder, and never needs the
                        lock. The PCAN and other interfaces opened straight through can.Bus are
-                       not guarded here.
+                       not guarded here; the PCAN as a witness is (pcan_witness_bus).
+  pcan_witness_bus(**kw)  (2026-11-13) the guard, then the pinned canbench's CanbenchPcanBus
+                       with its bus-off reset off: x2_jammer's session witness
+                       (bench_witness.PcanWitness)
 
 Every harness file opens these adapters through this module; test_kvaser_bus.py scans for a
 can.Bus that opens either directly, or with an interface named at run time. The tools import
@@ -54,6 +63,10 @@ _fixes = None
 
 
 class BenchNotHeld(RuntimeError):
+    pass
+
+
+class VirtualChannel(RuntimeError):
     pass
 
 
@@ -128,7 +141,13 @@ def kvaser_bus(**kw):
     require_bench()
     fixes()
     import can
-    return can.Bus(interface="kvaser", **kw)
+    b = can.Bus(interface="kvaser", **kw)
+    info = getattr(b, "channel_info", None)
+    if not isinstance(info, str) or "virtual" in info.lower():
+        b.shutdown()
+        raise VirtualChannel("kvaser channel %r is %r, not the bench's Kvaser: CANlib lists only "
+                             "its virtual channels when the Leaf is not presented" % (kw.get("channel"), info))
+    return b
 
 
 def gs_usb_bus(**kw):
@@ -144,6 +163,19 @@ def close_gs_usb(b):
     finally:
         _pin_tool().use()
         importlib.import_module("canbench.live.receiver").release_gs_usb(b)
+
+
+def pcan_witness_bus(**kw):
+    """The PCAN as a timing witness (2026-11-13, the gen-inhibit reviewer's ruling (C)): the
+    bench guard first, then the pinned canbench's CanbenchPcanBus, which hands up PCAN-Basic's
+    status messages and bus states as controller-state error frames instead of data frames or
+    an exception (python-can 4.6.1 raises on a bus-passive Read). canbench_busoff_reset=False:
+    a witness never resets its own controller, so its device clock runs on through the
+    session (a reset would also restart it)."""
+    require_bench()
+    _pin_tool().use()
+    mod = importlib.import_module("canbench.live.pcan_bus")
+    return mod.CanbenchPcanBus(canbench_busoff_reset=False, **kw)
 
 
 def bus(**kw):
