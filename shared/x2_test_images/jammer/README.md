@@ -121,6 +121,7 @@ the port before any image runs.
 | `main/` | the app: start-up, console, MCP2515 reset; see `main/README.md` |
 | `components/` | `jam_pulse`, the pulse engine; see `components/README.md` |
 | `test/` | host tests on fakes and their mutants; see `test/README.md` |
+| `VERIFICATION.md` | the bench and off-board test results for each build, against SPEC T8 and the bench checks below |
 
 ## Building
 
@@ -166,7 +167,8 @@ Custody of the X2 (dump, flash, restore) is
 `gen-inhibit/tools/bench/x2_flash_custody.py` under `shared/bench/SPEC.md`
 section 8.
 
-**Not shown on the bench:** that stop (a), the `esp_timer`, stops a train
-on its own. On the PlatformIO jammer every train ended through stop (b)
-(`end=deadline_layer_b`, `stop_by=none`). It stays here until the
-`stop_a_only` check above passes.
+Results are in `VERIFICATION.md`. On the PlatformIO jammer every train
+ended through stop (b) (`end=deadline_layer_b`, `stop_by=none`), so stop (a)
+on its own was never shown there. On the port's first builds (`9e017baa`)
+the `stop_a_only` check passed on the bench on 2026-11-13. B5-B8 have not
+been run yet.
