@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mutants of witness_anchor.py, bench_witness.py and x2_jammer.py's session and can2-isolation
-parts (the gen-inhibit reviewer's ruling (C), 2026-11-13); test_jammer_witnesses.py must fail on
+parts (the gen-inhibit reviewer's ruling (C), 2026-11-13, and its ruling (3) the same day: a
+fresh PCAN open per train, one anchor per open); test_jammer_witnesses.py must fail on
 each BY A CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
     py -3.13 -B gen-inhibit/tools/bench/test_jammer_witnesses_mutants.py
@@ -9,7 +10,9 @@ Each mutant is a copy of the three sources, the test and the modules they import
 worktree's scratch/, one edit applied to one file. The control, the unmutated copy, must pass
 with no crash first. The ruling names two of them: the offset shifted 0.3 s late must VOID
 (m1, m2), and a can2-isolation judge that judges a window on a Kvaser stamp must be caught
-(the "window on a stamp" mutants).
+(the "window on a stamp" mutants). Ruling (3) names three: the witness opened at the train's
+start, a lead over the 0.4 s bound, and a check judged on another open's anchor (the "train:"
+and "per open:" mutants).
 
 Not mutants (equivalent, so no test can kill them): dropping anchor()'s own "maps after its
 receipt" check alone (with the offset taken as the minimum no frame can map after its receipt;

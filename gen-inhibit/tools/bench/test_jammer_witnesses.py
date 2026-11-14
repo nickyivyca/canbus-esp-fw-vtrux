@@ -447,6 +447,9 @@ def session_args(spec_list, no_wican=True):
 
 
 def parse_cases():
+    # first: a lead over its bound refuses every train, and the parses below would crash before it
+    check("session", "the train's lead is fixed at no more than 0.4 s, 90 pulses",
+          X.LEAD_S <= 0.4 and X.LEAD_MAX_S <= 0.4 and X.LEAD_PULSES_MAX <= 90, (X.LEAD_S, X.LEAD_MAX_S))
     ap, checks = session_args(["boot-silence --resets 1", "pulses --n 3", "timeout --p 5000 --ms 2000 --control-ms 1000",
                                "noduration"])
     check("session", "four checks parsed, --no-wican inherited",
@@ -467,8 +470,6 @@ def parse_cases():
         except ValueError as e:
             got = str(e)
         check("session", "refused: %s" % label, got is not None and want in got, got)
-    check("session", "the train's lead is fixed at no more than 0.4 s, 90 pulses",
-          X.LEAD_S <= 0.4 and X.LEAD_MAX_S <= 0.4 and X.LEAD_PULSES_MAX <= 90, (X.LEAD_S, X.LEAD_MAX_S))
     try:
         X.parse_checks(ap, ["timeout --p 4445 --ms 2000"], True)
         got = None
