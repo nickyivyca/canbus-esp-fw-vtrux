@@ -17,6 +17,16 @@ per call:
                         (0 for an address not named)
   FAKE_ESPTOOL_FLASH    a file read_flash copies to its output path
   FAKE_ESPTOOL_FAIL     a command name that fails (exit 2, "A fatal error occurred")
+  FAKE_ESPTOOL_CHIP_FLASH  a whole-flash image (2026-11-13, x2_flash_custody verify-row):
+                        when set, read_flash <off> <size> <out> writes that slice of it
+                        (ALL: the whole), and verify_flash compares each file with it at
+                        its offset, printing 4.13.0's lines for each, "Verifying 0x<n> (<n>)
+                        bytes @ 0x<off, 8 digits> in flash against <file>..." then "-- verify
+                        OK (digest matched)" or "-- verify FAILED (digest mismatch)", and
+                        "A fatal error occurred: Verify failed." with exit 2 if any differs.
+                        Unset, verify_flash prints OK for every file, as before
+  FAKE_ESPTOOL_RC       "<command>=<exit>": that command exits so after its output
+`run` prints esptool's reset line and exits 0.
 """
 import os
 
@@ -24,7 +34,7 @@ MAIN = r'''
 import json, os, shutil, sys
 import esptool
 
-COMMANDS = ("version", "chip_id", "read_mem", "read_flash", "write_flash", "verify_flash")
+COMMANDS = ("version", "chip_id", "read_mem", "read_flash", "write_flash", "verify_flash", "run")
 argv = sys.argv[1:]
 log = os.environ.get("FAKE_ESPTOOL_LOG")
 if log:
@@ -50,12 +60,19 @@ if os.environ.get("FAKE_ESPTOOL_FAIL") == cmd:
     sys.exit(2)
 rest = argv[k + 1:]
 regs = {int(a, 16): v for a, v in json.loads(os.environ.get("FAKE_ESPTOOL_REGS") or "{}").items()}
+chip = open(os.environ["FAKE_ESPTOOL_CHIP_FLASH"], "rb").read() if os.environ.get("FAKE_ESPTOOL_CHIP_FLASH") else None
 if cmd == "chip_id":
     print("Chip is ESP32-S3 (QFN56) (revision v0.2)")
     print("MAC: 00:00:5e:00:53:01")
 elif cmd == "read_mem":
     a = int(rest[0], 16)
     print("0x%08x = 0x%08x" % (a, regs.get(a, 0)))
+elif cmd == "read_flash" and chip is not None:
+    off = int(rest[0], 0)
+    data = chip[off:] if rest[1] == "ALL" else chip[off:off + int(rest[1], 0)]
+    with open(rest[2], "wb") as f:
+        f.write(data)
+    print("Read %d bytes" % len(data))
 elif cmd == "read_flash":
     shutil.copyfile(os.environ["FAKE_ESPTOOL_FLASH"], rest[2])
     print("Read %d bytes" % os.path.getsize(rest[2]))
@@ -63,10 +80,28 @@ elif cmd == "write_flash":
     for p in rest[1::2]:
         print("Wrote %s" % p)
         print("Hash of data verified.")
+elif cmd == "verify_flash" and chip is not None:
+    differ = False
+    for off, p in zip(rest[0::2], rest[1::2]):
+        data = open(p, "rb").read()
+        off = int(off, 0)
+        print("Verifying 0x%x (%d) bytes @ 0x%08x in flash against %s..." % (len(data), len(data), off, p))
+        same = chip[off:off + len(data)] == data
+        differ = differ or not same
+        print("-- verify OK (digest matched)" if same else "-- verify FAILED (digest mismatch)")
+    if differ:
+        print("")
+        print("A fatal error occurred: Verify failed.")
+        sys.exit(2)
 elif cmd == "verify_flash":
     for p in rest[1::2]:
         print("Verifying %s" % p)
         print("-- verify OK (digest matched)")
+elif cmd == "run":
+    print("Hard resetting via RTS pin...")
+for spec in (os.environ.get("FAKE_ESPTOOL_RC") or "").split(","):
+    if spec.partition("=")[0] == cmd:
+        sys.exit(int(spec.partition("=")[2]))
 '''
 
 INIT = r'''

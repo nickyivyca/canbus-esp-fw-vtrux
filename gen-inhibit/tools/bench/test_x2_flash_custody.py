@@ -34,6 +34,10 @@ file in offset order and the record keeps the row; each check of the row refuses
 reason and nothing written; --build still flashes the PlatformIO row. esptool_main_cases()
 adds --row through main(), the argument refusals and check-row.
 
+verify-row (gen-inhibit reviewer, 2026-11-13: T10's identity with committed harness):
+verify_row_cases(), through main() on _fake_esptool.py with a whole-flash image; its can-fail
+is another row's build on the flash, which must FAIL.
+
 Run: python3.13 gen-inhibit/tools/bench/test_x2_flash_custody.py
 """
 import os
@@ -651,11 +655,15 @@ def esptool_main_cases():
         if not ok:
             bad.append(label)
 
-    def run(args, version="4.13.0", argv=good, device="good"):
+    last = {}
+
+    def run(args, version="4.13.0", argv=good, device="good", extra=None):
         """(exit, record, cli lines): main() with sys.argv set, in-process. device: "good"
-        (the X2's IDs), None (GI_X2_DEVICE unset) or the variable's text."""
-        keys = ("PYTHONPATH", "FAKE_ESPTOOL_FLASH", "FAKE_ESPTOOL_LOG", "FAKE_ESPTOOL_VERSION", "GI_ESPTOOL_ARGV") \
-            + tuple(serial_env)
+        (the X2's IDs), None (GI_X2_DEVICE unset) or the variable's text. extra: more
+        FAKE_ESPTOOL_* settings for this call. last["files"]: every file the call left in its
+        runs folder, the record's name included."""
+        keys = ("PYTHONPATH", "FAKE_ESPTOOL_FLASH", "FAKE_ESPTOOL_LOG", "FAKE_ESPTOOL_VERSION", "GI_ESPTOOL_ARGV",
+                "FAKE_ESPTOOL_CHIP_FLASH", "FAKE_ESPTOOL_FAIL", "FAKE_ESPTOOL_RC") + tuple(serial_env)
         saved_env = {k: os.environ.get(k) for k in keys}
         saved_argv, saved_runs = sys.argv, C.RUNS
         if os.path.exists(log):
@@ -663,6 +671,9 @@ def esptool_main_cases():
         runs = os.path.join(WORK, "runs")
         gi_paths.remove_tree(runs)
         os.environ.update(env_fake, FAKE_ESPTOOL_FLASH=flash, FAKE_ESPTOOL_LOG=log, FAKE_ESPTOOL_VERSION=version)
+        for k in ("FAKE_ESPTOOL_CHIP_FLASH", "FAKE_ESPTOOL_FAIL", "FAKE_ESPTOOL_RC"):
+            os.environ.pop(k, None)
+        os.environ.update(extra or {})
         os.environ.pop("GI_ESPTOOL_ARGV", None)
         if argv is not None:
             os.environ["GI_ESPTOOL_ARGV"] = json.dumps(argv)
@@ -684,7 +695,8 @@ def esptool_main_cases():
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
-        recs = sorted(os.listdir(runs)) if os.path.isdir(runs) else []
+        last["files"] = sorted(os.listdir(runs)) if os.path.isdir(runs) else []
+        recs = [n for n in last["files"] if n.startswith("x2_flash_custody_") and n.endswith(".json")]
         rec = None
         if len(recs) == 1:
             with open(os.path.join(runs, recs[0]), encoding="ascii") as fh:
@@ -775,6 +787,7 @@ def esptool_main_cases():
             check("main dump with --row: REFUSED before esptool and port",
                   rc == 1 and rec3 and rec3.get("verdict") == "REFUSED" and "takes no --row" in rec3.get("why", "")
                   and not cli and sorted(os.listdir(C.BACKUPS)) == kept, (rc, rec3, cli))
+            verify_row_cases(run, last, check, port)   # its checks go to this function's bad
         finally:
             C.X2IMG = saved_x2img
         for label, kw, want in (("esptool 5.0.2", {"version": "5.0.2"}, "5.0.2"),
@@ -836,6 +849,155 @@ def esptool_main_cases():
               rc == 1 and rec8 and rec8.get("verdict") == "FAIL" and rec8.get("reads_match") is True
               and NEITHER[:8] in rec8.get("why", ""), (rc, rec8 and {k: rec8.get(k) for k in ("verdict", "why")}))
     return bad
+
+
+# esptool 4.13.0's verify_flash output on the bench X2, 2026-11-13 18:50 (stop_b row), the
+# folder shortened and the connect lines left out: the parser is checked on the real lines,
+# not only on the stand-in's
+REAL_VERIFY = """Configuring flash size...
+Verifying 0x39a0 (14752) bytes @ 0x00000000 in flash against /x/builds/185f22b8726ecc32/bootloader.bin...
+-- verify OK (digest matched)
+Verifying 0xc00 (3072) bytes @ 0x00008000 in flash against /x/builds/185f22b8726ecc32/partition-table.bin...
+-- verify OK (digest matched)
+Verifying 0x2000 (8192) bytes @ 0x0000e000 in flash against /x/builds/185f22b8726ecc32/ota_data_initial.bin...
+-- verify FAILED (digest mismatch)
+Verifying 0x3ad20 (240928) bytes @ 0x00010000 in flash against /x/builds/185f22b8726ecc32/jammer_stop_b_NOT_FOR_VEHICLE.bin...
+-- verify OK (digest matched)
+
+A fatal error occurred: Verify failed.""".splitlines()
+
+
+def verify_row_cases(run, last, check, port):
+    """verify-row (gen-inhibit reviewer, 2026-11-13: x2_test_images SPEC T10's identity with
+    committed harness): through main() on the stand-in esptool with a whole-flash image
+    (FAKE_ESPTOOL_CHIP_FLASH). The row's own files on the flash, otadata marked VALID by the
+    app -> PASS: verify_flash, read-otadata, run, in that order. The can-fail: another row's
+    build on the flash -> FAIL; so for a changed bootloader, and for otadata selecting the
+    other slot. esptool unable to look, its exit not matching its lines, and run failing ->
+    ERROR. Refusals before any board command. check() records each failure in the caller's
+    list."""
+    got = C.verify_results(REAL_VERIFY)
+    check("verify-row: the real 4.13.0 lines parse, otadata FAILED, the rest OK",
+          got == {0x0: "OK", 0x8000: "OK", 0xE000: "FAILED", 0x10000: "OK"}, got)
+    got = C.verify_results(REAL_VERIFY[:2] + ["-- verify OK"])
+    check("verify-row: a result line not the pinned version's gives None",
+          got == {0x0: None}, got)
+
+    def chip_from(row, ota=None, flip_at=None):
+        """A whole-flash image holding row's files at their offsets, otadata replaced by ota,
+        one byte flipped at flip_at."""
+        img = bytearray(b"\xff" * 0x20000)
+        folder = os.path.join(X2IMG_FAKE, row["folder"])
+        for f in row["files"]:
+            data = open(os.path.join(folder, f["name"]), "rb").read()
+            o = int(f["offset"], 16)
+            img[o:o + len(data)] = data
+        if ota is not None:
+            img[0xE000:0xE000 + len(ota)] = ota
+        if flip_at is not None:
+            img[flip_at] ^= 1
+        p = os.path.join(WORK, "chip_%d.bin" % len(os.listdir(WORK)))
+        with open(p, "wb") as fh:
+            fh.write(bytes(img))
+        return p
+
+    def cmds(cli):
+        return [c.split()[6] if len(c.split()) > 6 else c for c in cli]
+
+    row_b = x2img_fixture(variant="stop_a_only", pn=STOP_A_PN, pt=JAMMER_PT)
+    chip_b = chip_from(row_b, ota_blob([(0, 1, 2, False)]))     # another row's build on the flash
+    row = x2img_fixture(pt=JAMMER_PT)
+    rid = row["folder"].split("/")[1]
+    args = ["verify-row", "--row", rid, "--variant", "jammer"]
+    valid = ota_blob([(0, 1, 2, False)])                       # seq 1, VALID: the app's mark
+
+    rc, rec, cli = run(args, extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_from(row, valid)})
+    v = (rec or {}).get("verify") or {}
+    check("verify-row: the row on the flash, otadata VALID -> PASS, exit 0",
+          rc == 0 and rec and rec.get("verdict") == "PASS", (rc, rec and rec.get("why")))
+    check("verify-row: version, verify_flash, read_flash of otadata, run, in that order",
+          cmds(cli) == ["version", "verify_flash", "read_flash", "run"]
+          and cli[1].split()[7::2] == ["0x0", "0x8000", "0xe000", "0x10000"]
+          and cli[2].split()[7:9] == ["0xe000", "0x2000"] and cli[1].split()[3] == port, cli)
+    check("verify-row: otadata differs and is not judged; every other file OK and judged",
+          [(f.get("offset"), f.get("result"), f.get("judged")) for f in v.get("files", [])]
+          == [("0x0", "OK", True), ("0x8000", "OK", True), ("0xe000", "FAILED", False), ("0x10000", "OK", True)]
+          and v.get("verdict") == "PASS", v)
+    check("verify-row: the whole verify output kept beside the record, otadata read and kept",
+          v.get("log") in last["files"] and any(n.startswith("x2_otadata_%s_" % rid) for n in last["files"])
+          and ((rec or {}).get("otadata_read") or {}).get("verdict") == "PASS"
+          and ((rec or {}).get("run") or {}).get("rc") == 0, (last["files"], rec))
+    check("verify-row: the record keeps the row, the port and esptool's version",
+          rec and (rec.get("row") or {}).get("folder") == row["folder"]
+          and (rec.get("row") or {}).get("code_hash") == row["code_hash"] and rec.get("port") == port
+          and rec.get("esptool_version") == "4.13.0", rec)
+    rc, rec, cli = run(args, extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_from(row, ota_blob())})
+    check("verify-row: otadata still the initial file (erased) -> PASS",
+          rc == 0 and rec and rec.get("verdict") == "PASS", (rc, rec and rec.get("why")))
+    # the can-fail (reviewer, 2026-11-13): a wrong row's files must FAIL
+    rc, rec, cli = run(args, extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_b})
+    check("verify-row can-fail: another row's build on the flash -> FAIL, exit 1, the app named",
+          rc == 1 and rec and rec.get("verdict") == "FAIL" and JAMMER_PN + ".bin" in rec.get("why", "")
+          and ((rec.get("verify") or {}).get("verdict")) == "FAIL", (rc, rec and rec.get("why")))
+    check("verify-row can-fail: run still last after a FAIL (the stub left by verify_flash)",
+          cmds(cli) == ["version", "verify_flash", "read_flash", "run"], cli)
+    rc, rec, cli = run(args, extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_from(row, valid, flip_at=0x10)})
+    check("verify-row: a changed bootloader -> FAIL, naming it",
+          rc == 1 and rec and rec.get("verdict") == "FAIL" and "bootloader.bin" in rec.get("why", ""),
+          (rc, rec and rec.get("why")))
+    rc, rec, cli = run(args, extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_from(row, ota_blob([(0, 2, 2, False)]))})
+    check("verify-row: files match but otadata selects app1 -> FAIL (OTHER-SLOT)",
+          rc == 1 and rec and rec.get("verdict") == "FAIL"
+          and ((rec.get("otadata_read") or {}).get("verdict")) == "OTHER-SLOT", (rc, rec and rec.get("why")))
+    rc, rec, cli = run(args, extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_from(row, valid),
+                                    "FAKE_ESPTOOL_FAIL": "verify_flash"})
+    check("verify-row: verify_flash could not look (no result lines) -> ERROR, run still last",
+          rc == 1 and rec and rec.get("verdict") == "ERROR" and "no verify result" in rec.get("why", "")
+          and cmds(cli)[-1] == "run", (rc, rec and rec.get("why"), cli))
+    rc, rec, cli = run(args, extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_from(row, ota_blob()),
+                                    "FAKE_ESPTOOL_RC": "verify_flash=2"})
+    check("verify-row: every line OK but esptool exits 2 -> ERROR",
+          rc == 1 and rec and rec.get("verdict") == "ERROR" and "does not match its lines" in rec.get("why", ""),
+          (rc, rec and rec.get("why")))
+    rc, rec, cli = run(args, extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_from(row, valid),
+                                    "FAKE_ESPTOOL_FAIL": "read_flash"})
+    check("verify-row: files match but the otadata read failed -> ERROR, run still last",
+          rc == 1 and rec and rec.get("verdict") == "ERROR"
+          and ((rec.get("otadata_read") or {}).get("verdict")) == "ERROR" and cmds(cli)[-1] == "run",
+          (rc, rec and rec.get("why"), cli))
+    rc, rec, cli = run(args, extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_from(row, valid), "FAKE_ESPTOOL_FAIL": "run"})
+    check("verify-row: identity matched but run failed -> ERROR naming the stub",
+          rc == 1 and rec and rec.get("verdict") == "ERROR" and "stub" in rec.get("why", ""),
+          (rc, rec and rec.get("why")))
+    for label, a2, kw, want in (
+            ("the row offered as stop_a_only", ["verify-row", "--row", rid, "--variant", "stop_a_only"], {},
+             "offered as 'stop_a_only'"),
+            ("no --variant", ["verify-row", "--row", rid], {}, "needs --row"),
+            ("--build", ["verify-row", "--build", "a89ece8c"], {}, "takes no --build"),
+            ("GI_ESPTOOL_ARGV unset", args, {"argv": None}, "GI_ESPTOOL_ARGV")):
+        rc, rec, cli = run(a2, extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_from(row, valid)}, **kw)
+        check("verify-row, %s: REFUSED, no board command" % label,
+              rc == 1 and rec and rec.get("verdict") == "REFUSED" and want in rec.get("why", "")
+              and not [c for c in cli if c != "version"], (rc, rec, cli))
+    dev = x2img_fixture(pinnable=False, pt=JAMMER_PT)
+    did = dev["folder"].split("/")[1]
+    chip_d = chip_from(dev, valid)
+    rc, rec, cli = run(["verify-row", "--row", did, "--variant", "jammer"], extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_d})
+    check("verify-row, a dev row without --dev-builder: REFUSED (T7), no board command",
+          rc == 1 and rec and rec.get("verdict") == "REFUSED" and "T7" in rec.get("why", "")
+          and not [c for c in cli if c != "version"], (rc, rec, cli))
+    rc, rec, cli = run(["verify-row", "--row", did, "--variant", "jammer", "--dev-builder", BUILDER],
+                       extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_d})
+    check("verify-row, a dev row with its builder: PASS, dev_builder kept",
+          rc == 0 and rec and rec.get("verdict") == "PASS" and (rec.get("row") or {}).get("dev_builder") == BUILDER,
+          (rc, rec and rec.get("why")))
+    old = x2img_fixture()   # a table the tool cannot read an otadata partition from
+    oid = old["folder"].split("/")[1]
+    rc, rec, cli = run(["verify-row", "--row", oid, "--variant", "jammer"],
+                       extra={"FAKE_ESPTOOL_CHIP_FLASH": chip_d})
+    check("verify-row, a row table with no otadata: REFUSED, no board command",
+          rc == 1 and rec and rec.get("verdict") == "REFUSED" and "otadata partitions" in rec.get("why", "")
+          and not [c for c in cli if c != "version"], (rc, rec, cli))
 
 
 def record_name_cases():

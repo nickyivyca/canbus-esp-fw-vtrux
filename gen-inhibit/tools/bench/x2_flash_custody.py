@@ -42,6 +42,22 @@ full read-back of its flash, never from a rebuild or from .pio.
                  select as ESP-IDF's bootloader does. PASS when that is the row's app
                  offset; OTHER-SLOT otherwise (gen-inhibit reviewer, 2026-11-13: T10's
                  verify_flash found the board's otadata differing from ota_data_initial.bin).
+  verify-row     board, no dump: x2_test_images SPEC T10's identity for a row's build, the
+                 banner's elf= not naming it (gen-inhibit reviewer, ruling (a) and its merge
+                 reply, 2026-11-13). --row, --variant, --dev-builder as check-row. In order:
+                   1. one esptool verify_flash of every file of the row at its offset, the
+                      whole output kept beside the record (x2_verify_<row>_<stamp>.log);
+                      every file must have a result line, and every file but the one at the
+                      row's otadata partition must verify OK. The otadata file is not judged
+                      here: the app marks its slot VALID, so the board's otadata differs from
+                      ota_data_initial.bin after the first boot;
+                   2. read-otadata (above), which must PASS: the board boots the row's app;
+                   3. esptool run, always and last: a failed verify_flash leaves the chip in
+                      esptool's stub, not running its app (2026-11-13, 18:30).
+                 PASS when 1 and 2 pass and run exits 0; FAIL when a judged file differs or
+                 otadata selects another slot (the board holds another build); ERROR when it
+                 could not tell (a file with no result line, esptool's exit not matching its
+                 lines, the otadata read failed) or run failed.
 
 BUILD_LOOKUP COMES FROM THE INTERPOSER'S CLONE (2026-10-08). The SeaDrive copy
 in projects/vtrux/tools/interposer/ is retired; $INTERPOSER_CODE must point at
@@ -113,6 +129,7 @@ esptool and the CAN witness are separate steps and each is recorded.
   python3.13 ... flash-jammer --no-dump --row <16 hex> --variant jammer [--dev-builder "<builder>"]
   python3.13 ... restore --dump-record runs/x2_flash_custody_dump_<stamp>.json
   python3.13 ... read-otadata --row <16 hex> --variant jammer [--dev-builder "<builder>"]
+  python3.13 ... verify-row --row <16 hex> --variant jammer [--dev-builder "<builder>"]
 """
 import argparse
 import hashlib
@@ -134,7 +151,7 @@ RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 BACKUPS = gi_paths.data_dir("board-backups")
 JAMMER = gi_paths.data_dir("x2_jammer")
 X2IMG = gi_paths.x2_test_images("jammer")   # the ESP-IDF port's builds (--row, 2026-11-13)
-ESPTOOL_SUBS = ("dump", "flash-jammer", "restore", "read-otadata")   # the subcommands that run esptool
+ESPTOOL_SUBS = ("dump", "flash-jammer", "restore", "read-otadata", "verify-row")   # the subcommands that run esptool
 _ET = {}    # {"argv", "version"}, checked in main before a board subcommand runs
 
 
@@ -176,19 +193,24 @@ def md5_file(path):
     return h.hexdigest()
 
 
-def esptool(port, *args):
-    """Run esptool; returns (rc, tail of its output). Never given dump bytes."""
+def esptool(port, *args, log=None):
+    """Run esptool; returns (rc, tail of its output). Never given dump bytes. log: a file the
+    whole output is written to, after a line naming the version (verify-row's per-file lines,
+    more than the tail keeps)."""
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     if not _ET.get("argv"):
         raise GE.Refused("esptool was not checked before this call (main checks it)")
     cmd = _ET["argv"] + ["--chip", GE.CHIP, "--port", port, "--baud", "921600"] + list(args)
     p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", env=env)
-    out = (p.stdout + p.stderr).splitlines()
     # esptool's progress bar is non-ASCII; printing it on cp1252 crashed the
     # 2026-10-08 00:49 flash-jammer run after a successful write.
-    keep = [x.encode("ascii", "replace").decode("ascii") for x in out
-            if not x.startswith("Warning: DEPRECATED")][-12:]
+    out = [x.encode("ascii", "replace").decode("ascii") for x in (p.stdout + p.stderr).splitlines()]
+    if log:
+        with open(log, "w", encoding="ascii", newline="\n") as fh:
+            fh.write("esptool version: %s (pinned %s), exit %d\n" % (_ET.get("version"), GE.PINNED, p.returncode))
+            fh.write("\n".join(out) + "\n")
+    keep = [x for x in out if not x.startswith("Warning: DEPRECATED")][-12:]
     return p.returncode, keep
 
 
@@ -672,6 +694,89 @@ def sub_read_otadata(a, rec):
     print("%s: %s" % (rec["verdict"], rec["why"]))
 
 
+# esptool 4.13.0's verify_flash lines (its esptool/cmds.py; seen on the bench X2, 2026-11-13)
+VERIFY_RE = re.compile(r"Verifying 0x[0-9a-f]+ \(\d+\) bytes @ 0x([0-9a-f]+) in flash against .*\.\.\.")
+VERIFY_FAILED = "-- verify FAILED (digest mismatch)"
+
+
+def verify_results(lines):
+    """{offset: "OK" | "FAILED" | None} from verify_flash's output: each "Verifying ... @ 0x<off>
+    in flash against <file>..." line and the line after it, the pinned version's OK line
+    (GE.VERIFY_OK) or its FAILED line; None when the next line is neither."""
+    out = {}
+    for i, ln in enumerate(lines):
+        m = VERIFY_RE.fullmatch(ln.strip())
+        if m:
+            nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            out[int(m.group(1), 16)] = "OK" if nxt == GE.VERIFY_OK else "FAILED" if nxt == VERIFY_FAILED else None
+    return out
+
+
+def sub_verify_row(a, rec):
+    """T10's identity for a row's build: verify_flash of the row's files, read-otadata, then
+    esptool run (module docstring, verify-row)."""
+    try:
+        row, _folder, files = jsonl_row(a)
+    except (RowRefused, OSError) as e:
+        rec.update(verdict="REFUSED", why=str(e))
+        print("REFUSED: %s (nothing run)" % e)
+        return
+    with open(dict(files)[PT_AT], "rb") as fh:
+        ota = [p for p in partitions(b"\xff" * PT_AT + fh.read()) if p[0] == 1 and p[1] == 0]
+    if len(ota) != 1:
+        rec.update(verdict="REFUSED", why="the row's partition table has %d otadata partitions, not 1" % len(ota))
+        print("REFUSED: %s (nothing run)" % rec["why"])
+        return
+    ota_off = ota[0][2]
+    rec["row"] = {k: row.get(k) for k in ("folder", "variant", "project_name", "app_elf_sha256", "app_offset",
+                                          "code_hash", "shared_commit", "shared_tag", "version", "pinnable", "builder")}
+    rec["row"]["dev_builder"] = a.dev_builder
+    os.makedirs(RUNS, exist_ok=True)
+    log = os.path.join(RUNS, "x2_verify_%s_%s.log" % (a.row, rec["when"]))
+    args = ["verify_flash"]
+    for off, p in files:
+        args += [hex(off), p]
+    rc, _tail = esptool(a.port, *args, log=log)
+    with open(log, encoding="ascii") as fh:
+        got = verify_results(fh.read().splitlines())
+    results = [got.get(o) for o, _ in files]
+    judged = [(o, p) for o, p in files if o != ota_off]
+    if None in results:
+        vv, vwhy = "ERROR", "no verify result line for %s" % ", ".join(
+            os.path.basename(p) for o, p in files if got.get(o) is None)
+    elif any(got[o] == "FAILED" for o, _ in judged):
+        vv, vwhy = "FAIL", "differs from the row: %s" % ", ".join(
+            os.path.basename(p) for o, p in judged if got[o] == "FAILED")
+    elif (rc == 0) != all(r == "OK" for r in results):
+        vv, vwhy = "ERROR", "esptool exit %d does not match its lines %s" % (rc, results)
+    else:
+        vv, vwhy = "PASS", "every file but otadata's matches the row (otadata %s)" % got[ota_off]
+    rec["verify"] = {"rc": rc, "log": os.path.basename(log), "otadata_offset": hex(ota_off), "verdict": vv,
+                     "why": vwhy, "files": [{"offset": hex(o), "name": os.path.basename(p), "result": got.get(o),
+                                             "judged": o != ota_off} for o, p in files]}
+    print("verify_flash: %s: %s" % (vv, vwhy))
+    orec = {"when": rec["when"]}
+    sub_read_otadata(a, orec)
+    rec["otadata_read"] = orec
+    rrc, rtail = esptool(a.port, "run")
+    rec["run"] = {"rc": rrc, "esptool_tail": rtail}
+    print("esptool run: exit %d" % rrc)
+    ov = orec.get("verdict")
+    if vv == "FAIL" or ov == "OTHER-SLOT":
+        rec["verdict"] = "FAIL"
+        rec["why"] = "the X2 does not hold this row's build: verify_flash %s (%s), otadata %s" % (vv, vwhy, ov)
+    elif vv != "PASS" or ov != "PASS":
+        rec["verdict"] = "ERROR"
+        rec["why"] = "identity not read: verify_flash %s (%s), otadata %s (%s)" % (vv, vwhy, ov, orec.get("why"))
+    elif rrc != 0:
+        rec["verdict"] = "ERROR"
+        rec["why"] = "identity matched, but esptool run exited %d: the X2 may be left in esptool's stub" % rrc
+    else:
+        rec["verdict"] = "PASS"
+        rec["why"] = "verify_flash %s; otadata selects the row's app; esptool run exit 0" % vwhy
+    print("%s: %s" % (rec["verdict"], rec["why"]))
+
+
 def dump_args_why(a):
     """None when the dump arguments fit the subcommand, else why not: flash-jammer takes
     exactly one of --dump-record and --no-dump (gen-inhibit reviewer, 2026-11-13: a
@@ -692,7 +797,7 @@ def build_args_why(a):
     subcommands take none of them (2026-11-13)."""
     given = [n for n, v in (("--build", a.build), ("--row", a.row), ("--variant", a.variant),
                             ("--dev-builder", a.dev_builder)) if v is not None]
-    if a.sub in ("check-row", "read-otadata"):
+    if a.sub in ("check-row", "read-otadata", "verify-row"):
         if a.build is not None:
             return "%s takes no --build: it reads a manifest.jsonl row (--row)" % a.sub
         if a.row is None or not a.variant:
@@ -711,7 +816,8 @@ def build_args_why(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("sub", choices=("dump", "flash-jammer", "restore", "check-dump", "check-row", "read-otadata"))
+    ap.add_argument("sub", choices=("dump", "flash-jammer", "restore", "check-dump", "check-row", "read-otadata",
+                                    "verify-row"))
     ap.add_argument("--expect-elf", default=None,
                     help="dump, check-dump (required): the app ELF sha256 prefix, 8 to 64 hex "
                          "digits, that a slot of the dump must carry; no default since 2026-11-12")
@@ -758,7 +864,7 @@ def main():
             rec["serial_device"] = dev
         {"dump": sub_dump, "flash-jammer": sub_flash_jammer,
          "restore": sub_restore, "check-dump": sub_check_dump, "check-row": sub_check_row,
-         "read-otadata": sub_read_otadata}[a.sub](a, rec)
+         "read-otadata": sub_read_otadata, "verify-row": sub_verify_row}[a.sub](a, rec)
     finally:
         write_rec(a.sub, rec)
     return 0 if rec.get("verdict") in ("PASS", "FLASHED", "VERIFIED") else 1   # check-row's PASS too
