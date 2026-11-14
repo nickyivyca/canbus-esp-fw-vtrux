@@ -13,10 +13,18 @@ MCP ?= ../main/mcp2515_reset.c
 CONSOLE ?= ../main/console_usj.c
 OUT ?= build
 
-INC = -Ifake -I../components/jam_pulse/include -I../components/jam_pulse -I../main
+# The banner's ELF hash length is the image's sdkconfig value, and the fakes
+# cut the hash to it as ESP-IDF does (README.md, the banner).
+ELF_SHA_LEN := $(shell sed -n 's/^CONFIG_APP_RETRIEVE_LEN_ELF_SHA=//p' ../sdkconfig)
+ifeq ($(ELF_SHA_LEN),)
+$(error no CONFIG_APP_RETRIEVE_LEN_ELF_SHA in ../sdkconfig)
+endif
+
+INC = -Ifake -I../components/jam_pulse/include -I../components/jam_pulse -I../main \
+      -DCONFIG_APP_RETRIEVE_LEN_ELF_SHA=$(ELF_SHA_LEN)
 HDRS = fake/fake_idf.h check.h ../components/jam_pulse/include/jam_pulse.h \
        ../components/jam_pulse/jam_internal.h ../main/console_usj.h \
-       ../main/jammer_main.h ../main/mcp2515_reset.h
+       ../main/jammer_main.h ../main/mcp2515_reset.h ../sdkconfig
 FAKE = fake/fake_idf.c
 
 TESTS = test_jam_parse test_jam_engine_ab test_jam_engine_a \

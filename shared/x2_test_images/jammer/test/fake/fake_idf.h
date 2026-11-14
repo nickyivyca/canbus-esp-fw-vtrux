@@ -188,6 +188,13 @@ typedef struct {
     char idf_ver[32];
 } esp_app_desc_t;
 const esp_app_desc_t *esp_app_get_description(void);
+/* The hash as text, cut to CONFIG_APP_RETRIEVE_LEN_ELF_SHA characters as
+ * ESP-IDF cuts it; the Makefile passes the value from the image's
+ * sdkconfig. */
+#if !defined(CONFIG_APP_RETRIEVE_LEN_ELF_SHA) \
+    || CONFIG_APP_RETRIEVE_LEN_ELF_SHA < 8 || CONFIG_APP_RETRIEVE_LEN_ELF_SHA > 64
+#error "CONFIG_APP_RETRIEVE_LEN_ELF_SHA: 8..64, from ../sdkconfig (Makefile)"
+#endif
 int esp_app_get_elf_sha256(char *dst, size_t size);
 typedef enum { ESP_RST_POWERON = 1 } esp_reset_reason_t;
 esp_reset_reason_t esp_reset_reason(void);
@@ -259,6 +266,9 @@ extern size_t fake_out_n;
 
 /* The app description esp_app_get_description() returns. */
 extern esp_app_desc_t fake_app_desc;
+/* The whole ELF SHA-256 as text; esp_app_get_elf_sha256() returns its
+ * start. */
+extern const char fake_elf_sha256_hex[65];
 
 /* The tasks created: name, function, priority, core. */
 #define FAKE_TASKS_MAX 8

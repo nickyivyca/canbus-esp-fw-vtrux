@@ -653,11 +653,23 @@ const esp_app_desc_t *esp_app_get_description(void)
     return &fake_app_desc;
 }
 
+/* The image's ELF SHA-256 as text. Distinct digits, so a cut shows where
+ * it fell. */
+const char fake_elf_sha256_hex[65] =
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/* As ESP-IDF v5.4.2's (components/esp_app_format/esp_app_desc.c): the
+ * hash's first CONFIG_APP_RETRIEVE_LEN_ELF_SHA characters (the image's
+ * sdkconfig, which the Makefile passes), cut further to fit size; returns
+ * the bytes written, the terminating NUL included, and 0 for no buffer or
+ * size < 2. */
 int esp_app_get_elf_sha256(char *dst, size_t size)
 {
-    size_t n = size - 1 < 64 ? size - 1 : 64;
-    memset(dst, 'e', n);
-    dst[n] = 0;
+    if (dst == NULL || size < 2) return 0;
+    size_t n = CONFIG_APP_RETRIEVE_LEN_ELF_SHA + 1;
+    if (size < n) n = size;
+    memcpy(dst, fake_elf_sha256_hex, n - 1);
+    dst[n - 1] = 0;
     return (int)n;
 }
 
