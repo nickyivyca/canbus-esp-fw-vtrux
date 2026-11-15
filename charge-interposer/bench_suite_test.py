@@ -3180,7 +3180,10 @@ MUTANTS = {
          "bench_topology's self-test unlisted (4cdb)"),
         ("CAN_FAILS", [n for n in B.CAN_FAILS if n != "bench_switch_loss"],
          "bench_switch_loss's can-fail unlisted"),
-        ("CAN_FAILS", B.CAN_FAILS + ["bench_switch_errors"],
+        # a driver with no can-fail: bench_switch_errors, named here before,
+        # has one since 30e24327 (2026-11-13), so the mutant only repeated a
+        # listed name and survived (run e79d, 2026-11-14)
+        ("CAN_FAILS", B.CAN_FAILS + ["bench_flight_silence"],
          "a listed can-fail the script does not have"),
         ("harness", _wrap_suite("harness", _drop_harness_check(
             "cf.bench-usb-host")), "listed, but the harness never runs it")],
