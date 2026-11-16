@@ -58,7 +58,8 @@ ROOT = os.path.dirname(HERE)
 def _code(ctx):
     c = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True,
                        text=True).stdout.strip()
-    return {"repo": ROOT, "commit": c, "dirty": False}
+    return {"repo": ROOT, "commit": c, "dirty": False,
+            "harness_identity": {"cc": os.environ.get("FAKE_TOOLCHAIN", "cc 1.0")}}
 
 
 def _product(root):
@@ -351,7 +352,8 @@ def test_reuse_pass():
         p = json.load(f)["code"]["product_digest"]
     for w in ("reused suite run emulated (suite emulated): acceptance record %s, its run emu"
               % b.rec["good"], "its comparison held there: c-emu",
-              "product digest: earlier %s, this tree %s" % (p, p), "harness digest (3 files)",
+              "product digest: earlier %s, this tree %s" % (p, p),
+              "harness digest (3 files, cc 'cc 1.0')",
               "| reuse | emulated | accepted | accepted |",
               "- compare c-reused (identical): held"):
         assert w in readme, (w, readme[:3000])
@@ -387,6 +389,49 @@ def test_shared_at_tree():
     b = base()
     rc, out, rec = b.later(comp=b.cs)
     refused(rc, out, rec, "harness of suite emulated changed", "shared/comp/tool.py")
+
+
+def test_toolchain_changed():
+    """A17 can-fail (the charge-interposer reviewer's ruling, 2026-11-16: no
+    build pin exists, so the toolchain's identities go into the harness
+    digest's input): the adapter's harness_identity now differs from what
+    the earlier run recorded, with every harness file unchanged: refused,
+    naming the identity and both strings."""
+    rc, out, rec = later_with_toolchain("cc 2.0")
+    refused(rc, out, rec, "harness of suite emulated changed", "0 file(s) differ",
+            "toolchain identity differs: cc (earlier 'cc 1.0', now 'cc 2.0')")
+
+
+def later_with_toolchain(cc):
+    """base().later() on a note-only commit with FAKE_TOOLCHAIN set to cc."""
+    old = os.environ.get("FAKE_TOOLCHAIN")
+    os.environ["FAKE_TOOLCHAIN"] = cc
+    try:
+        return base().later(change={"proj/notes.md": "notes, toolchain %s\n" % cc})
+    finally:
+        if old is None:
+            os.environ.pop("FAKE_TOOLCHAIN", None)
+        else:
+            os.environ["FAKE_TOOLCHAIN"] = old
+
+
+def test_identity_unreadable():
+    """A17: the adapter cannot read this machine's toolchain identity: the
+    harness cannot be shown unchanged, refused."""
+    rc, out, rec = later_with_toolchain("unreadable")
+    refused(rc, out, rec, "cannot give suite emulated's toolchain identity",
+            "cc --version: not found")
+
+
+def test_identity_not_recorded():
+    """A17: the earlier run recorded no harness_identity (a run from before
+    the identities were recorded): its identity differs, refused."""
+    b = base()
+
+    def edit(r):
+        r["code"].pop("harness_identity", None)
+    rc, out, rec = b.later(rec=b.clone_record("good", "noident1", edit=edit))
+    refused(rc, out, rec, "toolchain identity differs: cc (earlier not recorded, now 'cc 1.0')")
 
 
 def test_missing_differs():
@@ -490,6 +535,7 @@ def test_parse_readme():
 
 
 TESTS = [test_reuse_pass, test_harness_changed, test_shared_pin_changed, test_shared_at_tree,
+         test_toolchain_changed, test_identity_not_recorded, test_identity_unreadable,
          test_missing_differs, test_product_changed, test_subset, test_compare_not_held,
          test_no_compare, test_not_closed, test_record_changed, test_not_finished,
          test_not_required, test_not_alone, test_parse_readme]
@@ -506,6 +552,9 @@ MUTANTS = [
     ("product", test_product_changed),
     ("harness", test_harness_changed),
     ("harness", test_shared_pin_changed),
+    ("identity", test_toolchain_changed),
+    ("identity", test_identity_not_recorded),
+    ("identity", test_identity_unreadable),
     ("missing_differs", test_missing_differs),
     ("shared_at_tree", test_shared_at_tree),
     ("in_place", test_reuse_pass),

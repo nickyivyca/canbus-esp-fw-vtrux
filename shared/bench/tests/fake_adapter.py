@@ -157,6 +157,20 @@ def harness_files(suite, tree):
             out += [ln.strip() for ln in f if ln.strip()]
     return out + ["proj/pins.json", "shared/comp/tool.py"]
 
+
+def harness_identity(suite, tree, settings):
+    """The toolchain the required suite runs with, as this machine has it
+    (A17; the interposer's are gcc's and Python's versions): here one name,
+    "cc", its string from FAKE_TOOLCHAIN (default "cc 1.0"), which the
+    tests' emulated suite records in its code_info the same way; the
+    string "unreadable" raises, as an adapter that cannot read one does."""
+    if suite != "emulated":
+        return {}
+    cc = os.environ.get("FAKE_TOOLCHAIN", "cc 1.0")
+    if cc == "unreadable":
+        raise RuntimeError("cc --version: not found")
+    return {"cc": cc}
+
 # the committed harness-test catalogue (A8, A15): per entry its path,
 # arguments, environment, shell, timeout, tags and the paths it covers
 CATALOGUE = [
