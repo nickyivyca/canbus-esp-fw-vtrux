@@ -818,6 +818,11 @@ cleanup:
 }
 
 
+/*
+ * SPEC W7: the two endpoints that write car_data.json, which only AutoPID
+ * reads, are registered, and their handlers compiled, only with AutoPID on.
+ */
+#if WICAN_FEATURE_AUTOPID
 static esp_err_t store_car_data_handler(httpd_req_t *req)
 {
     if(flash_write_refused(req, "/store_car_data")) return ESP_OK;
@@ -861,6 +866,7 @@ static esp_err_t store_car_data_handler(httpd_req_t *req)
     httpd_resp_send(req, "Data stored successfully", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
+#endif /* WICAN_FEATURE_AUTOPID: store_car_data_handler (W7) */
 
 static esp_err_t check_status_handler(httpd_req_t *req)
 {
@@ -1389,6 +1395,7 @@ static esp_err_t upload_post_body(httpd_req_t *req, bool *succeeded)
     return ESP_OK;
 }
 
+#if WICAN_FEATURE_AUTOPID   /* SPEC W7: car_data.json is AutoPID's */
 static esp_err_t upload_car_data_handler(httpd_req_t *req)
 {
     if(flash_write_refused(req, "/upload/car_data.json")) return ESP_OK;
@@ -1524,7 +1531,6 @@ static esp_err_t upload_car_data_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-#if WICAN_FEATURE_AUTOPID
 esp_err_t autopid_data_handler(httpd_req_t *req)
 {
     char *data = autopid_data_read();
@@ -1698,27 +1704,25 @@ static const httpd_uri_t store_auto_data_uri = {
      * context to demonstrate it's usage */
     .user_ctx  = NULL
 };
-static const httpd_uri_t upload_car_data = {
+#if WICAN_FEATURE_AUTOPID
+static const httpd_uri_t upload_car_data = {     /* SPEC W7 */
     .uri       = "/upload/car_data.json",   // Match all URIs of type /upload/path/to/file
     .method    = HTTP_POST,
     .handler   = upload_car_data_handler,
     .user_ctx  = &server_data    // Pass server data as context
 };
-#if WICAN_FEATURE_AUTOPID
 static const httpd_uri_t autopid_data = {
     .uri       = "/autopid_data",   // Match all URIs of type /upload/path/to/file
     .method    = HTTP_GET,
     .handler   = autopid_data_handler,
     .user_ctx  = &server_data    // Pass server data as context
 };
-#endif
-static const httpd_uri_t store_car_data_uri = {
+static const httpd_uri_t store_car_data_uri = {  /* SPEC W7 */
     .uri       = "/store_car_data",
     .method    = HTTP_POST,
     .handler   = store_car_data_handler,
     .user_ctx  = NULL
 };
-#if WICAN_FEATURE_AUTOPID
 static const httpd_uri_t scan_available_pids_uri = {
     .uri       = "/scan_available_pids",
     .method    = HTTP_GET,
@@ -2444,13 +2448,11 @@ static httpd_handle_t config_server_init(void)
 		httpd_register_uri_handler(server, &store_auto_data_uri);
 		httpd_register_uri_handler(server, &load_pid_auto_uri);
 		httpd_register_uri_handler(server, &load_pid_auto_conf_uri);
-		httpd_register_uri_handler(server, &upload_car_data);
 #if WICAN_FEATURE_AUTOPID
+		httpd_register_uri_handler(server, &upload_car_data);       /* SPEC W7 */
 		httpd_register_uri_handler(server, &autopid_data);
 		httpd_register_uri_handler(server, &load_car_config_uri);
-#endif
-		httpd_register_uri_handler(server, &store_car_data_uri);
-#if WICAN_FEATURE_AUTOPID
+		httpd_register_uri_handler(server, &store_car_data_uri);    /* SPEC W7 */
 		httpd_register_uri_handler(server, &scan_available_pids_uri);
 #endif
         #if CONFIG_EXAMPLE_BASIC_AUTH

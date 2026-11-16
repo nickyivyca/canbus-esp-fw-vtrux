@@ -22,7 +22,7 @@ writing a file first does not make a project its owner.
 |---|---|---|
 | `SPEC.md`, `VALIDATION.md` | the component's spec, W1 to W14, and why each requirement is written as it is | the reviewers, as above |
 | `wican.c`, `wican.h` | stock `main.c`'s start-up as `wican_init()` and `wican_start()` (W4), the CAN receive and send tasks, the bus-owner callbacks (W5), the SLCAN command switch (W6), the URI hook (W8) | the implementor of the project that needs the change |
-| `config_server.c`/`.h` | the HTTP server: configuration, status, OTA, the websocket; the flash-write and OTA gates call the bus owner (W5); the OTA upload ends its update session on every failed exit, drops a stalled upload after 4 receive timeouts in a row and erases the slot as it writes (W12 to W14); the project's URIs at the hook (W8) | the same |
+| `config_server.c`/`.h` | the HTTP server: configuration, status, OTA, the websocket; the flash-write and OTA gates call the bus owner (W5); the OTA upload ends its update session on every failed exit, drops a stalled upload after 4 receive timeouts in a row and erases the slot as it writes (W12 to W14); the two endpoints that write AutoPID's `car_data.json`, `/upload/car_data.json` and `/store_car_data`, only with AutoPID on (W7); the project's URIs at the hook (W8) | the same |
 | `comm_server.c`/`.h` | the TCP/UDP port | the same |
 | `slcan.c`/`.h` | SLCAN framing, and the command parser W6 switches | the same |
 | `elm327.c`/`.h`, `autopid.c`/`.h`, `mqtt.c`/`.h` | three stock features, each with its switch (W7); ELM327's `ATSP` is refused while the bus is owned (W5) | the same |
