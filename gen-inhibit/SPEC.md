@@ -1343,7 +1343,7 @@ field name `ota_file`, as the device's own web UI form declares it. No paced or
 otherwise special-cased uploader is required or wanted; a plain
 `curl -F ota_file=@<image>` is the interface.
 
-Three properties are required of whatever handler is resident:
+Six properties are required of whatever handler is resident:
 
 1. **A read can never write past the end of the receive buffer.** The read
    target is a fixed buffer start, never a pointer that has been advanced past
@@ -1354,6 +1354,17 @@ Three properties are required of whatever handler is resident:
 3. **Timeout retries are bounded**, so a vanished client aborts the upload
    rather than pinning the single HTTP worker. The device's HTTP server is a
    recovery channel, and an upload that hangs it costs a power cycle.
+4. **A failed upload cancels its update** (`shared/wican` W12): every exit
+   of the handler after the update starts, except the restart into the new
+   image, ends the update session.
+5. **A stalled upload is dropped in about 20 s** (`shared/wican` W13): after
+   4 receive timeouts of 5 s in a row, the count restarting whenever a chunk
+   arrives. This is item 3's bound.
+6. **The slot is erased as it is written** (`shared/wican` W14), not all at
+   once before the first byte of the body is read.
+
+Items 4-6: text approved by the user 2026-11-07, written when the work was
+queued (user, 2026-11-16).
 
 **The handler is patched and stays patched.**
 

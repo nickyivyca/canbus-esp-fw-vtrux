@@ -1015,7 +1015,9 @@ was read as a logger on the truck dropping frames).
   v5.4.2 bootloader, until the WiCAN rehearsal.
 
 ### 9.2 The OTA upload path
-- **Stock v4.13's handler satisfies none of the three properties.** It
+- **Items 4-6** rest on `shared/wican` W12-W14, whose basis is in
+  `shared/wican/VALIDATION.md` (user, 2026-11-07). **Status:** validated.
+- **Stock v4.13's handler satisfies none of items 1-3.** It
   overruns its scratch buffer on every upload and retries a timeout
   forever. Those defects, how they were reproduced, and the fixes are
   recorded in the working log and in
