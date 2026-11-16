@@ -265,7 +265,8 @@ way, the Holder is not its own.
   lock is a mutex; not to have a guarantee that it's left in a known state
   when it's handed over"). A free lock is taken without asking anyone:
   `take` checks and claims it in one locked step, so it is the ask (user,
-  2026-11-13). The messages at a take and a release are notices. While a
+  2026-11-13). No message is sent at a take or a release: the log and its
+  release note are the record (user, 2026-11-16). While a
   role holds the lock, it does to the bench what its work needs: flashes the
   images it needs, resets or reboots either board, brings links up or down,
   moves adapters between drivers or into the Android emulator, and sends
@@ -419,7 +420,8 @@ way, the Holder is not its own.
 - **The lock is a mutex** (user, 2026-11-13, in the Git based CANBus
   Android development session; the details in the methodology owner's
   session, with the CAN replay tooling and Android sessions' lists). A free
-  lock is taken without asking. The holder does to the bench what its work
+  lock is taken without asking. No message at a take or a release (user,
+  2026-11-16). The holder does to the bench what its work
   needs, and its release reports the state it leaves; nothing is put back
   for the next holder, who sets up what it needs. An untouched board is
   `not read: untouched`. A whole-flash dump is made only to restore. A run
