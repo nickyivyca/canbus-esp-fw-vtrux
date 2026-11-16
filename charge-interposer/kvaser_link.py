@@ -42,9 +42,15 @@ hubs are bus-powered, and the GL850G holding the Kvaser, the PCAN and
 canmain (1-3.2) has shown -71/EPROTO. So a VOID from a stall, a lost-frame
 report or a failed link read-back carries, on its own VOID line, the
 kernel's USB and CAN lines for the check's window with their times
-(journalctl -k: usb 1-3.2*, gs_usb, kvaser_usb, peak_usb, pcan, -71,
-EPROTO, disconnects), so a power fault reads as one and not as a product
-result. void_line() builds that line; kernel_lines() reads the log.
+(journalctl -k: KLOG_RE), so a power fault reads as one and not as a
+product result. void_line() builds that line; kernel_lines() reads the log.
+The owner swapped in a powered hub on 2026-11-16 and the bench's paths moved
+(the WiCAN at 1-3.1, the X2 at 1-3.4, canchg at 1-3.3, the PCAN, canmain and
+the Kvaser at 1-3.2.x), so at the reviewer's ruling the same day KLOG_RE
+reads every device under the bench hub 1-3 by any driver, and the bench's
+devices by ID (BENCH_USB_IDS), besides gs_usb, kvaser_usb, peak_usb, pcan,
+-71, EPROTO, disconnects, "disabled by hub" and "error -32" (run e79d's
+WiCAN failure: "usb 1-3.2-port4: disabled by hub (EMI?)", error -32).
 
 THE OPENER (D). open_bus() is the only way a harness file opens the
 Kvaser: python-can's socketcan on channel "kvaser", named, after IFF_UP is
@@ -79,8 +85,24 @@ SYSFS_NET = "/sys/class/net"
 IFF_UP = 0x1
 STOP_ENV = "VTRUX_KVASER_STOP"
 JOURNALCTL = ["journalctl", "-k", "-o", "short-iso-precise", "--no-pager"]
-# the kernel's USB and CAN lines a VOID names (the reviewer's addendum)
-KLOG_RE = re.compile(r"usb 1-3\.2|gs_usb|kvaser_usb|peak_usb|pcan|-71\b|EPROTO|disconnect",
+# The bench's USB devices by vendor:product, as the kernel's enumeration line
+# names them ("New USB device found, idVendor=303a, idProduct=1001"), so a
+# device that comes back on another port is still read (lsusb, 2026-11-16).
+BENCH_USB_IDS = (
+    ("303a", "1001"),       # Espressif USB serial/JTAG: the X2 and the WiCAN
+    ("0bfd", "0120"),       # Kvaser Leaf Light v2
+    ("0c72", "0012"),       # PEAK PCAN-USB FD
+    ("1d50", "606f"),       # gs_usb (candleLight): canchg, canmain
+)
+# the kernel's USB and CAN lines a VOID names (the reviewer's addendum, and
+# its widening of 2026-11-16 after the hub swap): any device under the bench
+# hub 1-3, by any driver ("usb 1-3.1:", "cdc_acm 1-3.2.4:1.0:", "usb
+# 1-3.2-port4:"); the bench's devices by ID; the CAN drivers; -71, EPROTO,
+# disconnects, a port disabled by its hub, and error -32
+KLOG_RE = re.compile(r"\b1-3\b|"
+                     + "|".join(r"idVendor=%s, idProduct=%s" % p for p in BENCH_USB_IDS)
+                     + r"|gs_usb|kvaser_usb|peak_usb|pcan|-71\b|EPROTO|disconnect"
+                       r"|disabled by hub|error -32\b",
                      re.I)
 KLOG_MAX = 12                       # lines on a VOID line; the count says how many more
 RC_MEANING = {2: "refused", 3: "did not take"}         # canctl's header
