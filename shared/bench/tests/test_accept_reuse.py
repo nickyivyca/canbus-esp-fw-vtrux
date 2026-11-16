@@ -223,7 +223,7 @@ class Base:
         os.makedirs(self.runs)
         self.settings = os.path.join(self.dir, "machine.json")
         with open(self.settings, "w", encoding="utf-8") as f:
-            json.dump(dict(runs_root=self.runs, hosts={"local": {"python": [sys.executable]}},
+            json.dump(dict(runs_root=self.runs, hosts={"local": {"python": [sys.executable, "-B"]}},
                            bench_mac=MAC,
                            bench_holder=os.path.join(self.dir, "bench-holder.md")), f)
         self.n = 0

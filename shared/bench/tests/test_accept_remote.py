@@ -52,7 +52,7 @@ from vtrux_bench.run import procs as P               # noqa: E402
 BASE = _scratch.run_dir("accept_remote")
 N = [0]
 PY = sys.executable
-LOOP = (PY, os.path.join(HERE, "loop_ssh.py"), "-o", "BatchMode=yes")
+LOOP = (PY, "-B", os.path.join(HERE, "loop_ssh.py"), "-o", "BatchMode=yes")
 WINDOWS = os.name == "nt"
 # The remote host's python: this interpreter, spelled differently from PY on
 # every system (posix slashes, a "." part), so a check run with the local
@@ -158,9 +158,9 @@ class Fixture:
         self.far = os.path.join(self.dir, "far")
         os.makedirs(self.far)
         self.settings = {"runs_root": os.path.join(self.dir, "unused"),
-                         "hosts": {"local": {"python": [PY]},
+                         "hosts": {"local": {"python": [PY, "-B"]},
                                    "far": {"ssh": "farhost", "workroot": bash_path(self.far),
-                                           "python": [PY_FAR]}}}
+                                           "python": [PY_FAR, "-B"]}}}
 
     def trees(self):
         return T.make_trees(self.repo, self.alist, FA, self.work, self.made, say=self.rec.say,
@@ -300,7 +300,7 @@ def test_remote_once():
     after it."""
     N[0] += 1
     log = os.path.join(BASE, "ssh_log%d" % N[0])         # this call's own, never a stale one
-    ssh = (PY, "-c", "import sys; open(r'%s', 'a').write(sys.argv[2] + '\\n')" % log)
+    ssh = (PY, "-B", "-c", "import sys; open(r'%s', 'a').write(sys.argv[2] + '\\n')" % log)
     wr = "/w/runner"
     rec_dir = wr + "/accept-accept_s1_20261102T101500_ab12"
     made = S.Made()
@@ -350,7 +350,7 @@ def test_remove_guard():
     work folder <suite>_<YYYYmmddTHHMMSS>_<hex4>)."""
     N[0] += 1
     mark = os.path.join(BASE, "ssh_ran%d" % N[0])        # this call's own, never a stale one
-    ssh = (PY, "-c", "open(r'%s', 'w').close()" % mark)
+    ssh = (PY, "-B", "-c", "open(r'%s', 'w').close()" % mark)
     wr = "/w/runner"
     rec_dir = wr + "/accept-accept_s1_20261102T101500_ab12"
     cases = [

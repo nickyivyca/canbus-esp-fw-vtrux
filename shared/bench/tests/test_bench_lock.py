@@ -138,7 +138,7 @@ def init_line(host=None, env=None):
 
 
 def dead_pid():
-    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    p = subprocess.Popen([sys.executable, "-B", "-c", "pass"])
     p.wait()
     return p.pid
 
@@ -151,7 +151,7 @@ class Live:
     """A child process of this test that stays alive until stop()."""
 
     def __init__(self):
-        self.p = subprocess.Popen([sys.executable, "-c",
+        self.p = subprocess.Popen([sys.executable, "-B", "-c",
                                    "import time; time.sleep(300)"])
         self.pid = self.p.pid
 

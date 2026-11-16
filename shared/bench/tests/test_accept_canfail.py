@@ -183,7 +183,7 @@ class Fixture:
         self.prepare()
         machine = os.path.join(self.dir, "machine.json")
         with open(machine, "w", encoding="utf-8") as f:
-            json.dump(dict(hosts={"local": {"python": [sys.executable]}}), f)
+            json.dump(dict(hosts={"local": {"python": [sys.executable, "-B"]}}), f)
         path, s = ST.write_settings(machine, FA, {}, self.trees, self.rec, self.made, self.work)
         suite = C.compile_suite(self.alist, self.trees, FA, s, C.machine_env(FA),
                                 mutants=self.entries)

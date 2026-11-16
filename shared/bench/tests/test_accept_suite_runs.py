@@ -131,7 +131,7 @@ class Fixture:
         flake = os.path.join(self.dir, "flake")
         os.makedirs(flake)
         machine = os.path.join(self.dir, "machine.json")
-        m = dict(hosts={"local": {"python": [sys.executable]}}, bench_mac=MAC,
+        m = dict(hosts={"local": {"python": [sys.executable, "-B"]}}, bench_mac=MAC,
                  flake_dir=flake, runs_root=os.path.join(self.dir, "elsewhere"),
                  bench_holder=os.path.join(self.dir, "bench-holder.md"))
         if placement:

@@ -281,7 +281,7 @@ def main():
     check("run_cmd: a program that is not there is rc -1, never raised", lambda: isinstance(got, tuple)
           and got[0] == -1, got)
     try:
-        got = WF.run_cmd([sys.executable, "-c", "import time; time.sleep(5)"], 0.5)
+        got = WF.run_cmd([sys.executable, "-B", "-c", "import time; time.sleep(5)"], 0.5)
     except Exception as e:      # noqa: BLE001
         got = "raised %r" % e
     check("run_cmd: a timeout is rc -1, never raised", lambda: isinstance(got, tuple) and got[0] == -1, got)
@@ -293,7 +293,7 @@ def main():
     saved = os.dup(0)
     try:
         os.dup2(r_fd, 0)
-        got = WF.run_cmd([sys.executable, "-c", "import sys; print(repr(sys.stdin.read()))"], 10)
+        got = WF.run_cmd([sys.executable, "-B", "-c", "import sys; print(repr(sys.stdin.read()))"], 10)
     finally:
         os.dup2(saved, 0)
         os.close(saved)

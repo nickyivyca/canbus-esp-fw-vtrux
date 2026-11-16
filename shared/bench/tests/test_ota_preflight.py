@@ -499,7 +499,7 @@ def o7_engine():
               images={"w": Image("w", "probe", {}, expect="W", board="wican")},
               identify=lambda image, ctx, logdir: board["read"], flashers={"probe": probe})
     settings = dict(runs_root=os.path.join(root, "runs"), bench_holder=holder,
-                    hosts={"local": {"python": [sys.executable]}}, pause_poll_s=0.2,
+                    hosts={"local": {"python": [sys.executable, "-B"]}}, pause_poll_s=0.2,
                     canmain_check=dict(CANMAIN))
     try:
         E.Engine(s, settings, out=lambda *a: None).run()
