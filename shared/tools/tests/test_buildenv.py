@@ -3,8 +3,9 @@
     python -B shared/tools/tests/test_buildenv.py
 
 RealConfigure runs ESP-IDF itself: two configures of a small project, about
-40 s. It is a build for AGENTS.md "Builds during wall-clock tests", so it
-runs only when asked: VTRUX_IDF_TESTS=1, from an exported ESP-IDF shell.
+40 s. It runs only when asked: VTRUX_IDF_TESTS=1, from an exported ESP-IDF
+shell, and in build.slice like a build (AGENTS.md "Parallel work on the
+shared machine").
 """
 
 import os

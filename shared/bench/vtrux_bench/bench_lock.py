@@ -12,6 +12,8 @@ name it (bench_lock_log); without it, it reads the Holder line.
     python -m vtrux_bench.bench_lock [--log PATH] release --who W --board wican=TEXT --board x2=TEXT
     python -m vtrux_bench.bench_lock [--log PATH] request --who W --note TEXT
     python -m vtrux_bench.bench_lock [--log PATH] withdraw --who W
+    python -m vtrux_bench.bench_lock [--log PATH] wait --who W --pid N --note TEXT
+                                     [--poll S] [--timeout S]
     python -m vtrux_bench.bench_lock [--log PATH] clear --who W --reason TEXT
     python -m vtrux_bench.bench_lock [--log PATH] repair --who W --reason TEXT
     python -m vtrux_bench.bench_lock [--log PATH] retire --who W --to HOST --reason TEXT
@@ -22,8 +24,29 @@ through lost() and free_paused() (sections 3, 5 and 6; the event was named
 for the runner's PAUSE file). A runner takes the lock for its run through
 take() with its own PID (section 8), releases it at its run's end through
 release(), or hands it to a session through release_and_take() (section
-6, --keep-lock). --log defaults to $REVERSE_IT_DIR/firmware/bench-log.jsonl.
-Exit 0 done, 2 refused, with the reason on stderr.
+6, --keep-lock). A runner started with --from-hold PID takes over a hand
+take of its own role under PID through hand_to_run() (section 6).
+--log defaults to $REVERSE_IT_DIR/firmware/bench-log.jsonl.
+Exit 0 done, 2 refused, with the reason on stderr; wait also exits 3 when it
+gives up without taking.
+
+wait (section 3; user, 2026-11-16) takes the bench for a session when it
+frees: a background process of the session, with --pid the session's
+long-lived process. In one locked step it withdraws its role's queued
+request if that request's pid is absent or gone, then appends a request
+whose pid is its own (refused, exit 2, if its role still has a request
+queued under a running pid, or holds the lock). Then every --poll seconds
+(default 2), in one locked step each (wait_step): when the lock is free and
+its request is the oldest queued request whose pid is running, it appends a
+withdraw and a take for its role under --pid and exits 0, printing the take
+line last (section 5: every line it appends is printed, the request first).
+It exits 3 after a withdraw when --timeout passes, when --pid is gone
+or when it is stopped (SIGTERM, SIGINT, SIGHUP; SIGBREAK on Windows): the
+signal only sets a flag, read at the next locked step, so a stop never cuts
+a write in two. It exits 3 with nothing to withdraw if its own request has
+left the queue (withdrawn by hand, or dropped by a take of its role), and 2
+when the log refuses. A request with no pid, or whose pid has gone, keeps no
+place among the waiters. take and the runner's take still ignore the queue.
 
 The bench host and environment (section 4). `init` writes the log's first
 line, recording this host and its execution environment (detect_env). Every
@@ -49,7 +72,8 @@ note. The other fields, per event (FIELDS):
     release   boards: {board: TEXT} for each of BOARDS, TEXT the image read
     free_paused  off the wire and when, or "not read: <why>"; free_paused
               also run
-    request   note (required): what for and how long
+    request   note (required): what for and how long; pid (optional: the
+              waiting process, set by wait; running when appended)
     clear     reason (required)
     lost      run (required)
     repair    damaged: {name, sha256, kept, bad: [{line, error}]};
@@ -121,7 +145,7 @@ FIELDS = {
     "take": ("pid",),
     "release": ("boards",),
     "free_paused": ("boards",),
-    "request": (),
+    "request": ("pid",),
     "withdraw": (),
     "clear": ("reason",),
     "lost": (),
@@ -352,7 +376,8 @@ def new_state():
         "bench": None,          # {host, env} from init
         "holder": None,         # {who, run, pid, ts}
         "paused": {},           # who -> {run, ts}
-        "queue": [],            # [{who, note, ts}] in order
+        "queue": [],            # [{who, note, ts, pid}] in order; pid None
+                                # for a request not made by wait
         "runs": set(),          # every run id the log has named
         "takers": {},           # run id -> the role that took it
         "boards": {"known": False, "why": "no release recorded yet"},
@@ -407,6 +432,9 @@ def check_fields(ev):
                 raise Refused("repair needs dropped_runs, a list of run ids")
         elif not _text(ev, key):
             raise Refused("%s needs %s" % (kind, key))
+    if kind == "request" and "pid" in ev and not (_int(ev["pid"])
+                                                  and ev["pid"] > 0):
+        raise Refused("a request's pid, when given, is a positive integer")
     run = ev.get("run")
     if run is not None and (not isinstance(run, str) or not RUN_RE.match(run)):
         raise Refused("run id %r is not [A-Za-z0-9._-]{1,80}" % (run,))
@@ -516,7 +544,8 @@ def apply(state, ev):
             raise Refused("%s holds the lock: nothing to request" % who)
         if any(q["who"] == who for q in state["queue"]):
             raise Refused("%s already has a request queued" % who)
-        state["queue"].append({"who": who, "note": ev["note"], "ts": ev["ts"]})
+        state["queue"].append({"who": who, "note": ev["note"], "ts": ev["ts"],
+                               "pid": ev.get("pid")})
     elif kind == "withdraw":
         if not any(q["who"] == who for q in state["queue"]):
             raise Refused("%s has no request queued" % who)
@@ -671,6 +700,13 @@ def write_all(path, evs):
     and append them all in one locked step, or none: nothing can come in
     between (release_and_take). Returns (state after, the lines appended).
     A refusal names the holder as the log had it."""
+    evs = stamp(evs)
+    return write_steps(path, lambda state: evs)
+
+
+def stamp(evs):
+    """The events with this moment's ts and no None fields. Refused for init
+    and repair, which are never appended."""
     ts = now()
     evs = [{k: v for k, v in dict(ev, ts=ts).items() if v is not None}
            for ev in evs]
@@ -678,23 +714,35 @@ def write_all(path, evs):
         if ev.get("event") in ("init", "repair"):
             raise Refused("%s is never appended: init creates the log, repair "
                           "replaces a damaged one" % ev["event"])
+    return evs
+
+
+def write_steps(path, plan):
+    """One locked step whose events depend on the state: plan(state) is
+    called under the lock with the log's state and returns the events to
+    append (stamped, maybe none), or raises Refused. Each is checked in
+    turn against the state the ones before it leave, and all are appended
+    or none. Returns (state after, the lines appended)."""
     with locked(path) as f:
         state = _read(f)
         before = holder_text(state)
         try:
+            evs = plan(state)
             for ev in evs:
                 if ev["event"] == "clear":
                     check_holder_gone(state)
-                if ev["event"] == "take":
+                if ev["event"] == "take" or (ev["event"] == "request"
+                                             and "pid" in ev):
                     check_pid_alive(state, ev.get("pid"))
                 apply(state, ev)
         except Refused as e:
             raise Refused("%s (%s)" % (e, before))
         lines = [line_of(ev) for ev in evs]
-        f.seek(0, os.SEEK_END)
-        f.write("".join(ln + "\n" for ln in lines).encode("ascii"))
-        f.flush()
-        os.fsync(f.fileno())
+        if lines:
+            f.seek(0, os.SEEK_END)
+            f.write("".join(ln + "\n" for ln in lines).encode("ascii"))
+            f.flush()
+            os.fsync(f.fileno())
     return state, lines
 
 
@@ -809,6 +857,159 @@ def release_and_take(path, who, boards, pid, note=None):
     return write_all(path, [
         {"event": "release", "who": who, "boards": boards, "note": note},
         {"event": "take", "who": who, "pid": pid, "note": note}])
+
+
+def handed_reads(run):
+    """--from-hold's board reads (section 6): no board read at the handover."""
+    return {b: "%s: handed to run %s" % (NOT_READ, run) for b in BOARDS}
+
+
+def hand_to_run(path, who, hold_pid, pid, run, note=None):
+    """--from-hold PID (section 6; user, 2026-11-16): when the lock is held
+    by `who` with no run under hold_pid, release it and take it for `run`
+    under pid (the runner's own), in one locked step with nothing in
+    between; each board's read is "not read: handed to run <run>". Held in
+    any other way, or free, Refused, with nothing appended. Returns (state
+    after, [release line, take line])."""
+    def plan(state):
+        h = state["holder"]
+        if h is None:
+            raise Refused("--from-hold %d: the lock is free, not held by hand "
+                          "under that pid" % hold_pid)
+        if h["who"] != who:
+            raise Refused("--from-hold %d: the lock is held by %s, not by %s"
+                          % (hold_pid, h["who"], who))
+        if h["run"] is not None:
+            raise Refused("--from-hold %d: the lock is held for run %s, not "
+                          "by hand" % (hold_pid, h["run"]))
+        if h["pid"] != hold_pid:
+            raise Refused("--from-hold %d: the lock is held under pid %d"
+                          % (hold_pid, h["pid"]))
+        return stamp([
+            {"event": "release", "who": who, "boards": handed_reads(run),
+             "note": note},
+            {"event": "take", "who": who, "pid": pid, "run": run,
+             "note": note}])
+    return write_steps(path, plan)
+
+
+# ---- wait: the waitlist (section 3; user, 2026-11-16) -------------------
+
+WAIT_POLL_S = 2.0
+WAIT_SLICE_S = 0.05     # how often a waiter's sleep looks at its stop flag
+
+
+def live_waiters(state, alive):
+    """The queued requests that keep a place in the order: those with a pid
+    that is running, oldest first. alive(pid) is the bench's PID check."""
+    return [q for q in state["queue"]
+            if q.get("pid") is not None and alive(q["pid"])]
+
+
+def wait_enqueue(path, who, pid, me, note):
+    """wait's first step, one locked step: --pid must be running; the role's
+    queued request is withdrawn first if its pid is absent or gone; then a
+    request with pid `me`, the waiter's own. A role whose request is queued
+    under a running pid, or that holds the lock, is refused by request's
+    own rule. Returns (state after, the lines appended)."""
+    def plan(state):
+        impl = bench_impl(state)
+        check_pid_alive(state, pid)
+        evs = []
+        for q in state["queue"]:
+            if q["who"] == who and (q.get("pid") is None
+                                    or not impl.pid_alive(q["pid"])):
+                evs.append({"event": "withdraw", "who": who,
+                            "note": "wait: its earlier request (%s) keeps no "
+                            "place" % ("pid %d gone" % q["pid"]
+                                       if q.get("pid") is not None
+                                       else "no pid")})
+        evs.append({"event": "request", "who": who, "pid": me, "note": note})
+        return stamp(evs)
+    return write_steps(path, plan)
+
+
+def wait_step(state, who, pid, me, alive, expired, stopped):
+    """One poll of a waiter, decided on the state read under the lock:
+    (events, outcome). outcome is None to go on waiting; "took" with a
+    withdraw and a take for `who` under pid; "stopped", "pid gone" or
+    "timeout" with a withdraw; "left the queue" with nothing, when the
+    waiter's own request (who's, with pid me) is no longer queued."""
+    mine = [q for q in state["queue"] if q["who"] == who and q.get("pid") == me]
+    if not mine:
+        return [], "left the queue"
+    withdraw = {"event": "withdraw", "who": who}
+    if stopped:
+        return [dict(withdraw, note="wait stopped")], "stopped"
+    if not alive(pid):
+        return [dict(withdraw, note="wait: --pid %d is gone" % pid)], "pid gone"
+    if expired:
+        return [dict(withdraw, note="wait: --timeout passed")], "timeout"
+    if state["holder"] is None:
+        live = live_waiters(state, alive)
+        if live and live[0] is mine[0]:
+            return [dict(withdraw, note="wait: taking the bench"),
+                    {"event": "take", "who": who, "pid": pid,
+                     "note": "taken by wait for pid %d" % pid}], "took"
+    return [], None
+
+
+def wait(path, who, pid, note, poll=WAIT_POLL_S, timeout=None, me=None,
+         stopped=lambda: False, out=print, clock=time.monotonic):
+    """The waiter (section 3). me is the waiting process (default this one),
+    whose pid the request carries; stopped() says it was asked to stop.
+    Returns (exit code, outcome, the lines appended at the end): 0 "took",
+    3 for every other outcome. Raises Refused (exit 2) when the log refuses."""
+    me = os.getpid() if me is None else me
+    if not (_int(pid) and pid > 0) or pid == me:
+        raise Refused("--pid %r is not the session's long-lived process "
+                      "(never the waiter's own)" % (pid,))
+    if not poll > 0 or (timeout is not None and timeout < 0):
+        raise Refused("--poll must be above 0 and --timeout not below 0")
+    _st, lines = wait_enqueue(path, who, pid, me, note)
+    for ln in lines:
+        out(ln)
+    deadline = None if timeout is None else clock() + timeout
+    while True:
+        got = {}
+
+        def plan(state):
+            evs, got["outcome"] = wait_step(
+                state, who, pid, me, bench_impl(state).pid_alive,
+                deadline is not None and clock() >= deadline, stopped())
+            return stamp(evs)
+        _st, lines = write_steps(path, plan)
+        if got["outcome"] is not None:
+            return (0 if got["outcome"] == "took" else 3), got["outcome"], lines
+        end = clock() + poll
+        while clock() < end and not stopped():
+            time.sleep(min(WAIT_SLICE_S, poll))
+
+
+STOP_SIGNALS = ("SIGTERM", "SIGINT", "SIGHUP", "SIGBREAK")
+
+
+def run_wait(a):
+    """The wait command: its stop signals set a flag the waiter reads at
+    its next locked step; the old handlers are put back after."""
+    import signal
+    flag = []
+    old = {}
+    for name in STOP_SIGNALS:
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            old[sig] = signal.signal(sig, lambda *_: flag.append(1))
+    try:
+        rc, outcome, lines = wait(a.path, a.who, a.pid, a.note, poll=a.poll,
+                                  timeout=a.timeout, stopped=lambda: bool(flag))
+    finally:
+        for sig, h in old.items():
+            signal.signal(sig, h)
+    for ln in lines:            # the take line last, when it took
+        print(ln)
+    if rc:
+        print("wait: no take: %s" % outcome, file=sys.stderr)
+    return rc
 
 
 def scan(data):
@@ -1088,9 +1289,17 @@ def status_lines(state):
                    % h["pid"])
     for who, p in sorted(state["paused"].items()):
         out.append("paused: run %s of %s, since %s" % (p["run"], who, p["ts"]))
+    def alive(pid):         # asked only for a request with a pid, as above
+        return bench_impl(state).pid_alive(pid)
     for i, q in enumerate(state["queue"], 1):
-        out.append("queue %d: %s, %s, since %s" % (i, q["who"], q["note"],
-                                                   q["ts"]))
+        if q.get("pid") is None:
+            pid = "no pid (keeps no place among waiters)"
+        elif alive(q["pid"]):
+            pid = "pid %d running" % q["pid"]
+        else:
+            pid = "pid %d NOT RUNNING (keeps no place among waiters)" % q["pid"]
+        out.append("queue %d: %s, %s, since %s, %s" % (i, q["who"], q["note"],
+                                                       q["ts"], pid))
     b = state["boards"]
     if b["known"]:
         out.append("boards, as released by %s at %s:" % (b["who"], b["ts"]))
@@ -1104,8 +1313,12 @@ def status_json(state):
     s = dict(state)
     s["runs"] = sorted(s["runs"])
     h = s["holder"]
+    def alive(pid):
+        return bench_impl(state).pid_alive(pid)
     if h is not None:
-        s["holder"] = dict(h, alive=bench_impl(state).pid_alive(h["pid"]))
+        s["holder"] = dict(h, alive=alive(h["pid"]))
+    s["queue"] = [dict(q, alive=None if q.get("pid") is None
+                       else alive(q["pid"])) for q in s["queue"]]
     return s
 
 
@@ -1164,9 +1377,24 @@ def main(argv=None):
     s.add_argument("--to", required=True, help="the new bench host")
     s.add_argument("--reason", required=True)
     s.add_argument("--note")
+    s = sub.add_parser("wait", help="queue a request and take the bench for "
+                       "the session when it frees, in order among waiters")
+    s.add_argument("--who", required=True)
+    s.add_argument("--pid", type=int, required=True,
+                   help="the session's long-lived process, which the take "
+                   "names; the waiter gives up when it is gone")
+    s.add_argument("--note", required=True, help="what for, and how long")
+    s.add_argument("--poll", type=float, default=WAIT_POLL_S,
+                   help="seconds between reads of the log (default %g)"
+                   % WAIT_POLL_S)
+    s.add_argument("--timeout", type=float,
+                   help="seconds to wait before giving up (default: no limit)")
     a = p.parse_args(argv)
     try:
         path = a.log or default_log()
+        if a.cmd == "wait":
+            a.path = path
+            return run_wait(a)
         if a.cmd == "init":
             print(init(path, a.who))
             return 0

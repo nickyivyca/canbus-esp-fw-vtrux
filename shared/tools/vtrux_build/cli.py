@@ -54,8 +54,7 @@ def main(argv=None):
     r.add_argument("--check-only", action="store_true",
                    help="the pre-build refusals only; build nothing")
     r.add_argument("--jobs", type=int, metavar="N",
-                   help="build with ninja -j N instead of idf.py build "
-                        "(--jobs 1 from an Idle shell is the throttled form)")
+                   help="build with ninja -j N instead of idf.py build")
     b = sub.add_parser("build", help="a dev build of one variant (R31)")
     # Optional here so that a missing variant is refused with the list.
     b.add_argument("variant", nargs="?",
@@ -64,8 +63,7 @@ def main(argv=None):
     b.add_argument("--project", default=".",
                    help="the ESP-IDF project root (default: here)")
     b.add_argument("--jobs", type=int, metavar="N",
-                   help="ninja -j N (--jobs 1 from an Idle shell is the "
-                        "throttled form)")
+                   help="ninja -j N")
     sub.add_parser("check-env", help="the IDF environment check (R32)")
     i = sub.add_parser("image", help="read app images")
     i.add_argument("bins", nargs="+")

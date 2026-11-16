@@ -3,6 +3,14 @@
     python -m vtrux_bench.accept run --repo <git repo> --list <commit>:<path>
         --adapter <repo-relative path of the project's adapter>
         --settings <the machine's settings file> [--earlier <record id>]
+        [--from-hold PID]
+
+--from-hold PID (shared/bench SPEC section 6; user, 2026-11-16): a session
+that won the bench with bench_lock wait holds it by hand under PID. The
+acceptance takes the lock through the chain runner (A1), in each suite run's
+nested run, so PID is passed to every suite run (compile.py), and a nested
+run that needs the bench starts from the hand take (nested.py) instead of
+a take the session's hold would refuse.
 
 In order:
   1. the list is read from git (A2) for its step id, and the record folder
@@ -65,7 +73,7 @@ RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip"
                            "premise_skip_builds", "cleanup_finally", "refuse_dirty",
                            "dev_never_pass", "identity_untracked", "check_verdict",
                            "not_passed_listed", "nested_not_passed", "nested_wrong_shape",
-                           "images_not_started")}
+                           "images_not_started", "from_hold_passed")}
 
 DEV_LINE = "DEV RUN, not evidence"
 
@@ -176,7 +184,8 @@ def _side(name, alist, chain, runs_root, nested, reused=()):
             "record": {"results": [r for r in chain["results"] if r["group"] == g]}}
 
 
-def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=False):
+def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=False,
+        from_hold=None):
     """The whole acceptance. (exit code, record or None)."""
     say0 = out or (lambda s: print(s, flush=True))
     ident = runner_identity()
@@ -250,7 +259,9 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                                                        rec, made, parent, images=images)
         suite = C.compile_suite(alist, trees, adapter, s, base_env, paths={
             "settings": spath, "masked": os.path.join(rec.path, "settings.masked.json"),
-            "record_id": rec.id, "suite_runs": per_run}, mutants=entries)
+            "record_id": rec.id, "suite_runs": per_run,
+            "from_hold": from_hold if RULES["from_hold_passed"] else None},
+            mutants=entries)
         for g in suite.groups if RULES["images_not_started"] else []:
             if g.note in no_images:
                 for c in g.checks:
@@ -351,9 +362,14 @@ def main(argv=None):
     p.add_argument("--dev", action="store_true",
                    help="run from a runner tree with changes: the record's verdict "
                    "reads DEV RUN, not evidence, never ACCEPTANCE PASS (exit 3)")
+    p.add_argument("--from-hold", type=int, metavar="PID",
+                   help="the role holds the bench log's lock by hand under PID (won "
+                   "with bench_lock wait): each suite run that needs the bench "
+                   "starts from that hold (the chain runner's --from-hold)")
     a = ap.parse_args(argv)
     try:
-        rc, _info = run(a.repo, a.list, a.adapter, a.settings, a.earlier, dev=a.dev)
+        rc, _info = run(a.repo, a.list, a.adapter, a.settings, a.earlier, dev=a.dev,
+                        from_hold=a.from_hold)
     except (AcceptError, L.ListError, R.RecordError, T.TreeError, CF.CanfailError,
             ST.SettingsError, CL.CloseError, S.ScratchError, RU.ReuseError) as e:
         print("REFUSED: %s" % e, file=sys.stderr)

@@ -3066,6 +3066,83 @@ def test_keep_lock():
         kill_pid(keeper)
 
 
+def test_from_hold():
+    """Section 6, --from-hold PID (user, 2026-11-16): when the lock is held
+    by the suite's role, with no run, under PID, the runner releases it and
+    takes it for its run under its own PID in one locked step, each board
+    "not read: handed to run <id>". Refused, with nothing appended and no
+    folder, when the lock is free, held by another role, held under another
+    pid, or held with a run; and for its own PID, without a log, or with no
+    bench group."""
+    env, p = log_env("fromhold")
+    s = suite([Group("g", [chk("x", "pass")], needs_lock=True)], role=CI)
+    sess = spawn_foreign("vtrux_from_hold_%d" % os.getpid())
+    other = spawn_foreign("vtrux_from_hold_o_%d" % os.getpid())
+    calls = []
+    real = BL.write_steps
+
+    def spy(path, plan):
+        def seen(state):
+            evs = plan(state)
+            calls.append([e["event"] for e in evs])
+            return evs
+        return real(path, seen)
+    try:
+        BL.take(p, CI, sess)
+        n = len(log_events(p))
+        BL.write_steps = spy
+        try:
+            eng, rec = run(env, s, settings=env.settings(bench_lock_log=p),
+                           from_hold=sess)
+        finally:
+            BL.write_steps = real
+        assert verdicts(rec) == {"g/x": "PASS"}, verdicts(rec)
+        evs = log_events(p)[n:]
+        assert [(e["event"], e["who"]) for e in evs[:2]] == [
+            ("release", CI), ("take", CI)], evs
+        assert evs[0]["boards"] == {b: "not read: handed to run %s" % eng.run_id
+                                    for b in BL.BOARDS}, evs[0]
+        assert evs[0]["ts"] == evs[1]["ts"], "release and take apart"
+        assert (evs[1]["pid"], evs[1]["run"]) == (os.getpid(), eng.run_id), evs[1]
+        assert ["release", "take"] in calls, calls
+        assert evs[-1]["event"] == "release", evs[-1]
+        holds = (("free", None),
+                 ("another role", (GI, sess, None)),
+                 ("another pid", (CI, other, None)),
+                 ("with a run", (CI, sess, "handrun%d" % os.getpid())))
+        for name, hold in holds:
+            if hold is not None:
+                BL.take(p, hold[0], hold[1], run=hold[2])
+            before, m = os.listdir(env.runs), len(log_events(p))
+            try:
+                run(env, s, settings=env.settings(bench_lock_log=p),
+                    from_hold=sess)
+            except LockError as e:
+                assert "--from-hold" in str(e), (name, str(e))
+            else:
+                raise AssertionError("--from-hold accepted: %s" % name)
+            assert len(log_events(p)) == m, "%s: appended" % name
+            assert os.listdir(env.runs) == before, "%s: a folder" % name
+            if hold is not None:
+                BL.release(p, hold[0], {b: "not read: test" for b in BL.BOARDS})
+        BL.take(p, CI, sess)
+        nob = suite([Group("g", [chk("x", "pass")])], role=CI)
+        for fh, st_, sw in ((os.getpid(), env.settings(bench_lock_log=p), s),
+                            (sess, env.settings(), s),
+                            (sess, env.settings(bench_lock_log=p), nob)):
+            before, m = os.listdir(env.runs), len(log_events(p))
+            try:
+                run(env, sw, settings=st_, from_hold=fh)
+            except LockError:
+                pass
+            else:
+                raise AssertionError("--from-hold %r accepted" % fh)
+            assert len(log_events(p)) == m and os.listdir(env.runs) == before
+    finally:
+        kill_pid(sess)
+        kill_pid(other)
+
+
 def dead_child():
     import subprocess
     c = subprocess.Popen([PY, "-B", "-c", "pass"])
@@ -3326,7 +3403,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_self_pause, test_pause_hooks, test_resume_identify,
          test_resume_stop, test_resume_stop_kept, test_stop_no_resume,
          test_own_pid, test_take_first, test_folder_release, test_release_end,
-         test_keep_lock, test_canmain_check, test_canmain_down,
+         test_keep_lock, test_from_hold, test_canmain_check, test_canmain_down,
          test_canmain_holder, test_canmain_after_take, test_canmain_stops,
          test_canmain_resume]
 
@@ -3507,6 +3584,10 @@ MUTANTS = {
     "test_folder_release": _rule("folder_release"),
     "test_release_end": _rule("release_end"),
     "test_keep_lock": _rule("keep_lock_one_step"),
+    # the release and the take as two writes, unchecked: a hold under
+    # another pid or with a run is taken over, a free lock refused by the
+    # release's own rule, not --from-hold's
+    "test_from_hold": _rule("from_hold_one_step"),
     "test_canmain_check": _rule("canmain_check"),
     # the probe alone, as before 2026-11-13: an up canmain stops the bench
     "test_canmain_down": _rule("canmain_down"),

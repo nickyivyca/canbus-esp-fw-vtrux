@@ -120,8 +120,12 @@ TimerHandle_t xrestartTimer;
 #define FILE_PATH_MAX (ESP_VFS_PATH_MAX + CONFIG_SPIFFS_OBJ_NAME_LEN)
 /* Scratch buffer size */
 #define SCRATCH_BUFSIZE  4096
-/* Bounded retry so a vanished client cannot pin the httpd worker. */
-#define OTA_RECV_MAX_TIMEOUTS  20
+/*
+ * Bounded retry so a vanished client cannot pin the httpd worker: the upload
+ * is dropped on the 4th receive timeout in a row, of the server's 5 s each,
+ * so about 20 s with no byte received (shared/wican SPEC W13).
+ */
+#define OTA_RECV_MAX_TIMEOUTS  4
 
 #define MAX_FILE_SIZE   (2000*1024) // 200 KB
 #define MAX_FILE_SIZE_STR "200KB"
@@ -814,6 +818,11 @@ cleanup:
 }
 
 
+/*
+ * SPEC W7: the two endpoints that write car_data.json, which only AutoPID
+ * reads, are registered, and their handlers compiled, only with AutoPID on.
+ */
+#if WICAN_FEATURE_AUTOPID
 static esp_err_t store_car_data_handler(httpd_req_t *req)
 {
     if(flash_write_refused(req, "/store_car_data")) return ESP_OK;
@@ -857,6 +866,7 @@ static esp_err_t store_car_data_handler(httpd_req_t *req)
     httpd_resp_send(req, "Data stored successfully", HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
+#endif /* WICAN_FEATURE_AUTOPID: store_car_data_handler (W7) */
 
 static esp_err_t check_status_handler(httpd_req_t *req)
 {
@@ -1203,7 +1213,15 @@ static esp_err_t upload_post_body(httpd_req_t *req, bool *succeeded)
     assert(update_partition != NULL);
     ESP_LOGI(TAG, "Writing to partition subtype %d at offset 0x%lx",
              update_partition->subtype, update_partition->address);
-    err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &update_handle);
+    /*
+     * SPEC W14: sequential-write mode erases each block as the write reaches
+     * it. OTA_SIZE_UNKNOWN erased the whole slot here, before the first byte
+     * of the body was read.
+     *
+     * SPEC W12: from here on, every exit but the restart into the new image
+     * ends the session, with esp_ota_abort() or esp_ota_end().
+     */
+    err = esp_ota_begin(update_partition, OTA_WITH_SEQUENTIAL_WRITES, &update_handle);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
@@ -1240,8 +1258,10 @@ static esp_err_t upload_post_body(httpd_req_t *req, bool *succeeded)
                  * vanished mid-upload pinned the single httpd worker
                  * permanently -- the web UI, and therefore the only recovery
                  * channel on a WiCAN OBD, stayed dead until a power cycle.
+                 * SPEC W13: dropped on the OTA_RECV_MAX_TIMEOUTS-th in a row,
+                 * a failed exit under W12.
                  */
-                if (++timeouts > OTA_RECV_MAX_TIMEOUTS)
+                if (++timeouts >= OTA_RECV_MAX_TIMEOUTS)
                 {
                     ESP_LOGE(TAG, "OTA aborted: %d consecutive recv timeouts", timeouts);
                     esp_ota_abort(update_handle);
@@ -1253,6 +1273,11 @@ static esp_err_t upload_post_body(httpd_req_t *req, bool *succeeded)
 
 
             ESP_LOGE(TAG, "File reception failed!");
+            /*
+             * SPEC W12: a reset or close mid-body ends the session too. It
+             * returned without this, so each such upload leaked it.
+             */
+            esp_ota_abort(update_handle);
             /* Respond with 500 Internal Server Error */
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to receive file");
             return ESP_FAIL;
@@ -1370,6 +1395,7 @@ static esp_err_t upload_post_body(httpd_req_t *req, bool *succeeded)
     return ESP_OK;
 }
 
+#if WICAN_FEATURE_AUTOPID   /* SPEC W7: car_data.json is AutoPID's */
 static esp_err_t upload_car_data_handler(httpd_req_t *req)
 {
     if(flash_write_refused(req, "/upload/car_data.json")) return ESP_OK;
@@ -1505,7 +1531,6 @@ static esp_err_t upload_car_data_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-#if WICAN_FEATURE_AUTOPID
 esp_err_t autopid_data_handler(httpd_req_t *req)
 {
     char *data = autopid_data_read();
@@ -1679,27 +1704,25 @@ static const httpd_uri_t store_auto_data_uri = {
      * context to demonstrate it's usage */
     .user_ctx  = NULL
 };
-static const httpd_uri_t upload_car_data = {
+#if WICAN_FEATURE_AUTOPID
+static const httpd_uri_t upload_car_data = {     /* SPEC W7 */
     .uri       = "/upload/car_data.json",   // Match all URIs of type /upload/path/to/file
     .method    = HTTP_POST,
     .handler   = upload_car_data_handler,
     .user_ctx  = &server_data    // Pass server data as context
 };
-#if WICAN_FEATURE_AUTOPID
 static const httpd_uri_t autopid_data = {
     .uri       = "/autopid_data",   // Match all URIs of type /upload/path/to/file
     .method    = HTTP_GET,
     .handler   = autopid_data_handler,
     .user_ctx  = &server_data    // Pass server data as context
 };
-#endif
-static const httpd_uri_t store_car_data_uri = {
+static const httpd_uri_t store_car_data_uri = {  /* SPEC W7 */
     .uri       = "/store_car_data",
     .method    = HTTP_POST,
     .handler   = store_car_data_handler,
     .user_ctx  = NULL
 };
-#if WICAN_FEATURE_AUTOPID
 static const httpd_uri_t scan_available_pids_uri = {
     .uri       = "/scan_available_pids",
     .method    = HTTP_GET,
@@ -2425,13 +2448,11 @@ static httpd_handle_t config_server_init(void)
 		httpd_register_uri_handler(server, &store_auto_data_uri);
 		httpd_register_uri_handler(server, &load_pid_auto_uri);
 		httpd_register_uri_handler(server, &load_pid_auto_conf_uri);
-		httpd_register_uri_handler(server, &upload_car_data);
 #if WICAN_FEATURE_AUTOPID
+		httpd_register_uri_handler(server, &upload_car_data);       /* SPEC W7 */
 		httpd_register_uri_handler(server, &autopid_data);
 		httpd_register_uri_handler(server, &load_car_config_uri);
-#endif
-		httpd_register_uri_handler(server, &store_car_data_uri);
-#if WICAN_FEATURE_AUTOPID
+		httpd_register_uri_handler(server, &store_car_data_uri);    /* SPEC W7 */
 		httpd_register_uri_handler(server, &scan_available_pids_uri);
 #endif
         #if CONFIG_EXAMPLE_BASIC_AUTH

@@ -261,10 +261,80 @@ def test_nested_placement():
     assert {r["slice"] for r in rec["results"]} == {"bench.slice"}, rec["results"]
 
 
+def test_nested_from_hold():
+    """A7 under the bench lock, with shared/bench SPEC section 6's
+    --from-hold (user, 2026-11-16; the charge-interposer reviewer: the
+    acceptance takes the lock through the chain runner, A1, so it passes
+    --from-hold through): while the role holds the bench by hand under a
+    session's PID, a suite run whose first run needs the bench is refused
+    without it, and with it starts from that hold (the release's reads "not
+    read: handed to run <id>", the take for the run under the nested run's
+    own PID). A suite run that needs no bench takes no lock and is given
+    nothing; the hold stays the session's. nested.json's from_hold records
+    the PID and whether the run was given it. Run in this process, so the
+    made-up canmain check (_canmain_fixture) applies."""
+    import _canmain_fixture
+    from vtrux_bench import bench_lock as BL
+    from vtrux_bench.run.lock import LockError
+    from vtrux_bench.run.model import Check, Group, Suite
+    role = "tester (gen-inhibit)"
+    N[0] += 1
+    d = os.path.join(BASE, "fh%d" % N[0])
+    os.makedirs(os.path.join(d, "runs"))
+    log = os.path.join(d, "bench-log.jsonl")
+    BL.init(log, role)
+    settings = dict(runs_root=os.path.join(d, "runs"),
+                    hosts={"local": {"python": [sys.executable, "-B"]}},
+                    bench_lock_log=log, canmain_check=_canmain_fixture.install(d))
+    bench = Suite(name="proj-bench", role=role, groups=[
+        Group("b", [Check("ok", ["-c", "pass"], python=True)], needs_lock=True)])
+    emu = Suite(name="proj-emu", role=role, groups=[
+        Group("a", [Check("ok", ["-c", "pass"], python=True)])])
+    quiet = lambda s: None                                  # noqa: E731
+
+    def events():
+        with open(log, encoding="utf-8") as f:
+            return [json.loads(x) for x in f.read().splitlines()]
+    sess = subprocess.Popen([sys.executable, "-B", "-c", "import time; time.sleep(300)"])
+    try:
+        BL.take(log, role, sess.pid)
+        n = len(events())
+        try:
+            NS.run(bench, settings, dict(settings), "acc1-bench", out=quiet)
+        except LockError:
+            pass
+        else:
+            raise AssertionError("a bench suite run ran under the session's hold "
+                                 "without --from-hold")
+        assert len(events()) == n, "the refused run appended"
+        res = NS.run(bench, settings, dict(settings), "acc2-bench", out=quiet,
+                     from_hold=sess.pid)
+        assert res["exit"] == 0 and res["from_hold"] == {"pid": sess.pid,
+                                                         "given": True}, res
+        rid = res["first"]["run_id"]
+        new = events()[n:]
+        assert [(e["event"], e.get("run"), e.get("pid")) for e in new[:2]] == [
+            ("release", None, None), ("take", rid, os.getpid())], new
+        assert new[0]["boards"] == {b: "not read: handed to run %s" % rid
+                                    for b in BL.BOARDS}, new[0]
+        BL.take(log, role, sess.pid)
+        res = NS.run(emu, settings, dict(settings), "acc3-emu", out=quiet,
+                     from_hold=sess.pid)
+        assert res["exit"] == 0 and res["from_hold"] == {"pid": sess.pid,
+                                                         "given": False}, res
+        h = BL.read_state(log)["holder"]
+        assert (h["who"], h["pid"], h["run"]) == (role, sess.pid, None), h
+    finally:
+        sess.kill()
+        sess.wait()
+
+
 TESTS = [test_nested_record, test_rerun_new_record, test_first_run_decides,
-         test_nested_placement]
+         test_nested_placement, test_nested_from_hold]
 
 MUTANTS = [
+    (NS, "from_hold_bench", test_nested_from_hold),
+    (NS, "from_hold_bench_only", test_nested_from_hold),
     (C, "user_bus", test_nested_placement),
     (NS, "nested_masked", test_nested_record),
     (NS, "rerun_new_record", test_rerun_new_record),

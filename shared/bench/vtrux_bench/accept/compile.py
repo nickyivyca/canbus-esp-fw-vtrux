@@ -147,6 +147,8 @@ def suite_run_check(r, tree, adapter, settings, base_env, paths):
                "--run-id", "%s-%s" % (paths["record_id"], r["id"]), "--out", "{outdir}"])
     if r.get("rerun_flagged"):
         argv.append("--rerun-flagged")
+    if paths.get("from_hold") is not None:
+        argv += ["--from-hold", str(paths["from_hold"])]
     for g in r.get("groups") or []:
         argv += ["--group", g]
     for c in r.get("checks") or []:

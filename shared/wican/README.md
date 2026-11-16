@@ -3,9 +3,9 @@
 The stock WiCAN code, as one ESP-IDF component, `vtrux/wican`, which a
 project takes at a pinned tag (port plan goal 18, `SPEC.md` W1). It came from
 gen-inhibit's tree at port step 1a, byte for byte from `gen-inhibit/main`
-`0b03841`, and changes only as `SPEC.md` W3 to W10 say (W2). Stock behaviour
-here includes gen-inhibit's changes made before the port: the 403 replies,
-the removed sleep state machine, the Bluetooth strip.
+`0b03841`, and changes only as `SPEC.md` W3 to W10 and W12 to W14 say
+(W2). Stock behaviour here includes gen-inhibit's changes made before the
+port: the 403 replies, the removed sleep state machine, the Bluetooth strip.
 
 The spec and `VALIDATION.md` belong to the reviewers: a change is drafted by
 the reviewer of the project that needs it and ruled by the user in that
@@ -20,9 +20,9 @@ writing a file first does not make a project its owner.
 
 | File | What | Owner |
 |---|---|---|
-| `SPEC.md`, `VALIDATION.md` | the component's spec, W1 to W11, and why each requirement is written as it is | the reviewers, as above |
+| `SPEC.md`, `VALIDATION.md` | the component's spec, W1 to W14, and why each requirement is written as it is | the reviewers, as above |
 | `wican.c`, `wican.h` | stock `main.c`'s start-up as `wican_init()` and `wican_start()` (W4), the CAN receive and send tasks, the bus-owner callbacks (W5), the SLCAN command switch (W6), the URI hook (W8) | the implementor of the project that needs the change |
-| `config_server.c`/`.h` | the HTTP server: configuration, status, OTA, the websocket; the flash-write and OTA gates call the bus owner (W5); the project's URIs at the hook (W8) | the same |
+| `config_server.c`/`.h` | the HTTP server: configuration, status, OTA, the websocket; the flash-write and OTA gates call the bus owner (W5); the OTA upload ends its update session on every failed exit, drops a stalled upload after 4 receive timeouts in a row and erases the slot as it writes (W12 to W14); the two endpoints that write AutoPID's `car_data.json`, `/upload/car_data.json` and `/store_car_data`, only with AutoPID on (W7); the project's URIs at the hook (W8) | the same |
 | `comm_server.c`/`.h` | the TCP/UDP port | the same |
 | `slcan.c`/`.h` | SLCAN framing, and the command parser W6 switches | the same |
 | `elm327.c`/`.h`, `autopid.c`/`.h`, `mqtt.c`/`.h` | three stock features, each with its switch (W7); ELM327's `ATSP` is refused while the bus is owned (W5) | the same |
