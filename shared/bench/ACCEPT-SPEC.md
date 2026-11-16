@@ -109,8 +109,9 @@ Requirements are numbered A1 to A17. The numbers are stable.
     its own closed record;
   - its product digest equals this tree's;
   - the harness the required suite runs is unchanged: the digest over the
-    files the adapter names as that suite's harness (A15) is the same in
-    that run's tree and in this one.
+    files this tree's adapter names as that suite's harness (A15), read in
+    both trees, is the same in that run's tree and in this one; a file
+    missing from either tree makes them differ.
 
   The record names the earlier record, the run and both pairs of digests.
   The cited run stands as this acceptance's run of that suite: the
@@ -150,7 +151,10 @@ Requirements are numbered A1 to A17. The numbers are stable.
 
 - **A15. Each project's adapter**, one module beside its suite, gives: build
   targets and shells; the settings key map; the product files and digest;
-  for each suite another requires, the files of its harness (A17);
+  for each suite another requires, the files of its harness (A17): the
+  project's own files that suite runs, and what it runs through, such as
+  the shared pins file (the chain runner's version) and, if it builds, the
+  build environment's pin;
   images, identify and flashers; its comparers; redaction patterns; its
   harness-test catalogue (per entry: path, arguments, environment, shell,
   timeout, tags and the paths it covers); remote-host recipes; and its runs
