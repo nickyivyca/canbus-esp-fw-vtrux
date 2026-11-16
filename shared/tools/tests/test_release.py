@@ -1317,9 +1317,13 @@ class LauncherCheck(unittest.TestCase):
         return b
 
     def test_compiler_alone_passes(self):
-        for name, cmd, compiler in (
-                ("lc_plain", "C:\\tc\\gcc.exe", "C:/tc/gcc.exe"),
-                ("lc_quoted", '"C:\\t c\\gcc.exe"', "C:/t c/gcc.exe")):
+        # The command names the compiler in the host's own separators, as
+        # ninja's commands do: backslashes on Windows, where CMake records
+        # the same path with forward slashes, and forward slashes elsewhere,
+        # where a backslash is part of a file name.
+        for name, compiler, quote in (("lc_plain", "C:/tc/gcc.exe", ""),
+                                      ("lc_quoted", "C:/t c/gcc.exe", '"')):
+            cmd = quote + os.path.normpath(compiler) + quote
             with mock.patch("sys.stdout"):
                 check_no_launcher(self.folder(name, cmd, compiler), "t")
 
