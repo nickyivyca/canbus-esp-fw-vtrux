@@ -162,16 +162,21 @@ class NinjaGraph(unittest.TestCase):
             "C:/idf/tools/cmake/project.cmake"])
 
     def test_files_read(self):
+        # files_read() keeps an absolute path as recorded and joins a
+        # relative one onto the build folder, so the fixture's absolute
+        # paths must be absolute on the host running the test: C:/ on
+        # Windows, / elsewhere (C:/proj is relative on Linux).
+        root = "C:/" if os.name == "nt" else "/"
         self.bd = build_dir("graph_read", {
-            "build.ninja": BUILD_NINJA, "CMakeFiles/rules.ninja": RULES_NINJA,
-            "sub.ninja": SUB_NINJA,
+            "build.ninja": BUILD_NINJA.replace("C$:/", root.replace(":", "$:")),
+            "CMakeFiles/rules.ninja": RULES_NINJA, "sub.ninja": SUB_NINJA,
             ".ninja_deps": deps_log([("esp-idf/main/CMakeFiles/m.dir/a.c.obj",
-                                      ["C:/proj/main/a.c",
-                                       "C:/proj/main/inc/a.h"])])})
+                                      [root + "proj/main/a.c",
+                                       root + "proj/main/inc/a.h"])])})
         got = self.bd.files_read()
-        for p in ("C:/proj/main/inc/a.h", "C:/proj/path with space.ld",
-                  "C:/proj/CMakeLists.txt"):
-            self.assertIn(os.path.normpath(p), got)
+        for p in ("proj/main/inc/a.h", "proj/path with space.ld",
+                  "proj/CMakeLists.txt"):
+            self.assertIn(os.path.normpath(root + p), got)
         self.assertIn(self.bd.resolve("libx.a"), got)
 
     def test_no_rerun_edge(self):
