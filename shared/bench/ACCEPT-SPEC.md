@@ -11,7 +11,7 @@ and the other project's reviewer reads it before it merges into
 with both reviewers' answers to its questions. The bench lock's spec is
 `SPEC.md`, beside this file.
 
-Requirements are numbered A1 to A16. The numbers are stable.
+Requirements are numbered A1 to A17. The numbers are stable.
 
 ## What it is
 
@@ -98,6 +98,26 @@ Requirements are numbered A1 to A16. The numbers are stable.
 - **A12. The verdict.** ACCEPTANCE PASS only if every premise held, every
   check gave its expected verdict, every comparison held and every can-fail
   behaved as stated. Otherwise the runner lists each item that did not.
+- **A17. A required suite's earlier run** (user, 2026-11-16, in the
+  charge-interposer reviewer's session). When a suite run's suite requires
+  another (`Suite.requires`: the bench suite requires a whole emulated run
+  on the same product digest), the list may name an earlier acceptance
+  record's run of the required suite instead of running it again. The
+  runner accepts it at the start, before any lock or build, only when all
+  of these hold, and refuses otherwise:
+  - that run was of the whole suite, finished, and its comparison held in
+    its own closed record;
+  - its product digest equals this tree's;
+  - the harness the required suite runs is unchanged: the digest over the
+    files this tree's adapter names as that suite's harness (A15), read in
+    both trees, is the same in that run's tree and in this one; a file
+    missing from either tree makes them differ.
+
+  The record names the earlier record, the run and both pairs of digests.
+  The cited run stands as this acceptance's run of that suite: the
+  requirement and the list's comparisons read it where it is, and nothing
+  is copied into, or written in, the closed record. A change to the product
+  or to that suite's harness runs it again.
 
 ## The record and cleanup
 
@@ -131,6 +151,10 @@ Requirements are numbered A1 to A16. The numbers are stable.
 
 - **A15. Each project's adapter**, one module beside its suite, gives: build
   targets and shells; the settings key map; the product files and digest;
+  for each suite another requires, the files of its harness (A17): the
+  project's own files that suite runs, and what it runs through, such as
+  the shared pins file (the chain runner's version) and, if it builds, the
+  build environment's pin;
   images, identify and flashers; its comparers; redaction patterns; its
   harness-test catalogue (per entry: path, arguments, environment, shell,
   timeout, tags and the paths it covers); remote-host recipes; and its runs
