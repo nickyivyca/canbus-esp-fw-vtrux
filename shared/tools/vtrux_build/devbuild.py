@@ -19,9 +19,10 @@ Both run in the caller's environment as it is: nothing is added, and
 nothing taken away (R24 constrains release builds only). R14 applies: a
 dev build need not meet the release rules, so none of release.py's other
 checks run. The reconfigure is run every time, so a fresh folder gets its
-variant's options and the managed components are resolved; --jobs 1 from
-an Idle shell is the throttled form of AGENTS.md "Builds during wall-clock
-tests".
+variant's options and the managed components are resolved. Placement
+beside other work is the build's slice, not --jobs: on madhouse-debian it
+is started in build.slice (AGENTS.md "Parallel work on the shared
+machine").
 """
 
 import os

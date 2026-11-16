@@ -89,11 +89,11 @@ In order, each refusal an exit, never a warning:
      and keeps the cache off. With --jobs N,
      `ninja -C build -j N all` instead: what `idf.py build` runs, at N
      jobs (idf.py has no jobs option), in the same environment.
-     --jobs 1 from an Idle shell is the throttled form of AGENTS.md
-     "Builds during wall-clock tests". R9 asks for a reconfigure and a
-     build in one run, not for idf.py build (gen-inhibit reviewer,
-     2026-10-23). A configure ninja itself reruns keeps the cache's
-     CCACHE_ENABLE;
+     Placement beside other work is the build's slice, not --jobs
+     (AGENTS.md "Parallel work on the shared machine"). R9 asks for a
+     reconfigure and a build in one run, not for idf.py build
+     (gen-inhibit reviewer, 2026-10-23). A configure ninja itself reruns
+     keeps the cache's CCACHE_ENABLE;
      R9 again after the build, either way: CCACHE_ENABLE still off, and
      no launcher in the compile commands, and only the toolchain's own
      compilers, in every CMake build folder under build/, the bootloader's
