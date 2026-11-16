@@ -198,7 +198,7 @@ HARNESS_PY_TESTS = [
     "twai_fake_option_test.py", "scratch_dir_test.py", "scratch_run_test.py",
     "hw_mechanics_test.py", "serial_open_test.py", "adapter_fixes_test.py",
     "wican_pin_test.py", "canchg_mode_test.py", "canx2_slcan_test.py",
-    "kvaser_link_test.py",
+    "kvaser_link_test.py", "bus_alloc_test.py",
 ]
 # The ones of those also run with --can-fail, as <name>-canfail. One list
 # for the harness suite and accept_adapter's catalogue, so they can't drift.
@@ -207,7 +207,7 @@ HARNESS_PY_CANFAILS = [
     "paths_test.py", "twai_fake_option_test.py", "scratch_dir_test.py",
     "scratch_run_test.py", "hw_mechanics_test.py", "serial_open_test.py",
     "adapter_fixes_test.py", "wican_pin_test.py", "canchg_mode_test.py",
-    "canx2_slcan_test.py", "kvaser_link_test.py",
+    "canx2_slcan_test.py", "kvaser_link_test.py", "bus_alloc_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 # settings m_lanes_host: where the m-* groups run (module docstring)
@@ -1014,6 +1014,19 @@ class _Build:
 
 
 # ---- emulated -----------------------------------------------------------
+# The virtual segments a sim opens, run_scenario.BUS_SEGMENTS: the names the
+# core's allocation (VTRUX_BUS_ALLOC) uses for them (shared/bench job B,
+# 2026-11-16; bench_suite_test checks the two agree).
+SIM_BUS = ("vehicle", "charger", "physics")
+
+
+def _sim_bus():
+    """Check.bus for a sim, on a pinned shared/bench that has it (job B's
+    tag); {} on an older pin, whose Check has no bus."""
+    return {"bus": list(SIM_BUS)} if "bus" in getattr(Check, "__dataclass_fields__", {}) \
+        else {}
+
+
 def emulated(settings):
     """No hardware, no lock: builds, host suites, the 1x sims, the capture
     trace rebuild."""
@@ -1037,12 +1050,16 @@ def emulated(settings):
         b.mpy("regress-all", ["regress.py", "--all"], cls="build", timeout_s=7200),
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
          for t in LOGIC_PY_TESTS])
-    # The sims are wall-clock: the core runs one at a time per host and
-    # throttles every build there meanwhile. They come last in the lane.
+    # The sims are wall-clock. They come last in the lane. Each names its
+    # three virtual segments (SIM_BUS), so with the settings' bus_alloc the
+    # core gives it a bus of its own and watches it, and up to the host's
+    # wallclock_slots run side by side (shared/bench job B); without it,
+    # one at a time on bus.py's groups, as before.
     m_sims = b.mgroup("m-sims", [
         b.mpy("sim." + s, ["run_scenario.py", s, "--time-scale", "1",
                            "--keep-traces", "--outdir", "{outdir}"],
-              cls="wallclock", timeout_s=4 * 3600, judge=scenario_judge)
+              cls="wallclock", timeout_s=4 * 3600, judge=scenario_judge,
+              **_sim_bus())
         for s in SIM_SCENARIOS])
     l_emulated = Group("l-emulated", checks=[
         b.lpy(cid, argv, timeout_s=3600) for cid, argv in EMULATED_LOCAL])
