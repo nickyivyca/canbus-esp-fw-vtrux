@@ -65,8 +65,9 @@ Board state, what is on each board, stays in
   lines in order up to the first bad one (truncated there, never skipped
   past, so a state built on an illegal step is never replayed), then the
   `repair` event. After it the lock is free, the board state unknown (as
-  after `clear`), and any held or paused run is ended. A repair is messaged
-  to every role that may take (section 8), like a clear.
+  after `clear`), and any held or paused run is ended. A repair, like a
+  clear, is not messaged: the log is the record (user, 2026-11-16, in the
+  methodology owner's session, approving `bench-holder.md` rule 3).
 - **If line 1 (the `init`) is the bad line**, there is nothing to keep:
   `repair` writes a fresh `init` for the bench host and environment it runs
   in, then the `repair` event. No hand edit or rename is ever needed.
