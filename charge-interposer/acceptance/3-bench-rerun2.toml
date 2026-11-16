@@ -1,0 +1,262 @@
+# Port step 3's bench baseline on madhouse-debian, second re-run (shared/bench
+# ACCEPT-SPEC A2, A13; owned by the charge-interposer reviewer). Drafted by
+# the tester for the reviewer (the reviewer's message of 2026-11-16: "the
+# whole run again ... on harness = charge-interposer/main e03754bd (carries
+# 620da7f4), the same product, naming e79d"; approved by the reviewer as an
+# A13 re-run with no user round). A re-run of 3-bench-rerun.toml, itself a
+# re-run of the user-approved 3-bench.toml.
+#
+# Run e79d (runs/accept_3_20261114T035628_e79d, from 3-bench-rerun.toml at
+# 60729627, harness and product 742c96f6, shared/bench 344eef05) started
+# 2026-11-14 03:56:28. Its emulated suite ran 04:00:33-22:07:13 and its
+# harness suite 22:07:13-23:34:02; c-emulated held against 98d1's, and
+# c-harness differed on one line only, "VERDICT
+# l-harness/bench-suite-test-canfail: PASS -> FAIL" (148 of 149 mutants
+# caught: the coverage mutant named bench_switch_errors as a driver with no
+# can-fail, but it has had one since 30e24327, so the mutant survived).
+# Its vp1, vp2, vp3 and
+# bench runs were NOT-RUN: the bench lock was taken 23:34:03 and released
+# 23:38:01, and the WiCAN start hook's USB hard reset failed (esptool EIO,
+# then no serial data, then no device), beside kernel lines "usb
+# 1-3.2-port4: disabled by hub (EMI?)" on the bus-powered hub 1-3.2. The
+# X2 was not touched. The tester's VERIFICATION.md entry for e79d is in
+# 9.1, "Port step 3, bench baseline re-run after 98d1".
+# This list's record names e79d (A13: the runner's --earlier
+# accept_3_20261114T035628_e79d).
+#
+# Since e79d, on the harness side, one change: 620da7f4 (merged as
+# 0eb6651a), bench_suite_test's coverage mutant appends bench_flight_silence,
+# a driver with no can-fail, in place of bench_switch_errors. Its --can-fail
+# caught 149 of 149 and the test passed 36 of 36 (tester, build.slice,
+# 2026-11-16). The rest of 742c96f6..e03754bd is 3-bench-rerun.toml, its
+# README row and the methodology's AGENTS.md (e03754bd).
+#
+# The product is 0691f6f1's, as in e79d. Checked 2026-11-16: git diff
+# 742c96f6 e03754bd -- charge-interposer touches only
+# acceptance/3-bench-rerun.toml, acceptance/README.md and
+# bench_suite_test.py, none of them in bench_suite.product_files, and
+# shared_pins.json and bench_suite.py are unchanged (shared/bench
+# 2026.11.13.2, the same check ids in every suite). As before, the three
+# bench variants are built from this list's own tree and those builds
+# flashed, with no digest premise; they are dev builds (R31), so their code
+# hashes are not compared with b467's (spec 8.2).
+#
+# The bench since e79d (the reviewer's message of 2026-11-16, from CAN
+# replay's records, reverse-it tools/artifacts/can-tools-bench/runs/
+# *_20261116*): the owner swapped in a powered hub; no USB errors since
+# 09:28:47; the WiCAN passed esptool chip_id with a hard reset 5 of 5; a
+# two-bus run of about 5 min with the Kvaser on kvaser_usb had no stall and
+# no send failure. USB paths changed, by-id serials did not: the WiCAN at
+# 1-3.1, the X2 at 1-3.4, canchg at 1-3.3, the PCAN, canmain and Kvaser at
+# 1-3.2.x. The run's settings name every board and adapter by IDs and
+# serial, the Kvaser and canmain by netdev name (checked 2026-11-16), so no
+# setting changes. kvaser_link.KLOG_RE, the kernel-line filter of the VOID
+# details and of klog_windows.py, matches "usb 1-3.2" by path, so after the
+# swap a WiCAN or X2 "usb 1-3.1:" or "usb 1-3.4:" line is matched only when
+# it carries -71, EPROTO or "disconnect"; the tester's entry scans the
+# kernel log over the run's windows for every "usb 1-3" line by hand, as for
+# e79d. Since 2026-11-16 can-tools left the X2 on slcan_spi 4d7cf26d
+# (bench-holder.md); the bench start pass identifies it and flashes the
+# list's builds.
+#
+# Placement and the bench lock: as 3-bench-rerun.toml (the settings'
+# placement; the runner started in bench.slice; the lock not held through
+# the builds, the emulated suite or the harness suite, about 19 h; held for
+# each of vp1, vp2, vp3 and the bench run, taken and released by each,
+# about 22 h in four spells with gaps of about a second; a hand take in a
+# gap makes the next suite run refuse at its take, lock_wait_s 0, its
+# checks NOT-RUN, to be re-run under A13). A timing failure is triaged
+# against resource-log over its window (AGENTS.md "Parallel work on the
+# shared machine", point 2) before it counts. If stall VOIDs take out a
+# large part of the bench run, the tester tells the reviewer before any
+# re-run (the reviewer, 2026-11-13).
+#
+# Trees:
+#   harness   e03754bd, charge-interposer/main after the coverage-mutant
+#             merge (0eb6651a) and the methodology's AGENTS.md. Its
+#             shared/bench pin is 2026.11.13.2, its can-tools pin fa6c0aea,
+#             as 742c96f6's. The commit before this list's own.
+#   prod      the same commit: the three bench builds come from it.
+
+[step]
+id = "3"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-16"
+spec = ["2", "2.1", "2.2", "2.3", "2.4", "8", "8.2", "8.3", "9", "9.1", "10", "12"]
+verification = "the tester's VERIFICATION.md entries for port step 3's bench baseline"
+
+[trees.harness]
+project = "e03754bda5d5eacce4373d1fe5ec4206d2914ca5"
+
+# ---- the three variants the bench suite flashes ----------------------------
+[[build]]
+id = "bridge"
+tree = "harness"
+target = "idf-build"
+options = { variant = "bridge" }
+
+[[build]]
+id = "witness"
+tree = "harness"
+target = "idf-build"
+options = { variant = "witness" }
+
+[[build]]
+id = "truck"
+tree = "harness"
+target = "idf-build"
+options = { variant = "truck" }
+
+# ---- the emulated suite, whole (the bench suite's requires) ---------------
+# Whole again: the bench suite requires a whole emulated run on the same
+# code in the same record (Suite.requires, requires_whole), and e79d's is
+# in another record.
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+
+# ---- the harness suite, whole ----------------------------------------------
+[[suite_run]]
+id = "harness"
+tree = "harness"
+suite = "harness"
+after = ["emulated"]
+
+# ---- vport-bitrate judged three times, then the bench suite, whole ----------
+[[suite_run]]
+id = "vp1"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["harness"]
+
+[[suite_run]]
+id = "vp2"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["vp1"]
+
+[[suite_run]]
+id = "vp3"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["vp2"]
+
+# this run's flashes and identifies are the board evidence: each X2 image is
+# the list's own build, read back by its build id; the WiCAN's is the pinned
+# gen-inhibit image (wican_pin.json), read back from its boot slot
+[[suite_run]]
+id = "bench"
+tree = "harness"
+suite = "bench"
+images_from = ["bridge", "witness", "truck"]
+after = ["vp3"]
+
+# ---- the baselines -----------------------------------------------------------
+# The emulated and harness suites from e79d, which held against 98d1's
+# (c-emulated held; c-harness's only difference was the stale mutant's
+# can-fail line, which 620da7f4 fixes): the same product on the same
+# machine (the reviewer, 2026-11-16: e79d's suites if they held, else
+# 98d1's). The bench suite and vport-bitrate as 3-bench-rerun.toml: from
+# b467, the newest whole bench run (2b, harness and product f57ca9d3, on
+# Windows), since e79d's and 98d1's did not run.
+[baseline]
+emulated = "accept_3_20261114T035628_e79d/runs/accept_3_20261114T035628_e79d-emulated"
+harness = "accept_3_20261114T035628_e79d/runs/accept_3_20261114T035628_e79d-harness"
+bench = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-bench"
+vp1 = "accept_2b_20261109T072806_b467/runs/accept_2b_20261109T072806_b467-vp1"
+
+# The emulated suite against e79d's: no difference. The same check list and
+# product; the two host_bridge KNOWN-FAILs are KNOWN-FAIL on both sides;
+# any other FAIL, or a NOT-RUN that is not a declared skip, is a difference.
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = []
+
+# The harness suite against e79d's (154 PASS, 1 FAIL, 9 declared skips: 164
+# ids, the same ids at e03754bd). The one difference is the fix: the
+# coverage mutant now names a driver with no can-fail, so
+# bench-suite-test-canfail catches every mutant again (149 of 149 at
+# 620da7f4). Every other id kept its verdict is expected.
+[[compare]]
+id = "c-harness"
+comparer = "run-records"
+a = "baseline:harness"
+b = "harness"
+expect = "listed"
+differences = [
+  "VERDICT l-harness/bench-suite-test-canfail: FAIL -> PASS",
+]
+
+# The bench suite against b467's: no listed difference, as in
+# 3-bench-rerun.toml (83 checks, 17 declared skips, the same ids; in b467:
+# 64 PASS, the 17 skips NOT-RUN, b-witness/switch-loss KNOWN-FAIL (spec
+# 12's 2.3 entry), and b-vport/vport-listen-wrong-rate VOID (TEST FAULT;
+# variance from the known defect, not listed; it shows only if it moves)).
+# Some checks judge differently since b467 (the reviewer's D1-D6,
+# 3-bench-rerun.toml's header), so the same verdict is expected on a
+# changed judgement: a verdict that moves is a difference to judge line by
+# line in the tester's entry, the judgement change and Linux-side causes
+# included. A VOID "kvaser TX stall" or "kvaser link" is a difference too,
+# with the kernel lines its detail carries.
+[[compare]]
+id = "c-bench"
+comparer = "run-records"
+a = "baseline:bench"
+b = "bench"
+expect = "listed"
+differences = []
+
+# The three vport runs, each against the first and against b467's vp1: the
+# same verdicts, no TEST FAULT, no figure tolerance (vport-bitrate's node
+# frames count as sent on their own echo, D3).
+[[compare]]
+id = "vp1-vp2"
+comparer = "vport-windows"
+a = "vp1"
+b = "vp2"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp1-vp3"
+comparer = "vport-windows"
+a = "vp1"
+b = "vp3"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp1-b467"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp1"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp2-b467"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp2"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp3-b467"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp3"
+expect = "same-verdicts"
+
+# ---- spec 8.3: no ESP-IDF line before setup() -----------------------------
+# In the bench suite run, as in 2b and 3-bench.toml: the truck by
+# b-truck/flight-silence; bridge and witness by b-bridge/idf-log and
+# b-witness/idf-log.
