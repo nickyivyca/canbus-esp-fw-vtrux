@@ -65,8 +65,9 @@ Board state, what is on each board, stays in
   lines in order up to the first bad one (truncated there, never skipped
   past, so a state built on an illegal step is never replayed), then the
   `repair` event. After it the lock is free, the board state unknown (as
-  after `clear`), and any held or paused run is ended. A repair is messaged
-  to every role that may take (section 8), like a clear.
+  after `clear`), and any held or paused run is ended. A repair, like a
+  clear, is not messaged: the log is the record (user, 2026-11-16, in the
+  methodology owner's session, approving `bench-holder.md` rule 3).
 - **If line 1 (the `init`) is the bad line**, there is nothing to keep:
   `repair` writes a fresh `init` for the bench host and environment it runs
   in, then the `repair` event. No hand edit or rename is ever needed.
@@ -265,7 +266,8 @@ way, the Holder is not its own.
   lock is a mutex; not to have a guarantee that it's left in a known state
   when it's handed over"). A free lock is taken without asking anyone:
   `take` checks and claims it in one locked step, so it is the ask (user,
-  2026-11-13). The messages at a take and a release are notices. While a
+  2026-11-13). No message is sent at a take or a release: the log and its
+  release note are the record (user, 2026-11-16). While a
   role holds the lock, it does to the bench what its work needs: flashes the
   images it needs, resets or reboots either board, brings links up or down,
   moves adapters between drivers or into the Android emulator, and sends
@@ -419,7 +421,8 @@ way, the Holder is not its own.
 - **The lock is a mutex** (user, 2026-11-13, in the Git based CANBus
   Android development session; the details in the methodology owner's
   session, with the CAN replay tooling and Android sessions' lists). A free
-  lock is taken without asking. The holder does to the bench what its work
+  lock is taken without asking. No message at a take or a release (user,
+  2026-11-16). The holder does to the bench what its work
   needs, and its release reports the state it leaves; nothing is put back
   for the next holder, who sets up what it needs. An untouched board is
   `not read: untouched`. A whole-flash dump is made only to restore. A run
