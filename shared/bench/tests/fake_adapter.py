@@ -136,6 +136,27 @@ def artifacts_row(folder, summary):
     return row
 SUITES = {"emulated": "proj/suite.py:EMULATED", "bench": "proj/suite.py:BENCH"}
 
+# which suite each suite requires (Suite.requires, by the adapter's names),
+# and for each required suite the files of its harness (A15, A17): its own
+# files in the tree (proj/harness/*.py, and any path proj/harness/extra.txt
+# names, one per line), what it runs through (the pins file) and a shared
+# component's file, read at the tree's commit of that component
+SUITE_REQUIRES = {"bench": "emulated"}
+
+
+def harness_files(suite, tree):
+    if suite != "emulated":
+        return []
+    root = tree["project_dir"]
+    d = os.path.join(root, "proj", "harness")
+    out = ["proj/harness/%s" % n for n in sorted(os.listdir(d)) if n.endswith(".py")] \
+        if os.path.isdir(d) else []
+    extra = os.path.join(d, "extra.txt")
+    if os.path.isfile(extra):
+        with open(extra, encoding="utf-8") as f:
+            out += [ln.strip() for ln in f if ln.strip()]
+    return out + ["proj/pins.json", "shared/comp/tool.py"]
+
 # the committed harness-test catalogue (A8, A15): per entry its path,
 # arguments, environment, shell, timeout, tags and the paths it covers
 CATALOGUE = [

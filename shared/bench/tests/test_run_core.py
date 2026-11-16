@@ -1412,6 +1412,55 @@ def test_requires():
     assert r and "not identifiable" in r, r
 
 
+def test_requires_run():
+    """settings.requires_run names the one run Suite.requires reads for a
+    suite, wherever it is (ACCEPT-SPEC A17: an earlier acceptance record's
+    run, read in place): a clean run in another runs folder meets it though
+    the newest run under runs_root failed; a named folder with no record,
+    or a run of another suite, is refused; the rest of the rule still
+    applies (other code is refused)."""
+    env = Env("requires_run")
+    code = {"commit": "abc", "dirty": False}
+    emu_ok = suite([Group("e", [chk("x", "pass")])], name="emu",
+                   code_info=lambda ctx: dict(code))
+    emu_bad = suite([Group("e", [chk("x", "import sys; sys.exit(1)")])],
+                    name="emu", code_info=lambda ctx: dict(code))
+    other = suite([Group("o", [chk("z", "pass")])], name="other",
+                  code_info=lambda ctx: dict(code))
+    bench = suite([Group("b", [chk("y", "pass")])], name="bench",
+                  requires="emu", code_info=lambda ctx: dict(code))
+    elsewhere = os.path.join(env.root, "elsewhere")
+    run(env, emu_ok, settings=env.settings(runs_root=elsewhere))
+    run(env, other, settings=env.settings(runs_root=elsewhere))
+    by_suite = {}
+    for p in glob.glob(os.path.join(elsewhere, "*", "record.json")):
+        with open(p, encoding="utf-8") as f:
+            by_suite[json.load(f)["suite"]] = os.path.dirname(p)
+    time.sleep(1.1)
+    run(env, emu_bad)                # the newest emu run under runs_root fails
+
+    def refused(**kw):
+        try:
+            run(env, bench, settings=env.settings(**kw))
+        except SuiteError as e:
+            return str(e)
+        return None
+    r = refused()
+    assert r and "FAIL, ERROR" in r, r
+    assert refused(requires_run={"emu": by_suite["emu"]}) is None, \
+        refused(requires_run={"emu": by_suite["emu"]})
+    _eng, rec = run(env, bench, settings=env.settings(
+        requires_run={"emu": by_suite["emu"]}))
+    assert os.path.basename(by_suite["emu"]) in (rec.get("requires_met") or ""), rec
+    r = refused(requires_run={"emu": os.path.join(env.root, "no-such-run")})
+    assert r and "no readable record.json" in r, r
+    r = refused(requires_run={"emu": by_suite["other"]})
+    assert r and "is a run of other" in r, r
+    code["commit"] = "def"
+    r = refused(requires_run={"emu": by_suite["emu"]})
+    assert r and "other code" in r, r
+
+
 def test_requires_whole():
     """The run Suite.requires accepts is a run of the whole suite: not a
     --group or --check selection, and with no NOT-RUN check but declared
@@ -3257,7 +3306,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_build_alongside, test_after, test_wallclock_records,
          test_own_wallclock_wait, test_wallclock_hand_roles,
          test_placement_slices, test_placement_readback, test_runner_slice,
-         test_requires,
+         test_requires, test_requires_run,
          test_requires_whole, test_subset_mark, test_subset_not_whole,
          test_product_digest, test_digest_bridge,
          test_digest_own_folder, test_digest_folder_removed,
@@ -3407,6 +3456,7 @@ MUTANTS = {
     # the runner's start check removed: board work starts in any slice
     "test_runner_slice": _rule("runner_slice"),
     "test_requires": _rule("requires"),
+    "test_requires_run": _rule("requires_run"),
     "test_requires_whole": _rule("requires_whole"),
     "test_subset_mark": _rule("subset_mark"),
     "test_subset_not_whole": _rule("subset_not_whole"),
