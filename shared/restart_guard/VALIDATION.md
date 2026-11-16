@@ -49,8 +49,36 @@ verification").
   handler's watchdog handling changed: it feeds the watchdogs on entry in
   single-core builds, and configures the RTC watchdog in a new way where
   v5.4.1 called `esp_panic_handler_reconfigure_wdts(1000)`. That bears on
-  the unguarded time in the known limits below, and is to be re-read for
-  them, not yet done.
+  the unguarded time in the known limits below; re-read 2026-11-16, next.
+- **Re-reading of ESP-IDF v5.4.2 against v5.4.1** (gen-inhibit implementor,
+  2026-11-16, both trees on madhouse-debian; the watchdog citations checked
+  by the gen-inhibit reviewer; paths under `components/esp_system/`):
+  - The wrap point is unchanged and G2 is met. Every caller of
+    `esp_restart_noos()` is in another object file than its definition
+    (C3 `port/soc/esp32c3/system_internal.c:67`, S3 `.../esp32s3/...:70`):
+    `esp_system.c:63`, `port/cpu_start.c:769` and `:790`,
+    `port/usb_console.c:192` (wrapped too, not named before), and
+    `panic_restart()` (`port/panic_handler.c:313`), whose
+    `esp_restart_noos_dig()` branch is ESP32-only.
+  - `panic_restart()` has a new caller, `panic.c:279`: a panic handler
+    entered a second time restarts at once, still through
+    `esp_restart_noos()`, so still guarded. The halt path's
+    `esp_system_reset_modules_on_exit()` still resets no TWAI on the C3
+    (v5.4.2 adds only crypto resets), so a halt leaves the controller on the
+    bus, as the known limits say.
+  - Software resets that skip `esp_restart_noos()` are the same as in
+    v5.4.1: the brown-out reset (`port/brownout.c:70`) and the bootloader's.
+  - **The watchdogs while a crash is unguarded.** v5.4.1 set TG0 to a 1 s
+    system reset at panic entry (`port/panic_handler.c:182`) and re-armed it
+    through the handler. v5.4.2 feeds the watchdogs on entry in single-core
+    builds (`port/panic_handler.c:150-152`; gen-inhibit's C3 is single-core),
+    sets the RTC watchdog to 10 s, or the panic reboot delay plus 10 s, with
+    an RTC reset (`:226-230`), and disables both TG watchdogs (`:237`). So a
+    panic handler that hangs before `esp_restart_noos()` is ended by a
+    hardware reset that skips the guard after about 10 s on v5.4.2, where
+    v5.4.1 ended it after about 1 s. Watchdog final stages are outside G2
+    already. Whether the RTC reset takes the TWAI off the bus is the TRM's,
+    not read.
 - **Context (before the move):** on the bench without the step, each live
   restart put 107-139 error frames on the bus (2026-10-12); with it, on the
   trial build `089cd21`, 6 of 6 live restarts put 0 (2026-10-13).
@@ -74,6 +102,9 @@ verification").
     with interrupts off: it keeps acknowledging frames and can still send
     or retry the frame in its buffer. Each project weighs its panic action,
     panic output and core-dump choice against this in its own settings.
+    If the handler hangs, that time ends at the watchdog: about 10 s on
+    ESP-IDF v5.4.2 (about 1 s on v5.4.1), by a reset that skips the guard
+    (re-reading of 2026-11-16, above).
   - gen-inhibit's settings today: print and restart, no restart delay, no
     core dump (`sdkconfig`).
 - **Status:** validated.
