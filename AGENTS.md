@@ -659,11 +659,22 @@ other's frames, even with `hop_limit=0`, so they never run at once. Benches
 on different groups and ports may run together: move one with its port
 option.
 
-**Nothing enforces this yet.** Before starting a run, check your ports
-yourself: look for UDP sockets bound to the groups and ports you are about to
-use, then open your segments and listen; you should hear nothing. If you find
-a bench, find out whose it is before you kill anything. When the shared bench
-tooling gets this check, this section changes in the same merge.
+**The chain runner enforces this for checks that declare their buses**
+(`shared/main` from tag `2026.11.16`). A check whose suite gives it
+`Check.bus`, run with the `bus_alloc` setting, gets multicast groups and
+ports of its own, handed to it as `{bus_alloc}` on its command line and in
+`VTRUX_BUS_ALLOC`. Before it starts, the runner checks that none of those
+ports is bound and listens on its segments; a bound port or any frame heard
+makes it NOT-RUN "refused". While it runs, an isolation monitor on its
+segments makes it VOID on a frame from a sender, or a socket on its ports,
+that is not the check's own. `hosts.<host>.wallclock_slots` above 1 runs
+that many such checks side by side and needs `bus_alloc`. A wall-clock
+check with no `Check.bus` takes every slot.
+
+**Every other run is checked by hand.** Before starting it, look for UDP
+sockets bound to the groups and ports you are about to use, then open your
+segments and listen; you should hear nothing. If you find a bench, find out
+whose it is before you kill anything.
 
 ## Working rules
 
