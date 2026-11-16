@@ -196,6 +196,11 @@ fails when the rule is switched off through RULES):
                   it there
   requires     a suite with `requires` starts only when a run of that
                   suite on the same code matched its reference
+  requires_run  settings.requires_run {<suite>: <run folder>} names the one
+                  run Suite.requires reads for that suite, wherever it is,
+                  in place of the newest under runs_root (ACCEPT-SPEC A17:
+                  an earlier acceptance record's run); every other rule of
+                  the requirement applies to it unchanged
   product_digest  "the same code" (Suite.requires, --resume) is the product
                   digest over Suite.product_files when the suite gives them,
                   not the commit: a harness-only commit keeps it (user
@@ -278,7 +283,7 @@ RULES = {k: True for k in (
     "gate", "timeout", "skip", "base_env", "record_settings",
     "identify_error", "after",
     "own_wallclock_wait", "placement_readback", "runner_slice",
-    "requires", "requires_whole", "resume_code",
+    "requires", "requires_run", "requires_whole", "resume_code",
     "subset_mark", "subset_not_whole", "start_identify", "end_identify",
     "idle_safe_end", "idle_unsafe_line", "product_digest", "digest_bridge",
     "board_hooks",
@@ -2050,7 +2055,9 @@ class Engine:
     # ---- the precondition ---------------------------------------------
     def requirement_met(self):
         """Suite.requires names a suite (e.g. the emulated one). Met when
-        the newest finished run of it under runs_root is on the same code as
+        the newest finished run of it under runs_root (or the one run
+        settings.requires_run[<that suite>] names, wherever it is) is on the
+        same code as
         this run, and its results match the reference run named in
         settings.references[<that suite>] (no differences by compare); with
         no reference yet (the first baseline), when none of its results is
@@ -2062,7 +2069,25 @@ class Engine:
             return False, ("this run's code is not identifiable (%s): a dirty "
                            "tree has no code identity" % code)
         cands = []
-        for rec_path in glob.glob(os.path.join(self.runs_root, "*", "record.json")):
+        named = ((self.settings.get("requires_run") or {}).get(need)
+                 if RULES["requires_run"] else None)
+        if named:
+            # the one run the settings name for this suite, wherever it is
+            # (ACCEPT-SPEC A17: an earlier acceptance record's run, read in
+            # place); runs_root is not looked at
+            rec_path = os.path.join(named, "record.json")
+            try:
+                with open(rec_path, encoding="utf-8") as f:
+                    r = json.load(f)
+            except (OSError, ValueError) as e:
+                return False, ("the run requires_run names for %s (%s) has no "
+                               "readable record.json: %r" % (need, named, e))
+            if r.get("suite") != need:
+                return False, ("the run requires_run names for %s (%s) is a run "
+                               "of %s" % (need, named, r.get("suite")))
+            cands.append((r.get("ended", ""), rec_path, r))
+        for rec_path in [] if named else glob.glob(
+                os.path.join(self.runs_root, "*", "record.json")):
             try:
                 with open(rec_path, encoding="utf-8") as f:
                     r = json.load(f)

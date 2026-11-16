@@ -20,6 +20,10 @@ bytes.
     [[suite_run]]   id, tree, suite (the adapter's), groups, checks, whole,
                     rerun_flagged, images_from (the builds whose images the
                     suite flashes: settings.suite_images), after
+    [[reuse]]       id, tree, suite (the adapter's), record (an earlier
+                    acceptance record's folder in the runs folder), run (its
+                    [[suite_run]] id): that run stands as this acceptance's
+                    run of a required suite, read in place (A17; reuse.py)
     [baseline]      <check or suite run id> = <run or record name>
     [[compare]]     id, comparer (the adapter's), a, b (item ids, or
                     "baseline:<id>"), expect, tolerance, differences, mask
@@ -90,6 +94,8 @@ SCHEMA = {
                   "groups": (LIST, False), "checks": (LIST, False),
                   "whole": (BOOL, False), "rerun_flagged": (BOOL, False),
                   "images_from": (LIST, False), "after": (LIST, False)},
+    "reuse": {"id": (STR, True), "tree": (STR, True), "suite": (STR, True),
+              "record": (STR, True), "run": (STR, True)},
     "compare": {"id": (STR, True), "comparer": (STR, True), "a": (STR, True),
                 "b": (STR, True), "expect": (STR, True),
                 "tolerance": ("a table", False), "differences": (LIST, False),
@@ -107,7 +113,7 @@ SCHEMA = {
 TOP = {"step": ("table", "step"), "trees": ("tables", "tree"),
        "build": ("array", "build"), "check": ("array", "check"),
        "set": ("array", "set"), "suite_run": ("array", "suite_run"),
-       "baseline": ("strings", None), "compare": ("array", "compare"),
+       "reuse": ("array", "reuse"), "baseline": ("strings", None), "compare": ("array", "compare"),
        "canfail": ("array", "canfail"), "premise": ("array", "premise"),
        "hand": ("array", "hand")}
 CLS = ("light", "build", "wallclock")
@@ -433,7 +439,18 @@ def load(repo, spec, adapter):
         r_.setdefault("rerun_flagged", False)
         suite_runs.append(r_)
 
-    compares = [dict(_fields("compare %s" % q(c.get("id")), c, "compare", errs))
+    # an earlier acceptance record's run of a required suite (A17; checked
+    # in reuse.py: validate() for the list, check() at the start)
+    reuses = []
+    for u in data.get("reuse") or []:
+        where = "reuse %s" % q(u.get("id"))
+        u = dict(_fields(where, u, "reuse", errs))
+        tree_ref(where, u.get("tree"))
+        if "suite" in u:
+            adapter_name(where, "suite", u["suite"], adapter.SUITES)
+        reuses.append(u)
+
+    compares =[dict(_fields("compare %s" % q(c.get("id")), c, "compare", errs))
                 for c in data.get("compare") or []]
     canfails = [dict(_fields("canfail %s" % q(c.get("id")), c, "canfail", errs))
                 for c in data.get("canfail") or []]
@@ -446,6 +463,7 @@ def load(repo, spec, adapter):
     # ids: unique across the list, safe in paths
     items = ([("build", b.get("id")) for b in builds] + [("check", c.get("id")) for c in checks]
              + [("set", s.get("id")) for s in sets] + [("suite_run", r.get("id")) for r in suite_runs]
+             + [("reuse", u.get("id")) for u in reuses]
              + [("compare", c.get("id")) for c in compares] + [("canfail", c.get("id")) for c in canfails]
              + [("premise", p.get("id")) for p in premises] + [("hand", h.get("id")) for h in hands])
     seen = {}
@@ -537,5 +555,5 @@ def load(repo, spec, adapter):
         raise ListError("list %s at %s refused:\n  %s" % (path, commit[:12], "\n  ".join(errs)))
     return AcceptList(commit=commit, path=path, sha256=sha, spec=spec, step=step,
                       trees=trees, builds=builds, checks=checks, sets=sets,
-                      suite_runs=suite_runs, baseline=baseline, compares=compares,
+                      suite_runs=suite_runs, reuses=reuses, baseline=baseline, compares=compares,
                       canfails=canfails, premises=premises, hands=hands)

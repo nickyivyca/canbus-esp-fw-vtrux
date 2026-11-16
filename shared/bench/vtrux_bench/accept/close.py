@@ -36,7 +36,9 @@ summary: {"step", "list" {commit, path, sha256}, "runner" {commit, dirty},
 "trees" {name: tree record}, "builds" {id: build record}, "compares"
 [judge.run_compare results], "premises" [judge.premises results], "reruns"
 {suite run id: nested.json "flagged"}, "verdict" (judge.verdict), "earlier"
-(an earlier record's id, or None)}.
+(an earlier record's id, or None), "reused" (each [[reuse]]'s record from
+reuse.check, named in the README and the skeleton by reuse.readme_lines:
+A17)}.
 
 RULES: each is switched off by a mutant in tests/test_accept_close.py,
 which must then fail.
@@ -44,6 +46,8 @@ which must then fail.
 
 import hashlib
 import os
+
+from . import reuse as RU
 
 RULES = {k: True for k in (
     "readme_items", "readme_commits", "sums_all", "console_stops", "close_once",
@@ -105,6 +109,7 @@ def readme(rec, summary, hits, leftovers):
                 (br.get("elf") or {}).get("sha256")))
             for n, i in sorted((br.get("images") or {}).items()):
                 L.append("  - image %s: sha256 %s" % (n, i["sha256"]))
+        L += RU.readme_lines(s.get("reused"))       # A17: each earlier run reused
         L.append("")
     if RULES["readme_items"]:
         L += ["## Items", "", "| kind | id | expected | got | status | detail |",
@@ -176,6 +181,7 @@ def skeleton(rec, summary):
         L.append("- tree %s: project %s, product digest %s%s" % (
             name, t["project"]["commit"], t["product_digest"],
             "".join("; %s %s" % (c, sc["commit"]) for c, sc in sorted(t["shared"].items()))))
+    L += RU.readme_lines(s.get("reused"))
     counts = {}
     for i in s["verdict"]["items"]:
         counts[i["status"]] = counts.get(i["status"], 0) + 1

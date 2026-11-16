@@ -10,7 +10,9 @@ In order:
      every console line from here is in it
   2. the adapter is loaded from a clean clone at the list's commit, so it is
      committed harness run from a commit the record names (A15)
-  3. the list is checked (A2, A3, A8); the trees are made (A4)
+  3. the list is checked (A2, A3, A8); the trees are made (A4); each
+     [[reuse]], an earlier record's run of a required suite, is checked
+     (A17, reuse.py) and refuses the run if it does not hold
   4. the premises (A11): the items of one that fails, builds included, are
      not run, and are NOT EXERCISED
   5. the builds (A5), then the run's settings (A6)
@@ -51,6 +53,7 @@ from . import compile as C
 from . import judge as J
 from . import listfile as L
 from . import record as R
+from . import reuse as RU
 from . import settings as ST
 from . import trees as T
 
@@ -155,7 +158,11 @@ def _suite_not_passed(chain, group, n):
     return out + [("nested/" + rid, v) for rid, v in nested]
 
 
-def _side(name, alist, chain, runs_root, nested):
+def _side(name, alist, chain, runs_root, nested, reused=()):
+    for u in reused:
+        if u["id"] == name:                 # A17: the earlier run, where it is
+            with open(os.path.join(u["dir"], "record.json"), encoding="utf-8") as f:
+                return {"kind": "run", "dir": u["dir"], "record": json.load(f)}
     if name.startswith("baseline:"):
         d = os.path.join(runs_root, alist.baseline[name[len("baseline:"):]])
         with open(os.path.join(d, "record.json"), encoding="utf-8") as f:
@@ -192,9 +199,20 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                                             *adapter_rel.split("/")))
         rec.say("adapter: %s at %s" % (adapter_rel, commit[:12]))
         alist = L.load(repo, spec, adapter)
+        RU.validate(alist, adapter)
         trees = T.make_trees(repo, alist, adapter, parent, made, say=rec.say,
                              remote={"settings": machine, "record_id": rec.id})
-        prem = J.premises(alist.premises, trees, repo, adapter, parent, made)
+        # A17: each earlier run a [[reuse]] names, checked before any
+        # premise, build, lock or run; a refusal stops the whole acceptance
+        reused = [RU.check(repo, u, trees, adapter, machine["runs_root"],
+                           lambda rp, sp: L.read_list(rp, sp)[2]) for u in alist.reuses]
+        for u in reused:
+            rec.say("reuse %s: suite %s from record %s, run %s, read in place (A17): "
+                    "product digest %s in both; harness digest %s in both, over %d files; "
+                    "its comparison held: %s" % (
+                        u["id"], u["suite"], u["record"], u["run"], u["product"]["this"],
+                        u["harness"]["this"], u["harness"]["files"], ", ".join(u["compares"])))
+        prem =J.premises(alist.premises, trees, repo, adapter, parent, made)
         blocked = set()
         all_ids = ([c["id"] for c in alist.checks] + [r["id"] for r in alist.suite_runs]
                    + [b["id"] for b in alist.builds] + [c["id"] for c in alist.compares]
@@ -210,7 +228,12 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
         builds = B.run_builds(repo, alist, adapter, machine, rec, made, parent, base_env,
                               trees=trees, skip=skip)
         spath, s = ST.write_settings(settings_path, adapter, builds, trees, rec, made, parent)
-        entries = CF.prepare(repo, alist, trees, adapter, parent, made, rec.say)
+        if reused:
+            # the suite runs that require a reused suite read its run where
+            # it is (the chain runner's settings.requires_run), in their own
+            # settings, written below from these
+            s["requires_run"] = RU.requires_run(reused, rec.path)
+        entries =CF.prepare(repo, alist, trees, adapter, parent, made, rec.say)
         # a suite run flashes the images of the builds it names (A9); one
         # whose builds made none is not started, and the rest runs
         per_run, no_images = {}, {}
@@ -247,6 +270,11 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
         items += [J.item("suite_run", r_["id"], "PASS",
                          _group_verdict(chain, C.group_name(r_["id"]))[0],
                          "the first, whole run decides") for r_ in alist.suite_runs]
+        for u in reused:
+            i = J.item("reuse", u["id"], "accepted", "accepted",
+                       "record %s, run %s (A17)" % (u["record"], u["run"]))
+            i["not_passed"] = [("earlier/" + rid, v) for rid, v in J.not_passed(u["results"])]
+            items.append(i)
         # every result of each that is not a plain PASS, for the record's
         # full list (judge.not_passed; the item's detail stops at six)
         for i in items:
@@ -258,8 +286,10 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
         compares = []
         for c in alist.compares:
             try:
-                res = J.run_compare(c, _side(c["a"], alist, chain, machine["runs_root"], nested),
-                                    _side(c["b"], alist, chain, machine["runs_root"], nested),
+                res = J.run_compare(c, _side(c["a"], alist, chain, machine["runs_root"], nested,
+                                             reused),
+                                    _side(c["b"], alist, chain, machine["runs_root"], nested,
+                                          reused),
                                     adapter)
             except (OSError, KeyError, ValueError) as e:
                 res = {"id": c["id"], "expect": c["expect"], "held": False,
@@ -281,7 +311,8 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                    "trees": {n: t["record"] for n, t in trees.items()},
                    "builds": builds, "compares": compares, "premises": prem,
                    "reruns": {k: n["flagged"] for k, n in nested.items()},
-                   "verdict": v, "earlier": earlier}
+                   "verdict": v, "earlier": earlier,
+                   "reused": [{k: u[k] for k in u if k != "results"} for u in reused]}
         res = CL.close(rec, summary, made, adapter)
         closed = True
         rc = 3 if dev else (0 if v["pass"] else 1)
@@ -320,7 +351,7 @@ def main(argv=None):
     try:
         rc, _info = run(a.repo, a.list, a.adapter, a.settings, a.earlier, dev=a.dev)
     except (AcceptError, L.ListError, R.RecordError, T.TreeError, CF.CanfailError,
-            ST.SettingsError, CL.CloseError, S.ScratchError) as e:
+            ST.SettingsError, CL.CloseError, S.ScratchError, RU.ReuseError) as e:
         print("REFUSED: %s" % e, file=sys.stderr)
         return 2
     return rc
