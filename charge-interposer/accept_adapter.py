@@ -133,12 +133,20 @@ removes only what it makes there (A14).
                      runner's version among them, and pins.json, canre and
                      can-tools); and the chain runner (shared/bench's
                      vtrux_bench but its accept/) and shared/twai_port from
-                     the tree's checkouts. bench_suite.py's own imports are
-                     in it, so the bench-side modules it loads (bench_identify,
-                     kvaser_link and the rest) count too. No IDF build runs in
-                     the emulated suite (host_bridge builds with the host's
-                     compiler), so no build environment pin is listed. A
+                     the tree's checkouts. The bench side's modules
+                     (BENCH_SIDE: kvaser_link, bench_identify and the rest)
+                     are left out where a function imports them, which only
+                     bench checks call (bench_suite.py imports them inside
+                     bench()); one imported on loading a file is listed. A
                      local tree only
+  harness_identity   A17: no build environment pin exists (no IDF build runs
+                     in the emulated suite; host_bridge builds with the
+                     host's compiler), so for the emulated suite the
+                     toolchain's identities are compared instead
+                     (bench_suite.toolchain_identity: gcc's first version
+                     line and the host python's sys.version; the
+                     charge-interposer reviewer, 2026-11-16); refused when
+                     either cannot be read
   tree_setup,        what each fresh tree needs before its checks: the
   tree_installed     pinned canre installed and checked (canre_pin.py), and
                      locally the pinned can-tools canbench/ (can_tools_pin.py),
@@ -263,8 +271,9 @@ CI = "charge-interposer/"
 # and run whole, the sims run_scenario starts by path, and the pins it runs
 # through (the shared components, the chain runner's version among them, and
 # canre and can-tools); then every Python file's imports (at any depth: a
-# function's own import counts) and the .py and .sh a shell script names
-# outside its comments, followed from there (_refs). A Python script started
+# function's own import counts, but for BENCH_SIDE's) and the .py and .sh a
+# shell script names outside its comments, followed from there (_refs). A
+# Python script started
 # by path is listed here, as the sims are: on 2026-11-16 a scan of the
 # Python strings naming a .py or .sh (docstrings aside, and bench_suite.py's
 # lists of every suite's tests aside) reached no file this list lacks
@@ -274,6 +283,16 @@ EMULATED_ENTRIES = ("bench_suite.py", "run_scenario.py", "regress.py",
 EMULATED_DIRS = ("fw_harness/host_bridge/", "fw_harness/host_diff/", "host_unit/")
 EMULATED_SIMS = ("charger_sim.py", "vehicle_sim.py", "interposer_sim.py")
 EMULATED_PINS = (PIN_FILE, CI + "pins.json")
+# The bench side's modules: the bench suite's hardware drivers, which the
+# emulated suite never runs. A function's import of one is not followed (the
+# bench hooks and checks import them so: bench_suite.bench, bus.open_kvaser,
+# vehicle_sim's Kvaser transport), so a bench-only fix such as a Kvaser one
+# leaves the emulated harness digest as it was; an import of one that runs
+# on loading a file is followed, so a file that loads one on import lists it
+# (the charge-interposer reviewer, 2026-11-16)
+BENCH_SIDE = tuple(CI + m for m in (
+    "kvaser_link.py", "bench_identify.py", "bench_wican.py", "canchg_mode.py",
+    "canx2_slcan.py", "build_lookup.py"))
 # the shared files it runs through, read at the tree's commit of each
 # component, so a list's override of a pin counts too: the chain runner
 # (shared/bench's vtrux_bench, not its acceptance runner) and the TWAI port
@@ -314,14 +333,21 @@ def _refs(root, rel, tracked):
             tree = ast.parse(text)
         except SyntaxError as e:
             raise AdapterError("harness_files: %s does not parse: %s" % (rel, e))
-        for n in ast.walk(tree):
-            if isinstance(n, ast.Import):
-                for a in n.names:
-                    out += find(a.name.replace(".", "/") + ".py")
-            elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
-                out += find(n.module.replace(".", "/") + ".py")
-                for a in n.names:
-                    out += find("%s/%s.py" % (n.module.replace(".", "/"), a.name))
+        funcs = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+        todo = [(tree, False)]
+        while todo:
+            node, in_func = todo.pop()
+            for n in ast.iter_child_nodes(node):
+                got = []
+                if isinstance(n, ast.Import):
+                    for a in n.names:
+                        got += find(a.name.replace(".", "/") + ".py")
+                elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+                    got += find(n.module.replace(".", "/") + ".py")
+                    for a in n.names:
+                        got += find("%s/%s.py" % (n.module.replace(".", "/"), a.name))
+                out += [p for p in got if not (in_func and p in BENCH_SIDE)]
+                todo.append((n, in_func or isinstance(n, funcs)))
     elif rel.endswith(".sh"):
         for ln in text.splitlines():
             if not ln.lstrip().startswith("#"):
@@ -361,6 +387,22 @@ def harness_files(suite, tree):
         if d:
             out |= {p for p in _tracked(d, sub) if not p.startswith(skip)}
     return sorted(out)
+
+
+def harness_identity(suite, tree, settings):
+    """The toolchain the suite runs with, as this machine has it now (A17):
+    for the emulated suite bench_suite.toolchain_identity(settings), which
+    each run's code_info records the same way; {} for any other. A string
+    that could not be read refuses (AdapterError), so a reuse is never
+    accepted on two unread strings."""
+    if suite != "emulated":
+        return {}
+    import bench_suite as BS
+    ident = BS.toolchain_identity(settings)
+    bad = sorted("%s (%s)" % (k, v) for k, v in ident.items() if v.startswith(BS.NOT_READ))
+    if bad:
+        raise AdapterError("the emulated suite's toolchain identity: %s" % "; ".join(bad))
+    return ident
 
 
 def _code(tree):

@@ -540,10 +540,17 @@ def test_harness_files(A, work):
     subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", REPO, proj], check=True)
     git(proj, "checkout", "-q", "--detach", head)
     # a fixture commit in the clone: a from-import in a script the suite
-    # runs, whose module must then be listed
-    with open(os.path.join(proj, "charge-interposer", "zz_from_import.py"), "w",
-              encoding="utf-8", newline="\n") as f:
-        f.write("X = 1\n")
+    # runs, whose module must then be listed; in that module, a bench-side
+    # module imported on load (listed), another imported in a function (not
+    # listed), and a module of its own imported in a function (listed)
+    for name, text in (
+            ("zz_from_import.py", "import canx2_slcan  # noqa\nX = 1\n\n\n"
+                                  "def f():\n    import canchg_mode  # noqa\n"
+                                  "    import zz_lazy  # noqa\n"),
+            ("zz_lazy.py", "Y = 1\n")):
+        with open(os.path.join(proj, "charge-interposer", name), "w", encoding="utf-8",
+                  newline="\n") as f:
+            f.write(text)
     with open(os.path.join(proj, "charge-interposer", "run_scenario.py"), "a",
               encoding="utf-8", newline="\n") as f:
         f.write("\nfrom zz_from_import import X  # noqa\n")
@@ -568,6 +575,8 @@ def test_harness_files(A, work):
               "host_unit/test_bridge_health.cpp",
               "bus.py", "protocol.py", "replay.py", "capture_pins.py",   # imports
               "zz_from_import.py",                                   # a from-import
+              "zz_lazy.py", "diag_cadence.py",                       # a function's import
+              "canx2_slcan.py",                    # a bench-side module imported on load
               "scratch_run.sh",                                      # named by a .sh
               "firmware/shared_pins.json", "pins.json"):
         assert ci + p in got, ci + p
@@ -579,6 +588,12 @@ def test_harness_files(A, work):
               ci + "bench_drivers/bench_c12.py", ci + "fw_harness/host_bridge/README.md",
               "shared/bench/vtrux_bench/accept/run.py"):
         assert p not in got, p
+    # the bench side, which only a function imports (bench_suite.bench,
+    # bus.open_kvaser, vehicle_sim's Kvaser transport; the fixture's f), and
+    # what only it imports (the charge-interposer reviewer, 2026-11-16)
+    for m in ("kvaser_link.py", "bench_identify.py", "bench_wican.py", "canchg_mode.py",
+              "build_lookup.py", "wican_pin.py"):
+        assert ci + m not in got, ci + m
     assert not [p for p in got if p.endswith(".md")], [p for p in got if p.endswith(".md")]
     assert A.harness_files("bench", tree) == [] and A.harness_files("harness", tree) == []
     try:
@@ -587,6 +602,92 @@ def test_harness_files(A, work):
         pass
     else:
         raise AssertionError("a remote tree was listed")
+
+
+def _blobs(repo, commit, files):
+    """{path: bytes or None} of the project's files at commit (what the
+    core's harness digest reads, ACCEPT-SPEC A17)."""
+    out = {}
+    for p in files:
+        r = subprocess.run(["git", "-C", repo, "cat-file", "blob", "%s:%s" % (commit, p)],
+                           capture_output=True)
+        out[p] = r.stdout if r.returncode == 0 else None
+    return out
+
+
+def test_harness_bench_only_change(A, work):
+    """A17 (the charge-interposer reviewer, 2026-11-16): a bench-side fix,
+    a change to kvaser_link.py alone (as main afa970ca's), leaves every
+    file of the emulated suite's harness list as it was, so the harness
+    digest is equal and an earlier emulated run may stand; a change to a
+    file the emulated suite runs (bus.py, which its sims import) does
+    not."""
+    proj = os.path.join(work, "repo")
+    subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", REPO, proj], check=True)
+    git(proj, "checkout", "-q", "--detach", git(REPO, "rev-parse", "HEAD"))
+    base = git(proj, "rev-parse", "HEAD")
+    files = [p for p in A.harness_files("emulated", {"dir": work, "project_dir": proj})
+             if p.startswith("charge-interposer/")]
+    commits = {}
+    for name in ("kvaser_link.py", "bus.py"):
+        git(proj, "checkout", "-q", "--detach", base)
+        with open(os.path.join(proj, "charge-interposer", name), "a", encoding="utf-8",
+                  newline="\n") as f:
+            f.write("\n# a change\n")
+        git(proj, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qam",
+            "change " + name, "--no-verify")
+        commits[name] = git(proj, "rev-parse", "HEAD")
+    before = _blobs(proj, base, files)
+    assert all(v is not None for v in before.values()), [p for p, v in before.items()
+                                                         if v is None]
+    after_k = _blobs(proj, commits["kvaser_link.py"], files)
+    assert after_k == before, [p for p in files if after_k[p] != before[p]]
+    after_b = _blobs(proj, commits["bus.py"], files)
+    assert [p for p in files if after_b[p] != before[p]] == ["charge-interposer/bus.py"]
+
+
+def test_harness_identity(A, work):
+    """A17 (the charge-interposer reviewer, 2026-11-16: no build pin exists,
+    so the toolchain's identities are compared): harness_identity gives the
+    emulated suite's, bench_suite.toolchain_identity's, which every run's
+    code_info records as harness_identity: gcc's first version line and the
+    settings' python's sys.version, read on this host when the m-* groups
+    run here; {} for another suite; refused when the m-* groups run on
+    another host or a string cannot be read."""
+    import bench_suite as BS
+    src = open(os.path.join(HERE, "bench_suite.py"), encoding="utf-8").read()
+    assert '"harness_identity": toolchain_identity(settings)' in src
+    s = {"m_lanes_host": "local", "hosts": {"local": {"python": [sys.executable, "-B"]}}}
+    got = A.harness_identity("emulated", {}, s)
+    assert got == BS.toolchain_identity(s), got
+    assert set(got) == {"gcc --version", "python sys.version"}, got
+    assert got["python sys.version"] == sys.version, got
+    assert got["gcc --version"].startswith("gcc"), got
+    assert A.harness_identity("bench", {}, s) == {} and A.harness_identity("harness", {}, s) == {}
+    for bad in (dict(s, m_lanes_host="madhouse"),
+                dict(s, hosts={"local": {"python": [sys.executable, "-c", "raise SystemExit(3)",
+                                                    "--"]}})):
+        try:
+            A.harness_identity("emulated", {}, bad)
+        except A.AdapterError as e:
+            assert "toolchain identity" in str(e) and BS.NOT_READ in str(e), e
+        else:
+            raise AssertionError("an unread identity was given: %r" % bad)
+
+
+def test_bench_side_lazy(A, work):
+    """A17: loading bench_suite.py (as the chain runner does for the
+    emulated suite) loads none of the bench side's modules
+    (accept_adapter.BENCH_SIDE), which bench() imports itself, so the
+    harness list may leave them out."""
+    mods = [os.path.basename(p)[:-3] for p in A.BENCH_SIDE]
+    assert "kvaser_link" in mods and "bench_wican" in mods, mods
+    code = ("import sys; sys.path.insert(0, %r); import bench_suite; "
+            "print(sorted(m for m in %r if m in sys.modules))" % (HERE, mods))
+    r = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True,
+                       cwd=HERE, env=dict(os.environ, PYTHONPATH=CORE))
+    assert r.returncode == 0, r.stderr[-1500:]
+    assert r.stdout.strip() == "[]", r.stdout
 
 
 def test_madhouse_entries(A, work):
@@ -1004,7 +1105,8 @@ def test_vport_real(A, work):
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
          test_settings_tree_vars, test_settings_guard, test_machine_env_user_bus,
          test_idf_shell, test_targets, test_settings_keys, test_suite_settings,
-         test_shared_pins, test_harness_files,
+         test_shared_pins, test_harness_files, test_harness_bench_only_change,
+         test_harness_identity, test_bench_side_lazy,
          test_madhouse_entries, test_madhouse_refused_when_local, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
          test_sim_judged, test_run_logs, test_vport_windows, test_vport_real]
@@ -1158,10 +1260,29 @@ MUTANTS = [
     ("files not followed", "        if p in tracked:\n            todo += _refs(root, p, tracked)\n",
      ""),
     ("plain imports not followed",
-     '                    out += find(a.name.replace(".", "/") + ".py")\n',
-     "                    pass\n"),
+     '                        got += find(a.name.replace(".", "/") + ".py")\n',
+     "                        pass\n"),
     ("from-imports not followed",
-     '                out += find(n.module.replace(".", "/") + ".py")\n', "                pass\n"),
+     '                    got += find(n.module.replace(".", "/") + ".py")\n',
+     "                    pass\n"),
+    # A17, the reviewer's narrowing (2026-11-16): the bench side
+    ("a function's bench-side import followed",
+     "                out += [p for p in got if not (in_func and p in BENCH_SIDE)]\n",
+     "                out += got\n"),
+    ("a bench-side import on load not followed",
+     "                out += [p for p in got if not (in_func and p in BENCH_SIDE)]\n",
+     "                out += [p for p in got if p not in BENCH_SIDE]\n"),
+    ("a function's imports not followed",
+     "                out += [p for p in got if not (in_func and p in BENCH_SIDE)]\n",
+     "                out += [p for p in got if not in_func]\n"),
+    ("kvaser_link not bench-side", '    "kvaser_link.py", "bench_identify.py"',
+     '    "bench_identify.py"'),
+    # A17: the toolchain identity (harness_identity)
+    ("another suite's identity given", '    if suite != "emulated":\n        return {}\n',
+     "    if False:\n        return {}\n"),
+    ("an unread identity taken", "    if bad:\n        raise AdapterError(\"the emulated suite",
+     "    if False:\n        raise AdapterError(\"the emulated suite"),
+    ("no identity", "    return ident\n", "    return {}\n"),
     ("shell scripts not read", '    elif rel.endswith(".sh"):', "    elif False:"),
     ("shell comments read", '            if not ln.lstrip().startswith("#"):', "            if True:"),
     ("notes listed", 'if p and not p.endswith(".md")]', "if p]"),

@@ -61,6 +61,16 @@ sys.path.insert(0, HERE)
 
 import scratch_dir                                        # noqa: E402
 import bench_suite as B                                   # noqa: E402
+# bench_suite imports the bench side inside bench() (ACCEPT-SPEC A17; the
+# charge-interposer reviewer, 2026-11-16); the tests reach the same module
+# objects as B.<name>, which bench() then imports from sys.modules, so what
+# a test sets on one is what bench() uses
+import bench_identify                                     # noqa: E402
+import bench_wican                                        # noqa: E402
+import canchg_mode                                        # noqa: E402
+import canx2_slcan                                        # noqa: E402
+for _m in (bench_identify, bench_wican, canchg_mode, canx2_slcan):
+    setattr(B, _m.__name__, _m)
 from vtrux_bench.run import Result, Verdict               # noqa: E402
 from vtrux_bench.run.model import CheckRun, validate      # noqa: E402
 
