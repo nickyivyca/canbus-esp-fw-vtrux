@@ -145,6 +145,14 @@ class Check:
              env and the check's env are laid over it. The acceptance runner
              gives it, so a check never sees the operator's shell
              (ACCEPT-SPEC A7).
+    bus      for a wall-clock check, the virtual-bus segments it opens,
+             named as its suite likes (e.g. ["vehicle", "charger",
+             "physics"]). With settings.bus_alloc the runner gives it a bus
+             of its own per slot ({bus_alloc} and VTRUX_BUS_ALLOC,
+             "seg=group:port,..."), checks it is free and quiet before the
+             check starts, and watches it while it runs; up to
+             hosts.<h>.wallclock_slots such checks run at once (vbus.py).
+             Empty: the check takes the host's every slot, as before.
     """
     id: str
     argv: List[str]
@@ -160,6 +168,7 @@ class Check:
     skip: Optional[str] = None
     note: str = ""
     base_env: Optional[Dict[str, str]] = None
+    bus: List[str] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
