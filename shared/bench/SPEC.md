@@ -47,7 +47,7 @@ Board state, what is on each board, stays in
 | `take` | the lock is free | `pid` (required), `run` (optional) | held by `who`, for `run` if given |
 | `release` | held by `who` | `boards` (required: per board, the image read off the wire and when, or `not read`) | free; board state known only if every board was read off the wire |
 | `free_paused` | held by `who` with a `run`; written only by that run's runner, between cases (section 6) | `boards` (required, as for `release`) | free, with that run recorded as paused; board state known only if every board was read off the wire |
-| `request` | `who` is not the holder and has no request queued | `note` (what for, how long) | queued; shown by `status` |
+| `request` | `who` is not the holder and has no request queued | `note` (what for, how long); `pid` (optional: the waiting process, set by `wait`) | queued; shown by `status` |
 | `withdraw` | `who` has a request queued | -- | its request leaves the queue |
 | `clear` | held, and the holder's `pid` is not running in the bench environment | `reason` (required) | free; board state unknown |
 | `lost` | written only by a runner whose run lost the lock | `run` | records the stop; board state unknown |
@@ -58,6 +58,23 @@ Board state, what is on each board, stays in
   paused run's id by a different `who` is refused.
 - `request` does not reserve the bench: `take` does not consult the queue.
   The queue is for the humans and sessions deciding who goes next.
+- **`wait`** (user, 2026-11-16) waits for the bench and takes it for a
+  session. It runs on the bench host as a background process of the
+  session, with `--pid` the session's long-lived process, as for `take`. It
+  writes a `request` with its own PID as `pid`, first withdrawing its role's
+  queued request if that request's `pid` is gone or absent. It then reads
+  the log every `--poll` seconds (default 2). When the lock is free and its
+  request is the oldest queued request whose `pid` is running, it appends a
+  `withdraw` and a `take` for `who` under `--pid`, both in one locked step,
+  and exits 0, printing the take line. So when the lock frees, at most one
+  waiter takes it, in request order. It exits 3 without taking, after a
+  `withdraw`, when `--timeout` passes, when `--pid` is no longer running, or
+  when it is stopped; it exits 2 when the log refuses. A request with no
+  `pid`, or whose `pid` has gone, keeps no place in the order.
+- `take` and the runner's take still do not consult the queue (Ruled
+  2026-10-21): only waiters keep the order, among themselves.
+- A waiter may take between a run's `free_paused` and its resume, as any
+  role may (section 8).
 - **`repair`** (user, 2026-10-21, proposed by methodology): run on the bench
   host and environment only, by the roles that may take, and refused if the
   log replays cleanly. It renames the damaged log aside, keeping it, as
@@ -124,11 +141,12 @@ Board state, what is on each board, stays in
 
 ## 5. Command line
 
-`bench_lock.py init | status | take | release | request | withdraw | clear | repair | retire`
+`bench_lock.py init | status | take | release | request | withdraw | wait | clear | repair | retire`
 
 `free_paused`, like `lost`, is the runner's and is written only through the API.
 
-- `status` prints: holder, run, since, paused runs, the request queue, and
+- `status` prints: holder, run, since, paused runs, the request queue (each
+  request's `pid`, and whether it is running), and
   `BOARD STATE UNKNOWN` until a `release` with every board read off the wire
   follows the last `clear`, `lost` or `repair`. Exit 0 always, unless the log fails to
   replay (exit 2).
@@ -196,6 +214,13 @@ Board state, what is on each board, stays in
   and the take is a hand take for its own role, with no run, under `PID`,
   the long-lived process of the session doing the follow-on work. That
   session releases by hand when it is done.
+- **With `--from-hold PID`** (user, 2026-11-16) the runner starts from a
+  hand take. When the lock is held by its own role, with no run, under
+  `PID`, it releases it and takes it for its run under its own PID in one
+  step, with nothing in between; the release's board reads are `not read:
+  handed to run <id>`. Held in any other way, or free, it refuses as at any
+  start. So a session that won the bench with `wait` starts a run without
+  freeing it.
 - After a LOCK LOST the runner releases nothing. If the runner dies, the
   lock stays held under its PID until `clear`.
 - **Board reads after a LOCK LOST are not prevented** (user, 2026-10-24):
@@ -432,3 +457,11 @@ way, the Holder is not its own.
   and makes the 2026-10-21 "every release reads both boards" a report of
   both boards. Committed and merged by the gen-inhibit reviewer; read by
   the charge-interposer reviewer before merge.
+- **A bench waitlist** (user, 2026-11-16, asked in the Git based CANBus
+  Android development session; scoped in the methodology owner's session).
+  `wait` takes the bench for a session when it frees, one waiter per free,
+  in request order among live waiters; `request` gains an optional `pid`;
+  the queue stays advisory for every other take. A session that won the
+  bench starts a run on it with the runner's `--from-hold`. Drafted by the
+  methodology owner; committed by the gen-inhibit reviewer; read by the
+  charge-interposer reviewer before merge.
