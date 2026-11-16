@@ -113,10 +113,12 @@ SHARED_BENCH = shared_pin.use_bench()
 
 from vtrux_bench.run import (Check, Figure, Group, Image, KnownFail,  # noqa: E402
                              Result, Suite, Verdict)
-import bench_identify  # noqa: E402
-import bench_wican  # noqa: E402
-import canchg_mode  # noqa: E402
-import canx2_slcan  # noqa: E402
+# The bench side's modules (bench_identify, bench_wican, canchg_mode,
+# canx2_slcan, build_lookup) are imported inside bench() and the functions
+# only it calls, never here: loading this file for the emulated suite loads
+# none of them, so the emulated suite's harness list leaves them out
+# (accept_adapter.BENCH_SIDE, ACCEPT-SPEC A17; the charge-interposer
+# reviewer, 2026-11-16).
 import canre_pin  # noqa: E402
 import can_tools_pin  # noqa: E402
 import scratch_dir  # noqa: E402
@@ -851,6 +853,45 @@ def can_tools_info():
     return out
 
 
+NOT_READ = "not read: "
+
+
+def toolchain_identity(settings):
+    """The toolchain the emulated suite builds and runs with, for ACCEPT-SPEC
+    A17: no build environment pin exists, so its identities are recorded
+    instead, and a reused emulated run needs them unchanged (the
+    charge-interposer reviewer, 2026-11-16). {"gcc --version": its first
+    line, "python sys.version": the version string of the host's python
+    from the settings (hosts.local.python)}, read on this host, where the
+    m-* groups build and run when m_lanes_host is "local". Each run's
+    code_info records it as harness_identity, and accept_adapter's
+    harness_identity reads it again at an acceptance's start. A string
+    that could not be read starts with NOT_READ (so does each one when the
+    m-* groups run on another host), and the adapter refuses a reuse on
+    it."""
+    import subprocess
+    host = settings.get("m_lanes_host", "madhouse")
+    if host != "local":
+        why = NOT_READ + "the m-* groups run on host %s" % host
+        return {"gcc --version": why, "python sys.version": why}
+
+    def out(argv, first):
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            return NOT_READ + "%s: %s" % (argv[0], e)
+        text = (r.stdout or "").strip()
+        if r.returncode or not text:
+            return NOT_READ + "%s: rc %s %s" % (argv[0], r.returncode,
+                                               (r.stderr or "").strip()[:200])
+        return text.splitlines()[0] if first else text
+    py = list(((settings.get("hosts") or {}).get("local") or {}).get("python")
+              or [sys.executable])
+    return {"gcc --version": out(["gcc", "--version"], True),
+            "python sys.version": out(py + ["-c", "import sys; sys.stdout.write(sys.version)"],
+                                      False)}
+
+
 # ---- check builders -----------------------------------------------------
 class _Build:
     """The check builders and shared pieces the three suites use."""
@@ -955,7 +996,9 @@ class _Build:
                                    capture_output=True, text=True).stdout.strip()
             out = {"repo": repo, "commit": head, "dirty": bool(dirty),
                    "dirty_files": dirty.splitlines()[:20],
-                   "code_hash": None}
+                   "code_hash": None,
+                   # the toolchain, for a reuse of this run (ACCEPT-SPEC A17)
+                   "harness_identity": toolchain_identity(settings)}
             if images:
                 if settings.get("interposer_builds") is not None:
                     # an acceptance run's own builds (ACCEPT-SPEC A9)
@@ -1067,6 +1110,10 @@ def esptool_env(settings):
 def bench(settings):
     """Hardware only, the lock from start to finish; requires a matched
     emulated run on the same code."""
+    import bench_identify
+    import bench_wican
+    import canchg_mode
+    import canx2_slcan
     b = _Build(settings)
     bpy = b.bpy
     board_args = ["--external-interposer", "--serial-port", "{serial_port}",
