@@ -1405,6 +1405,394 @@ def test_folder_left():
         os.chmod(base, stat.S_IRWXU)
 
 
+# ---- the waitlist and --from-hold (user, 2026-11-16) --------------------
+
+def until(cond, what, s=10.0):
+    """Wait up to s for cond() to hold; Fail naming what did not happen."""
+    end = time.monotonic() + s
+    while not cond():
+        if time.monotonic() > end:
+            raise Fail("%s did not happen within %g s" % (what, s))
+        time.sleep(0.02)
+
+
+def queued(p, who):
+    return [q for q in B.read_state(p)["queue"] if q["who"] == who]
+
+
+class Waiter(threading.Thread):
+    """B.wait in a thread of this test, standing in for a waiter process
+    whose pid is `me` (a Live child, so it is running as a real waiter's
+    would be). stop() is its stop signal."""
+
+    def __init__(self, p, who, pid, me, poll=0.02, timeout=20.0, note="test wait"):
+        super().__init__(daemon=True)
+        self.a = (p, who, pid, note)
+        self.k = dict(poll=poll, timeout=timeout, me=me)
+        self.flag = []
+        self.rc = self.outcome = self.lines = self.err = None
+
+    def run(self):
+        try:
+            self.rc, self.outcome, self.lines = B.wait(
+                *self.a, stopped=lambda: bool(self.flag), out=lambda s: None,
+                **self.k)
+        except Exception as e:      # a Refused, or what a mutant breaks
+            self.err = e
+
+    def stop(self):
+        self.flag.append(1)
+
+
+def qstate(*evs):
+    """A replayed state from hand-written lines (no PID is checked by a
+    replay): evs are (event, who, fields)."""
+    return B.replay([init_line()] + [jl(e, w_, **k) for e, w_, k in evs])
+
+
+def test_request_pid():
+    """SPEC 3 request's optional pid (set by wait), running when appended;
+    5 status shows each request's pid and whether it is running."""
+    p = fresh("request_pid")
+    w(p, "take", CI, pid=ME)
+    refused(B.write, p, ev("request", GI, note="x", pid=0))
+    refused(B.write, p, ev("request", GI, note="x", pid="12"))
+    refused(B.write, p, ev("request", GI, note="x", pid=dead_pid()))
+    check(B.read_state(p)["queue"] == [], "a refused request was queued")
+    live = Live()
+    try:
+        st = w(p, "request", GI, note="B6, 30 min", pid=live.pid)
+        check(st["queue"][0]["pid"] == live.pid, "the request's pid is not kept")
+        w(p, "request", GIM, note="bring-up")
+        text = "\n".join(B.status_lines(B.read_state(p)))
+        check("queue 1: %s, B6, 30 min, since" % GI in text
+              and "pid %d running" % live.pid in text, text)
+        check("queue 2: %s, bring-up" % GIM in text and "no pid (keeps no "
+              "place among waiters)" in text, text)
+        js = B.status_json(B.read_state(p))["queue"]
+        check([(q["pid"], q["alive"]) for q in js] == [(live.pid, True),
+                                                       (None, None)], js)
+    finally:
+        live.stop()
+    text = "\n".join(B.status_lines(B.read_state(p)))
+    check("pid %d NOT RUNNING (keeps no place among waiters)" % live.pid in text,
+          text)
+    check(B.status_json(B.read_state(p))["queue"][0]["alive"] is False,
+          "json: a gone pid is not shown gone")
+
+
+def test_wait_step():
+    """SPEC 3 wait, one poll: when the lock is free and its request is the
+    oldest queued request whose pid is running, a withdraw and a take for
+    who under --pid; a request with no pid, or whose pid has gone, keeps no
+    place; a withdraw on stop, on --pid gone and on timeout; nothing while
+    the lock is held, and nothing to withdraw once its own request has left
+    the queue."""
+    me, pid, other, gone = 4101, 4102, 4103, 4104
+    alive = {me, pid, other}.__contains__
+
+    def step(state, **k):
+        a = dict(expired=False, stopped=False, alive=alive)
+        a.update(k)
+        return B.wait_step(state, GI, pid, me, a["alive"], a["expired"],
+                           a["stopped"])
+    mine = ("request", GI, dict(note="mine", pid=me))
+    held = ("take", CI, dict(pid=ME))
+    evs, oc = step(qstate(held, mine))
+    check((evs, oc) == ([], None), "held: %r %r" % (evs, oc))
+    evs, oc = step(qstate(mine))
+    check(oc == "took" and [(e["event"], e["who"]) for e in evs]
+          == [("withdraw", GI), ("take", GI)], "free, first: %r %r" % (evs, oc))
+    check(evs[1]["pid"] == pid and "run" not in evs[1],
+          "the take is not under --pid: %r" % evs[1])
+    ahead = ("request", GIM, dict(note="first", pid=other))
+    check(step(qstate(ahead, mine)) == ([], None),
+          "an older live waiter was jumped")
+    for skipped in (("request", GIM, dict(note="no pid")),
+                    ("request", GIM, dict(note="dead", pid=gone))):
+        evs, oc = step(qstate(skipped, mine))
+        check(oc == "took", "%s kept its place: %r" % (skipped[2]["note"], oc))
+    st = qstate(held, mine)
+    for k, want in ((dict(stopped=True), "stopped"),
+                    (dict(alive={me, other}.__contains__), "pid gone"),
+                    (dict(expired=True), "timeout")):
+        evs, oc = step(st, **k)
+        check(oc == want and [(e["event"], e["who"]) for e in evs]
+              == [("withdraw", GI)], "%s: %r %r" % (want, evs, oc))
+    for state in (qstate(held), qstate(held, ("request", GI,
+                                               dict(note="another's", pid=other)))):
+        evs, oc = step(state)
+        check((evs, oc) == ([], "left the queue"), "left: %r %r" % (evs, oc))
+
+
+def test_wait_fifo():
+    """SPEC 3 wait: three live waiters take in request order, exactly one
+    per free; the withdraw and the take land together (one locked step,
+    one ts), the take for who under --pid, with no run."""
+    p = fresh("wait_fifo")
+    w(p, "take", CI, pid=ME)
+    lives = [Live() for _ in range(4)]
+    sess = lives[0].pid
+    ws = []
+    try:
+        # the first waiter polls slowly, the later ones fast: a waiter that
+        # ignored the order would take before the first one looked
+        for who, lv, poll in ((GI, lives[1], 0.5), (GIM, lives[2], 0.02),
+                              (AND, lives[3], 0.02)):
+            t = Waiter(p, who, sess, lv.pid, poll=poll)
+            t.start()
+            ws.append(t)
+            until(lambda: queued(p, who), "the request of %s" % who)
+        for k, (holder, t) in enumerate(zip((CI, GI, GIM), ws)):
+            n = len(lines(p))
+            w(p, "release", holder, boards=BD)
+            t.join(3)
+            check(not t.is_alive() and t.err is None, "waiter %d did not take "
+                  "(alive %s, %r)" % (k, t.is_alive(), t.err))
+            check((t.rc, t.outcome) == (0, "took"), (t.rc, t.outcome))
+            time.sleep(0.3)             # the other waiters poll; none may take
+            new = [json.loads(x) for x in lines(p)[n:]]
+            who = t.a[1]
+            check([(e["event"], e["who"]) for e in new] == [
+                ("release", holder), ("withdraw", who), ("take", who)],
+                "free %d: %r" % (k, new))
+            check(new[1]["ts"] == new[2]["ts"], "withdraw and take apart")
+            check(new[2]["pid"] == sess and "run" not in new[2],
+                  "the take is not under --pid: %r" % new[2])
+            check(t.lines == lines(p)[n + 1:n + 3], "the lines returned")
+            check(all(x.is_alive() for x in ws[k + 1:]), "a later waiter left")
+    finally:
+        for t in ws:
+            t.stop()
+        for t in ws:
+            t.join(10)
+        for lv in lives:
+            lv.stop()
+
+
+def test_wait_stale():
+    """SPEC 3 wait: its role's queued request is withdrawn first if its pid
+    is absent or gone; requests with no pid, or a gone pid, keep no place
+    (left queued, not withdrawn by another role's waiter). A second wait by
+    a role whose request is queued under a running pid is refused by
+    request's rule (exit 2), and so is the holder's; nothing appended."""
+    p = fresh("wait_stale")
+    w(p, "take", CI, pid=ME)
+    sess, a, b, c, d = Live(), Live(), Live(), Live(), Live()
+    ws = []
+    try:
+        w(p, "request", AND, note="by hand, no pid")
+        w(p, "request", GI, note="by hand, no pid")
+        w(p, "request", GIM, note="its waiter died", pid=d.pid)
+        d.stop()
+        # GIM's request has a gone pid, GI's none: each role's waiter
+        # withdraws it first, in the same step as its own request, leaving
+        # the queue AND (no pid), GIM (pid b), GI (pid a)
+        for who, me in ((GIM, b), (GI, a)):
+            n = len(lines(p))
+            t = Waiter(p, who, sess.pid, me.pid)
+            t.start()
+            ws.append(t)
+            until(lambda: queued(p, who) and queued(p, who)[0]["pid"] == me.pid,
+                  "%s's request under its waiter's pid" % who)
+            new = [json.loads(x) for x in lines(p)[n:]]
+            check([(e["event"], e["who"], e.get("pid")) for e in new] == [
+                ("withdraw", who, None), ("request", who, me.pid)],
+                "%s's stale request: %r" % (who, new))
+            check(new[0]["ts"] == new[1]["ts"], "withdraw and request apart")
+        # GIM's waiter process dies (its thread goes on as a stand-in): its
+        # request keeps no place, nor does AND's, with no pid
+        b.stop()
+        # a second wait while GI's waiter runs: refused, nothing appended;
+        # and the holder's
+        n = len(lines(p))
+        with Live() as again:
+            # timeouts, so a wait a mutant lets through cannot hang the run
+            e = refused(B.wait, p, GI, sess.pid, "again", me=again, timeout=1)
+            check("already has a request queued" in e, e)
+            e = refused(B.wait, p, CI, sess.pid, "the holder", me=again,
+                        timeout=1)
+            check("holds the lock" in e, e)
+        check(len(lines(p)) == n, "a refused wait appended")
+        # the free: GI, third in the queue, is the oldest live waiter and
+        # takes; the two ahead of it stay queued, not withdrawn by it
+        w(p, "release", CI, boards=BD)
+        t = ws[1]
+        t.join(5)
+        check((t.rc, t.outcome) == (0, "took"), (t.rc, t.outcome, t.err))
+        st = B.read_state(p)
+        check([q["who"] for q in st["queue"]] == [AND, GIM],
+              "the skipped requests: %r" % st["queue"])
+        check(ws[0].is_alive(), "GIM's waiter (pid gone) took or left")
+    finally:
+        for t in ws:
+            t.stop()
+        for t in ws:
+            t.join(10)
+        for x in (sess, a, b, c, d):
+            x.stop()
+
+
+def test_wait_exit3():
+    """SPEC 3 wait exits 3 without taking, after a withdraw, when --timeout
+    passes, when --pid is no longer running, or when it is stopped; with
+    nothing to withdraw once its request has left the queue. --pid not
+    running at the start, or the waiter's own, is refused (exit 2) with
+    nothing appended."""
+    p = fresh("wait_exit3")
+    w(p, "take", CI, pid=ME)
+    with Live() as me:
+        for case in ("timeout", "pid gone", "stopped", "left the queue"):
+            sess = Live()
+            t = Waiter(p, GI, sess.pid, me, timeout=1.0 if case == "timeout" else 5)
+            n = len(lines(p))
+            t.start()
+            until(lambda: queued(p, GI), "the request (%s)" % case)
+            if case == "pid gone":
+                sess.stop()
+            elif case == "stopped":
+                t.stop()
+            elif case == "left the queue":
+                w(p, "withdraw", GI)
+            t.join(8)
+            sess.stop()
+            check(not t.is_alive() and t.err is None, "%s: %r" % (case, t.err))
+            check((t.rc, t.outcome) == (3, case), "%s: %r %r"
+                  % (case, t.rc, t.outcome))
+            new = [json.loads(x) for x in lines(p)[n:]]
+            want = [("request", GI), ("withdraw", GI)]
+            check([(e["event"], e["who"]) for e in new] == want, "%s: %r"
+                  % (case, new))
+            check(t.lines == ([] if case == "left the queue" else lines(p)[-1:]),
+                  "%s: the lines returned %r" % (case, t.lines))
+            check(queued(p, GI) == [], "%s: still queued" % case)
+        n = len(lines(p))
+        e = refused(B.wait, p, GI, dead_pid(), "x", me=me)
+        check("not running" in e, e)
+        refused(B.wait, p, GI, me, "x", me=me, timeout=1)
+        check(len(lines(p)) == n, "a refused wait appended")
+
+
+def test_wait_cli():
+    """SPEC 5 the wait command: exit 0 printing the take line; exit 3 with
+    the withdraw and the reason; exit 2 refused (its own PID as --pid, a
+    second waiter of a role, the holder), nothing appended."""
+    p = fresh("wait_cli")
+    with Live() as sess:
+        args = ["--log", p, "wait", "--who", GI, "--pid", str(sess),
+                "--note", "B6", "--poll", "0.05"]
+        rc, out, err = cli(*args + ["--timeout", "10"])
+        check(rc == 0, (rc, err))
+        check(out.splitlines() == lines(p)[1:], "every line appended, the take "
+              "line last: %r" % out)
+        last = [json.loads(x) for x in lines(p)[-3:]]
+        check([(e["event"], e.get("pid")) for e in last] == [
+            ("request", ME), ("withdraw", None), ("take", sess)], last)
+        n = len(lines(p))
+        rc, out, err = cli(*args + ["--timeout", "1"])      # GI holds now
+        check(rc == 2 and "holds the lock" in err, (rc, err))
+        rc, out, err = cli("--log", p, "wait", "--who", GIM, "--pid", str(ME),
+                           "--note", "x", "--timeout", "1")
+        check(rc == 2 and "REFUSED" in err, (rc, err))
+        check(len(lines(p)) == n, "a refused wait appended")
+        rc, out, err = cli("--log", p, "wait", "--who", GIM, "--pid", str(sess),
+                           "--note", "x", "--poll", "0.05", "--timeout", "0.3")
+        check(rc == 3 and "wait: no take: timeout" in err, (rc, err))
+        check(out.splitlines() == lines(p)[n:] and json.loads(
+            out.splitlines()[-1])["event"] == "withdraw",
+            "the request and the withdraw: %r" % out)
+        with Live() as me:
+            t = Waiter(p, GIM, sess, me)
+            t.start()
+            try:
+                until(lambda: queued(p, GIM), "GIM's waiter")
+                n = len(lines(p))
+                rc, out, err = cli("--log", p, "wait", "--who", GIM, "--pid",
+                                   str(sess), "--note", "again", "--timeout", "1")
+                check(rc == 2 and "already has a request queued" in err,
+                      (rc, err))
+                check(len(lines(p)) == n, "the second wait appended")
+            finally:
+                t.stop()
+                t.join(5)
+
+
+def test_wait_signal():
+    """SPEC 3 wait exits 3, after a withdraw, when it is stopped: SIGINT and
+    SIGTERM set a flag it reads at its next locked step; the old handlers
+    are put back. A handler that is not installed is never raised here (it
+    would end the test run): the wait then times out, which fails."""
+    import signal
+    p = fresh("wait_signal")
+    w(p, "take", CI, pid=ME)
+    with Live() as sess:
+        for name in ("SIGINT", "SIGTERM"):
+            sig = getattr(signal, name)
+            before = signal.getsignal(sig)
+            n = len(lines(p))
+            raised = []
+
+            def poke():
+                try:
+                    until(lambda: queued(p, GI), "the request")
+                    if signal.getsignal(sig) not in (before, signal.SIG_DFL):
+                        raised.append(1)
+                        signal.raise_signal(sig)
+                except Exception:
+                    pass
+            t = threading.Thread(target=poke, daemon=True)
+            t.start()
+            rc, out, err = cli("--log", p, "wait", "--who", GI, "--pid",
+                               str(sess), "--note", "x", "--poll", "0.05",
+                               "--timeout", "5")
+            t.join(5)
+            check(raised, "%s: no handler was installed" % name)
+            check(rc == 3 and "wait: no take: stopped" in err,
+                  "%s: %r %r" % (name, rc, err))
+            new = [json.loads(x) for x in lines(p)[n:]]
+            check([e["event"] for e in new] == ["request", "withdraw"],
+                  "%s: %r" % (name, new))
+            check(signal.getsignal(sig) == before,
+                  "%s: the old handler was not put back" % name)
+
+
+def test_from_hold():
+    """SPEC 6 --from-hold PID (bench_lock.hand_to_run): held by who, with no
+    run, under PID: release and take for the run under the runner's PID in
+    one locked step, each board "not read: handed to run <id>", which status
+    reads. Refused, with nothing appended, when the lock is free, held by
+    another role, held under another pid, or held with a run."""
+    p = fresh("from_hold")
+    with Live() as sess, Live() as other:
+        n = len(lines(p))
+        e = refused(B.hand_to_run, p, CI, sess, ME, "r1")
+        check("--from-hold" in e and "free" in e, e)
+        for setup, word in (((GI, sess, None), "held by %s" % GI),
+                            ((CI, other, None), "under pid %d" % other),
+                            ((CI, sess, "r0"), "for run r0")):
+            q = fresh("from_hold_r")
+            B.take(q, setup[0], setup[1], run=setup[2])
+            m = len(lines(q))
+            e = refused(B.hand_to_run, q, CI, sess, ME, "r1")
+            check("--from-hold" in e and word in e, "%s: %s" % (word, e))
+            check(len(lines(q)) == m, "%s: appended" % word)
+        check(len(lines(p)) == n, "free: appended")
+        B.take(p, CI, sess)
+        st, got = B.hand_to_run(p, CI, sess, ME, "r1", note="n")
+        new = [json.loads(x) for x in lines(p)[-2:]]
+        check(got == lines(p)[-2:], "the lines returned")
+        check([(e["event"], e["who"]) for e in new] == [("release", CI),
+                                                        ("take", CI)], new)
+        check(new[0]["boards"] == {b: "not read: handed to run r1"
+                                   for b in B.BOARDS}, new[0])
+        check(new[0]["ts"] == new[1]["ts"], "release and take apart")
+        check((new[1]["pid"], new[1]["run"]) == (ME, "r1"), new[1])
+        check(st["holder"]["run"] == "r1" and st["holder"]["pid"] == ME, st)
+        text = "\n".join(B.status_lines(B.read_state(p)))
+        check(B.UNKNOWN in text and "  wican: not read: handed to run r1" in text
+              and "  x2: not read: handed to run r1" in text, text)
+
+
 TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_runner_api, test_held_by_run, test_queue, test_clear, test_take_alive,
          test_lock_timeout, test_pid_wrong_env, test_pid_unsure,
@@ -1416,7 +1804,9 @@ TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_repair_leftovers, test_repair_finish, test_repair_cli,
          test_retire, test_retire_finish, test_retire_where,
          test_retire_replay, test_init_predecessor, test_hand_roles,
-         test_folder_readonly, test_folder_left]
+         test_folder_readonly, test_folder_left,
+         test_request_pid, test_wait_step, test_wait_fifo, test_wait_stale,
+         test_wait_exit3, test_wait_cli, test_wait_signal, test_from_hold]
 
 
 # ---- mutants ------------------------------------------------------------
@@ -1600,8 +1990,8 @@ MUTANTS = {
     ],
     "test_take_alive": [
         ("take of a dead pid",
-         _edit("                if ev[\"event\"] == \"take\":\n                    check_pid_alive(state, ev.get(\"pid\"))\n",
-               "")),
+         _edit("                if ev[\"event\"] == \"take\" or (ev[\"event\"] == \"request\"\n",
+               "                if (ev[\"event\"] == \"request\"\n")),
         ("take pid checked in this environment",
          _edit("        if not bench_impl(state).pid_alive(pid):",
                "        if not env_impl(\"wsl\").pid_alive(pid):")),
@@ -2032,6 +2422,150 @@ MUTANTS = {
     ],
     "test_folder_left": [
         ("ignore_errors, as before", _swap_folder(), "linux"),
+    ],
+    "test_request_pid": [
+        ("any request pid",
+         _edit("    if kind == \"request\" and \"pid\" in ev and not (_int(ev[\"pid\"])",
+               "    if False and not (_int(ev[\"pid\"])")),
+        ("request pid not checked running",
+         _edit("or (ev[\"event\"] == \"request\"", "or (False")),
+        ("request pid not kept",
+         _edit("                               \"pid\": ev.get(\"pid\")})",
+               "                               \"pid\": None})")),
+        ("status: every pid running",
+         _edit("        elif alive(q[\"pid\"]):\n            pid = \"pid %d running\"",
+               "        elif True:\n            pid = \"pid %d running\"")),
+        ("status: no pid shown",
+         _edit("since %s, %s\" % (i, q[\"who\"], q[\"note\"],\n"
+               "                                                       q[\"ts\"], pid))",
+               "since %s\" % (i, q[\"who\"], q[\"note\"],\n"
+               "                                                       q[\"ts\"]))")),
+        ("json: queue without running",
+         _edit("    s[\"queue\"] = [dict(q, alive=None if q.get(\"pid\") is None\n"
+               "                       else alive(q[\"pid\"])) for q in s[\"queue\"]]",
+               "    pass")),
+    ],
+    "test_wait_step": [
+        ("order ignored",
+         _edit("        if live and live[0] is mine[0]:", "        if live:")),
+        ("gone pids keep their place",
+         _edit("            if q.get(\"pid\") is not None and alive(q[\"pid\"])]",
+               "            if q.get(\"pid\") is not None]")),
+        ("no pid keeps a place",
+         _edit("            if q.get(\"pid\") is not None and alive(q[\"pid\"])]",
+               "            if q.get(\"pid\") is None or alive(q[\"pid\"])]")),
+        ("take under the waiter's pid",
+         _edit("{\"event\": \"take\", \"who\": who, \"pid\": pid,\n"
+               "                     \"note\": \"taken by wait",
+               "{\"event\": \"take\", \"who\": who, \"pid\": me,\n"
+               "                     \"note\": \"taken by wait")),
+        ("take without the withdraw",
+         _edit("            return [dict(withdraw, note=\"wait: taking the bench\"),\n",
+               "            return [\n")),
+        ("taken while held",
+         _edit("    if state[\"holder\"] is None:\n        live = live_waiters",
+               "    if True:\n        live = live_waiters")),
+        ("stop ignored",
+         _edit("    if stopped:\n        return", "    if False:\n        return")),
+        ("--pid gone ignored",
+         _edit("    if not alive(pid):\n        return", "    if False:\n        return")),
+        ("timeout ignored",
+         _edit("    if expired:\n        return", "    if False:\n        return")),
+        ("another waiter's request taken for its own",
+         _edit("q[\"who\"] == who and q.get(\"pid\") == me]", "q[\"who\"] == who]")),
+    ],
+    "test_wait_fifo": [
+        ("order ignored",
+         _edit("        if live and live[0] is mine[0]:", "        if live:")),
+        ("take under the waiter's pid",
+         _edit("{\"event\": \"take\", \"who\": who, \"pid\": pid,\n"
+               "                     \"note\": \"taken by wait",
+               "{\"event\": \"take\", \"who\": who, \"pid\": me,\n"
+               "                     \"note\": \"taken by wait")),
+        ("take without the withdraw",
+         _edit("            return [dict(withdraw, note=\"wait: taking the bench\"),\n",
+               "            return [\n")),
+    ],
+    "test_wait_stale": [
+        ("stale request kept",
+         _edit("            if q[\"who\"] == who and (q.get(\"pid\") is None",
+               "            if False and (q.get(\"pid\") is None")),
+        ("a request with no pid kept",
+         _edit("(q.get(\"pid\") is None\n                                    or not impl",
+               "(False\n                                    or not impl")),
+        ("a request with a gone pid kept",
+         _edit("                                    or not impl.pid_alive(q[\"pid\"])):",
+               "                                    or False):")),
+        ("a live request withdrawn too",
+         _edit("            if q[\"who\"] == who and (q.get(\"pid\") is None",
+               "            if q[\"who\"] == who and (True")),
+        ("gone pids keep their place",
+         _edit("            if q.get(\"pid\") is not None and alive(q[\"pid\"])]",
+               "            if q.get(\"pid\") is not None]")),
+        ("no pid keeps a place",
+         _edit("            if q.get(\"pid\") is not None and alive(q[\"pid\"])]",
+               "            if q.get(\"pid\") is None or alive(q[\"pid\"])]")),
+    ],
+    "test_wait_exit3": [
+        ("timeout ignored",
+         _edit("    if expired:\n        return", "    if False:\n        return")),
+        ("--pid gone ignored",
+         _edit("    if not alive(pid):\n        return", "    if False:\n        return")),
+        ("stop ignored",
+         _edit("    if stopped:\n        return", "    if False:\n        return")),
+        ("--pid not checked at the start",
+         _edit("        check_pid_alive(state, pid)\n        evs = []", "        evs = []")),
+        ("its own pid as --pid",
+         _edit("    if not (_int(pid) and pid > 0) or pid == me:",
+               "    if not (_int(pid) and pid > 0):")),
+        ("request without the waiter's pid",
+         _edit("        evs.append({\"event\": \"request\", \"who\": who, \"pid\": me,",
+               "        evs.append({\"event\": \"request\", \"who\": who, \"pid\": None,")),
+    ],
+    "test_wait_cli": [
+        ("no wait command",
+         _edit("        if a.cmd == \"wait\":\n            a.path = path\n"
+               "            return run_wait(a)\n", "")),
+        ("the take line not printed",
+         _edit("    for ln in lines:            # the take line last, when it took\n"
+               "        print(ln)\n", "")),
+        ("its own pid as --pid",
+         _edit("    if not (_int(pid) and pid > 0) or pid == me:",
+               "    if not (_int(pid) and pid > 0):")),
+        ("a live request withdrawn too",
+         _edit("            if q[\"who\"] == who and (q.get(\"pid\") is None",
+               "            if q[\"who\"] == who and (True")),
+    ],
+    "test_wait_signal": [
+        ("no stop signals",
+         _edit("STOP_SIGNALS = (\"SIGTERM\", \"SIGINT\", \"SIGHUP\", \"SIGBREAK\")",
+               "STOP_SIGNALS = ()")),
+        ("SIGTERM not handled",
+         _edit("STOP_SIGNALS = (\"SIGTERM\", \"SIGINT\", \"SIGHUP\", \"SIGBREAK\")",
+               "STOP_SIGNALS = (\"SIGINT\", \"SIGHUP\", \"SIGBREAK\")")),
+        ("the flag ignored",
+         _edit("stopped=lambda: bool(flag))", "stopped=lambda: False)")),
+        ("old handlers not put back",
+         _edit("            signal.signal(sig, h)", "            pass")),
+    ],
+    "test_from_hold": [
+        ("from a free lock",
+         _edit("        if h is None:\n            raise Refused(\"--from-hold %d: the lock is free",
+               "        if False:\n            raise Refused(\"--from-hold %d: the lock is free")),
+        ("from another role's hold",
+         _edit("        if h[\"who\"] != who:\n            raise Refused(\"--from-hold",
+               "        if False:\n            raise Refused(\"--from-hold")),
+        ("from a hold with a run",
+         _edit("        if h[\"run\"] is not None:\n            raise Refused(\"--from-hold",
+               "        if False:\n            raise Refused(\"--from-hold")),
+        ("from a hold under another pid",
+         _edit("        if h[\"pid\"] != hold_pid:", "        if False:")),
+        ("the reads not handed",
+         _edit("\"%s: handed to run %s\" % (NOT_READ, run)", "\"%s: untouched\" % NOT_READ")),
+        ("a release without the take",
+         _edit("             \"note\": note},\n            {\"event\": \"take\", \"who\": who, "
+               "\"pid\": pid, \"run\": run,\n             \"note\": note}])",
+               "             \"note\": note}])")),
     ],
 }
 

@@ -35,7 +35,11 @@ firmware/bench-lock-spec.md, sections 6 and 7):
     before the next case (section 6). At its run's end it releases with
     its board reads, or with
     --keep-lock PID releases and takes again for its role, with no run,
-    under PID, in one locked step.
+    under PID, in one locked step. With --from-hold PID it starts from a
+    hand take instead: the lock held by its role, with no run, under PID
+    is released ("not read: handed to run <id>") and taken for its run
+    under its own PID in one locked step; held in any other way, or free,
+    it refuses as at any start (user, 2026-11-16).
 In both, the lock is checked before every bench case, a case in progress
 always runs to its end, and any state but the run's own lock is lost: the
 record and index.txt open with "LOCK LOST: <state>", every remaining case is
@@ -88,6 +92,10 @@ fails when the rule is switched off through RULES):
                   reads, or "not read: <why>"; never after a LOCK LOST
   keep_lock_one_step  (log) --keep-lock PID appends the release and the hand
                   take under PID in one locked step, nothing in between
+  from_hold_one_step  (log) --from-hold PID appends the hand take's release
+                  ("not read: handed to run <id>") and the run's take in one
+                  locked step, checked there: held by the role, no run,
+                  under PID (bench_lock.hand_to_run)
   own_pid         (log) the run goes on only while the lock is held under
                   its runner's own PID: a hand take --run <id> under a
                   session's PID is a lost lock (section 6)
@@ -298,7 +306,7 @@ RULES = {k: True for k in (
     "canmain_check", "canmain_down", "canmain_after_take", "canmain_stops",
     "canmain_resume", "canmain_holder", "lock_guard", "lock_each_case", "pause_own_lock", "lost_record",
     "take_first", "folder_release", "self_pause", "release_end",
-    "keep_lock_one_step",
+    "keep_lock_one_step", "from_hold_one_step",
     "own_pid", "pause_hooks", "resume_identify", "resume_stop",
     "resume_stop_kept", "stop_no_resume",
     "flash_gate", "image_schedule", "identify_after",
@@ -423,7 +431,7 @@ def fmt_any(v, ctx):
 class Engine:
     def __init__(self, suite, settings, runs_root=None, run_id=None,
                  groups=None, checks=None, resume=None, out=print,
-                 keep_lock=None, record_settings=None):
+                 keep_lock=None, record_settings=None, from_hold=None):
         self.suite = suite
         self.settings = settings
         # what the record holds as the settings: a masked copy, when given
@@ -451,6 +459,7 @@ class Engine:
         # it, else the Holder line. took: this run holds a take in the log.
         self.lock_log = settings.get("bench_lock_log")
         self.keep_lock = keep_lock
+        self.from_hold = from_hold
         self.took = False
         self.lock_lost = None
         self.resume_stopped = None
@@ -1011,15 +1020,34 @@ class Engine:
             except BL.Refused as e:
                 raise lockmod.LockError("refusing to start: --keep-lock: %s"
                                         % e)
+        fh = self.from_hold
+        if fh is not None and (not isinstance(fh, int) or isinstance(fh, bool)
+                               or fh <= 0 or fh == os.getpid()):
+            raise lockmod.LockError(
+                "refusing to start: --from-hold %r is not the long-lived "
+                "process of the session holding the bench (never the "
+                "runner's own)" % (fh,))
         rid = make_run_id(self.suite.name, self.run_id_req)
         if os.path.exists(os.path.join(self.runs_root, rid)):
             raise FileExistsError(os.path.join(self.runs_root, rid))
         if not RULES["take_first"]:
             self.run_id, self.run_dir = new_run_dir(self.runs_root,
                                                     self.suite.name, rid)
+        note = "run of suite %s" % self.suite.name
         try:
-            BL.take(self.lock_log, self.suite.role, os.getpid(), run=rid,
-                    note="run of suite %s" % self.suite.name)
+            if fh is None:
+                BL.take(self.lock_log, self.suite.role, os.getpid(), run=rid,
+                        note=note)
+            elif RULES["from_hold_one_step"]:
+                BL.hand_to_run(self.lock_log, self.suite.role, fh,
+                               os.getpid(), rid,
+                               note="%s, from the hand take under pid %d "
+                               "(--from-hold)" % (note, fh))
+            else:
+                BL.release(self.lock_log, self.suite.role,
+                           BL.handed_reads(rid), note=note)
+                BL.take(self.lock_log, self.suite.role, os.getpid(), run=rid,
+                        note=note)
         except BL.Refused as e:
             raise lockmod.LockError(
                 "refusing to start: the bench log refused the take for run "
@@ -2456,15 +2484,15 @@ class Engine:
             ok, why = self.resume_matches()
             if not ok:
                 raise SuiteError("refusing to resume: %s" % why)
-        if self.keep_lock is not None and not (self.lock_log
-                                               and self.needs_bench()):
-            raise lockmod.LockError(
-                "refusing to start: --keep-lock hands over the bench log's "
-                "lock, and %s" % ("this run includes no bench group"
-                                  if self.lock_log else
-                                  "the settings name no bench_lock_log: "
-                                  "before the cutover the Holder line is "
-                                  "edited by hand"))
+        for opt, val, what in (("--keep-lock", self.keep_lock, "hands over"),
+                               ("--from-hold", self.from_hold, "takes over")):
+            if val is not None and not (self.lock_log and self.needs_bench()):
+                raise lockmod.LockError(
+                    "refusing to start: %s %s the bench log's lock, and %s"
+                    % (opt, what, "this run includes no bench group"
+                       if self.lock_log else
+                       "the settings name no bench_lock_log: before the "
+                       "cutover the Holder line is edited by hand"))
         runner = self.runner_placement()
         if runner.get("refuse"):
             raise SuiteError(runner["refuse"])
@@ -2558,7 +2586,8 @@ class Engine:
         header["lock"] = dict(
             source="log" if self.lock_log else "holder",
             path=self.lock_log or self.bench_holder, took=self.took,
-            keep_lock=self.keep_lock, lost=self.lock_lost,
+            keep_lock=self.keep_lock, from_hold=self.from_hold,
+            lost=self.lock_lost,
             release=self.lock_release)
         for ln in locklines + off + unconfirmed:
             self.out(ln)

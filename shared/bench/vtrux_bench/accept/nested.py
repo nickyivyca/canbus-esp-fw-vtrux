@@ -3,8 +3,15 @@ record inside the acceptance record (ACCEPT-SPEC A7).
 
     python -m vtrux_bench.accept.nested --suite <file.py>:<NAME>
         --settings <run settings> --record-settings <masked copy>
-        --run-id <id> --out <folder> [--rerun-flagged]
+        --run-id <id> --out <folder> [--rerun-flagged] [--from-hold PID]
         [--group G]... [--check GLOB]...
+
+--from-hold PID (the acceptance runner's, passed to every suite run): when
+the first run needs the bench, the chain runner starts it from the role's
+hand take under PID (shared/bench SPEC section 6). A suite run that needs no
+bench takes no lock and is given nothing. The re-run of flagged cases, after
+the first run's release, takes the lock as any run does. nested.json
+records the PID and whether the first run was given it ("from_hold").
 
 The run settings' runs_root is the acceptance record's runs/ (settings.py),
 so the nested record lands there, holding the masked settings (A6). With
@@ -30,10 +37,11 @@ import sys
 
 from ..run.cli import load_settings, load_suite
 from ..run.engine import Engine, exit_code
+from ..run.lock import LockError
 from ..run.model import SuiteError, Verdict
 
 RULES = {k: True for k in ("nested_masked", "rerun_new_record", "rerun_only_flagged",
-                           "first_decides")}
+                           "first_decides", "from_hold_bench", "from_hold_bench_only")}
 
 OK = (Verdict.PASS, Verdict.KNOWN_FAIL, Verdict.NOT_APPLICABLE)
 
@@ -50,15 +58,23 @@ def _worst(record, check):
     return bad[0] if bad else (vs[0] if vs else "absent")
 
 
-def run(suite, settings, masked, run_id, groups=(), checks=(), rerun=False, out=print):
-    """{"first": ..., "rerun": ..., "flagged": [...], "exit": int}."""
+def run(suite, settings, masked, run_id, groups=(), checks=(), rerun=False, out=print,
+        from_hold=None):
+    """{"first": ..., "rerun": ..., "flagged": [...], "exit": int, "from_hold":
+    {"pid", "given"} or None}."""
     rec_settings = masked if RULES["nested_masked"] else None
     eng = Engine(suite, settings, run_id=run_id, groups=list(groups), checks=list(checks),
                  record_settings=rec_settings, out=out)
+    given = (from_hold is not None and RULES["from_hold_bench"]
+             and (eng.needs_bench() or not RULES["from_hold_bench_only"]))
+    if given:
+        eng.from_hold = from_hold
     first = eng.run()
     rc = exit_code(first)
     res = {"first": {"run_id": first["run_id"], "dir": eng.run_dir, "exit": rc},
-           "rerun": None, "flagged": []}
+           "rerun": None, "flagged": [],
+           "from_hold": None if from_hold is None else {"pid": from_hold,
+                                                        "given": bool(given)}}
     marked = flagged(first)
     if rerun and marked:
         sel = marked if RULES["rerun_only_flagged"] else list(checks)
@@ -98,6 +114,7 @@ def main(argv=None):
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--rerun-flagged", action="store_true")
+    ap.add_argument("--from-hold", type=int, metavar="PID")
     ap.add_argument("--group", action="append", default=[])
     ap.add_argument("--check", action="append", default=[])
     a = ap.parse_args(argv)
@@ -105,8 +122,8 @@ def main(argv=None):
         settings = load_settings(a.settings)
         suite = load_suite(a.suite, settings)
         res = run(suite, settings, load_settings(a.record_settings), a.run_id,
-                  a.group, a.check, a.rerun_flagged)
-    except SuiteError as e:
+                  a.group, a.check, a.rerun_flagged, from_hold=a.from_hold)
+    except (SuiteError, LockError) as e:
         print("REFUSED: %s" % e, file=sys.stderr)
         return 2
     os.makedirs(a.out, exist_ok=True)
