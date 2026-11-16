@@ -71,6 +71,11 @@ first, for port step 2a). This first cut gives:
                                  TEST FAULT count; figures and FLAG lines
                                  are shown side by side, never judged; a
                                  side with no report is refused
+                     sim-timing  each sim's STALL lines and trace gaps
+                                 against the spread of serial runs plus a
+                                 margin, and each segment's rate against
+                                 side a's (shared/bench job B's trial; see
+                                 its section below)
 THE MADHOUSE HOST. A madhouse entry runs from a tree on madhouse (a list's
 [trees.<name>] with host = "madhouse"), which the runner makes under the
 host's workroot in the settings and removes with everything in it there
@@ -179,7 +184,7 @@ IDF_VERSION = "v5.4.2"     # spec 8.2: the interposer builds on ESP-IDF v5.4.2 (
 # 2026.11.12.2 (compile.USER_BUS_VARS), so this adapter no longer lists them
 MACHINE_VARS = ("REVERSE_IT_DIR", "CAN_TOOLS_DIR", "VTRUX_PUBLIC_REPO")
 JUDGES = ("script", "recorded", "c12", "host-bridge", "corrupt-pin", "scenario")
-COMPARERS = ("masked-log", "sim-judged", "run-logs", "vport-windows")
+COMPARERS = ("masked-log", "sim-judged", "run-logs", "vport-windows", "sim-timing")
 # the folder names the runner's scratch helper gives trees, builds and mutants
 MASKS = {"tree-root": r"(?:tree|build|mutant)-[\w.-]+?-\d+-[0-9a-f]{6}"}
 
@@ -1034,10 +1039,168 @@ def _vport_windows(a, b, spec, adapter):
     return out
 
 
+# ---- sim-timing: the sims' wall-clock timing against serial runs -------------
+# The charge-interposer reviewer, 2026-11-16 (shared/bench job B's trial of
+# side-by-side sims, slots 1, 2 and 4): per sim, figures of its timing that
+# load, or a neighbour on the machine, would move, each judged against the
+# spread of serial runs of the same product (tolerance.serial: run folders,
+# as [baseline] names them, under the runs folder both sides are in) widened
+# by a margin (tolerance.margin {figure: {"abs", "rel"}}: the band is
+# [min - m, max + m] with m = abs + rel x the larger of |min| and |max|),
+# and, with tolerance.fps = "a", each segment's frame rate against the range
+# of side a's sims (a slotted run, whose isolation events give the rates):
+#   <proc>.stalls          STALL lines in <sim>.<proc>.log (proc charger,
+#                          vehicle, interposer): the sim's own loop gaps over
+#                          40 ms of wall clock
+#   <side>.gaps_over_40ms  in <sim>.l1.trace (the interposer core's trace, on
+#                          its clock), the gaps between frames of each
+#                          periodic stream (an id with PERIODIC_MIN frames or
+#                          more) on that side (V vehicle, C charger) longer
+#                          than that stream's median gap by over 40 ms
+#   <side>.p99_gap_ms      the 99th percentile of the same gaps' excess over
+#                          their stream's median, all the side's streams
+#                          pooled
+#   fps.<segment>          the isolation event's frame rate on that segment
+# Only a figure outside its band is a difference ("figure"); a sim on one
+# side only is "missing" or "new". So the list expects "identical". A sim of
+# side b with a file missing that a serial run has, a serial run without that
+# sim, side a without isolation events under fps = "a", or a tolerance this
+# cannot read is refused (raises): nothing to compare is not "the same".
+SIM_PROCS = ("charger", "vehicle", "interposer")
+TRACE_SIDES = (("V", "vehicle"), ("C", "charger"))
+SIM_STALL = re.compile(r"\bSTALL \d+ ms wall\b")
+PERIODIC_MIN = 100
+GAP_OVER_MS = 40
+TIMING_FIGURES = ("stalls", "gaps_over_40ms", "p99_gap_ms")
+
+
+def _sims(side):
+    """{"sim.<name>": that sim's folder} of a run side's m-sims results."""
+    out = {}
+    for r in (side.get("record") or {}).get("results") or []:
+        if r["id"].startswith("m-sims/sim."):
+            out[r["id"].split("/", 1)[1]] = os.path.dirname(_case_log(side, r))
+    return out
+
+
+def _p99(xs):
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(len(xs) * 0.99))] if xs else 0
+
+
+def sim_timing(folder, sim):
+    """{figure: number} of one sim's folder (the figures above but fps); a
+    figure whose file is not there is left out."""
+    name = sim[len("sim."):]
+    out = {}
+    for proc in SIM_PROCS:
+        p = os.path.join(folder, "%s.%s.log" % (name, proc))
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8", errors="replace") as f:
+                out[proc + ".stalls"] = sum(1 for ln in f if SIM_STALL.search(ln))
+    p = os.path.join(folder, "%s.l1.trace" % name)
+    if os.path.isfile(p):
+        streams = {}
+        with open(p, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                if ln[:1] in "VC":
+                    x = ln.split(None, 3)
+                    streams.setdefault((x[0], x[2]), []).append(int(x[1]))
+        for key, side in TRACE_SIDES:
+            excess = []
+            for (k, _fid), ts in streams.items():
+                if k != key or len(ts) < PERIODIC_MIN:
+                    continue
+                gaps = [b - a for a, b in zip(ts, ts[1:])]
+                med = sorted(gaps)[len(gaps) // 2]
+                excess += [g - med for g in gaps]
+            out[side + ".gaps_over_40ms"] = sum(1 for e in excess if e > GAP_OVER_MS)
+            out[side + ".p99_gap_ms"] = _p99(excess)
+    return out
+
+
+def _band(values, margin):
+    lo, hi = min(values), max(values)
+    m = float(margin.get("abs") or 0) + float(margin.get("rel") or 0) * max(abs(lo), abs(hi))
+    return lo - m, hi + m
+
+
+def _fmt(v):
+    return "%d" % v if float(v).is_integer() else "%.1f" % v
+
+
+def _fps(side):
+    """{"sim.<name>": {segment: fps}} from a run's isolation events."""
+    out = {}
+    for e in (side.get("record") or {}).get("events") or []:
+        if e.get("kind") == "isolation" and str(e.get("check", "")).startswith("m-sims/sim."):
+            out[e["check"].split("/", 1)[1]] = e.get("fps") or {}
+    return out
+
+
+def _sim_timing(a, b, spec, adapter):
+    import json
+    tol = spec.get("tolerance") or {}
+    serial, margin = tol.get("serial"), tol.get("margin") or {}
+    if not isinstance(serial, list) or len(serial) < 2:
+        raise ValueError("sim-timing: tolerance.serial must name two or more serial runs")
+    unknown = set(margin) - set(TIMING_FIGURES) - {"fps"}
+    if unknown:
+        raise ValueError("sim-timing: tolerance.margin has no figure %s" % sorted(unknown))
+    root = os.path.dirname(os.path.dirname(os.path.dirname(b["dir"])))
+    runs = []
+    for s in serial:
+        d = os.path.join(root, s)
+        with open(os.path.join(d, "record.json"), encoding="utf-8") as f:
+            runs.append({"kind": "run", "dir": d, "record": json.load(f)})
+    sa, sb = _sims(a), _sims(b)
+    out = [{"kind": "missing", "line": "MISSING in b: %s" % s} for s in sorted(set(sa) - set(sb))]
+    out += [{"kind": "new", "line": "NEW in b: %s" % s} for s in sorted(set(sb) - set(sa))]
+    per_run = [_sims(r) for r in runs]
+    for sim in sorted(sb):
+        got = sim_timing(sb[sim], sim)
+        ref = []
+        for s, sims in zip(serial, per_run):
+            if sim not in sims:
+                raise ValueError("sim-timing: serial run %s has no %s" % (s, sim))
+            ref.append(sim_timing(sims[sim], sim))
+        for fig in sorted(set().union(*ref)):
+            if fig not in got:
+                raise ValueError("sim-timing: %s has no %s in b (%s), which the serial "
+                                 "runs have" % (sim, fig, sb[sim]))
+            vals = [r[fig] for r in ref if fig in r]
+            lo, hi = _band(vals, margin.get(fig.split(".", 1)[1]) or {})
+            if not lo <= got[fig] <= hi:
+                out.append({"kind": "figure", "name": "%s %s" % (sim, fig),
+                            "line": "figure %s %s: b %s outside [%s, %s] (serial %s)"
+                            % (sim, fig, _fmt(got[fig]), _fmt(lo), _fmt(hi),
+                               " ".join(_fmt(v) for v in vals))})
+    if tol.get("fps") is not None:
+        if tol["fps"] != "a":
+            raise ValueError("sim-timing: tolerance.fps is \"a\" or not given")
+        fa, fb = _fps(a), _fps(b)
+        if not fa:
+            raise ValueError("sim-timing: side a (%s) has no isolation event" % a.get("dir"))
+        for sim in sorted(sb):
+            if sim not in fb:
+                raise ValueError("sim-timing: side b has no isolation event for %s" % sim)
+            for seg in sorted(fb[sim]):
+                vals = [f[seg] for f in fa.values() if seg in f]
+                if not vals:
+                    raise ValueError("sim-timing: side a has no rate for segment %s" % seg)
+                lo, hi = _band(vals, margin.get("fps") or {})
+                if not lo <= fb[sim][seg] <= hi:
+                    out.append({"kind": "figure", "name": "%s fps.%s" % (sim, seg),
+                                "line": "figure %s fps.%s: b %s outside [%s, %s] (a's range)"
+                                % (sim, seg, _fmt(fb[sim][seg]), _fmt(lo), _fmt(hi))})
+    return out
+
+
 def comparer(name):
     return {"masked-log": lambda a, b, spec, ad: _masked_log_diffs(a["log"], b["log"]),
             "sim-judged": lambda a, b, spec, ad: _sim_diffs(a["log"], b["log"]),
-            "run-logs": _run_logs, "vport-windows": _vport_windows}[name]
+            "run-logs": _run_logs, "vport-windows": _vport_windows,
+            "sim-timing": _sim_timing}[name]
 
 
 # ---- the record (A13) -------------------------------------------------------
