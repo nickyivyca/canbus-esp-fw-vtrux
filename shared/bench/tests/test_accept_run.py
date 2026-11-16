@@ -149,6 +149,7 @@ class Run:
 
     def __init__(self, flaky_passes=True, mutant="sum", premise_later=False, extra="",
                  dirty_adapter=False, runner_dirty=False, dev=False, runner=None,
+                 from_hold=None,
                  setup_fails=False):
         N[0] += 1
         self.dir = os.path.join(BASE, "r%d" % N[0])
@@ -190,7 +191,8 @@ class Run:
         self.said = []
         args = ["run", "--repo", self.repo, "--list", "%s:proj/acceptance/s1.toml" % self.c3,
                 "--adapter", "proj/accept_adapter.py", "--settings", self.settings] + (
-                    ["--dev"] if dev else [])
+                    ["--dev"] if dev else []) + (
+                    ["--from-hold", str(from_hold)] if from_hold is not None else [])
         if runner:
             # a runner of its own (a clean checkout's shared/bench), in a
             # process of its own, without -B
@@ -525,10 +527,31 @@ def test_images_from():
     assert "fake_images" not in json.loads(r.read("settings.emu.masked.json"))
 
 
+def test_from_hold_passed():
+    """A1 with shared/bench SPEC section 6's --from-hold (user, 2026-11-16;
+    the charge-interposer reviewer: the acceptance takes the lock through the
+    chain runner, so it must pass --from-hold through): `run --from-hold PID`
+    reaches every suite run's nested run, whose nested.json records it (here
+    the emulated suite, which needs no bench, so it is not given it and the
+    acceptance passes as without it). The nested run's own use of it is
+    test_accept_suite_runs.py's test_nested_from_hold."""
+    pid = 424242
+    r = Run(from_hold=pid)
+    assert r.rc == 0, (r.rc, r.rec and r.read("console.txt")[-1500:])
+    chain = os.path.join(r.rec, "chain")
+    found = []
+    for d, _dirs, files in os.walk(chain):
+        if "nested.json" in files:
+            with open(os.path.join(d, "nested.json"), encoding="utf-8") as f:
+                found.append(json.load(f).get("from_hold"))
+    assert found and all(x == {"pid": pid, "given": False} for x in found), found
+
+
 TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premise_blocks,
          test_stopped, test_setup_failure_stops_run, test_dirty_runner_refused, test_dev_run,
          test_runner_identity, test_runner_stays_clean, test_check_every_result,
-         test_suite_run_not_passed, test_nested_wrong_shape, test_images_from]
+         test_suite_run_not_passed, test_nested_wrong_shape, test_images_from,
+         test_from_hold_passed]
 
 MUTANTS = [
     ("adapter_from_commit", test_adapter_committed),
@@ -544,6 +567,7 @@ MUTANTS = [
     ("nested_not_passed", test_suite_run_not_passed),
     ("nested_wrong_shape", test_nested_wrong_shape),
     ("images_not_started", test_images_from),
+    ("from_hold_passed", test_from_hold_passed),
     ("_stray", test_runner_stays_clean),        # VTRUX_TEST_STRAY: a stray file
 ]
 

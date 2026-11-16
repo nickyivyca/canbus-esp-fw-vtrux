@@ -3,7 +3,8 @@
     python -m vtrux_bench.run plan    --suite <file.py>:<NAME> --settings <json>
     python -m vtrux_bench.run run     --suite ... --settings ... [--group G]...
                                       [--check GLOB]... [--resume RUN_DIR]
-                                      [--keep-lock PID] [--record-settings JSON]
+                                      [--keep-lock PID] [--from-hold PID]
+                                      [--record-settings JSON]
     python -m vtrux_bench.run compare <ref run dir> <new run dir>
 
 --suite names a Python file (or an importable module) and an attribute: a
@@ -74,6 +75,12 @@ def main(argv=None):
                            "and take it again for the suite's role, with no "
                            "run, under PID (the long-lived process of the "
                            "session doing the follow-on work), in one step")
+            p.add_argument("--from-hold", type=int, metavar="PID",
+                           help="start from the suite's role's hand take of "
+                           "the bench log's lock, with no run, under PID (a "
+                           "session that won the bench with bench_lock "
+                           "wait): release it and take it for the run in "
+                           "one step; refused if held any other way, or free")
     p = sub.add_parser("compare")
     p.add_argument("ref")
     p.add_argument("new")
@@ -98,6 +105,7 @@ def main(argv=None):
                      resume=getattr(a, "resume", None),
                      run_id=getattr(a, "run_id", None),
                      keep_lock=getattr(a, "keep_lock", None),
+                     from_hold=getattr(a, "from_hold", None),
                      record_settings=load_settings(masked) if masked else None)
         if a.cmd == "plan":
             for ln in eng.plan_lines():
