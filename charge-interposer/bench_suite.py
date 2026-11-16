@@ -278,13 +278,13 @@ EMULATED_LOCAL = [
 SHARED_BENCH_TESTS = [
     "test_accept_canfail.py", "test_accept_close.py", "test_accept_compile.py",
     "test_accept_judge.py", "test_accept_list.py", "test_accept_record.py",
-    "test_accept_remote.py", "test_accept_run.py", "test_accept_setup.py",
-    "test_accept_suite_runs.py", "test_accept_trees.py", "test_bench_lock.py",
-    "test_canfail_control.py", "test_canmain.py", "test_decode.py",
-    "test_ota_outcome.py", "test_ota_policy.py", "test_ota_preflight.py",
-    "test_ota_wire.py", "test_run_core.py", "test_scratch.py",
-    "test_scratch_helper.py", "test_serial_dev.py", "test_wican_http.py",
-    "test_wifi.py",
+    "test_accept_remote.py", "test_accept_reuse.py", "test_accept_run.py",
+    "test_accept_setup.py", "test_accept_suite_runs.py", "test_accept_trees.py",
+    "test_bench_lock.py", "test_canfail_control.py", "test_canmain.py",
+    "test_decode.py", "test_ota_outcome.py", "test_ota_policy.py",
+    "test_ota_preflight.py", "test_ota_wire.py", "test_run_core.py",
+    "test_scratch.py", "test_scratch_helper.py", "test_serial_dev.py",
+    "test_vbus.py", "test_wican_http.py", "test_wifi.py",
 ]
 
 HARNESS_LOCAL = [
@@ -1020,13 +1020,6 @@ class _Build:
 SIM_BUS = ("vehicle", "charger", "physics")
 
 
-def _sim_bus():
-    """Check.bus for a sim, on a pinned shared/bench that has it (job B's
-    tag); {} on an older pin, whose Check has no bus."""
-    return {"bus": list(SIM_BUS)} if "bus" in getattr(Check, "__dataclass_fields__", {}) \
-        else {}
-
-
 def emulated(settings):
     """No hardware, no lock: builds, host suites, the 1x sims, the capture
     trace rebuild."""
@@ -1059,7 +1052,7 @@ def emulated(settings):
         b.mpy("sim." + s, ["run_scenario.py", s, "--time-scale", "1",
                            "--keep-traces", "--outdir", "{outdir}"],
               cls="wallclock", timeout_s=4 * 3600, judge=scenario_judge,
-              **_sim_bus())
+              bus=list(SIM_BUS))
         for s in SIM_SCENARIOS])
     l_emulated = Group("l-emulated", checks=[
         b.lpy(cid, argv, timeout_s=3600) for cid, argv in EMULATED_LOCAL])

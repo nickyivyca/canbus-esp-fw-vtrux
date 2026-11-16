@@ -779,7 +779,9 @@ def test_suites():
     #      over every judged check's window, the reviewer, 2026-11-13)
     # 289: bus-alloc-test and its can-fail (run_scenario's use of the core's
     #      per-check bus, shared/bench job B, 2026-11-16)
-    assert len(seen) == 289, "checks across the suites: %d" % len(seen)
+    # 293: sb.test-accept-reuse and sb.test-vbus, each plain and with
+    #      --can-fail (the re-pin to shared/bench 2026.11.16)
+    assert len(seen) == 293, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
