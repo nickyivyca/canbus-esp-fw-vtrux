@@ -205,13 +205,17 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
         # A17: each earlier run a [[reuse]] names, checked before any
         # premise, build, lock or run; a refusal stops the whole acceptance
         reused = [RU.check(repo, u, trees, adapter, machine["runs_root"],
-                           lambda rp, sp: L.read_list(rp, sp)[2]) for u in alist.reuses]
+                           lambda rp, sp: L.read_list(rp, sp)[2], settings=machine)
+                  for u in alist.reuses]
         for u in reused:
             rec.say("reuse %s: suite %s from record %s, run %s, read in place (A17): "
-                    "product digest %s in both; harness digest %s in both, over %d files; "
+                    "product digest %s in both; harness digest %s in both, over %d files%s; "
                     "its comparison held: %s" % (
                         u["id"], u["suite"], u["record"], u["run"], u["product"]["this"],
-                        u["harness"]["this"], u["harness"]["files"], ", ".join(u["compares"])))
+                        u["harness"]["this"], u["harness"]["files"],
+                        "".join(" and %s %r" % kv for kv in sorted(
+                            u["harness"]["identity"].items())),
+                        ", ".join(u["compares"])))
         prem =J.premises(alist.premises, trees, repo, adapter, parent, made)
         blocked = set()
         all_ids = ([c["id"] for c in alist.checks] + [r["id"] for r in alist.suite_runs]

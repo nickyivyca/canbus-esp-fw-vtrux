@@ -30,7 +30,16 @@ unless all of these hold:
     (adapter.harness_files(suite, tree), A15), read from git objects at
     each tree's commits (a shared/<component>/ path at that tree's commit
     of the component), is the same in the earlier run's tree and in this
-    one; a file missing from either tree makes them differ.
+    one; a file missing from either tree makes them differ;
+  - the toolchain it ran with is unchanged, where the adapter names one:
+    adapter.harness_identity(suite, tree, settings) gives {name: string} as
+    this machine has it now (the interposer: the host compiler's
+    `gcc --version` first line and the Python version string), the earlier
+    run recorded its own in its record.json (code.harness_identity, from
+    the suite's code_info), and both go into the harness digest's input; a
+    name the earlier run did not record makes them differ. (No build
+    environment pin exists, so the identities are recorded instead: the
+    charge-interposer reviewer's ruling, 2026-11-16.)
 
 The cited run then stands as this acceptance's run of that suite, read where
 it is: the suite runs that require it are told its folder (the chain
@@ -41,7 +50,8 @@ The record names the earlier record, the run and both pairs of digests
 
 The digest over a list of files: sha256 over the paths sorted, each as the
 path, NUL, the file's bytes (or the word MISSING, for the reason, though a
-missing file refuses before the digest counts), NUL.
+missing file refuses before the digest counts), NUL; then each identity
+name sorted, as "identity:", the name, NUL, the string (or MISSING), NUL.
 
 RULES: each is switched off by a mutant in tests/test_accept_reuse.py,
 which must then fail.
@@ -58,7 +68,7 @@ import tomllib
 RULES = {k: True for k in (
     "required_by", "alone", "closed", "sums", "finished", "whole", "compare_named",
     "compare_held", "product", "harness", "missing_differs", "shared_at_tree",
-    "in_place", "named")}
+    "in_place", "named", "identity")}
 
 TREE_LINE = re.compile(r"^- tree (\S+): project ([0-9a-f]{40}) \(tree [0-9a-f]+\), "
                        r"product digest (\S+)$")
@@ -137,15 +147,35 @@ def file_at(repo, tree, rel):
     return r.stdout if r.returncode == 0 else None
 
 
-def harness_digest(repo, tree, files):
-    """(digest, {path: sha256 or None}) over files in a tree (file_at)."""
+def harness_digest(repo, tree, files, identity=None):
+    """(digest, {path: sha256 or None}) over files in a tree (file_at),
+    then the identities {name: string or None}, if any."""
     h = hashlib.sha256()
     per = {}
     for rel in sorted(set(files)):
         b = file_at(repo, tree, rel)
         per[rel] = hashlib.sha256(b).hexdigest() if b is not None else None
         h.update(rel.encode("utf-8") + b"\0" + (b if b is not None else b"MISSING") + b"\0")
+    for name, v in sorted((identity or {}).items()):
+        h.update(b"identity:" + name.encode("utf-8") + b"\0"
+                 + (v.encode("utf-8") if isinstance(v, str) else b"MISSING") + b"\0")
     return h.hexdigest(), per
+
+
+def identities(adapter, suite, tree, settings, record):
+    """(this machine's, the earlier run's) identities for the suite: the
+    adapter's harness_identity(suite, tree, settings) names them, and the
+    earlier run's are read under the same names from its record.json
+    (code.harness_identity; None where it recorded none). ({}, {}) when the
+    adapter names none; ReuseError when it cannot read them."""
+    fn = getattr(adapter, "harness_identity", None)
+    try:
+        now = dict(fn(suite, tree, settings) or {}) if (fn and RULES["identity"]) else {}
+    except Exception as e:
+        raise ReuseError("the adapter cannot give suite %s's toolchain identity on this "
+                         "machine, so the harness cannot be shown unchanged: %s" % (suite, e))
+    then = (record.get("code") or {}).get("harness_identity") or {}
+    return now, {k: then.get(k) if isinstance(then.get(k), str) else None for k in now}
 
 
 def tree_commits(tree_record):
@@ -178,12 +208,14 @@ def validate(alist, adapter):
                                                           "\n  ".join(errs)))
 
 
-def check(repo, entry, trees, adapter, runs_root, list_reader):
+def check(repo, entry, trees, adapter, runs_root, list_reader, settings=None):
     """The [[reuse]] entry checked (see the module's docstring). Its record:
     {"id", "suite", "suite_name", "record", "run", "dir", "compares",
-    "product" {earlier, this}, "harness" {earlier, this, files}}; ReuseError
-    naming the reason otherwise. list_reader(repo, "<commit>:<path>") gives
-    the earlier list's bytes (listfile.read_list's third value)."""
+    "product" {earlier, this}, "harness" {earlier, this, files, identity
+    {name: string}}}; ReuseError naming the reason otherwise.
+    list_reader(repo, "<commit>:<path>") gives the earlier list's bytes
+    (listfile.read_list's third value); settings, the machine's settings,
+    go to the adapter's harness_identity."""
     rid, run_id = entry["record"], entry["run"]
     if not (NAME.match(rid) and NAME.match(run_id)):
         raise ReuseError("reuse %s: record %r and run %r must be plain names"
@@ -268,8 +300,9 @@ def check(repo, entry, trees, adapter, runs_root, list_reader):
     if not files:
         raise ReuseError("%s: the adapter names no harness files for suite %s (A15)"
                          % (where, entry["suite"]))
-    h_this, per_this = harness_digest(repo, tree_commits(this_tree["record"]), files)
-    h_earlier, per_earlier = harness_digest(repo, et, files)
+    id_this, id_earlier = identities(adapter, entry["suite"], this_tree, settings or {}, r)
+    h_this, per_this = harness_digest(repo, tree_commits(this_tree["record"]), files, id_this)
+    h_earlier, per_earlier = harness_digest(repo, et, files, id_earlier)
     if RULES["missing_differs"]:
         gone = sorted(p for p in files if per_this[p] is None or per_earlier[p] is None)
         if gone:
@@ -280,14 +313,20 @@ def check(repo, entry, trees, adapter, runs_root, list_reader):
                                  for p in gone[:5])))
     if RULES["harness"] and h_this != h_earlier:
         changed = sorted(p for p in files if per_this[p] != per_earlier[p])
+        tools = ["%s (earlier %s, now %s)" % (k, "not recorded" if id_earlier[k] is None
+                                              else repr(id_earlier[k]), repr(id_this[k]))
+                 for k in sorted(id_this) if id_this[k] != id_earlier[k]]
         raise ReuseError("%s: the harness of suite %s changed: digest %s in the earlier "
-                         "tree, %s in this one; %d file(s) differ: %s"
+                         "tree, %s in this one; %d file(s) differ%s%s"
                          % (where, entry["suite"], h_earlier, h_this, len(changed),
-                            ", ".join(changed[:5])))
+                            (": " + ", ".join(changed[:5])) if changed else "",
+                            ("; toolchain identity differs: " + "; ".join(tools))
+                            if tools else ""))
     return {"id": entry["id"], "suite": entry["suite"], "suite_name": r.get("suite"),
             "record": rid, "run": run_id, "dir": rdir, "compares": named,
             "product": {"earlier": p_earlier, "this": p_this},
-            "harness": {"earlier": h_earlier, "this": h_this, "files": len(set(files))},
+            "harness": {"earlier": h_earlier, "this": h_this, "files": len(set(files)),
+                        "identity": id_this},
             "results": r.get("results") or []}
 
 
@@ -318,6 +357,9 @@ def readme_lines(reused):
                     u["id"], u["suite"], u["record"], u["run"], ", ".join(u["compares"])),
                 "  - product digest: earlier %s, this tree %s" % (
                     u["product"]["earlier"], u["product"]["this"]),
-                "  - harness digest (%d files): earlier %s, this tree %s" % (
-                    u["harness"]["files"], u["harness"]["earlier"], u["harness"]["this"])]
+                "  - harness digest (%d files%s): earlier %s, this tree %s" % (
+                    u["harness"]["files"],
+                    "".join(", %s %r" % kv for kv in sorted(
+                        (u["harness"].get("identity") or {}).items())),
+                    u["harness"]["earlier"], u["harness"]["this"])]
     return out
