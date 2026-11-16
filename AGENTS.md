@@ -444,6 +444,18 @@ bench host is `madhouse-debian`.
   sessions' runs that touch the bench adapters, and `can-tools`, the CAN
   replay tooling session. They build images as the images' owners' tooling
   does and do not change their source.
+- **To wait for a held lock, run `bench_lock.py wait`** (`shared/main`
+  from tag `2026.11.16.3`) with the Bash tool's `run_in_background`:
+  `wait --who <role> --pid <session's long-lived process> --note "<what
+  for, how long>" [--timeout <s>]`. It queues a request and, when the lock
+  frees, takes it for you under that PID, first in first out among live
+  waiters, one per free, then exits 0, which wakes you holding the bench.
+  Exit 3 is gave up (timeout, or the PID gone), after withdrawing its
+  request; 2 is refused. Plain takes still ignore the queue. To start a run
+  on the bench you won, pass the runner `--from-hold <that PID>` (also
+  `vtrux_bench.accept run --from-hold`): it hands your hold to the run in
+  one step, so the bench is never free in between. Details: SPEC sections
+  3 and 6.
 - **`canmain`, CAN1's Innomaker, is for the Android app's two-bus tests.**
   The chain runner brings it down through `canctl` after its own take and at
   every resume, before the start hooks; a `canctl` failure, or `canmain`
