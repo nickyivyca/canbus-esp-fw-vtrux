@@ -34,17 +34,17 @@ whether the bench is clear from `bench_lock.py status` and a process list,
 never from memory. For bring-up work that is easier to do with the hardware in
 hand, ask your component's tester for a loan. While you hold it, your
 hardware runs still do not go in `VERIFICATION.md`. When you are done,
-release it per the rules in `$REVERSE_IT_DIR/firmware/bench-holder.md` and
-tell the tester that loaned it.
+release it per the rules in `$REVERSE_IT_DIR/firmware/bench-holder.md`; the
+log tells the tester.
 
 **Commit on your topic branch, `<project>/<role>/<topic>`, in your own
 worktree.** Never push, and never touch `<project>/main`. Tell the reviewer
 the branch and the range. If the reviewer sends back a conflict, merge
 `<project>/main` into your branch (never a rebase).
 
-**When a batch lands,** send the tester and the reviewer the same message: the
-commit or build id, the spec sections touched and the files changed. Do not say
-what you tested or what passed.
+**When a batch lands,** send the tester the commit or build id, the spec
+sections touched and the files changed, and the reviewer the branch and range
+to merge, in one message each. Do not say what you tested or what passed.
 
 **Self-compact.** You have two compaction points:
 - **The end of a step:** the step is committed, you have sent the "batch

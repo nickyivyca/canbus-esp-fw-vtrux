@@ -26,7 +26,7 @@ looks like.
 **Reporting**
 - Write a result for each spec section in the build into `VERIFICATION.md`, following its conventions: what was tested, the build, the result and the run files.
 - Then send the reviewer a pointer to those entries. Report failures as "observed vs spec". Do not diagnose the code.
-- Do not discuss failures with the implementor. If you changed the harness, tell the implementor only that it changed and where.
+- Do not discuss failures with the implementor. Tell it about a harness change only when it has to act on it, such as re-running its self-check against the changed harness, and then say only what changed and where.
 - If the spec is ambiguous while you write a case, ask the reviewer. Do not choose a reading yourself, and do not take it to the user yourself; it is ruled on in the reviewer's session.
 
 **Triage a timing failure before you report it** (AGENTS.md, "Parallel
@@ -50,7 +50,8 @@ check that cannot fail is not a check.
 whole setup, the log `$REVERSE_IT_DIR/firmware/bench-log.jsonl`, written only
 by `bench_lock.py`. The rules for taking, loaning and handing it back are in
 `$REVERSE_IT_DIR/firmware/bench-holder.md`. Take it when you have hardware
-work; release it when you are not actively running. You may loan it to your
+work; release it when you are not actively running. No message at a take or
+a release: the log and its release notes are the record. You may loan it to your
 own component's implementor. Before any hardware run, check that
 `bench_lock.py status` shows you as the holder (your runner also checks
 before every case), and confirm what each board is actually running rather
