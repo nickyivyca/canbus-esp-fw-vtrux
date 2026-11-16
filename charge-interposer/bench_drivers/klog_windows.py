@@ -13,6 +13,17 @@ flagged in the record and in your entry." The reviewer accepted an
 entry-time scan, committed and re-runnable; this is it. madhouse's journal
 is persistent, so it can be run again after the run.
 
+Only checks with hardware in their loop are scanned: the results of a run
+whose start event names a suite in HARDWARE_SUITES (the bench suite: the vp
+runs and the bench run), and a chain record's row for a whole suite run
+whose run (<record>-<group>) is one of those, since its window holds that
+run's board start hooks (run e79d's WiCAN failure was in vp1/run's). The
+emulated and harness suites' results, a chain's rows for them or for the
+builds, and a run whose start event names no suite, are left out and
+counted on a "not scanned" line (the reviewer, 2026-11-16, at the user's correction: the
+dongles are not in those suites' loop, so a line beside them means
+nothing).
+
 A check's window is its result's end time ("t") less its duration_s, with
 SLACK_S either side; a result with no duration has no window and is listed
 as such. Judged means a verdict other than NOT-RUN. The lines are
@@ -47,6 +58,11 @@ import kvaser_link                                      # noqa: E402
 SLACK_S = 1.0
 FLAG_RE = re.compile(r"-71\b|EPROTO|disconnect|disabled by hub|error -32\b", re.I)
 FLAG_TEXT = "-71/EPROTO/disconnect/disabled by hub/error -32"
+# the suites whose checks have the boards and the USB adapters in their loop:
+# the bench suite (the vp runs and the bench run). The emulated and harness
+# suites have no dongle in theirs, so their results are not scanned (the
+# reviewer, 2026-11-16, at the user's correction).
+HARDWARE_SUITES = ("charge-interposer-bench",)
 TS_RE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?[+-]\d\d:\d\d)\s")
 
 
@@ -55,27 +71,45 @@ def epoch(iso):
 
 
 def results(run_dirs):
-    """-> [(record, id, verdict, t0, t1 or None)] of every judged result in
-    every progress.jsonl under run_dirs."""
-    out = []
+    """-> ([(record, id, verdict, t0, t1 or None)] of every judged result in
+    every progress.jsonl under run_dirs whose run is a HARDWARE_SUITES run,
+    {(record, suite): n} of the judged results left out, suite None when
+    the run's start event names none)."""
+    runs = []                                   # (record, suite, [judged result rows])
     for d in run_dirs:
         for root, _dirs, files in os.walk(d):
             if "progress.jsonl" not in files:
                 continue
             rec = os.path.basename(root)        # the run's own folder name
+            suite, rows = None, []
             with open(os.path.join(root, "progress.jsonl"), encoding="utf-8") as f:
                 for ln in f:
                     try:
                         r = json.loads(ln)
                     except ValueError:
                         continue
+                    if r.get("type") == "event" and r.get("kind") == "start":
+                        suite = r.get("suite")
                     if r.get("type") != "result" or r.get("verdict") == "NOT-RUN":
                         continue
-                    t1 = epoch(r["t"])
-                    dur = r.get("duration_s")
-                    t0 = t1 - float(dur) if isinstance(dur, (int, float)) else None
-                    out.append((rec, r["id"], r["verdict"], t0, t1))
-    return out
+                    rows.append(r)
+            runs.append((rec, suite, rows))
+    hw = [rec for rec, suite, _rows in runs if suite in HARDWARE_SUITES]
+    out, skipped = [], {}
+    for rec, suite, rows in runs:
+        for r in rows:
+            # a chain record's row for a whole suite run ("vp1/run", group
+            # vp1) is hardware when that run, <record>-<group>, is: its
+            # window holds the run's board start hooks
+            if suite not in HARDWARE_SUITES and not any(
+                    h.endswith("-%s" % r.get("group")) for h in hw if r.get("group")):
+                skipped[(rec, suite)] = skipped.get((rec, suite), 0) + 1
+                continue
+            t1 = epoch(r["t"])
+            dur = r.get("duration_s")
+            t0 = t1 - float(dur) if isinstance(dur, (int, float)) else None
+            out.append((rec, r["id"], r["verdict"], t0, t1))
+    return out, skipped
 
 
 def kernel_rows(t0, t1, journal=None):
@@ -91,15 +125,19 @@ def kernel_rows(t0, t1, journal=None):
 
 
 def scan(run_dirs, journal=None):
-    """-> (lines, n flagged). One kernel read over the whole span."""
-    res = results(run_dirs)
+    """-> (lines, n flagged). One kernel read over the whole span of the
+    hardware runs' results."""
+    res, skipped = results(run_dirs)
+    lines, flagged = [], 0
+    for (rec, suite), n in sorted(skipped.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+        lines.append("not scanned, no hardware in the loop: %s, %d judged result(s) (%s)"
+                     % (rec, n, ("suite %s" % suite) if suite else "its start event names no suite"))
     timed = [r for r in res if r[3] is not None]
     if not timed:
-        return ["no judged result with a window in %s" % ", ".join(run_dirs)], 0
+        return lines + ["no judged hardware result with a window in %s" % ", ".join(run_dirs)], 0
     lo = min(r[3] for r in timed) - SLACK_S
     hi = max(r[4] for r in timed) + SLACK_S
     rows = kernel_rows(lo, hi, journal)
-    lines, flagged = [], 0
     lines.append("kernel USB/CAN lines over %d judged result(s), %s .. %s: %d line(s) in "
                  "the span" % (len(res), kvaser_link.clock_text(lo),
                                kvaser_link.clock_text(hi), len(rows)))
@@ -145,6 +183,8 @@ def _self_test(d, check):
         nested = os.path.join(d, "runs", "x-bench")
         os.makedirs(nested)
         rows = [
+            {"type": "event", "kind": "start", "t": "2026-11-13T10:00:00-08:00",
+             "suite": "charge-interposer-bench"},
             {"type": "result", "t": "2026-11-13T10:00:10-08:00", "id": "b/clean", "verdict": "PASS",
              "duration_s": 5.0},
             {"type": "result", "t": "2026-11-13T10:00:30-08:00", "id": "b/hit", "verdict": "PASS",
@@ -165,6 +205,30 @@ def _self_test(d, check):
         ]
         with open(os.path.join(nested, "progress.jsonl"), "w", encoding="utf-8") as f:
             f.write("\n".join(json.dumps(r) for r in rows) + "\nnot json\n")
+        # no hardware in the loop (the reviewer, 2026-11-16): an emulated
+        # run's PASS and a suite-less run's FAIL, each beside a -71 line
+        for name, start, cid, verdict, t in (
+                ("x-emulated", {"type": "event", "kind": "start", "t": "2026-11-13T10:02:30-08:00",
+                                "suite": "charge-interposer-emulated"},
+                 "m/sim", "PASS", "2026-11-13T10:02:40-08:00"),
+                ("x-nosuite", None, "h/x", "FAIL", "2026-11-13T10:03:00-08:00"),
+                # a chain record: its row for the bench run (group "bench",
+                # the run x-bench) is hardware, its row for the emulated run
+                # (group "emulated", x-emulated) is not
+                ("x-chain", {"type": "event", "kind": "start", "t": "2026-11-13T10:00:00-08:00",
+                             "suite": "accept-x"},
+                 "emulated/run", "FAIL", "2026-11-13T10:02:40-08:00")):
+            p = os.path.join(d, "runs", name)
+            os.makedirs(p)
+            with open(os.path.join(p, "progress.jsonl"), "w", encoding="utf-8") as f:
+                if start:
+                    f.write(json.dumps(start) + "\n")
+                f.write(json.dumps({"type": "result", "t": t, "id": cid, "verdict": verdict,
+                                    "group": cid.split("/")[0], "duration_s": 5.0}) + "\n")
+                if name == "x-chain":
+                    f.write(json.dumps({"type": "result", "t": "2026-11-13T10:03:00-08:00",
+                                        "id": "bench/run", "group": "bench", "verdict": "FAIL",
+                                        "duration_s": 5.0}) + "\n")
         log = ("2026-11-13T10:00:07.000001-08:00 madhouse-debian kernel: gs_usb 1-3.3:1.0 canchg: "
                "renamed from can0\n"
                "2026-11-13T10:00:25.500000-08:00 madhouse-debian kernel: usb 1-3.2.1: device "
@@ -177,17 +241,37 @@ def _self_test(d, check):
                "2026-11-13T10:01:47.000000-08:00 madhouse-debian kernel: usb 1-3.4: device "
                "descriptor read/64, error -32\n"
                "2026-11-13T10:02:07.000000-08:00 madhouse-debian kernel: cdc_acm 1-3.1:1.0: "
-               "ttyACM0: USB ACM device\n")
+               "ttyACM0: USB ACM device\n"
+               "2026-11-13T10:02:37.000000-08:00 madhouse-debian kernel: usb 1-3.2.1: device "
+               "descriptor read/64, error -71\n"
+               "2026-11-13T10:02:57.000000-08:00 madhouse-debian kernel: usb 1-3.2.1: device "
+               "descriptor read/64, error -71\n")
         lines, n = scan([d], lambda s, u: log)
         text = "\n".join(lines)
-        check(n == 4, "four judged results flagged (a -71, a disconnect, disabled by hub, "
-              "error -32): %d" % n)
+        check(n == 5, "five judged results flagged (a -71, a disconnect, disabled by hub, "
+              "error -32, a chain's bench run beside a -71): %d" % n)
+        check(any(x.startswith("  FLAGGED x-chain bench/run FAIL") for x in lines),
+              "a chain record's row for a hardware run is scanned and FLAGGED")
+        check("emulated/run" not in text and any(
+            x.startswith("not scanned, no hardware in the loop: x-chain, 1 judged") for x in lines),
+              "a chain record's row for the emulated run is not scanned")
         check(any(x.startswith("  FLAGGED x-bench b/emi PASS") and "disabled by hub" in x
                   for x in lines), "a PASS beside a port disabled by its hub is FLAGGED")
         check(any(x.startswith("  FLAGGED x-bench b/epipe FAIL") and "error -32" in x
                   for x in lines), "a FAIL beside an error -32 is FLAGGED")
         check(any("b/wican PASS: 1 kernel line(s), none" in x for x in lines),
               "a WiCAN line on 1-3.1 (cdc_acm) is read, and listed, not flagged")
+        check("m/sim" not in text and any(
+            x.startswith("not scanned, no hardware in the loop: x-emulated, 1 judged")
+            and "charge-interposer-emulated" in x for x in lines),
+              "an emulated run's PASS beside a -71 is not scanned, and counted as not scanned")
+        check("h/x" not in text and any(
+            x.startswith("not scanned, no hardware in the loop: x-nosuite, 1 judged")
+            and "names no suite" in x for x in lines),
+              "a run whose start event names no suite is not scanned, and says so")
+        only = scan([os.path.join(d, "runs", "x-emulated")], lambda s, u: log)
+        check(only[1] == 0 and any(x.startswith("no judged hardware result") for x in only[0]),
+              "a record of only non-hardware runs reads no kernel window: %s" % only[0][-1])
         check(any(x.startswith("  FLAGGED x-bench b/hit PASS") and "error -71" in x
                   for x in lines), "a PASS beside a -71 is FLAGGED, its line quoted")
         check(any(x.startswith("  FLAGGED x-bench b/fail FAIL") and "USB disconnect" in x
@@ -207,10 +291,22 @@ def _self_test(d, check):
 
 MUTANTS = [
     ("no flag at all", "        if bad:\n            flagged += 1", "        if False:\n            flagged += 1"),
+    ("non-hardware runs scanned", "            if suite not in HARDWARE_SUITES and not any(",
+     "            if False and not any("),
+    ("a run with no suite taken for hardware", "            if suite not in HARDWARE_SUITES and not any(",
+     "            if suite is not None and suite not in HARDWARE_SUITES and not any("),
+    ("a chain's rows for hardware runs not scanned",
+     "                    h.endswith(\"-%s\" % r.get(\"group\")) for h in hw if r.get(\"group\")):",
+     "                    False for h in hw):"),
+    ("a chain's rows scanned whatever run they name",
+     "                    h.endswith(\"-%s\" % r.get(\"group\")) for h in hw if r.get(\"group\")):",
+     "                    True for h in hw):"),
+    ("the emulated suite counted as hardware", "HARDWARE_SUITES = (\"charge-interposer-bench\",)",
+     "HARDWARE_SUITES = (\"charge-interposer-bench\", \"charge-interposer-emulated\")"),
     ("NOT-RUN judged", "r.get(\"verdict\") == \"NOT-RUN\":", "False:"),
     ("the window ignores the duration",
-     "                    t0 = t1 - float(dur) if isinstance(dur, (int, float)) else None",
-     "                    t0 = t1 - 0.0 if isinstance(dur, (int, float)) else None"),
+     "            t0 = t1 - float(dur) if isinstance(dur, (int, float)) else None",
+     "            t0 = t1 - 0.0 if isinstance(dur, (int, float)) else None"),
     ("-71 not flagged", "FLAG_RE = re.compile(r\"-71\\b|EPROTO|", "FLAG_RE = re.compile(r\"EPROTO|"),
     ("disabled by hub not flagged", "|disconnect|disabled by hub|error -32\\b\", re.I)",
      "|disconnect|error -32\\b\", re.I)"),
