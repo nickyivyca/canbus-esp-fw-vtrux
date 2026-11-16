@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The kernel's USB and CAN lines over every judged check's window of a run
-record, with each PASS or FAIL beside a -71, an EPROTO or a USB disconnect
-FLAGGED.
+record, with each PASS or FAIL beside a -71, an EPROTO, a USB disconnect, a
+port disabled by its hub or an error -32 FLAGGED.
 
 Charge-interposer tester, 2026-11-13, from the charge-interposer reviewer's
 request the same day (after CAN replay's bench advisory: both bench USB
@@ -16,10 +16,14 @@ is persistent, so it can be run again after the run.
 A check's window is its result's end time ("t") less its duration_s, with
 SLACK_S either side; a result with no duration has no window and is listed
 as such. Judged means a verdict other than NOT-RUN. The lines are
-kvaser_link.KLOG_RE's (usb 1-3.2*, gs_usb, kvaser_usb, peak_usb, pcan,
--71, EPROTO, disconnects); a window is FLAGGED when one of its lines
-matches FLAG_RE (-71, EPROTO, a disconnect). It judges nothing: the flags
-go into the record (--out) and the VERIFICATION.md entry.
+kvaser_link.KLOG_RE's (since the hub swap of 2026-11-16, at the reviewer's
+ruling: every device under the bench hub 1-3 by any driver, the bench's
+devices by ID, gs_usb, kvaser_usb, peak_usb, pcan, -71, EPROTO,
+disconnects, "disabled by hub", "error -32"); a window is FLAGGED when one
+of its lines matches FLAG_RE (-71, EPROTO, a disconnect, and from
+2026-11-16 "disabled by hub" and "error -32", run e79d's WiCAN failure
+lines). It judges nothing: the flags go into the record (--out) and the
+VERIFICATION.md entry.
 
     python3.13 -B charge-interposer/bench_drivers/klog_windows.py RUN_DIR [RUN_DIR ...] [--out FILE]
         every progress.jsonl under each RUN_DIR (nested runs included)
@@ -41,7 +45,8 @@ sys.path.insert(0, HERE)
 import kvaser_link                                      # noqa: E402
 
 SLACK_S = 1.0
-FLAG_RE = re.compile(r"-71\b|EPROTO|disconnect", re.I)
+FLAG_RE = re.compile(r"-71\b|EPROTO|disconnect|disabled by hub|error -32\b", re.I)
+FLAG_TEXT = "-71/EPROTO/disconnect/disabled by hub/error -32"
 TS_RE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?[+-]\d\d:\d\d)\s")
 
 
@@ -107,13 +112,13 @@ def scan(run_dirs, journal=None):
         if bad:
             flagged += 1
             lines.append("  FLAGGED %s %s %s (%s..%s): %d kernel line(s), %d of them "
-                         "-71/EPROTO/disconnect: %s"
+                         "%s: %s"
                          % (rec, cid, verdict, kvaser_link.clock_text(t0),
-                            kvaser_link.clock_text(t1), len(inw), len(bad),
+                            kvaser_link.clock_text(t1), len(inw), len(bad), FLAG_TEXT,
                             " | ".join(bad[:6]) + (" | ..." if len(bad) > 6 else "")))
         elif inw:
-            lines.append("  %s %s %s: %d kernel line(s), none -71/EPROTO/disconnect"
-                         % (rec, cid, verdict, len(inw)))
+            lines.append("  %s %s %s: %d kernel line(s), none %s"
+                         % (rec, cid, verdict, len(inw), FLAG_TEXT))
     lines.append("%d judged result(s) flagged" % flagged)
     return lines, flagged
 
@@ -149,6 +154,14 @@ def _self_test(d, check):
             {"type": "result", "t": "2026-11-13T10:01:00-08:00", "id": "b/skip", "verdict": "NOT-RUN"},
             {"type": "result", "t": "2026-11-13T10:01:10-08:00", "id": "b/nodur", "verdict": "PASS"},
             {"type": "event", "kind": "check-end", "t": "2026-11-13T10:00:10-08:00"},
+            # after the hub swap (the reviewer, 2026-11-16): run e79d's WiCAN
+            # failure lines are flags; a WiCAN line on 1-3.1 is read
+            {"type": "result", "t": "2026-11-13T10:01:30-08:00", "id": "b/emi", "verdict": "PASS",
+             "duration_s": 5.0},
+            {"type": "result", "t": "2026-11-13T10:01:50-08:00", "id": "b/epipe", "verdict": "FAIL",
+             "duration_s": 5.0},
+            {"type": "result", "t": "2026-11-13T10:02:10-08:00", "id": "b/wican", "verdict": "PASS",
+             "duration_s": 5.0},
         ]
         with open(os.path.join(nested, "progress.jsonl"), "w", encoding="utf-8") as f:
             f.write("\n".join(json.dumps(r) for r in rows) + "\nnot json\n")
@@ -158,10 +171,23 @@ def _self_test(d, check):
                "descriptor read/64, error -71\n"
                "2026-11-13T10:00:47.000000-08:00 madhouse-debian kernel: usb 1-3.2: USB "
                "disconnect, device number 4\n"
-               "2026-11-13T10:00:40.000000-08:00 madhouse-debian kernel: e1000e eno1 link up\n")
+               "2026-11-13T10:00:40.000000-08:00 madhouse-debian kernel: e1000e eno1 link up\n"
+               "2026-11-13T10:01:27.000000-08:00 madhouse-debian kernel: usb 1-3.2-port4: "
+               "disabled by hub (EMI?), re-enabling...\n"
+               "2026-11-13T10:01:47.000000-08:00 madhouse-debian kernel: usb 1-3.4: device "
+               "descriptor read/64, error -32\n"
+               "2026-11-13T10:02:07.000000-08:00 madhouse-debian kernel: cdc_acm 1-3.1:1.0: "
+               "ttyACM0: USB ACM device\n")
         lines, n = scan([d], lambda s, u: log)
         text = "\n".join(lines)
-        check(n == 2, "two judged results flagged (a -71, a disconnect): %d" % n)
+        check(n == 4, "four judged results flagged (a -71, a disconnect, disabled by hub, "
+              "error -32): %d" % n)
+        check(any(x.startswith("  FLAGGED x-bench b/emi PASS") and "disabled by hub" in x
+                  for x in lines), "a PASS beside a port disabled by its hub is FLAGGED")
+        check(any(x.startswith("  FLAGGED x-bench b/epipe FAIL") and "error -32" in x
+                  for x in lines), "a FAIL beside an error -32 is FLAGGED")
+        check(any("b/wican PASS: 1 kernel line(s), none" in x for x in lines),
+              "a WiCAN line on 1-3.1 (cdc_acm) is read, and listed, not flagged")
         check(any(x.startswith("  FLAGGED x-bench b/hit PASS") and "error -71" in x
                   for x in lines), "a PASS beside a -71 is FLAGGED, its line quoted")
         check(any(x.startswith("  FLAGGED x-bench b/fail FAIL") and "USB disconnect" in x
@@ -185,8 +211,11 @@ MUTANTS = [
     ("the window ignores the duration",
      "                    t0 = t1 - float(dur) if isinstance(dur, (int, float)) else None",
      "                    t0 = t1 - 0.0 if isinstance(dur, (int, float)) else None"),
-    ("-71 not flagged", "FLAG_RE = re.compile(r\"-71\\b|EPROTO|disconnect\", re.I)",
-     "FLAG_RE = re.compile(r\"EPROTO|disconnect\", re.I)"),
+    ("-71 not flagged", "FLAG_RE = re.compile(r\"-71\\b|EPROTO|", "FLAG_RE = re.compile(r\"EPROTO|"),
+    ("disabled by hub not flagged", "|disconnect|disabled by hub|error -32\\b\", re.I)",
+     "|disconnect|error -32\\b\", re.I)"),
+    ("error -32 not flagged", "|disconnect|disabled by hub|error -32\\b\", re.I)",
+     "|disconnect|disabled by hub\", re.I)"),
     ("an unreadable log read as none",
      "        if ln.startswith(\"(the kernel log could not be read\"):\n            raise RuntimeError(ln)",
      "        if ln.startswith(\"(the kernel log could not be read\"):\n            continue"),

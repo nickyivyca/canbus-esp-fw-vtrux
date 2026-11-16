@@ -32,7 +32,13 @@ Each case names what it checks:
                     a late echo and raises Stall for one that never comes
   7. kernel-lines   a planted kernel log: its usb 1-3.2*, kvaser_usb, pcan,
                     gs_usb and -71/EPROTO lines (and only those) on the
-                    VOID line with their times, the window named; the
+                    VOID line with their times, the window named; after
+                    the hub swap (2026-11-16), any driver's line for a
+                    device under 1-3 (usb 1-3.1, cdc_acm 1-3.2.4), a bench
+                    device's enumeration on another port by its ID, and
+                    "disabled by hub" and "error -32" anywhere, but not
+                    another bus's port 3 (usb 11-3) or a non-bench device's
+                    ID on another port; the
                     count of lines past KLOG_MAX said; an unreadable log
                     said, not taken as "none"
   8. recover        canctl down, usbreset, up 500000, in that order, and
@@ -474,8 +480,10 @@ PLANTED = """\
 2026-11-13T10:20:17.000005-08:00 madhouse-debian kernel: usb 1-3.4: USB disconnect, device number 9
 2026-11-13T10:20:18.000006-08:00 madhouse-debian kernel: e1000e: eno1 NIC Link is Up
 2026-11-13T10:20:19.000007-08:00 madhouse-debian kernel: usb 1-3.2.4: new full-speed USB device number 9 using xhci_hcd
-2026-11-13T10:20:20.000008-08:00 madhouse-debian kernel: cdc_acm 1-3.4:1.0: urb 1 failed submission with -71
+2026-11-13T10:20:20.000008-08:00 madhouse-debian kernel: cdc_acm 1-5:1.0: urb 1 failed submission with -71
 """
+# (the -71 line is off the bench hub 1-3 since 2026-11-16, when KLOG_RE took
+# every line under 1-3, so -71 alone still reads it)
 
 
 def case_kernel_lines(M, work):
@@ -489,7 +497,7 @@ def case_kernel_lines(M, work):
     assert asked and asked[0][0] <= t0 and asked[0][1] >= t1, asked
     assert len(kl) == 7, kl
     assert any("usb 1-3.2.4: new full-speed" in x for x in kl), ("usb 1-3.2 alone", kl)
-    assert any("cdc_acm 1-3.4:1.0: urb 1 failed submission with -71" in x for x in kl), \
+    assert any("cdc_acm 1-5:1.0: urb 1 failed submission with -71" in x for x in kl), \
         ("-71 alone", kl)
     assert not any("unrelated" in x or "eno1" in x for x in kl), kl
     assert any(x.startswith("2026-11-13T10:20:14.000002") and "error -71" in x for x in kl), kl
@@ -510,6 +518,32 @@ def case_kernel_lines(M, work):
         raise OSError("no journal")
     v = M.void_line("x", t0, t1, broken)
     assert "could not be read" in v and "none in the window" not in v, v
+    # after the hub swap (the reviewer, 2026-11-16): each line below is read
+    # by one rule alone, so each rule's loss fails here
+    kl = M.kernel_lines(t0, t1, lambda s, u: POST_SWAP)
+    for want, rule in (("usb 1-3.1: new full-speed", "a device under 1-3 by path"),
+                       ("cdc_acm 1-3.2.4:1.0: ttyACM2", "another driver's line under 1-3"),
+                       ("usb 1-3.2-port4: disabled by hub", "run e79d's line"),
+                       ("usb 1-5-port2: disabled by hub", "disabled by hub off 1-3"),
+                       ("usb 1-4: New USB device found, idVendor=303a", "a bench ID off 1-3"),
+                       ("usb 1-5.2: device descriptor read/64, error -32", "error -32 off 1-3")):
+        assert any(want in x for x in kl), (rule, want, kl)
+    for not_want in ("usb 11-3.2", "idVendor=07d1", "usb 1-7.2"):
+        assert not any(not_want in x for x in kl), (not_want, kl)
+    assert len(kl) == 6, kl
+
+
+POST_SWAP = """\
+2026-11-16T10:00:01.000001-08:00 madhouse-debian kernel: usb 1-3.1: new full-speed USB device number 126 using xhci_hcd
+2026-11-16T10:00:02.000002-08:00 madhouse-debian kernel: cdc_acm 1-3.2.4:1.0: ttyACM2: USB ACM device
+2026-11-16T10:00:03.000003-08:00 madhouse-debian kernel: usb 1-3.2-port4: disabled by hub (EMI?), re-enabling...
+2026-11-16T10:00:04.000004-08:00 madhouse-debian kernel: usb 1-5-port2: disabled by hub (EMI?), re-enabling...
+2026-11-16T10:00:05.000005-08:00 madhouse-debian kernel: usb 1-4: New USB device found, idVendor=303a, idProduct=1001, bcdDevice= 1.01
+2026-11-16T10:00:06.000006-08:00 madhouse-debian kernel: usb 1-5.2: device descriptor read/64, error -32
+2026-11-16T10:00:07.000007-08:00 madhouse-debian kernel: usb 11-3.2: new high-speed USB device number 4 using xhci_hcd
+2026-11-16T10:00:08.000008-08:00 madhouse-debian kernel: usb 1-10: New USB device found, idVendor=07d1, idProduct=3300, bcdDevice= 0.00
+2026-11-16T10:00:09.000009-08:00 madhouse-debian kernel: usb 1-7.2: new full-speed USB device number 5 using xhci_hcd
+"""
 
 
 def case_recover(M, work):
@@ -680,7 +714,16 @@ MUTANTS = [
      "    return \"VOID: %s\" % cause"),
     ("kernel lines: no filter", "        if KLOG_RE.search(ln):", "        if True:"),
     ("kernel lines: -71 not matched", "|-71\\b|EPROTO|", "|EPROTO|"),
-    ("kernel lines: usb 1-3.2 not matched", "r\"usb 1-3\\.2|gs_usb|", "r\"gs_usb|"),
+    ("kernel lines: the bench hub 1-3 not matched by path",
+     "KLOG_RE = re.compile(r\"\\b1-3\\b|\"", "KLOG_RE = re.compile(r\"(?!x)x|\""),
+    ("kernel lines: 1-3 matched inside another path (usb 11-3)",
+     "KLOG_RE = re.compile(r\"\\b1-3\\b|\"", "KLOG_RE = re.compile(r\"1-3|\""),
+    ("kernel lines: the bench's IDs not matched",
+     "+ \"|\".join(r\"idVendor=%s, idProduct=%s\" % p for p in BENCH_USB_IDS)", "+ \"(?!x)x\""),
+    ("kernel lines: disabled by hub not matched",
+     "r\"|disabled by hub|error -32\\b\",", "r\"|error -32\\b\","),
+    ("kernel lines: error -32 not matched",
+     "r\"|disabled by hub|error -32\\b\",", "r\"|disabled by hub\","),
     ("kernel lines: an unreadable log read as none",
      "        return [\"(the kernel log could not be read: %s)\" % e]", "        return []"),
     ("kernel lines: the window cut short", "    since, until = int(t0) - 1, int(t1) + 2",
