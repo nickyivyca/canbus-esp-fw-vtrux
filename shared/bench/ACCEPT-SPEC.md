@@ -111,8 +111,9 @@ Requirements are numbered A1 to A17. The numbers are stable.
   - the harness the required suite runs is unchanged: the digest over the
     files this tree's adapter names as that suite's harness (A15), read in
     both trees, is the same in that run's tree and in this one; a file
-    missing from either tree makes them differ. The machine's toolchain
-    identity (A15), as the earlier run recorded it and as the adapter reads
+    missing from either tree makes them differ. The identity of any
+    unpinned toolchain that suite runs on (A15), as the earlier run
+    recorded it and as the adapter reads
     it now, is part of that digest's input; one the earlier run did not
     record, or that cannot be read now, differs.
 
