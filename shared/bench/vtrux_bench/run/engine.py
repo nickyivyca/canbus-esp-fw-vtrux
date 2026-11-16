@@ -92,6 +92,11 @@ fails when the rule is switched off through RULES):
                   reads, or "not read: <why>"; never after a LOCK LOST
   keep_lock_one_step  (log) --keep-lock PID appends the release and the hand
                   take under PID in one locked step, nothing in between
+  keep_lock_if    (log) an Engine whose keep_lock_if is set (a callable
+                  given the run's results so far, used by the acceptance
+                  runner's nested run) hands the lock to the --keep-lock PID
+                  at the end only when it returns true, and otherwise
+                  releases it as a run without --keep-lock does
   from_hold_one_step  (log) --from-hold PID appends the hand take's release
                   ("not read: handed to run <id>") and the run's take in one
                   locked step, checked there: held by the role, no run,
@@ -306,7 +311,7 @@ RULES = {k: True for k in (
     "canmain_check", "canmain_down", "canmain_after_take", "canmain_stops",
     "canmain_resume", "canmain_holder", "lock_guard", "lock_each_case", "pause_own_lock", "lost_record",
     "take_first", "folder_release", "self_pause", "release_end",
-    "keep_lock_one_step", "from_hold_one_step",
+    "keep_lock_one_step", "keep_lock_if", "from_hold_one_step",
     "own_pid", "pause_hooks", "resume_identify", "resume_stop",
     "resume_stop_kept", "stop_no_resume",
     "flash_gate", "image_schedule", "identify_after",
@@ -459,6 +464,12 @@ class Engine:
         # it, else the Holder line. took: this run holds a take in the log.
         self.lock_log = settings.get("bench_lock_log")
         self.keep_lock = keep_lock
+        # None: hand to keep_lock at the end whatever happened; else a
+        # callable given the run's results at the release, which decides
+        # (the acceptance runner's nested run: keep the hold for a re-run of
+        # flagged bench cases only when there will be one)
+        self.keep_lock_if = None
+        self.handed_to = None
         self.from_hold = from_hold
         self.took = False
         self.lock_lost = None
@@ -970,20 +981,26 @@ class Engine:
             b: dict(o, t=self.hook_ts.get(("on_end", b)))
             for b, o in self.hook_out["on_end"].items()})
         note = "; ".join(self.idle_left() + ["end of run %s" % self.run_id])
+        keep = self.keep_lock
+        if keep is not None and self.keep_lock_if is not None and \
+                RULES["keep_lock_if"] and \
+                not self.keep_lock_if(list(self.rec.results)):
+            keep = None
         try:
-            if self.keep_lock is None:
+            if keep is None:
                 _st, line = BL.release(self.lock_log, self.suite.role, boards,
                                        note=note)
                 lines = [line]
             elif RULES["keep_lock_one_step"]:
                 _st, lines = BL.release_and_take(
-                    self.lock_log, self.suite.role, boards, self.keep_lock,
+                    self.lock_log, self.suite.role, boards, keep,
                     note=note)
             else:
                 lines = [BL.release(self.lock_log, self.suite.role, boards,
                                     note=note)[1],
                          BL.take(self.lock_log, self.suite.role,
-                                 self.keep_lock, note=note)[1]]
+                                 keep, note=note)[1]]
+            self.handed_to = keep
             self.lock_release = dict(ok=True, lines=lines, boards=boards)
             self.rec.event("lock-release", lines=lines)
         except BL.Refused as e:
@@ -2587,6 +2604,7 @@ class Engine:
             source="log" if self.lock_log else "holder",
             path=self.lock_log or self.bench_holder, took=self.took,
             keep_lock=self.keep_lock, from_hold=self.from_hold,
+            handed_to=self.handed_to,
             lost=self.lock_lost,
             release=self.lock_release)
         for ln in locklines + off + unconfirmed:

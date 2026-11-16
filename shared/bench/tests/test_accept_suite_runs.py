@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -36,6 +37,7 @@ from vtrux_bench.accept import nested as NS          # noqa: E402
 from vtrux_bench.accept import record as R           # noqa: E402
 from vtrux_bench.accept import settings as ST        # noqa: E402
 from vtrux_bench.accept import trees as T            # noqa: E402
+from vtrux_bench.run import engine as E              # noqa: E402
 
 BASE = _scratch.run_dir("accept_suite_runs")
 N = [0]
@@ -329,12 +331,213 @@ def test_nested_from_hold():
         sess.wait()
 
 
+# ---- the hold passed from run to run (the gen-inhibit reviewer, 2026-11-16) --
+ROLE = "tester (gen-inhibit)"
+OTHER = "tester (charge-interposer)"
+FLAKY_AT = ("import os, sys; p = os.path.join(r'%s', 'seen'); "
+            "ok = os.path.exists(p); open(p, 'w').close(); sys.exit(0 if ok else 1)")
+
+
+def _lock_env(tag):
+    """A scratch bench log initialised for ROLE, and run settings using it
+    with the made-up canmain check (this process only)."""
+    import _canmain_fixture
+    from vtrux_bench import bench_lock as BL
+    N[0] += 1
+    d = os.path.join(BASE, "%s%d" % (tag, N[0]))
+    os.makedirs(os.path.join(d, "runs"))
+    log = os.path.join(d, "bench-log.jsonl")
+    BL.init(log, ROLE)
+    return d, log, dict(runs_root=os.path.join(d, "runs"),
+                        hosts={"local": {"python": [sys.executable, "-B"]}},
+                        bench_lock_log=log, canmain_check=_canmain_fixture.install(d))
+
+
+def _hold_suite(name, d, bench_flaky=False, logic_flaky=False, slow_bench=False):
+    """A suite of ROLE: group b needs the bench, group a does not; each may
+    hold a case that fails the first time it runs (a marker in a folder of
+    its own under d) and passes after. slow_bench: b's first case takes
+    1.5 s, so group a's results (another lane) are in before the bench lane
+    ends and releases."""
+    from vtrux_bench.run.model import Check, Group, Suite
+
+    def flaky(tag):
+        p = os.path.join(d, "%s-%s" % (name, tag))
+        os.makedirs(p)
+        return Check("flaky", ["-c", FLAKY_AT % p], python=True)
+    b = [Check("ok", ["-c", "import time; time.sleep(1.5)" if slow_bench else "pass"],
+               python=True)] + ([flaky("b")] if bench_flaky else [])
+    a = [Check("ok", ["-c", "pass"], python=True)] + ([flaky("a")] if logic_flaky else [])
+    return Suite(name=name, role=ROLE, groups=[Group("b", b, needs_lock=True),
+                                               Group("a", a)])
+
+
+def _events(log):
+    with open(log, encoding="utf-8") as f:
+        return [json.loads(x) for x in f.read().splitlines()]
+
+
+def _holder(log):
+    from vtrux_bench import bench_lock as BL
+    h = BL.read_state(log)["holder"]
+    return None if h is None else (h["who"], h["pid"], h["run"])
+
+
+def _sleeper():
+    return subprocess.Popen([sys.executable, "-B", "-c", "import time; time.sleep(300)"])
+
+
+def test_nested_keep_lock():
+    """--keep-lock under --from-hold (the gen-inhibit reviewer, 2026-11-16:
+    the bench is never free between two suite runs that need it): while
+    another role waits for the bench (bench_lock wait, polling every
+    0.05 s), two bench suite runs in turn under one session's hold, the
+    first with --from-hold and --keep-lock, the second with --from-hold
+    alone. The log shows the first run's handed release and take, its end
+    release and the take under the session's PID in one step, the second
+    run's handed release and take, and its end release; only then the
+    waiter's withdraw and take. Each release but the last is followed at
+    once by a take of the role, so the lock was never free. nested.json's
+    keep_lock records whom each handed the lock to. --keep-lock without
+    --from-hold, or with another PID, is refused with nothing appended."""
+    import threading
+    from vtrux_bench import bench_lock as BL
+    from vtrux_bench.run.model import SuiteError
+    d, log, settings = _lock_env("kl")
+    quiet = lambda s: None                                  # noqa: E731
+    sess, other = _sleeper(), _sleeper()
+    stop = threading.Event()
+    got = {}
+    waiter = threading.Thread(target=lambda: got.update(r=BL.wait(
+        log, OTHER, other.pid, "after the acceptance", poll=0.05, timeout=120,
+        me=os.getpid(), stopped=stop.is_set, out=quiet)))
+    try:
+        BL.take(log, ROLE, sess.pid)
+        n = len(_events(log))
+        for fh, kl in ((None, sess.pid), (sess.pid, other.pid)):
+            try:
+                NS.run(_hold_suite("proj-bench-x%d" % kl, d), settings, dict(settings),
+                       "acc-x", out=quiet, from_hold=fh, keep_lock=kl)
+            except SuiteError:
+                pass
+            else:
+                raise AssertionError("--keep-lock %r with --from-hold %r was not refused"
+                                     % (kl, fh))
+            assert len(_events(log)) == n, "a refused --keep-lock appended"
+        waiter.start()
+        end = time.monotonic() + 10
+        while not [q for q in BL.read_state(log)["queue"] if q["who"] == OTHER]:
+            assert time.monotonic() < end, "the waiter's request was not queued"
+            time.sleep(0.02)
+        n = len(_events(log))
+        r1 = NS.run(_hold_suite("proj-bench-1", d), settings, dict(settings), "acc-b1",
+                    out=quiet, from_hold=sess.pid, keep_lock=sess.pid)
+        assert r1["exit"] == 0 and r1["keep_lock"] == {
+            "pid": sess.pid, "first": sess.pid, "rerun": None}, r1
+        assert _holder(log) == (ROLE, sess.pid, None), _holder(log)
+        r2 = NS.run(_hold_suite("proj-bench-2", d), settings, dict(settings), "acc-b2",
+                    out=quiet, from_hold=sess.pid)
+        assert r2["exit"] == 0 and r2["keep_lock"] == {
+            "pid": None, "first": None, "rerun": None}, r2
+        waiter.join(30)
+        assert got.get("r", (None,))[0] == 0, "the waiter did not take: %r" % (got,)
+        ev = _events(log)[n:]
+        rows = [(e["event"], e.get("who"), e.get("pid"), e.get("run")) for e in ev]
+        ids = (r1["first"]["run_id"], r2["first"]["run_id"])
+        me = os.getpid()
+        want = [("release", ROLE, None, None), ("take", ROLE, me, ids[0]),
+                ("release", ROLE, None, None), ("take", ROLE, sess.pid, None),
+                ("release", ROLE, None, None), ("take", ROLE, me, ids[1]),
+                ("release", ROLE, None, None),
+                ("withdraw", OTHER, None, None), ("take", OTHER, other.pid, None)]
+        assert [(a, b, c if a == "take" else None, r if a == "take" else None)
+                for a, b, c, r in rows] == want, rows
+        assert ev[0]["boards"] == BL.handed_reads(ids[0]) and \
+            ev[4]["boards"] == BL.handed_reads(ids[1]), (ev[0], ev[4])
+    finally:
+        stop.set()
+        if waiter.is_alive() or waiter.ident is not None:
+            waiter.join(10)
+        for p in (sess, other):
+            p.kill()
+            p.wait()
+
+
+def test_nested_rerun_hold():
+    """The re-run of flagged cases under a hold (the gen-inhibit reviewer,
+    2026-11-16: it does the same as the first run). A flaky bench case,
+    --from-hold, no --keep-lock: the first run hands the lock back to the
+    session at its end, the re-run starts from that hold and releases the
+    bench. With --keep-lock the re-run hands it back too. Nothing flagged:
+    the first run releases (no re-run, so nothing to keep it for). Only a
+    case in a group that needs no bench flagged: the first run releases,
+    and the re-run takes no lock. nested.json's keep_lock says whom each
+    run handed the lock to."""
+    d, log, settings = _lock_env("rh")
+    quiet = lambda s: None                                  # noqa: E731
+    sess = _sleeper()
+    from vtrux_bench import bench_lock as BL
+    try:
+        P = sess.pid
+        BL.take(log, ROLE, P)
+        n = len(_events(log))
+        res = NS.run(_hold_suite("proj-a", d, bench_flaky=True), settings, dict(settings),
+                     "acc-a", rerun=True, out=quiet, from_hold=P)
+        assert res["flagged"] == [{"check": "b/flaky", "first": "FAIL", "rerun": "PASS"}], res
+        assert res["keep_lock"] == {"pid": None, "first": P, "rerun": None}, res
+        ids = (res["first"]["run_id"], res["rerun"]["run_id"])
+        rows = [(e["event"], e.get("pid"), e.get("run")) for e in _events(log)[n:]]
+        me = os.getpid()
+        assert [(a, p if a == "take" else None, r if a == "take" else None)
+                for a, p, r in rows] == [
+            ("release", None, None), ("take", me, ids[0]), ("release", None, None),
+            ("take", P, None), ("release", None, None), ("take", me, ids[1]),
+            ("release", None, None)], rows
+        assert _holder(log) is None, _holder(log)
+        BL.take(log, ROLE, P)
+        res = NS.run(_hold_suite("proj-b", d, bench_flaky=True), settings, dict(settings),
+                     "acc-b", rerun=True, out=quiet, from_hold=P, keep_lock=P)
+        assert res["keep_lock"] == {"pid": P, "first": P, "rerun": P}, res
+        assert _holder(log) == (ROLE, P, None), _holder(log)
+        res = NS.run(_hold_suite("proj-c", d), settings, dict(settings), "acc-c",
+                     rerun=True, out=quiet, from_hold=P)
+        assert res["rerun"] is None and res["keep_lock"] == {
+            "pid": None, "first": None, "rerun": None}, res
+        assert _holder(log) is None, "nothing flagged, yet the hold was kept: %r" % (
+            _holder(log),)
+        BL.take(log, ROLE, P)
+        res = NS.run(_hold_suite("proj-d", d, logic_flaky=True, slow_bench=True), settings,
+                     dict(settings), "acc-d", rerun=True, out=quiet, from_hold=P)
+        assert res["flagged"] == [{"check": "a/flaky", "first": "FAIL", "rerun": "PASS"}], res
+        with open(os.path.join(res["first"]["dir"], "progress.jsonl"), encoding="utf-8") as fh:
+            prog = [json.loads(x) for x in fh.read().splitlines()]
+        i_flaky = [i for i, x in enumerate(prog) if x.get("type") == "result"
+                   and x.get("check") == "a/flaky"]
+        i_rel = [i for i, x in enumerate(prog) if x.get("kind") == "lock-release"]
+        assert i_flaky and i_rel and i_flaky[0] < i_rel[0], (
+            "a/flaky's result was not in before the release, so this case checks "
+            "nothing", i_flaky, i_rel)
+        assert res["keep_lock"] == {"pid": None, "first": None, "rerun": None}, res
+        assert _holder(log) is None, "a re-run needing no bench kept the hold: %r" % (
+            _holder(log),)
+    finally:
+        sess.kill()
+        sess.wait()
+
+
 TESTS = [test_nested_record, test_rerun_new_record, test_first_run_decides,
-         test_nested_placement, test_nested_from_hold]
+         test_nested_placement, test_nested_from_hold, test_nested_keep_lock,
+         test_nested_rerun_hold]
 
 MUTANTS = [
     (NS, "from_hold_bench", test_nested_from_hold),
     (NS, "from_hold_bench_only", test_nested_from_hold),
+    (NS, "keep_lock_passed", test_nested_keep_lock),
+    (NS, "keep_same_pid", test_nested_keep_lock),
+    (NS, "keep_for_rerun", test_nested_rerun_hold),
+    (NS, "keep_only_bench_rerun", test_nested_rerun_hold),
+    (NS, "rerun_from_hold", test_nested_rerun_hold),
+    (E, "keep_lock_if", test_nested_rerun_hold),
     (C, "user_bus", test_nested_placement),
     (NS, "nested_masked", test_nested_record),
     (NS, "rerun_new_record", test_rerun_new_record),

@@ -68,7 +68,9 @@ FILES = {
         "    Group('a', [Check('ok', ['-c', 'pass'], python=True),\n"
         "                Check('flaky', ['-c', FLAKY], python=True),\n"
         "                Check('kf', ['-c', 'import sys; sys.exit(1)'], python=True)])],\n"
-        "    known_fails=[KnownFail('a/kf', 'a recorded known FAIL')])\n"),
+        "    known_fails=[KnownFail('a/kf', 'a recorded known FAIL')])\n"
+        "BENCH = Suite(name='proj-bench', role='tester (gen-inhibit)', groups=[\n"
+        "    Group('b', [Check('ok', ['-c', 'pass'], python=True)], needs_lock=True)])\n"),
     "proj/mutants.toml": ('[[mutant]]\nid = "sum"\nfile = "proj/calc.py"\n'
                           'old = "return a + b"\nnew = "return a - b"\n'),
     "shared/comp/tool.py": "pass\n",
@@ -149,7 +151,7 @@ class Run:
 
     def __init__(self, flaky_passes=True, mutant="sum", premise_later=False, extra="",
                  dirty_adapter=False, runner_dirty=False, dev=False, runner=None,
-                 from_hold=None,
+                 from_hold=None, machine=None,
                  setup_fails=False):
         N[0] += 1
         self.dir = os.path.join(BASE, "r%d" % N[0])
@@ -187,7 +189,8 @@ class Run:
         with open(self.settings, "w", encoding="utf-8") as f:
             json.dump(dict(runs_root=self.runs, hosts={"local": {"python": [sys.executable, "-B"]}},
                            bench_mac=MAC, flake_dir=flake,
-                           bench_holder=os.path.join(self.dir, "bench-holder.md")), f)
+                           bench_holder=os.path.join(self.dir, "bench-holder.md"),
+                           **(machine or {})), f)
         self.said = []
         args = ["run", "--repo", self.repo, "--list", "%s:proj/acceptance/s1.toml" % self.c3,
                 "--adapter", "proj/accept_adapter.py", "--settings", self.settings] + (
@@ -547,11 +550,98 @@ def test_from_hold_passed():
     assert found and all(x == {"pid": pid, "given": False} for x in found), found
 
 
+def test_keep_lock_chain():
+    """A1 with two bench suite runs under --from-hold (the gen-inhibit
+    reviewer, 2026-11-16: the hold passes from run to run and is never
+    free during the acceptance). The list runs emu, bench1, bench2 (with
+    rerun_flagged, nothing flagged) and emu2; a session holds the bench
+    by hand and runs the acceptance with --from-hold, while another role
+    waits for the bench (bench_lock wait, polling every 0.05 s). Asked
+    before the chain, bench1 and bench2 need the bench, emu and emu2 do
+    not; bench1 alone is given --keep-lock, bench2 being the last that
+    needs it. The acceptance passes, and the log shows bench1's handed
+    release and take, its end release with the take under the session's
+    PID in one step, bench2's handed release and take, its end release,
+    and only then the waiter's withdraw and take. The nested runs are
+    subprocesses, so the canmain check is probe "absent" for real, on an
+    interface name and serial that no machine has."""
+    import threading
+    import time
+    from vtrux_bench import bench_lock as BL
+    role, other_role = "tester (gen-inhibit)", "tester (charge-interposer)"
+    N[0] += 1
+    d = os.path.join(BASE, "klc%d" % N[0])
+    os.makedirs(d)
+    log = os.path.join(d, "bench-log.jsonl")
+    BL.init(log, role)
+    serial = os.path.join(d, "canmain_serial.md")
+    with open(serial, "w", encoding="utf-8") as f:
+        f.write("- canmain serial: `TESTNOSUCHCANMAIN01`\n")
+    machine = dict(bench_lock_log=log, canmain_check={
+        "probe": "absent", "reason": "made-up interface and serial, on no machine",
+        "iface": "cmnosuch0", "serial_file": serial})
+    extra = ('\n[[suite_run]]\nid = "bench1"\ntree = "base"\nsuite = "bench"\n'
+             '\n[[suite_run]]\nid = "bench2"\ntree = "base"\nsuite = "bench"\n'
+             'rerun_flagged = true\n'
+             '\n[[suite_run]]\nid = "emu2"\ntree = "base"\nsuite = "emulated"\n')
+    sleep = [sys.executable, "-B", "-c", "import time; time.sleep(900)"]
+    sess, other = subprocess.Popen(sleep), subprocess.Popen(sleep)
+    stop, got = threading.Event(), {}
+    waiter = threading.Thread(target=lambda: got.update(r=BL.wait(
+        log, other_role, other.pid, "after the acceptance", poll=0.05, timeout=900,
+        me=os.getpid(), stopped=stop.is_set, out=lambda s: None)))
+    try:
+        BL.take(log, role, sess.pid)
+        waiter.start()
+        end = time.monotonic() + 10
+        while not [q for q in BL.read_state(log)["queue"] if q["who"] == other_role]:
+            assert time.monotonic() < end, "the waiter's request was not queued"
+            time.sleep(0.02)
+        with open(log, encoding="utf-8") as f:
+            n = len(f.read().splitlines())
+        r = Run(from_hold=sess.pid, extra=extra, machine=machine)
+        assert r.rc == 0, (r.rc, r.rec and r.read("console.txt")[-2500:])
+        console = r.read("console.txt")
+        P = sess.pid
+        for line in ("suite run emu: does not need the bench (asked)",
+                     "suite run bench1: needs the bench (asked)",
+                     "suite run bench2: needs the bench (asked)",
+                     "suite run emu2: does not need the bench (asked)",
+                     "suite run bench1: --from-hold %d --keep-lock %d" % (P, P),
+                     "suite run bench2: --from-hold %d (the last" % P):
+            assert line in console, (line, console[-2500:])
+        waiter.join(60)
+        assert got.get("r", (None,))[0] == 0, "the waiter did not take: %r" % (got,)
+        with open(log, encoding="utf-8") as f:
+            ev = [json.loads(x) for x in f.read().splitlines()[n:]]
+        rows = [(e["event"], e.get("who"), e.get("pid") if e["event"] == "take" else None,
+                 e.get("run") is not None) for e in ev]
+        assert rows[-2:] == [("withdraw", other_role, None, False),
+                             ("take", other_role, other.pid, False)], rows
+        runs = [e["run"] for e in ev if e["event"] == "take" and e.get("run")]
+        assert len(runs) == 2, runs
+        pids = {e["pid"] for e in ev if e["event"] == "take" and e.get("run")}
+        assert len(pids) == 2 and P not in pids, pids        # two nested runners
+        assert [(a, b, c if c == P else None, x) for a, b, c, x in rows[:-2]] == [
+            ("release", role, None, False), ("take", role, None, True),
+            ("release", role, None, False), ("take", role, P, False),
+            ("release", role, None, False), ("take", role, None, True),
+            ("release", role, None, False)], rows
+        assert "-bench1" in runs[0] and "-bench2" in runs[1], runs
+    finally:
+        stop.set()
+        if waiter.ident is not None:
+            waiter.join(10)
+        for p in (sess, other):
+            p.kill()
+            p.wait()
+
+
 TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premise_blocks,
          test_stopped, test_setup_failure_stops_run, test_dirty_runner_refused, test_dev_run,
          test_runner_identity, test_runner_stays_clean, test_check_every_result,
          test_suite_run_not_passed, test_nested_wrong_shape, test_images_from,
-         test_from_hold_passed]
+         test_from_hold_passed, test_keep_lock_chain]
 
 MUTANTS = [
     ("adapter_from_commit", test_adapter_committed),
@@ -568,6 +658,9 @@ MUTANTS = [
     ("nested_wrong_shape", test_nested_wrong_shape),
     ("images_not_started", test_images_from),
     ("from_hold_passed", test_from_hold_passed),
+    ("keep_lock_chain", test_keep_lock_chain),
+    ("keep_not_last", test_keep_lock_chain),
+    ("keep_bench_only", test_keep_lock_chain),
     ("_stray", test_runner_stays_clean),        # VTRUX_TEST_STRAY: a stray file
 ]
 

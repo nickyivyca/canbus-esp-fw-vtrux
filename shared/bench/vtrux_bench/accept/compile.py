@@ -130,9 +130,12 @@ def shell_argv(adapter, shell, settings, tree):
 BENCH = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def suite_run_check(r, tree, adapter, settings, base_env, paths):
+def suite_run_check(r, tree, adapter, settings, base_env, paths, probe=False):
     """The chain check that runs a [[suite_run]] as a nested run
-    (nested.py), with this runner's own shared/bench on its path."""
+    (nested.py), with this runner's own shared/bench on its path. paths'
+    "from_hold" (a PID) goes to every suite run, and "keep_lock" ({suite run
+    id: PID}) to the ones it names. probe: the same command asking only
+    whether the suite run needs the bench (nested.py --needs-bench)."""
     if tree.get("remote") and RULES["remote_suite_refused"]:
         raise ValueError("suite run %s: its tree is on the remote host %s, and suite runs "
                          "on remote trees are not built yet (a suite ships its own work "
@@ -142,13 +145,19 @@ def suite_run_check(r, tree, adapter, settings, base_env, paths):
                                                               paths["masked"])
     argv = (list(adapter.shell_argv("python", settings))
             + ["-m", "vtrux_bench.accept.nested",
-               "--suite", "%s:%s" % (resolve_path(tree, file), attr),
-               "--settings", sp, "--record-settings", mp,
-               "--run-id", "%s-%s" % (paths["record_id"], r["id"]), "--out", "{outdir}"])
-    if r.get("rerun_flagged"):
-        argv.append("--rerun-flagged")
-    if paths.get("from_hold") is not None:
-        argv += ["--from-hold", str(paths["from_hold"])]
+               "--suite", "%s:%s" % (resolve_path(tree, file), attr), "--settings", sp])
+    if probe:
+        argv.append("--needs-bench")
+    else:
+        argv += ["--record-settings", mp,
+                 "--run-id", "%s-%s" % (paths["record_id"], r["id"]), "--out", "{outdir}"]
+        if r.get("rerun_flagged"):
+            argv.append("--rerun-flagged")
+        if paths.get("from_hold") is not None:
+            argv += ["--from-hold", str(paths["from_hold"])]
+        keep = (paths.get("keep_lock") or {}).get(r["id"])
+        if keep is not None:
+            argv += ["--keep-lock", str(keep)]
     for g in r.get("groups") or []:
         argv += ["--group", g]
     for c in r.get("checks") or []:
@@ -156,6 +165,35 @@ def suite_run_check(r, tree, adapter, settings, base_env, paths):
     return Check(id="run", argv=argv, cwd=tree["project_dir"],
                  env=dict(tree_env(adapter, tree), PYTHONPATH=BENCH), timeout_s=48 * 3600.0,
                  base_env=dict(base_env), note="suite run %s" % r["id"])
+
+
+def needs_bench(r, tree, adapter, settings, base_env, paths, timeout_s=600.0):
+    """Whether a [[suite_run]]'s first run needs the bench, asked before the
+    chain: its nested command with --needs-bench, run here from the same
+    folder with the environment the chain runner gives it (base_env, the
+    local host's env, the check's env). (True or False, "asked"), or (None,
+    why) when it could not be told."""
+    import json
+    import subprocess
+    chk = suite_run_check(r, tree, adapter, settings, base_env, paths, probe=True)
+    env = dict(chk.base_env or {})
+    env.update(((settings.get("hosts") or {}).get("local") or {}).get("env") or {})
+    env.update(chk.env)
+    try:
+        p = subprocess.run(chk.argv, cwd=chk.cwd, env=env, capture_output=True, text=True,
+                           timeout=timeout_s, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, "could not ask: %r" % (e,)
+    lines = p.stdout.strip().splitlines()
+    try:
+        ans = json.loads(lines[-1])["needs_bench"]
+    except (IndexError, ValueError, KeyError, TypeError):
+        ans = None
+    if p.returncode != 0 or not isinstance(ans, bool):
+        err = p.stderr.strip().splitlines()
+        return None, "exit %d, %s" % (p.returncode, err[-1][:300] if err else
+                                      "no answer on its last line")
+    return ans, "asked"
 
 
 def compile_suite(alist, trees, adapter, settings, base_env, name=None, paths=None,
