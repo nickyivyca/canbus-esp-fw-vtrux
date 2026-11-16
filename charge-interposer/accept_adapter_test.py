@@ -1102,6 +1102,151 @@ def test_vport_real(A, work):
     assert len(p["faults"]) == 1 and "1249" in p["faults"][0], p["faults"]
 
 
+def _sim_trace(gap_at=None, gap_ms=0, n=100, period=50):
+    """An l1.trace with one periodic stream per side (period ms, n frames),
+    each with one frame late by gap_ms after frame gap_at, and an id seen
+    four times with one long gap (too few frames to count as periodic)."""
+    lines, t = [], 0
+    for i in range(n):
+        lines += ["T %d" % t, "V %d 18EFC000 8 0000000000000000" % t,
+                  "C %d 18FFD4C0 8 0000000000000000" % t]
+        t += period + (gap_ms if i == gap_at else 0)
+    lines += ["V %d 7F4 8 00" % x for x in (0, 10, 20, 3000)]
+    return "\n".join(lines) + "\n"
+
+
+def test_sim_timing(A, work):
+    """The sim-timing comparer (the charge-interposer reviewer, 2026-11-16:
+    job B's trial). Per sim: STALL lines per sim log, and from the l1.trace
+    the gaps over 40 ms beyond each periodic stream's median and their
+    99th percentile, each within [min, max] of the serial runs widened by
+    the margin (both ends); each segment's isolation-event rate within side
+    a's range with tolerance.fps = "a". Only a figure outside its band is a
+    difference; a sim on one side only is missing or new; a missing file, a
+    serial run without the sim, side a without isolation events or an
+    unreadable tolerance is refused."""
+    assert "sim-timing" in A.COMPARERS, A.COMPARERS
+    root = os.path.join(work, "runs")
+
+    def run(name, sims, fps=None):
+        d = os.path.join(root, name, "runs", name + "-emulated")
+        res, events = [], []
+        for sim, (stalls, trace) in sims.items():
+            cid = "m-sims/sim." + sim
+            res.append({"id": cid, "check": cid, "verdict": "PASS"})
+            f = os.path.join(d, "m-sims", "sim." + sim)
+            _write(os.path.join(f, "check.log"), "log\n")
+            for proc, k in zip(A.SIM_PROCS, stalls):
+                _write(os.path.join(f, "%s.%s.log" % (sim, proc)), "up\n" + "".join(
+                    "12:00:0%d x STALL %d ms wall at sim t=3s host=1.5 gc\n" % (i, 50 + i)
+                    for i in range(k)))
+            if trace is not None:
+                _write(os.path.join(f, "%s.l1.trace" % sim), trace)
+            if fps and sim in fps:
+                events.append({"type": "event", "kind": "isolation", "check": cid,
+                               "fps": fps[sim]})
+        rec = {"results": res, "events": events}
+        _write(os.path.join(d, "record.json"), json.dumps(rec))
+        return {"kind": "run", "dir": d, "record": rec}, "%s/runs/%s-emulated" % (name, name)
+
+    quiet, gap = _sim_trace(), _sim_trace(10, 60)
+    s1, n1 = run("s1", {"x": ((0, 0, 0), quiet), "y": ((0, 0, 0), gap)})
+    s2, n2 = run("s2", {"x": ((1, 0, 0), gap), "y": ((0, 1, 0), gap)})
+    tol = {"serial": [n1, n2], "margin": {"stalls": {"abs": 1}, "gaps_over_40ms": {"abs": 0},
+                                          "p99_gap_ms": {"abs": 0}}}
+    spec = {"tolerance": tol}
+
+    def lines(a, b, sp=spec):
+        return [d["line"] for d in A.comparer("sim-timing")(a, b, sp, A)]
+    t = A.sim_timing(os.path.join(s2["dir"], "m-sims", "sim.x"), "sim.x")
+    assert t == {"charger.stalls": 1, "vehicle.stalls": 0, "interposer.stalls": 0,
+                 "vehicle.gaps_over_40ms": 1, "vehicle.p99_gap_ms": 60,
+                 "charger.gaps_over_40ms": 1, "charger.p99_gap_ms": 60}, t
+    # within the bands: nothing (charger stalls 2 = max 1 + margin 1)
+    b, _ = run("b1", {"x": ((2, 0, 0), gap), "y": ((0, 1, 0), gap)})
+    assert lines(s1, b) == [], lines(s1, b)
+    # outside: above max + margin, and below min - margin
+    b, _ = run("b2", {"x": ((3, 0, 2), _sim_trace(10, 200)), "y": ((0, 3, 0), quiet)})
+    got = lines(s1, b)
+    want = ["figure sim.x charger.p99_gap_ms: b 200 outside [0, 60] (serial 0 60)",
+            "figure sim.x charger.stalls: b 3 outside [-1, 2] (serial 0 1)",
+            "figure sim.x interposer.stalls: b 2 outside [-1, 1] (serial 0 0)",
+            "figure sim.x vehicle.p99_gap_ms: b 200 outside [0, 60] (serial 0 60)",
+            "figure sim.y charger.gaps_over_40ms: b 0 outside [1, 1] (serial 1 1)",
+            "figure sim.y charger.p99_gap_ms: b 0 outside [60, 60] (serial 60 60)",
+            "figure sim.y vehicle.gaps_over_40ms: b 0 outside [1, 1] (serial 1 1)",
+            "figure sim.y vehicle.p99_gap_ms: b 0 outside [60, 60] (serial 60 60)",
+            "figure sim.y vehicle.stalls: b 3 outside [-1, 2] (serial 0 1)"]
+    assert got == want, got
+    # the margin's rel part, x the larger end, widens both ends
+    sp = {"tolerance": dict(tol, margin=dict(tol["margin"], p99_gap_ms={"rel": 3.5}))}
+    assert not any("p99" in x for x in lines(s1, b, sp)), lines(s1, b, sp)
+    # a sim on one side only
+    a, _ = run("a3", {"x": ((0, 0, 0), quiet), "y": ((0, 0, 0), gap)})
+    b, _ = run("b3", {"x": ((0, 0, 0), quiet), "z": ((0, 0, 0), None)})
+    try:
+        lines(a, b)
+    except ValueError as e:
+        assert "serial run %s has no sim.z" % n1 in str(e), e
+    else:
+        raise AssertionError("a sim the serial runs lack: not refused")
+    b, _ = run("b4", {"x": ((0, 0, 0), quiet)})
+    assert lines(a, b) == ["MISSING in b: sim.y"], lines(a, b)
+    # fps against side a's range per segment
+    fa = {"x": {"vehicle": 100.0, "charger": 50.0}, "y": {"vehicle": 120.0, "charger": 52.0}}
+    a, _ = run("a5", {"x": ((0, 0, 0), quiet), "y": ((0, 0, 0), gap)}, fps=fa)
+    b, _ = run("b5", {"x": ((0, 0, 0), quiet), "y": ((0, 0, 0), gap)},
+               fps={"x": {"vehicle": 110.0, "charger": 49.0},
+                    "y": {"vehicle": 120.0, "charger": 50.0}})
+    sp = {"tolerance": dict(tol, fps="a")}
+    assert lines(a, b, sp) == ["figure sim.x fps.charger: b 49 outside [50, 52] (a's range)"], \
+        lines(a, b, sp)
+    assert lines(a, b) == [], "fps judged without tolerance.fps"
+    # refusals
+    no_trace, _ = run("b6", {"x": ((0, 0, 0), None), "y": ((0, 0, 0), gap)})
+    no_events, _ = run("a7", {"x": ((0, 0, 0), quiet), "y": ((0, 0, 0), gap)})
+    with_fps = {"tolerance": dict(tol, fps="a")}
+    for why, a_, b_, sp_, word in (
+            ("b without a trace the serial runs have", s1, no_trace, spec,
+             "sim.x has no charger.gaps_over_40ms in b"),
+            ("side a without isolation events", no_events, b, with_fps, "no isolation event"),
+            ("side b without isolation events", a, no_events, with_fps,
+             "side b has no isolation event"),
+            ("one serial run", s1, s1, {"tolerance": dict(tol, serial=[n1])}, "two or more"),
+            ("no serial runs", s1, s1, {}, "two or more"),
+            ("a margin for no figure", s1, s1,
+             {"tolerance": dict(tol, margin={"stall": {"abs": 1}})}, "has no figure"),
+            ("fps from elsewhere", a, b, {"tolerance": dict(tol, fps="b")}, "tolerance.fps")):
+        try:
+            lines(a_, b_, sp_)
+        except ValueError as e:
+            assert word in str(e), (why, e)
+            continue
+        raise AssertionError("not refused: %s" % why)
+
+
+SIM_REAL = "accept_3_20261114T035628_e79d/runs/accept_3_20261114T035628_e79d-emulated"
+
+
+def test_sim_timing_real(A, work):
+    """sim-timing reads the real files: e79d's sim.balance-hold (a serial
+    1x run of port step 3) gives every figure, three sim logs and both
+    trace sides, with no STALL and the trace's p99 excess a few ms. Read in
+    place under REVERSE_IT_DIR; skipped without it."""
+    d = os.path.join(os.environ.get("REVERSE_IT_DIR", ""), "projects", "vtrux", "notes",
+                     "artifacts", "interposer-firmware", "runs", SIM_REAL, "m-sims",
+                     "sim.balance-hold")
+    if not (os.environ.get("REVERSE_IT_DIR") and os.path.isdir(d)):
+        print("skip  test_sim_timing_real: no e79d sim under REVERSE_IT_DIR")
+        return
+    t = A.sim_timing(d, "sim.balance-hold")
+    assert sorted(t) == sorted(["%s.stalls" % p for p in A.SIM_PROCS] + [
+        "%s.%s" % (s, f) for _k, s in A.TRACE_SIDES
+        for f in ("gaps_over_40ms", "p99_gap_ms")]), t
+    assert all(t["%s.stalls" % p] == 0 for p in A.SIM_PROCS), t
+    assert 0 < t["vehicle.p99_gap_ms"] < 10 and t["vehicle.gaps_over_40ms"] == 0, t
+
+
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
          test_settings_tree_vars, test_settings_guard, test_machine_env_user_bus,
          test_idf_shell, test_targets, test_settings_keys, test_suite_settings,
@@ -1109,7 +1254,8 @@ TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_s
          test_harness_identity, test_bench_side_lazy,
          test_madhouse_entries, test_madhouse_refused_when_local, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
-         test_sim_judged, test_run_logs, test_vport_windows, test_vport_real]
+         test_sim_judged, test_run_logs, test_vport_windows, test_vport_real,
+         test_sim_timing, test_sim_timing_real]
 
 MUTANTS = [
     # the re-pin to 2026.11.12's settings guard (the charge-interposer
@@ -1241,6 +1387,45 @@ MUTANTS = [
      '    if "== verdicts" not in p["headers"]:', "    if False:"),
     ("vport: the window figures misread", r'(\d+) error frame\(s\) in (\d+) burst\(s\) over',
      r'(\d+) error frame\(s\) in (\d) burst\(s\) over'),
+    # sim-timing (the charge-interposer reviewer, 2026-11-16: job B's trial)
+    ("sim-timing: not a comparer",
+     'COMPARERS = ("masked-log", "sim-judged", "run-logs", "vport-windows", "sim-timing")',
+     'COMPARERS = ("masked-log", "sim-judged", "run-logs", "vport-windows")'),
+    ("sim-timing: STALL lines not counted", r'SIM_STALL = re.compile(r"\bSTALL \d+ ms wall\b")',
+     r'SIM_STALL = re.compile(r"\bSTALLED \d+ ms wall\b")'),
+    ("sim-timing: gaps not against the stream's median",
+     "                med = sorted(gaps)[len(gaps) // 2]\n", "                med = 0\n"),
+    ("sim-timing: an id with few frames counted as periodic",
+     "                if k != key or len(ts) < PERIODIC_MIN:\n", "                if k != key:\n"),
+    ("sim-timing: no margin", '    m = float(margin.get("abs") or 0) + float(margin.get("rel") or 0)',
+     '    m = 0 * float(margin.get("abs") or 0) + float(margin.get("rel") or 0)'),
+    ("sim-timing: the rel margin not used",
+     ' + float(margin.get("rel") or 0) * max(abs(lo), abs(hi))', ""),
+    ("sim-timing: the band's low end not judged", "            if not lo <= got[fig] <= hi:",
+     "            if not got[fig] <= hi:"),
+    ("sim-timing: a figure missing in b taken", "            if fig not in got:\n",
+     "            if fig not in got:\n                continue\n"),
+    ("sim-timing: a serial run without the sim taken", "            if sim not in sims:\n",
+     "            if sim not in sims:\n                continue\n"),
+    ("sim-timing: a sim missing in b not listed",
+     '    out = [{"kind": "missing", "line": "MISSING in b: %s" % s}',
+     '    out = [] and [{"kind": "missing", "line": "MISSING in b: %s" % s}'),
+    ("sim-timing: fps not judged", "                if not lo <= fb[sim][seg] <= hi:",
+     "                if False:"),
+    ("sim-timing: fps against b's own range",
+     "                vals = [f[seg] for f in fa.values() if seg in f]",
+     "                vals = [f[seg] for f in fb.values() if seg in f]"),
+    ("sim-timing: fps judged without tolerance.fps", '    if tol.get("fps") is not None:',
+     "    if True:"),
+    ("sim-timing: side a without isolation events taken", "        if not fa:\n",
+     "        if False:\n"),
+    ("sim-timing: side b without an isolation event taken", "            if sim not in fb:\n",
+     "            if sim not in fb:\n                continue\n"),
+    ("sim-timing: one serial run taken", "len(serial) < 2:", "len(serial) < 1:"),
+    ("sim-timing: a margin for no figure taken",
+     '    if unknown:\n        raise ValueError("sim-timing: tolerance.margin',
+     '    if False:\n        raise ValueError("sim-timing: tolerance.margin'),
+    ("sim-timing: fps from any side", '        if tol["fps"] != "a":', "        if False:"),
     ("settings naming a tree variable taken", "    if why:\n        raise AdapterError(why)\n",
      "    pass\n"),
     ("only the local host's env looked at",
