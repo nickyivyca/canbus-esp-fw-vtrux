@@ -156,6 +156,8 @@ class Fixture:
         self.trees = T.make_trees(self.repo, self.alist, FA, self.parent, self.made,
                                   say=self.rec.say)
         self.machine_path = os.path.join(self.dir, "machine.json")
+        # no -B in the python here: the fake adapter adds it, and
+        # test_compile_shape checks the argv exactly (test_checkout_unchanged)
         m = dict(runs_root=os.path.join(self.dir, "not-used"),
                  hosts={"local": {"python": [sys.executable]}}, bench_mac=MAC,
                  bench_holder=os.path.join(self.dir, "bench-holder.md"))

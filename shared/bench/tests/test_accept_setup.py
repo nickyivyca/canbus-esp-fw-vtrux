@@ -116,7 +116,7 @@ class Fixture:
         self.alist = L.load(self.repo, "%s:proj/acceptance/s.toml"
                             % git(self.repo, "rev-parse", "HEAD"), self.A)
         self.made = S.Made()
-        self.settings = {"hosts": {"local": {"python": [PY]}}}
+        self.settings = {"hosts": {"local": {"python": [PY, "-B"]}}}
 
     def trees(self):
         return T.make_trees(self.repo, self.alist, self.A, os.path.join(self.dir, "work"),

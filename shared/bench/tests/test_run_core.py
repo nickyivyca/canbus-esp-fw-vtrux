@@ -198,8 +198,8 @@ class Env:
 
     def settings(self, **kw):
         s = dict(runs_root=self.runs, bench_holder=self.holder,
-                 hosts={"local": {"python": [PY]}},
-                 esptool=dict({"argv": [PY, os.path.join(HERE, "fake_esptool.py")],
+                 hosts={"local": {"python": [PY, "-B"]}},
+                 esptool=dict({"argv": [PY, "-B", os.path.join(HERE, "fake_esptool.py")],
                                "baud": 115200}, **json.loads(json.dumps(ESPTOOL_PORT))),
                  pause_poll_s=0.2, scratch=self.root,
                  canmain_check=dict(CM_SETTING))
@@ -1236,7 +1236,7 @@ def _fake_systemd_run(root):
     with open(p, "w", encoding="utf-8", newline="\n") as f:
         f.write("import subprocess, sys\na = sys.argv[1:]\n"
                 "sys.exit(subprocess.call(a[a.index('--') + 1:]))\n")
-    return [PY, p]
+    return [PY, "-B", p]
 
 
 def test_placement_slices():
@@ -1301,7 +1301,7 @@ def test_placement_readback():
     env = Env("placement_rb")
     pl = {"slices": {"light": "vtrux-test-elsewhere.slice"},
           "systemd_run": _fake_systemd_run(env.root),
-          "systemctl": [PY, "-c", "print('CPUWeight=7'); "
+          "systemctl": [PY, "-B", "-c", "print('CPUWeight=7'); "
                                   "print('MemoryHigh=infinity')"]}
     saved = E.PLATFORM
     try:
@@ -2052,7 +2052,7 @@ def test_timeout():
     env = Env("timeout")
     pidf = os.path.join(env.root, "child.pid")
     code = ("import subprocess, sys, time; "
-            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)']); "
+            "c = subprocess.Popen([sys.executable, '-B', '-c', 'import time; time.sleep(8)']); "
             "open(%r, 'w').write(str(c.pid)); time.sleep(8)" % pidf)
     s = suite([Group("g", [chk("slow", code, timeout_s=2)])])
     t0 = time.time()
@@ -2071,10 +2071,10 @@ def spawn_foreign(marker, seconds=60):
     Returns its pid."""
     import subprocess
     pidf = os.path.join(SCRATCH, "foreign_%s.pid" % marker)
-    code = ("import subprocess, sys; p = subprocess.Popen([sys.executable, '-c', "
+    code = ("import subprocess, sys; p = subprocess.Popen([sys.executable, '-B', '-c', "
             "'import time; time.sleep(%d)', %r]); open(%r, 'w').write(str(p.pid))"
             % (seconds, marker, pidf))
-    subprocess.run([PY, "-c", code], check=True)
+    subprocess.run([PY, "-B", "-c", code], check=True)
     return int(open(pidf).read())
 
 
@@ -2438,11 +2438,11 @@ def test_remote_stop():
     env = Env("remotestop")
     log = os.path.join(env.root, "ssh.jsonl")
     os.environ["FAKE_SSH_LOG"] = log
-    fake = (PY, os.path.join(HERE, "fake_ssh.py"))
+    fake = (PY, "-B", os.path.join(HERE, "fake_ssh.py"))
     real_remote, real_fetch = P.run_remote, E.Engine._fetch
     P.run_remote = lambda *a, **k: real_remote(*a, ssh=fake, **k)
     E.Engine._fetch = lambda self, *a: 0
-    st = env.settings(hosts={"local": {"python": [PY]},
+    st = env.settings(hosts={"local": {"python": [PY, "-B"]},
                              "far": {"ssh": "farhost", "workroot": "/w",
                                      "python": ["python3"]}})
     s = suite([Group("g", [Check("long", ["run-forever"]),
@@ -2485,7 +2485,7 @@ def test_bare_shell():
     off Windows."""
     env = Env("bareshell")
     saved = M.WINDOWS
-    st = env.settings(hosts={"local": {"python": [PY]},
+    st = env.settings(hosts={"local": {"python": [PY, "-B"]},
                              "far": {"ssh": "nowhere"}})
     try:
         M.WINDOWS = True
@@ -3068,7 +3068,7 @@ def test_keep_lock():
 
 def dead_child():
     import subprocess
-    c = subprocess.Popen([PY, "-c", "pass"])
+    c = subprocess.Popen([PY, "-B", "-c", "pass"])
     c.wait()
     return c.pid
 

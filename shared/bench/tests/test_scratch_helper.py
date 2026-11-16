@@ -166,7 +166,7 @@ def test_held_briefly(S, work):
     with open(f, "w") as fh:
         fh.write("x")
     holder = subprocess.Popen(
-        [PY, "-c", "import sys, time\nf = open(%r)\nprint('held', flush=True)\n"
+        [PY, "-B", "-c", "import sys, time\nf = open(%r)\nprint('held', flush=True)\n"
                    "time.sleep(1.2)\nf.close()\n" % f],
         stdout=subprocess.PIPE, text=True)
     try:
@@ -223,7 +223,7 @@ def test_state(S, work):
     folder with no owner are told apart; another host's is never finished."""
     parent = os.path.join(work, "st")
     os.makedirs(parent)
-    p = subprocess.Popen([PY, "-c", "pass"])
+    p = subprocess.Popen([PY, "-B", "-c", "pass"])
     p.wait()
 
     def mk(name, **o):
@@ -257,7 +257,7 @@ def test_prune(S, work):
     it leaves live and unowned folders, and a live run's owner file, alone.
     No owner file is left but the live ones'."""
     parent = os.path.join(work, "pr")
-    p = subprocess.Popen([PY, "-c", "pass"])
+    p = subprocess.Popen([PY, "-B", "-c", "pass"])
     p.wait()
     old = S.make(parent, "x")
     plant_git_objects(old)
@@ -296,7 +296,7 @@ def test_keep(S, work):
     prunes it, even once its run has finished; Made.remove_all() leaves it,
     lists it as kept and does not count it as a LEFTOVER."""
     parent = os.path.join(work, "kp")
-    p = subprocess.Popen([PY, "-c", "pass"])
+    p = subprocess.Popen([PY, "-B", "-c", "pass"])
     p.wait()
     m = S.Made()
     kept = m.add(S.make(parent, "k"))

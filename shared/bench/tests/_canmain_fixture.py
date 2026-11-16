@@ -35,6 +35,6 @@ def install(scratch):
         f.write("# made up\n\n- canmain serial: `%s`\n" % SERIAL)
     CM.SYS_ROOT = root
     CM.pnp_ids = lambda: list(PNP_IDS)
-    CM.CANCTL = [sys.executable, "-c", "import sys; sys.exit(9)"]
+    CM.CANCTL = [sys.executable, "-B", "-c", "import sys; sys.exit(9)"]
     return {"probe": "absent", "reason": "made-up bench, no canmain",
             "iface": "canmain", "serial_file": serial_file}

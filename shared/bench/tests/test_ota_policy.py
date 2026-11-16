@@ -209,7 +209,7 @@ def second_failure_stops_the_run():
         Group("g2", [Check("c2", ["-c", "pass"], python=True)], needs_lock=True, image="wican_prod")],
         images=dict(IMAGES), identify=lambda image, ctx, logdir_: board["sha"], flashers={"ota": fl})
     settings = dict(SETTINGS, runs_root=os.path.join(root, "runs"), bench_holder=holder,
-                    hosts={"local": {"python": [sys.executable]}}, pause_poll_s=0.2,
+                    hosts={"local": {"python": [sys.executable, "-B"]}}, pause_poll_s=0.2,
                     canmain_check=dict(CANMAIN))
 
     def go():

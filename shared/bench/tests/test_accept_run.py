@@ -184,7 +184,7 @@ class Run:
             open(os.path.join(flake, "seen"), "w").close()
         self.settings = os.path.join(self.dir, "machine.json")
         with open(self.settings, "w", encoding="utf-8") as f:
-            json.dump(dict(runs_root=self.runs, hosts={"local": {"python": [sys.executable]}},
+            json.dump(dict(runs_root=self.runs, hosts={"local": {"python": [sys.executable, "-B"]}},
                            bench_mac=MAC, flake_dir=flake,
                            bench_holder=os.path.join(self.dir, "bench-holder.md")), f)
         self.said = []
