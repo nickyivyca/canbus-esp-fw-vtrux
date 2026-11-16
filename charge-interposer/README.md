@@ -84,6 +84,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `capture_pins_test.py` | Tests for `capture_pins.py` | Tester |
 | `rebuild_capture_traces.py` | Rebuilds the capture-derived traces against their pins (spec 9.1). Moved from reverse-it (port step 0, reviewer 2026-10-26) | Tester |
 | `bus_gs_usb_test.py` | Test for `bus.open_gs_usb`, the charger segment's adapter, and `bus.open_bus` on canbench's `Adapter` detect results; no hardware; with a `--can-fail` mode | Tester |
+| `bus_alloc_test.py` | Test of run_scenario's use of the chain runner's per-check bus allocation (`VTRUX_BUS_ALLOC`, shared/bench wall-clock slots): each sim on its allocated groups and ports, refused with a board or dongle, end to end with vehicle_sim and charger_sim heard only on the allocated groups; with a `--can-fail` mode (user, 2026-11-16) | Tester |
 | `diag_cadence.py` | Spec 8.2 on the wire: the status-frame cadence and the immediate `0x7F4` | Tester |
 | `diag_cadence_test.py` | Test for `diag_cadence.py`; no hardware | Tester |
 | `bench_suite.py`, `bench_suite_test.py`, `bench_identify.py` | The chain runner's three suites, their test and its identify hook (reviewer, 2026-10-19) | Tester |
