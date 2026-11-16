@@ -520,6 +520,75 @@ def test_shared_pins(A, work):
         "project": "repo", "twai_port": "shared-twai_port"}
 
 
+def test_harness_files(A, work):
+    """A15, A17: the bench suite requires the emulated one (SUITE_REQUIRES,
+    as bench_suite.py says), and harness_files names the emulated suite's
+    harness, listed from the tree's own checkout: what it runs (its
+    definition, run_scenario and the sims, regress, the logic tests, the
+    capture trace rebuild, the host_bridge, host_diff and host_unit folders),
+    what those import and what its shell scripts name outside comments, the
+    pins it runs through (shared_pins.json, pins.json), and shared/bench's
+    chain runner and shared/twai_port from their checkouts; never notes,
+    other suites' tests, the bench drivers, the acceptance runner or this
+    adapter. Another suite has none; a remote tree is refused."""
+    src = open(os.path.join(HERE, "bench_suite.py"), encoding="utf-8").read()
+    assert 'requires="charge-interposer-emulated"' in src and \
+        'name="charge-interposer-emulated"' in src
+    assert A.SUITE_REQUIRES == {"bench": "emulated"}, A.SUITE_REQUIRES
+    head = git(REPO, "rev-parse", "HEAD")
+    proj = os.path.join(work, "repo")
+    subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", REPO, proj], check=True)
+    git(proj, "checkout", "-q", "--detach", head)
+    # a fixture commit in the clone: a from-import in a script the suite
+    # runs, whose module must then be listed
+    with open(os.path.join(proj, "charge-interposer", "zz_from_import.py"), "w",
+              encoding="utf-8", newline="\n") as f:
+        f.write("X = 1\n")
+    with open(os.path.join(proj, "charge-interposer", "run_scenario.py"), "a",
+              encoding="utf-8", newline="\n") as f:
+        f.write("\nfrom zz_from_import import X  # noqa\n")
+    git(proj, "add", "-A")
+    git(proj, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm",
+        "fixture", "--no-verify")
+    shared = {}
+    for c, commit in A.shared_pins(REPO, head).items():
+        d = os.path.join(work, "shared-" + c)
+        subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", REPO, d], check=True)
+        git(d, "checkout", "-q", "--detach", commit)
+        shared[c] = d
+    tree = {"dir": work, "project_dir": proj, "shared_dirs": shared}
+    got = A.harness_files("emulated", tree)
+    assert got == sorted(set(got)), "not sorted or repeated"
+    ci = "charge-interposer/"
+    for p in ("bench_suite.py", "run_scenario.py", "charger_sim.py", "vehicle_sim.py",
+              "interposer_sim.py", "regress.py", "test_machine.py", "test_trips.py",
+              "rebuild_capture_traces.py", "fw_harness/host_diff/check_port.py",
+              "fw_harness/host_bridge/run.sh", "fw_harness/host_bridge/l2_build.sh",
+              "fw_harness/host_diff/make_golden.py", "host_unit/run.sh",
+              "host_unit/test_bridge_health.cpp",
+              "bus.py", "protocol.py", "replay.py", "capture_pins.py",   # imports
+              "zz_from_import.py",                                   # a from-import
+              "scratch_run.sh",                                      # named by a .sh
+              "firmware/shared_pins.json", "pins.json"):
+        assert ci + p in got, ci + p
+    for p in ("shared/bench/vtrux_bench/run/engine.py", "shared/bench/vtrux_bench/__init__.py",
+              "shared/twai_port/test/twai_fake.c"):
+        assert p in got, p
+    for p in (ci + "accept_adapter.py", ci + "sims_test.py", ci + "kvaser_link_test.py",
+              ci + "shared_pin_test.py", ci + "scratch_run_test.py",     # named in comments
+              ci + "bench_drivers/bench_c12.py", ci + "fw_harness/host_bridge/README.md",
+              "shared/bench/vtrux_bench/accept/run.py"):
+        assert p not in got, p
+    assert not [p for p in got if p.endswith(".md")], [p for p in got if p.endswith(".md")]
+    assert A.harness_files("bench", tree) == [] and A.harness_files("harness", tree) == []
+    try:
+        A.harness_files("emulated", dict(tree, remote=True))
+    except A.AdapterError:
+        pass
+    else:
+        raise AssertionError("a remote tree was listed")
+
+
 def test_madhouse_entries(A, work):
     """A8, A15: the checks bench_suite runs on madhouse only are catalogue
     entries tagged "madhouse", each a committed file in this tree with the
@@ -935,7 +1004,7 @@ def test_vport_real(A, work):
 TESTS = [test_identity, test_catalogue, test_list_loads, test_tree_names, test_shells,
          test_settings_tree_vars, test_settings_guard, test_machine_env_user_bus,
          test_idf_shell, test_targets, test_settings_keys, test_suite_settings,
-         test_shared_pins,
+         test_shared_pins, test_harness_files,
          test_madhouse_entries, test_madhouse_refused_when_local, test_tree_setup, test_identifier_scan, test_artifacts_row,
          test_masked_log,
          test_sim_judged, test_run_logs, test_vport_windows, test_vport_real]
@@ -1079,6 +1148,36 @@ MUTANTS = [
      'TREE_VARS = ("INTERPOSER_CODE",)'),
     ("the refusal not naming the host and key", '["hosts.%s.env names %s" % (host, k) for k',
      '["a host env names a tree variable" for k'),
+    # A17: the emulated suite's harness (harness_files)
+    ("another suite required", 'SUITE_REQUIRES = {"bench": "emulated"}',
+     'SUITE_REQUIRES = {"bench": "harness"}'),
+    ("another suite's harness listed", '    if suite != "emulated":\n        return []\n',
+     "    if False:\n        return []\n"),
+    ("a remote tree listed", '    if tree.get("remote"):\n        raise AdapterError("harness_files',
+     '    if False:\n        raise AdapterError("harness_files'),
+    ("files not followed", "        if p in tracked:\n            todo += _refs(root, p, tracked)\n",
+     ""),
+    ("plain imports not followed",
+     '                    out += find(a.name.replace(".", "/") + ".py")\n',
+     "                    pass\n"),
+    ("from-imports not followed",
+     '                out += find(n.module.replace(".", "/") + ".py")\n', "                pass\n"),
+    ("shell scripts not read", '    elif rel.endswith(".sh"):', "    elif False:"),
+    ("shell comments read", '            if not ln.lstrip().startswith("#"):', "            if True:"),
+    ("notes listed", 'if p and not p.endswith(".md")]', "if p]"),
+    ("the acceptance runner listed", '("shared/bench/vtrux_bench/accept/",)', "()"),
+    ("no shared files", "        if d:\n            out |=", "        if False:\n            out |="),
+    ("the pins not listed", "    out |= set(EMULATED_PINS)\n", ""),
+    ("a sim not listed",
+     'EMULATED_SIMS = ("charger_sim.py", "vehicle_sim.py", "interposer_sim.py")',
+     'EMULATED_SIMS = ("charger_sim.py", "vehicle_sim.py")'),
+    ("the logic tests not listed", "    todo += [CI + t for t in BS.LOGIC_PY_TESTS]\n", ""),
+    ("the local scripts not listed",
+     '    todo += [argv[0].replace("{interposer_code}/", CI) for _cid, argv in BS.EMULATED_LOCAL]\n',
+     ""),
+    ("the shell folders not listed",
+     'EMULATED_DIRS = ("fw_harness/host_bridge/", "fw_harness/host_diff/", "host_unit/")',
+     'EMULATED_DIRS = ("fw_harness/host_bridge/", "fw_harness/host_diff/")'),
     ("vport: the same TEST FAULT on both sides counted once",
      '    for side, p in (("a", pa), ("b", pb)):\n        for ln in p["faults"]:',
      '    for side, p in (("a", pa),):\n        for ln in p["faults"]:'),

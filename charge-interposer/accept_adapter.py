@@ -121,6 +121,24 @@ removes only what it makes there (A14).
                      instead of images_dir; a bench suite run must name all
                      three (BENCH_VARIANTS)
 
+  SUITE_REQUIRES,    ACCEPT-SPEC A17 (user, 2026-11-16): the bench suite
+  harness_files      requires the emulated one, and harness_files("emulated",
+                     tree) names the emulated suite's harness, listed from
+                     the tree's checkout (tracked files, no .md): what the
+                     suite runs (EMULATED_ENTRIES, the sims, the logic tests,
+                     the local scripts, the host_bridge, host_diff and
+                     host_unit folders), what those import and what their
+                     shell scripts name outside comments, followed through;
+                     the pins it runs through (shared_pins.json, the chain
+                     runner's version among them, and pins.json, canre and
+                     can-tools); and the chain runner (shared/bench's
+                     vtrux_bench but its accept/) and shared/twai_port from
+                     the tree's checkouts. bench_suite.py's own imports are
+                     in it, so the bench-side modules it loads (bench_identify,
+                     kvaser_link and the rest) count too. No IDF build runs in
+                     the emulated suite (host_bridge builds with the host's
+                     compiler), so no build environment pin is listed. A
+                     local tree only
   tree_setup,        what each fresh tree needs before its checks: the
   tree_installed     pinned canre installed and checked (canre_pin.py), and
                      locally the pinned can-tools canbench/ (can_tools_pin.py),
@@ -231,6 +249,118 @@ def tree_paths(name, tree):
         taken.add(d)
         out[c] = d
     return out
+
+
+# ---- A17: the harness of a suite another requires ----------------------------
+# The bench suite requires a whole emulated run on the same product digest
+# (bench_suite.bench's Suite.requires), so a list may name an earlier
+# record's emulated run instead of running it, when the emulated suite's
+# harness is unchanged: harness_files names its files.
+SUITE_REQUIRES = {"bench": "emulated"}
+CI = "charge-interposer/"
+# what the emulated suite runs (bench_suite.emulated), beside its own
+# definition: the scripts its checks name, the folders its shell checks build
+# and run whole, the sims run_scenario starts by path, and the pins it runs
+# through (the shared components, the chain runner's version among them, and
+# canre and can-tools); then every Python file's imports (at any depth: a
+# function's own import counts) and the .py and .sh a shell script names
+# outside its comments, followed from there (_refs). A Python script started
+# by path is listed here, as the sims are: on 2026-11-16 a scan of the
+# Python strings naming a .py or .sh (docstrings aside, and bench_suite.py's
+# lists of every suite's tests aside) reached no file this list lacks
+# (charge-interposer tester)
+EMULATED_ENTRIES = ("bench_suite.py", "run_scenario.py", "regress.py",
+                    "fw_harness/host_diff/check_port.py")
+EMULATED_DIRS = ("fw_harness/host_bridge/", "fw_harness/host_diff/", "host_unit/")
+EMULATED_SIMS = ("charger_sim.py", "vehicle_sim.py", "interposer_sim.py")
+EMULATED_PINS = (PIN_FILE, CI + "pins.json")
+# the shared files it runs through, read at the tree's commit of each
+# component, so a list's override of a pin counts too: the chain runner
+# (shared/bench's vtrux_bench, not its acceptance runner) and the TWAI port
+# and fake host_bridge builds on (a twai_port checkout also holds the
+# can_port host_bridge compiles, pinned at the same tag, shared_pin.py
+# idf-match; it is not listed, since the core reads shared/can_port/ at a
+# can_port component the trees do not have, and the pins file covers it)
+SHARED_HARNESS = {"bench": ("shared/bench/vtrux_bench/", ("shared/bench/vtrux_bench/accept/",)),
+                  "twai_port": ("shared/twai_port/", ())}
+NAMED = re.compile(r"[\w.-]+\.(?:py|sh)\b")
+
+
+def _tracked(root, sub):
+    import subprocess
+    r = subprocess.run(["git", "-C", root, "ls-files", "-z", "--", sub], capture_output=True)
+    if r.returncode:
+        raise AdapterError("git ls-files %s in %s: %s" % (sub, root, r.stderr.decode(
+            "utf-8", "replace").strip()))
+    return [p for p in r.stdout.decode("utf-8").split("\0") if p and not p.endswith(".md")]
+
+
+def _refs(root, rel, tracked):
+    """The tracked files rel uses (see EMULATED_ENTRIES' comment), as
+    repo-relative paths: a name is looked for in charge-interposer/, where
+    every script the suite runs puts its imports (a file beside one in a
+    folder of EMULATED_DIRS is listed with its folder)."""
+    import ast
+    import posixpath
+
+    def find(name):
+        p = posixpath.normpath(CI + name)
+        return [p] if p in tracked else []
+    with open(os.path.join(root, *rel.split("/")), encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    out = []
+    if rel.endswith(".py"):
+        try:
+            tree = ast.parse(text)
+        except SyntaxError as e:
+            raise AdapterError("harness_files: %s does not parse: %s" % (rel, e))
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                for a in n.names:
+                    out += find(a.name.replace(".", "/") + ".py")
+            elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+                out += find(n.module.replace(".", "/") + ".py")
+                for a in n.names:
+                    out += find("%s/%s.py" % (n.module.replace(".", "/"), a.name))
+    elif rel.endswith(".sh"):
+        for ln in text.splitlines():
+            if not ln.lstrip().startswith("#"):
+                for m in NAMED.findall(ln):
+                    out += find(posixpath.basename(m))
+    return out
+
+
+def harness_files(suite, tree):
+    """The repo-relative files of the harness the suite runs (A15, A17), for
+    a suite another requires; [] for any other. Listed from this tree's own
+    checkout (its tracked files, never notes: .md), so the core reads the
+    same list in this tree and in the earlier run's. A local tree only."""
+    if suite != "emulated":
+        return []
+    if tree.get("remote"):
+        raise AdapterError("harness_files lists a local tree only; tree %s is on a remote "
+                           "host" % tree.get("dir"))
+    import bench_suite as BS
+    root = tree["project_dir"]
+    tracked = set(_tracked(root, CI))
+    todo = [CI + p for p in EMULATED_ENTRIES + EMULATED_SIMS]
+    todo += [CI + t for t in BS.LOGIC_PY_TESTS]
+    todo += [argv[0].replace("{interposer_code}/", CI) for _cid, argv in BS.EMULATED_LOCAL]
+    todo += sorted(p for p in tracked if p.startswith(tuple(CI + d for d in EMULATED_DIRS)))
+    out = set()
+    while todo:
+        p = todo.pop()
+        if p in out:
+            continue
+        out.add(p)               # a named file this tree lacks stays listed: it differs
+        if p in tracked:
+            todo += _refs(root, p, tracked)
+    out |= set(EMULATED_PINS)
+    for comp, (sub, skip) in SHARED_HARNESS.items():
+        d = (tree.get("shared_dirs") or {}).get(comp)
+        if d:
+            out |= {p for p in _tracked(d, sub) if not p.startswith(skip)}
+    return sorted(out)
 
 
 def _code(tree):
