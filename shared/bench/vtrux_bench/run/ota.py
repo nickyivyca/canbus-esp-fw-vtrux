@@ -16,7 +16,9 @@ The three Changes:
   O3   the image's app_elf_sha256 must equal Image.expect, byte 0 must be
        0xE9, and a pinned image's size, sha256 and md5 must equal its pin;
        otherwise it refuses and nothing is sent (check_image()).
-  O4a  the Wi-Fi is wifi.py's: one module, netsh on Windows, nmcli on Linux.
+  O4a  the Wi-Fi is wifi.py's: one module, netsh on Windows, nmcli on Linux,
+       or a phone over adb when the settings choose it (ota_settings,
+       wifi_backend).
   O7   an armed WiCAN is disarmed only under the caller's hold of the bench
        (disarm_if_held()); without one it is refused, as before.
 
@@ -48,8 +50,18 @@ Settings, "ota" (machine-local, never committed):
                   ssid_env naming a variable that is unset or empty. The SSID
                   is replaced by <WICAN_SSID> in every console line, record
                   and result this writes.
+    wifi          "system" (default): the host's own adapter, netsh or nmcli by
+                  the host's system; "adb": a rooted phone on USB whose Wi-Fi
+                  joins the hotspot (wifi.AdbPhone). With "adb", iface is the
+                  phone's Wi-Fi interface (wlan0), profile the saved network's
+                  id on the phone, and these two are read:
+    adb_serial    the phone's adb serial (required with "adb"; masked in
+                  every message)
+    adb           the adb command (default "adb")
     capture       the optional Wi-Fi capture (ota_wire.py); default true
-    capture_iface the capture interface's name in `dumpcap -D` (default iface)
+    capture_iface the capture interface's name in `dumpcap -D` (default iface;
+                  with "adb", the host's RNDIS link, whose capture is of the
+                  PC's side of the exchange, not the air)
     echo          print each upload's console as it goes (the command line's)
 
 The policies (O11), named by params["retry"]:
@@ -97,6 +109,7 @@ from . import wifi
 from .wican_http import MODES, http, have_external_route, gi_status, set_mode
 
 DEFAULT_HOST = "192.168.80.1"
+WIFI_KINDS = ("system", "adb")      # settings.ota.wifi (O4a): the host's own adapter, or the phone
 SSID_MASK = "<WICAN_SSID>"
 ESP_IMAGE_MAGIC = 0xE9
 
@@ -913,10 +926,28 @@ def ota_settings(settings):
     if not ssid:
         return None, ("the environment variable %s, named by settings.ota.ssid_env, is unset or "
                       "empty" % s["ssid_env"])
-    return {"host": s.get("host") or DEFAULT_HOST, "iface": s["iface"], "profile": s["profile"],
+    kind = s.get("wifi") or "system"
+    if kind not in WIFI_KINDS:
+        return None, "settings.ota.wifi is %r, not one of %s" % (kind, ", ".join(WIFI_KINDS))
+    phone = None
+    if kind == "adb":
+        if not s.get("adb_serial"):
+            return None, "settings.ota.wifi is \"adb\" but there is no adb_serial"
+        if not re.match(r"^\d+$", str(s["profile"])):
+            return None, "settings.ota.wifi is \"adb\": the profile must be the phone's saved network id"
+        phone = {"serial": s["adb_serial"], "adb": s.get("adb") or "adb"}
+    return {"host": s.get("host") or DEFAULT_HOST, "iface": s["iface"], "profile": str(s["profile"]),
             "ssid": ssid, "capture": s.get("capture", True) is not False,
             "capture_iface": s.get("capture_iface") or s["iface"],
-            "echo": bool(s.get("echo"))}, None
+            "echo": bool(s.get("echo")), "wifi": kind, "phone": phone}, None
+
+
+def wifi_backend(cfg):
+    """The Wi-Fi backend the settings chose (O4a): None for the host system's,
+    else the phone over adb."""
+    if cfg["wifi"] == "adb":
+        return wifi.adb_phone(cfg["phone"]["serial"], cfg["host"], cfg["phone"]["adb"])
+    return None
 
 
 def none_recoverable(res):
@@ -1024,6 +1055,7 @@ def make_flasher(identify=None, images=None):
         want[image.name] = (image.expect, pin_of(params))
         call.clear()
         call.update(cfg=cfg, hold=hold, want=want)
+        wifi.choose(wifi_backend(cfg))
         try:
             out = (none if policy == "none" else ota)(image, params, settings, logdir)
         except Stopped as e:
@@ -1031,6 +1063,7 @@ def make_flasher(identify=None, images=None):
                        detail="%s: stopped, the device not shown disarmed (O7)" % e.detail)
         finally:
             call.clear()
+            wifi.choose(None)
         out["detail"] = mask(out.get("detail"), cfg["ssid"])
         return out
 

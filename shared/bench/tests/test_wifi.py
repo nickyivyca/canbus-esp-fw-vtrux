@@ -8,7 +8,12 @@ WiCAN_test_000000, locally administered MACs and BSSIDs (02:00:00:...), a
 GUID of zeros, profile and interface names of our own. The netsh fixtures
 have the layout of `netsh wlan show interfaces` on Windows 10; the nmcli ones
 the documented terse (-t) formats of `nmcli -t -f GENERAL.STATE device show`
-and `nmcli -t -f ACTIVE,SSID device wifi list`.
+and `nmcli -t -f ACTIVE,SSID device wifi list`. The phone's (AdbPhone) have
+the layouts the OnePlus 3T's LineageOS 18.1 printed on madhouse-debian on
+2026-11-16 (`cmd wifi status`, `ip -4 -o addr`, `service call` replies, adb's
+errors) and NetworkManager 1.52's `nmcli -g DHCP4.OPTION` and `ip route get`,
+with every value made up (RFC 5737 addresses, a made-up serial); the RNDIS
+link lookup reads a made-up sysfs tree in the run's scratch folder.
 
     py -3.14 -B shared/bench/tests/test_wifi.py             exit 0 only if every check passes
     py -3.14 -B shared/bench/tests/test_wifi.py --can-fail  the control, then every mutant
@@ -19,6 +24,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 import _ota_mutants                                  # noqa: E402
+import _scratch                                      # noqa: E402
 sys.path.insert(0, _ota_mutants.package_root())
 from vtrux_bench.run import wifi as WF               # noqa: E402
 
@@ -111,6 +117,221 @@ class Runner:
 
 def nm_state(code, text):
     return (0, "GENERAL.STATE:%d (%s)\n" % (code, text))
+
+
+# ---- the phone over adb: made-up values in the layouts the 3T's LineageOS 18.1 prints --------
+
+SERIAL = "0123abcd"                 # made up
+ADB = "/opt/made-up/adb"
+BUILD = "18.1-20210705-NIGHTLY-oneplus3"
+HOST = "192.0.2.1"                  # RFC 5737, as the other tests use
+LINK = "enx020000000001"
+PHONE = "198.51.100.13"
+CALL = "su -c 'service call wifi 91 i32 0 i32 79 null null i32 0'"
+READ = "cmd wifi status; echo @@ip@@; ip -4 -o addr show wlan0"
+
+
+def phone_status(ssid=None, sup=None, ip=True, enabled=True):
+    """`cmd wifi status`, the mark, then `ip -4 -o addr show wlan0`."""
+    if not enabled:
+        lines = ["Wifi is disabled", "Wifi scanning is only available when wifi is enabled"]
+    else:
+        lines = ["Wifi is enabled", "Wifi scanning is only available when wifi is enabled"]
+        if ssid is None and sup is None:
+            lines.append("Wifi is not connected")
+        else:
+            lines += ['Wifi is connected to "%s"' % ssid,
+                      "WifiInfo: SSID: %s, BSSID: 02:00:00:00:01:00, MAC: 02:00:00:00:00:00, Supplicant "
+                      "state: %s, Wi-Fi standard: 4, RSSI: -41, Link speed: 72Mbps, Frequency: 2437MHz, "
+                      "Net ID: 79, Metered hint: false, score: 60" % (ssid, sup),
+                      "successfulTxPackets: 12", "successfulTxPacketsPerSecond: 0.5"]
+    ipout = ("28: wlan0    inet 192.168.80.2/24 brd 192.168.80.255 scope global wlan0\\       "
+             "valid_lft forever preferred_lft forever\n") if ip else ""
+    return (0, "\n".join(lines) + "\n@@ip@@\n" + ipout)
+
+
+def route_out(dev, via=None):
+    return (0, "%s %sdev %s src 192.0.2.180 uid 1000 \n    cache \n" % (HOST, "via %s " % via if via else "", dev))
+
+
+DHCP = (0, "requested_broadcast_address = 1 | requested_routers = 1 | routers = %s | subnet_mask = "
+           "255.255.255.0 | ip_address = 198.51.100.180\n" % PHONE)
+
+
+class PhoneRunner(Runner):
+    """Runner's answers for the phone backend's commands, by kind."""
+
+    def kind(self, argv):
+        if argv[0] == ADB:
+            cmd = argv[-1]
+            if cmd.startswith("getprop"):
+                return "build"
+            if cmd.startswith("su -c"):
+                return "call"
+            return "status"
+        if argv[:3] == ["nmcli", "-g", "DHCP4.OPTION"]:
+            return "dhcp"
+        if argv[:3] == ["nmcli", "device", "modify"]:
+            return "modify"
+        if argv[:3] == ["ip", "route", "get"]:
+            return "route"
+        return "other"
+
+
+def phone(answers, clk=None, link=LINK):
+    base = {"build": (0, BUILD + "\n"), "call": (0, "Result: Parcel(NULL)\n"), "dhcp": DHCP,
+            "modify": (0, "Connection successfully reapplied to device '%s'.\n" % LINK),
+            "route": route_out(LINK, PHONE), "status": phone_status(SSID, "COMPLETED")}
+    base.update(answers)
+    r = PhoneRunner(base, clk)
+    clk = clk or Clock()
+    be = WF.AdbPhone(SERIAL, HOST, ADB, run=r, link=lambda: link, now=clk.now, sleep=clk.sleep)
+    return be, r, clk
+
+
+def guarded(fn, *a, **kw):
+    """fn's (ok, why), or (None, "raised ...") when the code under test raises,
+    so a crash fails the checks that read it (a mutant is killed by a FAIL line)."""
+    try:
+        return fn(*a, **kw)
+    except Exception as e:      # noqa: BLE001
+        return None, "raised %r" % e
+
+
+def adb_phone():
+    # -- reading
+    be, r, _ = phone({})
+    check("adb: COMPLETED, on the SSID, with an address is on it", lambda: WF.on_ssid("wlan0", SSID, be) is True
+          and WF.current("wlan0", be) == (SSID, "connected"), WF.current("wlan0", be))
+    check("adb: the read is one shell call on the named phone, status then the address",
+          lambda: r.calls[0][0] == [ADB, "-s", SERIAL, "shell", READ], r.calls[:1])
+    be, r, _ = phone({"status": phone_status(OTHER, "COMPLETED")})
+    check("adb: connected to another SSID is NOT on it", lambda: WF.on_ssid("wlan0", SSID, be) is False
+          and WF.current("wlan0", be)[0] == OTHER)
+    be, r, _ = phone({"status": phone_status(SSID, "COMPLETED", ip=False)})
+    check("adb: COMPLETED with no address yet is NOT on it (A1: the address comes about 1 s later)",
+          lambda: WF.on_ssid("wlan0", SSID, be) is False and WF.current("wlan0", be) == (SSID, "no address yet"),
+          WF.current("wlan0", be))
+    be, r, _ = phone({"status": phone_status(SSID, "ASSOCIATING", ip=False)})
+    check("adb: associating is NOT on it", lambda: WF.on_ssid("wlan0", SSID, be) is False
+          and WF.current("wlan0", be)[1] == "associating", WF.current("wlan0", be))
+    be, r, _ = phone({"status": phone_status(ip=False)})
+    check("adb: not connected has no SSID", lambda: WF.current("wlan0", be) == (None, "not connected"),
+          WF.current("wlan0", be))
+    be, r, _ = phone({"status": phone_status(ip=False, enabled=False)})
+    check("adb: Wi-Fi off is said so", lambda: WF.current("wlan0", be) == (None, "wifi disabled"),
+          WF.current("wlan0", be))
+    be, r, _ = phone({"status": (1, "adb: device '%s' not found\n" % SERIAL)})
+    check("adb: a failed read is no network", lambda: WF.current("wlan0", be) == (None, None)
+          and not WF.on_ssid("wlan0", SSID, be), WF.current("wlan0", be))
+    be, r, _ = phone({"status": phone_status('odd "quoted" name', "COMPLETED")})
+    check("adb: an SSID holding quotes is read whole", lambda: WF.current("wlan0", be)[0] == 'odd "quoted" name',
+          WF.current("wlan0", be))
+
+    # -- joining
+    clk = Clock()
+    be, r, clk = phone({"status": [phone_status(ip=False)] * 2 + [phone_status(SSID, "COMPLETED")]}, clk)
+    ok, why = guarded(WF.join, "79", "wlan0", SSID, be=be, now=clk.now, sleep=clk.sleep)
+    kinds = [r.kind(c[0]) for c in r.calls]
+    check("adb join: build checked, the phone's address and route read, the saved id selected, then polled until on the SSID",
+          lambda: ok and kinds == ["build", "dhcp", "route", "call", "status", "status", "status"]
+          and r.calls[3][0] == [ADB, "-s", SERIAL, "shell", CALL], (ok, why, kinds))
+    check("adb join: the route already through the phone is not touched", lambda: "modify" not in kinds, kinds)
+    check("adb join: polled every 1 s", lambda: clk.sleeps == [1.0, 1.0], clk.sleeps)
+    check("adb: every command under a 45 s timeout, every adb call naming the phone's serial",
+          lambda: all(t == 45 for _a, t in r.calls)
+          and all(a[1:3] == ["-s", SERIAL] for a, _t in r.calls if a[0] == ADB), r.calls)
+    check("adb join: the serial is in no message", lambda: SERIAL not in why, why)
+
+    clk = Clock()
+    routes = [route_out("eno1", "192.0.2.254")] * 12 + [route_out(LINK, PHONE)]
+    be, r, clk = phone({"route": routes}, clk)
+    ok, why = guarded(WF.join, "79", "wlan0", SSID, be=be, now=clk.now, sleep=clk.sleep)
+    mod = [c[0] for c in r.calls if r.kind(c[0]) == "modify"]
+    check("adb join: no route through the phone: the phone's DHCP address read, the route added at runtime, "
+          "read back every 0.2 s until it is on the link",
+          lambda: ok and mod == [["nmcli", "device", "modify", LINK, "+ipv4.routes", "%s/32 %s" % (HOST, PHONE)]]
+          and [c[0] for c in r.calls if r.kind(c[0]) == "dhcp"] == [["nmcli", "-g", "DHCP4.OPTION", "device",
+                                                                       "show", LINK]]
+          and clk.sleeps[:11] == [0.2] * 11, (ok, why, mod, clk.sleeps[:12]))
+    check("adb join: the route waited for (about 2.5 s here, within its 5 s)",
+          lambda: [r.kind(c[0]) for c in r.calls].index("call") > [r.kind(c[0]) for c in r.calls].index("modify"),
+          [r.kind(c[0]) for c in r.calls])
+    clk = Clock()
+    be, r, clk = phone({"route": route_out("eno1", "192.0.2.254")}, clk)
+    ok, why = guarded(WF.join, "79", "wlan0", SSID, be=be, now=clk.now, sleep=clk.sleep)
+    check("adb join: a route that never moves to the link fails at 5 s, and the phone is not asked",
+          lambda: not ok and "within 5 s" in why and "call" not in [r.kind(c[0]) for c in r.calls]
+          and 4.9 <= clk.t - 1000.0 <= 7.0, (why, clk.t - 1000.0))
+    for label, ans, link, want in (
+            ("no RNDIS link", {}, None, "no RNDIS link"),
+            ("no DHCP router on the link", {"dhcp": (0, "requested_routers = 1\n")}, LINK, "no DHCP router"),
+            ("the route not added", {"route": route_out("eno1", "192.0.2.254"),
+                                     "modify": (10, "Error: Device 'x' not found.\n")}, LINK,
+             "nmcli device modify failed"),
+            ("an unknown build", {"build": (0, "18.1-20220101-NIGHTLY-oneplus3\n")}, LINK,
+             "no known connect transaction"),
+            ("the phone not reachable", {"build": (1, "adb: device '%s' not found\n" % SERIAL)}, LINK,
+             "not reachable"),
+            ("root denied", {"call": (1, "Permission denied\n")}, LINK, "connect call failed"),
+            ("su missing", {"call": (0, "/system/bin/sh: su: inaccessible or not found\n")}, LINK,
+             "connect call failed"),
+            ("an error reply", {"call": (0, 'Result: Parcel(Error: 0xffffffffffffffb6 "Not a data message")\n')},
+             LINK, "connect call failed")):
+        clk = Clock()
+        be, r, clk = phone(ans, clk, link=link)
+        ok, why = guarded(WF.join, "79", "wlan0", SSID, be=be, now=clk.now, sleep=clk.sleep)
+        check("adb join: %s fails, explicitly, and nothing is polled" % label,
+              lambda: not ok and want in why and "status" not in [r.kind(c[0]) for c in r.calls]
+              and SERIAL not in why, (why, [r.kind(c[0]) for c in r.calls]))
+    be, r, clk = phone({"build": (0, BUILD + "x\n")})
+    ok, why = guarded(WF.join, "79", "wlan0", SSID, be=be, now=clk.now, sleep=clk.sleep)
+    check("adb join: an unknown build touches neither the route nor the phone's Wi-Fi",
+          lambda: not ok and [r.kind(c[0]) for c in r.calls] == ["build"], [r.kind(c[0]) for c in r.calls])
+    be, r, clk = phone({})
+    ok, why = guarded(WF.join, "wican-hotspot-test", "wlan0", SSID, be=be, now=clk.now, sleep=clk.sleep)
+    check("adb join: a profile that is not a saved network's id is refused before any command",
+          lambda: not ok and "not a saved network" in why and not r.calls, (why, r.calls))
+    clk = Clock()
+    be, r, clk = phone({"status": phone_status(OTHER, "COMPLETED")}, clk)
+    ok, why = guarded(WF.join, "79", "wlan0", SSID, be=be, now=clk.now, sleep=clk.sleep)
+    check("adb join: on another SSID for 40 s is not joined", lambda: not ok and "40 s" in why
+          and 39.0 <= clk.t - 1000.0 <= 42.5, (why, clk.t - 1000.0))
+    clk = Clock()
+    be, r, clk = phone({"status": phone_status(ip=False)}, clk)
+    ok, why = guarded(WF.rejoin, "79", "wlan0", SSID, be=be, now=clk.now, sleep=clk.sleep)
+    check("adb rejoin: selects the network again (never left to the phone), the watch's 20 s",
+          lambda: not ok and "call" in [r.kind(c[0]) for c in r.calls] and 19.0 <= clk.t - 1000.0 <= 22.5,
+          (why, clk.t - 1000.0))
+
+    # -- the pieces read from the host
+    check("adb: the phone's address is the DHCP router, not requested_routers",
+          lambda: WF.parse_routers(DHCP[1]) == PHONE and WF.parse_routers("requested_routers = 1") is None)
+    root = os.path.join(_scratch.run_dir("wifi_adb"), "net")
+    for name, drv in (("eno1", "e1000e"), (LINK, "rndis_host"), ("lo", None)):
+        os.makedirs(os.path.join(root, name, "device") if drv else os.path.join(root, name))
+        if drv:
+            os.makedirs(os.path.join(root, "drivers", drv), exist_ok=True)
+            os.symlink(os.path.join(root, "drivers", drv), os.path.join(root, name, "device", "driver"))
+    os.makedirs(os.path.join(root, "drivers2"))
+    check("adb: the RNDIS link is the interface whose driver is rndis_host",
+          lambda: WF.rndis_link(root) == LINK, WF.rndis_link(root))
+    check("adb: no such interface is None", lambda: WF.rndis_link(os.path.join(root, "drivers2")) is None
+          and WF.rndis_link(os.path.join(root, "no-such")) is None)
+
+    # -- chosen by the settings
+    try:
+        WF.choose(be)
+        chosen = WF.backend()
+        WF.choose(None)
+        after = WF.backend()
+    finally:
+        WF.choose(None)
+    check("choose(): the chosen backend is used until choose(None)", lambda: chosen is be
+          and not isinstance(after, WF.AdbPhone), (chosen, after))
+    check("adb_phone(): the phone backend with the real runner",
+          lambda: isinstance(WF.adb_phone(SERIAL, HOST, ADB), WF.AdbPhone)
+          and WF.adb_phone(SERIAL, HOST, ADB).run is WF._nm_run and WF.adb_phone(SERIAL, HOST).adb == "adb")
 
 
 def nm_list(*rows):
@@ -228,6 +449,8 @@ def main():
     check("nmcli join: connected to another SSID is not joined, at 40 s", lambda: not ok and "40 s" in why
           and 39.0 <= clk.t - 1000.0 <= 42.5, (why, clk.t - 1000.0))
 
+    adb_phone()
+
     # -- the backend, chosen by the system in one place ------------------------------------
     check("backend: Windows is netsh", lambda: isinstance(WF.backend_for("Windows"), WF.Netsh))
     check("backend: Linux is nmcli", lambda: isinstance(WF.backend_for("Linux"), WF.Nmcli))
@@ -340,6 +563,33 @@ MUTANTS = [(n, WIFI, o, w) for n, o, w in [
     ("standard input left open", "timeout=timeout, stdin=subprocess.DEVNULL,", "timeout=timeout,"),
     ("a missing program raises", "    except (OSError, subprocess.SubprocessError) as e:\n        return -1, str(e)",
      "    except subprocess.SubprocessError as e:\n        return -1, str(e)"),
+    # the phone over adb
+    ("adb: COMPLETED without an address is connected",
+     'connected = sup == "COMPLETED" and has_ip and ssid is not None',
+     'connected = sup == "COMPLETED" and ssid is not None'),
+    ("adb: any build is called with a guessed transaction", "        if tx is None:\n", "        if tx is None and False:\n"),
+    ("adb: the connect reply not checked", 'if rc != 0 or out.strip() != "Result: Parcel(NULL)":', "if rc != 0:"),
+    ("adb: an unreachable phone goes on", '        if rc != 0:\n            return False, "adb: the phone is not reachable',
+     '        if False:\n            return False, "adb: the phone is not reachable'),
+    ("adb: the serial not masked", 'return text.replace(self.serial, "<adb serial>") if self.serial else text',
+     "return text"),
+    ("adb: the phone not named by serial", '[self.adb, "-s", self.serial, "shell", cmd]', '[self.adb, "shell", cmd]'),
+    ("adb: no host route", "        ok, why = self.route()\n", '        ok, why = True, "no route"\n'),
+    ("adb: the added route not read back",
+     "            if parse_route_dev(out) == (link, phone):\n                return True",
+     "            if True:\n                return True"),
+    ("adb: the route waited for 1 s", "ROUTE_WAIT_S = 5.0", "ROUTE_WAIT_S = 1.0"),
+    ("adb: the route read back every 1 s", "ROUTE_POLL_S = 0.2", "ROUTE_POLL_S = 1.0"),
+    ("adb: an existing route on another link taken",
+     '_, out = self.run(["ip", "route", "get", self.host], CMD_TIMEOUT_S)\n        if parse_route_dev(out) == (link, phone):\n',
+     '_, out = self.run(["ip", "route", "get", self.host], CMD_TIMEOUT_S)\n        if True:\n'),
+    ("adb: the saved id not sent", "% (tx, int(profile)))", "% (tx, 0))"),
+    ("adb: a profile name not refused", '        if not re.match(r"^\\d+$", str(profile)):\n',
+     "        if False:\n"),
+    ("adb: the RNDIS link any interface with a driver",
+     'if os.path.exists(drv) and os.path.basename(os.path.realpath(drv)) == "rndis_host":',
+     "if os.path.exists(drv):"),
+    ("the settings' choice ignored", "    if _CHOSEN is not None:\n        return _CHOSEN\n", ""),
 ]]
 
 
