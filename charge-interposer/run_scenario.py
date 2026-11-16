@@ -2059,6 +2059,68 @@ def priority_premise(named_pids):
             % ", ".join(n for n, _p in named_pids))
 
 
+# ---- the chain runner's bus (shared/bench vbus.py, job B, 2026-11-16) ---------
+# A run under shared/bench with settings.bus_alloc gets its own multicast group
+# and port for each virtual segment in VTRUX_BUS_ALLOC
+# ("vehicle=<group>:<port>,charger=...,physics=..."), so up to the host's
+# wallclock_slots sims run side by side, each on its own bus (AGENTS.md "One
+# simulator bench per set of ports"). The sims open them with bus.py, TTL 0 as
+# always. Unset: the groups in bus.py and the ports from the command line.
+BUS_ALLOC_ENV = "VTRUX_BUS_ALLOC"
+BUS_SEGMENTS = ("vehicle", "charger", "physics")      # bench_suite's Check.bus
+
+
+def bus_alloc(environ=None):
+    """{segment: (group, port)} from VTRUX_BUS_ALLOC, or None when it is
+    unset or empty. One that does not give exactly BUS_SEGMENTS, or a group
+    outside 239.0.0.0/8, is refused (SystemExit)."""
+    text = (os.environ if environ is None else environ).get(BUS_ALLOC_ENV, "").strip()
+    if not text:
+        return None
+    out = {}
+    for part in text.split(","):
+        try:
+            seg, rest = part.split("=", 1)
+            group, port = rest.rsplit(":", 1)
+            out[seg.strip()] = (group.strip(), int(port))
+        except ValueError:
+            raise SystemExit("%s=%r: not seg=group:port,..." % (BUS_ALLOC_ENV, text))
+    if sorted(out) != sorted(BUS_SEGMENTS):
+        raise SystemExit("%s names %s, not the segments %s" % (
+            BUS_ALLOC_ENV, ", ".join(sorted(out)), ", ".join(BUS_SEGMENTS)))
+    bad = [g for g, _p in out.values() if not g.startswith("239.0.")]
+    if bad:
+        raise SystemExit("%s: group(s) %s are not 239.0.x.x" % (BUS_ALLOC_ENV, ", ".join(bad)))
+    return out
+
+
+def sim_bus_args(args, alloc):
+    """Each simulator's segment options, {"charger", "interposer", "vehicle":
+    [...]}: the ports, and with an allocation (bus_alloc) its ports and
+    groups in place of the command line's ports and bus.py's groups. An
+    allocation is for the three virtual sims only: with a dongle or a board
+    on a segment it is refused (SystemExit)."""
+    if alloc is None:
+        v, c, p = args.vehicle_port, args.charger_port, args.phys_port
+        groups = None
+    else:
+        if (getattr(args, "external_interposer", False) or getattr(args, "vehicle_transport", None)
+                or getattr(args, "charger_transport", None)):
+            raise SystemExit("%s is for the virtual sims only, not with a board or a dongle"
+                             % BUS_ALLOC_ENV)
+        v, c, p = (alloc[s][1] for s in BUS_SEGMENTS)
+        groups = {s: alloc[s][0] for s in BUS_SEGMENTS}
+    out = {"charger": ["--port", str(c), "--phys-port", str(p)],
+           "interposer": ["--vehicle-port", str(v), "--charger-port", str(c)],
+           "vehicle": ["--port", str(v), "--phys-port", str(p)]}
+    if groups:
+        out["charger"] += ["--channel", groups["charger"], "--phys-channel", groups["physics"]]
+        out["interposer"] += ["--vehicle-channel", groups["vehicle"],
+                              "--charger-channel", groups["charger"]]
+        out["vehicle"] += ["--channel", groups["vehicle"], "--phys-channel", groups["physics"]]
+    return out
+
+
 def run_one(sc, args, outdir):
     veh_log = outdir / ("%s.vehicle.log" % sc.name)
     chg_log = outdir / ("%s.charger.log" % sc.name)
@@ -2085,13 +2147,13 @@ def run_one(sc, args, outdir):
         named.append((name, proc.pid))
         return proc
 
+    seg_args = sim_bus_args(args, getattr(args, "bus_alloc", None))
+
     def start_charger():
         with open(chg_log, "w") as f:
             procs.append(started("charger_sim", subprocess.Popen(
-                [PY, str(HERE / "charger_sim.py"),
-                 "--port", str(args.charger_port),
-                 "--phys-port", str(args.phys_port),
-                 "--sp-log", str(sp_log)]
+                [PY, str(HERE / "charger_sim.py")] + seg_args["charger"]
+                + ["--sp-log", str(sp_log)]
                 + _transport_args(args, "charger")
                 + ts + charger_argv(sc, getattr(args, "fault_at_offset_s", 0.0)),
                 stdout=f, stderr=subprocess.STDOUT, env=env,
@@ -2100,9 +2162,7 @@ def run_one(sc, args, outdir):
     def start_interposer():
         with open(int_log, "w") as f:
             procs.append(started("interposer_sim", subprocess.Popen(
-                [PY, str(HERE / "interposer_sim.py"),
-                 "--vehicle-port", str(args.vehicle_port),
-                 "--charger-port", str(args.charger_port)]
+                [PY, str(HERE / "interposer_sim.py")] + seg_args["interposer"]
                 + ([] if args.no_l1
                    else ["--trace-out", str(trace_path)])
                 + ts + sc.interposer, stdout=f,
@@ -2111,9 +2171,7 @@ def run_one(sc, args, outdir):
     def start_vehicle():
         with open(veh_log, "w") as f:
             return started("vehicle_sim", subprocess.Popen(
-                [PY, str(HERE / "vehicle_sim.py"),
-                 "--port", str(args.vehicle_port),
-                 "--phys-port", str(args.phys_port),
+                [PY, str(HERE / "vehicle_sim.py")] + seg_args["vehicle"] + [
                  # SIMULATED seconds, and only for a human reading the
                  # log -- the assertions below read vehicle_sim's `peaks`
                  # line, not these rows. 60 rather than 1200 so a short
@@ -4273,6 +4331,10 @@ def charger_argv(sc, offset_s=0.0):
 def main():
     ap = build_parser()
     args = ap.parse_args()
+    args.bus_alloc = bus_alloc()
+    if args.bus_alloc:
+        print("bus: %s=%s (the chain runner's, for this run's sims)"
+              % (BUS_ALLOC_ENV, os.environ[BUS_ALLOC_ENV]))
 
     if args.external_interposer and args.time_scale != 1.0:
         # Not a warning. The board's clock is real, so a scaled run silently
