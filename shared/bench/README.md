@@ -28,7 +28,7 @@ it.
 | File | What |
 |---|---|
 | `vtrux_bench/run/model.py` | The suite schema: `Suite`, `Group`, `Check`, `Image`, `KnownFail`, `Result`, `Figure`, `Tol`, the eight verdicts, and `validate`. Start here to write a suite. |
-| `vtrux_bench/run/engine.py` | Executes a suite. Lanes: "bench" (groups that need the bench, in order, then the end pass) in parallel with one "logic:<host>" lane per host. Enforces the rules listed in its docstring. |
+| `vtrux_bench/run/engine.py` | Executes a suite. Lanes: "bench" (groups that need the bench, in order, then the end pass) in parallel with one "logic:<host>" lane per host; within a group, slotted wall-clock checks side by side up to the host's slots (`vbus.py`). Enforces the rules listed in its docstring. |
 | `vtrux_bench/run/flash.py` | The built-in `esptool` flasher: md5 against expectations, the auto-reset check (`chip_id`) before (no flash if it fails), verified write, the check again after; no retry; a failed check forbids any further flash in the run. The port is found first by the board's USB IDs on Linux (`device_port`, `serial_dev.py`; a `port` there refused) and is the COM port setting on Windows, the one place the two differ. Ported from the charge-interposer tester's `flash_custody*.sh`. Its `BUILTIN` also registers `ota` (`ota.py`). |
 | `vtrux_bench/run/ota.py` | The built-in `ota` flasher (FLASH-SPEC O1-O13): one app image into a WiCAN running gen-inhibit's firmware, over its hotspot, through `POST /upload/ota.bin`. gen-inhibit's `bench_flash.py` and its suite's `upload()`/`ota()` at gen-inhibit/main `40ecfa5e` moved: the verdict's code (`classify`, `boots`, `watch`, `upload_and_judge`, `wait_for_device`, `post_ota`, `parse_curl` and the rest) is their source text, copied unchanged, so gen-inhibit's mutant edits apply to it; `flash_once()` is `bench_flash`'s `main()` with `--flash`. The marked changes: the image checked against `Image.expect` and a pinned image's size, sha256 and md5 before anything is sent (O3); the Wi-Fi through `wifi.py` (O4a); an armed WiCAN disarmed as `wican_reboot.py` does only under the caller's hold (O7). The runner gives a flasher whose `takes_hold` is true its own lock check as `hold=` (`Engine.ensure_image`), asked at the moment it would disarm; a direct call has none, and an armed device is refused. Retry policy on the image, `params["retry"]`: `none` (one upload; recoverable when nothing was sent or the verdict left the old image) or `dual-slot` (the suite's `ota()`, through `make_flasher(identify=, images=)` registered in `Suite.flashers`; the built-in alone refuses it). Settings `ota`: `host`, `iface`, `profile`, `ssid_env`, `capture`. The SSID comes only from the environment variable `ssid_env` names (O2): settings with an `ssid` key are refused, nothing sent, as is an unset or empty variable. The SSID is `<WICAN_SSID>` in every console line, record and result. Each upload's console and record go in the log folder. By hand: `python -m vtrux_bench.run.ota`, under a hold the bench lock log shows (`--who`, `--holder-pid`), with a log folder outside any git worktree. |
 | `vtrux_bench/run/wifi.py` | Joining the WiCAN's hotspot without a passphrase (FLASH-SPEC O4, O4a): `join`, `rejoin`, `on_ssid`, `current`, the same on both systems; joined means connected and on the SSID, read back, every 1 s up to 40 s (20 s for a rejoin). Backends `netsh` (Windows) and `nmcli` (Linux, NetworkManager, terse mode), chosen by `platform.system()` in `backend()` alone; every command under 45 s, standard input closed, through an injectable runner. |
@@ -43,6 +43,8 @@ it.
 | `tests/_ota_mutants.py` | The mutant runs of the four `test_ota_*` tests, `test_wifi.py` and `test_wican_http.py`, in gen-inhibit's style: the control first, each mutant one edit that must match exactly once, on a copy of `vtrux_bench` in the run's scratch folder, run in a process of its own; killed only by a FAIL line, never by a crash. |
 | `tests/_canmain_fixture.py` | A canmain check that passes with no hardware, for the tests that start the runner outside `test_run_core.py` (`test_ota_preflight.py`, `test_ota_policy.py`): `install(scratch)` makes `test_run_core.py`'s made-up sysfs tree and Plug and Play listing (one USB root hub, no canmain) under the test's scratch folder, points `vtrux_bench.run.canmain` at them and returns a `canmain_check` setting with probe `absent`. The check runs for real; the runner refuses a run without one (SPEC section 8). |
 | `vtrux_bench/run/lock.py` | Reads the bench lock in reverse-it `firmware/bench-holder.md`, the lock before the cutover (settings with no `bench_lock_log`). The runner never edits it (rule 2: a chained run holds the lock from start to finish; the tester takes it, messages, and releases it). With `bench_lock_log` set the runner uses `bench_lock.py` instead (spec section 6). |
+| `vtrux_bench/run/vbus.py` | Virtual-bus slots for a run's own wall-clock checks (the charge-interposer reviewer's job B, 2026-11-16; desk study B): `allocation` (each slot's own groups and ports from `bus_alloc`), `format_alloc`/`parse_alloc` (`seg=group:port,...`), `bound` (the sockets on given ports, from `ss -H -uanp`) and `Monitor` (joins a check's segments, listens first, records each datagram's sender port while it runs, and attributes it by the token in the environment of every process holding the port; foreign senders, unattributed senders and foreign holders make it VOID). Linux. See "Slots and buses" below. |
+| `tests/test_vbus.py` | Its tests (10) and the engine's slot rules: two slots run a group's three slotted checks two at a time, each on its own bus, none VOID; slot 0's bus as the settings give it; a bound port and a datagram heard before the start each refuse; the can-fail of the monitor (two checks given the same bus at once both VOID); a foreign sender, a foreign holder and an unattributed sender each make a check VOID; the allocation's string and limits; two slots without `bus_alloc` refused. Groups 239.0.200+ and ports from 45000 + 10 x (pid mod 400), every sending socket joined first and TTL 0. A control and one mutant per rule (13: vbus.RULES' eight and the engine's five) under `--can-fail`. Linux only. |
 | `vtrux_bench/run/procs.py` | Commands with timeouts that kill the whole tree; the remote (ssh) line with coreutils `timeout`; placement in a systemd slice (`scope_argv`, `cgroup_slice`; it replaced the build throttle, 2026-11-12) and the process-list scan for wall-clock tests. |
 | `vtrux_bench/run/record.py` | The run folder (never reused), `progress.jsonl`, `record.json` and `index.txt` (exclusive create), and `compare` with per-figure tolerances. |
 | `vtrux_bench/run/cli.py` | The command line. |
@@ -225,11 +227,33 @@ NOT-RUN or slows a build:
   segments, and its timing-sensitive tools are caught by
   `wallclock_patterns`. A hand take still blocks every bench case, which
   needs the run's own lock.
-- The one wait: a wall-clock check waits while another of this run's own
-  wall-clock checks is active on its host (a `wallclock-wait` event), since
-  two would share the simulator bench's groups and ports (AGENTS.md "One
-  simulator bench per set of ports"). `wallclock_poll_s` (default 2) is
-  its poll.
+- The one wait: a wall-clock check waits for a free slot on its host (a
+  `wallclock-wait` event); `wallclock_poll_s` (default 2) is its poll. A
+  host has `hosts.<h>.wallclock_slots` slots (default 1, which is the old
+  rule: one of the run's own wall-clock checks at a time). A check that
+  names no `Check.bus` takes every slot, since it may use a simulator
+  bench on fixed groups and ports (AGENTS.md "One simulator bench per set
+  of ports").
+- **Slots and buses** (the charge-interposer reviewer's job B, 2026-11-16;
+  `vbus.py`; local host only). A wall-clock check that names its
+  virtual-bus segments (`Check.bus`) takes one slot, and with the
+  `bus_alloc` setting gets that slot's own bus: one multicast group and
+  port per segment, given as `{bus_alloc}` and `VTRUX_BUS_ALLOC`
+  (`seg=group:port,...`), with a token `VTRUX_CHECK_TOKEN` for what it
+  starts. Before it starts, a socket already bound to one of its ports, or
+  a datagram heard on its segments over `listen_s`, makes it NOT-RUN
+  "refused". While it runs, its isolation monitor joins its segments and
+  records every datagram's sender port; a sender port is the check's when
+  every process holding a socket on it (but the runner) carries its token.
+  A datagram from any other sender, from one no process was found for, or
+  a socket on its ports held by a process without its token makes its
+  results VOID, the count named; the `isolation` event holds the counts
+  and each segment's rate, for the comparison with a serial run. Within a
+  group, consecutive such checks (not gates, not in a group that needs the
+  lock) run side by side up to the slots. More than one slot needs
+  `bus_alloc`. The suite still opens its buses with TTL 0, and the LAN
+  counters are still read around a run (AGENTS.md "A virtual CAN bus is
+  not automatically local").
 - A "build" check gets every core (`{jobs}`, the host's CPU count). Its
   result says whether a wall-clock test ran alongside it
   (`alongside_wallclock`, `alongside_reason`, from the same sources).
@@ -369,6 +393,16 @@ a change; a registry entry no selected check produced is listed (renamed?).
     wallclock_patterns  regexes over process command lines that mark a
                      wall-clock test running (either project's simulators);
                      recorded, never a refusal
+    hosts.<h>.wallclock_slots  how many of the run's own wall-clock checks
+                     with a Check.bus run at once there (default 1; more
+                     needs bus_alloc; the local host only)
+    bus_alloc        {"group_third": 3, "port_base": 43300, "port_stride": 10,
+                      "listen_s": 1.0, "poll_s": 0.5} (every key optional):
+                     slot k's i-th segment is group 239.0.<group_third+k>.<i+1>
+                     and port port_base + k*port_stride + i; listen_s the
+                     quiet listen before a check starts, poll_s how often
+                     its monitor looks up who holds a sender port. Without
+                     it no bus is allocated and no check is watched
     placement        Linux only: {"slices": {"wallclock": "bench.slice",
                                              "build": "build.slice",
                                              "light": "build.slice",

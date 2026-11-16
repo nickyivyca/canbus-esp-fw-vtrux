@@ -172,6 +172,28 @@ fails when the rule is switched off through RULES):
                   user 2026-11-12). Builds keep every core ({jobs}); a
                   build that ran alongside a wall-clock test says so in its
                   result (alongside_wallclock, alongside_reason)
+  wallclock_slots
+                  up to hosts.<h>.wallclock_slots (default 1) of this run's
+                  own wall-clock checks that name their virtual-bus
+                  segments (Check.bus) run at once on a host, each in its
+                  own slot; one that names none takes every slot (it may
+                  use a bench on fixed ports). More than one slot needs
+                  settings.bus_alloc. Within a group, consecutive such
+                  checks (not a gate, not in a group that needs the lock)
+                  run side by side (slot_concurrency) (the charge-interposer
+                  reviewer's job B, 2026-11-16; vbus.py)
+  bus_alloc     with settings.bus_alloc, a check with Check.bus gets its
+                  slot's own groups and ports (vbus.allocation) as {bus_alloc}
+                  and VTRUX_BUS_ALLOC, and a token as VTRUX_CHECK_TOKEN;
+                  before it starts, a socket already bound to one of its
+                  ports (bus_precheck), or a datagram heard on its segments
+                  over bus_alloc.listen_s (default 1 s), makes it NOT-RUN
+                  "refused" (AGENTS.md "One simulator bench per set of
+                  ports"); while it runs its isolation monitor records each
+                  datagram's sender ("isolation" event, with each segment's
+                  rate), and a datagram from a sender not the check's, or a
+                  socket on its ports held by a process not the check's,
+                  makes its results VOID with the count (isolation_void)
   hand_roles_wallclock
                   under bench_lock_log, a hand take (android, can-tools)
                   is recorded as not a wall-clock test
@@ -266,6 +288,7 @@ from .. import bench_lock as BL
 from . import canmain
 from . import lock as lockmod
 from . import procs
+from . import vbus as VB
 from .flash import BUILTIN as BUILTIN_FLASHERS
 from .model import Check, CheckRun, Result, SuiteError, Verdict, validate
 from .record import (Recorder, compare, load_progress, make_run_id,
@@ -289,7 +312,8 @@ RULES = {k: True for k in (
     "board_hooks",
     "start_hook_stops", "release_line", "end_crash_boards", "carry_finished",
     "carry_check_end", "missing_setting", "record_device",
-    "hand_roles_wallclock")}
+    "hand_roles_wallclock", "wallclock_slots", "slot_concurrency", "bus_alloc",
+    "bus_precheck", "isolation_void")}
 
 # sys.platform, read at each placement; the tests set it
 PLATFORM = sys.platform
@@ -409,6 +433,14 @@ class Engine:
         self.flashers = dict(BUILTIN_FLASHERS)
         self.flashers.update(suite.flashers)
         validate(suite, settings, self.flashers)
+        # the slots and the buses, refused before anything runs (job B)
+        self.settings = settings
+        try:
+            VB.alloc_config(settings)
+        except VB.BusError as e:
+            raise SuiteError(str(e))
+        for h in sorted(settings.get("hosts") or {}):
+            self.slots(h)
         self.runs_root = runs_root or settings.get("runs_root")
         self.run_id_req = run_id
         self.sel_groups = list(groups or [])
@@ -430,6 +462,7 @@ class Engine:
         self.kf = {k.id: k.ref for k in suite.known_fails}
         self._wc_lock = threading.Lock()
         self.active_wallclock = {}
+        self.slot_busy = {}             # host -> set of slot indices in use
         # Per board (Image.board): what it is on, what it last read, whether
         # this run flashed it, and boards whose auto-reset check failed.
         self.board_image = {}
@@ -1088,32 +1121,116 @@ class Engine:
             lines = [a for _p, _pp, a in table if rid not in a]
         return [h[:300] for h in procs.matching(lines, pats)], None
 
-    def _own_wallclock_acquire(self, host):
-        """Wait until none of this run's own wall-clock checks is active on
-        `host`, then count this one in. Two of them would share the
-        simulator bench's groups and ports, which is exclusive (AGENTS.md
-        "One simulator bench per set of ports"): a wait, not a refusal.
-        -> True, or False if STOP came first (nothing counted in)."""
+    def slots(self, host):
+        """The host's wall-clock slots (hosts.<h>.wallclock_slots, default
+        1; rule wallclock_slots). More than one needs settings.bus_alloc,
+        so each slot has a bus of its own."""
+        if not RULES["wallclock_slots"]:
+            return 1
+        n = self.host_cfg(host).get("wallclock_slots", 1)
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            raise SuiteError("hosts.%s.wallclock_slots must be a whole number >= 1, not %r"
+                             % (host, n))
+        if n > 1 and VB.alloc_config(self.settings) is None:
+            raise SuiteError("hosts.%s.wallclock_slots is %d but the settings give no "
+                             "bus_alloc: each slot needs a bus of its own" % (host, n))
+        return n
+
+    def slotted(self, c, host="local"):
+        """A wall-clock check that names its virtual-bus segments, on the
+        runner's own host (where its bus is allocated and watched; a remote
+        host's wall-clock checks stay one at a time)."""
+        return c.cls == "wallclock" and bool(getattr(c, "bus", None)) and host == "local"
+
+    def _side_by_side(self, g, c):
+        """Whether c may start beside the group's other slotted checks:
+        slotted, not a gate, in a group that does not need the lock, on a
+        host with more than one slot (rule slot_concurrency)."""
+        return (RULES["slot_concurrency"] and self.slotted(c, g.host) and not c.gate
+                and not g.needs_lock and self.slots(g.host) > 1)
+
+    def _bus_start(self, g, c, fid, host, taken):
+        """The check's bus (rule bus_alloc): None when it gets none (no
+        Check.bus, a remote host, no settings.bus_alloc); else {slot, alloc,
+        token, monitor}, or {refused: why} when its ports are bound or its
+        segments not quiet before it starts (bus_precheck)."""
+        if not (RULES["bus_alloc"] and self.slotted(c, host)):
+            return None
+        cfg = VB.alloc_config(self.settings)
+        if cfg is None:
+            return None
+        slot = min(taken) if taken else 0
+        try:
+            alloc = VB.allocation(self.settings, slot, list(c.bus))
+        except VB.BusError as e:
+            return {"refused": "refused: no bus for it: %s" % e}
+        ports = [p for _g, p in alloc.values()]
+        if RULES["bus_precheck"]:
+            try:
+                lines = VB.bound(ports)
+            except (VB.BusError, OSError, subprocess.SubprocessError) as e:
+                return {"refused": "refused: its ports cannot be checked: %s" % e}
+            if lines:
+                return {"refused": "refused: a socket is already bound to a port of its "
+                                   "bus %s (AGENTS.md \"One simulator bench per set of "
+                                   "ports\"): %s" % (VB.format_alloc(alloc),
+                                                     " | ".join(lines[:3]))}
+        import uuid
+        token = uuid.uuid4().hex
+        mon = VB.Monitor(alloc, token, poll_s=float(cfg.get("poll_s", 0.5)))
+        try:
+            mon.open()
+        except OSError as e:
+            mon.close()
+            return {"refused": "refused: its segments cannot be joined: %s" % e}
+        heard = mon.listen(float(cfg.get("listen_s", 1.0)))
+        if heard and RULES["bus_precheck"]:
+            mon.close()
+            return {"refused": "refused: %d datagram(s) heard on its bus %s before it "
+                               "started (AGENTS.md \"One simulator bench per set of "
+                               "ports\")" % (heard, VB.format_alloc(alloc))}
+        mon.start()
+        self.rec.event("bus", check=fid, slot=slot, alloc=VB.format_alloc(alloc))
+        return {"slot": slot, "alloc": alloc, "token": token, "monitor": mon}
+
+    def _own_wallclock_acquire(self, host, c=None):
+        """Wait for a slot on `host` and take it: a check with Check.bus
+        takes the lowest free slot, any other wall-clock check every slot
+        (none of this run's own may be active: two would share a simulator
+        bench's groups and ports, AGENTS.md "One simulator bench per set of
+        ports"). A wait, not a refusal. -> the set of slots taken (its
+        lowest is the check's slot), or None if STOP came first (nothing
+        taken)."""
         poll = float(self.settings.get("wallclock_poll_s", 2))
+        slots = self.slots(host)
+        whole = c is None or not self.slotted(c, host)
         waited = False
         while True:
             with self._wc_lock:
-                n = self.active_wallclock.get(host, 0)
-                if n == 0 or not RULES["own_wallclock_wait"]:
-                    self.active_wallclock[host] = n + 1
-                    return True
+                busy = self.slot_busy.setdefault(host, set())
+                free = [i for i in range(slots) if i not in busy]
+                if whole:
+                    take = set(range(slots)) if not busy else None
+                else:
+                    take = {free[0]} if free else None
+                if take is not None or not RULES["own_wallclock_wait"]:
+                    take = take or set()
+                    busy |= take
+                    self.active_wallclock[host] = self.active_wallclock.get(host, 0) + 1
+                    return take
             if self.stop_text() is not None:
-                return False
+                return None
             if not waited:
                 self.rec.event("wallclock-wait", host=host,
-                               note="another wall-clock check of this run is "
-                                    "active on the host")
+                               note="no free wall-clock slot on the host (%d slot(s))"
+                                    % slots)
                 waited = True
             time.sleep(poll)
 
-    def _own_wallclock_release(self, host):
+    def _own_wallclock_release(self, host, taken=()):
         with self._wc_lock:
             self.active_wallclock[host] -= 1
+            self.slot_busy.setdefault(host, set()).difference_update(taken)
 
     def build_jobs(self, alongside):
         """{jobs} for a build check: every core, whatever runs alongside
@@ -1432,18 +1549,29 @@ class Engine:
             # 2026-11-12): what else may be timing-sensitive is recorded and
             # the check runs. Only this run's own wall-clock checks on the
             # host are waited for (one simulator bench per set of ports).
-            if not self._own_wallclock_acquire(host):
+            # Up to the host's slots of them run at once, each on its own bus
+            # (wallclock_slots, bus_alloc; job B, 2026-11-16).
+            taken = self._own_wallclock_acquire(host, c)
+            if taken is None:
                 self._not_run(g, c, "STOP: %s" % self.stop_text())
                 return False
             others = self.others_on(host, counted=1)    # this check is in
             self.rec.event("wallclock-others", check=fid, host=host, **others)
+        bus = None
         try:
-            return self._run_check_body(g, c, fid, host)
-        finally:
             if c.cls == "wallclock":
-                self._own_wallclock_release(host)
+                bus = self._bus_start(g, c, fid, host, taken)
+                if bus is not None and bus.get("refused"):
+                    self._not_run(g, c, bus["refused"])
+                    return False
+            return self._run_check_body(g, c, fid, host, bus=bus)
+        finally:
+            if bus is not None and bus.get("monitor") is not None:
+                bus["monitor"].close()
+            if c.cls == "wallclock":
+                self._own_wallclock_release(host, taken)
 
-    def _run_check_body(self, g, c, fid, host):
+    def _run_check_body(self, g, c, fid, host, bus=None):
         self.executed_checks.add(fid)
         outdir = os.path.join(self.run_dir, g.name, c.id)
         os.makedirs(outdir)
@@ -1456,6 +1584,8 @@ class Engine:
         slice_ = self.placement_for(g, c)
         ctx = self.base_ctx()
         ctx.update(check_id=c.id, group=g.name, jobs=self.build_jobs(alongside))
+        if bus is not None:
+            ctx["bus_alloc"] = VB.format_alloc(bus["alloc"])
         if host == "local":
             ctx["outdir"] = outdir
         else:
@@ -1487,6 +1617,9 @@ class Engine:
             argv = list(py) + argv
         env = dict(cfg.get("env") or {})
         env.update(c_env)
+        if bus is not None:
+            env[VB.ALLOC_ENV] = VB.format_alloc(bus["alloc"])
+            env[VB.TOKEN_ENV] = bus["token"]
         timeout_s = c.timeout_s if RULES["timeout"] else 10 ** 9
         stop_now = lambda: (self.stop_text() or "").lower().startswith("now")
         t0 = time.monotonic()
@@ -1520,6 +1653,13 @@ class Engine:
                 procs.run_local(cl, cwd, env, 300, log_path)
             else:
                 procs.run_remote(cfg["ssh"], cl, cwd, env, 300, log_path)
+        iso = None
+        if bus is not None:
+            # the isolation monitor's verdict on what the check's segments
+            # carried while it ran (bus_alloc, isolation_void)
+            iso = bus["monitor"].stop()
+            self.rec.event("isolation", check=fid, slot=bus["slot"],
+                           alloc=VB.format_alloc(bus["alloc"]), **iso)
         run = CheckRun(check=c, full_id=fid, rc=rc, timed_out=to,
                        log_path=log_path, outdir=outdir, duration_s=dur,
                        ctx=ctx)
@@ -1560,10 +1700,15 @@ class Engine:
                     v = Verdict.KNOWN_FAIL
                 elif v == Verdict.PASS:
                     extra["known_fail_passed"] = True
+            detail = r.detail
+            if iso and iso["void"] and RULES["isolation_void"]:
+                extra["judged"] = v
+                detail = "isolation: %s; judged %s: %s" % (iso["void"], v, r.detail)
+                v = Verdict.VOID
             if v != Verdict.PASS:
                 all_pass = False
             self.rec.result(
-                id=rid, check=fid, group=g.name, verdict=v, detail=r.detail,
+                id=rid, check=fid, group=g.name, verdict=v, detail=detail,
                 figures={k: vars(f) for k, f in r.figures.items()},
                 tolerances={k: vars(t) for k, t in c.tolerances.items()},
                 rc=rc, duration_s=round(dur, 1), slice=slice_,
@@ -1641,6 +1786,22 @@ class Engine:
                 status = skip_all("placement did not take: %s" % bad)
                 return
             gate_reason = None
+            side, side_err, side_sem = [], [], None
+
+            def run_side(c):
+                try:
+                    self.run_check(g, c, carried)
+                except BaseException as e:          # raised in the lane, below
+                    side_err.append(e)
+                finally:
+                    side_sem.release()
+
+            def join_side():
+                for t in side:
+                    t.join()
+                del side[:]
+                if side_err:
+                    raise side_err[0]
             for c in items:
                 if c.skip and RULES["skip"]:
                     self._not_run(g, c, "skipped: %s" % c.skip)
@@ -1674,9 +1835,32 @@ class Engine:
                         continue
                 else:
                     self.wait_pause()
+                if self._side_by_side(g, c):
+                    # this group's consecutive slotted checks run side by
+                    # side, up to the host's slots (slot_concurrency); the
+                    # next one starts when a place is free, after the same
+                    # gates as above
+                    if side_sem is None:
+                        side_sem = threading.BoundedSemaphore(self.slots(g.host))
+                    got = False
+                    while not got:
+                        got = side_sem.acquire(timeout=2.0)
+                        if not got and self.stop_text() is not None:
+                            break
+                    if not got:
+                        st = self.stop_text()
+                        status = "stopped (%s)" % st
+                        self._not_run(g, c, "STOP: %s" % st)
+                        continue
+                    t = threading.Thread(target=run_side, args=(c,), daemon=True)
+                    t.start()
+                    side.append(t)
+                    continue
+                join_side()
                 passed = self.run_check(g, c, carried)
                 if c.gate and not passed and RULES["gate"]:
                     gate_reason = "gate %s/%s did not PASS" % (g.name, c.id)
+            join_side()
             changed = []
             for name in g.image_list:
                 im = self.suite.images[name]
