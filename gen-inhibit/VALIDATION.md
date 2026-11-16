@@ -347,6 +347,10 @@ has no VCM and no inverter:
   reason. OTA is not the only flash writer: audited 2026-09-26, the HTTP
   handlers `store_config`, `store_canflt`, `store_auto_data`,
   `store_car_data` and `upload_car_data` all write SPIFFS files.
+  **2026-11-16 (user):** the two `car_data` handlers are no longer in
+  gen-inhibit's build: `shared/wican` W7 (user, 2026-11-07) registers them
+  only with AutoPID on, which gen-inhibit leaves off (3.2), so 12.4's row
+  checks that each answers 404 in every mode instead of 403.
 - **Item 4, diag placement.** Changed 2026-09-26 (user). This item
   previously added "and if no inhibit completion has been observed for 1 s
   the normal cadence resumes". **That 1 s fallback is withdrawn**, and the
