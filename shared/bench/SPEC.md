@@ -13,7 +13,8 @@ from the gen-inhibit reviewer's conditions (user, 2026-10-21).
 
 ## 1. What it is
 
-One shared bench (the WiCAN, the X2 and the adapters on the bench host, today
+One shared bench (the WiCAN, the X2, the adapters and the phone that joins the
+WiCAN's hotspot (FLASH-SPEC O4), on the bench host, today
 NICKY-XPS, and madhouse-debian from port plan step 3) and one lock
 on it. The lock's state is the replay of an append-only log,
 `$REVERSE_IT_DIR/firmware/bench-log.jsonl`. `shared/bench/vtrux_bench/bench_lock.py`
@@ -465,3 +466,9 @@ way, the Holder is not its own.
   bench starts a run on it with the runner's `--from-hold`. Drafted by the
   methodology owner; committed by the gen-inhibit reviewer; read by the
   charge-interposer reviewer before merge.
+- **The phone is part of the bench** (user, 2026-11-16, in the CAN replay
+  tooling session, with FLASH-SPEC's phone backend). A take covers it, and
+  a release reports its state, as for everything the holder touched
+  (section 8). Drafted by the CAN replay tooling session; framed by the
+  charge-interposer reviewer, approved by the user in its session; read by
+  the gen-inhibit reviewer before merge.

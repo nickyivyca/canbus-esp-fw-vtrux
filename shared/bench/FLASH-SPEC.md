@@ -12,7 +12,12 @@ flasher (port plan, shared bench toolkit item 2, "flash"), written to run
 on Windows and on Linux for the bench's move to madhouse-debian (port plan
 step 3). The bench
 lock's spec is `SPEC.md` and the acceptance runner's `ACCEPT-SPEC.md`,
-beside this file.
+beside this file. **Revised 2026-11-16** for a phone as a second kind of
+Wi-Fi backend (O2, O4, O4a, O5, O12 and the last paragraph; no rule
+changes): the list of changes approved by the user that day in the CAN
+replay tooling session, which built the backend; the text framed by the
+charge-interposer reviewer and approved by the user in its session; read
+by the gen-inhibit reviewer before merge.
 
 Requirements are numbered O1 to O13. The numbers are stable.
 
@@ -40,8 +45,14 @@ once its rules are shown kept (O13; the gen-inhibit reviewer's condition,
   sha256 and md5. From the suite: its retry policy (O11). From the
   machine's settings: the device's address (default `192.168.80.1`, a WiCAN
   firmware default), the Wi-Fi interface, the name of a saved Wi-Fi profile
-  for the hotspot, and the name of an environment variable that holds the
-  hotspot's SSID. The SSID embeds the WiCAN's MAC, so it is never in the
+  for the hotspot, the name of an environment variable that holds the
+  hotspot's SSID, and which Wi-Fi backend joins it (`wifi`: `system`, the
+  default, the host's own adapter; or `adb`, a phone on the bench host,
+  O4a). With `adb` they also give the phone's adb serial (`adb_serial`,
+  masked in every message) and optionally the adb command (`adb`); the
+  Wi-Fi interface is then the phone's (`wlan0`) and the saved profile is the
+  saved network's id on the phone. Incomplete phone settings are refused,
+  and nothing is sent. The SSID embeds the WiCAN's MAC, so it is never in the
   settings themselves: the chain runner's `record.json` keeps the settings
   a run used. Settings that hold the SSID itself are refused, and nothing
   is sent. The SSID is masked in every log, record and message (user,
@@ -60,31 +71,54 @@ once its rules are shown kept (O13; the gen-inhibit reviewer's condition,
   reads, stores or passes a Wi-Fi passphrase. It brings up the saved profile
   the user made (Windows: `netsh wlan connect name=<profile>
   interface=<iface>`, each `netsh` call under a 45 s timeout; Linux:
-  `nmcli connection up id <profile>`). Joined means the interface is
-  connected **and** on the WiCAN's SSID, read back from the system (`netsh
-  wlan show interfaces`; `nmcli` on the interface), polled every 1 s for up
-  to 40 s.
+  `nmcli connection up id <profile>`; the phone: below). Joined means the
+  interface is connected **and** on the WiCAN's SSID, read back from the
+  system (`netsh wlan show interfaces`; `nmcli` on the interface), polled
+  every 1 s for up to 40 s.
+  - **The phone** (user, 2026-11-16, in the CAN replay tooling session:
+    "always pick network explicitly, always properly wait for it to
+    connect (with an appropriate timeout)"). The flasher first checks that
+    the phone's build is one whose connect transaction number is known, and
+    refuses otherwise. It selects the saved network by its id, as root:
+    `adb -s <serial> shell su -c 'service call wifi <tx> i32 0 i32 <id>
+    null null i32 0'`, whose reply must be `Result: Parcel(NULL)`. Joined
+    means `Supplicant state: COMPLETED` on the WiCAN's SSID (`cmd wifi
+    status`) **and** an IPv4 address on the phone's interface, polled with
+    the same bounds. Every join and every rejoin selects the network
+    explicitly; the phone is never left to rejoin by itself. Missing adb, a
+    wrong or absent device, root denied, an unknown build, a bad reply and a
+    timeout each fail with their reason.
 - **O4a. Linux and Windows the same way** (user, 2026-11-11: the tool is
   built to run on Linux as easily, with the same Wi-Fi joining).
   **Change.** The Wi-Fi handling is one module with the same calls on both
   systems: join the profile, read whether the interface is on the WiCAN's
   SSID, read the network it is on, rejoin. It has a Windows backend
   (`netsh`) and a Linux backend (NetworkManager's `nmcli`), chosen by the
-  host's system, with the same timeouts and results. Nothing else in the
-  flasher branches on the system, and every other step (the checks, the
-  upload, the reads, the verdict) is the same code on both, except stopping
-  the optional capture (O12). Each backend has its own tests, from recorded
-  command output, and can-fails, and the Linux backend is shown on
+  host's system, and a phone backend (O4), which the machine's settings
+  choose instead (O2; user, 2026-11-16, in the CAN replay tooling session:
+  both stay possible, in case a Wi-Fi adapter comes back), all with the
+  same timeouts and results. Nothing else in the flasher branches on the
+  system or the choice, and every other step (the checks, the upload, the
+  reads, the verdict) is the same code on both, except stopping the
+  optional capture (O12). Each backend has its own tests, from recorded
+  command output, and can-fails. The Linux backend is shown on
   madhouse-debian joining and rejoining the real hotspot before port plan
-  step 3's acceptance relies on it.
+  step 3's acceptance relies on it, and the phone backend likewise before
+  anything relies on it.
 - **O5. The second-route preflight, as today.** Before the join, a TCP
   connection to a public resolver (1.1.1.1:53 or 8.8.8.8:53) must succeed
   from a local address outside the hotspot's subnet; after the join, again.
   Whether the path is the same both times is recorded, not required. So
   joining the hotspot never takes the PC's own network away, and the device
-  is never reached through some other route. On Linux the saved profile is
-  made with `ipv4.never-default yes` (the profile's setup, in
-  `tools-reference.md`); the check catches a moved route either way.
+  is never reached through some other route. With the host's own adapter
+  on Linux, the saved profile is made with `ipv4.never-default yes`. With
+  the phone, the host's profile for the phone's RNDIS link is made with
+  `ipv4.never-default yes` and ignores the phone's DNS and routes, and each
+  join adds a runtime host route to the device through the phone (`nmcli
+  device modify <link> +ipv4.routes "<host>/32 <phone>"`, read back with
+  `ip route get`), because the link's name and the phone's address change
+  with each tethering session. The setups are in `tools-reference.md`; the
+  check catches a moved route either way.
 - **O6. The device's state.** The device must answer `GET
   http://<host>/gen_inhibit` with its `elf_sha256` and `uptime_ms`, read
   leniently (trailing bytes tolerated and noted), polled every 2 s for up to
@@ -166,7 +200,7 @@ once its rules are shown kept (O13; the gen-inhibit reviewer's condition,
 ## Where it leaves the PC, and the records
 
 - **O12. As today.**
-  - The PC stays on the hotspot, so the suite's identify and device tests
+  - The PC, or the phone, stays on the hotspot, so the suite's identify and device tests
     can follow, with the network the interface was on before the join
     recorded.
   - During the watch, a failed page read rejoins (20 s) only if the
@@ -182,7 +216,8 @@ once its rules are shown kept (O13; the gen-inhibit reviewer's condition,
     and its summary is printed only when the upload did not end in a 303.
     On Windows it stops by CTRL_BREAK, as today; on Linux by SIGINT. A
     missing tool or capture right (Linux: the `wireshark` group) is noted,
-    not refused.
+    not refused. With the phone, the capture is of the host's RNDIS link:
+    the PC's side of the exchange, not a Wi-Fi air capture.
 
 ## Tests, and what stays where
 
@@ -206,7 +241,11 @@ once its rules are shown kept (O13; the gen-inhibit reviewer's condition,
   suite's identify, such as gen-inhibit's `wican_sha()` (3 tries 3 s apart,
   a join after the first failure, 64 hex) and the interposer's
   `bench_wican` page read. Identify is the suite's, not the flasher's.
-- **The hotspot's Wi-Fi adapter on madhouse-debian** is port plan step 3's
-  (a USB Wi-Fi adapter for the WiCAN's hotspot). This
-  flasher needs one within the WiCAN's range on whichever host runs the
-  bench.
+- **The way onto the hotspot.** The bench host reaches the WiCAN's hotspot
+  through a Wi-Fi adapter within the WiCAN's range or through a phone, as
+  its settings choose (O2, O4a); this spec allows both, and neither is
+  required. **The bench as it is today** (2026-11-16): madhouse-debian has
+  no working Wi-Fi adapter for the hotspot, so its settings choose the
+  phone, the OnePlus 3T of reverse-it's `oneplus3t-bench-endpoint` plan.
+  That is the bench's current state, not a rule, and it changes with the
+  bench's settings when the hardware does.
