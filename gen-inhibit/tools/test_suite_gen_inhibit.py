@@ -389,9 +389,13 @@ def test_ssid(settings, bench, emu):
     home = os.path.expanduser("~").replace("\\", "/")
     check("no argv or cwd carries a local path (they come from the settings)",
           BASE.replace("\\", "/") not in raw.replace("\\\\", "/") and home not in raw.replace("\\\\", "/"))
-    check("every bash check runs bash by the full path in the settings, never a bare bash",
-          all(c.argv[0] == "{bash}" for s in (bench, emu) for g in s.groups for c in g.checks
-              if not c.skip and c.argv[0] != "powershell"), [c.argv[0] for g in bench.groups for c in g.checks][:3])
+    # a python check (C2scan since item 1, 2026-11-16) runs the host's python from the settings
+    check("every check runs bash by the full path in the settings, or the host's python from the settings; "
+          "none runs a bare bash or powershell",
+          all(c.argv[0] == "{bash}" or (c.python and c.argv[0].endswith(".py"))
+              for s in (bench, emu) for g in s.groups for c in g.checks if not c.skip),
+          [(c.id, c.argv[0]) for s in (bench, emu) for g in s.groups for c in g.checks
+           if not c.skip and c.argv[0] != "{bash}"])
     # since 2026-11-12 H and B15host both take it as REMOTE in their env (host_target.sh)
     raw_env = json.dumps([[c.argv, c.cwd, c.env] for s in (bench, emu) for g in s.groups for c in g.checks])
     check("no argv or env names the host H and B15host run on (gi_host_ssh does, as REMOTE in both)",
@@ -1751,6 +1755,22 @@ def test_example(bench, emu, settings):
           and o.get("host") == SG.HOST, o)
     check("the settings example's core is 2026.11.16.5",
           "<core 2026.11.16.5>" in json.dumps(ex.get("hosts")), ex.get("hosts"))
+    # C2scan (item 1, 2026-11-16): c_checks_run.py under the host's python, which exports
+    # ESP-IDF from IDF_PATH and IDF_TOOLS_PATH, so the example's host env names both
+    c2 = [c for g in emu.groups for c in g.checks if c.id == "C2scan"]
+    c2 = c2[0] if c2 else None
+    henv = ((ex.get("hosts") or {}).get("local") or {}).get("env") or {}
+    check("C2scan runs bench/c_checks_run.py under the host's python (no powershell), --clone "
+          "{gi_checks_clone} --components {gi_components} --outdir {outdir}, build class",
+          c2 is not None and c2.python and not c2.skip and c2.cls == "build"
+          and c2.argv[0] == SG.HARNESS + "/c_checks_run.py"
+          and c2.argv[1:] == ["--clone", "{gi_checks_clone}", "--commit", settings["gi_commit"],
+                              "--components", "{gi_components}", "--outdir", "{outdir}"]
+          and not any("powershell" in a or a.endswith(".ps1") for a in c2.argv),
+          c2 and (c2.argv, c2.python, c2.cls))
+    check("the settings example's host env names IDF_PATH and IDF_TOOLS_PATH (C2scan exports ESP-IDF from them)",
+          str(henv.get("IDF_PATH", "")).startswith("<") and str(henv.get("IDF_TOOLS_PATH", "")).startswith("<"),
+          sorted(henv))
     pl = ex.get("placement") or {}
     check("the settings example's placement: bench.slice for lock and wallclock, build.slice for build and light",
           pl.get("slices") == {"lock": "bench.slice", "wallclock": "bench.slice",

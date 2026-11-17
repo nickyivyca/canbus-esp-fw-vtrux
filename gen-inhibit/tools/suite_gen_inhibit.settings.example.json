@@ -8,7 +8,9 @@
   "hosts": {
     "local": {
       "python": ["python3.13", "-B"],
-      "env": {"PYTHONPATH": "<core 2026.11.16.5>/shared/bench:<interposer checkout>/charge-interposer"}
+      "env": {"PYTHONPATH": "<core 2026.11.16.5>/shared/bench:<interposer checkout>/charge-interposer",
+              "IDF_PATH": "<the ESP-IDF v5.4.2 tree: C2scan's c_checks_run.py exports it>",
+              "IDF_TOOLS_PATH": "<that install's tools folder>"}
     }
   },
   "esptool": {"argv": ["<the python of ESP-IDF v5.4.2's python env, whose esptool is 4.13.0>", "-m", "esptool"],

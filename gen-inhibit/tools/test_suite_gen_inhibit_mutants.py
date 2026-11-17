@@ -264,6 +264,12 @@ MUTANTS = [
     ("example: wall-clock checks in build.slice", '"wallclock": "bench.slice"', '"wallclock": "build.slice"', EXAMPLE),
     ("example: no lock slice", '"lock": "bench.slice", ', '', EXAMPLE),
     ("example: light checks in bench.slice", '"light": "build.slice"', '"light": "bench.slice"', EXAMPLE),
+    # C2scan through c_checks_run.py (item 1, 2026-11-16)
+    ("C2scan: the .ps1 again", '"%s/c_checks_run.py" % HARNESS, "--clone"', '"%s/c_checks_run.ps1" % HARNESS, "--clone"'),
+    ("C2scan: not under the host's python", 'python=True, cwd="{reverse_it}", timeout_s=7200, cls="build",',
+     'cwd="{reverse_it}", timeout_s=7200, cls="build",'),
+    ("example: no IDF_TOOLS_PATH for C2scan", ',\n              "IDF_TOOLS_PATH": "<that install\'s tools folder>"', '',
+     EXAMPLE),
 ]
 
 

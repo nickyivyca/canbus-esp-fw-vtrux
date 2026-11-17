@@ -79,10 +79,12 @@ Settings this suite reads, besides the core's (shared/bench/README.md):
     gi_prod_dir      the prod build's build/ folder
     gi_fw            the gen-inhibit worktree (or a folder in it) whose commit the emulated
                      suite builds and tests
-    gi_checks_clone  the project folder whose test/build_checks/ c_checks_run.ps1 runs (the
+    gi_checks_clone  the project folder whose test/build_checks/ c_checks_run.py runs (the
                      tester worktree's gen-inhibit/ from port step 0d, its root before)
-    gi_components    the -Components argument of c_checks_run.ps1: a managed_components
-                     tree its prod build verified (12.3 item 3)
+    gi_components    the --components argument of c_checks_run.py: a managed_components
+                     tree its prod build verified (12.3 item 3). C2scan also needs IDF_PATH
+                     and IDF_TOOLS_PATH in hosts.local.env: c_checks_run.py exports
+                     ESP-IDF from them
     gi_host_ssh      the ssh host part H and B15host run on (madhouse-debian, user, 2026-10-22);
                      when it names the host the suite runs on, both run there without ssh
                      (host_target.sh's local mode, 2026-11-12)
@@ -942,10 +944,11 @@ def emulated(settings):
                   env={"REMOTE": "{gi_host_ssh}"}, outputs=["B15_diag_decode_check_host_%s.txt" % C], judge=judged("B15host")),
         ]),
         Group("build_checks", checks=[
-            Check(id="C2scan", argv=["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                                         "%s/c_checks_run.ps1" % HARNESS, "-Clone", "{gi_checks_clone}", "-Commit", C,
-                                         "-Components", "{gi_components}", "-OutDir", "{outdir}"],
-                  cwd="{reverse_it}", timeout_s=7200, cls="build",
+            # c_checks_run.py exports ESP-IDF itself from IDF_PATH and IDF_TOOLS_PATH (the
+            # settings' hosts.local.env), as c_checks_run.ps1 did (item 1, 2026-11-16)
+            Check(id="C2scan", argv=["%s/c_checks_run.py" % HARNESS, "--clone", "{gi_checks_clone}", "--commit", C,
+                                     "--components", "{gi_components}", "--outdir", "{outdir}"],
+                  python=True, cwd="{reverse_it}", timeout_s=7200, cls="build",
                   outputs=["scan_scope_check_%s.txt" % C],
                   judge=judged("C2scan")),
             Check(id="C1C7", argv=["true"], skip="its command (tester_rows_on_images.py over the built images) is not yet in the suite"),
