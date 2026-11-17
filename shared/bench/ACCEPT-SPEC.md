@@ -11,7 +11,7 @@ and the other project's reviewer reads it before it merges into
 with both reviewers' answers to its questions. The bench lock's spec is
 `SPEC.md`, beside this file.
 
-Requirements are numbered A1 to A17. The numbers are stable.
+Requirements are numbered A1 to A18. The numbers are stable.
 
 ## What it is
 
@@ -122,6 +122,45 @@ Requirements are numbered A1 to A17. The numbers are stable.
   requirement and the list's comparisons read it where it is, and nothing
   is copied into, or written in, the closed record. A change to the product
   or to that suite's harness runs it again.
+- **A18. One hold from the first bench part to the last** (user,
+  2026-11-17, relayed by the charge-interposer tester). An acceptance's bench
+  parts are its items that take the bench lock: each suite run whose
+  nested run needs the bench, and any flasher run or hand item (A9). Once
+  the first starts, the bench is not free until the last has ended, so a
+  waiter cannot take it partway through the run, and no session has to be
+  asked to keep off it.
+  - **At the first bench part** the runner waits for the bench as `wait`
+    does (SPEC.md section 3), under its own PID: it queues a request and,
+    when the lock is free and its request is the oldest live one, takes it
+    for its role with no run, in the same locked step. That take is the
+    acceptance's hold (SPEC.md section 6). Everything before the first
+    part (builds, emulated-time and harness suites) runs without the lock.
+    It waits with no timeout. A `STOP`, or the runner's exit, withdraws the
+    request, and the bench parts are NOT-RUN, `bench not taken`. If the
+    log refuses the request (for example, its role already has a live
+    request queued), the bench parts are NOT-RUN with the refusal.
+  - **Between parts** the hold passes as it does from a session's hold
+    (SPEC.md section 6): each bench part starts from the hold
+    (`--from-hold`), and every one but the last hands the lock back to it
+    at its end (`--keep-lock`). The last releases the bench at its end,
+    with its own board reads, as any run's end does. Which part is last is
+    decided before the chain, from each one's own answer; one that cannot
+    be told counts as needing the bench.
+  - **If the run ends some other way while the hold is its own** (a part
+    lost the lock, stopped, or did not take over the hold, or the run was
+    stopped between parts), the runner releases the hold before it closes
+    the record (A13). The release carries each board's read from the last
+    part's end, or `not read: <why>`. The remaining bench parts are
+    NOT-RUN.
+  - **A bench part's pause** (`free_paused`, SPEC.md section 6) frees the
+    bench as any pause does: a pause is the operator's choice to let others
+    on. The bench part resumes under its own take, and the hold passes on
+    from its end as above.
+  - **With `--from-hold PID`**, the session's hold is the acceptance's
+    hold from the start, under that PID. The runner does not queue, and the
+    hold passes between parts the same way.
+  - The record names the request, the take that ended the wait, and every
+    hand-over and release, with their times.
 
 ## The record and cleanup
 
