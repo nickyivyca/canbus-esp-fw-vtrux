@@ -5,7 +5,8 @@
 # B19 absent and the prod page (prod) -- then _man back. The same runs as on c65c45e. Gen-inhibit tester,
 # 2026-10-16 (run by hand before; this records them).
 #
-#   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... bash baseline_b_otagroup.sh <worktree> <prod build dir> [step ...]
+#   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... GI_WICAN_POWER=<how the WiCAN is powered> \
+#     bash baseline_b_otagroup.sh <worktree> <prod build dir> [step ...]
 #   steps: rt txabort abortwin rxq rxq_page prod man   (default: all, in that order)
 #   rxq_page (2026-10-25, reviewer): B17b on the board already on rxq, --other man. With reproducible
 #   builds (step 0b) a second clean build (_man2, the old step) is byte-identical to _man, so the
@@ -26,7 +27,9 @@ C=${GI_COMMIT:?set GI_COMMIT}
 D=${GI_OUT:-$DATA/runs/baseline_$C/bench}   # GI_OUT: the chain runner's check folder (2026-10-18)
 mkdir -p "$D"
 STEPS=${*:-rt txabort abortwin rxq rxq_page prod man}
-PWR="12 V on OBD pin 16, USB unplugged (no WiCAN console); X2 756d6714 not held"
+# The WiCAN's power as given (gen-inhibit reviewer, 2026-11-16), not a fixed "USB unplugged".
+[ -n "${GI_WICAN_POWER:-}" ] || { echo "baseline_b_otagroup.sh needs GI_WICAN_POWER (how the WiCAN is powered, as read on the bench by a person; 2026-11-16): nothing run"; exit 2; }
+PWR="$GI_WICAN_POWER; no WiCAN console capture; X2 756d6714 not held"
 export MSYS_NO_PATHCONV=1   # restart_error_frames' /path arguments
 ota() {   # ota <label> <image>
   # GI_NO_OTA=1 (the chain runner, 2026-10-18): the runner has already put the step's

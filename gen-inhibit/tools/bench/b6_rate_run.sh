@@ -18,6 +18,8 @@ cd "${REVERSE_IT_DIR:?set REVERSE_IT_DIR to the reverse-it root}" || exit 2
 DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative to REVERSE_IT_DIR: runs/ and fixtures
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }
 C=${GI_COMMIT:?set GI_COMMIT}
+# The WiCAN's power as given (gen-inhibit reviewer, 2026-11-16), not a fixed "USB unplugged".
+[ -n "${GI_WICAN_POWER:-}" ] || { echo "b6_rate_run.sh needs GI_WICAN_POWER (how the WiCAN is powered, as read on the bench by a person; 2026-11-16): nothing run"; exit 2; }
 : "${INTERPOSER_CODE:?set INTERPOSER_CODE}"
 export GI_WICAN_SSID=${GI_WICAN_SSID:-$(grep -o 'SoftAP `WiCAN_[0-9a-fA-F]*`' firmware/bench-holder.md | head -1 | grep -o 'WiCAN_[0-9a-fA-F]*')}
 [ -n "$GI_WICAN_SSID" ] || { echo "no WiCAN SSID in firmware/bench-holder.md"; exit 2; }
@@ -29,7 +31,7 @@ export GI_OUT=${GI_OUT:-$DATA/runs/b6_rate_${C}_$stamp}
 export GI_RUNS_DIR=$GI_OUT
 case "$GI_RUNS_DIR" in *" "*) echo "GI_RUNS_DIR has a space: $GI_RUNS_DIR"; exit 2;; esac
 mkdir -p "$GI_OUT"
-PW="12 V on OBD pin 16, USB unplugged (no WiCAN console); WiCAN $C _man; X2 jammer a89ece8c (custody)"
+PW="$GI_WICAN_POWER; no WiCAN console capture; WiCAN $C _man; X2 jammer a89ece8c (custody)"
 echo "== $(date +%H:%M:%S) custody -> $GI_OUT"
 bash $A/baseline_b_jam.sh custody || { echo "custody failed: stop (X2 state: see $GI_OUT/x2)"; exit 1; }
 rec=$(ls -t "$GI_RUNS_DIR"/x2_flash_custody_dump_*.json | head -1)

@@ -265,8 +265,11 @@ def test_suites(settings, shas):
     check("bench: x2_slcan writes its own folder's files, the app named", all(
         p.startswith(os.path.join(pdir, "x2_slcan")) for _o, p in xsl.params["files"])
         and xsl.params.get("app") == xsl.params["files"][3], xsl.params)
-    check("bench: the jammer's custody wants the pin's whole x2_app ELF sha256",
-          bench.images["x2_jammer"].params["expect_elf"] == X2_APP_ELF, bench.images["x2_jammer"].params)
+    # the x2_pin move (gen-inhibit reviewer's order, 2026-11-16): the jammer's ESP-IDF port, its
+    # pinnable archive row, written by the row route
+    check("bench: the jammer is archive row ea762c62044cb5c6, variant jammer, and nothing else",
+          bench.images["x2_jammer"].params == {"row": "ea762c62044cb5c6", "variant": "jammer"},
+          bench.images["x2_jammer"].params)
     old = {"x2_app": {"files": [["0x0", "x.bin"]], "md5": {}, "expect": "deadbeef"}}
     e = raises(lambda: SG.bench(dict(settings, x2_images=old)))
     check("bench: the retired x2_images setting refuses the suite (no setting names an X2 identity)",
@@ -352,11 +355,23 @@ def test_suites(settings, shas):
     jdesc = jm[0].env.get("GI_JAMMER", "") if jm else ""
     check("bench: B5_B8 takes the WiCAN's power from the settings", jm and
           jm[0].env.get("GI_WICAN_POWER") == "{gi_wican_power}", jm and jm[0].env)
-    check("bench: B5_B8's jammer is the build the x2-jammer flasher writes",
-          bench.images["x2_jammer"].params["build"] in jdesc and "flash-jammer" in jdesc, jdesc)
-    img = SG.Image("x2_jammer", "x2-jammer", {"build": "0123abcd"}, "jammer:banner", board="x2")
-    check("jammer_desc names the image's build, not a fixed one",
-          "0123abcd" in SG.jammer_desc(img) and SG.JAMMER_MD5 not in SG.jammer_desc(img), SG.jammer_desc(img))
+    # every check that runs a baseline_b_*.sh with a power line gets it too (2026-11-16)
+    pw_checks = [(gg.name, c.id) for gg in bench.groups for c in gg.checks
+                 if any(("baseline_b_hand.sh" in a or "baseline_b_otagroup.sh" in a) for a in c.argv)]
+    no_pw = [(g_, i) for g_, i in pw_checks
+             for c in [next(c for gg in bench.groups if gg.name == g_ for c in gg.checks if c.id == i)]
+             if c.env.get("GI_WICAN_POWER") != "{gi_wican_power}"]
+    check("bench: every baseline_b_hand / baseline_b_otagroup check takes the WiCAN's power from the settings",
+          len(pw_checks) >= 10 and any("otagroup" in a for gg in bench.groups for c in gg.checks for a in c.argv)
+          and no_pw == [], (len(pw_checks), no_pw))
+    check("bench: B5_B8's jammer is the row the x2-jammer flasher writes",
+          "row ea762c62044cb5c6" in jdesc and "variant jammer" in jdesc and "flash-jammer" in jdesc
+          and "a89ece8c" not in jdesc, jdesc)
+    img = SG.Image("x2_jammer", "x2-jammer", {"row": "0123456789abcdef", "variant": "stop_a_only"},
+                   "jammer:banner", board="x2")
+    check("jammer_desc names the image's row and variant, not fixed ones",
+          "row 0123456789abcdef" in SG.jammer_desc(img) and "variant stop_a_only" in SG.jammer_desc(img)
+          and "ea762c62044cb5c6" not in SG.jammer_desc(img), SG.jammer_desc(img))
     s4 = {k: v for k, v in settings.items() if k != "gi_wican_power"}
     check("bench: no gi_wican_power refuses the suite", raises(lambda: SG.bench(s4)) is not None)
 
@@ -1003,14 +1018,17 @@ def test_flashers(settings, bench):
     finally:
         SG._x2_write = saved_write
 
-    def jam(dump_verdict, dump_rc=0, flash_rc=0, records=1, read="756d6714"):
+    def jam(verdict="PASS", verify_rc=0, flash_rc=0, records=1, read="756d6714"):
         def t(tt):
             on(tt, read)
-            files = {("x2_flash_custody_dump_T%d.json" % k): {"verdict": dump_verdict} for k in range(records)}
-            tt.do[("x2_flash_custody.py", "dump")] = lambda a, e: ("", dump_rc, files)
+            files = {("x2_flash_custody_verify-row_T%d.json" % k): {"verdict": verdict} for k in range(records)}
+            tt.do[("x2_flash_custody.py", "verify-row")] = lambda a, e: ("", verify_rc, files)
             tt.do[("x2_flash_custody.py", "flash-jammer")] = lambda a, e: ("", flash_rc, {})
+            tt.do[("x2_flash_custody.py", "dump")] = lambda a, e: (
+                "", 0, {"x2_flash_custody_dump_T.json": {"verdict": "PASS"}})
             r = hooks["x2_jammer"](xj, xj.params, settings, logdir())
-            return r, tt.named("x2_flash_custody.py", "flash-jammer")
+            return (r, tt.named("x2_flash_custody.py", "flash-jammer"), tt.named("x2_flash_custody.py", "verify-row"),
+                    tt.named("x2_flash_custody.py", "dump"))
         return with_tools(t)
     SG._x2_write = lambda *a: {"ok": False, "detail": "MUST NOT WRITE"}
     try:
@@ -1026,12 +1044,12 @@ def test_flashers(settings, bench):
             on(tt, read)
             x2_reads(tt, *after)
             tt.do[("x2_hold.py", "hold")] = lambda a, e: ("hold: TX (GPIO7) not driven\n", 0, {})
-            tt.do[("x2_flash_custody.py", "dump")] = lambda a, e: ("", 0, {"x2_flash_custody_dump_T.json":
-                                                                             {"verdict": "PASS"}})
+            tt.do[("x2_flash_custody.py", "verify-row")] = lambda a, e: (
+                "", 0, {"x2_flash_custody_verify-row_T.json": {"verdict": "PASS"}})
             tt.do[("x2_flash_custody.py", "flash-jammer")] = lambda a, e: ("", 0, {})
             im = xh if flasher == "x2_hold" else xj
             r = hooks[flasher](im, im.params, settings, logdir())
-            return r, tt.named("x2_hold.py", "hold"), tt.named("x2_flash_custody.py", "dump")
+            return r, tt.named("x2_hold.py", "hold"), tt.named("x2_flash_custody.py", "flash-jammer")
         SG._x2_write = write
         try:
             return with_tools(t) + (calls,)
@@ -1039,25 +1057,25 @@ def test_flashers(settings, bench):
             SG._x2_write = saved_write
     for fl in ("x2_hold", "x2_jammer"):
         for read in ("70df3a43", "held:not driven", "slcan:V0101:NF001", None):
-            r, holds, dumps, calls = first(fl, read)
-            step = holds if fl == "x2_hold" else dumps
+            r, holds, jams, calls = first(fl, read)
+            step = holds if fl == "x2_hold" else jams
             check("%s: the X2 read %s, so x2_app is written first (all four pinned files), read back, then the %s"
-                  % (fl, read, "hold" if fl == "x2_hold" else "custody dump"),
+                  % (fl, read, "hold" if fl == "x2_hold" else "jammer row"),
                   r["ok"] and calls == [("x2_app", ["0x0", "0x8000", "0xe000", "0x10000"])] and len(step) == 1
                   and "x2_app written first" in r["detail"], (r, calls, len(step)))
-        r, holds, dumps, calls = first(fl, "756d6714")
+        r, holds, jams, calls = first(fl, "756d6714")
         check("%s: the X2 read on x2_app writes nothing first" % fl,
               r["ok"] and calls == [] and "on x2_app already" in r["detail"], (r, calls))
-        r, holds, dumps, calls = first(fl, "70df3a43", write_result={"ok": False, "phase": "autoreset-before",
+        r, holds, jams, calls = first(fl, "70df3a43", write_result={"ok": False, "phase": "autoreset-before",
                                                                       "detail": "rc 2", "recoverable": False})
         check("%s: a failed x2_app write goes no further, and passes the flash gate's recoverable on" % fl,
-              not r["ok"] and r["recoverable"] is False and holds == [] and dumps == [] and len(calls) == 1, r)
-        r, holds, dumps, calls = first(fl, "70df3a43", after=("70df3a43",))
+              not r["ok"] and r["recoverable"] is False and holds == [] and jams == [] and len(calls) == 1, r)
+        r, holds, jams, calls = first(fl, "70df3a43", after=("70df3a43",))
         check("%s: x2_app written but read back as something else goes no further" % fl,
-              not r["ok"] and holds == [] and dumps == [] and "identify read 70df3a43" in r["detail"], r)
-        r, holds, dumps, calls = first(fl, "70df3a43", after=(SG.IdentifyError("port"),))
+              not r["ok"] and holds == [] and jams == [] and "identify read 70df3a43" in r["detail"], r)
+        r, holds, jams, calls = first(fl, "70df3a43", after=(SG.IdentifyError("port"),))
         check("%s: x2_app written but identify could not look goes no further" % fl,
-              not r["ok"] and holds == [] and dumps == [], r)
+              not r["ok"] and holds == [] and jams == [], r)
 
     # a failed identify leaves no read behind for the flashers to trust
     calls, write = x2_writes(WROTE)
@@ -1077,31 +1095,35 @@ def test_flashers(settings, bench):
     check("x2_hold: after a failed identify, x2_app is written first (the older read is not trusted)",
           r["ok"] and len(calls) == 1, (r, calls))
 
-    def t_elf(tt):
-        on(tt, "756d6714")
-        tt.do[("x2_flash_custody.py", "dump")] = lambda a, e: ("", 1, {})
-        hooks["x2_jammer"](xj, xj.params, settings, logdir())
-        return tt.named("x2_flash_custody.py", "dump")
-    d = with_tools(t_elf)
-    check("x2_jammer: the custody dump wants the pin's whole x2_app ELF sha256",
-          d and d[0][2][d[0][2].index("--expect-elf") + 1] == X2_APP_ELF, d and d[0][2])
 
 
 def _jam_checks(jam):
-    r, fl = jam("PASS")
-    check("x2_jammer: a PASS dump, then the jammer, from that dump's record",
-          r["ok"] and len(fl) == 1 and "x2_flash_custody_dump_T0.json" in fl[0][2][fl[0][2].index("--dump-record") + 1]
-          and SG.JAMMER_MD5 in fl[0][2], (r, fl))
-    r, fl = jam("FAIL")
-    check("x2_jammer: a FAIL dump flashes nothing", not r["ok"] and fl == [], (r, fl))
-    r, fl = jam("PASS", dump_rc=1)
-    check("x2_jammer: a dump exiting non-zero flashes nothing", not r["ok"] and fl == [], (r, fl))
-    r, fl = jam("PASS", records=0)
-    check("x2_jammer: no dump record flashes nothing", not r["ok"] and fl == [], (r, fl))
-    r, fl = jam("PASS", records=2)
-    check("x2_jammer: two dump records (which one?) flashes nothing", not r["ok"] and fl == [], (r, fl))
-    r, fl = jam("PASS", flash_rc=1)
-    check("x2_jammer: a failed jammer write stops further X2 flashes", not r["ok"] and r["recoverable"] is False, r)
+    """The x2-jammer flasher since the x2_pin move (2026-11-16): the archive row by the row route,
+    no custody dump, then verify-row, whose PASS record is the only way to ok."""
+    def after(argv, flag):
+        return argv[argv.index(flag) + 1] if flag in argv else None
+    r, fl, vr, dumps = jam()
+    a = fl[0][2] if len(fl) == 1 else []
+    check("x2_jammer: flash-jammer --no-dump --row ea762c62044cb5c6 --variant jammer, no dump, no --build",
+          r["ok"] and len(fl) == 1 and "--no-dump" in a and after(a, "--row") == "ea762c62044cb5c6"
+          and after(a, "--variant") == "jammer" and "--build" not in a and "--dump-record" not in a
+          and dumps == [], (r, fl, dumps))
+    v = vr[0][2] if len(vr) == 1 else []
+    check("x2_jammer: then verify-row on the same row and variant, its PASS named",
+          len(vr) == 1 and after(v, "--row") == "ea762c62044cb5c6" and after(v, "--variant") == "jammer"
+          and "verify-row PASS" in r["detail"] and "ea762c62044cb5c6" in r["detail"], (r, vr))
+    r, fl, vr, dumps = jam(flash_rc=1)
+    check("x2_jammer: a failed jammer write stops further X2 flashes, verifies nothing",
+          not r["ok"] and r["recoverable"] is False and vr == [], (r, vr))
+    r, fl, vr, dumps = jam(verdict="FAIL")
+    check("x2_jammer: a verify-row FAIL is not ok, and stops further X2 flashes",
+          not r["ok"] and r["recoverable"] is False and r["phase"] == "verify-row", r)
+    r, fl, vr, dumps = jam(verify_rc=1)
+    check("x2_jammer: verify-row exiting non-zero is not ok", not r["ok"] and r["phase"] == "verify-row", r)
+    r, fl, vr, dumps = jam(records=0)
+    check("x2_jammer: no verify-row record is not ok", not r["ok"] and r["phase"] == "verify-row", r)
+    r, fl, vr, dumps = jam(records=2)
+    check("x2_jammer: two verify-row records (which one?) is not ok", not r["ok"] and r["phase"] == "verify-row", r)
 
 
 def reboot_tool(verdict="PASS", rc=0, write=True, extra=None, seen=None):

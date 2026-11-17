@@ -90,9 +90,9 @@ Settings this suite reads, besides the core's (shared/bench/README.md):
                      (host_target.sh's local mode, 2026-11-12)
     gi_host_root     the reverse-it root on that host (H's RROOT; a leading ~/ is that host's home)
     gi_wican_power   how the WiCAN is powered, as read on the bench by a person (12 V on OBD
-                     pin 16, USB plugged or not): B5_B8's records carry it as given, as
-                     GI_WICAN_POWER (2026-11-16: they said "USB unplugged" whatever the
-                     bench had). The bench suite refuses settings without it
+                     pin 16, USB plugged or not): every check gets it as GI_WICAN_POWER, and
+                     the records carry it as given (2026-11-16: they said "USB unplugged"
+                     whatever the bench had). The bench suite refuses settings without it
     ota              the core flasher's block (vtrux_bench.run.ota): host (192.168.80.1, the
                      suite's HOST; another is refused), iface, profile, ssid_env (the variable
                      the suite fills with bench-holder.md's SSID; one already holding another
@@ -115,8 +115,9 @@ Settings this suite reads, besides the core's (shared/bench/README.md):
 The X2 can start a run on any image (the charge-interposer's runs leave it on theirs). The
 start step puts it on the first image the run needs. Before the hold and the jammer, the
 suite's own flashers first put it on x2_app (written from the pin and read back), unless
-identify last read it there. So the custody dump carries x2_app's ELF, and a hold is a
-hold of x2_app. The SLCAN answers name the protocol, not the build, so identify takes
+identify last read it there. So a hold is a hold of x2_app, and the jammer (since the
+x2_pin move, 2026-11-16: archive row JAMMER_ROW, written with no custody dump, identified
+by verify-row) always replaces the pinned x2_app, which its flasher can put back. The SLCAN answers name the protocol, not the build, so identify takes
 x2_slcan's identity only when esptool verify_flash finds the pinned slcan app at its offset.
 esptool (gen-inhibit reviewer, 2026-11-11; bench/gi_esptool.py): settings.esptool.argv,
 of the form [<python>, "-m", "esptool"], at the pinned version (4.13.0). The suite passes
@@ -198,14 +199,21 @@ def harness_dir(settings):
 # (B15host_export/diag_schemas), since the host's copy has no git (toolkit item 10,
 # 2026-10-24; gi_paths and SeaDrive's DBC before).
 B15_FILES = ("diag_decode_check.py", "gi_diag.py", "pins.json")
-JAMMER_MD5 = "a89ece8c467f90723a3ac26e72924aa8"            # baseline_b_jam.sh's build
+# The X2 jammer B5_B8 runs on (the x2_pin move, gen-inhibit reviewer's order, 2026-11-16, after
+# B5-B8 passed on it but for B7, VERIFICATION.md 12.4): the ESP-IDF port's archive row in
+# gi_paths.x2_test_images("jammer"), pinnable, written by x2_flash_custody.py's row route
+# (x2_test_images SPEC T6, T7, T9), which checks the row's files, sizes, hashes and app
+# descriptor before esptool writes. Until then the PlatformIO build a89ece8c, by
+# flash-jammer --build after a custody dump.
+JAMMER_ROW = "ea762c62044cb5c6"
+JAMMER_VARIANT = "jammer"
 
 
 def jammer_desc(image):
     """What the X2 runs once the x2-jammer flasher has run, for B5_B8's records
-    (GI_JAMMER, x2_jam_cases.py --jammer; 2026-11-16): the build the flasher writes."""
-    return "x2_jammer build %s (x2_flash_custody.py flash-jammer --build, after a custody dump)" % (
-        image.params["build"])
+    (GI_JAMMER, x2_jam_cases.py --jammer; 2026-11-16): the row the flasher writes."""
+    return ("x2_jammer row %s, variant %s (x2_flash_custody.py flash-jammer --no-dump --row, then verify-row)"
+            % (image.params["row"], image.params["variant"]))
 
 
 SSID_RX = re.compile(r"SoftAP `(WiCAN_[0-9a-fA-F]*)`")
@@ -504,34 +512,38 @@ def make_hooks(settings, ssid, images=None):
                     recoverable=True)
 
     def x2_jammer(image, params, settings_, logdir):
-        """x2_app first, then custody (x2_flash_custody: the dump, twice, must carry x2_app's
-        pinned ELF), then the jammer from its manifest row. x2_app comes back through its
-        flasher with the next group that needs it, or at the end pass as the X2's idle-safe
-        image (the jammer is marked not safe to leave idle)."""
+        """x2_app first, then the jammer from its archive row (x2_flash_custody flash-jammer
+        --no-dump --row --variant), then verify-row, which is the board's identity (the
+        banner prints 9 digits of the ELF; x2_test_images T8). No custody dump: x2_app_first
+        leaves the board on the pinned x2_app, and the gen-inhibit reviewer's custody ruling
+        for the row route (2026-11-13) dumps only a board found on an image other than the
+        pin. x2_app comes back from x2_pin.json through its flasher with the next group that
+        needs it, or at the end pass as the X2's idle-safe image (the jammer is marked not
+        safe to leave idle)."""
         bad = x2_app_first(settings_, logdir)
         if bad:
             return bad
         env = dict(base_env, GI_RUNS_DIR=logdir)
         py = _py(settings_)
-        dump = os.path.join(logdir, "custody_dump.txt")
-        before = set(glob.glob(os.path.join(logdir, "x2_flash_custody_dump_*.json")))
-        rc = run(py + [os.path.join(harness, "x2_flash_custody.py"), "dump", "--expect-elf",
-                       params["expect_elf"]], dump, env, 900)
-        recs = new_records(logdir, "x2_flash_custody_dump_*.json", before)
+        custody = os.path.join(harness, "x2_flash_custody.py")
+        row = ["--row", params["row"], "--variant", params["variant"]]
+        fl = os.path.join(logdir, "custody_flash_jammer.txt")
+        rc = run(py + [custody, "flash-jammer", "--no-dump"] + row, fl, env, 900)
+        if rc != 0:
+            return dict(ok=False, phase="flash-jammer", detail="flash-jammer rc %s" % rc, recoverable=False)
+        vr = os.path.join(logdir, "custody_verify_row.txt")
+        before = set(glob.glob(os.path.join(logdir, "x2_flash_custody_verify-row_*.json")))
+        rc = run(py + [custody, "verify-row"] + row, vr, env, 900)
+        recs = new_records(logdir, "x2_flash_custody_verify-row_*.json", before)
         verdict = None
         if len(recs) == 1:
             with open(recs[0], encoding="utf-8") as f:
                 verdict = json.load(f).get("verdict")
         if rc != 0 or verdict != "PASS":
-            return dict(ok=False, phase="custody-dump", detail="dump rc %s, %d records, verdict %s"
-                        % (rc, len(recs), verdict), recoverable=True)
-        fl = os.path.join(logdir, "custody_flash_jammer.txt")
-        rc = run(py + [os.path.join(harness, "x2_flash_custody.py"), "flash-jammer", "--dump-record", recs[-1],
-                       "--build", params.get("build", JAMMER_MD5)], fl, env, 900)
-        if rc != 0:
-            return dict(ok=False, phase="flash-jammer", detail="flash-jammer rc %s" % rc, recoverable=False)
-        return dict(ok=True, phase="done", detail="%s; custody dump %s; jammer %s" % (
-            x2_last.get("first"), os.path.basename(recs[-1]), params.get("build", JAMMER_MD5)), recoverable=True)
+            return dict(ok=False, phase="verify-row", detail="verify-row rc %s, %d records, verdict %s"
+                        % (rc, len(recs), verdict), recoverable=False)
+        return dict(ok=True, phase="done", detail="%s; jammer row %s (%s); verify-row PASS (%s)" % (
+            x2_last.get("first"), params["row"], params["variant"], os.path.basename(recs[0])), recoverable=True)
 
     def wican_sha():
         """The WiCAN's elf_sha256 off its page, or IdentifyError (could not look)."""
@@ -727,14 +739,19 @@ def suite(settings):
     images["x2_held"] = Image("x2_held", "x2-hold", {}, "held:not driven", board="x2",
                               note="x2_app, then in ROM download mode, CAN1 TX not driven (x2_hold.py)")
     images["x2_jammer"] = Image("x2_jammer", "x2-jammer",
-                                {"build": JAMMER_MD5, "expect_elf": pin["images"]["x2_app"]["app_elf_sha256"]},
-                                "jammer:banner", board="x2", note="x2_app, then x2_flash_custody: dump, then the jammer")
+                                {"row": JAMMER_ROW, "variant": JAMMER_VARIANT},
+                                "jammer:banner", board="x2",
+                                note="x2_app, then x2_flash_custody: the jammer row %s (%s), verify-row"
+                                % (JAMMER_ROW, JAMMER_VARIANT))
     for name, why in IDLE_UNSAFE.items():
         images[name].idle_safe = False
         images[name].note += "; not safe to leave idle: " + why
 
     env0 = {"GI_OUT": "{outdir}", "GI_RUNS_DIR": "{outdir}", "GI_COMMIT": commit, "REVERSE_IT_DIR": "{reverse_it}",
-            "GI_IMAGES": "{gi_images}", "GI_WICAN_SSID": ssid, "INTERPOSER_CODE": "{interposer_code}"}
+            "GI_IMAGES": "{gi_images}", "GI_WICAN_SSID": ssid, "INTERPOSER_CODE": "{interposer_code}",
+            # the WiCAN's power for every record, as read on the bench (2026-11-16: baseline_b_hand,
+            # baseline_b_otagroup and baseline_b_jam refuse without it; they wrote "USB unplugged")
+            "GI_WICAN_POWER": "{gi_wican_power}"}
     # the settings.ota block for the tools' joins (gi_wifi), its braces doubled for the core's
     # placeholder formatting
     env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in ota_tools_env(settings, ssid).items()})

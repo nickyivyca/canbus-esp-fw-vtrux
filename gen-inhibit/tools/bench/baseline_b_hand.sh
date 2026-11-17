@@ -5,7 +5,8 @@
 # chain runner; each step is one check.
 #
 #   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_IMAGES=<WiCAN tree with build-tester-*> \
-#   GI_PW_IMAGE="image e3d9437 _man (md5 95977df0, elf 25f50ac0)" [GI_OUT=<dir>] \
+#   GI_PW_IMAGE="image e3d9437 _man (md5 95977df0, elf 25f50ac0)" GI_WICAN_POWER=<how the WiCAN is powered> \
+#   [GI_OUT=<dir>] \
 #   bash baseline_b_hand.sh <step> ...
 #   steps: B1 B2app B2held B9 B10 B14 B15 B16 B17a B18 B20 NONODE
 #
@@ -30,8 +31,11 @@ export GI_WICAN_SSID=${GI_WICAN_SSID:-$(grep -o 'SoftAP `WiCAN_[0-9a-fA-F]*`' fi
 [ -n "$GI_WICAN_SSID" ] || { echo "no WiCAN SSID in firmware/bench-holder.md"; exit 2; }
 G=$A
 GD=$(hpath "$PWD/$DATA")
-PW_APP="12 V on OBD pin 16, USB unplugged; $GI_PW_IMAGE; X2 756d6714 not held"
-PW_HELD="12 V on OBD pin 16, USB unplugged; $GI_PW_IMAGE; X2 756d6714 held in ROM (x2_hold.py)"
+# The WiCAN's power as given (gen-inhibit reviewer, 2026-11-16): the records said "USB unplugged"
+# whatever the bench had; the WiCAN's USB is plugged at 1-3.1 on madhouse-debian.
+[ -n "${GI_WICAN_POWER:-}" ] || { echo "baseline_b_hand.sh needs GI_WICAN_POWER (how the WiCAN is powered, as read on the bench by a person; 2026-11-16): nothing run"; exit 2; }
+PW_APP="$GI_WICAN_POWER; no WiCAN console capture; $GI_PW_IMAGE; X2 756d6714 not held"
+PW_HELD="$GI_WICAN_POWER; no WiCAN console capture; $GI_PW_IMAGE; X2 756d6714 held in ROM (x2_hold.py)"
 # A B2 arm that exits non-zero makes the script exit 1 after the
 # rest have run (reviewer, 2026-10-25): the arms cases have no judge, so they were a
 # PASS on exit 0 while every arm failed (6926fb0 re-run 2, a Wi-Fi outage).
