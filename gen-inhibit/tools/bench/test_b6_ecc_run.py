@@ -105,7 +105,7 @@ def run(script_src, **env_over):
         log = os.path.join(tmp, "log.txt")
         e = {k: v for k, v in os.environ.items() if k not in ("GI_WICAN_SSID", "GI_OUT", "GI_RUNS_DIR")}
         e.update({"PATH": fw(b) + os.pathsep + e.get("PATH", ""), "LOG": fw(log), "GI_ECC_SHA": SHA,
-                  "INTERPOSER_CODE": "fake", "GI_COMMIT": "8abf16b", "REVERSE_IT_DIR": fw(root), "GI_OUT": A + "/runs/b6_ecc_test", "MSYS_NO_PATHCONV": "1"})
+                  "INTERPOSER_CODE": "fake", "GI_COMMIT": "8abf16b", "GI_WICAN_POWER": "12 V test supply", "REVERSE_IT_DIR": fw(root), "GI_OUT": A + "/runs/b6_ecc_test", "MSYS_NO_PATHCONV": "1"})
         for k, v in env_over.items():
             if v is None:
                 e.pop(k, None)
@@ -146,6 +146,9 @@ def checks(src):
           "no WiCAN console",
           calls and all(all((" %s " % n) in (c + " ") for n in need) for c in calls), calls)
     check("each call runs x2_jam_cases.py", calls and all("/%s/x2_jam_cases.py " % A in c for c in calls), calls)
+    check("each call's power is GI_WICAN_POWER as given, no console capture, never 'USB unplugged' (2026-11-16)",
+          calls and all("--power 12 V test supply; no WiCAN console capture; WiCAN _ecc %s" % SHA[:8] in c
+                        and "USB unplugged" not in c for c in calls), calls[:1])
     check("the SSID is redacted in the outputs, and kept nowhere",
           texts and all(SSID not in t for t in texts.values()) and
           any("<GI_WICAN_SSID>" in t for k, t in texts.items() if k.startswith("B6_ecc_")) and
@@ -157,7 +160,9 @@ def checks(src):
                       ("GI_ECC_SHA not hex", {"GI_ECC_SHA": "z" * 64}),
                       ("GI_ECC_SHA too short", {"GI_ECC_SHA": SHA[:63]}),
                       ("INTERPOSER_CODE unset", {"INTERPOSER_CODE": None}),
-                      ("GI_COMMIT unset", {"GI_COMMIT": None})):
+                      ("GI_COMMIT unset", {"GI_COMMIT": None}),
+                      ("GI_WICAN_POWER unset", {"GI_WICAN_POWER": None}),
+                      ("GI_WICAN_POWER empty", {"GI_WICAN_POWER": ""})):
         rc, out, log, _ = run(src, **env)
         check("%s: refused before custody" % name, rc != 0 and log == [], (rc, log, out[-200:]))
     rc, out, log, _ = run(src, FAKE_BANNER="0")
@@ -185,6 +190,10 @@ def checks(src):
 MUTANTS = [
     # Not "drop the export": a variable from the environment stays exported (equivalent).
     ("GI_COMMIT not required", 'export GI_COMMIT=${GI_COMMIT:?set GI_COMMIT (the _ecc build commit, e.g. 8abf16b)}\n', ''),
+    ("GI_WICAN_POWER not required (2026-11-16)", '[ -n "${GI_WICAN_POWER:-}" ] || { echo "b6_ecc_run.sh needs',
+     ': || { echo "b6_ecc_run.sh needs'),
+    ("the old fixed power", 'PW="$GI_WICAN_POWER; no WiCAN console capture; WiCAN _ecc',
+     'PW="12 V on OBD pin 16, USB unplugged (no WiCAN console); WiCAN _ecc'),
     ("no --ecc", " --reset-wican --ecc $gate --want-sha", " --reset-wican $gate --want-sha"),
     ("no --judge-first", "--n 29 --judge-first 10 ", "--n 29 "),
     ("30 pulses", "--n 29 --judge-first 10", "--n 30 --judge-first 10"),

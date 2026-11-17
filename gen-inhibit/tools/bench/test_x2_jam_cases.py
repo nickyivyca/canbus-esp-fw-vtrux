@@ -390,7 +390,10 @@ def pcan_run(codes, recover, reset_ok=True, steps=None):
     """PcanStatus.step over the script, 0.25 s apart on a fake clock."""
     clk = FakeClock()
     bus = FakePcan(codes, reset_ok)
-    st = C.PcanStatus(bus, recover=recover, now=clk.now, sleep=clk.sleep)
+    def reopen(b):      # stands in for pcan_reopen: counted on the bus, its answer scripted
+        r = b.reset()
+        return r, "fake re-open"
+    st = C.PcanStatus(bus, recover=recover, now=clk.now, sleep=clk.sleep, reopen=reopen)
     last, last_reset = object(), None
     try:
         for _ in range(steps or len(codes)):
@@ -407,23 +410,69 @@ def pcan_cases():
     out = []
     st, bus, err = pcan_run([0, 16, 16, 16, 16, 16, 16, 0], recover=True)
     out.append(("recover: BUSOFF resets the channel, at most once a second, each kept",
-                err is None and bus.resets == 2 and [ok for _, ok in st.resets] == [True, True]
-                and [round(t - 1000.0, 2) for t, _ in st.resets] == [0.25, 1.25],
-                (err, bus.resets, st.resets)))
+                err is None and bus.resets == 2 and [ok for _, ok, _w in st.reopens] == [True, True]
+                and [round(t - 1000.0, 2) for t, _, _w in st.reopens] == [0.25, 1.25]
+                and all(w == "fake re-open" for _, _, w in st.reopens),
+                (err, bus.resets, st.reopens)))
     out.append(("recover: status changes still kept as before",
                 [c for _, c, _ in st.changes] == [0, 16, 0], st.changes))
     st, bus, err = pcan_run([0, 16, 16, 16, 0], recover=False)
-    out.append(("no recover: BUSOFF is only recorded", err is None and bus.resets == 0 and st.resets == [],
+    out.append(("no recover: BUSOFF is only recorded", err is None and bus.resets == 0 and st.reopens == [],
                 (err, bus.resets)))
     st, bus, err = pcan_run([0, 0, 0, 0], recover=True)
     out.append(("recover: an OK channel is never reset", err is None and bus.resets == 0, bus.resets))
     st, bus, err = pcan_run([16, 16], recover=True, reset_ok=OSError("driver gone"))
     out.append(("recover: a reset that raises is kept, not a crash",
-                err is None and len(st.resets) == 1 and "OSError" in str(st.resets[0][1]), (err, st.resets)))
+                err is None and len(st.reopens) == 1 and st.reopens[0][1] is False
+                and "OSError" in str(st.reopens[0][2]), (err, st.reopens)))
     st, bus, err = pcan_run([16], recover=True, reset_ok=False)
     out.append(("recover: a refused reset is kept as False",
-                err is None and len(st.resets) == 1 and st.resets[0][1] is False,
-                (err, st.resets)))
+                err is None and len(st.reopens) == 1 and st.reopens[0][1] is False,
+                (err, st.reopens)))
+    # pcan_reopen against a stand-in PCAN-Basic (the gen-inhibit reviewer's option (a), 2026-11-16)
+    from can.interfaces.pcan import pcan as PP
+
+    class Api:
+        def __init__(self, answers):
+            self.calls, self.answers = [], dict(answers)
+
+        def Uninitialize(self, h):
+            self.calls.append(("Uninitialize", h))
+            return self.answers.get("un", PP.PCAN_ERROR_OK)
+
+        def Initialize(self, h, rate, hw, io, irq):
+            self.calls.append(("Initialize", h, rate, hw, io, irq))
+            return self.answers.get("in", PP.PCAN_ERROR_OK)
+
+        def SetValue(self, h, param, value):
+            self.calls.append(("SetValue", h, param, value))
+            return self.answers.get("sv", PP.PCAN_ERROR_OK)
+
+    class Bus:
+        def __init__(self, api):
+            self.m_objPCANBasic, self.m_PcanHandle = api, 0x51
+
+    api = Api({})
+    ok, why = C.pcan_reopen(Bus(api))
+    out.append(("pcan_reopen: Uninitialize, then Initialize as python-can opens 500 kbit, then error frames on",
+                ok is True and api.calls == [("Uninitialize", 0x51),
+                                             ("Initialize", 0x51, PP.PCAN_BITRATES[500000], PP.PCAN_TYPE_ISA, 0x02A0, 11),
+                                             ("SetValue", 0x51, PP.PCAN_ALLOW_ERROR_FRAMES, PP.PCAN_PARAMETER_ON)],
+                (ok, why, api.calls)))
+    api = Api({"in": 0x1})
+    ok, why = C.pcan_reopen(Bus(api))
+    out.append(("pcan_reopen: a failed Initialize is not ok, sets nothing, and is named",
+                ok is False and [c[0] for c in api.calls] == ["Uninitialize", "Initialize"] and "Initialize 1" in why,
+                (ok, why, api.calls)))
+    api = Api({"sv": 0x4})
+    ok, why = C.pcan_reopen(Bus(api))
+    out.append(("pcan_reopen: error frames refused is not ok", ok is False and "error frames 4" in why, (ok, why)))
+    api = Api({"un": 0x40000})
+    ok, why = C.pcan_reopen(Bus(api))
+    out.append(("pcan_reopen: an Uninitialize error is named; Initialize still decides",
+                ok is True and "Uninitialize 262144" in why, (ok, why)))
+    st = C.PcanStatus(Bus(Api({})), recover=True)
+    out.append(("PcanStatus: re-opens with pcan_reopen unless told otherwise", st.reopen is C.pcan_reopen, st.reopen))
     # replay_start hands auto_reset on as recover
     saved = (C.can.Bus, C.LF.build_stimulus, C.LF.play)
     made = []

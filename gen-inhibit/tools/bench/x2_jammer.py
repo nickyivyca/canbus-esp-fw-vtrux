@@ -301,6 +301,17 @@ def judge_can2(kv_pages, kv_groups, n_pulses, in_frames, in_err):
 
 
 BANNER_NAME = "JAMMER %s -- TEST EQUIPMENT, NEVER ON THE TRUCK"
+ELF_PREFIX_MIN = 9      # the banner's elf= digits (CONFIG_APP_RETRIEVE_LEN_ELF_SHA)
+HEX = set("0123456789abcdef")
+
+
+def elf_prefix_ok(elf, expect_elf):
+    """The banner's elf= is at least ELF_PREFIX_MIN lower-case hex digits and starts
+    expect_elf (lower case); a missing side is not ok."""
+    if not elf or not expect_elf:
+        return False
+    e, x = str(elf).lower(), str(expect_elf).lower()
+    return len(e) >= ELF_PREFIX_MIN and set(e) <= HEX and x.startswith(e)
 
 
 def judge_identity(lines, expect_name, expect_elf):
@@ -309,21 +320,31 @@ def judge_identity(lines, expect_name, expect_elf):
 
     lines: parsed console lines (parse_line) after ID was sent. PASS needs the name line
     "JAMMER <expect_name> -- TEST EQUIPMENT, NEVER ON THE TRUCK" with NOT_FOR_VEHICLE in
-    the name, the build line's elf= equal to expect_elf (the row's app_elf_sha256), the tx
-    line's twai=never_started and the mcp2515 line's config_mode=yes. Any of them missing
-    or different is a FAIL, with every one that failed named."""
+    the name, the build line's elf= a prefix of expect_elf (the row's app_elf_sha256) of at
+    least ELF_PREFIX_MIN hex digits, the tx line's twai=never_started and the mcp2515 line's
+    config_mode=yes. Any of them missing or different is a FAIL, with every one that failed
+    named.
+
+    The prefix (gen-inhibit reviewer, 2026-11-16): the port's banner prints the first 9 hex
+    digits of its ELF sha256 (ESP-IDF's esp_app_get_elf_sha256, CONFIG_APP_RETRIEVE_LEN_ELF_SHA=9;
+    the jammer README), so the whole hash this was given could never equal it, and the id
+    of row ea762c62044cb5c6 FAILed on 2026-11-16 21:31. The board's identity still rests on
+    x2_flash_custody's verify-row."""
     info = [p for p in lines if p and p.get("kind") == "INFO"]
     name = next((p["raw"] for p in info if p["raw"].endswith(" -- TEST EQUIPMENT, NEVER ON THE TRUCK")),
                 None)
-    elf = next((str(p["elf"]) for p in info if "elf" in p and "version" in p), None)
+    # elf= from the raw line: parse_line makes an all-decimal value an int, which would drop a
+    # leading zero of the banner's digits (2026-11-16)
+    elf = next((m.group(1) for p in info if "elf" in p and "version" in p
+                for m in [re.search(r"\belf=(\S+)", p["raw"])] if m), None)
     twai = next((p.get("twai") for p in info if "twai" in p), None)
     cfg = next((p.get("config_mode") for p in info if "mcp2515" in p["raw"]), None)
     stops = next((p.get("stops") for p in info if "stops" in p), None)
     why = []
     if not expect_name or "NOT_FOR_VEHICLE" not in expect_name or name != BANNER_NAME % expect_name:
         why.append("name line %r, expected %r" % (name, BANNER_NAME % expect_name))
-    if not expect_elf or elf != expect_elf:
-        why.append("elf %s, expected %s" % (elf, expect_elf))
+    if not elf_prefix_ok(elf, expect_elf):
+        why.append("elf %s, expected a prefix of at least %d digits of %s" % (elf, ELF_PREFIX_MIN, expect_elf))
     if twai != "never_started":
         why.append("twai=%s" % twai)
     if cfg != "yes":
@@ -1826,7 +1847,8 @@ def main():
     ap.add_argument("--no-wican", action="store_true",
                     help="never reach the WiCAN over HTTP (madhouse has no Wi-Fi, 2026-11-13)")
     ap.add_argument("--expect-name", default=None, help="id: the row's project_name")
-    ap.add_argument("--expect-elf", default=None, help="id: the row's app_elf_sha256")
+    ap.add_argument("--expect-elf", default=None,
+                    help="id: the row's app_elf_sha256; the banner's 9 digits must start it")
     ap.add_argument("--expect-stop-by", default=None, help="timeout: DONE's stop_by= must be this")
     ap.add_argument("--expect-end", default=None, help="timeout: DONE's end= must be this")
     ap.add_argument("--post-s", type=float, default=3.0,

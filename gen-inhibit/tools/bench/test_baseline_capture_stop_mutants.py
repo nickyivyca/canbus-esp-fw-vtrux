@@ -25,7 +25,7 @@ import gi_paths  # noqa: E402  scratch/ folders (harness-defects row, 2026-10-24
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.environ.get("BATCH_SRC") or HERE
 FILES = ["baseline_b21.sh", "baseline_b_noX2.sh", "baseline_b_jam.sh", "x2_release_identify.sh",
-         "baseline_b_otagroup.sh"]
+         "baseline_b_otagroup.sh", "baseline_b_hand.sh", "b6_rate_run.sh", "b6_ecc_run.sh"]
 TEST = "test_baseline_capture_stop.py"
 MUTANTS = [
     ("B21: the stop file is never written", "baseline_b21.sh", '  : > "$stop"\n', ""),
@@ -56,6 +56,20 @@ MUTANTS = [
      '      inert rt present --switch RESTART_GUARD_TEST\n',
      '      $PY -B $A/page_state.py --label "B12 rt early" --out "$D/B12_rt_end_page.json"\n'
      '      inert rt present --switch RESTART_GUARD_TEST\n'),
+    # the WiCAN's power as given (gen-inhibit reviewer, 2026-11-16)
+    ("hand: no GI_WICAN_POWER refusal", "baseline_b_hand.sh",
+     '[ -n "${GI_WICAN_POWER:-}" ] || { echo "baseline_b_hand.sh needs', ': || { echo "baseline_b_hand.sh needs'),
+    ("hand: the old fixed power for the app", "baseline_b_hand.sh",
+     'PW_APP="$GI_WICAN_POWER; no WiCAN console capture; $GI_PW_IMAGE;', 'PW_APP="12 V on OBD pin 16, USB unplugged; $GI_PW_IMAGE;'),
+    ("otagroup: no GI_WICAN_POWER refusal", "baseline_b_otagroup.sh",
+     '[ -n "${GI_WICAN_POWER:-}" ] || { echo "baseline_b_otagroup.sh needs', ': || { echo "baseline_b_otagroup.sh needs'),
+    ("otagroup: the old fixed power", "baseline_b_otagroup.sh",
+     'PWR="$GI_WICAN_POWER; no WiCAN console capture; X2 756d6714 not held"',
+     'PWR="12 V on OBD pin 16, USB unplugged (no WiCAN console); X2 756d6714 not held"'),
+    ("b6_rate: no GI_WICAN_POWER refusal", "b6_rate_run.sh",
+     '[ -n "${GI_WICAN_POWER:-}" ] || { echo "b6_rate_run.sh needs', ': || { echo "b6_rate_run.sh needs'),
+    ("b6_ecc: no GI_WICAN_POWER refusal", "b6_ecc_run.sh",
+     '[ -n "${GI_WICAN_POWER:-}" ] || { echo "b6_ecc_run.sh needs', ': || { echo "b6_ecc_run.sh needs'),
 ]
 
 

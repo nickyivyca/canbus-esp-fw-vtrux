@@ -26,6 +26,8 @@ DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative 
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }
 : "${GI_ECC_SHA:?set GI_ECC_SHA (the _ecc image elf_sha256)}"
 : "${INTERPOSER_CODE:?set INTERPOSER_CODE}"
+# The WiCAN's power as given (gen-inhibit reviewer, 2026-11-16), not a fixed "USB unplugged".
+[ -n "${GI_WICAN_POWER:-}" ] || { echo "b6_ecc_run.sh needs GI_WICAN_POWER (how the WiCAN is powered, as read on the bench by a person; 2026-11-16): nothing run"; exit 2; }
 # baseline_b_jam.sh requires it (2026-10-20: missing here at first; its fake in the test
 # did not require it). The _ecc build's commit; with GI_OUT set it names nothing else.
 export GI_COMMIT=${GI_COMMIT:?set GI_COMMIT (the _ecc build commit, e.g. 8abf16b)}
@@ -39,7 +41,7 @@ export GI_OUT=${GI_OUT:-$DATA/runs/b6_ecc_$stamp}
 export GI_RUNS_DIR=$GI_OUT
 case "$GI_RUNS_DIR" in *" "*) echo "GI_RUNS_DIR has a space: $GI_RUNS_DIR"; exit 2;; esac
 mkdir -p "$GI_OUT"
-PW="12 V on OBD pin 16, USB unplugged (no WiCAN console); WiCAN _ecc ${GI_ECC_SHA:0:8}; X2 jammer a89ece8c (custody)"
+PW="$GI_WICAN_POWER; no WiCAN console capture; WiCAN _ecc ${GI_ECC_SHA:0:8}; X2 jammer a89ece8c (custody)"
 echo "== $(date +%H:%M:%S) custody -> $GI_OUT"
 bash $A/baseline_b_jam.sh custody || { echo "custody failed: stop (X2 state: see $GI_OUT/x2)"; exit 1; }
 rec=$(ls -t "$GI_RUNS_DIR"/x2_flash_custody_dump_*.json | head -1)

@@ -130,6 +130,19 @@ MUTANTS = [
     ("pcan: a reset that raises crashes the status thread",
      '            except Exception as e:      # noqa: BLE001 -- kept; the witness shows the replay',
      '            except ZeroDivisionError as e:'),
+    # the re-open (the gen-inhibit reviewer's option (a), 2026-11-16)
+    ("pcan_reopen: no Uninitialize", '    r_un = api.Uninitialize(h)\n', '    r_un = 0\n'),
+    ("pcan_reopen: another bitrate", '    rate = PP.PCAN_BITRATES.get(BITRATE if bitrate is None else bitrate, PP.PCAN_BAUD_500K)\n',
+     '    rate = PP.PCAN_BITRATES.get(250000, PP.PCAN_BAUD_500K)\n'),
+    ("pcan_reopen: error frames not set",
+     '    r_ef = api.SetValue(h, PP.PCAN_ALLOW_ERROR_FRAMES, PP.PCAN_PARAMETER_ON) if r_in == PP.PCAN_ERROR_OK else None\n',
+     '    r_ef = PP.PCAN_ERROR_OK\n'),
+    ("pcan_reopen: ok whatever error frames answer",
+     '    ok = r_in == PP.PCAN_ERROR_OK and r_ef == PP.PCAN_ERROR_OK\n', '    ok = r_in == PP.PCAN_ERROR_OK\n'),
+    # Not "ok whatever Initialize answers" (ok = r_ef == OK): r_ef is set only after an OK
+    # Initialize, so that edit is equivalent (it survived, 2026-11-16).
+    ("PcanStatus: re-opens by bus.reset again", '        self.reopen = reopen or pcan_reopen\n',
+     '        self.reopen = reopen or (lambda b: (bool(b.reset()), "reset"))\n'),
     ("pcan: replay_start does not hand auto_reset on as recover",
      '    st = PcanStatus(pc, recover=auto_reset)',
      '    st = PcanStatus(pc)'),

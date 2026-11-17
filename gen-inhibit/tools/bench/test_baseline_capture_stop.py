@@ -122,6 +122,9 @@ def host_py():
     return r.stdout.split() if r.returncode == 0 else ["exit %d: %s" % (r.returncode, r.stderr.strip())]
 
 
+POWER = "12 V test supply; USB plugged at test-port"   # GI_WICAN_POWER, as the settings give it (2026-11-16)
+
+
 def env_for(tmp, runs, out, **extra):
     e = dict(os.environ)
     e["PATH"] = fw(os.path.join(tmp, "bin")) + os.pathsep + e.get("PATH", "")
@@ -129,9 +132,10 @@ def env_for(tmp, runs, out, **extra):
               "REAL_PY": fw(sys.executable), "GI_DUMPCAP_PRE": "%s -B %s" % (fw(sys.executable), fw(os.path.join(tmp, "fake_dumpcap.py"))),
               "GI_CAPTURE_TAIL_S": str(TAIL), "GI_CAPTURE_MAX_S": "60", "GI_COMMIT": "e3d9437",
               "GI_WICAN_SSID": "WiCAN_testssid", "INTERPOSER_CODE": "x", "GI_CAPTURE_IFACE": "test-iface",
-              "GI_RUNS_DIR": fw(runs), "GI_OUT": fw(out), "MSYS_NO_PATHCONV": "1"})
+              "GI_RUNS_DIR": fw(runs), "GI_OUT": fw(out), "MSYS_NO_PATHCONV": "1",
+              "GI_WICAN_POWER": POWER})
     e.update(extra)
-    return e
+    return {k: v for k, v in e.items() if v is not None}     # extra NAME=None unsets NAME
 
 
 def bash(script, args, env, timeout=600):
@@ -264,6 +268,33 @@ def main():
         check("otagroup rt: one page read, after test_only_inert, into GI_OUT",
               rc == 0 and len(ps) == 1 and inert and ps[0] > max(inert) and log[ps[0]] == "PAGESTATE out=[%s]" % want
               and os.path.exists(want), (rc, log[-6:], text[-300:]))
+        # 7. the WiCAN's power as given, never a fixed "USB unplugged" (gen-inhibit reviewer, 2026-11-16)
+        inert_calls = [l for l in log if l.startswith("CALL") and "test_only_inert.py" in l]
+        check("otagroup rt: test_only_inert gets GI_WICAN_POWER as given, no console capture, no 'USB unplugged'",
+              inert_calls and all("--power %s; no WiCAN console capture; X2 756d6714 not held; image" % POWER in l
+                                  for l in inert_calls) and not any("USB unplugged" in l for l in log),
+              inert_calls[:1])
+        for script, args, extra in (("baseline_b_otagroup.sh", [fw(tmp), fw(tmp), "rt"], {"GI_NO_OTA": "1"}),
+                                    ("baseline_b_hand.sh", ["B1"], {"GI_PW_IMAGE": "image test"}),
+                                    ("b6_rate_run.sh", [], {}),
+                                    ("b6_ecc_run.sh", [], {"GI_ECC_SHA": "ab" * 32})):
+            for unset in (None, ""):
+                o = os.path.join(tmp, "nopw %s %r" % (script, unset))
+                os.makedirs(o)
+                before = len(calls(tmp))
+                rc, text = bash(script, args, env_for(tmp, os.path.join(tmp, "runs7"), o, GI_WICAN_POWER=unset,
+                                                      **extra))
+                new = [l for l in calls(tmp)[before:].splitlines() if l.startswith("CALL")]
+                check("%s: GI_WICAN_POWER %s refuses, exit 2, nothing run" % (script, "unset" if unset is None else "empty"),
+                      rc == 2 and new == [] and "GI_WICAN_POWER" in text, (rc, new[:2], text[-200:]))
+        o = os.path.join(tmp, "hand B1")
+        os.makedirs(o)
+        before = len(calls(tmp))
+        rc, text = bash("baseline_b_hand.sh", ["B1"], env_for(tmp, os.path.join(tmp, "runs8"), o, GI_PW_IMAGE="image test"))
+        b1 = [l for l in calls(tmp)[before:].splitlines() if l.startswith("CALL") and "slcan_refusal_probe.py" in l]
+        check("hand B1: the probe gets GI_WICAN_POWER as given, no console capture, the image, the X2 not held",
+              len(b1) == 1 and "--power %s; no WiCAN console capture; image test; X2 756d6714 not held" % POWER in b1[0]
+              and "USB unplugged" not in b1[0], (b1, text[-200:]))
     except Exception as e:                      # a crash is reported, never a pass
         check("ran without raising", False, repr(e))
     finally:

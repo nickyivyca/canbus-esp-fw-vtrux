@@ -582,6 +582,24 @@ def pcan_bus_off_time(changes):
                  if isinstance(code, int) and code & PCAN_BUSOFF), None)
 
 
+def pcan_reopen(bus, bitrate=None):
+    """(ok, why): re-open a python-can PcanBus's channel in place (the gen-inhibit reviewer's
+    option (a) for B7, 2026-11-16). PCAN-Basic's Uninitialize, then Initialize with what
+    python-can's PcanBus passes for a classic bitrate (PCAN_BITRATES[BITRATE], PCAN_TYPE_ISA,
+    0x02A0, 11), then PCAN_ALLOW_ERROR_FRAMES on, as python-can sets it. The bus object keeps
+    its handle, so the replay's sends go on through it. ok only when Initialize and the
+    parameter both answer PCAN_ERROR_OK; why names each step's answer."""
+    from can.interfaces.pcan import pcan as PP
+    api, h = bus.m_objPCANBasic, bus.m_PcanHandle
+    rate = PP.PCAN_BITRATES.get(BITRATE if bitrate is None else bitrate, PP.PCAN_BAUD_500K)
+    r_un = api.Uninitialize(h)
+    r_in = api.Initialize(h, rate, PP.PCAN_TYPE_ISA, 0x02A0, 11)
+    r_ef = api.SetValue(h, PP.PCAN_ALLOW_ERROR_FRAMES, PP.PCAN_PARAMETER_ON) if r_in == PP.PCAN_ERROR_OK else None
+    ok = r_in == PP.PCAN_ERROR_OK and r_ef == PP.PCAN_ERROR_OK
+    return ok, "Uninitialize %s, Initialize %s, error frames %s" % (
+        int(r_un), int(r_in), "not set" if r_ef is None else int(r_ef))
+
+
 class PcanStatus(threading.Thread):
     """Records the PCAN's own status (code and string) whenever it changes.
 
@@ -592,23 +610,26 @@ class PcanStatus(threading.Thread):
     PCAN_BUSOFF_AUTORESET, and on Windows the PCAN came back after its own bus-off;
     on Linux the parameter is accepted and the channel stays BUSOFF (code 16) for the
     rest of the arm, so the replay sent nothing after the jam (B7, 0.0 0x051/s, every
-    arm INCONCLUSIVE). With recover, a BUSOFF reading resets the channel (bus.reset(),
-    PCAN-Basic's Reset), at most once every RESET_EVERY_S; each reset is kept in
-    `resets` as (t, ok).
+    arm INCONCLUSIVE). PCAN-Basic's Reset, tried next (8556f073), returned OK and left it
+    BUSOFF too (B7 at 22:06). So with recover (the gen-inhibit reviewer's option (a),
+    2026-11-16) a BUSOFF reading re-opens the channel, reopen(bus) (pcan_reopen: Uninitialize,
+    then Initialize as python-can opened it), at most once every RESET_EVERY_S; each is kept
+    in `reopens` as (t, ok, why).
     """
     RESET_EVERY_S = 1.0
 
-    def __init__(self, bus, recover=False, now=time.time, sleep=time.sleep):
+    def __init__(self, bus, recover=False, now=time.time, sleep=time.sleep, reopen=None):
         super().__init__(daemon=True)
         self.bus = bus
         self.recover = recover
+        self.reopen = reopen or pcan_reopen
         self.now, self.sleep = now, sleep
         self.changes = []    # (t, status code or error text, status string)
-        self.resets = []     # (t, True/False, or the error text): resets after a BUSOFF
+        self.reopens = []    # (t, ok, why): re-opens after a BUSOFF
         self.stop_flag = threading.Event()
 
     def step(self, last, last_reset):
-        """One reading: (code, last_reset). Records a change, and with recover resets a
+        """One reading: (code, last_reset). Records a change, and with recover re-opens a
         channel that reads BUSOFF."""
         try:
             code = int(self.bus.status())
@@ -624,10 +645,10 @@ class PcanStatus(threading.Thread):
                 and (last_reset is None or self.now() - last_reset >= self.RESET_EVERY_S)):
             last_reset = self.now()
             try:
-                ok = bool(self.bus.reset())
+                ok, why = self.reopen(self.bus)
             except Exception as e:      # noqa: BLE001 -- kept; the witness shows the replay
-                ok = "reset failed: %s: %s" % (type(e).__name__, e)
-            self.resets.append((last_reset, ok))
+                ok, why = False, "re-open raised %s: %s" % (type(e).__name__, e)
+            self.reopens.append((last_reset, ok, why))
         return code, last_reset
 
     def run(self):
@@ -764,7 +785,7 @@ def replay_start(seconds=90.0, auto_reset=False):
     # auto_reset: the PCAN rejoins after its own bus-off (python-can's default is
     # off). busoff-rearm needs the replay back after the jam, so the gate could
     # go live; the other cases keep the default they ran with. On Linux the driver
-    # does not act on it, so PcanStatus resets the channel itself (recover, 2026-11-16).
+    # does not act on it, so PcanStatus re-opens the channel itself (recover, 2026-11-16).
     pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE,
                  auto_reset=auto_reset)
     stats = {}
@@ -1374,7 +1395,7 @@ def case_busoff_rearm(a, rec, con, wit):
     if a.expect is None:
         raise SystemExit("busoff-rearm needs --expect stays|reinstalls")
     rec["expect"] = a.expect
-    rec["replay_source"] = "PCAN: lowid_flood_skip_bench.build_stimulus (the interlock slice), auto_reset on, and a BUSOFF reading resets the channel (PcanStatus recover)"
+    rec["replay_source"] = "PCAN: lowid_flood_skip_bench.build_stimulus (the interlock slice), auto_reset on, and a BUSOFF reading re-opens the channel (PcanStatus recover, pcan_reopen)"
     rec["x2_state_rule6"] = "jammer"
     rec["arms"] = []
     for k in range(a.arms):
@@ -1417,7 +1438,7 @@ def case_busoff_rearm(a, rec, con, wit):
         arm["phases"] = ph
         arm["samples"] = pol.samples
         arm["pcan_status_changes"] = st.changes
-        arm["pcan_resets"] = st.resets
+        arm["pcan_reopens"] = st.reopens
         arm["replay_stats"] = dict(stats)
         frames, errs, clock = wit.clocked()
         arm["clock"] = clock

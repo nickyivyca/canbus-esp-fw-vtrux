@@ -290,7 +290,7 @@ PN = "vtrux_jammer_x2_NOT_FOR_VEHICLE"
 ELF = "ab" * 32
 
 
-def port_banner(name=PN, elf=ELF, twai="never_started", cfg="yes", uptime=3600 * 10 ** 6):
+def port_banner(name=PN, elf=ELF[:9], twai="never_started", cfg="yes", uptime=3600 * 10 ** 6):
     """The port's five banner lines (shared/x2_test_images/jammer/README.md, "The banner")."""
     return ["JAMMER %s -- TEST EQUIPMENT, NEVER ON THE TRUCK" % name,
             "JAMMER build version=2026.11.12.2-6-g9e017baa elf=%s idf=v5.4.2" % elf,
@@ -319,6 +319,16 @@ def port_cases(bad):
     for label, lines, name, elf, want in (
             ("identity: the port's banner, the row's name and elf", port_banner(), PN, ELF, "PASS"),
             ("identity: a different elf", port_banner(elf="cd" * 32), PN, ELF, "FAIL"),
+            # the banner's 9 digits against the row's whole hash (gen-inhibit reviewer, 2026-11-16)
+            ("identity: the banner's 9 digits start the row's elf", port_banner(elf=ELF[:9]), PN, ELF, "PASS"),
+            ("identity: the banner's 9 digits upper case", port_banner(elf=ELF[:9].upper()), PN, ELF, "PASS"),
+            ("identity: the whole elf in the banner still passes", port_banner(elf=ELF), PN, ELF, "PASS"),
+            ("identity: 9 digits that do not start it", port_banner(elf="ab" * 4 + "c"), PN, ELF, "FAIL"),
+            ("identity: 8 digits that start it are too few", port_banner(elf=ELF[:8]), PN, ELF, "FAIL"),
+            ("identity: the expected elf shorter than the banner's", port_banner(elf=ELF[:9]), PN, ELF[:8], "FAIL"),
+            ("identity: a non-hex elf", port_banner(elf="abababab-"), PN, "abababab-" + ELF, "FAIL"),
+            ("identity: all-decimal digits with a leading zero", port_banner(elf="012345678"), PN,
+             "012345678" + ELF[9:], "PASS"),
             ("identity: a different name", port_banner(name="jammer_stop_a_NOT_FOR_VEHICLE"), PN, ELF, "FAIL"),
             ("identity: a name without NOT_FOR_VEHICLE, both sides", port_banner(name="vtrux_jammer_x2"),
              "vtrux_jammer_x2", ELF, "FAIL"),
@@ -332,11 +342,12 @@ def port_cases(bad):
     # sub_id with the expectations, through the fake console
     for label, kw, want in (("id: the port's banner -> identity PASS", {}, "PASS"),
                             ("id: the port booted after the open -> FAIL", {"uptime_us": 500000}, "FAIL"),
-                            ("id: the wrong elf -> FAIL", {"elf": "cd" * 32}, "FAIL")):
+                            ("id: the wrong elf -> FAIL", {"elf": "cd" * 32}, "FAIL"),
+                            ("id: the wrong 9 digits -> FAIL", {"elf": "cd" * 4 + "c"}, "FAIL")):
         rec = {}
         try:
             jam = FakeJammer("", kw.get("uptime_us", 3600 * 10 ** 6),
-                             banner=port_banner(elf=kw.get("elf", ELF), uptime=kw.get("uptime_us", 3600 * 10 ** 6)))
+                             banner=port_banner(elf=kw.get("elf", ELF[:9]), uptime=kw.get("uptime_us", 3600 * 10 ** 6)))
             X.sub_id(Args(expect_name=PN, expect_elf=ELF), rec, FakeCon(jam), None)
         except Exception as e:      # noqa: BLE001  a crash is reported against the case
             rec["verdict"] = "RAISED %r" % e
