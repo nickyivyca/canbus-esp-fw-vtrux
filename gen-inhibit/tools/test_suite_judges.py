@@ -128,6 +128,18 @@ EDITS = [
       (r"^verdict PASS", "verdict FAIL")], None, "FAIL"),
     ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^(arm 1 \(replay [\d.]+/s\): )PASS", r"\g<1>VOID", "FAIL"),
     ("B7", "bench", r"B7_busoff_rearm\.txt", r"^arm 1: AS SPECIFIED", "arm 1: NOT AS SPECIFIED", "FAIL"),
+    # an arm the case could not judge is INCONCLUSIVE, and so is B7 (2026-11-16) ...
+    ("B7", "bench", r"B7_busoff_rearm\.txt",
+     [(r"^arm 1: AS SPECIFIED", "arm 1: INCONCLUSIVE"), (r"^verdict AS SPECIFIED", "verdict INCONCLUSIVE")],
+     None, "INCONCLUSIVE"),
+    # ... but not beside a NOT AS SPECIFIED arm, nor when the case's verdict disagrees,
+    # nor for any other word
+    ("B7", "bench", r"B7_busoff_rearm\.txt",
+     [(r"^arm 1: AS SPECIFIED", "arm 1: INCONCLUSIVE"), (r"^arm 0: AS SPECIFIED", "arm 0: NOT AS SPECIFIED"),
+      (r"^verdict AS SPECIFIED", "verdict INCONCLUSIVE")], None, "FAIL"),
+    ("B7", "bench", r"B7_busoff_rearm\.txt", r"^arm 1: AS SPECIFIED", "arm 1: INCONCLUSIVE", "FAIL"),
+    ("B7", "bench", r"B7_busoff_rearm\.txt",
+     [(r"^arm 1: AS SPECIFIED", "arm 1: VOID"), (r"^verdict AS SPECIFIED", "verdict INCONCLUSIVE")], None, "FAIL"),
     ("B8", "bench", r"B8_busoff\.txt", r"^arm 1 train=True: PASS", "arm 1 train=True: FAIL", "FAIL"),
     ("B8", "bench", r"B8_busoff\.txt", r"^arm 3 train=False: INCONCLUSIVE", "arm 3 train=False: FAIL", "FAIL"),
     ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(A3 recent .*?)  as specified", r"\g<1>  NOT as specified", "FAIL"),

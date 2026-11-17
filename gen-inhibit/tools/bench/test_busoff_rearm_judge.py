@@ -179,7 +179,7 @@ def main():
     j = v()
     check("no reboot read when uptime only rises", j["reboot_after_rearm_rel_s"] is None)
 
-    a = C.build_parser().parse_args(["busoff-rearm", "--power", "12 V", "--expect", "stays"])
+    a = C.build_parser().parse_args(["busoff-rearm", "--power", "12 V", "--jammer", "j", "--expect", "stays"])
     check("--expect parsed", a.expect == "stays" and a.case == "busoff-rearm")
 
     print("\n%d failure(s)" % len(FAILS))

@@ -60,7 +60,8 @@ for spec in 1.5:7 5:7 8.5:6; do
   echo "$(date +%H:%M:%S) B6_ecc_n29_lead$l ($n arms)"
   $PY -B $A/x2_jam_cases.py threshold --arms $n --n 29 --judge-first 10 --interval-ms 1000 \
     --lead-s $l --reset-wican --ecc $gate --want-sha "$GI_ECC_SHA" --no-wican-console \
-    --power "$PW" > "$GI_OUT/B6_ecc_n29_lead$l.txt" 2>&1
+    --power "$PW" --jammer "x2_jammer bb20e4a37b64 / md5 a89ece8c... (baseline_b_jam.sh custody)" \
+    > "$GI_OUT/B6_ecc_n29_lead$l.txt" 2>&1
   rc=$?
   echo "  exit $rc"
   grep -E "^arm |^  /gi_ecc|^REFUSED|^STOPPED|^verdict" "$GI_OUT/B6_ecc_n29_lead$l.txt" | cut -c1-220

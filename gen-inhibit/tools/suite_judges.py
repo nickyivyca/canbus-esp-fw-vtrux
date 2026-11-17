@@ -282,8 +282,16 @@ def b7(F):
     arms = re.findall(r"^arm \d+: (.+?):", t, re.M)
     v = re.search(r"^verdict (.+?) *$", t, re.M)
     ok = arms and all(a == "AS SPECIFIED" for a in arms) and v and v.group(1) == "AS SPECIFIED"
-    return [result("B7", "PASS" if ok else "FAIL", {"arms": fig(len(arms)), "as_specified": fig(arms.count("AS SPECIFIED"))},
-                   "%d of %d arms AS SPECIFIED" % (arms.count("AS SPECIFIED"), len(arms)))]
+    # An arm the case could not judge (e.g. "the replay was not running after the re-arm")
+    # is INCONCLUSIVE, and so is B7 when the case says so and no arm is anything else
+    # (2026-11-16, B7 on madhouse-debian: every arm INCONCLUSIVE read as FAIL here).
+    inc = (not ok and arms and "INCONCLUSIVE" in arms
+           and set(arms) <= {"AS SPECIFIED", "INCONCLUSIVE"} and v and v.group(1) == "INCONCLUSIVE")
+    n_inc = arms.count("INCONCLUSIVE")
+    return [result("B7", "PASS" if ok else "INCONCLUSIVE" if inc else "FAIL",
+                   {"arms": fig(len(arms)), "as_specified": fig(arms.count("AS SPECIFIED"))},
+                   "%d of %d arms AS SPECIFIED%s" % (arms.count("AS SPECIFIED"), len(arms),
+                                                     ", %d INCONCLUSIVE" % n_inc if n_inc else ""))]
 
 
 @judge("B8", "B")

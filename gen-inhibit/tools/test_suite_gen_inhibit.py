@@ -192,6 +192,7 @@ def fixture():
         "gi_fw": HERE, "gi_components": "x", "gi_checks_clone": HERE,
         "gi_host_ssh": "hosttest", "gi_host_root": "~/rt", "bash": shutil.which("bash"),
         "gi_can1_termination": "fixed passive resistors (test)",
+        "gi_wican_power": "12 V on OBD pin 16, USB plugged (test)",
         "bench_holder": bh, "runs_root": os.path.join(BASE, "runs"),
         "hosts": {"local": {"python": [sys.executable, "-B"]}},
         "esptool": {"argv": [sys.executable, "-c", "pass"], "device": FS.device(FS.X2_SERIAL)},
@@ -345,6 +346,19 @@ def test_suites(settings, shas):
           and "build-tester-man2" not in hand_sh, "")
     s3 = {k: v for k, v in settings.items() if k != "gi_can1_termination"}
     check("bench: no gi_can1_termination refuses the suite", raises(lambda: SG.bench(s3)) is not None)
+    # B5_B8 names what the X2 runs and how the WiCAN is powered (2026-11-16): baseline_b_jam.sh's
+    # jam step refuses without them, and its records carry them as given
+    jm = [c for gg in bench.groups if gg.name == "man_jammer" for c in gg.checks if c.id == "B5_B8"]
+    jdesc = jm[0].env.get("GI_JAMMER", "") if jm else ""
+    check("bench: B5_B8 takes the WiCAN's power from the settings", jm and
+          jm[0].env.get("GI_WICAN_POWER") == "{gi_wican_power}", jm and jm[0].env)
+    check("bench: B5_B8's jammer is the build the x2-jammer flasher writes",
+          bench.images["x2_jammer"].params["build"] in jdesc and "flash-jammer" in jdesc, jdesc)
+    img = SG.Image("x2_jammer", "x2-jammer", {"build": "0123abcd"}, "jammer:banner", board="x2")
+    check("jammer_desc names the image's build, not a fixed one",
+          "0123abcd" in SG.jammer_desc(img) and SG.JAMMER_MD5 not in SG.jammer_desc(img), SG.jammer_desc(img))
+    s4 = {k: v for k, v in settings.items() if k != "gi_wican_power"}
+    check("bench: no gi_wican_power refuses the suite", raises(lambda: SG.bench(s4)) is not None)
 
     rd = SG.reads(bench)
     check("reads: B13's desk step reads B13's arms and both B2 halves",

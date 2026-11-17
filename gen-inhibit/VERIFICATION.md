@@ -8106,6 +8106,63 @@ no bench; nothing in the runs read was changed.
   `SHA256SUMS` `3fa3ad81...9502` hashes every other file: `by_folder.txt`,
   `all_runs.txt`, the tool's test and mutant outputs).
 
+**B5-B8 with the jammer's ESP-IDF port (row `ea762c62044cb5c6`) -- tester,
+2026-11-16 21:30-22:13, on `2341e73d` `_man` (`02d702d6...`), madhouse-debian.
+Result: B5 PASS, B6 PASS (10 of 10 arms, no arm short), B8 PASS; B7
+INCONCLUSIVE (every arm: the replay was not running after the re-arm).** The
+gen-inhibit reviewer's order: B5-B8 and the re-run of step 1b's known anomaly 7
+(a short `n10` arm) on the ported jammer, before the x2_pin move. These are
+`baseline_b_jam.sh jam`'s cases, run by hand under a hand take of the bench
+lock, in bench.slice.
+- **Conditions.** WiCAN: `02d702d6...`, read off its page through the 3T at
+  21:30, 21:43 and 22:12, mode 0 at the start. Power: 12 V on OBD pin 16, as
+  bench-holder.md has recorded since 2026-10-09 (not re-read), and USB plugged
+  at 1-3.1. No WiCAN console capture. X2 (rule 6): the jammer, archive row
+  `ea762c62044cb5c6` (`vtrux_jammer_x2_NOT_FOR_VEHICLE`, image hash
+  `ae2783e25ad536ab...`, pinnable), written by `x2_flash_custody.py
+  flash-jammer --no-dump --row` at 21:30. `read-otadata` and `verify-row`
+  passed at 21:31, and the banner was read at 21:32 and 22:12. Witness: the
+  Kvaser through CANlib (`leaf`). Replayer: the PCAN (`pcan`).
+- **B5 (livetrain): PASS.** 200/s 3 of 3, 500/s 9 of 9, 0 inconclusive.
+  Harness `2b998fe9`.
+- **B6 (threshold; spec 7, trip 6): PASS, 10 of 10 arms over the 5 runs.**
+  Harness `8556f073`. Every arm had per-pulse deltas of 1 and `bus_error`
+  deltas of 1, and the stimulus was never short. In the n10 arms trip 6
+  latched, "error-frame rate exceeded", seen on the page 9.02-9.12 s after the
+  first pulse. The
+  n9 arms did not latch, with at most 9 in the window. Every reset before an
+  arm was shown: a lower uptime, mode 0, nothing latched.
+- **B7 (busoff-rearm, `--expect reinstalls`): INCONCLUSIVE, every arm, in two
+  runs** (`2b998fe9` code at 21:44, `8556f073` at 22:06). The PCAN replaying
+  `0x051` went BUSOFF at the jam's start and stayed so for the rest of each
+  arm, so after the re-arm the witness saw 0.0 `0x051`/s. With no fresh
+  `0x051` the case cannot show the device going live. At `8556f073` the PCAN's
+  `reset()` was called once a second on BUSOFF and returned True 68 times per
+  arm, and the status still read BUSOFF. The page showed the controller
+  `running` 0.98 s after the re-arm, with "no fresh 0x051". The suite judge at
+  `8556f073` read this as FAIL ("0 of 3 arms AS SPECIFIED"): it had no
+  INCONCLUSIVE. That was fixed after the run, on this topic, and it now reads
+  INCONCLUSIVE.
+- **B8 (busoff; spec 11, bus-off half): PASS.** Train 3 of 3 PASS; the control
+  arm is INCONCLUSIVE, as the case designs it. Harness `2b998fe9` code (tree at
+  `8dcbfefc`).
+- **Harness changes this run needed** (topic `gen-inhibit/tester/jam-row`):
+  - `2b998fe9`: every record names the jammer and the WiCAN's power as given.
+    `baseline_b_jam.sh jam` never captures the WiCAN console.
+  - `8556f073`: `--reset-wican` rejoins the hotspot through `gi_wifi.select`
+    while the page cannot be read, and refuses without `GI_OTA_SETTINGS`. The
+    first pass's B6 case lost the page for the whole 40 s, because the 3T did
+    not rejoin the hotspot after the reboot by itself, and the next arm's POST
+    met "Network is unreachable". The same commit has the PCAN's reset on
+    BUSOFF; on this host that did not bring it back, as the B7 bullet says.
+  - The B7 judge's INCONCLUSIVE, described in the B7 bullet.
+  - `x2_jammer.py id --expect-elf` with the row's whole app_elf_sha256 FAILs:
+    the banner prints 9 digits. The 9-digit prefix PASSes. Not changed; the
+    board's identity rests on `verify-row`.
+- **Run files:** `runs/b5b8_ea762c6_20261116T213049/` (`README.md`: the runs
+  and which harness each used, the drivers, `judged.txt`; superseded records
+  and the first pass's stdout in `first_pass/`).
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical
