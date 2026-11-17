@@ -73,7 +73,9 @@ Board state, what is on each board, stays in
   when it is stopped; it exits 2 when the log refuses. A request with no
   `pid`, or whose `pid` has gone, keeps no place in the order.
 - `take` and the runner's take still do not consult the queue (Ruled
-  2026-10-21): only waiters keep the order, among themselves.
+  2026-10-21): only waiters keep the order, among themselves. An
+  acceptance runner's first take is a waiter's (section 6, "An
+  acceptance's hold").
 - A waiter may take between a run's `free_paused` and its resume, as any
   role may (section 8).
 - **`repair`** (user, 2026-10-21, proposed by methodology): run on the bench
@@ -222,6 +224,15 @@ Board state, what is on each board, stays in
   handed to run <id>`. Held in any other way, or free, it refuses as at any
   start. So a session that won the bench with `wait` starts a run without
   freeing it.
+- **An acceptance's hold** (user, 2026-11-17; ACCEPT-SPEC A18). The
+  acceptance runner, a long-lived process, takes the bench at its first
+  bench part as `wait` does: it queues a request under its own PID and,
+  when it is the oldest live request and the lock is free, takes it for
+  its role with no run. Each nested run then starts from that hold with
+  `--from-hold`, and every one but the last hands it back with
+  `--keep-lock`. So the bench is never free between the acceptance's bench
+  parts, and waiters stay queued until its last part releases. If the
+  acceptance ends while the hold is still its own, it releases it.
 - After a LOCK LOST the runner releases nothing. If the runner dies, the
   lock stays held under its PID until `clear`.
 - **Board reads after a LOCK LOST are not prevented** (user, 2026-10-24):
@@ -258,7 +269,9 @@ way, the Holder is not its own.
   `take --run <id>` then `release`, under the session's own PID.
 - **Who takes for a run: the runner itself**, through the API, with its own
   PID and run id, at start. A take by hand (work that is not a run) gives the
-  Claude Code session's process as `--pid`. `--pid` has no default.
+  Claude Code session's process as `--pid`. An acceptance's hold is a take
+  with no run, under the acceptance runner's own PID (section 6). `--pid`
+  has no default.
 - **PID checks fail safe:** unsure, or access denied, counts as alive, so PID
   reuse can only make `clear` refuse, never wrongly allow it.
 - **Who may write:** the tester or implementor of gen-inhibit or
@@ -472,3 +485,10 @@ way, the Holder is not its own.
   (section 8). Drafted by the CAN replay tooling session; framed by the
   charge-interposer reviewer, approved by the user in its session; read by
   the gen-inhibit reviewer before merge.
+- **An acceptance holds the bench from its first bench part to its last**
+  (user, 2026-11-17, relayed by the charge-interposer tester; ACCEPT-SPEC
+  A18). At its first bench part the acceptance runner waits in the queue as
+  `wait` does, takes the bench under its own PID, and passes the hold to and
+  from its nested runs, so no waiter takes the bench partway through the
+  acceptance. Drafted by the charge-interposer reviewer, approved by the
+  user in its session; read by the gen-inhibit reviewer before merge.
