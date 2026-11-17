@@ -89,6 +89,10 @@ Settings this suite reads, besides the core's (shared/bench/README.md):
                      when it names the host the suite runs on, both run there without ssh
                      (host_target.sh's local mode, 2026-11-12)
     gi_host_root     the reverse-it root on that host (H's RROOT; a leading ~/ is that host's home)
+    gi_wican_power   how the WiCAN is powered, as read on the bench by a person (12 V on OBD
+                     pin 16, USB plugged or not): B5_B8's records carry it as given, as
+                     GI_WICAN_POWER (2026-11-16: they said "USB unplugged" whatever the
+                     bench had). The bench suite refuses settings without it
     ota              the core flasher's block (vtrux_bench.run.ota): host (192.168.80.1, the
                      suite's HOST; another is refused), iface, profile, ssid_env (the variable
                      the suite fills with bench-holder.md's SSID; one already holding another
@@ -195,6 +199,15 @@ def harness_dir(settings):
 # 2026-10-24; gi_paths and SeaDrive's DBC before).
 B15_FILES = ("diag_decode_check.py", "gi_diag.py", "pins.json")
 JAMMER_MD5 = "a89ece8c467f90723a3ac26e72924aa8"            # baseline_b_jam.sh's build
+
+
+def jammer_desc(image):
+    """What the X2 runs once the x2-jammer flasher has run, for B5_B8's records
+    (GI_JAMMER, x2_jam_cases.py --jammer; 2026-11-16): the build the flasher writes."""
+    return "x2_jammer build %s (x2_flash_custody.py flash-jammer --build, after a custody dump)" % (
+        image.params["build"])
+
+
 SSID_RX = re.compile(r"SoftAP `(WiCAN_[0-9a-fA-F]*)`")
 WICAN_BUILDS = {   # image name -> build-tester-<dir> in gi_images
     # no wican_man2 since 2026-10-25: reproducible builds (step 0b) make it byte-identical to wican_man
@@ -687,6 +700,7 @@ def suite(settings):
     prod_dir = need(settings, "gi_prod_dir")
     ssid = wican_ssid(need(settings, "bench_holder"))
     need(settings, "gi_can1_termination")      # NONODE's --termination: read on the bench by a person
+    need(settings, "gi_wican_power")           # B5_B8's power text: read on the bench by a person
     images = {}
     hooks = make_hooks(settings, ssid, images)
     try:
@@ -806,7 +820,7 @@ def suite(settings):
                 ["B5_livetrain_p5000.txt"] + ["B5_livetrain_p2000_run%d.txt" % r for r in (1, 2, 3)]
                 + ["B6_threshold_n10_lead%s.txt" % l for l in ("1.5", "5", "8.5")]
                 + ["B6_threshold_n9_lead%s.txt" % l for l in ("1.5", "5")] + ["B7_busoff_rearm.txt", "B8_busoff.txt"],
-                5400)]),
+                5400, env={"GI_JAMMER": jammer_desc(images["x2_jammer"]), "GI_WICAN_POWER": "{gi_wican_power}"})]),
         Group("man_slcan", needs_lock=True, image=["wican_man", "x2_slcan"], checks=[
             chk("B22", "baseline_b22.sh", [], judged("B22"),
                 ["B22_case3_%s_man_a.txt" % C, "B22_case3_%s_man_b.txt" % C], 1800),

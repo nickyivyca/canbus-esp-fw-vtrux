@@ -48,7 +48,8 @@ VOID; Witness.recorded() still gives the times on either clock for the record.
 
   py -3.14 gen-inhibit/tools/bench/x2_jam_cases.py busoff --arms 3 [--control]
   py -3.14 ... livetrain --arms 3 [--p 5000 --ms 5000]   (arm (i): a steady, slower train)
-  Every case needs --power (how the WiCAN is powered; recorded as given).
+  Every case needs --power (how the WiCAN is powered; recorded as given) and --jammer
+  (what the X2 runs, as the step that flashed it names it; recorded as given, 2026-11-16).
   py -3.14 ... threshold --arms 3 --n 10 --interval-ms 1000
 Writes runs/x2_jam_<case>_<stamp>.json (never overwrites).
 """
@@ -1401,6 +1402,10 @@ def build_parser():
     ap.add_argument("--power", required=True,
                     help="how the WiCAN is powered, recorded as given (since 2026-10-12; "
                          "it was a fixed 'USB only (PC)', wrong once USB was unplugged)")
+    ap.add_argument("--jammer", required=True,
+                    help="what the X2 runs, as the step that flashed it names it, recorded as given "
+                         "(since 2026-11-16; it was a fixed 'x2_jammer bb20e4a37b64 / md5 a89ece8c...', "
+                         "wrong once the jammer's ESP-IDF port is flashed)")
     ap.add_argument("--arms", type=int, default=3)
     ap.add_argument("--control", action="store_true")
     ap.add_argument("--w", type=int, default=20)
@@ -1433,6 +1438,15 @@ def build_parser():
                     help="busoff-rearm: 'stays' on the build before the spec 7 change "
                          "(a direct re-arm leaves the controller bus_off), 'reinstalls' after it")
     return ap
+
+
+def session_record(a, build, decoder, serial_devices):
+    """The record's opening fields. The jammer and the power are recorded as the caller
+    gives them (--jammer, --power): nothing here knows which image the X2 runs."""
+    return {"when": time.strftime("%Y%m%dT%H%M%S"), "case": a.case, "args": vars(a),
+            "build": build, "power": a.power, "decoder": decoder,
+            "jammer": "X2 CAN1, %s" % a.jammer,
+            "witness": "Kvaser, normal mode", "serial_devices": serial_devices}
 
 
 def run_guarded(case, a, rec, con, wit):
@@ -1477,10 +1491,7 @@ def main():
     except GS.Refused as e:
         print("REFUSED: %s (nothing run, no record)" % e)
         return 2
-    rec = {"when": time.strftime("%Y%m%dT%H%M%S"), "case": a.case, "args": vars(a),
-           "build": build, "power": a.power, "decoder": gi_diag.run_identity(),
-           "jammer": "X2 CAN1, x2_jammer bb20e4a37b64 / md5 a89ece8c...",
-           "witness": "Kvaser, normal mode", "serial_devices": serial_devices}
+    rec = session_record(a, build, gi_diag.run_identity(), serial_devices)
     global CC
     from console_capture import ConsoleCapture
     CC = start_wican_console(a, ConsoleCapture, port_of)      # every live arm (reviewer 2026-10-08)

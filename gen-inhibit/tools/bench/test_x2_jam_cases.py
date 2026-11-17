@@ -8,6 +8,7 @@ latching before the 10th delivered error frame.
 
 Run: py -3.14 gen-inhibit/tools/bench/test_x2_jam_cases.py
 """
+import json
 import os
 import sys
 
@@ -260,7 +261,7 @@ def reset_cases():
             called.append(1)
             raise RuntimeError("armed although the reset was not shown")
         C.arm_live = armed
-        args = C.build_parser().parse_args(["threshold", "--power", "x", "--arms", "2",
+        args = C.build_parser().parse_args(["threshold", "--power", "x", "--jammer", "j", "--arms", "2",
                                             "--reset-wican"])
         rec = {}
         try:
@@ -431,10 +432,33 @@ def main():
         ok = False
     except SystemExit:
         ok = True
-    ok = ok and C.build_parser().parse_args(["livetrain", "--power", "12 V"]).power == "12 V"
+    ok = ok and C.build_parser().parse_args(["livetrain", "--power", "12 V", "--jammer", "j"]).power == "12 V"
     print("  %-4s args     %-58s" % ("ok" if ok else "FAIL", "--power required, kept as given"))
     if not ok:
         bad.append("power arg")
+    # --jammer is required and recorded as given (2026-11-16: the record named the
+    # PlatformIO jammer a89ece8c whatever the X2 ran)
+    try:
+        C.build_parser().parse_args(["livetrain", "--power", "12 V"])
+        ok = False
+    except SystemExit:
+        ok = True
+    print("  %-4s args     %-58s" % ("ok" if ok else "FAIL", "--jammer required"))
+    if not ok:
+        bad.append("jammer arg required")
+    a = C.build_parser().parse_args(["threshold", "--power", "P-text", "--jammer", "row ea762c62044cb5c6"])
+    rec = C.session_record(a, "B-build", "D-decoder", {"x2": "dev"})
+    for label, ok, got in (
+            ("the record's jammer is the one given", rec.get("jammer") == "X2 CAN1, row ea762c62044cb5c6",
+             rec.get("jammer")),
+            ("the record names no jammer it was not given", "a89ece8c" not in json.dumps(rec), rec.get("jammer")),
+            ("the record's power is the one given", rec.get("power") == "P-text", rec.get("power")),
+            ("the record keeps build, decoder, devices, case",
+             (rec.get("build"), rec.get("decoder"), rec.get("serial_devices"), rec.get("case"))
+             == ("B-build", "D-decoder", {"x2": "dev"}, "threshold"), "")):
+        print("  %-4s record   %-58s %s" % ("ok" if ok else "FAIL", label, str(got)[:40]))
+        if not ok:
+            bad.append(label)
     for label, ok, detail in witness_state_cases():
         print("  %-4s witness  %-58s %s" % ("ok" if ok else "FAIL", label[:58], str(detail)[:60]))
         if not ok:

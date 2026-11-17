@@ -184,6 +184,11 @@ MUTANTS = [
     ("an argv carries a local path", '["{gi_images}", "{gi_prod_dir}"] + step.split()', '[images_dir, prod_dir] + step.split()'),
     ("NONODE without a termination in the settings", '    need(settings, "gi_can1_termination")', '    settings.get("gi_can1_termination")'),
     ("NONODE's termination is a fixed text", 'env={"GI_TERMINATION": "{gi_can1_termination}",', 'env={"GI_TERMINATION": "unknown",'),
+    # B5_B8's jammer and WiCAN power (2026-11-16)
+    ("B5_B8 without a WiCAN power in the settings", '    need(settings, "gi_wican_power")', '    settings.get("gi_wican_power")'),
+    ("B5_B8's power is a fixed text", '"GI_WICAN_POWER": "{gi_wican_power}"', '"GI_WICAN_POWER": "12 V on OBD pin 16, USB unplugged"'),
+    ("B5_B8's jammer is a fixed text", '"GI_JAMMER": jammer_desc(images["x2_jammer"])', '"GI_JAMMER": "x2_jammer a89ece8c"'),
+    ("jammer_desc names the fixed build", '        image.params["build"])', '        JAMMER_MD5)'),
     ("NONODE's sha is the prod image's", '"GI_MAN_SHA": images["wican_man"].expect}', '"GI_MAN_SHA": images["wican_prod"].expect}'),
     ("NONODE is not judged", 'judged("NONODE"), ["NONODE_nonode_bench.txt"]', 'None, ["NONODE_nonode_bench.txt"]'),
     # the host-run commit (2026-10-22): H and B15host run this clone's harness

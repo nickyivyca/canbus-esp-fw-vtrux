@@ -4,6 +4,7 @@
 # tester, 2026-10-16 (on c65c45e these were run by hand; this records them).
 #
 #   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... INTERPOSER_CODE=... \
+#     [GI_JAMMER=<what the X2 runs> GI_WICAN_POWER=<how the WiCAN is powered>] \
 #     bash baseline_b_jam.sh custody|jam|restore
 #
 #   custody  dump the X2 (two reads must match; the dump holds NVS and is
@@ -12,7 +13,13 @@
 #   jam      B5 livetrain 200/s (--p 5000) once and 500/s (--p 2000) three times;
 #            B6 threshold n10 at 1.0 s with leads 1.5/5/8.5, controls n9 at 1.1 s
 #            with leads 1.5/5, 2 arms each, --reset-wican; B7 busoff-rearm
-#            --expect reinstalls; B8 busoff --control; 3 arms where not stated
+#            --expect reinstalls; B8 busoff --control; 3 arms where not stated.
+#            jam refuses (exit 2, nothing run) without GI_JAMMER, what the X2 runs as
+#            the step that flashed it names it, and GI_WICAN_POWER, how the WiCAN is
+#            powered; both go into every record as given (2026-11-16: the records named
+#            the PlatformIO jammer a89ece8c and "USB unplugged" whatever the bench had).
+#            Never a WiCAN console capture (--no-wican-console; reviewer 2026-10-20,
+#            until the WiCAN's factory reset): --reset-wican resets by POST /system_reboot
 #   restore  restore from the dump (verify-flash digest), hold it in ROM, then
 #            release it with the PCAN ACKing and read 0x7F7 off the wire
 # Run from the reverse-it root. Each step's stdout is kept in
@@ -27,7 +34,6 @@ D=${GI_OUT:-$DATA/runs/baseline_$C/bench}   # GI_OUT: the chain runner's check f
 X=$D/x2
 JAMMER_MD5=a89ece8c467f90723a3ac26e72924aa8
 mkdir -p "$X"
-PW="12 V on OBD pin 16, USB unplugged (no WiCAN console); WiCAN $C _man; X2 jammer a89ece8c (custody)"
 case ${1:?custody, jam or restore} in
   custody)
     $PY -B $A/x2_flash_custody.py dump --expect-elf 756d6714 > "$X/custody_dump.txt" 2>&1; echo "dump exit $?"
@@ -40,7 +46,10 @@ case ${1:?custody, jam or restore} in
     echo "dump record: $rec"
     ;;
   jam)
-    j() { local n=$1; shift; echo "$(date +%H:%M:%S) $n"; $PY -B $A/x2_jam_cases.py "$@" --power "$PW" > "$D/$n.txt" 2>&1; echo "  exit $?"; }
+    [ -n "${GI_JAMMER:-}" ] || { echo "jam needs GI_JAMMER (what the X2 runs, as the step that flashed it names it): nothing run"; exit 2; }
+    [ -n "${GI_WICAN_POWER:-}" ] || { echo "jam needs GI_WICAN_POWER (how the WiCAN is powered): nothing run"; exit 2; }
+    PW="$GI_WICAN_POWER; no WiCAN console capture; WiCAN $C _man"
+    j() { local n=$1; shift; echo "$(date +%H:%M:%S) $n"; $PY -B $A/x2_jam_cases.py "$@" --power "$PW" --jammer "$GI_JAMMER" --no-wican-console > "$D/$n.txt" 2>&1; echo "  exit $?"; }
     j B5_livetrain_p5000 livetrain --arms 3 --p 5000 --ms 5000
     for r in 1 2 3; do j B5_livetrain_p2000_run$r livetrain --arms 3 --p 2000 --ms 5000; done
     for l in 1.5 5 8.5; do j B6_threshold_n10_lead$l threshold --arms 2 --n 10 --interval-ms 1000 --lead-s $l --reset-wican; done

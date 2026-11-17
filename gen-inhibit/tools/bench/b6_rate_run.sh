@@ -44,7 +44,8 @@ for spec in 1.5:7 5:7 8.5:6; do
   l=${spec%%:*}; n=${spec##*:}
   echo "$(date +%H:%M:%S) B6_rate_n10_lead$l ($n arms)"
   $PY -B $A/x2_jam_cases.py threshold --arms $n --n 10 --interval-ms 1000 --lead-s $l --reset-wican \
-    --power "$PW" > "$GI_OUT/B6_rate_n10_lead$l.txt" 2>&1
+    --power "$PW" --jammer "x2_jammer bb20e4a37b64 / md5 a89ece8c... (baseline_b_jam.sh custody)" \
+    --no-wican-console > "$GI_OUT/B6_rate_n10_lead$l.txt" 2>&1
   echo "  exit $?"
   grep -E "^arm |^verdict" "$GI_OUT/B6_rate_n10_lead$l.txt" | cut -c1-200
 done

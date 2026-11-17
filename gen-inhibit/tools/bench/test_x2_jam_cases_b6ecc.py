@@ -136,9 +136,9 @@ def tried(fn):
 def console_checks(C):
     """--no-wican-console (reviewer, 2026-10-20: no WiCAN console captures until the
     factory reset)."""
-    p = tried(lambda: C.build_parser().parse_args(["threshold", "--power", "x", "--no-wican-console"]))
+    p = tried(lambda: C.build_parser().parse_args(["threshold", "--power", "x", "--jammer", "j", "--no-wican-console"]))
     check("the parser takes --no-wican-console", getattr(p, "no_wican_console", None) is True, p)
-    p = tried(lambda: C.build_parser().parse_args(["threshold", "--power", "x"]))
+    p = tried(lambda: C.build_parser().parse_args(["threshold", "--power", "x", "--jammer", "j"]))
     check("the console is on unless asked off", getattr(p, "no_wican_console", None) is False, p)
     FakeCC.made = 0
     asked = []
@@ -283,7 +283,7 @@ S1 = gi_paths.verify(gi_paths.runs("b6_ecc_20261020T214017", "x2_jam_threshold_2
 def gate_checks(C):
     """--ecc-gate (reviewer, 2026-10-20): stop after the first arm when its /gi_ecc page
     fails gi_ecc.liveness; exit 3."""
-    p = tried(lambda: C.build_parser().parse_args(["threshold", "--power", "x", "--ecc", "--reset-wican", "--ecc-gate"]))
+    p = tried(lambda: C.build_parser().parse_args(["threshold", "--power", "x", "--jammer", "j", "--ecc", "--reset-wican", "--ecc-gate"]))
     check("the parser takes --ecc-gate", getattr(p, "ecc_gate", None) is True, p)
     r = C.threshold_refusal(ns(ecc=False, reset_wican=False, ecc_gate=True))
     check("--ecc-gate without --ecc is refused", r is not None and "--ecc-gate needs --ecc" in r, r)
@@ -329,10 +329,10 @@ def gate_checks(C):
 def over_checks(C):
     """--stop-over-counts (reviewer, 2026-10-21): B6 session 3 stops at the end of the
     arm where the 3rd over-count lands; sessions 1-2 had 2, so session 3 passes 1."""
-    p = tried(lambda: C.build_parser().parse_known_args(["threshold", "--power", "x", "--ecc", "--reset-wican",
+    p = tried(lambda: C.build_parser().parse_known_args(["threshold", "--power", "x", "--jammer", "j", "--ecc", "--reset-wican",
                                                          "--stop-over-counts", "1"])[0])
     check("the parser takes --stop-over-counts N", getattr(p, "stop_over_counts", None) == 1, p)
-    p = tried(lambda: C.build_parser().parse_args(["threshold", "--power", "x"]))
+    p = tried(lambda: C.build_parser().parse_args(["threshold", "--power", "x", "--jammer", "j"]))
     check("--stop-over-counts defaults to off", getattr(p, "stop_over_counts", "absent") is None, p)
     r = C.threshold_refusal(ns(ecc=False, reset_wican=False, stop_over_counts=1))
     check("--stop-over-counts without --ecc is refused", r is not None and "--stop-over-counts needs --ecc" in r, r)

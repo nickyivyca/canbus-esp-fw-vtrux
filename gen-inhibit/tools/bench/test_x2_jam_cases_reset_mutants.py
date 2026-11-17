@@ -78,6 +78,17 @@ MUTANTS = [
     ("the per-pulse delta without req_start (the old return-time stamp)",
      '    be = [(t, (s or {}).get("drv_bus_error"), (s or {}).get("req_start")) for t, s in samples\n',
      '    be = [(t, (s or {}).get("drv_bus_error")) for t, s in samples\n'),
+    # The record's jammer, as the caller names it (2026-11-16, before B5-B8 on the
+    # jammer's ESP-IDF port: the record named a89ece8c whatever the X2 ran).
+    ("--jammer optional",
+     'ap.add_argument("--jammer", required=True,',
+     'ap.add_argument("--jammer", default="x2_jammer bb20e4a37b64 / md5 a89ece8c...",'),
+    ("the record names the old jammer whatever was given",
+     '"jammer": "X2 CAN1, %s" % a.jammer,',
+     '"jammer": "X2 CAN1, x2_jammer bb20e4a37b64 / md5 a89ece8c...",'),
+    ("the record drops the caller's power",
+     '"build": build, "power": a.power, "decoder": decoder,',
+     '"build": build, "power": "12 V", "decoder": decoder,'),
 ]
 
 
