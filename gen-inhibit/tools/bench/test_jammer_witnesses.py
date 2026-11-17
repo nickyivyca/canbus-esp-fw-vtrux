@@ -49,6 +49,9 @@ import sys
 import threading
 import time
 import types
+# no bytecode anywhere below this process: a child that imports the pinned core must not write
+# __pycache__ into its read-only checkout (charge-interposer tester, 2026-11-16)
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
