@@ -68,8 +68,9 @@ def main():
             and os.path.isfile(os.path.join(shared, "twai_port", "test", "twai_fake.c"))):
         print("wican_ref: no checkout of %s at %s; create it with\n"
               "  git -C <anchor> worktree add --detach %s %s\n"
+              "  chmod -R a-w %s\n"
               "or pass WICANDIR=<folder> to make"
-              % (tag, folder, checkout, tag), file=sys.stderr)
+              % (tag, folder, checkout, tag, shared), file=sys.stderr)
         return 2
     print(folder.replace("\\", "/"))
     return 0
