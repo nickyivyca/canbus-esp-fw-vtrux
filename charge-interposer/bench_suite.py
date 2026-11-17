@@ -286,6 +286,15 @@ SHARED_BENCH_TESTS = [
     "test_scratch.py", "test_scratch_helper.py", "test_serial_dev.py",
     "test_vbus.py", "test_wican_http.py", "test_wifi.py",
 ]
+# The pinned shared/bench tests the harness does not run, each with why.
+SHARED_BENCH_NOT_RUN = {
+    # the charge-interposer reviewer, 2026-11-16 (re-pin to 2026.11.16.5):
+    # it tests the shared test suite, not the runner's behaviour; it runs in
+    # a shared/bench range's own control, and shared_pin's digest check
+    # catches a dirtied checkout anyway
+    "test_checkout_unchanged.py": "tests shared/bench's own test suite; "
+                                  "run in the shared/bench range's control",
+}
 
 HARNESS_LOCAL = [
     # the bench host's own pinned canbench (madhouse has no clone and
