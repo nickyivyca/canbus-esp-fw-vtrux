@@ -706,11 +706,20 @@ def b20(F):
                    "%d of %d AS SPECIFIED" % (spec, len(cases)))]
 
 
+# The flash guard's PASS line from 2026-11-16 (spec 12.4's flash-write row, user 2026-11-16):
+# the two car-data endpoints are not registered, 404 in every mode. bench_flash_guard.py prints
+# it after "spec 5.1 item 3 holds on the device" only when every row passed.
+B21_UNREGISTERED = "/store_car_data and /upload/car_data.json are not registered (404 in every mode)."
+
+
 @judge("B21", "B")
 def b21(F):
     bad, figs = [], {}
-    if "spec 5.1 item 3 holds on the device" not in text(F.one(r"B21_bench_flash_guard\.txt")):
+    fg = text(F.one(r"B21_bench_flash_guard\.txt"))
+    if "spec 5.1 item 3 holds on the device" not in fg:
         bad.append("flash guard")
+    elif B21_UNREGISTERED not in fg:
+        bad.append("flash guard: the car-data endpoints not shown unregistered (404 in every mode)")
     if "the OTA guard holds in every non-OFF mode" not in text(F.one(r"B21_bench_ota_guard\.txt")):
         bad.append("OTA guard")
     for kind in ("multipart", "image"):

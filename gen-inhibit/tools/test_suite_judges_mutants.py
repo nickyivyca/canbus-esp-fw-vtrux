@@ -14,6 +14,9 @@ import os
 import shutil
 import subprocess
 import sys
+# no bytecode anywhere below this process: a child importing the pinned core must not write
+# __pycache__ into its read-only checkout (charge-interposer tester, 2026-11-16)
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "bench"))
@@ -89,6 +92,11 @@ MUTANTS = [
     ("B17: the page need not name the image", 'ok = first == "AS SPECIFIED" and m and i and m.group(1) == i.group(1)',
      'ok = first == "AS SPECIFIED" and m and i'),
     ("B21: an RST is not counted", 'rst = sum(1 for _, e, _ in reps if e == "rst")', 'rst = 0'),
+    # the car-data endpoints not registered (spec 12.4, user 2026-11-16)
+    ("B21: the car-data sentence not required", "    elif B21_UNREGISTERED not in fg:\n", "    elif False:\n"),
+    ("B21: any line naming the car-data endpoints will do",
+     'B21_UNREGISTERED = "/store_car_data and /upload/car_data.json are not registered (404 in every mode)."',
+     'B21_UNREGISTERED = "/store_car_data and /upload/car_data.json"'),
     ("B22: tx_fail is not checked", 'if not prov_ok(p) or int(d.group(2)) or',
      'if not prov_ok(p) or'),
     ("B22: a void arm is a missing line, as before 2026-10-29", '        if "---- ARM VOID:" in t and reasons:\n',

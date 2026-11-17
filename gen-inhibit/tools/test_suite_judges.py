@@ -20,6 +20,9 @@ import os
 import re
 import shutil
 import sys
+# no bytecode anywhere below this process: a child importing the pinned core must not write
+# __pycache__ into its read-only checkout (charge-interposer tester, 2026-11-16)
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -190,6 +193,8 @@ EDITS = [
     ("B19page", "bench", r"B19_spec11_page_prod\.txt", r"^AS SPECIFIED", "NOT AS SPECIFIED", "FAIL"),
     ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^(gate-open +)AS SPECIFIED", r"\g<1>NOT AS SPECIFIED", "FAIL"),
     ("B21", "bench", r"B21_bench_flash_guard\.txt", r"spec 5\.1 item 3 holds on the device", "spec 5.1 item 3 does not hold", "FAIL"),
+    # the car-data sentence (spec 12.4, user 2026-11-16), present in the copy (B21_NOW below)
+    ("B21", "bench", r"B21_bench_flash_guard\.txt", r" are not registered \(404 in every mode\)\.", " are registered.", "FAIL"),
     ("B21", "bench", r"B21_wire_image_e3d9437\.txt", r"^(PASSIVE  rep 2 .*?device_end )fin", r"\g<1>rst", "FAIL"),
     ("B21", "bench", r"B21_wire_multipart_e3d9437\.txt", r"^(OBSERVE  rep 3 .*? wire )403", r"\g<1>200", "FAIL"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"tx_fail=0", "tx_fail=1", "FAIL"),
@@ -420,6 +425,27 @@ C7_FILES = [
 ]
 
 
+# B21's flash guard, as it prints its PASS line from 2026-11-16 (spec 12.4's flash-write row,
+# user 2026-11-16: /store_car_data and /upload/car_data.json not registered, 404 in every
+# mode). The e3d9437 build registered both (behind the guard), so its file has the old line
+# and B21 judges FAIL on it now (checked in main). The copy the other checks read gets the
+# new line, in place of the old, so the index's PASS and B21's edits keep their meaning.
+B21_THEN = ("spec 5.1 item 3 holds on the device: every flash writer is refused while gen_inhibit owns the bus, "
+            "and each 403 names the reason.")
+B21_NOW = B21_THEN[:-1] + "; " + J.B21_UNREGISTERED
+
+
+def b21_now(dest):
+    """B21's flash guard file in dest/bench in its 2026-11-16 form (B21_NOW); False if the
+    baseline's line was not there once."""
+    p = os.path.join(dest, "bench", "B21_bench_flash_guard.txt")
+    s = open(p, encoding="utf-8").read()
+    if s.count(B21_THEN) != 1:
+        return False
+    open(p, "w", encoding="utf-8").write(s.replace(B21_THEN, B21_NOW))
+    return True
+
+
 def copy_tree(base, dest):
     """The baseline's text files (no captures, no witness logs), into dest/{bench,host,root},
     and B12's restart records beside its cycle files (b12_records)."""
@@ -458,6 +484,11 @@ def main():
     gi_paths.remove_tree(scratch)
     real = os.path.join(scratch, "real")
     copy_tree(base, real)
+    own = J.judge_one("B21", os.path.join(real, "bench"))
+    check("B21: on the baseline's own flash guard file (registered car-data endpoints) the judge FAILS, naming them",
+          lambda: [r["verdict"] for r in own] == ["FAIL"] and "not shown unregistered" in own[0]["detail"],
+          [(r["verdict"], r["detail"]) for r in own])
+    check("B21: the copy's flash guard file takes its 2026-11-16 PASS line", lambda: b21_now(real))
     recs = b12_records(base)
     check("B12: the 7 cycle files name 7 restart records, each found and copied beside them",
           lambda: len(recs) == 7 and all(os.path.isfile(os.path.join(real, "bench", n)) for n, _p in recs),
