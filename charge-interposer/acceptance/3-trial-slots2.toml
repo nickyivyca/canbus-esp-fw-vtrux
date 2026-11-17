@@ -1,0 +1,117 @@
+# The slot trial on madhouse-debian, slots 2 of 1, 2 and 4: shared/bench job
+# B's side-by-side m-sims (shared/bench ACCEPT-SPEC A2; owned by the
+# charge-interposer reviewer). Drafted by the tester for the reviewer (the
+# reviewer's message of 2026-11-17: "Once its record exists, send slots 2
+# and 4 together as one range"). As 3-trial-slots1.toml (its header has the
+# trial's purpose, the baseline 8b8e with the tester's hand check, and the
+# serial spread and margins), with 2 slots, against the slots-1 run rather
+# than 8b8e, and one more comparison: each sim's segment frame rates against
+# the slots-1 run's.
+#
+# Settings: accept_trial_slots2_settings_madhouse-debian.json, a copy of
+# accept_settings_madhouse-debian.json changing only
+# hosts.local.wallclock_slots (2) and bus_alloc ({}: the core's defaults,
+# groups 239.0.3+slot.<n>, ports 43300 + 10 x slot). Up to 2 m-sims checks
+# run side by side, each on its slot's own groups and ports, refused if they
+# are bound or not quiet before it starts, voided on a foreign sender or
+# holder while it runs, and each recording an isolation event with its
+# segments' frame rates.
+#
+# The frame-rate baseline is the slots-1 run
+# (accept_3_20261117T135536_0849, from 3-trial-slots1.toml at 8ebbd9e6): the
+# same allocated buses one at a time, whose isolation events give each
+# segment's rate range over its 27 sims.
+# c-timing judges each sim's rate on each segment against that range, with
+# margin 0 (the reviewer, 2026-11-16). This run starts only once the
+# slots-1 run has closed, since c-timing reads its record. Its stalls, gaps
+# and p99 stay judged against the serial spread of 98d1, e79d and 8b8e with
+# 3-trial-slots1.toml's margins (stalls 1, gaps_over_40ms 6, p99_gap_ms 2).
+# Verdicts and logs are judged against the slots-1 run too: [baseline] may
+# name only this list's own items, so the slots-1 run is this list's
+# baseline:emulated, and 8b8e is reached through it (3-trial-slots1.toml
+# judges the slots-1 run's verdicts and logs against 8b8e's; equal verdicts
+# carry over). Every stall or gap inside the margins goes into the tester's
+# entry per sim, not folded into the pass (the reviewer, 2026-11-17).
+#
+# The product is 0691f6f1's (premise "digest"). The emulated suite runs
+# whole. Placement as 3-trial-slots1.toml: the runner in bench.slice, the
+# sims in bench.slice, the builds and emulated-time checks in build.slice.
+# It may run beside other work on the machine (AGENTS.md "Parallel work on
+# the shared machine"); a timing failure is triaged against resource-log
+# over its window (point 2) before it counts, and the tester's entry says
+# what ran beside it.
+#
+# Trees:
+#   harness   be768ac3, as 3-trial-slots1.toml.
+
+[step]
+id = "3"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-17"
+spec = ["9", "9.1"]
+verification = "the tester's VERIFICATION.md entry for the slot trial (shared/bench job B) on madhouse-debian"
+
+[trees.harness]
+project = "be768ac3a947025c0d06e774aa784b97e94c9f77"
+
+[[premise]]
+id = "digest"
+kind = "product_digest_same_as"
+tree = "harness"
+commit = "0691f6f10b2d0a54166de33bac344cacc5e0bb99"
+
+# ---- the emulated suite, whole, 2 sims side by side -----------------------
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+
+# ---- the baseline: the slots-1 run's emulated suite -----------------------
+[baseline]
+emulated = "accept_3_20261117T135536_0849/runs/accept_3_20261117T135536_0849-emulated"
+
+# Verdicts against the slots-1 run's: none moves. The same 40 checks (88
+# results); the two host_bridge KNOWN-FAILs and the three declared skips on
+# both sides.
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = []
+
+# Each check's log against the slots-1 run's, the sims' scored margins
+# included: shown line by line, judged on verdicts only (c-timing judges the
+# timing).
+[[compare]]
+id = "c-margins"
+comparer = "run-logs"
+a = "baseline:emulated"
+b = "emulated"
+expect = "same-verdicts"
+
+# The sims' wall-clock timing inside the serial spread of 98d1, e79d and
+# 8b8e widened by the margins, and each sim's segment frame rates inside the
+# slots-1 run's range.
+[[compare]]
+id = "c-timing"
+comparer = "sim-timing"
+a = "baseline:emulated"
+b = "emulated"
+expect = "identical"
+
+[compare.tolerance]
+fps = "a"
+serial = [
+  "accept_3_20261113T081639_98d1/runs/accept_3_20261113T081639_98d1-emulated",
+  "accept_3_20261114T035628_e79d/runs/accept_3_20261114T035628_e79d-emulated",
+  "accept_3_20261116T181213_8b8e/runs/accept_3_20261116T181213_8b8e-emulated",
+]
+
+[compare.tolerance.margin]
+stalls = { abs = 1 }
+gaps_over_40ms = { abs = 6 }
+p99_gap_ms = { abs = 2 }
+fps = { abs = 0 }
