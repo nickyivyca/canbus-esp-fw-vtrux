@@ -1,4 +1,4 @@
-"""Harness test for page_only_baseline: outage grouping, WLAN parsing, judge.
+"""Harness test for page_only_baseline: outage grouping, the WLAN read and rejoin, judge.
 
 A reboot without a console must show as exactly one outage whether the sign is
 an unanswered page, a dropped WLAN, or both in sequence; two separate drops are
@@ -6,22 +6,28 @@ two outages; a clean run is no outage; a poll not in mode 0 is reported. The
 WLAN signal and rates are read as numbers only, never from the SSID or BSSID
 lines, and are logged without changing the verdict. Also --power is required.
 
-Linux (2026-11-12, the reviewer's Linux leftovers item 6): the WLAN is read with nmcli's
-terse output (made-up lines in its documented form; madhouse-debian has no Wi-Fi adapter
-yet). Connected only with exactly one active access point whose SSID is the WiCAN's; an
-escaped ':' in an SSID is part of it; the signal is the active line's, the rates None; a
-reader that can't run or exits non-zero is not connected and says why; Windows still
-reads netsh; the rejoin goes through the stored profile, nmcli on Linux.
+The WLAN read and the rejoin (2026-11-16, the gen-inhibit reviewer's job (1): every rejoin
+through the core's vtrux_bench.run.wifi) go through gi_wifi with the backend settings.ota
+chooses, here a stand-in backend: on the hotspot only when connected AND on the WiCAN's
+SSID, read from the configured interface; a backend that cannot be read is not on it and
+says why; the SSID never in a state; the link fields None; the rejoin selects the network
+once through the backend, with the settings' profile and interface, and does not wait (no
+read); its failure is kept, masked. Without GI_OTA_SETTINGS the tool refuses, exit 2, no
+record. Until 2026-11-16 this read netsh and nmcli output itself.
 
+  PYTHONPATH=<core 2026.11.16.5>/shared/bench \
   python3.13 gen-inhibit/tools/bench/test_page_only_baseline.py [--mutants]
 
---mutants: each mutant of page_only_baseline.py's WLAN reading is a copy in this run's
+--mutants: each mutant of page_only_baseline.py's WLAN read and rejoin is a copy in this run's
 scratch/ folder with one edit, run through GI_PAGE_ONLY_DIR; a check must fail on each,
 and the unmutated copy, the control, must pass.
 """
 import os
 import subprocess
 import sys
+# no bytecode anywhere below this process: a child that imports the pinned core must not write
+# __pycache__ into its read-only checkout (charge-interposer tester, 2026-11-16)
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -104,44 +110,18 @@ def uptime_cases():
     return out
 
 
-NETSH_UP = """
-    Name                   : Wi-Fi
-    State                  : connected
-    SSID                   : AP-X
-    BSSID                  : 00:00:5e:00:53:02
-"""
-NETSH_OTHER = NETSH_UP.replace("AP-X", "AP-Y")
-NETSH_DOWN = """
-    Name                   : Wi-Fi
-    State                  : disconnected
-"""
-NETSH_LINK = NETSH_UP + """    Radio type             : 802.11n
-    Receive rate (Mbps)    : 144.4
-    Transmit rate (Mbps)   : 130
-    Signal                 : 87%
-"""
-# SSID and BSSID values shaped like the numbers read: neither may land in the result.
-NETSH_DECOY = """
-    State                  : connected
-    SSID                   : 55%
-    BSSID                  : 77
-    Signal                 : strong
-"""
+NONE = {"wlan_signal": None, "wlan_rx_mbps": None, "wlan_tx_mbps": None}
+CFG = {"host": "192.168.80.1", "iface": "wlan0", "profile": "79", "ssid": "AP-X", "wifi": "adb",
+       "capture": False, "capture_iface": "wlan0", "echo": False, "phone": {"serial": "x", "adb": "adb"}}
 
 
 def link_cases():
-    L = P.parse_wlan_link
     sig = [S(0), S(1, answered=False), S(2, answered=False), S(3)]
     for s, v in zip(sig, (10, 40, 30, 5)):
         s.update({"wlan_signal": v, "wlan_rx_mbps": v * 2.0})
     o = P.outages(sig)
-    none = {"wlan_signal": None, "wlan_rx_mbps": None, "wlan_tx_mbps": None}
     low = [dict(S(t), wlan_signal=1) for t in range(5)]
     return [
-        ("link: signal, rx and tx read as numbers",
-         L(NETSH_LINK) == {"wlan_signal": 87, "wlan_rx_mbps": 144.4, "wlan_tx_mbps": 130.0}),
-        ("link: disconnected output gives None for each", L(NETSH_DOWN) == none),
-        ("link: SSID/BSSID lines and a non-number signal give nothing", L(NETSH_DECOY) == none),
         ("link: the outage's min is over its own polls only",
          [(x["min_signal"], x["min_rx_mbps"]) for x in o] == [(30, 60.0)]),
         ("link: an outage with no link readings has None",
@@ -154,24 +134,24 @@ def link_cases():
     ]
 
 
-# nmcli -t -e yes -f ACTIVE,SSID,SIGNAL device wifi list --rescan no (made-up names)
-NM_UP = "no:Neighbour:40\nyes:AP-X:71\nno:AP-X-5G:20\n"
-NM_OTHER = "yes:Neighbour:80\nno:AP-X:60\n"
-NM_DOWN = "no:AP-X:55\nno:Neighbour:30\n"
-NM_TWO = "yes:AP-X:71\nyes:Neighbour:40\n"
-NM_COLON = "yes:AP\\:X:66\n"               # an SSID with a ':' in it, escaped by nmcli
-NM_ODD = "yes:AP-X:--\n"
+class FakeBe:
+    """A Wi-Fi backend's read() and connect(), as gi_wifi calls them."""
+    name = "fake"
 
+    def __init__(self, reads=(), connect=(True, "asked to join AP-X")):
+        self.reads, self.ret = list(reads), connect
+        self.read_ifaces, self.connects = [], []
 
-class FakeRun:
-    def __init__(self, out="", rc=0, raise_=None):
-        self.out, self.rc, self.raise_, self.argv = out, rc, raise_, None
+    def read(self, iface):
+        self.read_ifaces.append(iface)
+        r = self.reads.pop(0) if self.reads else (None, None, False)
+        if isinstance(r, Exception):
+            raise r
+        return r
 
-    def __call__(self, argv, **kw):
-        self.argv = argv
-        if self.raise_:
-            raise self.raise_
-        return subprocess.CompletedProcess(argv, self.rc, self.out, "")
+    def connect(self, profile, iface):
+        self.connects.append((profile, iface))
+        return self.ret
 
 
 def call(fn):
@@ -182,60 +162,66 @@ def call(fn):
         return e
 
 
-def nmcli_cases():
-    none = {"wlan_signal": None, "wlan_rx_mbps": None, "wlan_tx_mbps": None}
-    win = FakeRun(NETSH_LINK)
-    lin = FakeRun(NM_UP)
-    rw = P.read_wlan("AP-X", run=lin, platform="linux")
-    rww = P.read_wlan("AP-X", run=win, platform="win32")
+def refused_without_settings():
+    """The tool run with no GI_OTA_SETTINGS: (exit, stdout, files left in its runs folder)."""
+    import gi_paths
+    d = gi_paths.scratch("test-page_only_baseline", start=__file__)
+    env = {k: v for k, v in os.environ.items() if k != "GI_OTA_SETTINGS"}
+    env.update(GI_WICAN_SSID="AP-X", GI_RUNS_DIR=d)
+    # a mutant copy runs from its own folder: the harness beside this test stays importable
+    env["PYTHONPATH"] = os.pathsep.join([HERE] + [x for x in [env.get("PYTHONPATH")] if x])
+    r = subprocess.run([sys.executable, "-B", os.path.join(P.HERE, "page_only_baseline.py"), "--power", "test",
+                        "--seconds", "1"], capture_output=True, text=True, env=env, timeout=60)
+    return r.returncode, r.stdout, os.listdir(d)
+
+
+def wifi_cases():
+    on = FakeBe([("AP-X", "connected", True)])
+    r_on = call(lambda: P.read_wlan(CFG, on))
+    other = call(lambda: P.read_wlan(CFG, FakeBe([("AP-Y", "connected", True)])))
+    noaddr = call(lambda: P.read_wlan(CFG, FakeBe([("AP-X", "no address yet", False)])))
+    gone = call(lambda: P.read_wlan(CFG, FakeBe([OSError("adb gone")])))
+    nothing = call(lambda: P.read_wlan(CFG, FakeBe([(None, "disconnected", False)])))
+    rj = FakeBe(connect=(True, "the phone asked to join its saved network 79; route via AP-X"))
+    r_rj = call(lambda: P.rejoin(CFG, rj))
+    r_bad = call(lambda: P.rejoin(CFG, FakeBe(connect=(False, "root denied"))))
+    states = [x[1] for x in (r_on, other, noaddr, gone, nothing) if isinstance(x, tuple)]
+    rc, out, left = refused_without_settings()
     return [
-        ("nmcli: one active AP with the SSID -> connected", P.parse_nmcli(NM_UP, "AP-X") == (True, "connected")),
-        ("nmcli: the active AP is ANOTHER SSID -> not ok", P.parse_nmcli(NM_OTHER, "AP-X") == (False, "connected")),
-        ("nmcli: the SSID listed but not active -> not ok", P.parse_nmcli(NM_DOWN, "AP-X") == (False, "disconnected")),
-        ("nmcli: two active lines -> not ok, said", P.parse_nmcli(NM_TWO, "AP-X") == (False, "2 active")),
-        ("nmcli: an escaped ':' is part of the SSID", P.parse_nmcli(NM_COLON, "AP:X")[0] is True
-         and P.parse_nmcli(NM_COLON, "AP")[0] is False),
-        ("nmcli: a prefix of the SSID is not it", P.parse_nmcli(NM_UP, "AP")[0] is False),
-        ("nmcli link: the active line's signal, rates None",
-         P.parse_nmcli_link(NM_UP) == dict(none, wlan_signal=71)),
-        ("nmcli link: none active, or two, or a non-number -> all None",
-         P.parse_nmcli_link(NM_DOWN) == none and P.parse_nmcli_link(NM_TWO) == none
-         and P.parse_nmcli_link(NM_ODD) == none),
-        ("read_wlan on Linux runs nmcli's terse ACTIVE,SSID,SIGNAL list, no rescan, and parses it",
-         lin.argv == P.WLAN_LINUX and lin.argv[0] == "nmcli" and "-t" in lin.argv and "--rescan" in lin.argv
-         and rw == (True, "connected", dict(none, wlan_signal=71))),
-        ("read_wlan on Windows runs netsh, as before",
-         win.argv == ["netsh", "wlan", "show", "interfaces"] and rww[:2] == (True, "connected")
-         and rww[2]["wlan_signal"] == 87),
-        ("read_wlan: nmcli missing -> not connected, said, no raise",
-         call(lambda: P.read_wlan("AP-X", run=FakeRun(raise_=FileNotFoundError("nmcli")), platform="linux"))
-         == (False, "nmcli failed (FileNotFoundError)", none)),
-        ("read_wlan: nmcli exiting non-zero -> not connected, with its code, even with output",
-         P.read_wlan("AP-X", run=FakeRun(NM_UP, rc=8), platform="linux") == (False, "nmcli exit 8", none)),
-        ("read_wlan: a timeout -> not connected, said",
-         call(lambda: P.read_wlan("AP-X", run=FakeRun(raise_=subprocess.TimeoutExpired("nmcli", 10)),
-                                  platform="linux")[:2]) == (False, "nmcli failed (TimeoutExpired)")),
-        ("rejoin: nmcli through the stored profile on Linux, netsh on Windows",
-         P.rejoin_argv("AP-X", platform="linux") == ["nmcli", "device", "wifi", "connect", "AP-X"]
-         and P.rejoin_argv("AP-X", platform="win32") == ["netsh", "wlan", "connect", "name=AP-X"]),
+        ("wifi: connected and on the WiCAN's SSID -> on the hotspot, link fields None",
+         isinstance(r_on, tuple) and r_on[0] is True and r_on[2] == NONE),
+        ("wifi: read from the settings' interface", on.read_ifaces == ["wlan0"]),
+        ("wifi: connected to ANOTHER SSID -> not on it", isinstance(other, tuple) and other[0] is False),
+        ("wifi: on the SSID but not connected (no address yet) -> not on it",
+         isinstance(noaddr, tuple) and noaddr[0] is False and "no address yet" in noaddr[1]),
+        ("wifi: a backend that cannot be read -> not on it, said, no raise",
+         isinstance(gone, tuple) and gone[0] is False and "OSError" in gone[1]),
+        ("wifi: no network -> not on it", isinstance(nothing, tuple) and nothing[0] is False),
+        ("wifi: the SSID is in no state", len(states) == 5 and not any("AP-X" in st for st in states)),
+        ("rejoin: one select through the backend, the settings' profile and interface",
+         rj.connects == [("79", "wlan0")]),
+        ("rejoin: does not wait (no read), and its text is masked",
+         rj.read_ifaces == [] and isinstance(r_rj, tuple) and r_rj[0] is True
+         and "AP-X" not in r_rj[1] and "<WICAN_SSID>" in r_rj[1]),
+        ("rejoin: a failed select is kept as failed, with its reason",
+         r_bad == (False, "root denied")),
+        ("rejoin: the record's event names the backend and keeps a failure as FAILED",
+         P.rejoin_note(CFG, False, "root denied") == "rejoin (adb backend) FAILED: root denied"
+         and P.rejoin_note(CFG, True, "asked") == "rejoin (adb backend) ok: asked"),
+        ("no GI_OTA_SETTINGS: refused, exit 2, no record",
+         rc == 2 and "REFUSED" in out and "GI_OTA_SETTINGS" in out and left == []),
     ]
 
 
 MUTANTS = [
-    ("an SSID's escaped ':' splits it", '        elif ch == "\\\\":\n            esc = True\n', ""),
-    ("any line counts as active", 'if f[0] == "yes" and len(f) >= 3]', "if len(f) >= 3]"),
-    ("two active lines read as connected", "    return (len(act) == 1 and ssid is not None and act[0][1] == ssid), state",
-     "    return (len(act) >= 1 and ssid is not None and act[0][1] == ssid), state"),
-    ("the SSID not compared", "and ssid is not None and act[0][1] == ssid), state", "and ssid is not None), state"),
-    ("the signal not read", '        out["wlan_signal"] = int(act[0][2])\n', "        pass\n"),
-    ("nmcli's exit code ignored", '    if r.returncode != 0:\n        return False, "nmcli exit %d"',
-     '    if False:\n        return False, "nmcli exit %d"'),
-    ("a reader that can't run raises", "    except (OSError, subprocess.SubprocessError) as e:\n        return False, \"%s failed",
-     "    except ():\n        return False, \"%s failed"),
-    ("Linux reads netsh", "    argv = WLAN_WINDOWS if win else WLAN_LINUX", "    argv = WLAN_WINDOWS"),
-    ("Linux rejoins with netsh", '    if (platform or sys.platform) == "win32":\n        return ["netsh", "wlan", "connect"',
-     '    if True:\n        return ["netsh", "wlan", "connect"'),
-    ("nmcli rescans on every poll", '"list", "--rescan", "no"]', '"list"]'),
+    ("the backend's read not used", "    on, state = GW.state(cfg, be)\n", "    on, state = True, \"connected\"\n"),
+    ("the rejoin waits for the join", "    return GW.select(cfg, be)\n", "    return GW.join(cfg, be=be)\n"),
+    ("the rejoin not made", "    return GW.select(cfg, be)\n", "    return True, \"skipped\"\n"),
+    ("no settings goes on", '''        print("REFUSED: %s (nothing run, no record)" % e)
+        return 2
+    import lowid_flood_skip_bench''', '''        wcfg, wbe = {"wifi": "none"}, None
+    import lowid_flood_skip_bench'''),
+    ("a rejoin's failure recorded as ok", '"ok" if ok else "FAILED", why', '"ok", why'),
 ]
 
 
@@ -307,11 +293,7 @@ def main():
               + [S(t, port=False) for t in range(101, 400)])["unplug"])),
         ("not mode 0 reported", P.judge(odd)["not_mode0_at"] == [1]
          and P.judge(odd)["verdict"] != "no outage"),
-        ("netsh connected to the SSID -> ok", P.parse_wlan(NETSH_UP, "AP-X") == (True, "connected")),
-        ("netsh connected to ANOTHER SSID -> not ok", P.parse_wlan(NETSH_OTHER, "AP-X")[0] is False),
-        ("netsh disconnected -> not ok", P.parse_wlan(NETSH_DOWN, "AP-X") == (False, "disconnected")),
-        ("BSSID line is not read as SSID", P.parse_wlan(NETSH_UP, "00:00:5e:00:53:02")[0] is False),
-    ] + uptime_cases() + link_cases() + nmcli_cases()
+    ] + uptime_cases() + link_cases() + wifi_cases()
     try:
         P.build_parser().parse_args([])
         checks.append(("--power required", False))

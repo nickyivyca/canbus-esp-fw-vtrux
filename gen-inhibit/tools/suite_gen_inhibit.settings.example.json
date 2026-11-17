@@ -8,7 +8,7 @@
   "hosts": {
     "local": {
       "python": ["python3.13", "-B"],
-      "env": {"PYTHONPATH": "<core 2026.11.12>/shared/bench:<interposer clone>/charge-interposer"}
+      "env": {"PYTHONPATH": "<core 2026.11.16.5>/shared/bench:<interposer checkout>/charge-interposer"}
     }
   },
   "esptool": {"argv": ["<the python of ESP-IDF v5.4.2's python env, whose esptool is 4.13.0>", "-m", "esptool"],
@@ -33,7 +33,12 @@
   "gi_components": "<prod build tree>/managed_components",
   "gi_host_ssh": "<ssh host for part H>",
   "gi_host_root": "<reverse-it root on that host>",
-  "interposer_code": "<interposer clone>/charge-interposer",
+  "interposer_code": "<a read-only detached checkout of charge-interposer/main at interposer_code_commit>/charge-interposer",
+  "interposer_code_commit": "<that commit, as the checkout's HEAD starts; the bench suite refuses a checkout not clean at it>",
+  "ota": {"_comment": "The core flasher's block (vtrux_bench.run.ota, core 2026.11.16.5; FLASH-SPEC O2): the WiCAN's OTA and every join of its hotspot use it, the tools getting it as GI_OTA_SETTINGS. wifi adb is the phone over adb (FLASH-SPEC O4): iface its Wi-Fi interface, profile its saved network's id for the hotspot, adb_serial its adb serial (a bench identifier: local settings only). wifi system is the host's own adapter (iface its device, profile its saved profile). ssid_env names the variable the suite fills with bench-holder.md's SSID; the SSID itself is never here.",
+          "host": "192.168.80.1", "wifi": "adb", "adb_serial": "<the phone's adb serial>", "adb": "<adb, by full path>",
+          "iface": "wlan0", "profile": "<the phone's saved network id for the hotspot>", "ssid_env": "GI_WICAN_SSID",
+          "capture": true, "capture_iface": "<the host's RNDIS link to the phone, as dumpcap -D names it>"},
 
   "x2_pin_dir": "<folder holding <pin>/<image>/<file> for x2_pin.json, e.g. <reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit/x2_pin; filled by x2_pin.py install. Only where the files are: their bytes and the X2's identities are the committed pin's, and the old x2_images setting is refused>",
 
