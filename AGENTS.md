@@ -120,8 +120,9 @@ elsewhere and pinned as a tool of its harness, as gen-inhibit pins its X2
 images (`gen-inhibit/tools/x2_pin.json`: the gen-inhibit commit and the
 image's size and hashes). The run loads it at its start through the shared
 flasher (`shared/bench`), OTA over the WiCAN's hotspot, with the board's
-identity read before and after. Until `madhouse-debian` has its USB Wi-Fi
-adapter, it loads the same pinned image over USB with the shared flasher's
+identity read before and after. Until the run's settings choose a Wi-Fi
+backend that reaches the hotspot (a USB Wi-Fi adapter, or the phone over
+adb), it loads the same pinned image over USB with the shared flasher's
 esptool path.
 
 ## Session rules
