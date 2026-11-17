@@ -44,6 +44,12 @@ MUTANTS = [
     ("B6: an INCONCLUSIVE arm passes", 'verdict = "PASS" if seen == {"PASS"} else "INCONCLUSIVE"', 'verdict = "PASS"'),
     ("B6: any arm word but FAIL will do", 'if not arms or not seen <= {"PASS", "INCONCLUSIVE"}:',
      'if not arms or "FAIL" in seen:'),
+    # B7's INCONCLUSIVE (2026-11-16, B7 on madhouse-debian)
+    ("B7: an INCONCLUSIVE arm fails B7, as before 2026-11-16", 'return [result("B7", "PASS" if ok else "INCONCLUSIVE" if inc else "FAIL",',
+     'return [result("B7", "PASS" if ok else "FAIL",'),
+    ("B7: INCONCLUSIVE beside a NOT AS SPECIFIED arm", 'and set(arms) <= {"AS SPECIFIED", "INCONCLUSIVE"} and v',
+     'and v'),
+    ("B7: INCONCLUSIVE whatever the case's verdict", 'and v and v.group(1) == "INCONCLUSIVE")', 'and v)'),
     ("B8: the control arm is not looked at", 'and all(c != "FAIL" for c in control)', ''),
     ("B9: trip 6 need not latch", 'ok = latched and min(bursts) > 0', 'ok = min(bursts) > 0'),
     ("B9: live_before is not looked at", '    if rec.get("live_before") is not True:\n', '    if False:\n'),
