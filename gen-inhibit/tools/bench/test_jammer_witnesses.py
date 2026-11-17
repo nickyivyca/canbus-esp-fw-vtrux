@@ -24,8 +24,10 @@ come out the other way.
              every 0x7A0, one group per pulse, PASS through judge_can2_isolation; a missing
              pulse, an unstamped bus error, a 0x7A0 lost -> INCONCLUSIVE; state frames and
              error frames in the PCAN phase are not groups
-  usb        usb_record keeps EPROTO, -71, reset and disconnect lines on 1-3.2.x and not on
-             1-3.4, 1-3.21 or without an error word; usb_fold VOIDs a check with a line in its
+  usb        usb_record keeps EPROTO, -71, reset and disconnect lines on 1-3 and every 1-3.x
+             device (the WiCAN's 1-3.1 and the X2's 1-3.4 since 2026-11-16) and not on 1-4.x,
+             11-3.x, 1-31 or without an error word; the record names the 1-3 tree, not a
+             bus-powered hub; usb_fold VOIDs a check with a line in its
              window (a FAIL too), keeps NOT-RUN, and VOIDs when the kernel log is unreadable
   session    parse_checks and args_why; run_session on a fake console and a fake PCAN whose
              stamps are device time (an uptime base, drift, delivery lag): boot silence, pulses
@@ -886,14 +888,20 @@ def usb_cases():
              (2.0, "usb 1-3.2.1: USB disconnect, device number 12"),
              (3.0, "usb 1-3.2.2: reset high-speed USB device number 9 using xhci_hcd"),
              (4.0, "usb 1-3.2: Error -71 while reading timestamp"),
-             (5.0, "usb 1-3.4: USB disconnect, device number 7"),          # the X2's port, not the hub
-             (6.0, "usb 1-3.21: reset full-speed USB device"),             # another port
+             (5.0, "usb 1-3.4: USB disconnect, device number 7"),          # the X2's port (2026-11-16)
+             (6.0, "usb 1-4.1: reset full-speed USB device"),              # another tree
              (7.0, "usb 1-3.2.1: new full-speed USB device number 13"),    # no error word
-             (8.0, "kvaser_usb 1-3.2.1:1.0 kvaser: error -71")]
+             (8.0, "kvaser_usb 1-3.2.1:1.0 kvaser: error -71"),
+             (9.0, "cdc_acm 1-3.1:1.0: failed to set dtr/rts, error -71"),  # the WiCAN's port (2026-11-16)
+             (10.0, "usb 1-3: USB disconnect, device number 3"),           # the top hub itself
+             (11.0, "usb 11-3.2: reset high-speed USB device"),            # another bus
+             (12.0, "usb 1-31: reset full-speed USB device")]              # not the 1-3 port
     rec = X.usb_record(1000.0, 1010.0, run=fake_journal(lines))
     got = [round(t - 1000.0, 1) for t, _ln in rec["hits"]]
-    check("usb", "EPROTO, disconnect, reset, -71 on 1-3.2.x kept; 1-3.4, 1-3.21, no error word not",
-          got == [1.0, 2.0, 3.0, 4.0, 8.0], got)
+    check("usb", "EPROTO, disconnect, reset, -71 on 1-3 and any 1-3.x kept (1-3.1, 1-3.4 too); 1-4.1, 11-3.2, "
+          "1-31, no error word not", got == [1.0, 2.0, 3.0, 4.0, 5.0, 8.0, 9.0, 10.0], got)
+    check("usb", "the record names the 1-3 tree, not a bus-powered hub",
+          rec.get("hub", "").startswith("1-3 (") and "bus-powered" not in rec.get("hub", ""), rec.get("hub"))
     r = {"verdict": "PASS"}
     X.usb_fold(r, rec, 1000.5, 1001.5)
     check("usb", "fold: a line in the window -> VOID, the line kept", r["verdict"].startswith("VOID: USB")
@@ -902,8 +910,8 @@ def usb_cases():
     X.usb_fold(r, rec, 1000.5, 1001.5)
     check("usb", "fold: a FAIL in the window is VOID too", r["verdict"].startswith("VOID: USB"), r)
     r = {"verdict": "PASS"}
-    X.usb_fold(r, rec, 1004.5, 1007.5)
-    check("usb", "fold: control, only lines that do not VOID in the window -> PASS stays",
+    X.usb_fold(r, rec, 1005.5, 1007.5)
+    check("usb", "fold: control, only lines that do not VOID in the window (1-4.1, no error word) -> PASS stays",
           r["verdict"] == "PASS" and r["usb"]["lines"] == [], r)
     r = {"verdict": "NOT-RUN"}
     X.usb_fold(r, rec, 1000.5, 1001.5)

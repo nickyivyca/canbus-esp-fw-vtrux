@@ -104,11 +104,13 @@ INCONCLUSIVE; can2-isolation's "canchg nothing" ends with a frame canchg sends i
 socket, whose ACK errors its reader must hear (nothing else on CAN2 can send). A failed read on
 any witness socket, canchg's included, is WitnessDown (NOT-RUN).
 
-THE USB RECORD (same ruling): the hubs are bus-powered, and the GL850G at 1-3.2 holds the Kvaser,
-the PCAN, canmain and the WiCAN console. `journalctl -k` is read over the run (the session's
-whole span, or a single sub's), and an EPROTO, -71, reset or disconnect line naming a 1-3.2.x
-device VOIDs every check whose window holds it, the line kept in the record; a kernel log that
-cannot be read VOIDs too.
+THE USB RECORD (same ruling; widened by the gen-inhibit reviewer, 2026-11-16): the whole 1-3
+tree, the powered top hub at 1-3 and everything below it. Since the hub change of 2026-11-16 the
+WiCAN is at 1-3.1 and the X2 at 1-3.4 on the top hub, beside the GL850G at 1-3.2 with the
+Kvaser, the PCAN and canmain. `journalctl -k` is read over the run (the session's whole span, or
+a single sub's), and an EPROTO, -71, reset or disconnect line naming 1-3 or a 1-3.x device VOIDs
+every check whose window holds it, the line kept in the record; a kernel log that cannot be read
+VOIDs too. Until 2026-11-16 only 1-3.2.x counted.
 
 --no-wican: no HTTP to the WiCAN at all, the record says "not read: --no-wican" where its
 page would be. madhouse has no Wi-Fi adapter, and there the WiCAN's 192.168.80.1 routes out
@@ -1469,12 +1471,14 @@ def resource_window(t0, t1, run=None):
 
 
 # The USB record (the gen-inhibit reviewer, 2026-11-13, after CAN replay's degraded-USB
-# advisory): the bench's hubs are bus-powered, and the GL850G at 1-3.2 holds the Kvaser, the
-# PCAN, canmain and the WiCAN console. The kernel log over the run's whole window is read, and
-# any EPROTO, -71, reset or disconnect line naming a 1-3.2.x device VOIDs every check whose
-# window holds it, with the line kept in the record. A kernel log that cannot be read VOIDs too:
-# nothing then shows the hub was clean.
-USB_DEV_RE = re.compile(r"(?<![\d.])1-3\.2(?:\.\d+)*(?!\d)")
+# advisory; widened to the whole 1-3 tree by the gen-inhibit reviewer, 2026-11-16): the powered
+# top hub at 1-3 holds the WiCAN (1-3.1), the X2 (1-3.4) and the GL850G (1-3.2) with the Kvaser,
+# the PCAN and canmain. The kernel log over the run's whole window is read, and any EPROTO, -71,
+# reset or disconnect line naming 1-3 or a 1-3.x device VOIDs every check whose window holds it,
+# with the line kept in the record. A kernel log that cannot be read VOIDs too: nothing then
+# shows the tree was clean. Until 2026-11-16 the record was 1-3.2.x only.
+USB_DEV_RE = re.compile(r"(?<![\d.-])1-3(?:\.\d+)*(?![\d-])")
+USB_TREE = "1-3 (the powered top hub: the WiCAN 1-3.1, the GL850G 1-3.2, the X2 1-3.4)"
 USB_BAD_RE = re.compile(r"EPROTO|-71\b|\breset\b|disconnect", re.I)
 
 
@@ -1483,7 +1487,7 @@ def usb_record(t0, t1, run=None):
     import math
     import subprocess
     run = run or subprocess.run
-    out = {"window": [round(t0, 3), round(t1, 3)], "hub": "1-3.2 (GL850G, bus-powered)"}
+    out = {"window": [round(t0, 3), round(t1, 3)], "hub": USB_TREE}
     try:
         p = run(["journalctl", "-k", "--since", "@%d" % math.floor(t0), "--until", "@%d" % math.ceil(t1),
                  "-o", "short-unix", "--no-pager"], capture_output=True, text=True, timeout=60)
@@ -1518,7 +1522,7 @@ def usb_fold(rec, record, lo, hi):
     v = str(rec.get("verdict"))
     if lines and v != "NOT-RUN" and not v.startswith("REFUSED"):
         rec["verdict_before_usb"] = rec.get("verdict")
-        rec["verdict"] = "VOID: USB on the 1-3.2 hub: %d kernel line(s) in the check's window" % len(lines)
+        rec["verdict"] = "VOID: USB on the 1-3 tree: %d kernel line(s) in the check's window" % len(lines)
         rec["why"] = lines[0]
     return rec
 
