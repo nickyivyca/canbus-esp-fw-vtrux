@@ -10,7 +10,17 @@ that won the bench with bench_lock wait holds it by hand under PID. The
 acceptance takes the lock through the chain runner (A1), in each suite run's
 nested run, so PID is passed to every suite run (compile.py), and a nested
 run that needs the bench starts from the hand take (nested.py) instead of
-a take the session's hold would refuse.
+a take the session's hold would refuse. So that the bench is never free
+between two suite runs that need it (the gen-inhibit reviewer, 2026-11-16),
+every suite run that needs the bench but the last is also given
+--keep-lock PID: it ends by handing the lock back to PID, and the next one
+starts from that hold; the last releases the bench. Which suite runs need
+it is asked of each before the chain (compile.needs_bench: its nested
+command with --needs-bench), skipping those that will not start (no
+images, a premise that did not hold); one that cannot be told counts as
+needing it, so the runs before it keep the hold. A suite run that then does
+not take over the hold leaves the bench held under PID at the end, never
+free; the console says which runs were given --keep-lock.
 
 In order:
   1. the list is read from git (A2) for its step id, and the record folder
@@ -73,7 +83,8 @@ RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip"
                            "premise_skip_builds", "cleanup_finally", "refuse_dirty",
                            "dev_never_pass", "identity_untracked", "check_verdict",
                            "not_passed_listed", "nested_not_passed", "nested_wrong_shape",
-                           "images_not_started", "from_hold_passed")}
+                           "images_not_started", "from_hold_passed", "keep_lock_chain",
+                           "keep_not_last", "keep_bench_only")}
 
 DEV_LINE = "DEV RUN, not evidence"
 
@@ -184,6 +195,36 @@ def _side(name, alist, chain, runs_root, nested, reused=()):
             "record": {"results": [r for r in chain["results"] if r["group"] == g]}}
 
 
+def _keep_lock(alist, trees, adapter, settings, base_env, paths, not_started, pid, say):
+    """{suite run id: pid} for every suite run that needs the bench but the
+    last, in the list's order (the order the chain runs them in), so the
+    hold passes from one to the next; suite runs that will not start are
+    left out. One whose need cannot be told counts as needing the bench."""
+    bench = []
+    for r in alist.suite_runs:
+        if r["id"] in not_started:
+            continue
+        if RULES["keep_bench_only"]:
+            nb, why = C.needs_bench(r, trees[r["tree"]], adapter, settings, base_env, paths)
+        else:
+            nb, why = True, "not asked"
+        if nb is None:
+            say("suite run %s: could not tell whether it needs the bench (%s): counted "
+                "as needing it, so the suite runs before it keep the hold" % (r["id"], why))
+        else:
+            say("suite run %s: %s the bench (%s)" % (r["id"], "needs" if nb
+                                                      else "does not need", why))
+        if nb is not False:
+            bench.append(r["id"])
+    given = bench[:-1] if RULES["keep_not_last"] else bench
+    for i in bench:
+        say("suite run %s: --from-hold %d%s" % (i, pid, " --keep-lock %d (the hold passes "
+                                                "to the next)" % pid if i in given else
+                                                " (the last that needs the bench: it "
+                                                "releases)"))
+    return {i: pid for i in given}
+
+
 def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=False,
         from_hold=None):
     """The whole acceptance. (exit code, record or None)."""
@@ -257,11 +298,14 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                 rec.say("suite run %s: %s" % (r_["id"], why))
             per_run[r_["id"]] = ST.write_tree_settings(s, adapter, r_["id"], trees[r_["tree"]],
                                                        rec, made, parent, images=images)
-        suite = C.compile_suite(alist, trees, adapter, s, base_env, paths={
-            "settings": spath, "masked": os.path.join(rec.path, "settings.masked.json"),
-            "record_id": rec.id, "suite_runs": per_run,
-            "from_hold": from_hold if RULES["from_hold_passed"] else None},
-            mutants=entries)
+        paths = {"settings": spath, "masked": os.path.join(rec.path, "settings.masked.json"),
+                 "record_id": rec.id, "suite_runs": per_run,
+                 "from_hold": from_hold if RULES["from_hold_passed"] else None}
+        if paths["from_hold"] is not None and RULES["keep_lock_chain"]:
+            paths["keep_lock"] = _keep_lock(alist, trees, adapter, s, base_env, paths,
+                                            set(no_images) | blocked, from_hold, rec.say)
+        suite = C.compile_suite(alist, trees, adapter, s, base_env, paths=paths,
+                                mutants=entries)
         for g in suite.groups if RULES["images_not_started"] else []:
             if g.note in no_images:
                 for c in g.checks:
