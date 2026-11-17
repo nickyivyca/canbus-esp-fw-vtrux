@@ -38,7 +38,9 @@ after it; the idle window is counted from the unplug.
 --pulse-rts-at S (validation only, USB connected): opens the WiCAN's console (its port
 resolved from GI_WICAN_DEVICE, kept in the record as serial_device) at S seconds and
 gives one USB-JTAG reset, so the detector can be checked against a reboot that
-is known to happen. The console is never read for counting.
+is known to happen. The console is never read for counting. Refused (exit 2, nothing run)
+while the WiCAN's console is closed until its factory reset (gi_serial.WICAN_CONSOLE_CLOSED,
+gen-inhibit reviewer, 2026-10-20 and 2026-11-16).
 
 The WLAN state and the rejoin go through gi_wifi (2026-11-16, the gen-inhibit reviewer's
 job (1): every rejoin through vtrux_bench.run.wifi), from GI_OTA_SETTINGS, the settings.ota
@@ -317,7 +319,8 @@ def build_parser():
                          "unplug)")
     ap.add_argument("--unplug-window", type=float, default=15.0)
     ap.add_argument("--pulse-rts-at", type=float, default=None,
-                    help="validation only (USB connected): one USB-JTAG reset at this time")
+                    help="validation only (USB connected): one USB-JTAG reset at this time. Refused "
+                         "while the WiCAN's console is closed (gi_serial.WICAN_CONSOLE_CLOSED)")
     ap.add_argument("--build-check", action="store_true",
                     help="read /gen_inhibit's elf_sha256 at the start and the end (1.5b)")
     return ap

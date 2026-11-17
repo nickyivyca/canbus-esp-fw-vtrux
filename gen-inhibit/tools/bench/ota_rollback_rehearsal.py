@@ -175,7 +175,8 @@ def wican_port():
     if not SERIAL_DEVICE:
         import gi_serial as GS
         try:
-            SERIAL_DEVICE.update(GS.resolve("wican"))
+            # esptool only, never the console (gi_serial.WICAN_CONSOLE_CLOSED, 2026-11-16)
+            SERIAL_DEVICE.update(GS.resolve("wican", esptool=True))
         except GS.Refused as e:
             raise SystemExit("REFUSED: %s (nothing run on the board)" % e)
     return SERIAL_DEVICE["port"]

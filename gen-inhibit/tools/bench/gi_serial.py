@@ -47,6 +47,18 @@ TEST_ROOT = "GI_SERIAL_SYS_ROOT"
 TEST_BY_ID = "GI_SERIAL_BY_ID"
 
 
+# THE WICAN'S CONSOLE IS CLOSED (gen-inhibit reviewer, 2026-10-20: no WiCAN console capture
+# until the WiCAN's factory reset, since its console has printed its config; every console path
+# refuses, the reviewer, 2026-11-16). resolve() and port() are the step before a tool opens a
+# port, so for the WiCAN they refuse, unless the caller runs esptool on it (esptool=True:
+# ota_rollback_rehearsal's read_flash), which is not a console capture. present() opens
+# nothing and is not refused. The rule is lifted by emptying WICAN_CONSOLE_CLOSED in a commit,
+# after the reset.
+WICAN_CONSOLE_CLOSED = ("the WiCAN's console is closed until its factory reset (gen-inhibit reviewer, "
+                        "2026-10-20; every console path refuses, 2026-11-16): its console has printed "
+                        "its config")
+
+
 class Refused(Exception):
     """No port: the IDs are missing or wrong, the lookup refused, or this is not Linux."""
 
@@ -85,9 +97,12 @@ def device(board, environ=None):
         raise Refused(str(e))
 
 
-def resolve(board, environ=None):
+def resolve(board, environ=None, esptool=False):
     """{port, vid, pid, serial, interface, usb, tty, board, env} for the board's one port, as a
-    record keeps it (S3), plus "lookup" when the test overrides are set. Refused otherwise."""
+    record keeps it (S3), plus "lookup" when the test overrides are set. Refused otherwise, and
+    for the WiCAN unless esptool is True (WICAN_CONSOLE_CLOSED)."""
+    if board == "wican" and WICAN_CONSOLE_CLOSED and not esptool:
+        raise Refused(WICAN_CONSOLE_CLOSED)
     environ = os.environ if environ is None else environ
     dev = device(board, environ)
     SD = serial_dev()
@@ -102,9 +117,10 @@ def resolve(board, environ=None):
     return got
 
 
-def port(board, environ=None):
-    """The board's port: its /dev/serial/by-id/ path. Refused if there is not exactly one."""
-    return resolve(board, environ)["port"]
+def port(board, environ=None, esptool=False):
+    """The board's port: its /dev/serial/by-id/ path. Refused if there is not exactly one, and
+    for the WiCAN unless esptool is True (WICAN_CONSOLE_CLOSED)."""
+    return resolve(board, environ, esptool)["port"]
 
 
 def present(board, environ=None):

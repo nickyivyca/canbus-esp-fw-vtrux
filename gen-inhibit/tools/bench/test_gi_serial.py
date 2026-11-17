@@ -86,10 +86,33 @@ def unit_checks(work):
           isinstance(got, dict) and "made up (test)" in str(got.get("lookup")), got)
     w = None
     try:
-        w = GS.port("wican", env)
+        w = GS.port("wican", env, esptool=True)
     except Exception as e:      # noqa: BLE001
         w = e
-    check("port: the WiCAN's IDs give its by-id link, not the X2's", w == ports["wican"], w)
+    check("port: the WiCAN's IDs give its by-id link, not the X2's (for esptool)", w == ports["wican"], w)
+    # the WiCAN's console is closed until its factory reset (gen-inhibit reviewer, 2026-10-20;
+    # every console path refuses, 2026-11-16): resolve and port refuse it unless for esptool
+    for label, fn in (("resolve", lambda: GS.resolve("wican", env)), ("port", lambda: GS.port("wican", env)),
+                      ("resolve, esptool False", lambda: GS.resolve("wican", env, esptool=False))):
+        try:
+            got_w = fn()
+        except GS.Refused as e:
+            got_w = e
+        except Exception as e:      # noqa: BLE001
+            got_w = "raised %r" % e
+        check("%s: the WiCAN's console port is refused, naming the rule" % label,
+              isinstance(got_w, GS.Refused) and "console is closed until its factory reset" in str(got_w), got_w)
+    try:
+        got_wr = GS.resolve("wican", env, esptool=True)
+    except Exception as e:      # noqa: BLE001
+        got_wr = e
+    check("resolve: the WiCAN for esptool gives its port and IDs",
+          isinstance(got_wr, dict) and got_wr.get("port") == ports["wican"] and got_wr.get("board") == "wican", got_wr)
+    try:
+        got_x = GS.port("x2", env)
+    except Exception as e:      # noqa: BLE001
+        got_x = e
+    check("port: the X2's console is not closed", got_x == ports["x2"], got_x)
 
     def without(k):
         return {x: v for x, v in env.items() if x != k}
@@ -270,6 +293,13 @@ MUTANTS = [
      "    root, by_id = None, None\n"),
     ("a made-up lookup is not said", '        got["lookup"] =', '        got["_lookup"] ='),
     ("the board is not recorded", "    got = dict(got, board=board, env=ENV[board])\n", "    got = dict(got)\n"),
+    # the WiCAN's console closed (2026-11-16)
+    ("the WiCAN's console open", '    if board == "wican" and WICAN_CONSOLE_CLOSED and not esptool:\n', '    if False:\n'),
+    ("the WiCAN closed for esptool too", '    if board == "wican" and WICAN_CONSOLE_CLOSED and not esptool:\n',
+     '    if board == "wican" and WICAN_CONSOLE_CLOSED:\n'),
+    ("every board's console closed", '    if board == "wican" and WICAN_CONSOLE_CLOSED and not esptool:\n',
+     '    if WICAN_CONSOLE_CLOSED and not esptool:\n'),
+    ("port drops esptool", '    return resolve(board, environ, esptool)["port"]', '    return resolve(board, environ)["port"]'),
     ("the boards' variables swapped", 'ENV = {"x2": "GI_X2_DEVICE", "wican": "GI_WICAN_DEVICE"}',
      'ENV = {"x2": "GI_WICAN_DEVICE", "wican": "GI_X2_DEVICE"}'),
     ("the settings' keys swapped", 'SETTING = {"x2": ("esptool", "device"), "wican": ("wican", "usb_device")}',
