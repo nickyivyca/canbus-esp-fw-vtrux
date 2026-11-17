@@ -17,7 +17,8 @@ nothing), the second-route preflight (O5), the disarm under the bench's hold
 recoverable false, mode=0 sent alone), the runner handing its hold to the
 flasher, what counts as a load (O10: a2+c is not, nor a (c) whose strict read
 fails), the rejoin during the watch and the upload's record, the SSID masked
-(O12), and the by-hand command's hold.
+(O12), the Wi-Fi backend chosen in the settings and cleared after (O4a), and
+the by-hand command's hold.
 
     py -3.14 -B shared/bench/tests/test_ota_preflight.py             exit 0 only if every check passes
     py -3.14 -B shared/bench/tests/test_ota_preflight.py --can-fail  the control, then every mutant
@@ -142,6 +143,12 @@ class FakeWifi:
     def rejoin(self, profile, iface, ssid, timeout=20.0):
         self.calls.append(("rejoin", profile, iface, ssid, timeout))
         return (self.rejoin_ok, "rejoin %s" % ("ok" if self.rejoin_ok else "failed"))
+
+    def choose(self, be):
+        self.calls.append(("choose", be))
+
+    def adb_phone(self, serial, host, adb="adb"):
+        return ("phone", serial, host, adb)
 
     def named(self, what):
         return [c for c in self.calls if c[0] == what]
@@ -626,6 +633,50 @@ def o11_none_policy_refusals():
           lambda: r["ok"] is True and w.named("join")[0][3] == SSID, (r, w.named("join")))
 
 
+def o4a_backend():
+    """O4a: the Wi-Fi backend chosen in the machine's settings: the host
+    system's by default, the phone over adb with "wifi": "adb"; set before the
+    upload and cleared after it, refused settings choosing nothing."""
+    base = {"host": HOST, "iface": "wlan0", "ssid_env": SSID_ENV, "capture": False}
+    r, b, w, _ = flasher({"bin": IMG, "retry": "none"}, bench_kw={"after": TOOK})
+    check("O4a: by default the host system's backend: choose(None), and cleared after",
+          lambda: r["ok"] is True and w.named("choose") == [("choose", None), ("choose", None)]
+          and w.calls[0] == ("choose", None) and w.calls[-1] == ("choose", None), w.calls)
+    r, b, w, _ = flasher({"bin": IMG, "retry": "none"}, bench_kw={"after": TOOK},
+                         settings={"ota": dict(base, wifi="system", profile=PROFILE)})
+    check("O4a: \"wifi\": \"system\" is the host system's backend",
+          lambda: r["ok"] is True and w.named("choose") == [("choose", None), ("choose", None)], w.calls)
+    r, b, w, _ = flasher({"bin": IMG, "retry": "none"}, bench_kw={"after": TOOK},
+                         settings={"ota": dict(base, wifi="adb", profile=79, adb_serial="0123abcd")})
+    check("O4a: \"wifi\": \"adb\" chooses the phone (serial, the device's host, adb), first, and clears it after",
+          lambda: r["ok"] is True and w.calls[0] == ("choose", ("phone", "0123abcd", HOST, "adb"))
+          and w.calls[-1] == ("choose", None) and len(w.named("choose")) == 2, w.calls)
+    check("O4a: with the phone, the profile is the saved network's id, passed as text",
+          lambda: w.named("join") and w.named("join")[0][1] == "79" and w.named("join")[0][2] == "wlan0",
+          w.named("join"))
+    r, b, w, _ = flasher({"bin": IMG, "retry": "none"}, bench_kw={"after": TOOK},
+                         settings={"ota": dict(base, wifi="adb", profile="79", adb_serial="0123abcd",
+                                               adb="/opt/made-up/adb")})
+    check("O4a: the adb command from the settings",
+          lambda: r["ok"] is True and w.calls[0] == ("choose", ("phone", "0123abcd", HOST, "/opt/made-up/adb")),
+          w.calls)
+    for label, extra in (("no adb_serial", {"wifi": "adb", "profile": "79"}),
+                         ("a profile that is not a network id", {"wifi": "adb", "profile": PROFILE,
+                                                                  "adb_serial": "0123abcd"}),
+                         ("a backend that does not exist", {"wifi": "usb-dongle", "profile": PROFILE})):
+        r, b, w, _ = flasher({"bin": IMG, "retry": "none"}, settings={"ota": dict(base, **extra)})
+        check("O4a: settings with %s: refused, nothing chosen, joined or sent" % label,
+              lambda: r["ok"] is False and r["phase"] == "settings" and not b.calls and not w.calls, (r, w.calls))
+
+    class Boom(FakeWifi):
+        def current(self, iface):
+            raise RuntimeError("no Wi-Fi backend")
+    r, b, w, _ = flasher({"bin": IMG, "retry": "none"}, wifi=Boom(),
+                         settings={"ota": dict(base, wifi="adb", profile="79", adb_serial="0123abcd")})
+    check("O4a: the chosen backend is cleared even when the upload crashes",
+          lambda: r["ok"] is False and w.calls and w.calls[-1] == ("choose", None), w.calls)
+
+
 def cli():
     from vtrux_bench import bench_lock as BL
     env = BL.detect_env()
@@ -683,6 +734,7 @@ def main():
     o7_engine()
     o10_o12()
     o11_none_policy_refusals()
+    o4a_backend()
     cli()
     print("\n%s" % ("%d FAIL" % len(FAILS) if FAILS else "all ok"))
     return 1 if FAILS else 0
@@ -791,6 +843,17 @@ MUTANTS = [(n, OTA, o, w) for n, o, w in [
     ("O2: the SSID itself taken when not empty", '    if "ssid" in s:\n', '    if s.get("ssid") and not s.get("ssid_env"):\n'),
     ("O2: an unset or empty variable not refused", "    if not ssid:\n        return None, (\"the environment variable",
      "    if False:\n        return None, (\"the environment variable"),
+    # O4a: the backend from the settings
+    ("O4a: the settings' backend never chosen", "        wifi.choose(wifi_backend(cfg))\n", ""),
+    ("O4a: the chosen backend not cleared", "            call.clear()\n            wifi.choose(None)\n",
+     "            call.clear()\n"),
+    ("O4a: adb chooses the host system's backend", '    if cfg["wifi"] == "adb":\n        return wifi.adb_phone(',
+     '    if False:\n        return wifi.adb_phone('),
+    ("O4a: an unknown backend taken as the system's", "    if kind not in WIFI_KINDS:\n", "    if False:\n"),
+    ("O4a: adb without a serial", '        if not s.get("adb_serial"):\n', "        if False:\n"),
+    ("O4a: adb with a profile name", '        if not re.match(r"^\\d+$", str(s["profile"])):\n', "        if False:\n"),
+    ("O4a: the adb command ignored", 'phone = {"serial": s["adb_serial"], "adb": s.get("adb") or "adb"}',
+     'phone = {"serial": s["adb_serial"], "adb": "adb"}'),
     # the by-hand command
     ("by hand: no hold needed", '    if not held:\n        builtins.print("refused: the bench is not held',
      '    if False:\n        builtins.print("refused: the bench is not held'),
