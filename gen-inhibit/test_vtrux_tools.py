@@ -159,6 +159,8 @@ class Launcher(unittest.TestCase):
         self.assertIn(os.path.normpath(os.path.join(self.d, "shared-" + TAG)),
                       out)
         self.assertIn("worktree add --detach ../shared-%s %s" % (TAG, TAG), out)
+        self.assertIn('chmod -R a-w "%s"' % os.path.normpath(
+            os.path.join(self.d, "shared-" + TAG, "shared")), out)
 
     def test_runs_the_checkouts_cli(self):
         self.pins({"tag": TAG})

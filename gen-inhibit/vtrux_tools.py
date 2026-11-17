@@ -85,8 +85,9 @@ def tools_dir():
         raise SystemExit(
             "vtrux_tools: the pinned checkout %s is missing. Create it, "
             "read-only and detached at the pin's tag, with:\n"
-            '    git -C "%s" worktree add --detach ../shared-%s %s'
-            % (checkout, top, tag, tag))
+            '    git -C "%s" worktree add --detach ../shared-%s %s\n'
+            '    chmod -R a-w "%s"'
+            % (checkout, top, tag, tag, os.path.join(checkout, "shared")))
     return tools
 
 
