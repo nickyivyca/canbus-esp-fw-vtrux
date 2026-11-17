@@ -49,7 +49,9 @@ to merge, in one message each. Do not say what you tested or what passed.
 **Self-compact.** You have two compaction points:
 - **The end of a step:** the step is committed, you have sent the "batch
   lands" message, and your batch or the reviewer's reply already names your
-  next work, or says to wait for the next batch. Compact before you start on
+  next work, or says to wait for the next batch. If you already hold your
+  next work and it does not need the reviewer's answer to your batch, do not
+  wait for that answer. Compact before you start on
   that work. The resume message names that work, or what you are waiting
   for, and where it is written. If you are only waiting, for the next batch
   or the reviewer's reply, and that is written in your working log, you may

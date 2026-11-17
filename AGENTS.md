@@ -85,6 +85,15 @@ for a shared change in progress, and extra worktrees named
 anchor worktree add --detach ../shared-<tag> <tag>`. Work moves between
 machines only through origin.
 
+**A `shared-<tag>/` checkout is made read-only when it is made:** `chmod -R
+a-w ../shared-<tag>/shared`, leaving the checkout's root and its `.git` file
+writable. The pins hash those files, so a stray write, such as a
+`__pycache__`, changes the digest and the pin check refuses. Python run
+from a pinned checkout, or with one on `PYTHONPATH`, runs with `-B` or
+`PYTHONDONTWRITEBYTECODE=1`, children included; on Windows that is the only
+guard, since a read-only flag does not stop new files in a folder. To remove
+a checkout, `chmod -R u+w` its `shared/` first, then `git worktree remove`.
+
 **Start-up check.** Before anything else, check that you are in your role's
 worktree, on your role's branch (`git branch --show-current`). If not, stop
 and tell the user.
@@ -163,10 +172,16 @@ message it only reads costs as much as one it acts on.
   the same session is batched into one message where it can wait.
 - **Don't relay what the receiver can read** from origin, a tracker, the bench
   log or a file: name where it is only if it must act on it.
-- **A merge or a cherry-pick is messaged only when it gives the receiver its
-  next job:** pick this onto your branch, start this work from it, pin or read
-  it, or fix what it broke. "Merged, pushed, scan clean" and "picked as X"
-  are not sent.
+- **A report that asks the reviewer to merge or review always gets one
+  answer:** merged, with the commit (and tag), or sent back, with why. Its
+  sender is waiting on it, so it is a go signal, not a notice; one line is
+  enough.
+- **Any other merge or cherry-pick is messaged only when it gives the
+  receiver its next job:** pick this onto your branch, start this work from
+  it, pin or read it, or fix what it broke. "Picked as X" is not sent, and a
+  merge is not copied to sessions that did not ask for it.
+- **Don't wait on an answer you don't need.** After sending a report, start
+  the next work you already hold, unless it needs that answer.
 
 ### Compacting your own context: `/self-compact`
 
