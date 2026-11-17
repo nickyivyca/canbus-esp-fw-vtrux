@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Spec 5.1 item 3, bench half: every flash writer is refused while armed.
+"""Spec 5.1 item 3, bench half: every flash writer is refused while armed, and the
+two car-data writers are not registered at all (spec 12.4 flash-write row).
 
     py -3.11 bench_flash_guard.py --host 192.168.80.1
     py -3.11 bench_flash_guard.py --host 192.168.80.1 --check-accepted
@@ -43,10 +44,22 @@ What the handlers actually do, now read rather than assumed:
   upload_car_data  Rejects an oversized Content-Length before fopen, so only a
                    >2 MB body would be safe. Anything smaller reaches fopen.
 
-Those last two are SKIPPED, and that is a stated limitation rather than a hidden
-one. All five share the one gate (`flash_write_refused`), and all five are covered
-by the refusal half; showing on three that the 403 is conditional on the mode is
-what rules out an unconditional refusal.
+Those last two were SKIPPED in the accepted-when-OFF half, a stated limitation.
+From 2026-11-16 they are not registered in this build at all (below), and only the
+three above share the gate (`flash_write_refused`); showing on them that the 403 is
+conditional on the mode is what rules out an unconditional refusal.
+
+THE TWO CAR-DATA ENDPOINTS ARE NOT REGISTERED (spec 12.4's flash-write row, user
+2026-11-16; shared/wican W7 with AutoPID off, spec 3.2): /store_car_data and
+/upload/car_data.json each answer 404 in EVERY mode. So they are not in WRITERS, whose
+rows want the guard's 403: in modes 1-4 each is POSTed with an empty body, as before,
+and must answer 404; and when OFF each is probed on every run, not only with
+--check-accepted, and must answer 404 there too. THE OFF PROBE IS A GET, NEVER A POST,
+a harness safety choice: an unregistered URI answers 404 to every method, while a URI
+registered for POST only answers a GET with 405, so a build that registered either
+endpoint again shows as a FAIL naming it registered, and no request can reach a handler
+that would truncate car_data.json (above). A 403 in modes 1-4 is a FAIL too: the
+endpoint is registered, behind the guard.
 
 WHY NOT-403 IS THE RIGHT ASSERTION, and not "200". 403 is the guard's own answer,
 produced before the handler looks at the body at all. Any other status -- or even
@@ -71,13 +84,14 @@ from bench_ota_guard import (            # noqa: E402
     http, runs_dir, set_mode, wifi_mode,
 )
 
-# The five handlers spec 5.1 item 3 names, with the method each expects and a
+# The flash writers spec 5.1 item 3 names, with the method each expects and a
 # body that no handler can accept. `config_vs_spec.py` checks the source side;
 # this checks the device.
 #
 # The bodies are junk ON PURPOSE -- see the header. Each is well-formed HTTP and
 # nonsense to the handler.
-# The five handlers spec 5.1 item 3 names. `off_safe` says whether the endpoint
+# The three registered writers (the two car-data ones are not registered from
+# 2026-11-16: UNREGISTERED below). `off_safe` says whether the endpoint
 # can be probed when OFF without writing: see the header for what each handler
 # does before it opens the file. An empty body is the probe, because these three
 # check the content length before any fopen.
@@ -85,14 +99,20 @@ WRITERS = (
     ("/store_config",        "POST", b"", True),
     ("/store_canflt",        "POST", b"", True),
     ("/store_auto_data",     "POST", b"", True),
-    # fopen(..., "w") before any validation: truncates on ANY request.
-    ("/store_car_data",      "POST", b"", False),
-    # Takes its destination from the URI, like the OTA handler. Only a >2 MB
-    # body is rejected before fopen, so there is no cheap safe probe.
-    ("/upload/car_data.json", "POST", b"", False),
 )
 
+# Not registered in this build (spec 12.4, user 2026-11-16): 404 in every mode. A POST in
+# modes 1-4 (an empty body, as before); a GET when OFF (the header: a POST must never reach
+# their handlers, and a GET to a URI registered for POST alone answers 405).
+#   /store_car_data          fopen(..., "w") before any validation: truncates on ANY request.
+#   /upload/car_data.json    takes its destination from the URI, like the OTA handler; only a
+#                            >2 MB body is rejected before fopen.
+UNREGISTERED = ("/store_car_data", "/upload/car_data.json")
+
 fails = []
+# the PASS line's second half, which suite_judges' B21 judge reads (spec 12.4, 2026-11-16)
+UNREGISTERED_LINE = ("/store_car_data and /upload/car_data.json are not registered "
+                     "(404 in every mode).")
 
 # Every row, so the run leaves evidence rather than a claim. Reviewed 2026-09-26:
 # "20 of 20 refused" existed only in a chat message, which is not a record.
@@ -163,6 +183,13 @@ def refusals(host):
             say(False, "arm %s" % MODES[mode],
                 "asked for mode %d, device reports %r" % (mode, got))
             continue
+        for path in UNREGISTERED:
+            code, txt = http(host, path, method="POST", body=b"")
+            say(code == 404, "%-8s %s not registered (404)" % (MODES[mode], path),
+                "HTTP %s%s" % (code, "" if code == 404 else
+                               " -- 403 is the guard's answer, so the endpoint is registered"
+                               if code == 403 else " -- not the 404 of an unregistered URI"),
+                mode=MODES[mode], endpoint=path, status=code, body=(txt or "")[:120])
         for path, method, body, _off_safe in WRITERS:
             code, txt = http(host, path, method=method, body=body)
             detail = "HTTP %s" % code
@@ -181,6 +208,26 @@ def refusals(host):
                     "%s -- a flash write was NOT refused while armed" % detail,
                     **rec_extra)
     set_mode(host, 0)
+
+
+def unregistered_when_off(host):
+    """OFF: each car-data endpoint answers a GET with 404. A GET, never a POST (the header):
+    405 means it is registered for POST, and a POST there would reach its handler."""
+    print("\n=== the car-data endpoints are not registered when OFF either (GET, never POST) ===")
+    set_mode(host, 0)
+    page, _ = gi_status(host, strict=False)
+    if (page or {}).get("mode") != 0:
+        say(False, "device is OFF for the car-data probe", "mode is %r" % (page or {}).get("mode"))
+        return
+    for path in UNREGISTERED:
+        code, txt = http(host, path, method="GET")
+        detail = "HTTP %s (GET)" % code
+        if code == 405:
+            detail += " -- Method Not Allowed: the endpoint IS registered (for another method)"
+        elif code != 404:
+            detail += " -- not the 404 of an unregistered URI: the endpoint is registered"
+        say(code == 404, "OFF      %s not registered (404)" % path, detail,
+            mode="OFF", endpoint=path, method="GET", status=code, body=(txt or "")[:120])
 
 
 def accepted_when_off(host):
@@ -247,6 +294,7 @@ def main():
         return 2
 
     refusals(args.host)
+    unregistered_when_off(args.host)
     if args.check_accepted:
         accepted_when_off(args.host)
     else:
@@ -270,7 +318,7 @@ def main():
         print("%d FAILED: %s" % (len(fails), ", ".join(fails[:6])))
         return 1
     print("spec 5.1 item 3 holds on the device: every flash writer is refused "
-          "while gen_inhibit owns the bus, and each 403 names the reason.")
+          "while gen_inhibit owns the bus, and each 403 names the reason; %s" % UNREGISTERED_LINE)
     return 0
 
 

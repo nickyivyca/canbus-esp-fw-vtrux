@@ -17,6 +17,9 @@ import os
 import shutil
 import subprocess
 import sys
+# no bytecode anywhere below this process: a child importing the pinned core must not write
+# __pycache__ into its read-only checkout (charge-interposer tester, 2026-11-16)
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "bench"))
@@ -78,6 +81,22 @@ MUTANTS = [
     ("flash: the value not recorded", FLASH,
      '    say(ap_ok, "device is in AP mode", detail, wifi_mode=mode_value)\n',
      '    say(ap_ok, "device is in AP mode", detail)\n'),
+    # The car-data endpoints are not registered: 404 in every mode (spec 12.4, user 2026-11-16)
+    ("flash: car-data, a 403 in modes 1-4 accepted", FLASH,
+     'say(code == 404, "%-8s %s not registered (404)"', 'say(code in (403, 404), "%-8s %s not registered (404)"'),
+    ("flash: car-data, not probed in modes 1-4", FLASH,
+     '        for path in UNREGISTERED:\n            code, txt = http(host, path, method="POST", body=b"")\n',
+     '        for path in ():\n            code, txt = http(host, path, method="POST", body=b"")\n'),
+    ("flash: car-data, OFF probed with a POST", FLASH,
+     '        code, txt = http(host, path, method="GET")\n', '        code, txt = http(host, path, method="POST", body=b"")\n'),
+    ("flash: car-data, a 405 accepted when OFF", FLASH,
+     'say(code == 404, "OFF      %s not registered (404)"', 'say(code in (404, 405), "OFF      %s not registered (404)"'),
+    ("flash: car-data, the OFF probe only with --check-accepted", FLASH,
+     "    refusals(args.host)\n    unregistered_when_off(args.host)\n    if args.check_accepted:\n",
+     "    refusals(args.host)\n    if args.check_accepted:\n        unregistered_when_off(args.host)\n"),
+    ("flash: car-data, no OFF probe", FLASH, "    unregistered_when_off(args.host)\n", ""),
+    ("flash: car-data, the PASS line without the 404 sentence", FLASH,
+     'each 403 names the reason; %s" % UNREGISTERED_LINE)', 'each 403 names the reason.")'),
 ]
 
 

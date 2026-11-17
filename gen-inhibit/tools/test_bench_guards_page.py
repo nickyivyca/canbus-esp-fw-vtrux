@@ -20,6 +20,15 @@ record. The fake config carries the same made-up value in credential-shaped
 fields, so printing or recording more than wifi_mode shows too.
 
     py -3.14 test_bench_guards_page.py     # exit 0 only if every check passes
+The car-data endpoints (spec 12.4's flash-write row, user 2026-11-16): /store_car_data and
+/upload/car_data.json are not registered, so the fake answers 404 to them in every mode
+and for every method. The flash guard passes on that, with a 404 row for each in each of
+the five modes, the OFF ones probed with a GET whether or not --check-accepted is given;
+a device that answers them with the guard's 403 in modes 1-4, or a GET with 405 when OFF
+(registered for POST), fails, the 405 row naming it registered; and the guard never POSTs
+to either while the device is OFF. Its PASS line carries the 404 sentence the B21 judge
+reads.
+
 Its mutants: test_bench_guards_page_mutants.py. GUARDS_DIR runs another copy of
 the two guards (the mutants use it).
 """
@@ -30,6 +39,9 @@ import os
 import shutil
 import sys
 import urllib.parse
+# no bytecode anywhere below this process: a child importing the pinned core must not write
+# __pycache__ into its read-only checkout (charge-interposer tester, 2026-11-16)
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -63,6 +75,7 @@ import bench_ota_guard as G       # noqa: E402
 import bench_flash_guard as F     # noqa: E402
 
 FAILS = []
+CAR_PATHS = ("/store_car_data", "/upload/car_data.json")
 MADE_UP = "made-up-value-not-a-credential"
 SHA = "ab" * 32
 PAGE_ID = {"elf_sha256": SHA, "git_version": "1234567", "uptime_ms": 4321}
@@ -98,13 +111,24 @@ class Device:
     Records every path."""
 
     def __init__(self, die_after_off_probe=False, page_up=True, cfg=AP_CONFIG, cfg_status=200,
-                 page_wifi=None):
-        self.mode, self.paths = 0, []
+                 page_wifi=None, car=None):
+        # car: None, not registered (404 always); "guarded", registered behind the guard (403
+        # when owned, 405 to a GET and a closed connection to a POST when OFF); "405 off",
+        # 404 when owned but 405 to a GET when OFF; "403 owned", 403 when owned, 404 when OFF
+        self.mode, self.paths, self.car, self.calls = 0, [], car, []
         self.die, self.page_up = die_after_off_probe, page_up
         self.cfg, self.cfg_status, self.page_wifi = cfg, cfg_status, page_wifi
 
     def http(self, host, path, method="GET", body=None, ctype=None, **_kw):
         self.paths.append(path.split("?")[0])
+        self.calls.append((self.mode, method, path.split("?")[0]))
+        if path in CAR_PATHS:
+            owned = self.mode != 0
+            if self.car in ("guarded", "403 owned") and owned:
+                return 403, "refused: gen_inhibit owns the bus"
+            if self.car in ("guarded", "405 off") and not owned:
+                return (405, "Method Not Allowed") if method == "GET" else (None, "RemoteDisconnected: closed")
+            return 404, "Nothing matches the given URI"
         if path.startswith("/check_status"):
             return 200, json.dumps({"git_version": "check-status-version", "sta_pass": MADE_UP})
         if path.startswith("/load_config"):
@@ -225,6 +249,51 @@ def main():
           "rc %r; %s" % (rc, [(r.get("endpoint"), r["ok"], r.get("device_alive")) for r in off]))
     check("flash: ... asked of /gen_inhibit, not /check_status", lambda: "/check_status" not in dev.paths,
           sorted(set(dev.paths)))
+
+    print("\n=== the car-data endpoints: not registered, 404 in every mode (spec 12.4) ===")
+
+    def car_run(car=None, accepted=True):
+        dev = Device(car=car)
+        if os.path.exists(out_path):
+            os.remove(out_path)
+        rc, out = run(F, ["--host", "192.0.2.1", "--out", out_path] + (["--check-accepted"] if accepted else []), dev)
+        rows = [r for r in record(work, "bench_flash_guard.json").get("rows", []) if r.get("endpoint") in CAR_PATHS]
+        return rc, out, rows, dev
+
+    def by_mode(rows):
+        return sorted((r.get("mode"), r.get("endpoint"), r["ok"]) for r in rows)
+    modes = tuple(F.MODES[m] for m in range(5))    # OFF first
+    for accepted in (True, False):
+        tag = "with" if accepted else "without"
+        rc, out, rows, dev = car_run(accepted=accepted)
+        check("car-data (%s --check-accepted): the run passes on a device that does not register them" % tag,
+              lambda: rc == 0, "rc %r; %s" % (rc, out[-200:]))
+        check("car-data (%s --check-accepted): a passing 404 row for each in each of the five modes" % tag,
+              lambda: len(rows) == 10 and all(r["ok"] and r.get("status") == 404 for r in rows)
+              and {r.get("mode") for r in rows} == set(F.MODES[m] for m in range(5)),
+              by_mode(rows))
+        check("car-data (%s --check-accepted): OFF probed with a GET, never a POST" % tag,
+              lambda: [c for c in dev.calls if c[2] in CAR_PATHS and c[0] == 0] ==
+              [(0, "GET", p) for p in CAR_PATHS], [c for c in dev.calls if c[2] in CAR_PATHS])
+    check("car-data: the PASS line keeps the B21 judge's phrase and adds the 404 sentence",
+          lambda: "spec 5.1 item 3 holds on the device" in out
+          and "/store_car_data and /upload/car_data.json are not registered (404 in every mode)." in out,
+          out[-260:])
+    for car, label, want_fail, says in (
+            ("guarded", "registered behind the guard (403 owned, 405 to a GET when OFF)",
+             {(m, p) for m in modes for p in CAR_PATHS}, "registered"),
+            ("403 owned", "403 in modes 1-4", {(m, p) for m in modes[1:] for p in CAR_PATHS}, "registered"),
+            ("405 off", "405 to a GET when OFF", {("OFF", p) for p in CAR_PATHS}, "IS registered")):
+        rc, out, rows, dev = car_run(car)
+        failed = {(r.get("mode"), r.get("endpoint")) for r in rows if not r["ok"]}
+        check("car-data, %s: the run fails, on exactly those rows" % label,
+              lambda: rc == 1 and failed == want_fail and len(rows) == 10, (rc, sorted(failed)))
+        check("car-data, %s: each failing row says the endpoint is registered" % label,
+              lambda: all(says in r["detail"] for r in rows if not r["ok"]),
+              [r["detail"] for r in rows if not r["ok"]][:2])
+        check("car-data, %s: no POST to either while OFF, and no PASS line" % label,
+              lambda: not [c for c in dev.calls if c[2] in CAR_PATHS and c[0] == 0 and c[1] != "GET"]
+              and "holds on the device" not in out, [c for c in dev.calls if c[2] in CAR_PATHS and c[0] == 0])
 
     print("\n=== the AP-mode precondition refuses, both guards ===")
     # (label, device, what the FAIL line must say). Every case must stop both
