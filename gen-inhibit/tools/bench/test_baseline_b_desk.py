@@ -147,6 +147,27 @@ def main():
             some("B2_e4_presence_respond_%s_x2app.json" % C, 1, noheld)
             rc, log = desk("B13", [bench, noheld, noheld], os.path.join(tmp, "b13noheld_out"))
             check("B13: no held RESPOND arm exits 2", rc == 2, (rc, log[-200:]))
+        if "B11raw" in steps:
+            # 4. a run folder with a space in its path judges the same: the step hands each
+            # record and its capture to the judge as separate words (an array). The e3d9437
+            # folder had spaces on Windows (SeaDrive's "My Libraries"); on Linux it has none,
+            # so without this copy a word-split argument list passes unseen (2026-11-16).
+            spaced = os.path.join(tmp, "spaced run dir")
+            os.makedirs(spaced)
+            for j in sorted(glob.glob(os.path.join(bench, "B11raw_e4_quiesce_*.json"))):
+                for p in glob.glob(os.path.splitext(j)[0] + "*"):
+                    shutil.copy(p, spaced)
+            out = os.path.join(tmp, "spaced out", "B11raw")
+            rc, log = desk("B11raw", [spaced], out)
+            check("B11raw: a run folder with a space in its path exits 0", rc == 0, log[-300:])
+            res = SJ.judge_one("B11raw", out)
+            fg = {k: x["value"] for r in res for k, x in r["figures"].items()}
+            want = {new_name.get(k, k): x for k, x in idx["B11raw"]["figures"].items()}
+            check("B11raw: a run folder with a space in its path judges as the index (%s)"
+                  % idx["B11raw"]["verdict"],
+                  [r["verdict"] for r in res] == [idx["B11raw"]["verdict"]] and fg == want,
+                  ([(r["verdict"], r["detail"][:120]) for r in res],
+                   {k: (fg.get(k), want.get(k)) for k in set(fg) | set(want) if fg.get(k) != want.get(k)}))
     finally:
         gi_paths.remove_tree(tmp)
     print("\n%s, %d ok, %d FAIL" % ("PASS" if not fails else "FAIL", oks, len(fails)))
