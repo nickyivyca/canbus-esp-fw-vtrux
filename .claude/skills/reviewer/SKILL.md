@@ -27,10 +27,12 @@ the topic branches too, unless the work isn't worth keeping. On a conflict,
 abort and send it back to be merged with `<project>/main` (never a rebase). If
 origin has moved, merge it into `<project>/main` yourself.
 
-**Message a merge or a pick only when it gives the receiver its next job**
-(AGENTS.md, "Messages between sessions"): the requester's next work starts
-from it, or the other reviewer has to read, pin or fix something. Cherry-pick
-a methodology commit without replying; the methodology owner checks origin.
+**Answer every report from your tester or implementor** with one line:
+merged (the commit, and the tag if any) or sent back (why). It is their go
+signal. **Other merges and picks are messaged only when they give the
+receiver its next job** (AGENTS.md, "Messages between sessions"): the other
+reviewer has to read, pin or fix something. Cherry-pick a methodology commit
+without replying; the methodology owner checks origin.
 Pass it to your tester and implementor to pick in your next message that
 gives them work, or on its own only if it changes what they are doing now.
 

@@ -67,7 +67,10 @@ than trusting the log or the file. Follow the process-cleanup rules in
   says to wait for its notification without polling, then carry on: for a
   suite, judge the run and report per `VERIFICATION.md`.
 - **After you have reported a piece of work,** a build or any other item
-  the reviewer assigned, once the reviewer's reply has arrived. If it names
+  the reviewer assigned. If you already hold your next work and it does not
+  need the reviewer's answer to this report, compact now and start it: the
+  resume message names that work and where it is written. Otherwise wait for
+  the answer (the reviewer always sends one). If it names
   your next work, compact before you start on it: the resume message names
   that work and the reviewer message it is in, and says to start on it. If
   it says to wait, for a build message or for another session, the resume
