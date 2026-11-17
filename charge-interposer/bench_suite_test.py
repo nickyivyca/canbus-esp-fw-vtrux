@@ -2126,9 +2126,12 @@ def test_shared_bench_tests():
     tests = os.path.join(pinned, "tests")
     found = {n for n in os.listdir(tests)
              if n.startswith("test_") and n.endswith(".py")}
-    assert found == set(B.SHARED_BENCH_TESTS), \
-        "shared/bench tests: found %s, listed %s" % (
-            sorted(found), sorted(B.SHARED_BENCH_TESTS))
+    both = set(B.SHARED_BENCH_TESTS) & set(B.SHARED_BENCH_NOT_RUN)
+    assert not both, "listed as run and as not run: %s" % sorted(both)
+    assert found == set(B.SHARED_BENCH_TESTS) | set(B.SHARED_BENCH_NOT_RUN), \
+        "shared/bench tests: found %s, listed %s, not run %s" % (
+            sorted(found), sorted(B.SHARED_BENCH_TESTS), sorted(B.SHARED_BENCH_NOT_RUN))
+    found -= set(B.SHARED_BENCH_NOT_RUN)
     s, su = _all()
     runs = set()
     for g in su["harness"].groups:
@@ -2857,6 +2860,7 @@ _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
 _ORIG["SELF_TESTS"] = B.SELF_TESTS
 _ORIG["CAN_FAILS"] = B.CAN_FAILS
 _ORIG["SHARED_BENCH_TESTS"] = B.SHARED_BENCH_TESTS
+_ORIG["SHARED_BENCH_NOT_RUN"] = B.SHARED_BENCH_NOT_RUN
 _ORIG["SHARED_BENCH"] = B.SHARED_BENCH
 _ORIG["HARNESS_PY_CANFAILS"] = B.HARNESS_PY_CANFAILS
 _ORIG["can_tools_info"] = B.can_tools_info
@@ -3203,6 +3207,9 @@ MUTANTS = {
             "cf.bench-usb-host")), "listed, but the harness never runs it")],
     "test_shared_bench_tests": [
         ("SHARED_BENCH_TESTS", ["test_decode.py"], "test_run_core unlisted"),
+        ("SHARED_BENCH_NOT_RUN", {}, "test_checkout_unchanged neither run nor ruled out"),
+        ("SHARED_BENCH_NOT_RUN", dict(B.SHARED_BENCH_NOT_RUN, **{"test_run_core.py": "x"}),
+         "a test both run and ruled out"),
         ("harness", _wrap_suite("harness", _drop_harness_check(
             "sb.test-decode-canfail")),
          "the harness drops test_decode --can-fail"),
