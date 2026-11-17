@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Gen-inhibit's two suites for the shared chain runner (shared/bench, vtrux_bench.run,
-pinned at shared/main tag 2026.11.12 (ee4608aa; before it 2026.11.11.7 (a0e12584), 2026.11.11 (79e5f7c6), and
-b9896a0 on charge-interposer/main). From 2026.11.11.2 its bench lock runs on Linux, the
+pinned at shared/main tag 2026.11.16.5 (d2b545c8; before it 2026.11.12 (ee4608aa), 2026.11.11.7 (a0e12584),
+2026.11.11 (79e5f7c6), and b9896a0 on charge-interposer/main). From 2026.11.11.2 its bench lock runs on Linux, the
 bench host's system (user, 2026-11-11). That core's on_start / on_end board steps reboot the WiCAN at
 each run's start and release; it refuses an esptool write unless settings.esptool.chip
 names the X2's type and MAC, the MAC living only in the local settings, never in a
@@ -26,6 +26,21 @@ Gen-inhibit tester, 2026-10-18. Two suites on the one core (user, 2026-10-17):
               left it, an image marked not safe to leave idle replaced first.
     emulated  parts H and C: no hardware, no lock.
 The core's rules are in its engine.py; nothing here repeats them.
+
+The WiCAN's OTA and every join of its hotspot (core 2026.11.16.5; the gen-inhibit reviewer's
+job (1), 2026-11-16). The OTA is the core's own flasher (vtrux_bench.run.ota, FLASH-SPEC
+O1-O13: this suite's upload() and ota() and bench_flash.py, moved there), registered as
+make_flasher(identify=<this suite's WiCAN identify>, images=<this suite's images>) with
+every WiCAN image's retry policy "dual-slot": attempt 1; else the build the WiCAN runs,
+uploaded over itself; then once more; a second failure stops the run; a load is (c) TOOK
+and a strict page read (O10). It joins the hotspot through the Wi-Fi backend settings.ota
+chooses (the phone over adb on madhouse-debian, FLASH-SPEC O4, O4a), and under the
+runner's hold disarms an armed WiCAN (O7). Every other join goes through the same backend:
+identify's join after a failed page read (join_hotspot), and the harness tools', which get
+the settings.ota block as GI_OTA_SETTINGS (bench/gi_wifi.py, bench/gi_ota.py). With the
+phone, the host reaches the device through a /32 route the phone's join puts on its RNDIS
+link (O5), and every HTTP read of the device goes over it. Until then the suite ran
+bench_flash.py, whose join was netsh.
 
 Placement (core 2026.11.12; AGENTS.md "Parallel work on the shared machine", point 1).
 The settings example gives the core's placement setting: bench.slice for the lock and
@@ -72,6 +87,16 @@ Settings this suite reads, besides the core's (shared/bench/README.md):
                      when it names the host the suite runs on, both run there without ssh
                      (host_target.sh's local mode, 2026-11-12)
     gi_host_root     the reverse-it root on that host (H's RROOT; a leading ~/ is that host's home)
+    ota              the core flasher's block (vtrux_bench.run.ota): host (192.168.80.1, the
+                     suite's HOST; another is refused), iface, profile, ssid_env (the variable
+                     the suite fills with bench-holder.md's SSID; one already holding another
+                     SSID is refused), wifi ("system", or "adb": the phone, with adb_serial and
+                     adb; the serial a bench identifier, local settings only), capture. The
+                     bench suite refuses settings without it; the tools get it as
+                     GI_OTA_SETTINGS
+    interposer_code_commit  the charge-interposer/main commit interposer_code is a read-only
+                     detached checkout of (gen-inhibit reviewer, 2026-11-16), so the run
+                     record names it; the bench suite refuses a checkout not at it, or dirty
     interposer_code  a charge-interposer/ clone (for x2_flash_custody and the X2's identify;
                      its bench_identify reads settings.serial_port, so it is handed a copy
                      of the settings with serial_port set to the X2's resolved by-id path,
@@ -123,6 +148,7 @@ def _load_bench(name):
 
 
 GE = _load_bench("gi_esptool")
+GW = _load_bench("gi_wifi")        # the hotspot through the core's Wi-Fi (settings.ota, 2026-11-16)
 GS = _load_bench("gi_serial")      # the boards' USB IDs for the tools (DEVICES-SPEC S1, 2026-11-12)
 X2_PIN_FILE = X2P.PIN_FILE  # the committed pin; never a setting
 X2_IMAGES = ("x2_app", "x2_slcan")
@@ -148,6 +174,9 @@ VERIFY_OK = GE.VERIFY_OK
 
 ROLE = "tester (gen-inhibit)"
 HOST = "192.168.80.1"
+# Every WiCAN image's retry policy in the core's flasher (FLASH-SPEC O11): this suite's ota()
+# at 40ecfa5e, moved into the core (2026-11-16)
+OTA_RETRY = "dual-slot"
 # The bench harness: bench/ of the gi_tools folder the settings name (moved from
 # SeaDrive, goal 20, 2026-10-22). In a check's argv it is this placeholder, which the
 # core fills from the settings, so no local path is recorded; the hooks join gi_tools
@@ -336,6 +365,38 @@ def wican_page():
         return json.load(r)
 
 
+def join_hotspot(settings):
+    """(ok, why): joins the WiCAN's hotspot through the Wi-Fi backend settings.ota chooses
+    (gi_wifi; the phone selects its saved network explicitly and puts the host's /32 route
+    to the device through it). Settings without a usable ota block join nothing, saying why."""
+    try:
+        cfg = GW.config(settings.get("ota"))
+    except GW.Refused as e:
+        return False, "no join: %s" % e
+    return GW.join(cfg)
+
+
+def ota_tools_env(settings, ssid):
+    """{GI_OTA_SETTINGS: the settings.ota block} for the tools, or {} without one; and the
+    variable settings.ota.ssid_env names filled with bench-holder.md's SSID in this process,
+    where the core's flasher reads it. ValueError when that variable already holds another
+    SSID, or the block names a host other than the suite's."""
+    ota = settings.get("ota")
+    if not ota:
+        return {}
+    if (ota.get("host") or HOST) != HOST:
+        raise ValueError("settings.ota.host is %s; the suite and its tools reach the WiCAN at %s"
+                         % (ota.get("host"), HOST))
+    var = ota.get("ssid_env")
+    if var:
+        have = os.environ.get(var)
+        if have and have != ssid:
+            raise ValueError("the environment variable %s (settings.ota.ssid_env) holds an SSID other than "
+                             "bench-holder.md's" % var)
+        os.environ[var] = ssid
+    return {GW.ENV: GW.env_value(ota)}
+
+
 _sleep = time.sleep
 
 
@@ -354,13 +415,13 @@ def make_hooks(settings, ssid, images=None):
     dual-slot restore looks up the build the WiCAN is running in it."""
     images = {} if images is None else images
     root = need(settings, "reverse_it")
-    tools = need(settings, "gi_tools")
     harness = harness_dir(settings)
     # GI_FW_TOOLS is retired (2026-10-22): the bench tools find gen-inhibit/tools/ as
     # their parent, and refuse it if set. REVERSE_IT_DIR is where their data is.
     base_env = {"GI_WICAN_SSID": ssid, "REVERSE_IT_DIR": root, "INTERPOSER_CODE": settings.get("interposer_code") or ""}
     base_env.update(esptool_env(settings))     # GI_ESPTOOL_ARGV (gi_esptool.py, 2026-11-11)
     base_env.update(serial_env(settings))      # GI_X2_DEVICE, GI_WICAN_DEVICE (gi_serial.py, 2026-11-12)
+    ota_tools_env(settings, ssid)              # ssid_env's variable filled for the core's flasher (2026-11-16)
 
     def redact(paths):
         """The SSID out of every text file named; anything else (a flash dump) untouched."""
@@ -383,43 +444,6 @@ def make_hooks(settings, ssid, images=None):
         d = os.path.dirname(logpath)
         redact([logpath] + [os.path.join(d, n) for n in sorted(set(os.listdir(d)) - before)])
         return rc
-
-    def upload(label, name, bin_path, settings_, logdir):
-        """One OTA through bench_flash: (ok, its VERDICT line). ok only on (c) TOOK."""
-        stamp = time.strftime("%Y%m%dT%H%M%S")
-        txt = os.path.join(logdir, "ota_%s_%s_%s.txt" % (label, name, stamp))
-        rec = os.path.join(logdir, "ota_%s_%s_%s.json" % (label, name, stamp))
-        rc = run(_py(settings_) + [os.path.join(tools, "bench_flash.py"), "--bin", bin_path, "--flash",
-                                   "--record", rec], txt, base_env, 600)
-        t = _text(txt)
-        v = re.search(r"VERDICT: .*", t)
-        ok = rc == 0 and "VERDICT: (c) TOOK" in t
-        return ok, "%s %s: %s (rc %s)" % (label, name, v.group(0) if v else "no VERDICT line", rc)
-
-    def ota(image, params, settings_, logdir):
-        """The WiCAN's OTA. A failed upload is never a reason to skip the image's checks
-        (user, 2026-10-19): the dual-slot restore (the build the board runs now, OTA'd
-        over itself so both slots hold it; the 2026-10-16 procedure), then one more
-        attempt. A second failure in a row stops the run (reviewer's bound): two in a
-        row points at the build, not the Wi-Fi. Every attempt's VERDICT line is kept."""
-        ok, d1 = upload("attempt1", image.name, params["bin"], settings_, logdir)
-        if ok:
-            return dict(ok=True, phase="ota", detail=d1, recoverable=True)
-        try:
-            sha = wican_sha()
-        except IdentifyError as e:
-            return dict(ok=False, phase="restore", detail="%s; then %s: no restore on an unknown state" % (d1, e),
-                        recoverable=False)
-        cur = [im for im in images.values() if im.board == "wican" and im.expect == sha]
-        if not cur:
-            return dict(ok=False, phase="restore", recoverable=False,
-                        detail="%s; the WiCAN reads %s, no image of this suite: no restore" % (d1, sha[:8]))
-        ok, d2 = upload("restore", cur[0].name, cur[0].params["bin"], settings_, logdir)
-        if not ok:
-            return dict(ok=False, phase="restore", detail="%s; %s" % (d1, d2), recoverable=False)
-        ok, d3 = upload("attempt2", image.name, params["bin"], settings_, logdir)
-        return dict(ok=ok, phase="ota" if ok else "ota-twice", detail="%s; %s; %s" % (d1, d2, d3),
-                    recoverable=True)
 
     x2_last = {}     # what identify last read off the X2 in this process ("read"), or nothing
 
@@ -503,10 +527,7 @@ def make_hooks(settings, ssid, images=None):
             except Exception as e:
                 last = e
                 if attempt == 0:
-                    if tools not in sys.path:
-                        sys.path.insert(0, tools)
-                    import bench_flash as BF
-                    BF.join_ap(ssid)
+                    join_hotspot(settings)      # the backend settings.ota chooses (2026-11-16)
                 _sleep(3)
         else:
             raise IdentifyError("the WiCAN's /gen_inhibit could not be read: %r" % (last,))
@@ -619,11 +640,27 @@ def make_hooks(settings, ssid, images=None):
                         detail=rec.get("detail") or "wican_reboot.py rc %s" % rc, found=found)
         return hook
 
+    # The WiCAN's OTA: the core's flasher with this suite's identify and images (dual-slot,
+    # FLASH-SPEC O11; core 2026.11.16.5). It takes the runner's hold (takes_hold).
+    from vtrux_bench.run import ota as OTA
+    ota = OTA.make_flasher(identify=wican_sha, images=images)
     return dict(redact=redact, ota=ota, x2_hold=x2_hold, x2_jammer=x2_jammer, identify=identify,
                 on_start=board_step("start"), on_end=board_step("release"))
 
 
 # ---------------------------------------------------------------- the suite
+
+def interposer_code_at(settings):
+    """The read-only charge-interposer checkout interposer_code names must be clean at
+    interposer_code_commit (gen-inhibit reviewer, 2026-11-16), so the run record names the
+    interposer code the X2's identify ran. ValueError otherwise."""
+    commit = need(settings, "interposer_code_commit")
+    st = tree_at(need(settings, "interposer_code"), commit)
+    if not (st["at"] and st["clean"]):
+        raise ValueError("settings.interposer_code is not a clean checkout at interposer_code_commit %s "
+                         "(head %s, clean %s)" % (commit, st["head"], st["clean"]))
+    return st
+
 
 def x2_pinned(settings):
     """The X2's pinned images (x2_pin.load) from settings.x2_pin_dir, or ValueError. The old
@@ -650,15 +687,21 @@ def suite(settings):
     need(settings, "gi_can1_termination")      # NONODE's --termination: read on the bench by a person
     images = {}
     hooks = make_hooks(settings, ssid, images)
+    try:
+        GW.config(settings.get("ota"))      # the core's own check of the block, before a run
+    except GW.Refused as e:
+        raise ValueError("settings.ota: %s" % e)
+    interposer_code_at(settings)
     H = HARNESS
 
     desc = {}
     for name, d in WICAN_BUILDS.items():
         b = image_bin(os.path.join(images_dir, "build-tester-" + d))
-        images[name] = Image(name, "ota", {"bin": b}, elf_sha256_of_bin(b), board="wican")
+        images[name] = Image(name, "ota", {"bin": b, "retry": OTA_RETRY}, elf_sha256_of_bin(b), board="wican")
         desc[name] = "image %s %s (elf %s)" % (commit, d, images[name].expect[:8])
     b = image_bin(prod_dir)
-    images["wican_prod"] = Image("wican_prod", "ota", {"bin": b}, elf_sha256_of_bin(b), board="wican")
+    images["wican_prod"] = Image("wican_prod", "ota", {"bin": b, "retry": OTA_RETRY}, elf_sha256_of_bin(b),
+                                 board="wican")
     desc["wican_prod"] = "image %s prod (elf %s)" % (commit, images["wican_prod"].expect[:8])
     pin = x2_pinned(settings)
     for name in X2_IMAGES:
@@ -676,6 +719,9 @@ def suite(settings):
 
     env0 = {"GI_OUT": "{outdir}", "GI_RUNS_DIR": "{outdir}", "GI_COMMIT": commit, "REVERSE_IT_DIR": "{reverse_it}",
             "GI_IMAGES": "{gi_images}", "GI_WICAN_SSID": ssid, "INTERPOSER_CODE": "{interposer_code}"}
+    # the settings.ota block for the tools' joins (gi_wifi), its braces doubled for the core's
+    # placeholder formatting
+    env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in ota_tools_env(settings, ssid).items()})
 
     def chk(cid, script, args, judge=None, outputs=(), timeout=3600, pw="wican_man", env=None, cls="wallclock"):
         e = dict(env0, GI_PW_IMAGE=desc[pw])
@@ -844,7 +890,10 @@ def code_info_for(settings, images, pin=None):
         clean = all(t["clean"] and t["at"] for t in trees.values()) and all(
             app_version(im.params["bin"]) == commit for im in images.values() if im.params.get("bin"))
         return {"commit": commit, "dirty": not clean, "code_hash": None, "trees": trees, "images": per,
-                "gi_tools": git_state(need(settings, "gi_tools"))}
+                "gi_tools": git_state(need(settings, "gi_tools")),
+                "interposer_code": dict(tree_at(need(settings, "interposer_code"),
+                                                settings.get("interposer_code_commit")),
+                                        commit=settings.get("interposer_code_commit"))}
     return code_info
 
 

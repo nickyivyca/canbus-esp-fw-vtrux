@@ -6,7 +6,7 @@ tool fails, and a settings file naming bench_lock_log puts a run on that log whi
 without keeps it on the Holder line. No hardware: every tool the hooks run is stood in
 for.
 
-    PYTHONPATH=<core 2026.11.12>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 2026.11.16.5>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit.py
 
 The board steps run the real wican_reboot.py from this folder's bench/ (the suite's
@@ -24,6 +24,9 @@ import shutil
 import sys
 import threading
 import types
+# no bytecode anywhere below this process: a child that imports the pinned core must not write
+# __pycache__ into its read-only checkout (charge-interposer tester, 2026-11-16)
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -59,6 +62,7 @@ from vtrux_bench.run import engine as ENG                    # noqa: E402
 from vtrux_bench.run.engine import Engine, fmt               # noqa: E402
 from vtrux_bench.run.model import CheckRun, SuiteError, validate   # noqa: E402
 import suite_gen_inhibit as SG                               # noqa: E402
+JOIN_HOTSPOT = SG.join_hotspot      # the real one: the hooks' tests stand in for it
 import _fake_serial as FS     # noqa: E402  bench/ (on sys.path above): the made-up serial devices
 
 # esptool (gi_esptool.py, 2026-11-11): the settings' argv in its one form, and the version
@@ -69,6 +73,9 @@ SG.GE.version = lambda argv, timeout=60: (VERSION[0], "esptool.py v%s\n%s\n" % (
 
 SSID ="WiCAN_" + "0f" * 6   # made up for the test, and built so this file has no SSID-form literal (test_publish_scan.py)
 BASE = scratch_dir("suite_gen_inhibit")
+# the core flasher's settings.ota block (vtrux_bench.run.ota; core 2026.11.16.5): the host's own
+# Wi-Fi, no capture; its ssid_env a variable of this test's own, which the suite fills
+OTA_BLOCK = {"iface": "wlan-test", "profile": "wican-test", "ssid_env": "GI_TEST_WICAN_SSID", "capture": False}
 SER_PORTS = {}   # the made-up serial devices' by-id links, by board (filled with the settings)
 fails = []
 oks = 0
@@ -169,10 +176,19 @@ def fixture():
     env, ports = FS.fake_bench(os.path.join(BASE, "serial"))
     SER_PORTS.update(ports)
     SD.SYS_ROOT, SD.BY_ID = env["GI_SERIAL_SYS_ROOT"], env["GI_SERIAL_BY_ID"]
+    ic = os.path.join(BASE, "ic")
+    os.makedirs(ic)
+    git(ic, "init", "-q")
+    with open(os.path.join(ic, "README.md"), "w") as f:
+        f.write("test\n")
+    git(ic, "add", ".")
+    git(ic, "commit", "-q", "-m", "ic")
     settings = {
         "reverse_it": BASE.replace("\\", "/"), "gi_tools": HERE.replace("\\", "/"), "gi_commit": "e3d9437",
         "gi_images": os.path.join(BASE, "images"), "gi_prod_dir": os.path.join(BASE, "prod"),
-        "interposer_code": os.path.join(BASE, "ic"), "x2_pin_dir": os.path.join(BASE, "x2pin", "files"),
+        "interposer_code": ic, "interposer_code_commit": git(ic, "rev-parse", "--short=8", "HEAD"),
+        "x2_pin_dir": os.path.join(BASE, "x2pin", "files"),
+        "ota": dict(OTA_BLOCK),
         "gi_fw": HERE, "gi_components": "x", "gi_checks_clone": HERE,
         "gi_host_ssh": "hosttest", "gi_host_root": "~/rt", "bash": shutil.which("bash"),
         "gi_can1_termination": "fixed passive resistors (test)",
@@ -436,9 +452,9 @@ def test_bins():
     sha = fake_bin(p, "abc1234", 0x5A)
     check("elf_sha256_of_bin reads the descriptor's ELF sha", SG.elf_sha256_of_bin(p) == sha)
     check("app_version reads the descriptor's version", SG.app_version(p) == "abc1234")
-    import bench_flash as BF
-    check("elf_sha256_of_bin agrees with bench_flash.image_elf_sha256 (the OTA judge's own)",
-          BF.image_elf_sha256(p) == sha, BF.image_elf_sha256(p))
+    from vtrux_bench.run import ota as OTA
+    check("elf_sha256_of_bin agrees with the core flasher's image_elf_sha256 (the OTA judge's own)",
+          OTA.image_elf_sha256(p) == sha, OTA.image_elf_sha256(p))
     with open(p, "r+b") as f:
         f.seek(0x20)
         f.write(b"\0\0\0\0")
@@ -543,8 +559,7 @@ def test_identify(settings, bench):
     ident = hooks["identify"]
     wm, xa, xj, xh = (bench.images[n] for n in ("wican_man", "x2_app", "x2_jammer", "x2_held"))
     joined = []
-    fake_module("bench_flash", join_ap=lambda s, timeout=40.0: joined.append(s),
-                image_elf_sha256=__import__("bench_flash").image_elf_sha256)
+    SG.join_hotspot = lambda settings_: joined.append(SSID) or (True, "joined (test)")
 
     def bi(result):
         calls = []
@@ -869,28 +884,50 @@ def test_flashers(settings, bench):
     m2 = bench.images["wican_rxq"]     # an image other than _man (wican_man2 until 2026-10-25)
     TOOK, A1 = "...\nVERDICT: (c) TOOK -- page reads the image\n", "VERDICT: (a1) did NOT take: reset at 131072\n"
 
-    def ota(outs, page=m2.expect):
-        """outs: each upload's (stdout, rc), in order; page: what the WiCAN reads after
-        the first attempt fails (a sha, or an exception to raise)."""
+    from vtrux_bench.run import ota as OTA
+    holds = []
+
+    def ota(outs, page=m2.expect, hold=None):
+        """outs: each upload's (console, rc), in order, from the core's flash_once (stood in
+        for); page: what the WiCAN reads after the first attempt fails (a sha, or an
+        exception to raise). Returns (result, each upload's bin)."""
         def t(tt):
-            seq = list(outs)
-            tt.do["bench_flash.py"] = lambda a, e: (seq.pop(0) + ({},)) if seq else ("", 1, {})
+            seq, bins = list(outs), []
+
+            def fo(args, hold_=None):
+                bins.append(args.bin)
+                holds.append(hold_)
+                out, rc = seq.pop(0) if seq else ("", 1)
+                return {"rc": rc, "console": out, "sent": True, "stop": None, "verdict": None}
 
             def pg():
                 if isinstance(page, Exception):
                     raise page
                 return {"elf_sha256": page}
             SG.wican_page = pg
-            try:            # the suite's own flasher, which knows its images; it must never raise
-                r = bench.flashers["ota"](wm, wm.params, settings, logdir())
+            saved = OTA.flash_once
+            OTA.flash_once = fo
+            try:            # the core's flasher with the suite's identify and images; never raises
+                r = bench.flashers["ota"](wm, wm.params, settings, logdir(), hold=hold)
             except Exception as e:
                 r = {"ok": None, "recoverable": None, "detail": "RAISED %r" % e}
-            bins = [c[2][c[2].index("--bin") + 1] for c in tt.named("bench_flash.py")]
+            finally:
+                OTA.flash_once = saved
             return r, bins
         return with_tools(t)
+    check("ota: the suite's flasher is the core's (vtrux_bench.run.ota), taking the runner's hold",
+          getattr(bench.flashers["ota"], "takes_hold", False) is True
+          and bench.flashers["ota"].__module__ == OTA.__name__, bench.flashers["ota"])
+    check("ota: every WiCAN image names the dual-slot policy (FLASH-SPEC O11)",
+          all(im.params.get("retry") == "dual-slot" for im in bench.images.values() if im.board == "wican"),
+          {n: im.params.get("retry") for n, im in bench.images.items() if im.board == "wican"})
     target, cur = wm.params["bin"], m2.params["bin"]
-    r, bins = ota([(TOOK, 0)])
+    r, bins = ota([(TOOK, 0)], hold="HOLD")
     check("ota: (c) TOOK with exit 0 is ok, one upload", r["ok"] and bins == [target], (r, bins))
+    check("ota: the runner's hold reaches the upload (an armed WiCAN disarmed under it, O7)",
+          holds[-1:] == ["HOLD"], holds[-1:])
+    r, bins = ota([(TOOK, 0)], hold=None)
+    check("ota: a call without a hold uploads without one", holds[-1:] == [None], holds[-1:])
     r, bins = ota([(A1, 1), (TOOK, 0), (TOOK, 0)])
     check("ota: a failed upload, the running build restored over itself, then the image again",
           r["ok"] and bins == [target, cur, target], (r, bins))
@@ -1078,8 +1115,7 @@ def test_board_hooks(settings, bench, emu):
     wm, rt, xa = bench.images["wican_man"], bench.images["wican_rt"], bench.images["x2_app"]
     wican = {n: im.expect for n, im in bench.images.items() if im.board == "wican"}
     order = []
-    fake_module("bench_flash", join_ap=lambda s, timeout=40.0: order.append("join"),
-                image_elf_sha256=__import__("bench_flash").image_elf_sha256)
+    SG.join_hotspot = lambda settings_: order.append("join") or (True, "joined (test)")
 
     def page_up():
         order.append("page")
@@ -1336,8 +1372,7 @@ def test_lock_source(settings):
         fake_bin(os.path.join(repo, "build-tester-" + b, "wican-fw_obd_t.bin"), h, 0x10 + k)
     fake_bin(os.path.join(repo, "prod", "wican-fw_obd_p.bin"), h, 0x70)
     other = "tester (charge-interposer)"
-    fake_module("bench_flash", join_ap=lambda s, timeout=40.0: None,
-                image_elf_sha256=__import__("bench_flash").image_elf_sha256)
+    SG.join_hotspot = lambda settings_: (True, "joined (test)")
     fake_module("bench_identify", identify=lambda image, ctx, logdir_, settings_: None)
     n = [0]
     cg0, plat0 = ENG.RUNNER_CGROUP, ENG.PLATFORM
@@ -1709,6 +1744,13 @@ def test_example(bench, emu, settings):
     check("the settings example names x2_pin_dir and not the retired x2_images",
           "x2_pin_dir" in ex and "x2_images" not in ex, sorted(ex))
     check("the settings example has no WiCAN SSID", not re.search(r"WiCAN_[0-9a-fA-F]{4}", json.dumps(ex)))
+    o = ex.get("ota") or {}
+    check("the settings example's ota block: the phone over adb, its serial and saved network as placeholders, "
+          "ssid_env and never the SSID", o.get("wifi") == "adb" and str(o.get("adb_serial", "")).startswith("<")
+          and str(o.get("profile", "")).startswith("<") and o.get("ssid_env") and "ssid" not in o
+          and o.get("host") == SG.HOST, o)
+    check("the settings example's core is 2026.11.16.5",
+          "<core 2026.11.16.5>" in json.dumps(ex.get("hosts")), ex.get("hosts"))
     pl = ex.get("placement") or {}
     check("the settings example's placement: bench.slice for lock and wallclock, build.slice for build and light",
           pl.get("slices") == {"lock": "bench.slice", "wallclock": "bench.slice",
@@ -1729,9 +1771,85 @@ def test_example(bench, emu, settings):
         ENG.PLATFORM = plat0
 
 
+def test_ota(settings, bench):
+    """The WiCAN's hotspot through the core's Wi-Fi (core 2026.11.16.5; the gen-inhibit
+    reviewer's job (1), 2026-11-16): identify's join goes through gi_wifi with the backend
+    settings.ota chooses; the tools get the block as GI_OTA_SETTINGS, and the variable its
+    ssid_env names holds bench-holder.md's SSID; the bench suite refuses settings without a
+    usable block, another host, another SSID in that variable, and an interposer checkout not
+    clean at interposer_code_commit, which the record names."""
+    seen = []
+    saved = SG.GW.join
+    SG.GW.join = lambda cfg, **kw: seen.append(cfg) or (True, "joined (test)")
+    try:
+        r_none = JOIN_HOTSPOT(dict(settings, ota=None))
+        r_bad = JOIN_HOTSPOT(dict(settings, ota=dict(OTA_BLOCK, ssid="x")))
+        n_bad = len(seen)
+        r = JOIN_HOTSPOT(settings)
+    finally:
+        SG.GW.join = saved
+    check("join: no settings.ota joins nothing, saying why", r_none[0] is False and "no join" in r_none[1], r_none)
+    check("join: a block the core refuses joins nothing", r_bad[0] is False and n_bad == 0, (r_bad, n_bad))
+    check("join: through gi_wifi with the core's reading of settings.ota",
+          r == (True, "joined (test)") and len(seen) == 1 and seen[0].get("iface") == OTA_BLOCK["iface"]
+          and seen[0].get("profile") == OTA_BLOCK["profile"] and seen[0].get("ssid") == SSID, (r, seen))
+
+    var = OTA_BLOCK["ssid_env"]
+    os.environ.pop(var, None)
+    env = SG.ota_tools_env(settings, SSID)
+    check("tools: GI_OTA_SETTINGS is the settings.ota block", json.loads(env.get(SG.GW.ENV, "null")) == OTA_BLOCK, env)
+    check("tools: the variable ssid_env names holds bench-holder.md's SSID", os.environ.get(var) == SSID)
+    check("tools: no block gives no GI_OTA_SETTINGS", SG.ota_tools_env(dict(settings, ota=None), SSID) == {})
+    os.environ[var] = "WiCAN_" + "0e" * 6
+    check("tools: that variable already holding another SSID is refused",
+          raises(lambda: SG.ota_tools_env(settings, SSID), ValueError))
+    os.environ[var] = SSID
+    check("tools: another host than the suite's is refused",
+          raises(lambda: SG.ota_tools_env(dict(settings, ota=dict(OTA_BLOCK, host="192.168.80.2")), SSID), ValueError))
+    c = next(c for g in bench.groups for c in g.checks if g.name == "man_app" and c.id == "B16")
+    try:
+        got = fmt(c.env.get(SG.GW.ENV, ""), dict(settings, outdir="o", run_dir="r"))
+    except Exception as e:      # noqa: BLE001 -- a value the core cannot format fails the check
+        got = "FORMAT FAILED %r" % e
+    try:
+        back = json.loads(got or "null")
+    except ValueError:
+        back = None
+    check("tools: a check's GI_OTA_SETTINGS reads back as the block after the core's formatting",
+          back == OTA_BLOCK, got)
+
+    for name, bad in [("no settings.ota", dict(settings, ota=None)),
+                      ("a block without its interface", dict(settings, ota=dict(OTA_BLOCK, iface=""))),
+                      ("the SSID itself in the block", dict(settings, ota=dict(OTA_BLOCK, ssid="x"))),
+                      ("the phone without its serial", dict(settings, ota=dict(OTA_BLOCK, wifi="adb", profile="7"))),
+                      ("no interposer_code_commit", dict(settings, interposer_code_commit=None)),
+                      ("an interposer checkout at another commit", dict(settings, interposer_code_commit="0123abcd"))]:
+        check("bench suite: %s is refused" % name, raises(lambda: SG.bench(bad), ValueError))
+    ic = settings["interposer_code"]
+    with open(os.path.join(ic, "README.md"), "a") as f:
+        f.write("dirty\n")
+    try:
+        check("bench suite: a dirty interposer checkout is refused", raises(lambda: SG.bench(settings), ValueError))
+    finally:
+        git(ic, "checkout", "-q", "--", "README.md")
+    info = SG.code_info_for(settings, bench.images)({})
+    ici = info.get("interposer_code") or {}
+    check("record: the code info names the interposer checkout's commit, clean and at it",
+          ici.get("commit") == settings["interposer_code_commit"] and ici.get("at") is True and ici.get("clean") is True,
+          ici)
+
+
 def main():
     try:
         settings, shas = fixture()
+        try:        # a suite that will not load on the fixture is a failed check, not a crash
+            SG.bench(settings)
+            SG.emulated(settings)
+        except Exception as e:      # noqa: BLE001
+            check("both suites load on the fixture's settings", False, "%s: %s" % (type(e).__name__, e))
+            print("\nFAIL, %d ok, %d FAIL" % (oks, len(fails)))
+            return 1
+        check("both suites load on the fixture's settings", True)
         bench, emu = test_suites(settings, shas)
         test_example(bench, emu, settings)
         test_host_group(settings, emu)
@@ -1743,6 +1861,7 @@ def main():
         test_adapter()
         test_identify(settings, bench)
         test_flashers(settings, bench)
+        test_ota(settings, bench)
         test_board_hooks(settings, bench, emu)
         test_board_hooks_e2e(settings, bench)
     finally:

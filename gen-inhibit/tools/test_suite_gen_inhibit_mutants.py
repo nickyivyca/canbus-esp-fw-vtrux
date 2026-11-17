@@ -2,7 +2,7 @@
 """Mutants of suite_gen_inhibit.py; test_suite_gen_inhibit.py must fail on each BY A
 CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
-    PYTHONPATH=<core 2026.11.12>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
+    PYTHONPATH=<core 2026.11.16.5>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
         py -3.14 -B test_suite_gen_inhibit_mutants.py
 
 The mutants run in a shared clone of this repo at HEAD, made in the worktree's scratch/,
@@ -20,6 +20,9 @@ import os
 import shutil
 import subprocess
 import sys
+# no bytecode anywhere below this process: a child that imports the pinned core must not write
+# __pycache__ into its read-only checkout (charge-interposer tester, 2026-11-16)
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "bench"))
@@ -56,28 +59,35 @@ MUTANTS = [
      'if jrec.get("reset_since_open") is True:', 'if False:'),
     ("identify X2: a jammer ID with no uptime raises as a reset",
      'if jrec.get("reset_since_open") is True:', 'if jrec.get("reset_since_open") is not False:'),
-    ("ota: the exit is not looked at", 'ok = rc == 0 and "VERDICT: (c) TOOK" in t', 'ok = "VERDICT: (c) TOOK" in t'),
-    ("ota: the verdict is not looked at", 'ok = rc == 0 and "VERDICT: (c) TOOK" in t', 'ok = rc == 0'),
-    ("ota: no dual-slot restore before the retry",
-     'ok, d2 = upload("restore", cur[0].name, cur[0].params["bin"], settings_, logdir)', 'ok, d2 = True, "skipped"'),
-    ("ota: the restore uploads the wanted image, not the running build",
-     'ok, d2 = upload("restore", cur[0].name, cur[0].params["bin"], settings_, logdir)',
-     'ok, d2 = upload("restore", cur[0].name, params["bin"], settings_, logdir)'),
-    ("ota: no second attempt", 'ok, d3 = upload("attempt2", image.name, params["bin"], settings_, logdir)',
-     'ok, d3 = False, "no retry"'),
-    ("ota: a failed restore is not looked at",
-     '        if not ok:\n            return dict(ok=False, phase="restore", detail="%s; %s" % (d1, d2), recoverable=False)',
-     '        pass'),
-    ("ota: a failed restore allows more WiCAN flashes",
-     'return dict(ok=False, phase="restore", detail="%s; %s" % (d1, d2), recoverable=False)',
-     'return dict(ok=False, phase="restore", detail="%s; %s" % (d1, d2), recoverable=True)'),
-    ("ota: any WiCAN image is taken as the running build",
-     'cur = [im for im in images.values() if im.board == "wican" and im.expect == sha]',
-     'cur = [im for im in images.values() if im.board == "wican"]'),
-    ("ota: an unreadable page after a failure is not caught",
-     '            sha = wican_sha()\n        except IdentifyError as e:', '            sha = wican_sha()\n        except ZeroDivisionError as e:'),
-    ("ota: the first attempt's failure line is dropped",
-     'detail="%s; %s; %s" % (d1, d2, d3)', 'detail="%s; %s" % (d2, d3)'),
+    # the WiCAN's OTA is the core's flasher from 2026-11-16 (core 2026.11.16.5, FLASH-SPEC O11):
+    # its dual-slot rules' mutants are the core's own (O13); here, the suite's wiring of it
+    ("ota: the core's flasher gets no identify (dual-slot refused)",
+     "ota = OTA.make_flasher(identify=wican_sha, images=images)", "ota = OTA.make_flasher(images=images)"),
+    ("ota: the core's flasher gets no images (no build to restore)",
+     "ota = OTA.make_flasher(identify=wican_sha, images=images)", "ota = OTA.make_flasher(identify=wican_sha)"),
+    ("ota: the WiCAN images' policy is not dual-slot", 'OTA_RETRY = "dual-slot"', 'OTA_RETRY = "none"'),
+    ("join: identify's join is not made",
+     "                    join_hotspot(settings)      # the backend settings.ota chooses (2026-11-16)\n",
+     "                    pass\n"),
+    ("join: settings.ota not read through the core's check",
+     '        cfg = GW.config(settings.get("ota"))\n    except GW.Refused as e:\n        return False, "no join: %s" % e',
+     '        cfg = dict(settings.get("ota") or {}, ssid="")\n    except GW.Refused as e:\n        return False, "no join: %s" % e'),
+    ("tools: no GI_OTA_SETTINGS in a check's environment",
+     '    env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in ota_tools_env(settings, ssid).items()})\n',
+     ""),
+    ("tools: GI_OTA_SETTINGS' braces not doubled for the core's formatting",
+     'env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v',
+     'env0.update({k: v for k, v'),
+    ("tools: ssid_env's variable holding another SSID is not refused", "        if have and have != ssid:", "        if False:"),
+    ("tools: another host is not refused", '    if (ota.get("host") or HOST) != HOST:', "    if False:"),
+    ("tools: ssid_env's variable not filled", "        os.environ[var] = ssid\n", ""),
+    ("bench suite: settings.ota not checked before a run",
+     '        GW.config(settings.get("ota"))      # the core\'s own check of the block, before a run',
+     "        pass"),
+    ("bench suite: the interposer checkout not checked", "    interposer_code_at(settings)\n    H = HARNESS",
+     "    H = HARNESS"),
+    ("bench suite: a dirty interposer checkout accepted", 'if not (st["at"] and st["clean"]):', 'if not st["at"]:'),
+    ("record: the interposer commit not recorded", 'commit=settings.get("interposer_code_commit"))}', "commit=None)}"),
     ("x2_hold: any pin state is a hold", 'ok = rc == 0 and "TX (GPIO7) not driven" in t', 'ok = rc == 0'),
     ("x2_jammer: the dump's verdict is not read", 'if rc != 0 or verdict != "PASS":', 'if rc != 0 or not recs:'),
     ("x2_jammer: a failed jammer write allows more X2 flashes",
@@ -92,8 +102,9 @@ MUTANTS = [
     ("adapter: results are not named by their judge", 'out.append(Result(r["verdict"], sub=cid,',
      'out.append(Result(r["verdict"], sub="",'),
     ("the ELF sha from the wrong offset", 'return head[0xB0:0xD0].hex()', 'return head[0x90:0xB0].hex()'),
-    ("a WiCAN image expects a short sha", 'Image(name, "ota", {"bin": b}, elf_sha256_of_bin(b), board="wican")',
-     'Image(name, "ota", {"bin": b}, elf_sha256_of_bin(b)[:8], board="wican")'),
+    ("a WiCAN image expects a short sha",
+     'Image(name, "ota", {"bin": b, "retry": OTA_RETRY}, elf_sha256_of_bin(b), board="wican")',
+     'Image(name, "ota", {"bin": b, "retry": OTA_RETRY}, elf_sha256_of_bin(b)[:8], board="wican")'),
     ("B8 is judged nowhere", 'judged("B5", "B6", "B7", "B8")', 'judged("B5", "B6", "B7")'),
     ("B19page is judged nowhere", 'judged("B19absent", "B19page")', 'judged("B19absent")'),
     ("B27 is dropped instead of skipped", 'Check(id="B27", argv=["true"], skip=B27_SKIP)', 'Check(id="B27", argv=["true"])'),

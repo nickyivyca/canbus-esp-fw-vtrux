@@ -9,9 +9,10 @@ stops answering HTTP and its SoftAP goes away, so the laptop's WiFi drops off
 it (a reset of a71b90a took ~6 s to rejoin). So every poll records:
 
   - the page (answered or not, mode, drv null),
-  - the host's WLAN state and SSID (netsh wlan show interfaces on Windows, nmcli on
-    Linux), and from the same output its signal and, on Windows, its receive/transmit
-    rates, numbers only, logged but not judged.
+  - whether the WiFi interface that reaches the hotspot is connected and on the WiCAN's
+    SSID, read through the core's Wi-Fi backend that settings.ota chooses (gi_wifi; the
+    phone over adb on madhouse-debian). The link fields (signal, rates) are kept in the
+    record and are None: no backend reads them (netsh did until 2026-11-16).
 
 OUTAGE = a maximal run of polls where the page went unanswered, OR the WLAN was
 not connected to the WiCAN's SSID, OR the poll STALLED (took longer than
@@ -22,9 +23,10 @@ drop -- the request in flight blocked 7.4 s and then answered -- so the first
 version of this tool, without the stall sign, saw no outage at a real reboot. Each outage is a candidate reboot. Without a
 console this cannot tell a reboot from a SoftAP/WiFi outage, so outages are
 reported as outages; 0 outages means no reboot by this test. A mode that is
-not 0 is reported too (nothing posts during the run). Rejoins (netsh, or nmcli on
-Linux, through the profile already stored for the SoftAP) after --rejoin-after s of
-WLAN loss.
+not 0 is reported too (nothing posts during the run). Rejoins after --rejoin-after s of
+WLAN loss select the hotspot again through the same backend, explicitly, and the polls
+go on meanwhile (gi_wifi.select: the phone's connect call by its saved network's id, with
+the host's /32 route to the device through the phone).
 
 --watch-wican: records on every poll whether the WiCAN's USB device is present (its USB
 IDs in GI_WICAN_DEVICE, looked up through gi_serial and the core's serial_dev,
@@ -38,9 +40,11 @@ resolved from GI_WICAN_DEVICE, kept in the record as serial_device) at S seconds
 gives one USB-JTAG reset, so the detector can be checked against a reboot that
 is known to happen. The console is never read for counting.
 
-The WLAN state comes from nmcli on Linux (2026-11-12, the reviewer's Linux leftovers
-item 6; read_wlan) and netsh on Windows; its port lookup is Linux only, so the tool runs
-on Linux. The nmcli reading has not met a real adapter yet (see WLAN_LINUX).
+The WLAN state and the rejoin go through gi_wifi (2026-11-16, the gen-inhibit reviewer's
+job (1): every rejoin through vtrux_bench.run.wifi), from GI_OTA_SETTINGS, the settings.ota
+block the suite hands its tools; without it the tool refuses, nothing run. Until then it
+ran netsh on Windows and nmcli on Linux itself. Its port lookup is Linux only, so the tool
+runs on Linux.
 
 UPTIME (spec 11, "Uptime and reset reason are reported", user 2026-10-09; first
 on cc34c80). Every poll also records the page's `uptime_ms` and `reset_reason`,
@@ -66,138 +70,56 @@ outage that was not a reboot.
 the start and at the end of the run, for bring-up 1.5b after an OTA. Never /check_status
 (reviewer, 2026-10-20); until 2026-10-25 this read its `git_version`.
 
-    GI_WICAN_SSID=... python3.13 gen-inhibit/tools/bench/page_only_baseline.py
+    GI_WICAN_SSID=... GI_OTA_SETTINGS=<settings.ota as JSON> \
+    python3.13 gen-inhibit/tools/bench/page_only_baseline.py
         --power "..." [--seconds 360] [--period 1.0] [--pulse-rts-at 30]
 Writes runs/page_only_baseline_<stamp>.json.
 """
 import argparse
 import json
 import os
-import re
-import subprocess
 import sys
 import time
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import gi_wifi as GW  # noqa: E402  the hotspot through the core's Wi-Fi (2026-11-16)
 
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 SSID_ENV = "GI_WICAN_SSID"
 
 
-def parse_wlan(text, ssid):
-    """(connected_to_ssid, state) from `netsh wlan show interfaces` output."""
-    state = None
-    cur_ssid = None
-    for line in text.splitlines():
-        m = re.match(r"\s*State\s*:\s*(.+?)\s*$", line)
-        if m:
-            state = m.group(1)
-        m = re.match(r"\s*SSID\s*:\s*(.+?)\s*$", line)
-        if m:
-            cur_ssid = m.group(1)
-    return (state == "connected" and ssid is not None and cur_ssid == ssid), state
-
-
-# Only these three lines of the netsh output are read, and only their numbers are kept:
-# the same output names the SSID and BSSID, which no record may hold (2026-11-01).
+# The link fields logged per poll beside a stall (reviewer, 2026-11-01): numbers only, never
+# the SSID or BSSID. Until 2026-11-16 netsh gave all three and nmcli the signal. Through the
+# core's Wi-Fi backends (gi_wifi, below) none is read, so each is None; the fields stay in the
+# record and its summaries, and are logged, never judged.
 LINK_FIELDS = (("wlan_signal", r"Signal", r"(\d+)\s*%", int),
                ("wlan_rx_mbps", r"Receive rate \(Mbps\)", r"(\d+(?:\.\d+)?)", float),
                ("wlan_tx_mbps", r"Transmit rate \(Mbps\)", r"(\d+(?:\.\d+)?)", float))
 
 
-def parse_wlan_link(text):
-    """{wlan_signal (%), wlan_rx_mbps, wlan_tx_mbps} from `netsh wlan show interfaces`
-    output, each None if its line is absent or not a number. Logged per poll, so a stall
-    with the link up can be set beside the link's signal and rate (reviewer, 2026-11-01)."""
-    out = {k: None for k, _, _, _ in LINK_FIELDS}
-    for line in text.splitlines():
-        for k, label, num, conv in LINK_FIELDS:
-            m = re.match(r"\s*%s\s*:\s*%s\s*$" % (label, num), line)
-            if m:
-                out[k] = conv(m.group(1))
-    return out
+def read_wlan(cfg, be):
+    """(on_the_hotspot, state, link fields), read through the Wi-Fi backend settings.ota
+    chooses (gi_wifi.state: connected AND on the WiCAN's SSID, read back; the phone over adb
+    on madhouse-debian; 2026-11-16, the gen-inhibit reviewer's job (1)). A backend that
+    cannot be read is not on it, its state saying why. The link fields are None (above)."""
+    on, state = GW.state(cfg, be)
+    return on, state, {k: None for k, _, _, _ in LINK_FIELDS}
 
 
-# Linux (2026-11-12, the reviewer's Linux leftovers item 6): NetworkManager's nmcli, in its
-# terse form, which escapes a ':' or '\' inside a value with '\'. Only the access point this
-# host is joined to (ACTIVE yes) is read; its SSID is compared, never kept, and its BSSID is
-# not asked for. SIGNAL is NetworkManager's percent, as netsh's Signal is. The rates have no
-# nmcli field for the link in use (iw is not installed on madhouse-debian), so on Linux
-# wlan_rx_mbps and wlan_tx_mbps are None. Not yet run against a real adapter: madhouse-debian
-# has no Wi-Fi adapter until the USB one arrives, so the parsing is tested on made-up output
-# in nmcli's documented form.
-WLAN_WINDOWS = ["netsh", "wlan", "show", "interfaces"]
-WLAN_LINUX = ["nmcli", "-t", "-e", "yes", "-f", "ACTIVE,SSID,SIGNAL", "device", "wifi", "list", "--rescan", "no"]
+def rejoin(cfg, be):
+    """(ok, why): select the WiCAN's hotspot again through the backend, explicitly (the phone
+    by its saved network's id, with the host's /32 route through it; FLASH-SPEC O4), and
+    return without waiting, so the poll loop goes on reading it (gi_wifi.select). The
+    passphrase stays with the system; nothing here reads it."""
+    return GW.select(cfg, be)
 
 
-def nm_fields(line):
-    """One line of nmcli's terse output, split on unescaped ':' and unescaped."""
-    out, cur, esc = [], "", False
-    for ch in line:
-        if esc:
-            cur += ch
-            esc = False
-        elif ch == "\\":
-            esc = True
-        elif ch == ":":
-            out.append(cur)
-            cur = ""
-        else:
-            cur += ch
-    out.append(cur)
-    return out
-
-
-def _nm_active(text):
-    return [f for f in (nm_fields(ln) for ln in text.splitlines() if ln.strip()) if f[0] == "yes" and len(f) >= 3]
-
-
-def parse_nmcli(text, ssid):
-    """(connected_to_ssid, state) from WLAN_LINUX's output: connected to ssid only when
-    exactly one access point is active and its SSID is ssid."""
-    act = _nm_active(text)
-    state = "connected" if len(act) == 1 else "disconnected" if not act else "%d active" % len(act)
-    return (len(act) == 1 and ssid is not None and act[0][1] == ssid), state
-
-
-def parse_nmcli_link(text):
-    """The link fields from WLAN_LINUX's output: the active access point's signal (%);
-    the rates None (above)."""
-    out = {k: None for k, _, _, _ in LINK_FIELDS}
-    act = _nm_active(text)
-    if len(act) == 1 and re.fullmatch(r"\d+", act[0][2]):
-        out["wlan_signal"] = int(act[0][2])
-    return out
-
-
-def read_wlan(ssid, run=subprocess.run, platform=None):
-    """(connected_to_ssid, state, link fields): netsh on Windows, nmcli elsewhere. A
-    reader that can't run, or exits non-zero, is not connected, its state saying why."""
-    win = (platform or sys.platform) == "win32"
-    argv = WLAN_WINDOWS if win else WLAN_LINUX
-    none = {k: None for k, _, _, _ in LINK_FIELDS}
-    try:
-        r = run(argv, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError) as e:
-        return False, "%s failed (%s)" % (argv[0], type(e).__name__), none
-    if win:
-        ok, state = parse_wlan(r.stdout, ssid)
-        return ok, state, parse_wlan_link(r.stdout)
-    if r.returncode != 0:
-        return False, "nmcli exit %d" % r.returncode, none
-    ok, state = parse_nmcli(r.stdout, ssid)
-    return ok, state, parse_nmcli_link(r.stdout)
-
-
-def rejoin_argv(ssid, platform=None):
-    """The command that rejoins the WiCAN's SoftAP through the profile this host already
-    has for it (the passphrase stays in the OS's store and is never read here)."""
-    if (platform or sys.platform) == "win32":
-        return ["netsh", "wlan", "connect", "name=%s" % ssid]
-    return ["nmcli", "device", "wifi", "connect", ssid]
+def rejoin_note(cfg, ok, why):
+    """The record's event for one rejoin: the backend, whether the select was accepted, why."""
+    return "rejoin (%s backend) %s: %s" % (cfg["wifi"], "ok" if ok else "FAILED", why)
 
 
 def link_summary(samples):
@@ -407,6 +329,13 @@ def main():
     if not ssid:
         print("FAIL: set %s" % SSID_ENV)
         return 2
+    # the hotspot through the core's Wi-Fi, as settings.ota chooses (gi_wifi, 2026-11-16)
+    try:
+        wcfg = GW.from_env()
+        wbe = GW.backend(wcfg)
+    except GW.Refused as e:
+        print("REFUSED: %s (nothing run, no record)" % e)
+        return 2
     import lowid_flood_skip_bench as LF
     import gi_serial as GS
     # the WiCAN's USB device by its IDs (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12),
@@ -442,7 +371,7 @@ def main():
                     time.sleep(0.05)
                 rec["events"].append([round(time.perf_counter() - t0, 3),
                                       "rts pulsed: %s" % cc.pulse_rts(0.2)])
-            wlan_ok, state, link = read_wlan(ssid)
+            wlan_ok, state, link = read_wlan(wcfg, wbe)
             port = None
             if a.watch_wican:
                 try:
@@ -466,12 +395,8 @@ def main():
             if not wlan_ok:
                 lost_since = t if lost_since is None else lost_since
                 if t - lost_since >= a.rejoin_after:
-                    argv = rejoin_argv(ssid)
-                    try:
-                        rc = subprocess.run(argv, capture_output=True, text=True, timeout=10).returncode
-                    except (OSError, subprocess.SubprocessError) as e:
-                        rc = type(e).__name__
-                    rec["events"].append([round(t, 3), "rejoin %s rc %s" % (argv[0], rc)])
+                    ok, why = rejoin(wcfg, wbe)
+                    rec["events"].append([round(t, 3), rejoin_note(wcfg, ok, why)])
                     lost_since = t
             else:
                 lost_since = None
