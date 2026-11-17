@@ -8163,6 +8163,42 @@ lock, in bench.slice.
   and which harness each used, the drivers, `judged.txt`; superseded records
   and the first pass's stdout in `first_pass/`).
 
+**B7 with the replay's PCAN re-opened after its bus-off -- tester, 2026-11-17
+00:07-00:14, on `2341e73d` `_man` (`02d702d6...`), madhouse-debian. Result: B7
+PASS, 3 of 3 arms AS SPECIFIED.** Spec 7, "A bus-off ends the device's part
+until a re-arm or a reboot". This is the bench try of the gen-inhibit
+reviewer's option (a), 2026-11-16, after the INCONCLUSIVE B7 in the entry
+above. Harness `a34c5d5c` (`4e81b9c2`'s `pcan_reopen`, merged in `6e01cab2`).
+On a BUSOFF reading, the replay's PCAN is re-opened: PCAN-Basic Uninitialize,
+then Initialize at 500 kbit, then error frames on. `x2_jam_cases.py
+busoff-rearm --arms 3 --expect reinstalls`, as `baseline_b_jam.sh jam` runs it,
+by hand under a hand take of the bench lock, in bench.slice.
+- **Conditions.** WiCAN: `02d702d6...`, read off its page through the 3T at
+  00:08:27. It was not flashed or rebooted in the take, and was in mode 0 at the
+  end. Power: 12 V on OBD pin 16, as bench-holder.md has recorded since
+  2026-10-09 (not re-read), and USB plugged at 1-3.1. No WiCAN console capture.
+  X2 (rule 6): still the jammer row `ea762c62044cb5c6`, not flashed. `verify-row`
+  passed at 00:08:28. `x2_jammer.py id` passed at 00:08:30, given the row's
+  whole app_elf_sha256 (the banner's 9 digits judged as its prefix,
+  `2182f563`). Witness: the Kvaser through CANlib (`leaf`, clock `kvaser_hw`).
+  Replayer: the PCAN (`pcan`). No kernel USB error on the 1-3 tree over the
+  take.
+- **Each arm.**
+  - The PCAN read BUSOFF at the train's start. It was re-opened four times, 1 s
+    apart, and each re-open answered OK. It read OK again about 3.35 s after
+    the BUSOFF; the train is 3 s long.
+  - The page showed the WiCAN bus_off 0.91-1.02 s after the jam. In the no-arm
+    window it stayed bus_off, with 0 device `0x051`.
+  - After the direct re-arm it was running and live after 0.19-0.94 s, and the
+    first device `0x051` came 0.16-0.26 s after the re-arm. The witness saw
+    100.0 `0x051`/s after the re-arm.
+  - No reboot.
+- **Suite judge** (`suite_judges` B7 at `a34c5d5c`): `B7 PASS | 3 of 3 arms AS
+  SPECIFIED`. No timing failure.
+- **Run files:** `runs/b7reopen_a34c5d5_20261117T000827/` (`README.md`: the
+  per-arm table, the drivers and the pre-step outputs; the record
+  `x2_jam_busoff-rearm_20261117T000852.json` and its witness file).
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical
