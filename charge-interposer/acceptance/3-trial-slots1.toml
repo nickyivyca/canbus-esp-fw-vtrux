@@ -1,0 +1,130 @@
+# The slot trial on madhouse-debian, slots 1 of 1, 2 and 4: shared/bench job
+# B's side-by-side m-sims (shared/bench ACCEPT-SPEC A2; owned by the
+# charge-interposer reviewer). Drafted by the tester for the reviewer (the
+# reviewer's message of 2026-11-16: "Slot trial: as planned, but the serial
+# baseline is rerun3's emulated part (98d1 and e79d give the serial spread
+# ...). Send me the three lists once rerun3's m-sims end, and run them
+# during its bench phase."). Not a step acceptance: it measures whether the
+# m-sims checks can run side by side on buses of their own (shared/bench
+# 2026.11.16's hosts.<h>.wallclock_slots and bus_alloc, at this tree's pin
+# 2026.11.16.5) without moving a verdict, a scored margin or the sims'
+# wall-clock timing. The slot count goes to the user with the results;
+# spec 9's 1x time scale is untouched.
+#
+# Settings: accept_trial_slots1_settings_madhouse-debian.json, beside
+# accept_settings_madhouse-debian.json (rerun3's), a copy of it changing
+# only hosts.local.wallclock_slots (1) and bus_alloc ({}: the core's
+# defaults, groups 239.0.3+slot.<n>, ports 43300 + 10 x slot). With
+# bus_alloc set, each m-sims check (Check.bus, the three SIM_BUS segments)
+# runs on its slot's own groups and ports, is refused if they are bound or
+# not quiet before it starts, is voided on a foreign sender or holder while
+# it runs, and records an isolation event with its segments' frame rates.
+# With one slot the checks still run one at a time: this run is the
+# allocated buses' serial point, and its isolation events are the frame-rate
+# range slots 2 and 4 are judged against (their lists name this run's
+# record, so they are committed once it exists).
+#
+# The baseline is rerun3's emulated suite (run 8b8e,
+# runs/accept_3_20261116T181213_8b8e, from 3-bench-rerun3.toml at be768ac3:
+# serial, no bus_alloc, the same tree). The tester's hand check from the
+# committed tree, the run-records comparer of shared/bench 2026.11.16.5
+# (d2b545c8, vtrux_bench.accept.judge.compare_records) on e79d's emulated
+# record against 8b8e's: 88 results each (83 PASS, 2 KNOWN-FAIL, 3
+# NOT-RUN), no difference. 8b8e's record closes after its bench phase; if
+# its c-emulated there disagrees, this trial is judged again.
+#
+# The serial spread (c-timing's tolerance.serial) is the three whole serial
+# emulated runs of this product on madhouse: 98d1, e79d and 8b8e, 27 sims
+# each. ef3d's are left out: its suite was stopped 16 sims in by the host
+# reboot, with no close. Over the three, per figure, the largest per-sim
+# spread (max - min) is the margin, as abs (the tester's rule, the reviewer
+# 2026-11-16): stalls 1 (sim.charger-fault-stop vehicle, 98d1 1, e79d 0,
+# 8b8e 0; also sim.evap-override-imbalanced-hold interposer 1 0 0),
+# gaps_over_40ms 6 (sim.charger-fault-stop vehicle, 6 0 0: the same stall),
+# p99_gap_ms 2 (sim.evap-override-imbalanced charger 3 1 1; every other
+# sim's p99 is 1 to 4 ms in all three runs). Every other stalls and gaps
+# figure is 0 in all three. The fps margin (slots 2 and 4) is 0.
+#
+# The product is 0691f6f1's, as in 98d1, e79d and 8b8e (premise "digest").
+# The emulated suite runs whole: the m-sims are about 18 h of its 18 h 7 min
+# in e79d, and the whole suite gives c-emulated every id.
+#
+# Placement: the runner started in bench.slice, as for 3-bench-rerun3.toml,
+# with the settings' placement (the sims in bench.slice, the builds and the
+# emulated-time checks in build.slice). It runs beside 8b8e's bench phase
+# (the reviewer, 2026-11-16): the bench suite takes no allocated group or
+# port, and each run's wallclock-others events name the other. A timing
+# failure on either side is triaged against resource-log over its window
+# (AGENTS.md "Parallel work on the shared machine", point 2), and the
+# tester's entries say where they overlapped.
+#
+# Trees:
+#   harness   be768ac3, charge-interposer/main with 3-bench-rerun3.toml
+#             (shared/bench 2026.11.16.5; the adapter's sim-timing comparer).
+
+[step]
+id = "3"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-16"
+spec = ["9", "9.1"]
+verification = "the tester's VERIFICATION.md entry for the slot trial (shared/bench job B) on madhouse-debian"
+
+[trees.harness]
+project = "be768ac3a947025c0d06e774aa784b97e94c9f77"
+
+[[premise]]
+id = "digest"
+kind = "product_digest_same_as"
+tree = "harness"
+commit = "0691f6f10b2d0a54166de33bac344cacc5e0bb99"
+
+# ---- the emulated suite, whole, on allocated buses -------------------------
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+
+# ---- the baseline: rerun3's emulated suite, serial -------------------------
+[baseline]
+emulated = "accept_3_20261116T181213_8b8e/runs/accept_3_20261116T181213_8b8e-emulated"
+
+# Verdicts against 8b8e's: none moves. The same 40 checks (88 results); the
+# two host_bridge KNOWN-FAILs and the three declared skips on both sides.
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = []
+
+# Each check's log against 8b8e's, the sims' scored margins included: shown
+# line by line, judged on verdicts only (c-timing judges the timing).
+[[compare]]
+id = "c-margins"
+comparer = "run-logs"
+a = "baseline:emulated"
+b = "emulated"
+expect = "same-verdicts"
+
+# The sims' wall-clock timing inside the serial spread of 98d1, e79d and
+# 8b8e widened by the margins above.
+[[compare]]
+id = "c-timing"
+comparer = "sim-timing"
+a = "baseline:emulated"
+b = "emulated"
+expect = "identical"
+
+[compare.tolerance]
+serial = [
+  "accept_3_20261113T081639_98d1/runs/accept_3_20261113T081639_98d1-emulated",
+  "accept_3_20261114T035628_e79d/runs/accept_3_20261114T035628_e79d-emulated",
+  "accept_3_20261116T181213_8b8e/runs/accept_3_20261116T181213_8b8e-emulated",
+]
+
+[compare.tolerance.margin]
+stalls = { abs = 1 }
+gaps_over_40ms = { abs = 6 }
+p99_gap_ms = { abs = 2 }
