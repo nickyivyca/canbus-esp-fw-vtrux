@@ -4,7 +4,8 @@
 # tester, 2026-10-16 (on c65c45e these were run by hand; this records them).
 #
 #   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... INTERPOSER_CODE=... \
-#     [GI_JAMMER=<what the X2 runs> GI_WICAN_POWER=<how the WiCAN is powered>] \
+#     [GI_JAMMER=<what the X2 runs> GI_WICAN_POWER=<how the WiCAN is powered> \
+#      GI_OTA_SETTINGS=<settings.ota as JSON: B6's --reset-wican rejoins through it>] \
 #     bash baseline_b_jam.sh custody|jam|restore
 #
 #   custody  dump the X2 (two reads must match; the dump holds NVS and is

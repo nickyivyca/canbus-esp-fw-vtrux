@@ -198,11 +198,12 @@ class FakeClock:
         self.t += s
 
 
-def reset_case(pages, cc=None, post_raises=False):
+def reset_case(pages, cc=None, post_raises=False, select=None):
     """Run C.reset_to_off against a scripted page sequence (the last repeats)."""
     clk = FakeClock()
     seq = list(pages)
     posts = []
+    kw = {} if select is None else {"select": select}
 
     def page():
         return seq.pop(0) if len(seq) > 1 else seq[0]
@@ -213,7 +214,7 @@ def reset_case(pages, cc=None, post_raises=False):
             raise OSError("connection reset")
         return True
     try:
-        out = C.reset_to_off(cc, page, post, clk.now, clk.sleep, timeout_s=10.0)
+        out = C.reset_to_off(cc, page, post, clk.now, clk.sleep, timeout_s=10.0, **kw)
     except Exception as e:          # a crash is reported as a failed check, never a pass
         out = {"ok": "CRASHED", "why": "%s: %s" % (type(e).__name__, e), "how": "", "posted": None}
     return out, posts
@@ -252,6 +253,91 @@ def reset_cases():
     r, posts = reset_case([pg(5000000, 0, True), pg(800)], cc=cc)
     out.append(("WiCAN console open: USB-JTAG pulse, no POST, said", r["ok"] and cc.pulses == 1 and posts == []
                 and r["how"] == "usb-jtag (WiCAN console)", r["how"]))
+    # 2026-11-16: the hotspot rejoined through select() while the page cannot be read.
+    calls = []
+
+    def sel(result=(True, "joined")):
+        def f():
+            calls.append(1)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        return f
+    r, _ = reset_case([pg(5000000, 0, True)] + [None] * 7 + [pg(900)], select=sel())
+    out.append(("rejoin: select() while the page is unread, at most every 5 s, each kept; then shown",
+                r["ok"] is True and len(calls) == 2 and [x["after_s"] for x in r["rejoins"]] == [1.0, 6.0]
+                and all(x["ok"] is True and x["why"] == "joined" for x in r["rejoins"])
+                and "gi_wifi.select" in (r.get("rejoin") or ""),
+                (r["why"], len(calls), r.get("rejoins"))))
+    calls.clear()
+    r, _ = reset_case([pg(5000000), pg(5001000), pg(5002000), pg(900)], select=sel())
+    out.append(("rejoin: not called while the page reads", r["ok"] is True and calls == [] and r["rejoins"] == [],
+                (len(calls), r.get("rejoins"))))
+    calls.clear()
+    r, _ = reset_case([pg(5000000)] + [None] * 3 + [pg(900)], select=sel(OSError("adb gone")))
+    out.append(("rejoin: a select() that raises is kept, not a crash; the page read decides",
+                r["ok"] is True and len(r["rejoins"]) == 1 and r["rejoins"][0]["ok"] is False
+                and "OSError" in r["rejoins"][0]["why"], (r["why"], r.get("rejoins"))))
+    calls.clear()
+    r, _ = reset_case([pg(5000000)] + [None] * 20, select=sel((False, "not joined")))
+    out.append(("rejoin: a hotspot never rejoined is not shown, every try kept",
+                r["ok"] is False and len(r["rejoins"]) == 2 and all(x["ok"] is False for x in r["rejoins"]),
+                (r["why"], r.get("rejoins"))))
+    r, _ = reset_case([pg(5000000)] + [None] * 3 + [pg(900)])
+    out.append(("rejoin: none without select, and said", r["ok"] is True and r.get("rejoin") is None
+                and r["rejoins"] == [], r.get("rejoin")))
+    # hotspot_refusal: GI_OTA_SETTINGS needed for --reset-wican, read into HOTSPOT.
+    pa = lambda *x: C.build_parser().parse_args(["threshold", "--power", "x", "--jammer", "j"] + list(x))
+    saved_h = C.HOTSPOT
+    try:
+        C.HOTSPOT = "stale"
+        why = C.hotspot_refusal(pa(), {})
+        out.append(("hotspot: without --reset-wican nothing is read, HOTSPOT None",
+                    why is None and C.HOTSPOT is None, (why, C.HOTSPOT)))
+        C.HOTSPOT = "stale"
+        why = C.hotspot_refusal(pa("--reset-wican"), {})
+        out.append(("hotspot: --reset-wican without GI_OTA_SETTINGS refused, HOTSPOT None",
+                    why is not None and "GI_OTA_SETTINGS" in why and C.HOTSPOT is None, (why, C.HOTSPOT)))
+        why = C.hotspot_refusal(pa("--reset-wican"), {"GI_OTA_SETTINGS": "not json"})
+        out.append(("hotspot: GI_OTA_SETTINGS not JSON refused", why is not None and C.HOTSPOT is None, why))
+        import gi_wifi as GW
+        saved_gw = (GW.from_env, GW.select)
+        try:
+            got = []
+            GW.from_env = lambda environ=None: {"cfg": environ.get("GI_OTA_SETTINGS")}
+            GW.select = lambda cfg, be=None: (got.append(cfg), (True, "selected"))[1]
+            why = C.hotspot_refusal(pa("--reset-wican"), {"GI_OTA_SETTINGS": "{\"x\": 1}"})
+            res = C.HOTSPOT() if callable(C.HOTSPOT) else None
+            out.append(("hotspot: a usable block sets HOTSPOT to gi_wifi.select on it",
+                        why is None and res == (True, "selected") and got == [{"cfg": "{\"x\": 1}"}],
+                        (why, res, got)))
+            seen = {}
+            saved_r = C.reset_to_off
+            try:
+                C.reset_to_off = lambda *a, **k: seen.update(k) or {"ok": True}
+                C.reset_wican_to_off()
+            finally:
+                C.reset_to_off = saved_r
+            out.append(("hotspot: reset_wican_to_off hands HOTSPOT to reset_to_off as select",
+                        seen.get("select") is C.HOTSPOT and C.HOTSPOT is not None, seen))
+        finally:
+            GW.from_env, GW.select = saved_gw
+        # main refuses before the page is read or anything opens
+        saved_m = (sys.argv, C.LF.page, os.environ.get("GI_OTA_SETTINGS"))
+        pages = []
+        try:
+            os.environ.pop("GI_OTA_SETTINGS", None)
+            # no page: past the refusal main stops at "mode 0" (exit 1), never opening a port
+            C.LF.page = lambda: pages.append(1)
+            sys.argv = ["x2_jam_cases.py", "threshold", "--power", "x", "--jammer", "j", "--reset-wican"]
+            rc = C.main()
+        finally:
+            sys.argv, C.LF.page = saved_m[0], saved_m[1]
+            if saved_m[2] is not None:
+                os.environ["GI_OTA_SETTINGS"] = saved_m[2]
+        out.append(("hotspot: main exits 2 before the page is read", rc == 2 and pages == [], (rc, pages)))
+    finally:
+        C.HOTSPOT = saved_h
     # case_threshold must not arm when the reset was not shown.
     saved = (C.reset_wican_to_off, C.arm_live)
     called = []
@@ -277,6 +363,89 @@ def reset_cases():
         C.reset_wican_to_off, C.arm_live = saved
     return out
 
+
+
+class FakePcan:
+    """status() from a script (the last repeats); reset() counted, its answer scripted."""
+
+    def __init__(self, codes, reset_ok=True):
+        self.codes = list(codes)
+        self.reset_ok = reset_ok
+        self.resets = 0
+
+    def status(self):
+        return self.codes.pop(0) if len(self.codes) > 1 else self.codes[0]
+
+    def status_string(self):
+        return {0: "OK", 16: "BUSOFF"}.get(self.codes[0], "?")
+
+    def reset(self):
+        self.resets += 1
+        if isinstance(self.reset_ok, Exception):
+            raise self.reset_ok
+        return self.reset_ok
+
+
+def pcan_run(codes, recover, reset_ok=True, steps=None):
+    """PcanStatus.step over the script, 0.25 s apart on a fake clock."""
+    clk = FakeClock()
+    bus = FakePcan(codes, reset_ok)
+    st = C.PcanStatus(bus, recover=recover, now=clk.now, sleep=clk.sleep)
+    last, last_reset = object(), None
+    try:
+        for _ in range(steps or len(codes)):
+            last, last_reset = st.step(last, last_reset)
+            clk.sleep(0.25)
+    except Exception as e:          # a crash is a failed check, never a pass
+        return st, bus, "%s: %s" % (type(e).__name__, e)
+    return st, bus, None
+
+
+def pcan_cases():
+    """(label, ok, detail): the replay's PCAN recovered after its own bus-off (2026-11-16, B7:
+    on Linux PCAN_BUSOFF_AUTORESET is accepted and the channel stays BUSOFF)."""
+    out = []
+    st, bus, err = pcan_run([0, 16, 16, 16, 16, 16, 16, 0], recover=True)
+    out.append(("recover: BUSOFF resets the channel, at most once a second, each kept",
+                err is None and bus.resets == 2 and [ok for _, ok in st.resets] == [True, True]
+                and [round(t - 1000.0, 2) for t, _ in st.resets] == [0.25, 1.25],
+                (err, bus.resets, st.resets)))
+    out.append(("recover: status changes still kept as before",
+                [c for _, c, _ in st.changes] == [0, 16, 0], st.changes))
+    st, bus, err = pcan_run([0, 16, 16, 16, 0], recover=False)
+    out.append(("no recover: BUSOFF is only recorded", err is None and bus.resets == 0 and st.resets == [],
+                (err, bus.resets)))
+    st, bus, err = pcan_run([0, 0, 0, 0], recover=True)
+    out.append(("recover: an OK channel is never reset", err is None and bus.resets == 0, bus.resets))
+    st, bus, err = pcan_run([16, 16], recover=True, reset_ok=OSError("driver gone"))
+    out.append(("recover: a reset that raises is kept, not a crash",
+                err is None and len(st.resets) == 1 and "OSError" in str(st.resets[0][1]), (err, st.resets)))
+    st, bus, err = pcan_run([16], recover=True, reset_ok=False)
+    out.append(("recover: a refused reset is kept as False",
+                err is None and len(st.resets) == 1 and st.resets[0][1] is False,
+                (err, st.resets)))
+    # replay_start hands auto_reset on as recover
+    saved = (C.can.Bus, C.LF.build_stimulus, C.LF.play)
+    made = []
+    try:
+        class FakeBusCtor(FakePcan):
+            def __init__(self, **kw):
+                super().__init__([0])
+                self.kw = kw
+
+            def shutdown(self):
+                pass
+        C.can.Bus = lambda **kw: made.append(FakeBusCtor(**kw)) or made[-1]
+        C.LF.build_stimulus = lambda: []
+        C.LF.play = lambda tx, stim, seconds, stats=None: None
+        for ar in (True, False):
+            pc, th, stats, st, tx = C.replay_start(seconds=0.1, auto_reset=ar)
+            C.replay_stop(pc, th, st, tx)
+            out.append(("replay_start(auto_reset=%s): PcanStatus recover=%s, auto_reset passed" % (ar, ar),
+                        st.recover is ar and made[-1].kw.get("auto_reset") is ar, (st.recover, made[-1].kw)))
+    finally:
+        C.can.Bus, C.LF.build_stimulus, C.LF.play = saved
+    return out
 
 
 def witness_state_cases():
@@ -465,6 +634,10 @@ def main():
             bad.append(label)
     for label, ok, detail in reset_cases():
         print("  %-4s reset    %-58s %s" % ("ok" if ok else "FAIL", label[:58], detail))
+        if not ok:
+            bad.append(label)
+    for label, ok, detail in pcan_cases():
+        print("  %-4s pcan     %-58s %s" % ("ok" if ok else "FAIL", label[:58], detail))
         if not ok:
             bad.append(label)
     print("\n=== %s ===" % ("PASS" if not bad else "FAIL: " + "; ".join(bad)))

@@ -78,6 +78,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 BITRATE = 500000
+PCAN_BUSOFF = 0x10   # PCAN-Basic's PCAN_ERROR_BUSOFF, as status() returns it (16)
 KEEP_IDS = {0x051, 0x7F1, 0x7F2, 0x7F3, 0x7F8, 0x7F9}
 TRIP6_TEXT = LJ.TRIP6_TEXT
 
@@ -586,29 +587,54 @@ class PcanStatus(threading.Thread):
 
     status_string() returned None on 2026-10-08 01:38 and crashed case B, so
     the numeric status() is the primary reading and the string is a label.
-    """
 
-    def __init__(self, bus):
+    recover (2026-11-16, B7 on madhouse-debian): python-can's auto_reset sets
+    PCAN_BUSOFF_AUTORESET, and on Windows the PCAN came back after its own bus-off;
+    on Linux the parameter is accepted and the channel stays BUSOFF (code 16) for the
+    rest of the arm, so the replay sent nothing after the jam (B7, 0.0 0x051/s, every
+    arm INCONCLUSIVE). With recover, a BUSOFF reading resets the channel (bus.reset(),
+    PCAN-Basic's Reset), at most once every RESET_EVERY_S; each reset is kept in
+    `resets` as (t, ok).
+    """
+    RESET_EVERY_S = 1.0
+
+    def __init__(self, bus, recover=False, now=time.time, sleep=time.sleep):
         super().__init__(daemon=True)
         self.bus = bus
+        self.recover = recover
+        self.now, self.sleep = now, sleep
         self.changes = []    # (t, status code or error text, status string)
+        self.resets = []     # (t, True/False, or the error text): resets after a BUSOFF
         self.stop_flag = threading.Event()
 
-    def run(self):
-        last = object()
-        while not self.stop_flag.is_set():
+    def step(self, last, last_reset):
+        """One reading: (code, last_reset). Records a change, and with recover resets a
+        channel that reads BUSOFF."""
+        try:
+            code = int(self.bus.status())
+        except Exception as e:
+            code = "status read failed: %s" % type(e).__name__
+        if code != last:
             try:
-                code = int(self.bus.status())
-            except Exception as e:
-                code = "status read failed: %s" % type(e).__name__
-            if code != last:
-                try:
-                    label = self.bus.status_string()
-                except Exception:
-                    label = None
-                self.changes.append((time.time(), code, label))
-                last = code
-            time.sleep(0.02)
+                label = self.bus.status_string()
+            except Exception:
+                label = None
+            self.changes.append((self.now(), code, label))
+        if (self.recover and code == PCAN_BUSOFF
+                and (last_reset is None or self.now() - last_reset >= self.RESET_EVERY_S)):
+            last_reset = self.now()
+            try:
+                ok = bool(self.bus.reset())
+            except Exception as e:      # noqa: BLE001 -- kept; the witness shows the replay
+                ok = "reset failed: %s: %s" % (type(e).__name__, e)
+            self.resets.append((last_reset, ok))
+        return code, last_reset
+
+    def run(self):
+        last, last_reset = object(), None
+        while not self.stop_flag.is_set():
+            last, last_reset = self.step(last, last_reset)
+            self.sleep(0.02)
 
 
 def wait_live(timeout=15.0):
@@ -737,7 +763,8 @@ class StoppableSender:
 def replay_start(seconds=90.0, auto_reset=False):
     # auto_reset: the PCAN rejoins after its own bus-off (python-can's default is
     # off). busoff-rearm needs the replay back after the jam, so the gate could
-    # go live; the other cases keep the default they ran with.
+    # go live; the other cases keep the default they ran with. On Linux the driver
+    # does not act on it, so PcanStatus resets the channel itself (recover, 2026-11-16).
     pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE,
                  auto_reset=auto_reset)
     stats = {}
@@ -746,7 +773,7 @@ def replay_start(seconds=90.0, auto_reset=False):
     th = threading.Thread(target=LF.play, args=(tx, stim, seconds),
                           kwargs={"stats": stats}, daemon=True)
     th.start()
-    st = PcanStatus(pc)
+    st = PcanStatus(pc, recover=auto_reset)
     st.start()
     return pc, th, stats, st, tx
 
@@ -763,6 +790,10 @@ def replay_stop(pc, th, st, tx):
 
 
 CC = None   # the session's WiCAN ConsoleCapture, started in main()
+# The hotspot's rejoin after a WiCAN reset: gi_wifi.select on the settings.ota block from
+# GI_OTA_SETTINGS, set in main() for --reset-wican (2026-11-16, below at reset_to_off).
+HOTSPOT = None
+SELECT_EVERY_S = 5.0
 
 
 def start_wican_console(a, factory, port_of):
@@ -1031,10 +1062,10 @@ def reset_wican_to_off():
     7.1), so threshold arms after the first need a cleared device; a chip
     reset clears it. Returns a record of what was done and read; `ok` says
     whether the reset is SHOWN (see reset_to_off)."""
-    return reset_to_off(CC, LF.page, LF.dev_post, time.time, time.sleep)
+    return reset_to_off(CC, LF.page, LF.dev_post, time.time, time.sleep, select=HOTSPOT)
 
 
-def reset_to_off(cc, page, post, now, sleep, timeout_s=40.0):
+def reset_to_off(cc, page, post, now, sleep, timeout_s=40.0, select=None):
     """The reset, with its proof. USB-JTAG through the WiCAN's console port (COM4 on the
     old Windows bench; GI_WICAN_DEVICE now) when the console is open, else POST
     /system_reboot (the WiCAN's USB has been unplugged since 2026-10-09). The record's
@@ -1045,9 +1076,21 @@ def reset_to_off(cc, page, post, now, sleep, timeout_s=40.0):
     ran on a device still latched from the case before (baseline B6, voided).
     Now the reset counts only if the page comes back in mode 0 with an uptime
     BELOW the one read before it and nothing latched; otherwise ok is False and
-    the caller does not arm."""
+    the caller does not arm.
+
+    2026-11-16 (B5-B8 on jammer row ea762c62044cb5c6, madhouse-debian): the reboot takes
+    the hotspot down, and the phone that carries the host to it (gi_wifi, the settings.ota
+    backend) does not rejoin by itself: the page stayed unread for the whole 40 s, and the
+    next arm's POST met "Network is unreachable". The old Windows host's own Wi-Fi rejoined
+    unasked. So while the page cannot be read, select(), the backend's connect by its saved
+    network (gi_wifi.select, as page_only_baseline's poll does), is called, at most once
+    every SELECT_EVERY_S; each call is kept in "rejoins" (seconds after the reset, ok, why)."""
     p0 = page() or {}
     out = {"t": now(), "uptime_before_ms": p0.get("uptime_ms")}
+    out["rejoin"] = ("gi_wifi.select (settings.ota's backend) while the page cannot be read, every %.0f s"
+                     % SELECT_EVERY_S) if select is not None else None
+    out["rejoins"] = []
+    last_select = None
     if cc is not None and getattr(cc, "ser", None) is not None:
         out["how"] = "usb-jtag (WiCAN console)"
         out["pulsed"] = cc.pulse_rts(0.2)
@@ -1067,6 +1110,14 @@ def reset_to_off(cc, page, post, now, sleep, timeout_s=40.0):
                 and p["uptime_ms"] < out["uptime_before_ms"]):
             after = p
             break
+        if p is None and select is not None and (last_select is None
+                                                 or now() - last_select >= SELECT_EVERY_S):
+            last_select = now()
+            try:
+                ok, why = select()
+            except Exception as e:      # noqa: BLE001 -- recorded; the page read decides
+                ok, why = False, "%s: %s" % (type(e).__name__, e)
+            out["rejoins"].append({"after_s": round(last_select - out["t"], 1), "ok": ok, "why": why})
         sleep(1.0)
     out["after"] = snapx(after) if after is not None else snapx(page())
     if out["uptime_before_ms"] is None:
@@ -1323,7 +1374,7 @@ def case_busoff_rearm(a, rec, con, wit):
     if a.expect is None:
         raise SystemExit("busoff-rearm needs --expect stays|reinstalls")
     rec["expect"] = a.expect
-    rec["replay_source"] = "PCAN: lowid_flood_skip_bench.build_stimulus (the interlock slice), auto_reset on"
+    rec["replay_source"] = "PCAN: lowid_flood_skip_bench.build_stimulus (the interlock slice), auto_reset on, and a BUSOFF reading resets the channel (PcanStatus recover)"
     rec["x2_state_rule6"] = "jammer"
     rec["arms"] = []
     for k in range(a.arms):
@@ -1366,6 +1417,7 @@ def case_busoff_rearm(a, rec, con, wit):
         arm["phases"] = ph
         arm["samples"] = pol.samples
         arm["pcan_status_changes"] = st.changes
+        arm["pcan_resets"] = st.resets
         arm["replay_stats"] = dict(stats)
         frames, errs, clock = wit.clocked()
         arm["clock"] = clock
@@ -1417,7 +1469,9 @@ def build_parser():
                     help="threshold: seconds live before the pulses start")
     ap.add_argument("--reset-wican", action="store_true",
                     help="rearm: one USB-JTAG reset before the first arm; threshold: "
-                         "one before EVERY arm, since a trip 6 latch survives re-arming")
+                         "one before EVERY arm, since a trip 6 latch survives re-arming. "
+                         "Needs GI_OTA_SETTINGS (gi_wifi): the hotspot is rejoined through it "
+                         "after each reboot")
     ap.add_argument("--judge-first", type=int, default=None,
                     help="threshold: judge trip 6 on the first N pulses only (B6 investigation: "
                          "--n 29 --judge-first 10); every pulse is still recorded")
@@ -1460,6 +1514,25 @@ def run_guarded(case, a, rec, con, wit):
         print(rec["verdict"])
 
 
+def hotspot_refusal(a, environ=None):
+    """Why --reset-wican cannot run, or None, setting HOTSPOT (2026-11-16). A reset reboots
+    the WiCAN and takes its hotspot down; the host gets back to it only through the Wi-Fi
+    backend settings.ota chooses (gi_wifi, GI_OTA_SETTINGS), which is never left to rejoin
+    by itself. Without a usable block the reset could not be shown, so it refuses before
+    the bench is touched. Without --reset-wican nothing is read and HOTSPOT stays None."""
+    global HOTSPOT
+    HOTSPOT = None
+    if not a.reset_wican:
+        return None
+    import gi_wifi as GW
+    try:
+        cfg = GW.from_env(environ)
+    except GW.Refused as e:
+        return "--reset-wican rejoins the hotspot after each reboot through gi_wifi: %s" % e
+    HOTSPOT = lambda: GW.select(cfg)
+    return None
+
+
 def main():
     a = build_parser().parse_args()
     if a.case == "threshold":
@@ -1467,6 +1540,10 @@ def main():
         if why:
             print("REFUSED: %s" % why)
             return 2
+    why = hotspot_refusal(a)
+    if why:
+        print("REFUSED: %s (nothing run, no record)" % why)
+        return 2
     p = LF.page()
     if p is None or p.get("mode") != 0:
         print("FAIL: device must be in mode 0")
