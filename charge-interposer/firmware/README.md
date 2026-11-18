@@ -125,9 +125,9 @@ With no `-D`, the variant is `truck` (user, 2026-11-03): shared/tools'
 always names its variant.
 
 **`../vtrux_tools.py`, from the repo root,** starts the shared build
-tooling at the version `shared_pins.json` pins, from its read-only checkout
-`../shared-<tag>/` beside the worktree, and gives `release` and `build`
-this folder as the project:
+tooling at the version `shared_pins.json` pins, from its checkout
+`../shared-<tag>/` beside the worktree, checked through git (shared/tools
+R23), and gives `release` and `build` this folder as the project:
 
 ```powershell
 py -3.14 -B charge-interposer/vtrux_tools.py check-env                 # the IDF environment check (R32)
