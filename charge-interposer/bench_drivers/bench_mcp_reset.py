@@ -313,12 +313,8 @@ def judge_normal(echoes, sent, before, after):
 
 def open_innomaker(bitrate):
     import can
-    import libusb_package
-    d = os.path.dirname(libusb_package.get_library_path())
-    if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(d)
-    os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    bus = adapter_fixes.canchg(bitrate=bitrate)     # by serial on Linux
+    # by serial on Linux; libusb's DLL folder first on Windows
+    bus = adapter_fixes.canchg(bitrate=bitrate)
     from gs_usb.constants import GS_CAN_MODE_HW_TIMESTAMP as HW
     flags = getattr(getattr(bus, "gs_usb", None), "device_flags", None)
     return bus, bool(flags is not None and flags & HW)

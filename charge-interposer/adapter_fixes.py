@@ -73,6 +73,15 @@ bus.open_gs_usb's own GsUsbBus subclass, canchg_target()), which:
 Off Linux it is index 0 as before (the Windows bench, NICKY-XPS until step
 3: WinUSB, no kernel driver to take it from).
 
+libusb_package's DLL folder (tester, 2026-11-18; the charge-interposer
+reviewer's ruling (a) on run 8b8e): on Windows gs_usb finds no device
+unless libusb's DLL folder is on the search path, so canchg() and
+bus.open_gs_usb call libusb_bootstrap() before opening, and no other
+harness file imports libusb_package. Off Windows it does nothing: pyusb
+finds the system libusb, and libusb_package is not installed on madhouse
+(8b8e's bench suite, the first on madhouse, crashed on that import in each
+Innomaker opener, then 6 copies of the bootstrap).
+
     python3.13 -B charge-interposer/adapter_fixes.py canchg-check
         canchg found and in libusb mode -> exit 0, else the refusal -> exit 1
 """
@@ -98,6 +107,33 @@ class CanchgError(RuntimeError):
 
 def linux(platform=None):
     return (platform or sys.platform).startswith("linux")
+
+
+def windows(platform=None):
+    return (platform or sys.platform) == "win32"
+
+
+def libusb_bootstrap(platform=None, pkg=None, environ=None, add_dll=None):
+    """On Windows, put libusb_package's DLL folder on the DLL search path
+    and PATH: gs_usb finds 0 devices there without it (bringup,
+    2026-10-04). -> that folder, or None elsewhere, where it imports and
+    changes nothing: pyusb finds the system libusb (madhouse: pyusb 1.3.1),
+    and libusb_package, a Windows DLL-path aid, is not installed (the
+    charge-interposer reviewer, 2026-11-18, after 8b8e's bench suite
+    crashed on its import). pkg, environ, add_dll: stand-ins (tests)."""
+    if not windows(platform):
+        return None
+    if pkg is None:
+        import libusb_package as pkg
+    if environ is None:
+        environ = os.environ
+    if add_dll is None:
+        add_dll = getattr(os, "add_dll_directory", None)
+    d = os.path.dirname(pkg.get_library_path())
+    if add_dll is not None:
+        add_dll(d)
+    environ["PATH"] = d + os.pathsep + environ.get("PATH", "")
+    return d
 
 
 def apply(platform=None, fixes=None):
@@ -224,10 +260,13 @@ def check_opened(b, target):
     return b
 
 
-def canchg(platform=None, fixes=None, can_mod=None, environ=None, root=SYSFS_USB, **kw):
+def canchg(platform=None, fixes=None, can_mod=None, environ=None, root=SYSFS_USB,
+           libusb=None, **kw):
     """python-can's gs_usb Bus on the charger segment's Innomaker:
-    canchg_target() first (a refusal opens nothing), then bus(), then
-    check_opened(). kw: bitrate and the like, never index/bus/address."""
+    libusb_bootstrap() (Windows only), canchg_target() (a refusal opens
+    nothing), then bus(), then check_opened(). kw: bitrate and the like,
+    never index/bus/address. libusb: a stand-in for libusb_package (tests)."""
+    libusb_bootstrap(platform, libusb)
     target = canchg_target(0, platform, environ, root)
     b = bus(platform, fixes, can_mod, interface="gs_usb", channel="can0",
             **gs_usb_kwargs(target), **kw)

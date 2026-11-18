@@ -428,6 +428,21 @@ def capacity_figure(pre, stop_lo, stop_hi, fill, tag):
                                  held))
 
 
+def _same_port(a, b):
+    """True if a and b name one port: equal ignoring case (Windows' COM
+    names), or one device once symbolic links are resolved. On Linux --port
+    is a /dev/serial/by-id/ link and pyserial lists /dev/ttyACMn, so without
+    resolving it the X2's own port was listed as the WiCAN's (8b8e's bench
+    run, 2026-11-17)."""
+    if not a or not b:
+        return False
+    if a.upper() == b.upper():
+        return True
+    if not (os.path.exists(a) and os.path.exists(b)):
+        return False
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
 def wican_usb_figure(ports, x2_port):
     """The WiCAN's USB state at a case's start, as a FIGURE line (reviewer
     2026-10-22). ports: [(device, vid, pid, location)] -- the serial number
@@ -435,7 +450,7 @@ def wican_usb_figure(ports, x2_port):
     if ports is None:
         return "FIGURE WiCAN USB at case start: unknown (port list unavailable)"
     others = [p for p in ports if (p[1], p[2]) == ESP_USB_JTAG and
-              p[0].upper() != (x2_port or "").upper()]
+              not _same_port(p[0], x2_port)]
     if not others:
         return ("FIGURE WiCAN USB at case start: absent -- no Espressif "
                 "USB-JTAG port besides %s" % x2_port)
@@ -647,12 +662,8 @@ def open_kvaser():
 
 def open_innomaker():
     import can
-    import libusb_package
-    d = os.path.dirname(libusb_package.get_library_path())
-    if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(d)
-    os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    return adapter_fixes.canchg(bitrate=500000)     # by serial on Linux
+    # by serial on Linux; libusb's DLL folder first on Windows
+    return adapter_fixes.canchg(bitrate=500000)
 
 
 class Injector(object):
@@ -1325,6 +1336,24 @@ def self_test():
     import types as _ty
     tdir = scratch_dir.make("usbhost-selftest")
     try:
+        # the WiCAN's USB state on Linux: --port a by-id link to the X2's
+        # tty, which pyserial lists by its /dev name (8b8e, 2026-11-17)
+        if hasattr(os, "symlink") and os.name != "nt":
+            tty, link = os.path.join(tdir, "ttyACM2"), os.path.join(tdir, "by-id-x2")
+            open(tty, "w").close()
+            os.symlink(tty, link)
+            other = os.path.join(tdir, "ttyACM0")
+            open(other, "w").close()
+            w = wican_usb_figure([(tty, 0x303A, 0x1001, "1-3.4")], link)
+            check("absent" in w, "wican usb: the X2's tty behind its by-id link is "
+                  "the X2, not the WiCAN (%s)" % w)
+            w = wican_usb_figure([(tty, 0x303A, 0x1001, "1-3.4"),
+                                  (other, 0x303A, 0x1001, "1-3.1")], link)
+            check("present" in w and "ttyACM0 (location 1-3.1)" in w and
+                  "ttyACM2" not in w, "wican usb: by-id link resolved, the other "
+                  "Espressif tty listed (%s)" % w)
+        else:
+            print("NOTE  wican usb by-id link: no symlinks on %s" % sys.platform)
         bdir, odir = os.path.join(tdir, "baseline"), os.path.join(tdir, "case")
         os.makedirs(bdir)
         os.makedirs(odir)
@@ -1452,8 +1481,10 @@ MUTANTS = [
     ("line ends not counted",
      "        acc += len(ln) + LINE_END_B\n", "        acc += len(ln)\n"),
     ("the X2's own port reported as the WiCAN",
-     "              p[0].upper() != (x2_port or \"\").upper()]",
+     "              not _same_port(p[0], x2_port)]",
      "              True]"),
+    ("the X2's by-id link not resolved (Linux, 8b8e)",
+     "    return os.path.realpath(a) == os.path.realpath(b)", "    return False"),
     ("any USB serial port reported as the WiCAN",
      "    others = [p for p in ports if (p[1], p[2]) == ESP_USB_JTAG and",
      "    others = [p for p in ports if True and"),

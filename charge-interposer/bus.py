@@ -285,17 +285,6 @@ def open_kvaser(channel, bitrate, *, receive_own_messages=False, logger=None,
     return link.WatchedBus(b)
 
 
-def _libusb_bootstrap():
-    """gs_usb finds 0 devices on Windows unless libusb's DLL directory is on
-    the DLL search path (bringup, 2026-10-04)."""
-    import os
-    import libusb_package
-    d = os.path.dirname(libusb_package.get_library_path())
-    if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(d)
-    os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
-
-
 class _DropEchoes:
     """Mixin for a python-can bus whose device returns an echo frame
     (is_rx False) for every frame it sends, whatever receive_own_messages
@@ -333,7 +322,8 @@ def open_gs_usb(channel, bitrate, *, receive_own_messages=False,
     if _target is None:
         _target = adapter_fixes.canchg_target(index)
     if _bus_cls is None:
-        _libusb_bootstrap()
+        # libusb's DLL folder on Windows; nothing elsewhere (adapter_fixes)
+        adapter_fixes.libusb_bootstrap()
         # gs_usb's start() without its USB reset, on Linux (adapter_fixes)
         adapter_fixes.apply()
         from can.interfaces.gs_usb import GsUsbBus as _bus_cls
