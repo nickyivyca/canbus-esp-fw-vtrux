@@ -93,6 +93,8 @@ MUTANTS = [
     ("NONODE: no termination passes", '    if not rec.get("termination"):\n', '    if False:\n'),
     ("NONODE: the latch figure is the first arm's", 'fig(max(float(m.group(1)) for m in lat), "s")', 'fig(float(lat[0].group(1)), "s")'),
     ("B15: the repeat id from any adapter", 'if len(ids) == 1:', 'if True:'),
+    ("B15: an adapter that did not open passes (2026-11-18)", '    if unread:\n        return [result("B15", "ERROR"',
+     '    if False:\n        return [result("B15", "ERROR"'),
     ("B15host: a frame that does not decode passes", 'result("B15host", "PASS" if decodes and pages else "FAIL"',
      'result("B15host", "PASS" if pages else "FAIL"'),
     ("B17: the page need not name the image", 'ok = first == "AS SPECIFIED" and m and i and m.group(1) == i.group(1)',
