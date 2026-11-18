@@ -33,8 +33,10 @@ so a run here never reads as a remote one.
      quoted, scp never called; each output file in GI_OUT, its first line the mode
      line and its second the host identity; the first output line says which.
   6. shim_7f3_probe.sh, the same two ways, two trees, one with a space: the host
-     identity, then each tree's probe with the tree and PY quoted; the first output line
-     says which.
+     identity, then each tree's probe with the tree, PY and RROOT (since 2026-11-17, one
+     with a space and a leading ~/) quoted; the first output line says which. Without
+     RROOT it is refused, naming it, before any command, both ways. What the probe does
+     on a real tree is test_shim_7f3_probe.py's.
   Part 2 also checks HOST_SSH_BATCH (the suite's B15host): -o BatchMode=yes on ssh only
   when it is set.
 
@@ -333,17 +335,24 @@ def part_wire(base, me):
 def part_7f3(base, me):
     print("6. shim_7f3_probe.sh, remote and local")
     res = run_twice(base, "p7f3", [os.path.join(DIR, "shim_7f3_probe.sh"), "gi host_a", "gi_host_b"],
-                    lambda d: {"PY": "py3x"}, me)
+                    lambda d: {"PY": "py3x", "RROOT": "~/r it"}, me)
     compare("7f3", res, me)
-    want = ["bash -s", "bash -s gi\\ host_a py3x", "bash -s gi_host_b py3x"]
+    want = ["bash -s", "bash -s gi\\ host_a py3x \\~/r\\ it", "bash -s gi_host_b py3x \\~/r\\ it"]
     for mode in ("remote", "local"):
         rc, out, ssh_c, sh_c, home, d = res[mode]
         got = ssh_c if mode == "remote" else sh_c
-        check("7f3 %s: the identity, then each tree's probe, the tree and PY quoted" % mode,
+        check("7f3 %s: the identity, then each tree's probe, the tree, PY and RROOT quoted" % mode,
               [c["cmd"] for c in got] == want, [c["cmd"] for c in got])
         check("7f3 %s: each probe gets the probe script on stdin, the same for both trees" % mode,
               len(got) == 3 and got[1]["in"] == got[2]["in"] and got[1]["in"].startswith(b"set -euo pipefail\ndest="),
               [c["in"][:30] for c in got])
+    # 2026-11-17: the copy's shim build needs REVERSE_IT_DIR on the host, so RROOT has no default
+    res = run_twice(base, "p7f3_norroot", [os.path.join(DIR, "shim_7f3_probe.sh"), "gi_host_a"],
+                    lambda d: {"PY": "py3x"}, me)
+    for mode in ("remote", "local"):
+        rc, out, ssh_c, sh_c, home, d = res[mode]
+        check("7f3 %s: without RROOT refused before any command, naming RROOT" % mode,
+              rc != 0 and not ssh_c and not sh_c and "RROOT" in out, (rc, out[-200:], len(ssh_c), len(sh_c)))
 
 
 def checks():
@@ -413,7 +422,13 @@ MUTANTS = [
     ("shim_7f3_probe.sh", "7f3: the identity still over ssh", 'on_host "bash -s" < "$(dirname "$0")/host_identity.sh"',
      'ssh "$REMOTE" "bash -s" < "$(dirname "$0")/host_identity.sh"'),
     ("shim_7f3_probe.sh", "7f3: each probe still over ssh", '  on_host "bash -s $(printf', '  ssh "$REMOTE" "bash -s $(printf'),
-    ("shim_7f3_probe.sh", "7f3: the tree not quoted", """$(printf '%q %q' "$dest" "$PY")""", "$dest $PY"),
+    ("shim_7f3_probe.sh", "7f3: the tree not quoted", """$(printf '%q %q %q' "$dest" "$PY" "$RROOT")""",
+     """$dest $(printf '%q %q' "$PY" "$RROOT")"""),
+    # 2026-11-17: RROOT, for the copy's long-arm stimulus build
+    ("shim_7f3_probe.sh", "7f3: RROOT not required", 'RROOT="${RROOT:?', 'RROOT="${RROOT-'),
+    ("shim_7f3_probe.sh", "7f3: RROOT not passed", """ "$PY" "$RROOT")" <<""", """ "$PY" "")" <<"""),
+    ("shim_7f3_probe.sh", "7f3: RROOT not quoted", """$(printf '%q %q %q' "$dest" "$PY" "$RROOT")""",
+     """$(printf '%q %q' "$dest" "$PY") $RROOT"""),
 ]
 
 
