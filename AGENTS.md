@@ -470,8 +470,16 @@ bench host is `madhouse-debian`.
   request; 2 is refused. Plain takes still ignore the queue. To start a run
   on the bench you won, pass the runner `--from-hold <that PID>` (also
   `vtrux_bench.accept run --from-hold`): it hands your hold to the run in
-  one step, so the bench is never free in between. Details: SPEC sections
-  3 and 6.
+  one step, so the bench is never free in between. An acceptance run
+  (`vtrux_bench.accept run`, from `shared/main` tag `2026.11.17`) needs
+  neither: under the bench log it queues for the bench itself at its first
+  bench part, as `wait` does, under its own PID and with no timeout. It
+  keeps the bench through its last bench part, so no session has to be
+  asked to keep off it, and a `wait` queued meanwhile takes the bench only
+  after the last part releases, or during a part's pause. Nothing before
+  the first bench part holds the lock. A STOP or SIGTERM while it waits
+  withdraws its request, and its bench parts are NOT-RUN. Details: SPEC
+  sections 3 and 6, and ACCEPT-SPEC A18.
 - **`canmain`, CAN1's Innomaker, is for the Android app's two-bus tests.**
   The chain runner brings it down through `canctl` after its own take and at
   every resume, before the start hooks; a `canctl` failure, or `canmain`
