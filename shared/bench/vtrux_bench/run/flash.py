@@ -19,6 +19,18 @@ Ported from the charge-interposer tester's flash_custody*.sh (2026-10-14 to
   4. the auto-reset check again, first thing after the write.
 No step is retried. Every step's output is kept in the log folder.
 
+One log folder can take several flashes: a start that loads both boards
+writes both into its `start` folder, and run_local appends. So each file
+keeps every flash's output, in order (`serial_device.txt` and
+`flash_md5.txt` appended too, each flash's block opened by its image's
+name), and
+steps 2 and 3 judge only the output of their own esptool call, read from
+where the file ended before it (`_run_read`). Reading the whole file judged
+the first board's chip_id as the second's, and summed the "Hash of data
+verified" lines of both writes: a WiCAN flashed after the X2 was refused as
+"the port reached another board" (the charge-interposer tester, run 8b8e's
+parts vp1-vp3, 2026-11-17).
+
 esptool's command names (COMMANDS) are the underscore ones, `chip_id` and
 `write_flash` (gen-inhibit reviewer, 2026-11-11). esptool v4, the one in
 ESP-IDF v5.4.x's python env, takes only those, and refuses `chip-id` as an
@@ -66,7 +78,7 @@ from .. import serial_dev as SD
 from .procs import run_local
 
 RULES = {"chip_match": True, "chip_required": True, "port_refused": True,
-         "resolve_first": True, "windows_port": True}
+         "resolve_first": True, "windows_port": True, "per_call_log": True}
 # esptool's command names: underscore, which v4 and v5 both take
 COMMANDS = {"chip_id": "chip_id", "write_flash": "write_flash"}
 this_env = BL.this_env      # tests set the environment here
@@ -140,6 +152,20 @@ def md5_of(path):
     return h.hexdigest()
 
 
+def _run_read(argv, env, timeout_s, log):
+    """(rc, timed_out, text): run_local appending to `log`, and the text this
+    call added to it, from where the file ended before (module docstring:
+    one log folder, several flashes)."""
+    start = os.path.getsize(log) if os.path.exists(log) else 0
+    if not RULES["per_call_log"]:
+        start = 0
+    rc, to = run_local(argv, None, env, timeout_s, log)
+    with open(log, "rb") as f:
+        f.seek(start)
+        text = f.read().decode("utf-8", errors="replace")
+    return rc, to, text
+
+
 def _esptool(settings):
     et = settings.get("esptool") or {}
     argv = et.get("argv")
@@ -174,9 +200,9 @@ def esptool_flash(image, params, settings, logdir):
     else:
         port = params.get("port") or et.get("port")
     out["port"] = port
-    with open(os.path.join(logdir, "serial_device.txt"), "w",
-              encoding="utf-8") as f:
-        f.write("port: %s\n" % port)
+    with open(os.path.join(logdir, "serial_device.txt"),
+              "a" if RULES["per_call_log"] else "w", encoding="utf-8") as f:
+        f.write("image: %s\nport: %s\n" % (image.name, port))
         for k in SD.KEYS + ("usb", "tty"):
             f.write("%s: %s\n" % (k, (out["device"] or {}).get(k)))
     out["phase"] = "files"
@@ -192,7 +218,9 @@ def esptool_flash(image, params, settings, logdir):
             out["detail"] = "md5 of %s is %s, expected %s" % (
                 path, out["md5"].get(path), m)
             return out
-    with open(os.path.join(logdir, "flash_md5.txt"), "w") as f:
+    with open(os.path.join(logdir, "flash_md5.txt"),
+              "a" if RULES["per_call_log"] else "w") as f:
+        f.write("# image: %s\n" % image.name)
         for path, m in out["md5"].items():
             f.write("%s  %s\n" % (m, path))
     why = chip_unnamed(params.get("chip") or et.get("chip"))
@@ -205,15 +233,14 @@ def esptool_flash(image, params, settings, logdir):
 
     out["phase"] = "autoreset-before"
     log = os.path.join(logdir, "autoreset_before.txt")
-    rc, to = run_local(argv0 + ["--port", port, COMMANDS["chip_id"]], None,
-                       env, 120, log)
+    rc, to, text = _run_read(argv0 + ["--port", port, COMMANDS["chip_id"]],
+                             env, 120, log)
     if rc != 0:
         out["detail"] = ("auto-reset check before the flash failed (rc=%s%s): "
                          "nothing written" % (rc, ", timeout" if to else ""))
         out["recoverable"] = False
         return out
-    with open(log, encoding="utf-8", errors="replace") as f:
-        why = chip_mismatch(f.read(), params.get("chip") or et.get("chip"))
+    why = chip_mismatch(text, params.get("chip") or et.get("chip"))
     if why:
         out["phase"] = "chip-mismatch"
         out["detail"] = ("chip_id mismatch (%s): the port reached another "
@@ -226,9 +253,8 @@ def esptool_flash(image, params, settings, logdir):
     cmd = argv0 + ["--port", port, "--baud", baud, COMMANDS["write_flash"]]
     for off, path in files:
         cmd += [str(off), path]
-    rc, to = run_local(cmd, None, env, 600, log)
-    with open(log, encoding="utf-8", errors="replace") as f:
-        verified = f.read().count("Hash of data verified")
+    rc, to, text = _run_read(cmd, env, 600, log)
+    verified = text.count("Hash of data verified")
     if rc != 0 or verified != len(files):
         out["detail"] = ("write_flash rc=%s, %d of %d writes verified"
                          % (rc, verified, len(files)))

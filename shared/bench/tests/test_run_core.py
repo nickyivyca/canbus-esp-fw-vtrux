@@ -2322,6 +2322,48 @@ def test_esptool_v5_output():
         env.esptool_calls()
 
 
+def test_esptool_two_flashes():
+    """Two flashes into one log folder, as a start that loads both boards
+    makes them (the charge-interposer tester, run 8b8e's vp1-vp3,
+    2026-11-17): the second board, another chip and MAC with three files
+    after the first's two, is flashed on its own chip_id and its own write's
+    verified count, and every file keeps both flashes' output. A third
+    flash, the first board's image on the second board's chip into the same
+    folder, is still refused."""
+    env = Env("esptool_two")
+    a = env.image("A", "IMG-A")
+    logd = os.path.join(env.root, "start")
+    os.makedirs(logd)
+    r = FL.esptool_flash(a, a.params, env.settings(), logd)
+    assert r["ok"] and "2 writes verified" in r["detail"], r
+    b = env.image("B", "IMG-B")
+    extra = os.path.join(env.root, "B-part.bin")
+    with open(extra, "w") as f:
+        f.write("PART")
+    pb = dict(b.params, files=b.params["files"] + [["0x8000", extra]],
+              chip={"type": "ESP32-C3", "mac": "02:00:00:00:00:0c"})
+    os.environ["FAKE_ESPTOOL_CHIP"] = "ESP32-C3"
+    os.environ["FAKE_ESPTOOL_MAC"] = "02:00:00:00:00:0c"
+    r = FL.esptool_flash(b, pb, env.settings(), logd)
+    assert r["ok"] and "3 writes verified" in r["detail"], r
+    with open(os.path.join(logd, "autoreset_before.txt")) as f:
+        text = f.read()
+    assert text.index("02:00:00:00:00:01") < text.index("02:00:00:00:00:0c"), text
+    with open(os.path.join(logd, "flash.txt")) as f:
+        text = f.read()
+    assert text.count("Hash of data verified") == 5, text
+    with open(os.path.join(logd, "flash_md5.txt")) as f:
+        text = f.read()
+    assert text.index("# image: A\n") < text.index("# image: B\n") and \
+        text.count(a.params["files"][1][1]) == 1 and extra in text, text
+    with open(os.path.join(logd, "serial_device.txt")) as f:
+        text = f.read()
+    assert text.index("image: A\n") < text.index("image: B\n"), text
+    r = FL.esptool_flash(a, a.params, env.settings(), logd)
+    assert not r["ok"] and r["phase"] == "chip-mismatch" and \
+        "type ESP32-C3, expected ESP32-S3" in r["detail"], r
+
+
 def _device_env(name):
     assert SD_LINK, SD_WHY
     env = Env(name)
@@ -3395,7 +3437,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_timeout,
          test_resume, test_carry_finished, test_carry_check_end, test_compare,
          test_esptool_flasher, test_esptool_commands, test_esptool_v5_output,
-         test_esptool_device, test_esptool_port_refused,
+         test_esptool_two_flashes, test_esptool_device, test_esptool_port_refused,
          test_esptool_windows_port, test_record_device,
          test_remote_command,
          test_remote_stop,
@@ -3566,6 +3608,9 @@ MUTANTS = {
     "test_esptool_commands": _patch(FL, "COMMANDS", {"chip_id": "chip-id",
                                                      "write_flash": "write-flash"}),
     "test_esptool_v5_output": _patch(FL, "chip_read", _chip_read_first_line),
+    # the whole log read, and serial_device.txt rewritten, as before
+    # 2026-11-18: the second board judged on the first's chip_id
+    "test_esptool_two_flashes": _patch(FL, "RULES", dict(FL.RULES, per_call_log=False)),
     # the remote line niced again
     "test_remote_command": _patch(P, "remote_command", _niced_remote_command),
     "test_remote_stop": _patch(P, "RULES", {"remote_stop": False}),
