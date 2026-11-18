@@ -1,6 +1,6 @@
 """Starts the shared build tooling (shared/tools) at the version this project
-pins, from its read-only checkout ../shared-<tag>/ beside this worktree's
-root (shared/tools SPEC R23).
+pins, from its checkout ../shared-<tag>/ beside this worktree's root, which
+is checked through git (shared/tools R23).
 
     python3.13 -B charge-interposer/vtrux_tools.py check-env
     python3.13 -B charge-interposer/vtrux_tools.py release [--check-only] [--jobs N]
@@ -66,8 +66,9 @@ import os
 import subprocess
 import sys
 
-# A __pycache__ written into the checkout would change its R7 digest, which
-# the pin check then refuses.
+# No bytecode is written into the pinned checkout. R23 checks the checkout
+# through git, and shared/main's committed .gitignore lists __pycache__/, so
+# bytecode would pass that check; this keeps the checkout as git wrote it.
 sys.dont_write_bytecode = True
 
 # The project, charge-interposer/firmware/: the IDF build root, which holds
@@ -106,7 +107,7 @@ def tools_dir():
     if not os.path.isdir(os.path.join(tools, "vtrux_build")):
         raise SystemExit(
             "vtrux_tools: the pinned checkout %s is missing. Create it, "
-            "read-only and detached at the pin's tag, with:\n"
+            "detached at the pin's tag, with:\n"
             '    git -C "%s" worktree add --detach ../shared-%s %s'
             % (checkout, top, tag, tag))
     return tools
