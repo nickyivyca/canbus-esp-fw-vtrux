@@ -955,15 +955,29 @@ def wait_step(state, who, pid, me, alive, expired, stopped):
 
 
 def wait(path, who, pid, note, poll=WAIT_POLL_S, timeout=None, me=None,
-         stopped=lambda: False, out=print, clock=time.monotonic):
+         stopped=lambda: False, out=print, clock=time.monotonic, own=False):
     """The waiter (section 3). me is the waiting process (default this one),
     whose pid the request carries; stopped() says it was asked to stop.
     Returns (exit code, outcome, the lines appended at the end): 0 "took",
-    3 for every other outcome. Raises Refused (exit 2) when the log refuses."""
+    3 for every other outcome. Raises Refused (exit 2) when the log refuses.
+
+    own=True is an acceptance runner's first take (section 6, "An
+    acceptance's hold"; ACCEPT-SPEC A18): the long-lived process is the
+    waiter itself, so pid must be me, and the take is the waiter's own."""
     me = os.getpid() if me is None else me
+    if own:
+        if pid != me:
+            raise Refused("an acceptance's hold is taken under the acceptance "
+                          "runner's own pid (%r), not %r" % (me, pid))
+        return _wait(path, who, pid, note, poll, timeout, me, stopped, out, clock)
     if not (_int(pid) and pid > 0) or pid == me:
         raise Refused("--pid %r is not the session's long-lived process "
                       "(never the waiter's own)" % (pid,))
+    return _wait(path, who, pid, note, poll, timeout, me, stopped, out, clock)
+
+
+def _wait(path, who, pid, note, poll, timeout, me, stopped, out, clock):
+    """wait() after its pid check."""
     if not poll > 0 or (timeout is not None and timeout < 0):
         raise Refused("--poll must be above 0 and --timeout not below 0")
     _st, lines = wait_enqueue(path, who, pid, me, note)

@@ -664,6 +664,10 @@ MUTANTS = [
     ("_stray", test_runner_stays_clean),        # VTRUX_TEST_STRAY: a stray file
 ]
 
+# run.RULES of the acceptance's own hold (ACCEPT-SPEC A18): their mutants
+# are in tests/test_accept_hold.py, which checks that each has one
+HOLD_RULES = ("hold_queued", "from_hold_no_queue", "hold_recorded")
+
 
 def outcome_of(t):
     try:
@@ -690,7 +694,7 @@ def main(argv):
             print("REFUSED: the control fails (%s), so a mutant's failures would "
                   "mean nothing" % ", ".join(control))
             return 1
-        missing = sorted(set(RUN.RULES) - {k for k, _t in MUTANTS})
+        missing = sorted(set(RUN.RULES) - {k for k, _t in MUTANTS} - set(HOLD_RULES))
         if missing:
             print("FAIL  rules with no mutant: %s" % ", ".join(missing))
             bad += 1

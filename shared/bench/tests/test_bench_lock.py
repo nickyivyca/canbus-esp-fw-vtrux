@@ -1756,6 +1756,34 @@ def test_wait_signal():
                   "%s: the old handler was not put back" % name)
 
 
+def test_wait_own():
+    """SPEC 6 "An acceptance's hold" (ACCEPT-SPEC A18; user, 2026-11-17):
+    wait(own=True) is an acceptance runner's first take, the waiter being
+    the long-lived process. A pid other than the waiter's own is refused,
+    with nothing appended; without own, the waiter's own pid is still
+    refused. With its own pid it queues a request under that pid and, when
+    the lock frees, withdraws it and takes for its role with no run under
+    that same pid."""
+    p = fresh("wait_own")
+    w(p, "take", CI, pid=ME)
+    with Live() as me, Live() as other:
+        n = len(lines(p))
+        e = refused(B.wait, p, GI, other, "x", me=me, own=True, timeout=1)
+        check("own pid" in e, e)
+        refused(B.wait, p, GI, me, "x", me=me, timeout=1)
+        check(len(lines(p)) == n, "a refused wait appended")
+        t = Waiter(p, GI, me, me)
+        t.k["own"] = True
+        t.start()
+        until(lambda: queued(p, GI), "the request")
+        check(queued(p, GI)[0].get("pid") == me, queued(p, GI))
+        w(p, "release", CI, boards={b: "not read: test" for b in B.BOARDS})
+        t.join(8)
+        check(not t.is_alive() and t.err is None and t.rc == 0, "%r %r" % (t.rc, t.err))
+        h = B.read_state(p)["holder"]
+        check((h["who"], h["pid"], h["run"]) == (GI, me, None), h)
+
+
 def test_from_hold():
     """SPEC 6 --from-hold PID (bench_lock.hand_to_run): held by who, with no
     run, under PID: release and take for the run under the runner's PID in
@@ -1806,7 +1834,7 @@ TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_retire_replay, test_init_predecessor, test_hand_roles,
          test_folder_readonly, test_folder_left,
          test_request_pid, test_wait_step, test_wait_fifo, test_wait_stale,
-         test_wait_exit3, test_wait_cli, test_wait_signal, test_from_hold]
+         test_wait_exit3, test_wait_cli, test_wait_signal, test_wait_own, test_from_hold]
 
 
 # ---- mutants ------------------------------------------------------------
@@ -2547,6 +2575,15 @@ MUTANTS = {
          _edit("stopped=lambda: bool(flag))", "stopped=lambda: False)")),
         ("old handlers not put back",
          _edit("            signal.signal(sig, h)", "            pass")),
+    ],
+    "test_wait_own": [
+        ("own with another pid",
+         _edit("        if pid != me:\n            raise Refused(\"an acceptance's hold",
+               "        if False:\n            raise Refused(\"an acceptance's hold")),
+        ("own refused as the waiter's own pid",
+         _edit("        return _wait(path, who, pid, note, poll, timeout, me, stopped, out, "
+               "clock)\n    if not",
+               "    if not")),
     ],
     "test_from_hold": [
         ("from a free lock",
