@@ -5,9 +5,9 @@
     "digest": "beddb9f59c25f3f9978ebb9b3488894c944098055f6cbb5a69528dc00893783d"
   },
   "shared/bench": {
-    "tag": "2026.11.16.5",
-    "commit": "d2b545c85026423fa242e597541249f8e70f94c8",
-    "digest": "7275a7f536f5355af0aa91eb617b8b2de19d04928f50931822e2a1a40c479519"
+    "tag": "2026.11.17",
+    "commit": "a54be0eb93904eeb94672b18c23d9aef42044799",
+    "digest": "4bedc4f9ae85c6c87d6dec946c64f37b55eb168bfb3d4faca10345f24021a7c9"
   },
   "shared/twai_port": {
     "tag": "2026.11.08",

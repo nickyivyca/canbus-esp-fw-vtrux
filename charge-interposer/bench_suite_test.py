@@ -781,7 +781,9 @@ def test_suites():
     #      per-check bus, shared/bench job B, 2026-11-16)
     # 293: sb.test-accept-reuse and sb.test-vbus, each plain and with
     #      --can-fail (the re-pin to shared/bench 2026.11.16)
-    assert len(seen) == 293, "checks across the suites: %d" % len(seen)
+    # 295: sb.test-accept-hold, plain and with --can-fail (the re-pin to
+    #      shared/bench 2026.11.17, ACCEPT-SPEC A18)
+    assert len(seen) == 295, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in

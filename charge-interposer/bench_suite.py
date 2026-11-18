@@ -277,6 +277,7 @@ EMULATED_LOCAL = [
 # holds the acceptance runner's tests and scratch helpers too.
 SHARED_BENCH_TESTS = [
     "test_accept_canfail.py", "test_accept_close.py", "test_accept_compile.py",
+    "test_accept_hold.py",
     "test_accept_judge.py", "test_accept_list.py", "test_accept_record.py",
     "test_accept_remote.py", "test_accept_reuse.py", "test_accept_run.py",
     "test_accept_setup.py", "test_accept_suite_runs.py", "test_accept_trees.py",
