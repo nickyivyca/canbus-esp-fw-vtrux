@@ -297,6 +297,30 @@ class Check(unittest.TestCase):
         self.refused(root, tools, "vtrux_build/extra.py",
                      "no committed .gitignore lists it", "R23")
 
+    def test_staged_file_refused(self):
+        """A file staged in the checkout's index but not in the commit:
+        git ls-files --others does not list it."""
+        root, tools, _ = project("pin_staged")
+        co = os.path.dirname(os.path.dirname(tools))
+        scratch.write(os.path.join(tools, "vtrux_build", "extra.py"), "y\n")
+        git(co, "add", "shared/tools/vtrux_build/extra.py")
+        self.assertEqual(git(co, "ls-files", "--others", "--",
+                             "shared/tools"), "",
+                         "the setup: --others does not list the file")
+        self.refused(root, tools, "vtrux_build/extra.py",
+                     "staged in the checkout's index", "R23")
+
+    def test_staged_ignored_file_refused(self):
+        """A file a committed .gitignore lists, staged with git add -f: once
+        in the index it is not the ignored bytecode the rule lets pass."""
+        root, tools, _ = project("pin_staged_ignored")
+        co = os.path.dirname(os.path.dirname(tools))
+        scratch.write(os.path.join(tools, "vtrux_build", "__pycache__",
+                                   "x.cpython-313.pyc"), b"\0")
+        git(co, "add", "-f", "shared/tools/vtrux_build/__pycache__")
+        self.refused(root, tools, "x.cpython-313.pyc",
+                     "staged in the checkout's index", "R23")
+
     def test_hidden_by_core_excludesfile_refused(self):
         root, tools, _ = project("pin_excludesfile")
         co = os.path.dirname(os.path.dirname(tools))
@@ -440,6 +464,9 @@ MUTANTS = [
     ("no check for other files",
      '    extra = untracked_files(checkout, pin["commit"])\n',
      '    extra = []\n'),
+    ("a file staged in the index passes",
+     '        if p and entries.get(p, (None, "tree"))[1] == "tree":\n',
+     '        if False:\n'),
     ("an uncommitted .gitignore may hide files",
      'if p and posixpath.basename(p) == ".gitignore" and not any(',
      'if False and not any('),
