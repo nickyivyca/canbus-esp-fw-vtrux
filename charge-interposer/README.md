@@ -95,7 +95,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `acceptance/README.md`, `acceptance/<step>.toml` | The acceptance lists, one per port step (shared/bench ACCEPT-SPEC A2): what the runner runs for a step, read from git at a named commit. `2a.toml`: port step 2a, items (a)-(j) of the tracker's 2a row (reviewer, 2026-11-04) | Reviewer |
 | `scratch_run.sh`, `scratch_run_test.py` | The harness's bash scripts' run folders, as `scratch_dir.py` gives the Python ones, and its test (reviewer, 2026-11-02) | Tester |
 | `twai_fake_option_test.py` | Test of how `host_bridge` builds on the shared vehicle port and TWAI fake (`run.sh`, `l2_build.sh`; until port step 2b its `TWAI_FAKE` option), and of the shared fake's can-fail (reviewer, 2026-11-02) | Tester |
-| `shared_pin.py`, `shared_pin_test.py` | The harness's shared code from the read-only `../shared-<tag>/` checkout, checked against `firmware/shared_pins.json`, and its test (port step 2a); `idf-match`: the twai_port and can_port pins are one tag, the versions idf_component.yml takes | Tester |
+| `shared_pin.py`, `shared_pin_test.py` | The harness's shared code from the `../shared-<tag>/` checkout, checked against `firmware/shared_pins.json` through git by shared/tools R23's rule (from the re-pin to 2026.11.17.3), and its test (port step 2a); `idf-match`: the twai_port and can_port pins are one tag, the versions idf_component.yml takes | Tester |
 | `firmware/vtrux_checks.json` | The release profile and the build-switch table (shared/tools R12, R18, R20, R29) | Tester |
 | `bench_wican.py`, `bench_wican_test.py` | The WiCAN as a board of the bench suite: identified and rebooted through gen-inhibit's tools, and loaded only with the pinned gen-inhibit image (`wican_pin.json`) over USB by the core's esptool flasher on the WiCAN's own device, never the X2's; and its test (reviewer, 2026-10-24; the USB load 2026-11-12) | Tester |
 | `bench_drivers/` | Whole directory: the bench suite's hardware drivers and helpers, `reset_check`, `keepalive_probe`, and `script_can_fail` with its test. Moved from reverse-it (port step 0, reviewer 2026-10-26); `README.md` inside | Tester |
@@ -119,8 +119,9 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 `shared/bench/` (the chain-runner core, package `vtrux_bench`) was written by
 the charge-interposer tester. The gen-inhibit tester owns gen-inhibit's suite
 definition, judges and flash kinds on top of it. Each project takes shared
-code from a read-only sibling checkout, `../shared-<tag>/`, at a pinned tag,
-checked against a committed pin file (user, 2026-10-23). Until it moves to
+code from a sibling checkout, `../shared-<tag>/`, at a pinned tag,
+checked against a committed pin file (user, 2026-10-23); this project checks
+it through git, by shared/tools R23's rule (user, 2026-11-17). Until it moves to
 that, gen-inhibit installs the core at a pinned commit, and this branch still
 carries its own copy of `shared/`, which its first re-pin removes. **One
 exception:** `shared/bench/tests/layout_hash_crosscheck.py` is owned by the
