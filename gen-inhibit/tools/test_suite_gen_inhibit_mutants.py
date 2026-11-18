@@ -184,6 +184,8 @@ MUTANTS = [
     ("board step: the tool's detail is dropped",
      'detail=rec.get("detail") or "wican_reboot.py rc %s" % rc, found=found)',
      'detail="wican_reboot.py rc %s" % rc, found=found)'),
+    ("board step: found_unknown is not kept (2026-11-18)",
+     '("found_image", "found_sha", "found_unknown",', '("found_image", "found_sha",'),
     ("board step: the before state is not kept",
      'before_latched=(before.get("reasons") or {}).get("abort_latched"),', 'before_latched=None,'),
     ("board step: the script from the wrong folder",

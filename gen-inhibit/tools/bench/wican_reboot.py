@@ -26,14 +26,24 @@ a manual release.
        - reset_reason is SW (a software restart, spec: "A reboot is confirmed by uptime");
        - mode 0, and nothing latched or disabled: abort_latched false, disabled false,
          self_off and disable_reason empty;
-       - elf_sha256 is a known image: with --first, any of --known (the start step may
-         flash after this; the record says whether it differs from the first image the
-         run needs); with --want, exactly that image; with --want-unknown (the run does
-         not know what the board is on), never.
-The record names the image found (or the unknown hash), whether the board came up armed
-and was disarmed, and every check. Reads /gen_inhibit only, never /check_status or any
+       - the image: with --first, any elf_sha256 the page names, one of --known or not
+         (the start step loads the run's first image after this; the record says whether
+         the board differs from it, and an image none of --known names is recorded as
+         unknown, with its hash); a page that names no elf_sha256 FAILs; with --want,
+         exactly that image; with --want-unknown (the run does not know what the board is
+         on), never.
+The record names the image found (or the unknown hash, with found_unknown true), whether
+the board came up armed and was disarmed, and every check. Reads /gen_inhibit only, never /check_status or any
 config. Exit 0 on PASS, 1 otherwise. GI_WICAN_HOST overrides the device's address (the
 harness test's fake). Gen-inhibit tester, 2026-10-20.
+
+An unknown image at the start (gen-inhibit reviewer, 2026-11-18). The start step passed
+only on one of this suite's images until then, so a board left on another project's image
+(the charge-interposer's pinned WiCAN image, run gen-inhibit-bench_20261118T140836_1fcd)
+stopped the run although the core's flasher was about to load the run's first image over
+it. With --first the image no longer counts toward the verdict when every other check
+holds: found_unknown and differs_from_first are true, so the flasher loads the first
+image, and its own identity check stands. --want stays exact.
 
 The hotspot's rejoin (2026-11-18). A reboot takes the WiCAN's hotspot down, and the phone
 that carries madhouse-debian to it (gi_wifi's adb backend) is never left to rejoin by
@@ -165,7 +175,7 @@ def main(argv=None):
            "before": None, "pre_disarm_post": None, "pre_disarm_page": None,
            "reboot_post": None, "after": None, "disarm_post": None,
            "final": None, "found_image": None, "found_sha": None, "differs_from_first": None,
-           "came_up_armed": None, "disarmed": None, "rejoin": None, "rejoins": [], "verdict": "FAIL"}
+           "found_unknown": None, "came_up_armed": None, "disarmed": None, "rejoin": None, "rejoins": [], "verdict": "FAIL"}
 
     def chk(name, ok, detail):
         rec["checks"].append({"check": name, "ok": bool(ok), "detail": detail})
@@ -252,9 +262,13 @@ def main(argv=None):
     rec["found_sha"] = sha
     names = [n for n, s in sorted(known.items()) if s == sha]
     rec["found_image"] = names[0] if names else None
+    rec["found_unknown"] = sha is not None and not names
     if a.first:
-        chk("a known image", bool(names), "elf_sha256 %s is %s" % (
-            sha, names[0] if names else "none of this suite's images"))
+        # any image the page names (gen-inhibit reviewer, 2026-11-18): an unknown one is
+        # recorded as such, and differs from the first, so the flasher loads over it
+        chk("an image named", sha is not None, "elf_sha256 %s is %s" % (
+            sha, names[0] if names else "none of this suite's images (unknown: the start loads %s over it)"
+            % a.first if sha else "not on the page"))
         rec["differs_from_first"] = rec["found_image"] != a.first
     elif a.want:
         chk("the image the run expects", sha == known[a.want], "elf_sha256 %s, want %s %s" % (

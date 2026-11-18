@@ -136,7 +136,12 @@ interposer pins its own WiCAN image since charge-interposer 8681e343,
   `--want` and `--want-unknown`, and its record's `verdict`, `detail`,
   `found_image`, `found_sha`, `came_up_armed` and `disarmed` (none of them
   changed by the hotspot rejoin of 2026-11-18, which runs only with
-  `GI_OTA_SETTINGS` set and adds the record fields `rejoin` and `rejoins`);
+  `GI_OTA_SETTINGS` set and adds the record fields `rejoin` and `rejoins`).
+  From 2026-11-18 (gen-inhibit reviewer's ruling) `--first`'s verdict no longer
+  needs a known image: a start on an image none of `--known` names PASSes when
+  every other check holds, with `found_image` None, `found_sha` its hash, the
+  new field `found_unknown` true and `differs_from_first` true; a page with no
+  `elf_sha256` still FAILs, and `--want` stays exact;
 - `bench/page_state.py`, loaded the same way: `read_page(timeout)` returning
   the page as a dict with `elf_sha256`.
 

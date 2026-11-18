@@ -1294,8 +1294,14 @@ def test_board_hooks_e2e(settings, bench):
 
         odd = "cd" * 32
         out, _, _ = case("on_start", man, TW.Dev(sha=odd))
-        check("board hooks e2e: an unknown image refuses the start, naming the hash",
-              out["ok"] is False and odd in out["detail"], out)
+        f = out.get("found") or {}
+        check("board hooks e2e: an unknown image passes the start, recorded as unknown with its hash, "
+              "and as not the first (gen-inhibit reviewer, 2026-11-18)",
+              out["ok"] is True and odd in out["detail"] and f.get("found_unknown") is True
+              and f.get("found_sha") == odd and f.get("found_image") is None
+              and f.get("differs_from_first") is True, out)
+        out, _, _ = case("on_start", man, TW.Dev(sha=None))
+        check("board hooks e2e: a page that names no image fails the start", out["ok"] is False, out)
         out, _, _ = case("on_start", man, TW.Dev(sha=man.expect, after_latched=True))
         check("board hooks e2e: a latch that survives the reboot fails the start", out["ok"] is False, out)
 

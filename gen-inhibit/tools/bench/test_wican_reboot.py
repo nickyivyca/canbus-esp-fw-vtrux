@@ -10,8 +10,9 @@ a clean start; the board a killed run left armed and latched (reboot clears it, 
 says what was found); an auto-arm image (comes up armed, disarmed, PASS) and one whose
 disarm does nothing (FAIL); a reboot POST that does nothing, or answers 403 (FAIL: the
 POST is never trusted); a PANIC reset, a latch or a disable that survives (FAIL); at the
-start an unknown hash (FAIL, hash named) and a suite image other than the first (PASS,
-marked); at a release the wanted image, another one, and a run that does not know (only
+start an unknown hash (PASS, recorded as unknown with its hash and as not the first:
+reviewer, 2026-11-18), a page that names no elf_sha256 (FAIL) and a suite image other
+than the first (PASS, marked); at a release the wanted image, another one, and a run that does not know (only
 the first PASSes); no page at all (FAIL, nothing sent). Every case checks that only
 /gen_inhibit, /system_reboot and /gen_inhibit_set?mode=0 were asked for and that no other
 page field (a fake SSID and password) reaches the record or the output. The boot-time
@@ -292,18 +293,41 @@ def tests():
         check("a disable that survives the reboot: FAIL", rc == 1 and failed(rec, "not disabled"),
               (rc, rec.get("detail")))
 
+        # an unknown image at the start (reviewer, 2026-11-18): PASS when every other check
+        # holds, recorded as unknown with its hash, and as not the first image
         rc, rec, text, paths, _ = run(srv, tmp, "unknown", Dev(sha=ODD), ["--first", "wican_man"])
-        check("start on an unknown image: FAIL, the hash named",
-              rc == 1 and failed(rec, "a known image") and ODD in rec.get("detail", ""), (rc, rec.get("detail")))
+        check("start on an unknown image: PASS, recorded as unknown with its hash",
+              rc == 0 and rec.get("verdict") == "PASS" and rec.get("found_image") is None
+              and rec.get("found_sha") == ODD and rec.get("found_unknown") is True
+              and ("found unknown image " + ODD) in rec.get("detail", ""), (rc, rec.get("detail")))
+        check("start on an unknown image: marked as not the run's first image",
+              rec.get("differs_from_first") is True and "not the run's first image wican_man" in rec.get("detail", ""),
+              rec.get("detail"))
+        common("unknown", rec, text, paths)
+        rc, rec, text, paths, _ = run(srv, tmp, "unknownlatch", Dev(sha=ODD, after_latched=True), ["--first", "wican_man"])
+        check("start on an unknown image with a latch that survives: FAIL",
+              rc == 1 and failed(rec, "abort not latched") and rec.get("found_unknown") is True, (rc, rec.get("detail")))
+        rc, rec, text, paths, _ = run(srv, tmp, "noimage", Dev(sha=None), ["--first", "wican_man"])
+        check("start on a page that names no image: FAIL",
+              rc == 1 and failed(rec, "an image named") and rec.get("found_unknown") is False, (rc, rec.get("detail")))
         rc, rec, text, paths, _ = run(srv, tmp, "other", Dev(sha=RT), ["--first", "wican_man"])
         check("start on another suite image: PASS, marked as not the first",
               rc == 0 and rec.get("found_image") == "wican_rt" and rec.get("differs_from_first") is True
+              and rec.get("found_unknown") is False
               and "not the run's first image wican_man" in rec.get("detail", ""), (rc, rec.get("detail")))
+        rc, rec, text, paths, _ = run(srv, tmp, "first", Dev(), ["--first", "wican_man"])
+        check("start on the first image: PASS, not marked",
+              rc == 0 and rec.get("differs_from_first") is False and rec.get("found_unknown") is False
+              and "not the run's first image" not in rec.get("detail", ""), (rc, rec.get("detail")))
 
         rc, rec, text, paths, _ = run(srv, tmp, "want", Dev(), ["--want", "wican_man"])
         check("release on the wanted image: PASS", rc == 0 and rec.get("verdict") == "PASS", rec.get("detail"))
         rc, rec, text, paths, _ = run(srv, tmp, "wantother", Dev(sha=RT), ["--want", "wican_man"])
         check("release on another image: FAIL", rc == 1 and failed(rec, "the image the run expects"),
+              (rc, rec.get("detail")))
+        rc, rec, text, paths, _ = run(srv, tmp, "wantodd", Dev(sha=ODD), ["--want", "wican_man"])
+        check("release on an unknown image: FAIL (--want stays exact)",
+              rc == 1 and failed(rec, "the image the run expects") and rec.get("found_unknown") is True,
               (rc, rec.get("detail")))
         rc, rec, text, paths, _ = run(srv, tmp, "wantunknown", Dev(), ["--want-unknown"])
         check("release when the run does not know the image: FAIL",
@@ -372,7 +396,10 @@ MUTANTS = [
     ("mode not checked", '("mode 0", p.get("mode") == 0,', '("mode 0", True,'),
     ("latch not checked", 'r.get("abort_latched") is False,', 'True,'),
     ("disable not checked", 'p.get("disabled") is False and r.get("disable_reason") in ("", None),', 'True,'),
-    ("start takes any image", 'chk("a known image", bool(names),', 'chk("a known image", True,'),
+    ("start refuses an unknown image", 'chk("an image named", sha is not None,', 'chk("an image named", bool(names),'),
+    ("start takes a page with no image", 'chk("an image named", sha is not None,', 'chk("an image named", True,'),
+    ("an unknown image not recorded as such", 'rec["found_unknown"] = sha is not None and not names',
+     'rec["found_unknown"] = False'),
     ("release takes any image", "chk(\"the image the run expects\", sha == known[a.want],",
      "chk(\"the image the run expects\", True,"),
     ("release passes when the run does not know", 'chk("the image the run expects", False, "the run does not know',

@@ -633,8 +633,11 @@ def make_hooks(settings, ssid, images=None):
         """The core's on_start / on_end for the WiCAN (port plan, board images step 4; user
         2026-10-20): wican_reboot.py reboots it, reads the page until a new boot shows,
         disarms whatever comes up armed, and passes only on a SW reset, mode 0, nothing
-        latched or disabled, and a known image (start: any of this suite's WiCAN images;
-        end: the one the core believes the board is on). The X2 has no such step."""
+        latched or disabled, and the image (start: any image the page names, one of this
+        suite's or not; an unknown one is recorded as found_unknown with its hash and as
+        differing from the first, so the core's flasher loads the first image over it
+        (gen-inhibit reviewer, 2026-11-18); end: the one the core believes the board is
+        on). The X2 has no such step."""
         def hook(board, image, ctx, logdir):
             if board != "wican":
                 return dict(ok=True, detail="no %s step for the %s" % (step, board))
@@ -661,8 +664,8 @@ def make_hooks(settings, ssid, images=None):
             except (OSError, ValueError):
                 return dict(ok=False, detail="wican_reboot.py left no record (rc %s)" % rc)
             before = rec.get("before") or {}
-            found = {k: rec.get(k) for k in ("found_image", "found_sha", "differs_from_first",
-                                             "came_up_armed", "disarmed")}
+            found = {k: rec.get(k) for k in ("found_image", "found_sha", "found_unknown",
+                                             "differs_from_first", "came_up_armed", "disarmed")}
             found.update(before_mode=before.get("mode"),
                          before_latched=(before.get("reasons") or {}).get("abort_latched"),
                          record=os.path.basename(rec_path))
