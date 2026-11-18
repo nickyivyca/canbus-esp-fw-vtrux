@@ -99,6 +99,81 @@ LOSS_RE = re.compile(r"\bveh\(rx=\d+ tx=\d+ err=(\d+)")
 # deadline, so nothing in it is fitted.
 ERROR_ACTIVE_ATTEMPTS = 128 // 8
 
+# THE LEADING ATTEMPTS FROM THE WITNESS'S TIMING, ON LINUX (tester,
+# 2026-11-18; the charge-interposer reviewer's ruling on run 8b8e). On
+# madhouse the PCAN is PCAN-Basic on PEAK's own pcan driver (9.3.3), which
+# passed on only the first of the 16 identical bus-error frames: 1 error
+# row, then the first valid 0x7F4 4.156 ms later, the same 4.156 ms that
+# NICKY-XPS's 16 error rows span (b467). There the leading attempts are
+# counted from the time from the first error row to the first valid row,
+# over one error-active attempt's length in bit times: the frame from SOF to
+# the end of its CRC, stuffed, then the CRC delimiter and the ACK slot, the
+# 6-bit active error flag, the 8-bit delimiter and the 3-bit intermission.
+# For the board's 0x7F4 (04 09 00 00 c0 ff 00 00) that is 110 + 19 = 129
+# bits, 258 us at 500 kbit/s; NICKY-XPS's error rows are 258 us apart. An
+# error-passive attempt adds the 8-bit suspend: 137 bits, 274 us, the valid
+# rows' spacing on both systems (printed beside the verdict as a check on
+# the model, not judged). The two rows' stamps sit at different points of
+# their attempts, so the time is n attempts plus that offset (28 us in b467)
+# and n is the nearest whole number, which holds while the offset is under
+# half an attempt. The error-row count is shown as a figure, and the total
+# the board must account for is unchanged. Off Linux the rows are counted.
+BITRATE = 500000
+ACTIVE_TAIL_BITS = 2 + 6 + 8 + 3     # CRC delim, ACK slot, flag, delim, IFS
+PASSIVE_TAIL_BITS = ACTIVE_TAIL_BITS + 8   # + suspend transmission
+
+
+def _crc15(bits):
+    crc = 0
+    for b in bits:
+        nxt = b ^ ((crc >> 14) & 1)
+        crc = (crc << 1) & 0x7FFF
+        if nxt:
+            crc ^= 0x4599
+    return crc
+
+
+def stuffed_bits(fid, data):
+    """Bits on the wire from SOF to the end of the CRC sequence of a classic
+    standard-id data frame, stuff bits included."""
+    bits = [0]
+    bits += [(fid >> (10 - i)) & 1 for i in range(11)]
+    bits += [0, 0, 0]                       # RTR, IDE, r0
+    bits += [(len(data) >> (3 - i)) & 1 for i in range(4)]
+    for byte in data:
+        bits += [(byte >> (7 - i)) & 1 for i in range(8)]
+    c = _crc15(bits)
+    bits += [(c >> (14 - i)) & 1 for i in range(15)]
+    out, run, last = 0, 0, None
+    for b in bits:
+        out += 1
+        run = run + 1 if b == last else 1
+        last = b
+        if run == 5:
+            out += 1                        # the stuff bit, opposite polarity
+            last, run = 1 - b, 1
+    return out
+
+
+def attempt_s(fid, data, tail_bits, bitrate=BITRATE):
+    """One attempt's length in seconds: the stuffed frame, then tail_bits."""
+    return (stuffed_bits(fid, bytes(data)) + tail_bits) / float(bitrate)
+
+
+def lead_from_timing(lead, mid):
+    """-> (n, gap_s, active_s): the error-active attempts from the first
+    error row to the first valid row, or (None, ...) if either is missing."""
+    if not lead or not mid:
+        return None, None, None
+    v = mid[0]
+    act = attempt_s(v[1], v[3], ACTIVE_TAIL_BITS)
+    gap = v[0] - lead[0][0]
+    return int(round(gap / act)), gap, act
+
+
+def lead_by_default(platform=None):
+    return "timing" if (platform or sys.platform).startswith("linux") else "rows"
+
 
 # --- parsing and scoring (pure; --self-test covers these) -------------------
 
@@ -224,7 +299,7 @@ def split_attempts(seq):
     return seq[:vi[0]], seq[vi[0]:vi[-1] + 1], seq[vi[-1] + 1:]
 
 
-def score_noack(rows, serial, capture_end_t, strict=False):
+def score_noack(rows, serial, capture_end_t, strict=False, lead_by="rows"):
     """-> (ok, lines). Nothing ACKing: round=0; the attempts the witness
     saw account for the board's own error count exactly, the first 16 of
     them as error rows (error-active); nothing past the wait; then nothing
@@ -244,7 +319,12 @@ def score_noack(rows, serial, capture_end_t, strict=False):
     u AND t INDEPENDENTLY (user ruling 2026-10-22, relayed by the reviewer):
     the old u + t <= 1 is dropped; 6 of 21 RTS no-ACKer boots showed u=1
     t=1 (runs/u1t1_discriminator_20261022.txt). strict (--strict-port, the
-    ported image, port requirement (f)): u must be 0, t <= 1."""
+    ported image, port requirement (f)): u must be 0, t <= 1.
+
+    lead_by: "rows" counts the leading error rows (NICKY-XPS); "timing"
+    counts the leading attempts from the first error row to the first valid
+    row in bit times (Linux, where the driver passes on one error row for
+    the 16; see ACTIVE_TAIL_BITS). score_boot picks it by platform."""
     lines, ok = [], True
     s = parse_serial(serial)
     b = board_rows(rows)
@@ -256,7 +336,25 @@ def score_noack(rows, serial, capture_end_t, strict=False):
                        "attempt -- is it on the vehicle segment?"]
     seq = attempt_rows(rows)
     lead, mid, trail = split_attempts(seq)
-    counted = len(lead) + len(mid)
+    if lead_by == "timing":
+        n_lead, gap, act = lead_from_timing(lead, mid)
+        if n_lead is None:
+            return False, ["FAIL: %s -- nothing to time the leading attempts "
+                           "by (lead by timing)"
+                           % ("no error row before the first valid attempt"
+                              if not lead else "no valid attempt")]
+        pas = attempt_s(mid[0][1], mid[0][3], PASSIVE_TAIL_BITS)
+        vsp = ((mid[-1][0] - mid[0][0]) / (len(mid) - 1)) if len(mid) > 1 else None
+        how = ("by timing: %.3f ms from the first error row to the first valid "
+               "over a %.0f us error-active attempt (%d bits); error rows %d; "
+               "valid rows %s us apart, the model's error-passive attempt "
+               "%.0f us" % (gap * 1000, act * 1e6, round(act * BITRATE),
+                            len(lead), "%.1f" % (vsp * 1e6) if vsp else "-",
+                            pas * 1e6))
+    else:
+        n_lead = len(lead)
+        how = "by rows: %d error rows" % n_lead
+    counted = n_lead + len(mid)
     u = counted - s["veh_err"] if s["veh_err"] is not None else None
     t = len(trail)
     # the whole run, error rows included: nothing may be attempted past the
@@ -270,13 +368,13 @@ def score_noack(rows, serial, capture_end_t, strict=False):
                        "%.0f s apart -- two clock scales mixed, not a "
                        "measurement" % quiet]
     lines.append("MODE round=%d/4 wait %s us boot %s us; boot line %d of 4 "
-                 "in %s us, window %s us; board err=%s; witness: %d error "
-                 "row(s), then %d row(s) to the last valid attempt (%d valid "
-                 "%s), %d trailing; %.1f ms first to last, then %.1f s with "
-                 "nothing from the board; u=%s t=%d%s"
+                 "in %s us, window %s us; board err=%s; witness: %d leading "
+                 "attempt(s) (%s), then %d row(s) to the last valid attempt "
+                 "(%d valid %s), %d trailing; %.1f ms first to last, then "
+                 "%.1f s with nothing from the board; u=%s t=%d%s"
                  % (s["round"], s["wait_us"], s["boot_us"], s["bl_round"],
                     s["bl_wait_us"], s["bl_boot_us"], s["veh_err"],
-                    len(lead), len(mid), len(b),
+                    n_lead, how, len(mid), len(b),
                     " ".join(sorted(set("0x%03X" % r[1] for r in b))),
                     len(trail), span * 1000, quiet, u, t,
                     " (strict-port)" if strict else ""))
@@ -297,28 +395,30 @@ def score_noack(rows, serial, capture_end_t, strict=False):
     elif u < 0:
         ok = False
         lines.append("FAIL: the board counts %d errored attempts, the "
-                     "witness saw %d (%d error rows + %d to the last valid; "
+                     "witness saw %d (%d leading + %d to the last valid; "
                      "the trailing cut row not counted) -- the board counts "
                      "MORE than happened"
-                     % (s["veh_err"], counted, len(lead), len(mid)))
+                     % (s["veh_err"], counted, n_lead, len(mid)))
     elif u > 1:
         ok = False
         lines.append("FAIL: the board counts %d errored attempts, the "
-                     "witness saw %d (%d error rows + %d to the last valid): "
+                     "witness saw %d (%d leading + %d to the last valid): "
                      "u=%d uncounted, only one final attempt can be"
-                     % (s["veh_err"], counted, len(lead), len(mid), u))
+                     % (s["veh_err"], counted, n_lead, len(mid), u))
     elif strict and u > 0:
         ok = False
         lines.append("FAIL: strict-port: the board counts %d errored "
                      "attempts, the witness saw %d: u=%d uncounted; the "
                      "ported image must count every attempt (u=0)"
                      % (s["veh_err"], counted, u))
-    if len(lead) != ERROR_ACTIVE_ATTEMPTS:
+    if n_lead != ERROR_ACTIVE_ATTEMPTS:
         ok = False
-        lines.append("FAIL: %d leading error row(s); an error-active "
+        lines.append("FAIL: %d leading %s; an error-active "
                      "transmitter with no ACKer gives 128/8 = %d before it "
                      "turns error-passive"
-                     % (len(lead), ERROR_ACTIVE_ATTEMPTS))
+                     % (n_lead, "error row(s)" if lead_by != "timing" else
+                        "error-active attempt(s) by timing",
+                        ERROR_ACTIVE_ATTEMPTS))
     if t > 1:
         ok = False
         lines.append("FAIL: %d rows after the last valid attempt; only one "
@@ -342,11 +442,14 @@ def score_noack(rows, serial, capture_end_t, strict=False):
 def score_boot(args, mode, rows, serial, end_t):
     """One ack or noack boot's verdict. strict only from this script's own
     --strict-port: bench_usb_host passes its own args to run_boot, which
-    have no such switch, so its boots are always judged by the default."""
+    have no such switch, so its boots are always judged by the default.
+    The leading attempts are counted by timing on Linux and by rows
+    elsewhere (lead_by_default; args.platform only for the self-test)."""
     if mode == "ack":
         return score_ack(rows, serial)
     return score_noack(rows, serial, end_t,
-                       strict=bool(getattr(args, "strict_port", False)))
+                       strict=bool(getattr(args, "strict_port", False)),
+                       lead_by=lead_by_default(getattr(args, "platform", None)))
 
 
 # --- hardware ---------------------------------------------------------------
@@ -710,6 +813,83 @@ def self_test():
     ok, ln = score_noack(noack_seq(16, 168, 2), ser0, end, strict=True)
     check(not ok and any("rows after the last valid" in x for x in ln),
           "noack strict CAN-FAIL: t=2 FAILS under --strict-port too")
+
+    # the leading attempts by timing (Linux; the reviewer's ruling on 8b8e,
+    # 2026-11-18). The bit-time model for the board's 0x7F4:
+    SD = bytes.fromhex("04090000c0ff0000")
+    check(stuffed_bits(0x7F4, SD) == 110 and
+          round(attempt_s(0x7F4, SD, ACTIVE_TAIL_BITS) * 1e6) == 258 and
+          round(attempt_s(0x7F4, SD, PASSIVE_TAIL_BITS) * 1e6) == 274,
+          "bits: 0x7F4 04 09 00 00 c0 ff 00 00 is 110 stuffed bits to its "
+          "CRC's end, 258 us error-active and 274 us error-passive at 500 "
+          "kbit/s (NICKY-XPS's error rows and both systems' valid rows)")
+    check(stuffed_bits(0x7F4, bytes(8)) != 110,
+          "bits: the stuffing depends on the data (all-zero data differs)")
+    LOSS5 = LOSS0.replace("err=184", "err=185")
+    ser5 = [BL0, M0, LOSS5]
+
+    def real_seq(t_err, t_valid, n_valid=169, trail=True):
+        """Rows at the stamps the witnesses gave: error rows at t_err,
+        valid 0x7F4 from t_valid 274 us apart, then the cut row."""
+        out = [(t, 0x002, True, bytes.fromhex("011b0000"), t) for t in t_err]
+        out += [(t_valid + 0.000274 * i, 0x7F4, False, SD, t_valid + 0.000274 * i)
+                for i in range(n_valid)]
+        if trail:
+            tt = out[-1][0] + 0.00014
+            out.append((tt, 0x004, True, bytes.fromhex("010a0000"), tt))
+        return out
+    # b467 witness_noack_01 (NICKY-XPS): 16 error rows from 677126.333226,
+    # 258 us apart; the first valid at 677126.337382; board err=185
+    xps = real_seq([677126.333226 + 0.000258 * i for i in range(16)], 677126.337382)
+    # 8b8e witness_noack_01 (madhouse): 1 error row at 75126.480917, the
+    # first valid at 75126.485073; board err=185
+    lin = real_seq([75126.480917], 75126.485073)
+    xend, lend = xps[-1][0] + 12.0, lin[-1][0] + 12.0
+    n, gap, act = lead_from_timing(*split_attempts(attempt_rows(xps))[:2])
+    check(n == 16 and abs(gap - 0.004156) < 1e-6,
+          "timing on b467's XPS stamps: 4.156 ms over 258 us -> 16, the row "
+          "count there (%s)" % n)
+    ok, ln = score_noack(xps, ser5, xend, lead_by="timing")
+    check(ok and "16 leading attempt(s) (by timing" in ln[0] and "error rows 16" in ln[0],
+          "noack timing: b467's XPS shape PASSES by timing, error rows shown "
+          "as 16 (%s)" % [x for x in ln if "FAIL" in x])
+    ok, ln = score_noack(xps, ser5, xend, lead_by="rows")
+    check(ok, "noack rows: b467's XPS shape PASSES by rows too")
+    ok, ln = score_noack(lin, ser5, lend, lead_by="timing")
+    check(ok and "16 leading attempt(s) (by timing" in ln[0] and "error rows 1;" in ln[0],
+          "noack timing: 8b8e's Linux shape (1 error row) PASSES by timing, "
+          "error rows shown as 1, the 185 total kept (%s)"
+          % [x for x in ln if "FAIL" in x])
+    ok, ln = score_noack(lin, ser5, lend, lead_by="rows")
+    check(not ok and any("1 leading error row" in x for x in ln),
+          "noack rows CAN-FAIL: the Linux shape by rows FAILS (8b8e's verdict)")
+    # can-fails of the timing method: an error-active run cut short, or
+    # longer, moves the first valid row by whole attempts
+    for k, what in ((15, "15 attempts"), (17, "17 attempts")):
+        t_valid = 75126.480917 + 0.004156 + (k - 16) * 0.000258
+        bad = real_seq([75126.480917], t_valid)
+        ok, ln = score_noack(bad, ser5, bad[-1][0] + 12.0, lead_by="timing")
+        check(not ok and any("%d leading error-active attempt(s) by timing" % k in x
+                             for x in ln),
+              "noack timing CAN-FAIL: the first valid row %s after the first "
+              "error row FAILS on the 16" % what)
+    ok, ln = score_noack(real_seq([], 75126.485073), ser5, lend, lead_by="timing")
+    check(not ok and any("nothing to time" in x for x in ln),
+          "noack timing CAN-FAIL: no error row at all FAILS, not counted as 0")
+    # 185 kept by timing: err=184 against 16 + 169 is u=1 (passes), 186 fails
+    ok, ln = score_noack(lin, [BL0, M0, LOSS0.replace("err=184", "err=186")],
+                         lend, lead_by="timing")
+    check(not ok and any("counts 186" in x and "saw 185" in x for x in ln),
+          "noack timing CAN-FAIL: board err=186 against 16 + 169 FAILS")
+    # score_boot picks by platform
+    check(lead_by_default("linux") == "timing" and lead_by_default("win32") == "rows",
+          "lead_by: timing on Linux, rows on Windows")
+    import types as _ty
+    ok_l, _ = score_boot(_ty.SimpleNamespace(platform="linux"), "noack", lin, ser5, lend)
+    ok_w, _ = score_boot(_ty.SimpleNamespace(platform="win32"), "noack", lin, ser5, lend)
+    check(ok_l and not ok_w,
+          "score_boot: the Linux shape PASSES as judged on Linux and FAILS as "
+          "judged on Windows")
     ok, ln = score_noack(noack_seq(16, 170, 0), ser0, end, strict=True)
     check(not ok and any("u=2" in x for x in ln),
           "noack strict CAN-FAIL: u=2 FAILS under --strict-port too")
@@ -805,7 +985,32 @@ def build_parser():
                     help="recorded per boot (the other board's state, "
                          "bench-holder rule 6)")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--lead-timing", nargs="+", metavar="WITNESS",
+                    help="saved witness_noack_NN.txt files: print each one's "
+                         "leading attempts by timing and its error rows")
     return ap
+
+
+def read_witness(path):
+    """Rows (t_device, id, err, data, t_host) from a saved witness file."""
+    rows = []
+    for ln in open(path, encoding="utf-8"):
+        if ln.startswith("#") or not ln.strip():
+            continue
+        t, h, fid, err, data = ln.split()[:5]
+        rows.append((float(t), int(fid, 16), err == "1", bytes.fromhex(data),
+                     float(h)))
+    return rows
+
+
+def lead_timing_report(paths):
+    for p in paths:
+        lead, mid, _ = split_attempts(attempt_rows(read_witness(p)))
+        n, gap, act = lead_from_timing(lead, mid)
+        print("%s: leading attempts by timing %s (%.3f ms over %.0f us), "
+              "error rows %d" % (p, n, (gap or 0) * 1000, (act or 0) * 1e6,
+                                 len(lead)))
+    return 0
 
 
 # --can-fail: each edit must make --self-test fail (script_can_fail.py)
@@ -816,8 +1021,8 @@ MUTANTS = [
     ("strict not judged",
      "    elif strict and u > 0:\n", "    elif False:\n"),
     ("strict on by default",
-     "def score_noack(rows, serial, capture_end_t, strict=False):",
-     "def score_noack(rows, serial, capture_end_t, strict=True):"),
+     "def score_noack(rows, serial, capture_end_t, strict=False, lead_by=\"rows\"):",
+     "def score_noack(rows, serial, capture_end_t, strict=True, lead_by=\"rows\"):"),
     ("strict also demands t=0",
      "    elif strict and u > 0:\n", "    elif strict and (u > 0 or t > 0):\n"),
     ("u > 1 not judged",
@@ -827,11 +1032,11 @@ MUTANTS = [
     ("t > 1 not judged",
      "    if t > 1:\n", "    if False:\n"),
     ("the switch never reaches the scorer",
-     "strict=bool(getattr(args, \"strict_port\", False)))",
-     "strict=False)"),
+     "strict=bool(getattr(args, \"strict_port\", False)),",
+     "strict=False,"),
     ("the switch on without the option",
-     "strict=bool(getattr(args, \"strict_port\", False)))",
-     "strict=bool(getattr(args, \"strict_port\", True)))"),
+     "strict=bool(getattr(args, \"strict_port\", False)),",
+     "strict=bool(getattr(args, \"strict_port\", True)),"),
     ("--strict-port defaults on",
      "    ap.add_argument(\"--strict-port\", action=\"store_true\",",
      "    ap.add_argument(\"--strict-port\", action=\"store_false\","),
@@ -841,6 +1046,22 @@ MUTANTS = [
      "    return mode == \"ack\" or mode.startswith(\"com3\")"),
     ("link: a failure not VOID", "        return False, link.link_void(e, t0, time.time())",
      "        return True, str(e)"),
+    # 2026-11-18, the leading attempts by timing on Linux (ruling on 8b8e)
+    ("timing: rows on Linux too",
+     "    return \"timing\" if (platform or sys.platform).startswith(\"linux\") else \"rows\"",
+     "    return \"rows\""),
+    ("timing: score_boot never passes it",
+     "lead_by=lead_by_default(getattr(args, \"platform\", None)))",
+     "lead_by=\"rows\")"),
+    ("timing: no stuff bits", "        if run == 5:\n", "        if False:\n"),
+    ("timing: the passive attempt's length used",
+     "ACTIVE_TAIL_BITS = 2 + 6 + 8 + 3 ", "ACTIVE_TAIL_BITS = 2 + 6 + 8 + 3 + 8 "),
+    ("timing: from the last error row", "    gap = v[0] - lead[0][0]",
+     "    gap = v[0] - lead[-1][0]"),
+    ("timing: rounded up", "    return int(round(gap / act)), gap, act",
+     "    return int(gap / act) + 1, gap, act"),
+    ("timing: the 16 judged on rows", "    if n_lead != ERROR_ACTIVE_ATTEMPTS:",
+     "    if len(lead) != ERROR_ACTIVE_ATTEMPTS:"),
 ]
 
 
@@ -852,6 +1073,8 @@ def main():
     if a.can_fail:
         import script_can_fail
         return script_can_fail.run(__file__, MUTANTS)
+    if a.lead_timing:
+        return lead_timing_report(a.lead_timing)
     if not a.port or not a.mode:
         ap.error("--port and --mode are required for a bench run")
     return run_bench(a)
