@@ -18,7 +18,10 @@ Every verdict is RELATIVE to a baseline taken in the same bench session
   close-boots     a plain open, then a close: the close resets the board with
                   NO host (bench 2026-10-14). The PCAN records across the
                   reboot (the 28-errored-attempts question). boot= from the
-                  first MODE line after re-opening.
+                  first MODE line after re-opening. On Linux the close does
+                  not reset the board (8b8e, 2026-11-17), so the case sends
+                  esptool's hard reset and closes the port at once
+                  (close_reset_path; the reviewer's ruling (a), 2026-11-18).
   bridge          the Kvaser injects 0x6A2 (DLC 8, 24-bit sequence) every
                   5 ms on the vehicle segment; the PCAN (device clock)
                   witnesses it on the wire, the Innomaker the forwarded
@@ -584,10 +587,12 @@ class HostPort(object):
         self.reading.set()
         return h
 
-    def hard_reset(self):
+    def hard_reset(self, settle=True):
         """esptool's USB-Serial-JTAG HardReset, as run_scenario.SerialTap
         sends it: DTR low, RTS high 0.2 s, low, 0.2 s, each RTS change
-        followed by a DTR write so usbser.sys sends the line state."""
+        followed by a DTR write so usbser.sys sends the line state.
+        settle False leaves out the last 0.2 s (close-boots on Linux closes
+        the port right after the pulse)."""
         with self.lock:
             s = self.ser
             s.dtr = False
@@ -597,7 +602,8 @@ class HostPort(object):
             time.sleep(0.2)
             s.rts = False
             s.dtr = s.dtr
-            time.sleep(0.2)
+            if settle:
+                time.sleep(0.2)
         self.mark("RESET SENT host=%.6f" % t0)
         return t0
 
@@ -806,17 +812,32 @@ def case_noread_boots(a, out):
     return verdict_rc(oks), lines
 
 
+def close_reset_path(platform=None):
+    """How close-boots resets the board with no host there. "close" on
+    Windows: usbser.sys's close of a plain open resets it (bench
+    2026-10-14). "reset-then-close" on Linux, where the close does not:
+    8b8e's three close-boots read the board's uptime on, 20 s a boot, so
+    the case sends esptool's hard reset and closes the port at once (the
+    charge-interposer reviewer's ruling (a), 2026-11-18)."""
+    return ("reset-then-close" if (platform or sys.platform).startswith("linux")
+            else "close")
+
+
 def case_close_boots(a, out):
     mode = "ack" if a.ack else "noack"
     base = _baseline(baseline_dir(a, out), mode)
     lines, oks = [], []
+    how = close_reset_path(getattr(a, "platform", None))
+    lines.append("close-boots reset path: %s" % how)
     for n in range(1, a.boots + 1):
         tag = "close_%s_%02d" % (mode, n)
         path = os.path.join(out, "serial_%s.stamped" % tag)
         wit = Rx(open_pcan(acks=a.ack), "pcan")
         hp = HostPort(a.port, path, lines_low=False)
         time.sleep(3.0)
-        hc = hp.close()                 # the close resets the board
+        if how == "reset-then-close":
+            hp.hard_reset(settle=False)  # the reset, then no host at boot
+        hc = hp.close()                 # on Windows the close resets the board
         time.sleep(3.0)
         hp2 = HostPort(a.port, path, lines_low=True)
         time.sleep(14.0)
@@ -1412,6 +1433,61 @@ def self_test():
           and "error -71" in ln,
           "link: an UP link under a no-ACK case is a VOID line with the kernel's lines")
 
+    # close-boots' reset path (2026-11-18, the reviewer's ruling (a) on 8b8e)
+    check(close_reset_path("linux") == "reset-then-close" and
+          close_reset_path("win32") == "close",
+          "close-boots: the hard reset then the close on Linux, the close "
+          "alone on Windows")
+    ev = []
+
+    class FakePort(object):
+        def __init__(self, port, path, lines_low=True, rx_size=None):
+            ev.append("open %s" % ("low" if lines_low else "plain"))
+            self.stamped = [(0.0, "t=5s state=P"),
+                            (0.0, "  MODE veh=listen-only | round=0/4 in 50025us "
+                                  "| boot=12200us")]
+
+        def hard_reset(self, settle=True):
+            ev.append("reset settle=%s" % settle)
+            return 0.0
+
+        def close(self):
+            ev.append("close")
+            return 0.0
+
+    class FakeRx(object):
+        def __init__(self, bus, name):
+            pass
+
+        def take(self):
+            return []
+
+        def close(self):
+            pass
+    g = globals()
+    saved = {k: g[k] for k in ("HostPort", "Rx", "open_pcan", "time", "_baseline",
+                               "write_rows")}
+    try:
+        g.update(HostPort=FakePort, Rx=FakeRx, open_pcan=lambda acks: None,
+                 time=_ty.SimpleNamespace(sleep=lambda s: None,
+                                          perf_counter=time.perf_counter,
+                                          time=time.time),
+                 _baseline=lambda d, m: [12162, 12218, 12168],
+                 write_rows=lambda *x: None)
+        for plat, want in (("linux", ["open plain", "reset settle=False", "close",
+                                      "open low", "close"]),
+                           ("win32", ["open plain", "close", "open low", "close"])):
+            ev[:] = []
+            try:
+                case_close_boots(_ty.SimpleNamespace(ack=True, boots=1, platform=plat,
+                                                     baseline_dir=None, port="X2"),
+                                 tdir)
+            except Exception as e:                      # noqa: BLE001
+                ev.append("raised %s" % e)
+            check(ev == want, "close-boots on %s: %s" % (plat, ev))
+    finally:
+        g.update(saved)
+
     class Watch(object):
         def __init__(self, stall_at):
             self.n, self.stall_at, self.polls = 0, stall_at, 0
@@ -1483,6 +1559,16 @@ MUTANTS = [
     ("the X2's own port reported as the WiCAN",
      "              not _same_port(p[0], x2_port)]",
      "              True]"),
+    # 2026-11-18, close-boots' reset path (the reviewer's ruling (a) on 8b8e)
+    ("close-boots: the close alone on Linux too",
+     "    return (\"reset-then-close\" if (platform or sys.platform).startswith(\"linux\")",
+     "    return (\"reset-then-close\" if False"),
+    ("close-boots: the reset path chosen but no reset sent",
+     "            hp.hard_reset(settle=False)  # the reset, then no host at boot\n",
+     "            pass\n"),
+    ("close-boots: the port held 0.2 s after the reset",
+     "            hp.hard_reset(settle=False)  # the reset, then no host at boot\n",
+     "            hp.hard_reset()\n"),
     ("the X2's by-id link not resolved (Linux, 8b8e)",
      "    return os.path.realpath(a) == os.path.realpath(b)", "    return False"),
     ("any USB serial port reported as the WiCAN",
