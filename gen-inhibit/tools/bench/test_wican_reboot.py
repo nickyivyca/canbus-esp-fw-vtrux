@@ -17,6 +17,14 @@ the first PASSes); no page at all (FAIL, nothing sent). Every case checks that o
 page field (a fake SSID and password) reaches the record or the output. The boot-time
 rule is also tested directly. WICAN_REBOOT overrides the script under test. Scratch in
 the worktree's scratch/. Gen-inhibit tester, 2026-10-20.
+
+The hotspot's rejoin (2026-11-18): a fake WiCAN that stays unreachable after its reboot
+until the hotspot is selected again, and the script run from a folder of its own beside a
+stand-in gi_wifi (FAKE_GI_WIFI, whose select asks the fake for /__select). With
+GI_OTA_SETTINGS it selects and PASSes, the record saying how and when; without it nothing
+is selected and the new boot FAILs; a refused select and one that raises are kept as
+failed, at most one per SELECT_EVERY_S; a set but unusable block FAILs before anything is
+asked for or sent.
 """
 import http.server
 import importlib.util
@@ -51,7 +59,11 @@ def check(name, cond, detail=""):
 class Dev:
     """The fake WiCAN's state; one per case."""
     def __init__(self, sha=MAN, mode=0, latched=False, reboot="ok", reset="SW", boot_mode=0,
-                 disarm="ok", after_latched=False, after_disabled=False, down=False):
+                 disarm="ok", after_latched=False, after_disabled=False, down=False, rejoin=False):
+        # rejoin: after a reboot the page is unreachable until the hotspot is selected again
+        # (the fake gi_wifi's select asks for /__select), as the phone is never left to
+        # rejoin by itself (2026-11-18)
+        self.rejoin, self.selected, self.selects = rejoin, True, []
         self.boot_t = time.time() - 500.0
         self.sha, self.mode, self.latched, self.reset = sha, mode, latched, "SW"
         self.disabled = False
@@ -88,8 +100,14 @@ class Fake(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         d = Fake.dev
+        if self.path == "/__select":            # the fake gi_wifi's select, not the device's
+            d.selected = True
+            d.selects.append(time.time())
+            return self._send(200, "selected")
         d.paths.append("GET " + self.path)
         p = None if d.down or self.path != "/gen_inhibit" else d.page()
+        if d.rejoin and not d.selected and d.pending is None:
+            p = None                            # rebooted, and the hotspot not selected since
         self._send(200, json.dumps(p)) if p is not None else self._send(503)
 
     def do_POST(self):
@@ -100,6 +118,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
                 return self._send(403)
             if d.reboot == "ok":
                 d.pending = time.time() + 0.3
+                d.selected = False              # the hotspot goes down with the reboot
             return self._send(200, "rebooting")
         if self.path == "/gen_inhibit_set?mode=0":
             if d.disarm == "ok":
@@ -111,13 +130,65 @@ class Fake(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def run(srv, tmp, name, dev, args):
+FAKE_GI_WIFI = '''"""The rejoin cases' stand-in for gi_wifi (test_wican_reboot.py): from_env, backend and
+select as gi_wifi's; select asks the fake WiCAN for /__select. Settings {"fail": true} make
+select refuse, {"crash": true} raise."""
+import json
+import os
+import urllib.request
+
+ENV = "GI_OTA_SETTINGS"
+
+
+class Refused(Exception):
+    pass
+
+
+def from_env(environ=None):
+    environ = os.environ if environ is None else environ
+    try:
+        cfg = json.loads(environ.get(ENV) or "")
+    except ValueError:
+        raise Refused("%s is not JSON" % ENV)
+    if not isinstance(cfg, dict) or not cfg.get("profile"):
+        raise Refused("%s names no profile" % ENV)
+    return cfg
+
+
+def backend(cfg):
+    return "fake"
+
+
+def select(cfg, be=None):
+    if cfg.get("crash"):
+        raise RuntimeError("fake select crashed")
+    if cfg.get("fail"):
+        return False, "fake select refused"
+    urllib.request.urlopen("http://%s/__select" % os.environ["GI_WICAN_HOST"], timeout=2).read()
+    return True, "fake select of profile %s" % cfg["profile"]
+'''
+
+
+def rejoin_tool(tmp):
+    """The script under test in a folder of its own beside page_state.py and the fake gi_wifi."""
+    d = os.path.join(tmp, "rejoin_tool")
+    if not os.path.isdir(d):
+        os.makedirs(d)
+        shutil.copy(SCRIPT, os.path.join(d, "wican_reboot.py"))
+        shutil.copy(os.path.join(os.path.dirname(SCRIPT), "page_state.py"), d)
+        with open(os.path.join(d, "gi_wifi.py"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(FAKE_GI_WIFI)
+    return os.path.join(d, "wican_reboot.py")
+
+
+def run(srv, tmp, name, dev, args, env=None, script=None):
     Fake.dev = dev
     out = os.path.join(tmp, name + ".json")
     t0 = time.time()
-    r = subprocess.run([sys.executable, "-B", SCRIPT, "--label", name, "--out", out] + KNOWN + FAST + args,
-                       capture_output=True, text=True, timeout=120,
-                       env=dict(os.environ, GI_WICAN_HOST="127.0.0.1:%d" % srv.server_address[1]))
+    e = {k: v for k, v in os.environ.items() if k != "GI_OTA_SETTINGS"}
+    e.update(env or {}, GI_WICAN_HOST="127.0.0.1:%d" % srv.server_address[1])
+    r = subprocess.run([sys.executable, "-B", script or SCRIPT, "--label", name, "--out", out] + KNOWN + FAST + args,
+                       capture_output=True, text=True, timeout=120, env=e)
     rec = json.load(open(out)) if os.path.exists(out) else {}
     text = (open(out).read() if os.path.exists(out) else "") + r.stdout + r.stderr
     return r.returncode, rec, text, list(dev.paths), time.time() - t0
@@ -238,6 +309,46 @@ def tests():
         check("release when the run does not know the image: FAIL",
               rc == 1 and failed(rec, "the image the run expects"), (rc, rec.get("detail")))
 
+        # the hotspot's rejoin (2026-11-18): the phone never rejoins by itself after a reboot
+        tool = rejoin_tool(tmp)
+        ota = {"GI_OTA_SETTINGS": json.dumps({"profile": "79", "wifi": "adb"})}
+        dev = Dev(rejoin=True)
+        rc, rec, text, paths, _ = run(srv, tmp, "rejoin", dev, ["--first", "wican_man"], ota, tool)
+        rj = rec.get("rejoins") or []
+        check("rejoin: with GI_OTA_SETTINGS the hotspot is selected after the reboot, PASS",
+              rc == 0 and rec.get("verdict") == "PASS" and len(dev.selects) >= 1
+              and rj and rj[0].get("ok") is True and "profile 79" in rj[0].get("why", ""), (rc, rec.get("detail"), rj))
+        check("rejoin: the record says how (gi_wifi.select, the settings' backend) and when",
+              "gi_wifi.select" in (rec.get("rejoin") or "") and "adb" in (rec.get("rejoin") or "")
+              and isinstance(rj[0].get("after_s") if rj else None, float), (rec.get("rejoin"), rj))
+        common("rejoin", rec, text, paths)
+        dev = Dev(rejoin=True)
+        rc, rec, text, paths, _ = run(srv, tmp, "norejoin", dev, ["--first", "wican_man"], None, tool)
+        check("no GI_OTA_SETTINGS: no select, so a board that needs one FAILs on the new boot; rejoin None",
+              rc == 1 and failed(rec, "a new boot") and not dev.selects and rec.get("rejoin") is None
+              and rec.get("rejoins") == [], (rc, rec.get("detail"), rec.get("rejoin"), dev.selects))
+        dev = Dev(rejoin=True)
+        rc, rec, text, paths, _ = run(srv, tmp, "selectfails", dev, ["--first", "wican_man"],
+                                      {"GI_OTA_SETTINGS": json.dumps({"profile": "79", "fail": True})}, tool)
+        rj = rec.get("rejoins") or []
+        check("a refused select: FAIL on the new boot, the select kept as failed with its reason",
+              rc == 1 and failed(rec, "a new boot") and rj and rj[0].get("ok") is False
+              and "fake select refused" in rj[0].get("why", ""), (rc, rec.get("detail"), rj))
+        check("selects at most once every SELECT_EVERY_S (5 s): one in a 3 s wait", len(rj) == 1, rj)
+        dev = Dev(rejoin=True)
+        rc, rec, text, paths, _ = run(srv, tmp, "selectcrash", dev, ["--first", "wican_man"],
+                                      {"GI_OTA_SETTINGS": json.dumps({"profile": "79", "crash": True})}, tool)
+        rj = rec.get("rejoins") or []
+        check("a select that raises: kept as failed with the error, FAIL on the new boot, a record left",
+              rc == 1 and failed(rec, "a new boot") and rj and rj[0].get("ok") is False
+              and "fake select crashed" in rj[0].get("why", ""), (rc, rec.get("detail"), rj))
+        dev = Dev(rejoin=True)
+        rc, rec, text, paths, _ = run(srv, tmp, "badsettings", dev, ["--first", "wican_man"],
+                                      {"GI_OTA_SETTINGS": "not json"}, tool)
+        check("GI_OTA_SETTINGS set but unusable: FAIL before anything is asked for or sent",
+              rc == 1 and failed(rec, "hotspot rejoin settings") and paths == [] and not dev.selects,
+              (rc, rec.get("detail"), paths))
+
         rc, rec, text, paths, _ = run(srv, tmp, "down", Dev(down=True), ["--first", "wican_man"])
         check("no page at all: FAIL and nothing sent",
               rc == 1 and not any(p.startswith("POST") for p in paths) and failed(rec, "page before the reboot"),
@@ -280,6 +391,18 @@ MUTANTS = [
      'rec["pre_disarm_page"] = None'),
     ("the first disarm not reported", '            bits.append("disarmed before the reboot: %s"',
      '            bits.append("before the reboot: %s"'),
+    # the hotspot's rejoin (2026-11-18)
+    ("no rejoin", "        elif select is not None and (", "        elif False and ("),
+    ("a select every poll", "(last_select is None or time.time() - last_select >= SELECT_EVERY_S)", "True"),
+    ("unusable settings ignored",
+     '        chk("hotspot rejoin settings", False, "GI_OTA_SETTINGS: %s: nothing sent" % e)\n        return finish()\n',
+     "        select = None\n"),
+    ("a select that raises not caught", "            try:\n                ok, how = select()\n"
+     "            except Exception as e:      # a select that crashes is a select that failed\n"
+     "                ok, how = False, repr(e)[:160]\n", "            ok, how = select()\n"),
+    ("a failed select recorded as ok", '"ok": bool(ok), "why": how})', '"ok": True, "why": how})'),
+    ("the rejoin's how not recorded", "        select, rec[\"rejoin\"] = hotspot_select()\n",
+     "        select, _ = hotspot_select()\n"),
 ]
 
 

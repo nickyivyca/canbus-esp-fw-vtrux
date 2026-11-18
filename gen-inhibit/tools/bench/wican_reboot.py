@@ -18,7 +18,8 @@ a manual release.
   2. POST /system_reboot. Its reply is recorded and counts for nothing.
   3. Read the page until it shows a new boot, for up to --wait s: uptime_ms lower than
      before, or the boot time (read time minus uptime) later than before by more than
-     the reads' own uncertainty. None in time: FAIL.
+     the reads' own uncertainty. None in time: FAIL. While the page cannot be read, the
+     hotspot is selected again (below), at most once every SELECT_EVERY_S.
   4. If that page's mode is not 0: POST /gen_inhibit_set?mode=0 and read again.
   5. PASS only when all hold on the last page read:
        - a new boot was seen (3);
@@ -33,6 +34,16 @@ The record names the image found (or the unknown hash), whether the board came u
 and was disarmed, and every check. Reads /gen_inhibit only, never /check_status or any
 config. Exit 0 on PASS, 1 otherwise. GI_WICAN_HOST overrides the device's address (the
 harness test's fake). Gen-inhibit tester, 2026-10-20.
+
+The hotspot's rejoin (2026-11-18). A reboot takes the WiCAN's hotspot down, and the phone
+that carries madhouse-debian to it (gi_wifi's adb backend) is never left to rejoin by
+itself, so with GI_OTA_SETTINGS set (the suite's settings.ota block) step 3 calls
+gi_wifi.select, the backend's connect by its saved network, while the page cannot be read,
+as x2_jam_cases' reset_to_off does. The record's `rejoin` says how (None without the
+variable: a host whose own Wi-Fi rejoins, NICKY-XPS before the move) and `rejoins` lists
+each select (after_s from the reboot POST, ok, why, masked by gi_wifi). A set but unusable
+block FAILs before anything is sent. Found on the first chain bench runs on madhouse
+(gen-inhibit-bench_20261118T124727_377f: page before, "no page after the reboot").
 
 Cross-project dependency (gen-inhibit reviewer, 2026-10-24): the charge-interposer's
 runner loads this file by path, read-only, from a pinned gen-inhibit/main checkout, and
@@ -52,6 +63,22 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from page_state import HOST, read_page, state  # noqa: E402
 
 BOOT_MARGIN_S = 0.5
+SELECT_EVERY_S = 5.0
+
+
+def hotspot_select(environ=None):
+    """(select or None, how): the rejoin, gi_wifi.select on the settings.ota block from
+    GI_OTA_SETTINGS, or None without the variable. Raises gi_wifi.Refused for a set but
+    unusable block."""
+    environ = os.environ if environ is None else environ
+    if not environ.get("GI_OTA_SETTINGS"):
+        return None, None
+    import gi_wifi as GW
+    cfg = GW.from_env(environ)
+    be = GW.backend(cfg)
+    return (lambda: GW.select(cfg, be)), (
+        "gi_wifi.select (settings.ota's %s backend) while the page cannot be read, every %.0f s"
+        % (cfg.get("wifi") or "system", SELECT_EVERY_S))
 
 
 def timed_read(timeout):
@@ -138,7 +165,7 @@ def main(argv=None):
            "before": None, "pre_disarm_post": None, "pre_disarm_page": None,
            "reboot_post": None, "after": None, "disarm_post": None,
            "final": None, "found_image": None, "found_sha": None, "differs_from_first": None,
-           "came_up_armed": None, "disarmed": None, "verdict": "FAIL"}
+           "came_up_armed": None, "disarmed": None, "rejoin": None, "rejoins": [], "verdict": "FAIL"}
 
     def chk(name, ok, detail):
         rec["checks"].append({"check": name, "ok": bool(ok), "detail": detail})
@@ -166,6 +193,11 @@ def main(argv=None):
         print(rec["detail"])
         return 0 if rec["verdict"] == "PASS" else 1
 
+    try:
+        select, rec["rejoin"] = hotspot_select()
+    except Exception as e:      # gi_wifi.Refused, or a core that cannot be loaded
+        chk("hotspot rejoin settings", False, "GI_OTA_SETTINGS: %s: nothing sent" % e)
+        return finish()
     before = read_tries(4, a.gap, a.timeout, rec["errors"])
     if before is None:
         chk("page before the reboot", False, "no page in 4 tries: nothing sent")
@@ -177,9 +209,11 @@ def main(argv=None):
         got = read_tries(4, a.gap, a.timeout, rec["errors"])
         rec["pre_disarm_page"] = got[0] if got else None
     rec["reboot_post"] = post("/system_reboot", a.timeout)
+    t_post = time.time()
     time.sleep(a.settle)
     after, why = None, "no page after the reboot"
     t_end = time.time() + a.wait
+    last_select = None
     while True:
         got = read_tries(1, 0, a.timeout, rec["errors"])
         if got is not None:
@@ -187,6 +221,13 @@ def main(argv=None):
             if yes:
                 after = got
                 break
+        elif select is not None and (last_select is None or time.time() - last_select >= SELECT_EVERY_S):
+            last_select = time.time()
+            try:
+                ok, how = select()
+            except Exception as e:      # a select that crashes is a select that failed
+                ok, how = False, repr(e)[:160]
+            rec["rejoins"].append({"after_s": round(last_select - t_post, 1), "ok": bool(ok), "why": how})
         if time.time() >= t_end:
             break
         time.sleep(a.poll)

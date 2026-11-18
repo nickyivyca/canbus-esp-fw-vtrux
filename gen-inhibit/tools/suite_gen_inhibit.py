@@ -444,7 +444,10 @@ def make_hooks(settings, ssid, images=None):
     base_env = {"GI_WICAN_SSID": ssid, "REVERSE_IT_DIR": root, "INTERPOSER_CODE": settings.get("interposer_code") or ""}
     base_env.update(esptool_env(settings))     # GI_ESPTOOL_ARGV (gi_esptool.py, 2026-11-11)
     base_env.update(serial_env(settings))      # GI_X2_DEVICE, GI_WICAN_DEVICE (gi_serial.py, 2026-11-12)
-    ota_tools_env(settings, ssid)              # ssid_env's variable filled for the core's flasher (2026-11-16)
+    # ssid_env's variable filled for the core's flasher (2026-11-16), and GI_OTA_SETTINGS for
+    # the hooks' tools: wican_reboot.py rejoins the hotspot through it (2026-11-18; before,
+    # its value was dropped and the phone was never asked back after a reboot)
+    base_env.update(ota_tools_env(settings, ssid))
 
     def redact(paths):
         """The SSID out of every text file named; anything else (a flash dump) untouched."""

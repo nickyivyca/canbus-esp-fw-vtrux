@@ -75,6 +75,8 @@ MUTANTS = [
     ("tools: no GI_OTA_SETTINGS in a check's environment",
      '    env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in ota_tools_env(settings, ssid).items()})\n',
      ""),
+    ("hooks: GI_OTA_SETTINGS dropped from the hooks' environment (wican_reboot.py's rejoin), as before 2026-11-18",
+     "    base_env.update(ota_tools_env(settings, ssid))\n", "    ota_tools_env(settings, ssid)\n"),
     ("tools: GI_OTA_SETTINGS' braces not doubled for the core's formatting",
      'env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v',
      'env0.update({k: v for k, v'),
