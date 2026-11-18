@@ -873,6 +873,14 @@ same folder.
   committed `.gitignore` counts, so a machine's own excludes cannot hide a
   file. The bytes are compared without line-ending filters, so a file
   rewritten with CRLF still refuses, as it did under the on-disk digest.
+  The mode is compared as git records it, not as full permission bits, so
+  the checkouts already made read-only under 99fc947c pass unchanged (the
+  gen-inhibit reviewer's read, 2026-11-17).
+- **What the pin does not cover:** a file the committed `.gitignore` files
+  list is not checked, wherever it sits. That includes Python's bytecode,
+  and also `shared/x2_test_images`' `/build/`, `/managed_components/` and
+  `sdkconfig.old`. Nothing trusts those as pinned content: the X2 images are
+  pinned by their own hashes (the gen-inhibit reviewer's read, 2026-11-17).
 - **Basis:** port plan goal 20 item 8 (user, 2026-10-23): shared Python
   tooling is used from a separate checkout at the pinned tag, with the
   harness checking the checkout's digest against the pin. Applied to the

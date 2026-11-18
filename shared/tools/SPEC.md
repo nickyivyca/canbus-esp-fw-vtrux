@@ -353,8 +353,10 @@ unless the code hash changes, which the reproducible test (R19) shows.
   - the pin's digest is R7 taken over the component's files at that
     commit, read from git's objects rather than from the disk;
   - every file git tracks under the component has, on disk, exactly its
-    bytes and mode at that commit, compared without git's line-ending
-    filters, and none is missing;
+    bytes at that commit, compared without git's line-ending filters, and
+    the mode git records for it (a regular file, an executable, or a
+    symbolic link), not its full permission bits, so a read-only file still
+    passes; and none is missing;
   - there is no other file under the component, except files the
     checkout's own committed `.gitignore` files list. A machine's own
     excludes (`core.excludesFile`, `info/exclude`) do not count.
