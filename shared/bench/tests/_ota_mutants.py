@@ -12,10 +12,19 @@ variable OTA_TEST_PKG names the folder holding it). A mutant is killed only
 by a FAIL line: a crash is not a kill (a Traceback on stderr, or a FAIL whose
 detail says CRASH). Every mutant must be killed. Each mutant's copy is removed
 after its run; the run folder goes when this process exits.
+
+The copy is made writable, every folder and file (writable_copy): a
+pinned checkout ../shared-<tag> is read-only (AGENTS.md, from 2026-11-17),
+and copytree keeps the mode bits, so the mutant could not otherwise be
+written into it (the charge-interposer tester's re-pin to 2026.11.17: all
+six --can-fail runs stopped at m1 with PermissionError).
+tests/test_readonly_copy.py runs a mutant from a read-only source, with
+the rule switched off as its can-fail.
 """
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -24,6 +33,19 @@ import _scratch
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.join(os.path.dirname(HERE), "vtrux_bench")
 ENV_PKG = "OTA_TEST_PKG"
+
+# switched off by tests/test_readonly_copy.py --can-fail
+RULES = {"writable_copy": True}
+
+
+def writable(root):
+    """Give the owner write access to root and everything in it (a copy of
+    a read-only checkout), so a mutant can be written there."""
+    if not RULES["writable_copy"]:
+        return
+    for d, dirs, files in os.walk(root):
+        for p in [d] + [os.path.join(d, n) for n in files]:
+            os.chmod(p, os.stat(p).st_mode | stat.S_IWUSR)
 
 
 def package_root():
@@ -52,6 +74,7 @@ def run_mutants(test_file, mutants, name):
         d = os.path.join(base, "m%d" % n)
         shutil.copytree(PKG, os.path.join(d, "vtrux_bench"),
                         ignore=shutil.ignore_patterns("__pycache__"))
+        writable(os.path.join(d, "vtrux_bench"))
         if rel is not None:
             path = os.path.join(d, "vtrux_bench", rel)
             with open(path, encoding="utf-8", newline="") as f:
