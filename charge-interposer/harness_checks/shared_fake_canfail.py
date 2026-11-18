@@ -38,12 +38,18 @@ Exit 0: the controls were the same and every mutant differed. 1: not. 2:
 refused, nothing judged (no shared folders, a name mutate.py does not hold,
 a text not found exactly once, a run.sh refusal).
 
+The copies are made writable, every folder and file (writable_copy; the
+charge-interposer reviewer, 2026-11-17): the pinned checkout is read-only
+(AGENTS.md, from 2026-11-17) and copytree keeps the mode bits, so the
+mutant could not otherwise be written, nor the build write beside it.
+
 Tests: ../twai_fake_option_test.py (with --can-fail).
 """
 
 import importlib.util
 import os
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -60,11 +66,21 @@ TOOL = "shared-fake-canfail"
 
 # switched off one at a time by twai_fake_option_test.py --can-fail
 RULES = {k: True for k in ("known_names", "exactly_once", "control_same",
-                           "mutant_differs", "fresh_copy", "copy_used")}
+                           "mutant_differs", "fresh_copy", "copy_used", "writable_copy")}
 
 
 class Refused(Exception):
     pass
+
+
+def writable(root):
+    """The owner given write access to root and everything in it (a copy
+    of a read-only checkout)."""
+    if not RULES["writable_copy"]:
+        return
+    for d, _dirs, files in os.walk(root):
+        for p in [d] + [os.path.join(d, n) for n in files]:
+            os.chmod(p, os.stat(p).st_mode | stat.S_IWUSR)
 
 
 def load_mutants(fake_dir):
@@ -135,6 +151,7 @@ def fake_copy(fake_dir, dest, mutant=None):
     ign = shutil.ignore_patterns("__pycache__")
     shutil.copytree(tp, os.path.join(dest, "shared", "twai_port"), ignore=ign)
     shutil.copytree(cp, os.path.join(dest, "shared", "can_port"), ignore=ign)
+    writable(os.path.join(dest, "shared"))
     d = os.path.join(dest, "shared", "twai_port", os.path.basename(
         os.path.normpath(fake_dir)))
     if mutant:

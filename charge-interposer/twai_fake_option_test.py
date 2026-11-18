@@ -714,6 +714,44 @@ def test_canfail_judges(ctx, work):
     assert rc == 1 and "NOT THE SAME" in out, out
 
 
+def test_canfail_read_only(ctx, work):
+    """The can-fail from a read-only checkout, as a pinned ../shared-<tag>
+    is (AGENTS.md, from 2026-11-17; the charge-interposer reviewer,
+    2026-11-17): every folder and file of the stand-in checkout made
+    read-only, the can-fail still applies each mutant to its copy and
+    passes (3 caught), each run can write beside the fake in its copy (as
+    the build does), and the checkout is unchanged and still read-only."""
+    fd = fake_dir(os.path.join(work, "f"))
+    co = os.path.normpath(os.path.join(fd, "..", "..", ".."))
+    for d, _dirs, files in os.walk(co, topdown=False):
+        for p in [os.path.join(d, n) for n in files] + [d]:
+            os.chmod(p, os.stat(p).st_mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+
+    def snap():
+        out = {}
+        for d, _dirs, files in os.walk(co):
+            out[d] = os.stat(d).st_mode
+            for n in files:
+                p = os.path.join(d, n)
+                with open(p, "rb") as f:
+                    out[p] = (f.read(), os.stat(p).st_mode)
+        return out
+    before = snap()
+    inner = same_runner()
+
+    def runner(env, log):
+        with open(os.path.join(env["TWAI_FAKE_DIR"], "built.txt"), "w") as f:
+            f.write("a build output beside the fake\n")
+        return inner(env, log)
+    out = []
+    w = os.path.join(work, "w")
+    os.makedirs(w)
+    rc = ctx["canfail"].judge(fd, w, runner, out.append)
+    text = "\n".join(out)
+    assert rc == 0 and text.count("-- caught") == 3, text
+    assert snap() == before, "the read-only checkout changed"
+
+
 def test_canfail_refusals(ctx, work):
     """Refused before any run: a mutant name the fake's mutate.py does not
     hold, a mutant text not found exactly once, a fake with no can_port
@@ -775,7 +813,7 @@ def env_set(**kw):
 
 TESTS = [test_refusals, test_build, test_pinned, test_c_source_fails, test_removed_on_fail,
          test_list_and_closing, test_leftover_reported, test_race_retried, test_race_bounded,
-         test_canfail_mode, test_canfail_judges, test_canfail_refusals]
+         test_canfail_mode, test_canfail_judges, test_canfail_read_only, test_canfail_refusals]
 
 # mutants: (file in host_bridge, name, old, new); each is applied to the
 # tree copy (tree_copy) the tests then run
