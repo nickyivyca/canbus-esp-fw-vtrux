@@ -173,6 +173,13 @@ def needs_bench(r, tree, adapter, settings, base_env, paths, timeout_s=600.0):
     folder with the environment the chain runner gives it (base_env, the
     local host's env, the check's env). (True or False, "asked"), or (None,
     why) when it could not be told."""
+    return probe(r, tree, adapter, settings, base_env, paths, timeout_s)[:2]
+
+
+def probe(r, tree, adapter, settings, base_env, paths, timeout_s=600.0):
+    """needs_bench's question, with the suite's role from the same answer:
+    (needs, why, role), role None when it was not told (ACCEPT-SPEC A18:
+    an acceptance's hold is taken for its bench parts' role)."""
     import json
     import subprocess
     chk = suite_run_check(r, tree, adapter, settings, base_env, paths, probe=True)
@@ -183,17 +190,18 @@ def needs_bench(r, tree, adapter, settings, base_env, paths, timeout_s=600.0):
         p = subprocess.run(chk.argv, cwd=chk.cwd, env=env, capture_output=True, text=True,
                            timeout=timeout_s, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as e:
-        return None, "could not ask: %r" % (e,)
+        return None, "could not ask: %r" % (e,), None
     lines = p.stdout.strip().splitlines()
     try:
-        ans = json.loads(lines[-1])["needs_bench"]
-    except (IndexError, ValueError, KeyError, TypeError):
-        ans = None
+        last = json.loads(lines[-1])
+        ans, role = last["needs_bench"], last.get("role")
+    except (IndexError, ValueError, KeyError, TypeError, AttributeError):
+        ans, role = None, None
     if p.returncode != 0 or not isinstance(ans, bool):
         err = p.stderr.strip().splitlines()
         return None, "exit %d, %s" % (p.returncode, err[-1][:300] if err else
-                                      "no answer on its last line")
-    return ans, "asked"
+                                      "no answer on its last line"), None
+    return ans, "asked", role if isinstance(role, str) else None
 
 
 def compile_suite(alist, trees, adapter, settings, base_env, name=None, paths=None,
@@ -240,16 +248,18 @@ def chain_root(rec, settings):
         else settings.get("runs_root")
 
 
-def run_suite(suite, settings, rec, adapter=None, made=None, **kw):
+def run_suite(suite, settings, rec, adapter=None, made=None, hold=None, **kw):
     """Run the suite with the chain runner; its record, with "_dir" its
     folder. The chain record holds the masked settings (A6). The chain
     runner's work folder on each remote host it used goes into made (A14:
-    the chain runner itself leaves it)."""
+    the chain runner itself leaves it). hold: the acceptance's hold
+    (hold.Hold, A18), consulted before and after each bench part's group."""
     from .settings import masked
     from ..run import engine as E
-    eng = Engine(suite, settings, runs_root=chain_root(rec, settings), out=rec.say,
-                 record_settings=masked(settings, adapter) if RULES["masked_record"] else None,
-                 **kw)
+    cls = Engine if hold is None else hold.engine_class(Engine)
+    eng = cls(suite, settings, runs_root=chain_root(rec, settings), out=rec.say,
+              record_settings=masked(settings, adapter) if RULES["masked_record"] else None,
+              **kw)
     try:
         r = eng.run()
     finally:

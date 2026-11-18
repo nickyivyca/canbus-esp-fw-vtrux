@@ -38,13 +38,16 @@ summary: {"step", "list" {commit, path, sha256}, "runner" {commit, dirty},
 {suite run id: nested.json "flagged"}, "verdict" (judge.verdict), "earlier"
 (an earlier record's id, or None), "reused" (each [[reuse]]'s record from
 reuse.check, named in the README and the skeleton by reuse.readme_lines:
-A17)}.
+A17), "hold" (the bench hold's section from hold.Hold.finish, A18, or
+None; its README section is hold_lines, tested with the hold in
+tests/test_accept_hold.py)}.
 
 RULES: each is switched off by a mutant in tests/test_accept_close.py,
 which must then fail.
 """
 
 import hashlib
+import json
 import os
 
 from . import reuse as RU
@@ -80,6 +83,29 @@ def _rerun_lines(summary):
             out.append("| %s | %s | first %s | re-run %s |" % (
                 sr, r["check"], r["first"], r["rerun"] or "(not re-run)"))
     return out
+
+
+def hold_lines(h):
+    """The README's section on the bench hold (A18; hold.py): its mode, PID
+    and parts, why the parts were NOT-RUN if they were, and the bench log's
+    lines of the hold with their times (also in bench_hold.json)."""
+    if not h:
+        return []
+    L = ["## The bench hold (A18)", "",
+         "- %s, pid %s, role %s; bench parts: %s" % (h["mode"], h["pid"], h["role"],
+                                                       ", ".join(h["parts"]))]
+    if h.get("not_run"):
+        L.append("- bench parts NOT-RUN: %s" % h["not_run"])
+    if h.get("release_before_close"):
+        L.append("- released before the close: the release line below")
+    if h.get("release_error"):
+        L.append("- LOCK NOT RELEASED before the close: %s" % h["release_error"])
+    for e in h.get("lines") or []:
+        rest = ", ".join("%s %s" % (k, json.dumps(e[k], sort_keys=True))
+                         for k in sorted(e) if k not in ("ts", "event", "who"))
+        L.append("- %s %s %s%s" % (e.get("ts"), e.get("event"), e.get("who"),
+                                    ": " + rest if rest else ""))
+    return L + [""]
 
 
 def readme(rec, summary, hits, leftovers):
@@ -150,6 +176,7 @@ def readme(rec, summary, hits, leftovers):
         L += ["## Flagged cases: first run and re-run", "",
               "| suite run | case | first | re-run |", "|---|---|---|---|"] + rr + [
             "", "The first, whole run decides (A12).", ""]
+    L += hold_lines(s.get("hold"))
     L += ["## Identifier scan", ""]
     if hits is None:
         L.append("- no identifier scan: the adapter gives none")

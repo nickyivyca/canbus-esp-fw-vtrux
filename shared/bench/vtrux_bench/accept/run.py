@@ -19,8 +19,19 @@ it is asked of each before the chain (compile.needs_bench: its nested
 command with --needs-bench), skipping those that will not start (no
 images, a premise that did not hold); one that cannot be told counts as
 needing it, so the runs before it keep the hold. A suite run that then does
-not take over the hold leaves the bench held under PID at the end, never
-free; the console says which runs were given --keep-lock.
+not take over the hold, or does not hand it back, leaves the bench held
+under PID at the end, never free, and the later suite runs that need the
+bench are NOT-RUN, naming it (hold.py; the charge-interposer reviewer,
+2026-11-17); the console says which runs were given --keep-lock.
+
+Without --from-hold, with the settings' bench_lock_log (ACCEPT-SPEC A18;
+user, 2026-11-17), the hold is the runner's own: the same chain of
+--from-hold and --keep-lock, under the acceptance runner's own PID, and
+the hold is taken at the first suite run that needs the bench, by waiting
+in the bench log's queue as bench_lock wait does, with no timeout; nothing
+before it holds the lock. If the run ends while that hold is still its
+own, it is released before the close. hold.py has the rules; the record's
+bench_hold.json names the request, the take, every hand-over and release.
 
 In order:
   1. the list is read from git (A2) for its step id, and the record folder
@@ -68,6 +79,7 @@ from . import builds as B
 from . import canfail as CF
 from . import close as CL
 from . import compile as C
+from . import hold as HO
 from . import judge as J
 from . import listfile as L
 from . import record as R
@@ -84,7 +96,8 @@ RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip"
                            "dev_never_pass", "identity_untracked", "check_verdict",
                            "not_passed_listed", "nested_not_passed", "nested_wrong_shape",
                            "images_not_started", "from_hold_passed", "keep_lock_chain",
-                           "keep_not_last", "keep_bench_only")}
+                           "keep_not_last", "keep_bench_only", "hold_queued",
+                           "from_hold_no_queue", "hold_recorded")}
 
 DEV_LINE = "DEV RUN, not evidence"
 
@@ -195,17 +208,22 @@ def _side(name, alist, chain, runs_root, nested, reused=()):
             "record": {"results": [r for r in chain["results"] if r["group"] == g]}}
 
 
-def _keep_lock(alist, trees, adapter, settings, base_env, paths, not_started, pid, say):
+def _keep_lock(alist, trees, adapter, settings, base_env, paths, not_started, pid, say,
+               found=None):
     """{suite run id: pid} for every suite run that needs the bench but the
     last, in the list's order (the order the chain runs them in), so the
     hold passes from one to the next; suite runs that will not start are
-    left out. One whose need cannot be told counts as needing the bench."""
-    bench = []
+    left out. One whose need cannot be told counts as needing the bench.
+    found, a dict, gets "bench" (the suite runs that need it, in order:
+    the bench parts, A18) and "role" (the first one's suite role told)."""
+    bench, roles = [], []
     for r in alist.suite_runs:
         if r["id"] in not_started:
             continue
         if RULES["keep_bench_only"]:
-            nb, why = C.needs_bench(r, trees[r["tree"]], adapter, settings, base_env, paths)
+            nb, why, role = C.probe(r, trees[r["tree"]], adapter, settings, base_env, paths)
+            if nb and role:
+                roles.append(role)
         else:
             nb, why = True, "not asked"
         if nb is None:
@@ -222,6 +240,8 @@ def _keep_lock(alist, trees, adapter, settings, base_env, paths, not_started, pi
                                                 "to the next)" % pid if i in given else
                                                 " (the last that needs the bench: it "
                                                 "releases)"))
+    if found is not None:
+        found.update(bench=bench, role=roles[0] if roles else None)
     return {i: pid for i in given}
 
 
@@ -240,6 +260,7 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
     rec = R.start(machine["runs_root"], step_id, out=say0)
     made = S.Made()
     closed = False
+    hold = None
     try:
         parent = made.add(S.make(os.path.join(S.scratch_root(repo), "vtrux-accept"), rec.id))
         harness = os.path.join(parent, "harness")
@@ -298,12 +319,27 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                 rec.say("suite run %s: %s" % (r_["id"], why))
             per_run[r_["id"]] = ST.write_tree_settings(s, adapter, r_["id"], trees[r_["tree"]],
                                                        rec, made, parent, images=images)
+        # A18: the hold is the session's (--from-hold) or, under the bench
+        # log, the runner's own, taken at the first bench part (hold.py)
+        lock_log = s.get("bench_lock_log")
+        own = bool(lock_log) and RULES["hold_queued"] and (
+            from_hold is None or not RULES["from_hold_no_queue"])
+        hold_pid = os.getpid() if own else from_hold
         paths = {"settings": spath, "masked": os.path.join(rec.path, "settings.masked.json"),
                  "record_id": rec.id, "suite_runs": per_run,
-                 "from_hold": from_hold if RULES["from_hold_passed"] else None}
+                 "from_hold": hold_pid if RULES["from_hold_passed"] else None}
+        found = {}
         if paths["from_hold"] is not None and RULES["keep_lock_chain"]:
             paths["keep_lock"] = _keep_lock(alist, trees, adapter, s, base_env, paths,
-                                            set(no_images) | blocked, from_hold, rec.say)
+                                            set(no_images) | blocked, hold_pid, rec.say,
+                                            found)
+        if own and from_hold is None and not found.get("bench"):
+            paths["from_hold"], paths["keep_lock"] = None, {}    # no bench part: no hold
+        if lock_log and found.get("bench") and paths["from_hold"] is not None:
+            hold = HO.Hold(lock_log, found.get("role") or adapter.ROLE, found["bench"],
+                           from_hold=None if own else from_hold, say=rec.say,
+                           record_id=rec.id)
+            hold.install()
         suite = C.compile_suite(alist, trees, adapter, s, base_env, paths=paths,
                                 mutants=entries)
         for g in suite.groups if RULES["images_not_started"] else []:
@@ -315,7 +351,15 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                     C.group_name("cf-%s-" % e["canfail"])) for e in entries):
                 for c in g.checks:
                     c.skip = "a premise did not hold (A11)"
-        chain = C.run_suite(suite, s, rec, adapter=adapter, made=made)
+        chain = C.run_suite(suite, s, rec, adapter=adapter, made=made, hold=hold)
+        held = None
+        if hold is not None:
+            held = hold.finish()            # A18: a leftover own hold, before the close
+            if RULES["hold_recorded"]:
+                with open(os.path.join(rec.path, "bench_hold.json"), "x", encoding="utf-8",
+                          newline="\n") as f:
+                    json.dump(held, f, indent=1, sort_keys=True)
+                    f.write("\n")
         nested = {}
         for r_ in alist.suite_runs:
             p = os.path.join(chain["_dir"], C.group_name(r_["id"]), "run", "nested.json")
@@ -371,6 +415,7 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                    "builds": builds, "compares": compares, "premises": prem,
                    "reruns": {k: n["flagged"] for k, n in nested.items()},
                    "verdict": v, "earlier": earlier,
+                   "hold": held if RULES["hold_recorded"] else None,
                    "reused": [{k: u[k] for k in u if k != "results"} for u in reused]}
         res = CL.close(rec, summary, made, adapter)
         closed = True
@@ -386,6 +431,11 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                 S.remove(rec.path, quiet=True)
         raise
     finally:
+        if hold is not None:
+            try:
+                hold.finish()               # A18: on any way out, before the cleanup
+            finally:
+                hold.uninstall()
         left = made.remove_all(out=say0) if RULES["cleanup_finally"] else []
         if not closed:
             for p, why in left:

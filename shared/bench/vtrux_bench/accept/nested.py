@@ -34,10 +34,11 @@ then the first run hands the lock back only with --keep-lock. nested.json's
 handed the lock to at its end ("first", "rerun": a PID, or null for a
 release or no take).
 
---needs-bench prints {"needs_bench": true|false} as its last line for the
-suite and selection, and exits 0, taking no lock and writing nothing: the
-acceptance runner asks each suite run before the chain, to find the last
-that needs the bench (run.py).
+--needs-bench prints {"needs_bench": true|false, "role": the suite's role}
+as its last line for the suite and selection, and exits 0, taking no lock
+and writing nothing: the acceptance runner asks each suite run before the
+chain, to find its bench parts, the last of them, and the role its hold is
+taken for (run.py, hold.py; ACCEPT-SPEC A18).
 
 The run settings' runs_root is the acceptance record's runs/ (settings.py),
 so the nested record lands there, holding the masked settings (A6). With
@@ -194,7 +195,8 @@ def main(argv=None):
         suite = load_suite(a.suite, settings)
         if a.needs_bench:
             eng = Engine(suite, settings, groups=a.group, checks=a.check)
-            print(json.dumps({"needs_bench": bool(eng.needs_bench())}))
+            print(json.dumps({"needs_bench": bool(eng.needs_bench()),
+                              "role": suite.role}))
             return 0
         res = run(suite, settings, load_settings(a.record_settings), a.run_id,
                   a.group, a.check, a.rerun_flagged, from_hold=a.from_hold,
