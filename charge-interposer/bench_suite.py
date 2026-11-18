@@ -283,7 +283,8 @@ SHARED_BENCH_TESTS = [
     "test_accept_setup.py", "test_accept_suite_runs.py", "test_accept_trees.py",
     "test_bench_lock.py", "test_canfail_control.py", "test_canmain.py",
     "test_decode.py", "test_ota_outcome.py", "test_ota_policy.py",
-    "test_ota_preflight.py", "test_ota_wire.py", "test_run_core.py",
+    "test_ota_preflight.py", "test_ota_wire.py", "test_readonly_copy.py",
+    "test_run_core.py",
     "test_scratch.py", "test_scratch_helper.py", "test_serial_dev.py",
     "test_vbus.py", "test_wican_http.py", "test_wifi.py",
 ]
@@ -292,7 +293,8 @@ SHARED_BENCH_NOT_RUN = {
     # the charge-interposer reviewer, 2026-11-16 (re-pin to 2026.11.16.5):
     # it tests the shared test suite, not the runner's behaviour; it runs in
     # a shared/bench range's own control, and shared_pin's digest check
-    # catches a dirtied checkout anyway
+    # (from the re-pin to 2026.11.17.3, its R23 git check) catches a
+    # dirtied checkout anyway
     "test_checkout_unchanged.py": "tests shared/bench's own test suite; "
                                   "run in the shared/bench range's control",
 }
