@@ -2352,6 +2352,10 @@ def test_esptool_two_flashes():
     with open(os.path.join(logd, "flash.txt")) as f:
         text = f.read()
     assert text.count("Hash of data verified") == 5, text
+    with open(os.path.join(logd, "flash_md5.txt")) as f:
+        text = f.read()
+    assert text.index("# image: A\n") < text.index("# image: B\n") and \
+        text.count(a.params["files"][1][1]) == 1 and extra in text, text
     with open(os.path.join(logd, "serial_device.txt")) as f:
         text = f.read()
     assert text.index("image: A\n") < text.index("image: B\n"), text

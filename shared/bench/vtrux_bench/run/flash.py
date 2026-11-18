@@ -21,7 +21,9 @@ No step is retried. Every step's output is kept in the log folder.
 
 One log folder can take several flashes: a start that loads both boards
 writes both into its `start` folder, and run_local appends. So each file
-(`serial_device.txt` included) keeps every flash's output, in order, and
+keeps every flash's output, in order (`serial_device.txt` and
+`flash_md5.txt` appended too, each flash's block opened by its image's
+name), and
 steps 2 and 3 judge only the output of their own esptool call, read from
 where the file ended before it (`_run_read`). Reading the whole file judged
 the first board's chip_id as the second's, and summed the "Hash of data
@@ -216,7 +218,9 @@ def esptool_flash(image, params, settings, logdir):
             out["detail"] = "md5 of %s is %s, expected %s" % (
                 path, out["md5"].get(path), m)
             return out
-    with open(os.path.join(logdir, "flash_md5.txt"), "w") as f:
+    with open(os.path.join(logdir, "flash_md5.txt"),
+              "a" if RULES["per_call_log"] else "w") as f:
+        f.write("# image: %s\n" % image.name)
         for path, m in out["md5"].items():
             f.write("%s  %s\n" % (m, path))
     why = chip_unnamed(params.get("chip") or et.get("chip"))
