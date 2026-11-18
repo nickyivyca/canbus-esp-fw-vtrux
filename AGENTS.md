@@ -76,7 +76,7 @@ esp-fw-vtrux/                plain folder: not a repo, no AGENTS.md
   interposer-reviewer/       worktree on charge-interposer/main
   interposer-implementor/    worktree on charge-interposer/implementor/<topic>
   interposer-tester/         worktree on charge-interposer/tester/<topic>
-  shared-<tag>/              detached and read-only, one per pinned shared/main commit
+  shared-<tag>/              detached, one per pinned shared/main commit
 ```
 
 Also there while needed: a writable worktree on `shared/<component>/<topic>`
@@ -85,14 +85,26 @@ for a shared change in progress, and extra worktrees named
 anchor worktree add --detach ../shared-<tag> <tag>`. Work moves between
 machines only through origin.
 
-**A `shared-<tag>/` checkout is made read-only when it is made:** `chmod -R
-a-w ../shared-<tag>/shared`, leaving the checkout's root and its `.git` file
-writable. The pins hash those files, so a stray write, such as a
-`__pycache__`, changes the digest and the pin check refuses. Python run
-from a pinned checkout, or with one on `PYTHONPATH`, runs with `-B` or
-`PYTHONDONTWRITEBYTECODE=1`, children included; on Windows that is the only
-guard, since a read-only flag does not stop new files in a folder. To remove
-a checkout, `chmod -R u+w` its `shared/` first, then `git worktree remove`.
+**A `shared-<tag>/` checkout is checked through git** by a pin check that
+follows shared/tools SPEC R23: HEAD and the tag, the pin's digest taken from
+git's objects, every tracked file's bytes and git mode on disk (read-only
+files pass), and no other file under the component but those the
+checkout's committed `.gitignore` files list; a machine's own excludes do
+not count. The charge-interposer's `shared_pin.py` checks this way from its
+re-pin to `2026.11.17.3`, and so does shared/tools' release-build check
+from tag `2026.11.17.3`. Python run from a checkout needs no `-B` where its
+committed `.gitignore` lists bytecode, as `shared/main`'s root one does from
+tag `2026.11.17.3`. Don't edit or add files in a checkout.
+
+**Until gen-inhibit's pin checks follow R23,** they hash the files on disk,
+so a stray write, such as a `__pycache__`, changes the digest and the check
+refuses. A checkout of a tag gen-inhibit pins is made read-only when it is
+made: `chmod -R a-w ../shared-<tag>/shared`, leaving the checkout's root and
+its `.git` file writable. Python run from such a checkout, or with one on
+`PYTHONPATH`, runs with `-B` or `PYTHONDONTWRITEBYTECODE=1`, children
+included; on Windows that is the only guard, since a read-only flag does
+not stop new files in a folder. To remove a read-only checkout, `chmod -R
+u+w` its `shared/` first, then `git worktree remove`.
 
 **Start-up check.** Before anything else, check that you are in your role's
 worktree, on your role's branch (`git branch --show-current`). If not, stop
