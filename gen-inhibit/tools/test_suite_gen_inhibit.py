@@ -453,7 +453,10 @@ def test_ssid(settings, bench, emu):
         sp = os.path.join(BASE, "settings.json")
         with open(sp, "w", encoding="utf-8") as f:
             json.dump(settings, f)
-        rc = CLI.main(["plan", "--suite", os.path.join(HERE, "suite_gen_inhibit.py") + ":bench", "--settings", sp])
+        # by module name, so the runner takes the SG already loaded, with the pins stand-in:
+        # by file it loads a fresh copy whose pins check reads this machine's installs
+        # (a clean worktree has none). The emulated plan below keeps the file form.
+        rc = CLI.main(["plan", "--suite", "suite_gen_inhibit:bench", "--settings", sp])
     text = out.getvalue()
     check("plan of the bench suite exits 0 and lists every group",
           rc == 0 and all("group %s " % g.name in text for g in bench.groups), (rc, text[-300:]))
