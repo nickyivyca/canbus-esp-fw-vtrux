@@ -46,6 +46,12 @@ fake, and on ESP-IDF's side a new TWAI_ define and a version that is not
 idf_in_fake off, a fake-side mutant passes; an allowance nothing needs
 passes with allowances_needed off and fails with it on.
 
+Every mutant's fake comes from a read-only copy of the fake's twai_port,
+as from a pinned checkout, which is read-only (AGENTS.md, from 2026-11-17;
+the charge-interposer reviewer, 2026-11-17), and each copy made from it is
+made writable (writable_copy: copytree keeps the mode bits); with
+writable_copy off, a mutant cannot be written into its copy.
+
 Exit 0 pass, 1 a difference, 2 refused (no IDF_PATH, not v5.4.2, a file
 missing, no fake).
 """
@@ -53,6 +59,7 @@ missing, no fake).
 import os
 import re
 import shutil
+import stat
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -90,7 +97,8 @@ UNUSED_IN = ("{tp}/twai_port.c", "{tp}/twai_port_ll_unsupported.c",
              "{tp}/include/twai_port.h", "{code}/firmware/main")
 
 # switched off one at a time by --can-fail's own control of the rules
-RULES = {k: True for k in ("fake_in_idf", "idf_in_fake", "allowances_needed")}
+RULES = {k: True for k in ("fake_in_idf", "idf_in_fake", "allowances_needed",
+                           "writable_copy")}
 
 
 class Refused(Exception):
@@ -448,7 +456,27 @@ def copy_fake(fake_dir, dest):
     tp = os.path.dirname(os.path.abspath(fake_dir))
     t = os.path.join(dest, "twai_port")
     shutil.copytree(tp, t, ignore=shutil.ignore_patterns("__pycache__"))
+    if RULES["writable_copy"]:
+        _set_writable(t, True)
     return os.path.join(t, os.path.basename(os.path.normpath(fake_dir)))
+
+
+def _set_writable(root, on):
+    """The owner's write access to root and everything in it, given (on) or
+    taken away."""
+    for d, _dirs, files in os.walk(root, topdown=not on):
+        for p in [d] + [os.path.join(d, n) for n in files]:
+            m = os.stat(p).st_mode
+            os.chmod(p, m | stat.S_IWUSR if on else m & ~(stat.S_IWUSR | stat.S_IWGRP
+                                                          | stat.S_IWOTH))
+
+
+def read_only_source(fake_dir, dest):
+    """A copy of the fake's twai_port, made read-only, as a pinned checkout
+    is; its fake's folder."""
+    fd = copy_fake(fake_dir, dest)
+    _set_writable(os.path.dirname(fd), False)
+    return fd
 
 
 def can_fail(fake_dir, root, out=print):
@@ -458,9 +486,11 @@ def can_fail(fake_dir, root, out=print):
         rc = check(fake_dir, root, out=lambda s: None)
         out("%s  control: the unchanged files pass" % ("ok  " if rc == 0 else "FAIL"))
         bad += rc != 0
+        # every mutant's fake from a read-only source, as a pinned checkout is
+        src = read_only_source(fake_dir, os.path.join(work, "source"))
         for n, (side, rel, name, old, new) in enumerate(MUTANTS, 1):
             w = os.path.join(work, "m%d" % n)
-            fd = copy_fake(fake_dir, os.path.join(w, "fake"))
+            fd = copy_fake(src, os.path.join(w, "fake"))
             ir = copy_idf(root, os.path.join(w, "idf"))
             p = os.path.join(fd if side == "fake" else ir, *rel.split("/"))
             text = read(p)
@@ -490,12 +520,23 @@ def can_fail(fake_dir, root, out=print):
         # the rules each matter. fake_in_idf and idf_in_fake: with the rule
         # off, some fake-side mutant above passes. allowances_needed: an
         # allowance nothing needs (for a kind with none) passes with the rule
-        # off and fails with it on.
+        # off and fails with it on. writable_copy: with the rule off, a
+        # fake-side mutant cannot be written into its copy of the read-only
+        # source.
         quiet = lambda s: None                                  # noqa: E731
         for rule in sorted(RULES):
             RULES[rule] = False
             try:
-                if rule == "allowances_needed":
+                if rule == "writable_copy":
+                    rel = [m[1] for m in MUTANTS if m[0] == "fake"][0]
+                    fd = copy_fake(src, os.path.join(work, "r-writable_copy", "fake"))
+                    try:
+                        with open(os.path.join(fd, *rel.split("/")), "a", encoding="utf-8"):
+                            pass
+                        ok = False
+                    except PermissionError:
+                        ok = True
+                elif rule == "allowances_needed":
                     ONLY_IDF["structs"] = (re.compile(r"^never_needed_t$"), "a stale one")
                     try:
                         ok = check(fake_dir, root, out=quiet) == 0
@@ -509,7 +550,7 @@ def can_fail(fake_dir, root, out=print):
                         if side != "fake":
                             continue
                         w = os.path.join(work, "r-%s-%d" % (rule, n))
-                        fd = copy_fake(fake_dir, os.path.join(w, "fake"))
+                        fd = copy_fake(src, os.path.join(w, "fake"))
                         p = os.path.join(fd, *rel.split("/"))
                         text = read(p)
                         with open(p, "w", encoding="utf-8", newline="") as f:
