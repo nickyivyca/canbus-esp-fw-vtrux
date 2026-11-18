@@ -683,6 +683,34 @@ def make_hooks(settings, ssid, images=None):
 
 # ---------------------------------------------------------------- the suite
 
+# The pinned installs gi_tools' bench tools load (gen-inhibit reviewer, 2026-11-18, gap 1): each
+# pin tool's own `check`, run from the gi_tools folder, so it looks in that worktree's scratch/.
+# Run gen-inhibit-bench_20261118T141143_de6e pointed at a fresh gi_tools worktree with neither
+# installed, and nearly every check raised CanrePinError or CanToolsPinError.
+PIN_CHECKS = (("canre", ("bench", "canre_pin.py")), ("can-tools", ("can_tools_pin.py",)))
+
+
+def pins_installed(settings):
+    """ValueError unless every pin tool in PIN_CHECKS passes `check` in settings.gi_tools;
+    the refusal names each that failed, with its last line, and the install command."""
+    tools = need(settings, "gi_tools")
+    bad = []
+    for name, rel in PIN_CHECKS:
+        argv = _py(settings) + [os.path.join(tools, *rel), "check"]
+        try:
+            p = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120,
+                               env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+            rc, said = p.returncode, (p.stderr.strip() or p.stdout.strip())
+        except (OSError, subprocess.TimeoutExpired) as e:
+            rc, said = None, "could not run: %s" % e
+        if rc != 0:
+            bad.append("%s (rc %s): %s" % (name, rc, said.splitlines()[-1] if said else "no output"))
+    if bad:
+        raise ValueError("settings.gi_tools %s lacks its pinned installs; run each pin tool's install "
+                         "there (%s): %s" % (tools, ", ".join("/".join(r) + " install" for _, r in PIN_CHECKS),
+                                             "; ".join(bad)))
+
+
 def interposer_code_at(settings):
     """The read-only charge-interposer checkout interposer_code names must be clean at
     interposer_code_commit (gen-inhibit reviewer, 2026-11-16), so the run record names the
@@ -726,6 +754,7 @@ def suite(settings):
     except GW.Refused as e:
         raise ValueError("settings.ota: %s" % e)
     interposer_code_at(settings)
+    pins_installed(settings)                # before the bench is taken (reviewer, 2026-11-18)
     H = HARNESS
 
     desc = {}

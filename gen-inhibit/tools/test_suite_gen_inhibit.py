@@ -63,6 +63,18 @@ from vtrux_bench.run.engine import Engine, fmt               # noqa: E402
 from vtrux_bench.run.model import CheckRun, SuiteError, validate   # noqa: E402
 import suite_gen_inhibit as SG                               # noqa: E402
 JOIN_HOTSPOT = SG.join_hotspot      # the real one: the hooks' tests stand in for it
+# the pins check (gap 1, 2026-11-18): stood in for everywhere, so the suite loads in a worktree
+# or mutant clone without the installs; the real one is tested on stand-in pin tools
+PINS_INSTALLED, PINS_CALLS, PINS_RAISE = SG.pins_installed, [], []
+
+
+def _pins_stand_in(settings_):
+    PINS_CALLS.append(settings_.get("gi_tools"))
+    if PINS_RAISE:
+        raise ValueError(PINS_RAISE[0])
+
+
+SG.pins_installed = _pins_stand_in
 import _fake_serial as FS     # noqa: E402  bench/ (on sys.path above): the made-up serial devices
 
 # esptool (gi_esptool.py, 2026-11-11): the settings' argv in its one form, and the version
@@ -1910,6 +1922,68 @@ def test_ota(settings, bench):
           ici)
 
 
+PIN_STAND_IN = '''import os, sys
+name = os.path.basename(__file__)
+bad = os.environ.get("PIN_TEST_FAIL", "")
+if sys.argv[1:] != ["check"]:
+    print("usage", file=sys.stderr); sys.exit(2)
+if name in bad.split(","):
+    print("%s: the pin is not installed at X: run install" % name, file=sys.stderr); sys.exit(1)
+print("%s checked" % name)
+'''
+
+
+def test_pins(settings):
+    """Gap 1 (gen-inhibit reviewer, 2026-11-18): the bench suite refuses to load unless gi_tools'
+    canre and can-tools pin tools pass `check`; the real pins_installed, on stand-in pin tools
+    in a stand-in gi_tools folder."""
+    del PINS_CALLS[:]
+    SG.bench(settings)
+    check("pins: the bench suite asks the pins check, on settings.gi_tools",
+          PINS_CALLS == [settings["gi_tools"]], PINS_CALLS)
+    PINS_RAISE.append("planted: canre not installed")
+    try:
+        e = raises(lambda: SG.bench(settings), ValueError)
+    finally:
+        del PINS_RAISE[:]
+    check("pins: a failed pins check refuses the bench suite", e is not None and "planted" in str(e), e)
+    del PINS_CALLS[:]
+    SG.emulated(settings)
+    check("pins: the emulated suite does not ask (no bench tools)", PINS_CALLS == [], PINS_CALLS)
+
+    tools = os.path.join(BASE, "pins_gi_tools")
+    os.makedirs(os.path.join(tools, "bench"))
+    for rel in (("bench", "canre_pin.py"), ("can_tools_pin.py",)):
+        with open(os.path.join(tools, *rel), "w", encoding="utf-8", newline="\n") as f:
+            f.write(PIN_STAND_IN)
+    s = dict(settings, gi_tools=tools)
+    saved = os.environ.get("PIN_TEST_FAIL")
+    try:
+        for fail, want in (("", None), ("canre_pin.py", ["canre"]), ("can_tools_pin.py", ["can-tools"]),
+                           ("canre_pin.py,can_tools_pin.py", ["canre", "can-tools"])):
+            os.environ["PIN_TEST_FAIL"] = fail
+            e = raises(lambda: PINS_INSTALLED(s), ValueError)
+            if want is None:
+                check("pins (real): both pin tools pass check -> loads", e is None, e)
+            else:
+                msg = str(e or "")
+                check("pins (real): %s failing check -> refused, naming %s and the tool's own line"
+                      % (fail, " and ".join(want)),
+                      e is not None and all("%s (rc 1)" % w in msg for w in want)
+                      and ("can-tools (rc" in msg) == ("can-tools" in want)
+                      and ("canre (rc" in msg) == ("canre" in want)
+                      and "the pin is not installed" in msg and "install" in msg, msg)
+        os.remove(os.path.join(tools, "can_tools_pin.py"))
+        os.environ["PIN_TEST_FAIL"] = ""
+        e = raises(lambda: PINS_INSTALLED(s), ValueError)
+        check("pins (real): a pin tool missing from gi_tools -> refused", e is not None and "can-tools" in str(e), e)
+    finally:
+        if saved is None:
+            os.environ.pop("PIN_TEST_FAIL", None)
+        else:
+            os.environ["PIN_TEST_FAIL"] = saved
+
+
 def main():
     try:
         settings, shas = fixture()
@@ -1935,6 +2009,7 @@ def main():
         test_ota(settings, bench)
         test_board_hooks(settings, bench, emu)
         test_board_hooks_e2e(settings, bench)
+        test_pins(settings)
     finally:
         rmtree(BASE)
     print("\n%s, %d ok, %d FAIL" % ("PASS" if not fails else "FAIL", oks, len(fails)))
