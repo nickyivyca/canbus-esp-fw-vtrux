@@ -16,6 +16,8 @@ TAG = "2026.01.01"
 GIT_ENV = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
 TOOL_FILES = {"vtrux_build/__init__.py": "x = 1\n", "README.md": "tools\n"}
+# The checkout's root .gitignore, as shared/main's lists Python's bytecode.
+ROOT_GITIGNORE = "/scratch/\n__pycache__/\n*.pyc\n"
 
 
 def git(root, *args):
@@ -24,14 +26,17 @@ def git(root, *args):
                           capture_output=True, text=True).stdout.strip()
 
 
-def checkout(parent, tag=TAG, files=None):
+def checkout(parent, tag=TAG, files=None, gitignore=ROOT_GITIGNORE):
     """<parent>/shared-<tag>/: a git repository whose one commit holds
-    shared/tools/ (files, TOOL_FILES by default) and is tagged tag. Returns
-    (its shared/tools folder, the pin that matches it)."""
+    shared/tools/ (files, TOOL_FILES by default) and a root .gitignore
+    (gitignore; None for none), and is tagged tag. Returns (its shared/tools
+    folder, the pin that matches it)."""
     co = os.path.join(parent, "shared-" + tag)
     tools = os.path.join(co, "shared", "tools")
     for rel, text in (files or TOOL_FILES).items():
         scratch.write(os.path.join(tools, *rel.split("/")), text)
+    if gitignore is not None:
+        scratch.write(os.path.join(co, ".gitignore"), gitignore)
     git(co, "init", "-q")
     git(co, "add", "-A")
     git(co, "commit", "-qm", "shared")

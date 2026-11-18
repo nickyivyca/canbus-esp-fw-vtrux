@@ -42,8 +42,8 @@ The record's fields (RECORD_SCHEMA 1):
                               the project's shared_pins.json, which the
                               checkout it ran from matched, and "dirty",
                               whether git saw uncommitted changes under that
-                              checkout's shared/tools (only files the digest
-                              leaves out can differ there)
+                              checkout's shared/tools (none, once R23's check
+                              of its files has passed)
     environment_passed        R24: the names, never the values, the build
                               took from its caller's environment, sorted
     release_checks            what the build script checked on the way, for
