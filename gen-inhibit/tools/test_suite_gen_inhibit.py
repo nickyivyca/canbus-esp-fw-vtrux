@@ -1126,9 +1126,12 @@ def _jam_checks(jam):
     check("x2_jammer: two verify-row records (which one?) is not ok", not r["ok"] and r["phase"] == "verify-row", r)
 
 
-def reboot_tool(verdict="PASS", rc=0, write=True, extra=None, seen=None):
-    """Stands in for wican_reboot.py: writes the record where --out says."""
+def reboot_tool(verdict="PASS", rc=0, write=True, extra=None, seen=None, envs=None):
+    """Stands in for wican_reboot.py: writes the record where --out says; envs gets the
+    environment it was given."""
     def fn(argv, env):
+        if envs is not None:
+            envs.append(dict(env))
         if seen is not None:
             seen.append("wican_reboot")
         if write:
@@ -1180,9 +1183,15 @@ def test_board_hooks(settings, bench, emu):
     out, calls, _ = call("on_end", "x2", None, reboot_tool())
     check("board hooks: the X2's end step does nothing and passes", out["ok"] is True and calls == [], (out, calls))
 
-    out, calls, d = call("on_start", "wican", rt, reboot_tool())
+    envs = []
+    out, calls, d = call("on_start", "wican", rt, reboot_tool(envs=envs))
     argv = calls[0][2] if calls else []
     known = dict(kv.split("=", 1) for kv in opts(argv, "--known"))
+    # 2026-11-18: wican_reboot.py rejoins the hotspot through GI_OTA_SETTINGS after the
+    # reboot (the phone never rejoins by itself); before, the suite dropped the value
+    got = (envs[0] if envs else {}).get("GI_OTA_SETTINGS")
+    check("board hooks: wican_reboot.py gets settings.ota as GI_OTA_SETTINGS (its rejoin after the reboot)",
+          got is not None and json.loads(got) == settings["ota"], (got, settings.get("ota")))
     check("board hooks: the WiCAN's start runs wican_reboot.py once, from the harness folder",
           len(calls) == 1 and os.path.normpath(argv[len(SG._py(settings))]) ==
           os.path.normpath(os.path.join(SG.harness_dir(settings), "wican_reboot.py")), argv)
