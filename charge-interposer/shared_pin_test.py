@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Tests shared_pin.py: the harness's shared code is the tag the project
-pins, from its read-only checkout ../shared-<tag>/, or it is refused.
+pins, from its checkout ../shared-<tag>/ checked through git (shared/tools
+R23), or it is refused.
 
 Charge-interposer tester, port step 2a (the reviewer, 2026-11-03; port plan
-goal 20 item 8). The fixture is made in a scratch_dir run folder: a stand-in
-shared repo `src` with two tagged commits (T1, and T2 with a changed
-vtrux_bench), a project worktree `wt` beside it, and checkouts
-`shared-<tag>` beside `wt`, as on the bench host. The stand-in's
-shared/tools/vtrux_build/digest.py is a salted hash of its own, so a digest
-taken by anything but the checkout's own module gives another value.
+goal 20 item 8); check 4 by R23's git rule from the re-pin to 2026.11.17.3
+(the charge-interposer reviewer's batch, 2026-11-17). The fixture is made in
+a scratch_dir run folder: a stand-in shared repo `src` with two tagged
+commits (T1, and T2 with a changed vtrux_bench), a project worktree `wt`
+beside it, and checkouts `shared-<tag>` beside `wt`, as on the bench host.
+Its root .gitignore lists Python's bytecode, as shared/main's does from
+2026.11.17.3; its shared/bench holds a .md (R7 leaves it out), an
+executable and, off Windows, a symbolic link to a file.
 
   1. read(): a good entry reads; refused are no file, bad JSON, no entry, no
      tag, a tag that is a commit id, a tag with a slash, a short commit, a
@@ -17,9 +20,24 @@ taken by anything but the checkout's own module gives another value.
      are a missing checkout (the refusal prints the create command), a
      checkout at another commit, a tag the repository lacks, a tag marking
      another commit than the pin's, a file changed, added or removed in the
-     component, and no worktree. No __pycache__ is left in the checkout.
-  3. The digest is the checkout's own: a pin carrying a plain sha256 of the
-     same files is refused.
+     component, an added .md (R7 leaves it out, R23 does not), and no
+     worktree.
+  3. The digest is git's (4a): git_digest equals R7 (os.walk, R7's
+     exclusions, path NUL bytes NUL in byte order) of the clean checkout on
+     disk; a pin carrying a plain sha256 of the files is refused; a
+     __pycache__ the committed .gitignore lists passes, though an on-disk
+     R7 would count it.
+  9. R23's git rule, each case its own (4b, 4c): refused are a file's bytes
+     changed, the same text with CRLF endings (named as line endings), a
+     regular file made executable, an executable made not executable, a
+     tracked file missing, a folder where git has a file, an untracked file,
+     one hidden only by the checkout's info/exclude or only by the global
+     core.excludesFile (each shown first to hide it from git status), an
+     uncommitted .gitignore under the component that hides a file and
+     itself, a root .gitignore changed to hide a file, and off Windows a
+     symbolic link retargeted or replaced by a file. Passing: the whole
+     component made read-only (chmod a-w, folders too), and a *.pyc the
+     committed .gitignore lists.
   4. use_bench(), each in a fresh interpreter: vtrux_bench loads from the
      checked folder, first on sys.path, once; a vtrux_bench imported earlier
      is kept if it is the shared/bench of a pinned checkout anywhere, with no
@@ -31,7 +49,10 @@ taken by anything but the checkout's own module gives another value.
      is not the tag is refused.
   6. main(): check/where exit 0 on the pin, 1 refused, 2 on a bad call.
   7. The real pin file: once it has the tester's entries, each passes
-     folder() on this host; until then reported as not checked. And the
+     folder() on this host (pins whose digest was taken on disk before R23,
+     such as twai_port's and can_port's at 2026.11.08, so show git_digest
+     equal to the on-disk R7 of real checkouts); until then reported as not
+     checked. And the
      real twai_port and can_port pins pass idf-match against the real
      firmware/main/idf_component.yml.
   8. idf-match (port step 2b): each dependency's own version read from a
@@ -52,6 +73,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -63,21 +85,26 @@ sys.path.insert(0, HERE)
 import scratch_dir  # noqa: E402
 
 FAILS = []
-SALT = "stand-in R7"
-DIGEST_PY = '''import hashlib, os
-def component_digest(root):
-    h = hashlib.sha256(b"%s")
-    for d, dirs, files in sorted(os.walk(root)):
-        dirs.sort()
-        dirs[:] = [x for x in dirs if x != "__pycache__"]
-        for f in sorted(files):
-            if f.endswith(".md"):
+GITIGNORE = "__pycache__/\n*.pyc\n"
+UNIX = os.name != "nt"
+
+
+def r7_disk(root):
+    """R7 of the folder on disk, written here from shared/tools SPEC R7
+    (every file under it by os.walk, links to files read through, files
+    named .gitignore or ending .md left out; each relative path with "/",
+    NUL, its bytes, NUL, in the paths' byte order), not from the module."""
+    rels = []
+    for d, _dirs, files in os.walk(root):
+        for f in files:
+            if f == ".gitignore" or f.endswith(".md"):
                 continue
-            p = os.path.join(d, f)
-            h.update(os.path.relpath(p, root).replace(os.sep, "/").encode())
-            h.update(open(p, "rb").read())
+            rels.append(os.path.relpath(os.path.join(d, f), root).replace(os.sep, "/"))
+    h = hashlib.sha256()
+    for rel in sorted(rels, key=lambda s: s.encode("utf-8")):
+        with open(os.path.join(root, *rel.split("/")), "rb") as f:
+            h.update(rel.encode("utf-8") + b"\0" + f.read() + b"\0")
     return h.hexdigest()
-''' % SALT.encode().decode()
 
 
 def check(name, ok, detail=""):
@@ -134,13 +161,18 @@ def fixture(base):
     src, wt = os.path.join(base, "s"), os.path.join(base, "wt")
     os.makedirs(src)
     git(src, "init", "-q", "-b", "m")
-    write(src, {"shared/tools/vtrux_build/digest.py": DIGEST_PY,
+    write(src, {".gitignore": GITIGNORE,
+                "shared/tools/vtrux_build/digest.py": "# stand-in\n",
                 "shared/bench/vtrux_bench/__init__.py": "MARK = 'T1'\n",
                 "shared/bench/tests/test_x.py": "X = 1\n",
                 "shared/bench/README.md": "readme\n",
+                "shared/bench/run.sh": "#!/bin/sh\necho run\n",
                 "shared/twai_port/test/twai_fake.c": "int fake;\n",
                 "shared/can_port/can_port.c": "int port;\n"})
+    if UNIX:
+        os.symlink("tests/test_x.py", os.path.join(src, "shared", "bench", "link.py"))
     git(src, "add", "-A")
+    git(src, "update-index", "--chmod=+x", "shared/bench/run.sh")
     git(src, "commit", "-q", "-m", "a")
     git(src, "tag", "-a", "T1", "-m", "T1")
     a = git(src, "rev-parse", "HEAD")
@@ -160,9 +192,8 @@ def pin_values(fx, tag="T1", commit=None):
     co = os.path.join(os.path.dirname(fx["wt"]), "shared-" + tag)
     out = {}
     for name in P.OURS:
-        d = os.path.join(co, *name.split("/"))
         out[name] = {"tag": tag, "commit": commit or fx["a"],
-                     "digest": P.digest_of(co, d)}
+                     "digest": P.git_digest(co, commit or fx["a"], name)}
     return out
 
 
@@ -179,6 +210,153 @@ def child(fx, code):
            "P.START = %r; P.PIN_FILE = %r\n" % (SRC_DIR, fx["start"], fx["pins"]))
     return subprocess.run([sys.executable, "-B", "-c", pre + code],
                           capture_output=True, text=True, timeout=120)
+
+
+def rm_tree(path):
+    shutil.rmtree(path)
+
+
+def passes(name, *args):
+    try:
+        P.folder(*args)
+        check(name, True)
+    except P.SharedPinError as e:
+        check(name, False, str(e))
+
+
+def hidden_from_status(co, rel):
+    """git status (with every exclude git uses) does not list rel."""
+    out = git(co, "status", "--porcelain=v1", "--untracked-files=all")
+    return rel not in out
+
+
+def r23_cases(fx, co1, bench):
+    """9. R23's git rule (module docstring), on the pinned checkout co1."""
+    args = ("shared/bench", fx["pins"], fx["start"])
+    base = os.path.dirname(co1)
+
+    def restore():
+        git(co1, "checkout", "-q", "--", ".")
+
+    x = os.path.join(bench, "tests", "test_x.py")
+    with open(x, "wb") as f:
+        f.write(b"X = 1\r\n")
+    refused("9 the same text with CRLF endings", P.folder, *args,
+            has="test_x.py: its bytes differ from the commit's (7 bytes on disk, "
+                "6 in git; line endings differ)")
+    restore()
+
+    if UNIX:
+        m = os.stat(x).st_mode
+        os.chmod(x, m | 0o111)
+        refused("9 a regular file made executable", P.folder, *args,
+                has="test_x.py: executable on disk, and git records it not executable")
+        os.chmod(x, m)
+        sh = os.path.join(bench, "run.sh")
+        m = os.stat(sh).st_mode
+        check("9 (fixture) run.sh is checked out executable", bool(m & stat.S_IXUSR))
+        os.chmod(sh, m & ~0o111)
+        refused("9 an executable made not executable", P.folder, *args,
+                has="run.sh: not executable on disk, and git records it executable")
+        os.chmod(sh, m)
+
+        # read-only: every file and folder of the component, a-w
+        made = []
+        try:
+            for d, dirs, files in os.walk(bench, topdown=False):
+                for n in files + dirs:
+                    p = os.path.join(d, n)
+                    if not os.path.islink(p):
+                        made.append((p, os.stat(p).st_mode))
+                        os.chmod(p, os.stat(p).st_mode & ~0o222)
+            made.append((bench, os.stat(bench).st_mode))
+            os.chmod(bench, os.stat(bench).st_mode & ~0o222)
+            check("9 (fixture) the component is read-only",
+                  not os.stat(x).st_mode & 0o222 and not os.stat(bench).st_mode & 0o222)
+            passes("9 the component made read-only (chmod a-w, folders too) passes",
+                   *args)
+        finally:
+            for p, mode in reversed(made):
+                os.chmod(p, mode)
+    else:
+        print("NOTE     9 execute bits and chmod a-w: not compared on Windows")
+
+    os.remove(x)
+    os.mkdir(x)
+    refused("9 a folder where git has a file", P.folder, *args,
+            has="test_x.py: git records a regular file, and the disk has a folder")
+    os.rmdir(x)
+    restore()
+
+    write(bench, {"tests/stray.pyc": "bytecode"})
+    passes("9 a *.pyc the committed .gitignore lists passes", *args)
+    os.remove(os.path.join(bench, "tests", "stray.pyc"))
+
+    stray = os.path.join(bench, "stray.txt")
+    excl = os.path.join(co1, git(co1, "rev-parse", "--git-path", "info/exclude"))
+    old = open(excl, encoding="utf-8").read() if os.path.exists(excl) else None
+    os.makedirs(os.path.dirname(excl), exist_ok=True)
+    try:
+        with open(excl, "a", encoding="utf-8", newline="\n") as f:
+            f.write("\nstray.txt\n")
+        write(bench, {"stray.txt": "x\n"})
+        check("9 (control) info/exclude hides stray.txt from git status",
+              hidden_from_status(co1, "stray.txt"))
+        refused("9 a file only info/exclude hides", P.folder, *args,
+                has="stray.txt: not in the commit")
+    finally:
+        if old is None:
+            os.remove(excl)
+        else:
+            with open(excl, "w", encoding="utf-8", newline="\n") as f:
+                f.write(old)
+    gx, gconf = os.path.join(base, "gx"), os.path.join(base, "gconfig")
+    with open(gx, "w", encoding="utf-8", newline="\n") as f:
+        f.write("stray.txt\n")
+    with open(gconf, "w", encoding="utf-8", newline="\n") as f:
+        f.write("[core]\n\texcludesFile = %s\n" % gx.replace("\\", "/"))
+    was = os.environ.get("GIT_CONFIG_GLOBAL")
+    os.environ["GIT_CONFIG_GLOBAL"] = gconf
+    try:
+        check("9 (control) the global core.excludesFile hides stray.txt from git status",
+              hidden_from_status(co1, "stray.txt"))
+        refused("9 a file only the global core.excludesFile hides", P.folder, *args,
+                has="stray.txt: not in the commit")
+    finally:
+        if was is None:
+            del os.environ["GIT_CONFIG_GLOBAL"]
+        else:
+            os.environ["GIT_CONFIG_GLOBAL"] = was
+    os.remove(stray)
+
+    write(bench, {"tests/.gitignore": "stray.txt\n.gitignore\n", "tests/stray.txt": "x\n"})
+    check("9 (control) the uncommitted tests/.gitignore hides itself and stray.txt",
+          hidden_from_status(co1, "stray.txt") and hidden_from_status(co1, ".gitignore"))
+    refused("9 an uncommitted .gitignore under the component", P.folder, *args,
+            has="tests/.gitignore: a .gitignore not in the commit")
+    os.remove(os.path.join(bench, "tests", ".gitignore"))
+    os.remove(os.path.join(bench, "tests", "stray.txt"))
+
+    write(co1, {".gitignore": GITIGNORE + "stray.txt\n"})
+    write(bench, {"stray.txt": "x\n"})
+    refused("9 the root .gitignore changed to hide a file", P.folder, *args,
+            has=".gitignore: differs from the commit's")
+    os.remove(stray)
+    restore()
+
+    if UNIX:
+        link = os.path.join(bench, "link.py")
+        os.remove(link)
+        os.symlink("vtrux_bench/__init__.py", link)
+        refused("9 a symbolic link retargeted", P.folder, *args,
+                has="link.py: a symbolic link to")
+        os.remove(link)
+        write(bench, {"link.py": "tests/test_x.py"})
+        refused("9 a symbolic link replaced by a file", P.folder, *args,
+                has="link.py: git records a symbolic link, and the disk has a regular file")
+        os.remove(link)
+        os.symlink("tests/test_x.py", link)
+    passes("9 the checkout passes again once each case is undone", *args)
 
 
 def checks():
@@ -215,9 +393,7 @@ def checks():
         refused("1 a component the harness does not pin", P.read, "shared/tools",
                 fx["pins"], has="not a component this harness pins")
 
-        # 2. folder(), with bytecode allowed in this interpreter (run -B), so
-        # only the module's own setting keeps it out of the checkout
-        sys.dont_write_bytecode = False
+        # 2. folder()
         for name in P.OURS:
             try:
                 d = P.folder(name, fx["pins"], fx["start"])
@@ -226,9 +402,6 @@ def checks():
                           os.path.join(co1, *name.split("/"))), d)
             except P.SharedPinError as e:
                 check("2 the pinned %s passes" % name, False, str(e))
-        sys.dont_write_bytecode = True
-        check("2 no __pycache__ left in the checkout",
-              not any("__pycache__" in dirs for _d, dirs, _f in os.walk(co1)))
         set_pins(fx, {"shared/bench": dict(good["shared/bench"], tag="T2")})
         e = refused("2 a missing checkout", P.folder, "shared/bench", fx["pins"],
                     fx["start"], has="does not exist")
@@ -248,24 +421,22 @@ def checks():
                 fx["pins"], fx["start"], has="is at %s" % fx["b"])
         git(co1, "checkout", "-q", "--detach", "T1")
         bench = os.path.join(co1, "shared", "bench")
-        for label, act, undo in (
+        for label, act, undo, has in (
                 ("changed", lambda: write(bench, {"tests/test_x.py": "X = 2\n"}),
-                 lambda: git(co1, "checkout", "-q", "--", ".")),
+                 lambda: git(co1, "checkout", "-q", "--", "."), "its bytes differ"),
                 ("added", lambda: write(bench, {"tests/new.py": ""}),
-                 lambda: os.remove(os.path.join(bench, "tests", "new.py"))),
+                 lambda: os.remove(os.path.join(bench, "tests", "new.py")),
+                 "tests/new.py: not in the commit"),
                 ("removed", lambda: os.remove(os.path.join(bench, "tests", "test_x.py")),
-                 lambda: git(co1, "checkout", "-q", "--", "."))):
+                 lambda: git(co1, "checkout", "-q", "--", "."), "test_x.py: missing"),
+                (".md added (R7 leaves it out, R23 does not)",
+                 lambda: write(bench, {"NOTES.md": "notes\n"}),
+                 lambda: os.remove(os.path.join(bench, "NOTES.md")),
+                 "NOTES.md: not in the commit")):
             act()
             refused("2 a file %s in the component" % label, P.folder, "shared/bench",
-                    fx["pins"], fx["start"], has="has the digest")
+                    fx["pins"], fx["start"], has=has)
             undo()
-        write(bench, {"NOTES.md": "a .md the digest leaves out\n"})
-        try:
-            P.folder("shared/bench", fx["pins"], fx["start"])
-            check("2 a .md added (left out by R7) still passes", True)
-        except P.SharedPinError as e:
-            check("2 a .md added (left out by R7) still passes", False, str(e))
-        os.remove(os.path.join(bench, "NOTES.md"))
         # the run folder is inside this worktree's scratch/: git is kept
         # from looking above it, as on a host with no git above the code
         os.environ["GIT_CEILING_DIRECTORIES"] = os.path.dirname(base)
@@ -275,12 +446,27 @@ def checks():
         finally:
             del os.environ["GIT_CEILING_DIRECTORIES"]
 
-        # 3. the digest is the checkout's own
+        # 3. the digest is git's (4a)
+        check("3 git_digest equals R7 of the clean checkout on disk",
+              good["shared/bench"]["digest"] == r7_disk(bench),
+              "%s vs %s" % (good["shared/bench"]["digest"], r7_disk(bench)))
         set_pins(fx, {"shared/bench": dict(good["shared/bench"],
                                            digest=plain_digest(bench))})
         refused("3 a plain sha256 of the files is not the pin's digest", P.folder,
-                "shared/bench", fx["pins"], fx["start"], has="has the digest")
+                "shared/bench", fx["pins"], fx["start"], has="in git")
         set_pins(fx, good)
+        write(bench, {"vtrux_bench/__pycache__/__init__.cpython-313.pyc": "bytecode"})
+        try:
+            P.folder("shared/bench", fx["pins"], fx["start"])
+            check("3 a __pycache__ the committed .gitignore lists passes "
+                  "(an on-disk R7 would count it)", True)
+        except P.SharedPinError as e:
+            check("3 a __pycache__ the committed .gitignore lists passes "
+                  "(an on-disk R7 would count it)", False, str(e))
+        rm_tree(os.path.join(bench, "vtrux_bench", "__pycache__"))
+
+        # 9. R23's git rule (4b, 4c)
+        r23_cases(fx, co1, bench)
 
         # 4. use_bench(), in fresh interpreters
         r = child(fx, "d = P.use_bench(); d2 = P.use_bench()\n"
@@ -390,7 +576,7 @@ def checks():
         two = os.path.join(base, "shared-T2")
         git(fx["src"], "worktree", "add", "-q", "--detach", two, "T2")
         t2 = {"tag": "T2", "commit": fx["b"],
-              "digest": P.digest_of(two, os.path.join(two, "shared", "twai_port"))}
+              "digest": P.git_digest(two, fx["b"], "shared/twai_port")}
         set_pins(fx, dict(good, **{"shared/twai_port": t2}))
         write(ydir, {"split.yml": YML % {"can": "T1", "twai": "T2"}})
         refused("8 the two pins at different tags", P.idf_match, fx["pins"],
@@ -482,13 +668,61 @@ MUTANTS = [
      "    if rc != 0 or not tagged:\n        raise SharedPinError(\"the %r pin names",
      "    if False:\n        raise SharedPinError(\"the %r pin names"),
     ("the digest not compared", "    if got != pin[\"digest\"]:", "    if False:"),
-    ("the digest taken by its own sha256, not the checkout's",
-     "    return mod.component_digest(folder)",
-     "    import hashlib\n    h = hashlib.sha256()\n"
-     "    for d, ds, fs in sorted(os.walk(folder)):\n        ds.sort()\n"
-     "        for f in sorted(fs):\n            h.update(open(os.path.join(d, f), 'rb').read())\n"
-     "    return h.hexdigest()"),
-    ("bytecode written into the checkout", "    sys.dont_write_bytecode = True\n", ""),
+    # check 4 by R23's git rule (the re-pin to 2026.11.17.3)
+    ("the digest taken on disk, not from git (4a)",
+     "    got = git_digest(checkout, pin[\"commit\"], name)",
+     "    def _r7(root):\n        h = hashlib.sha256()\n        fs = []\n"
+     "        for dd, _ds, ff in os.walk(root):\n"
+     "            fs += [os.path.relpath(os.path.join(dd, f), root).replace(os.sep, '/')\n"
+     "                   for f in ff if not excluded(f)]\n"
+     "        for rel in sorted(fs, key=lambda s: s.encode('utf-8')):\n"
+     "            h.update(rel.encode('utf-8') + b'\\0'\n"
+     "                     + open(os.path.join(root, rel), 'rb').read() + b'\\0')\n"
+     "        return h.hexdigest()\n"
+     "    got = _r7(d)"),
+    ("R7's exclusions not applied to git's files (4a)",
+     "        if excluded(posixpath.basename(p)):\n            continue\n", ""),
+    ("git's files hashed in tree order, not byte order (4a)",
+     '    chosen.sort(key=lambda t: t[0].encode("utf-8"))\n',
+     "    chosen.reverse()\n"),
+    ("a tracked file's bytes not compared (4b)",
+     "        if got != want:\n            out.append(\"%s: its bytes differ",
+     "        if False:\n            out.append(\"%s: its bytes differ"),
+    ("line endings normalised before the bytes are compared (4b)",
+     "                got = f.read()\n        except OSError as e:\n"
+     "            out.append(\"%s: unreadable (%s)\" % (p, e))",
+     "                got = f.read().replace(b\"\\r\\n\", b\"\\n\")\n"
+     "        except OSError as e:\n"
+     "            out.append(\"%s: unreadable (%s)\" % (p, e))"),
+    ("the execute bit not compared (4b)",
+     "            if executable != (mode == EXECUTABLE):", "            if False:"),
+    ("the full permission bits compared, so read-only is refused (4b)",
+     "            if executable != (mode == EXECUTABLE):",
+     "            if executable != (mode == EXECUTABLE) or not st.st_mode & stat.S_IWUSR:"),
+    ("a missing tracked file not refused (4b)",
+     "            out.append(\"%s: missing\" % p)\n            continue",
+     "            continue"),
+    ("a tracked file's kind not checked (4b)",
+     "        elif not stat.S_ISREG(st.st_mode):", "        elif False:"),
+    ("a symbolic link's target not compared (4b)",
+     "                if got != want:\n                    out.append(\"%s: a symbolic link to",
+     "                if False:\n                    out.append(\"%s: a symbolic link to"),
+    ("a symbolic link replaced by a file accepted (4b)",
+     "            if not (windows and stat.S_ISREG(st.st_mode)):",
+     "            if not stat.S_ISREG(st.st_mode):"),
+    ("tracked differences not refused (4b)",
+     "    if changed:\n", "    if False:\n"),
+    ("untracked files not refused (4c)",
+     "    if extra:\n", "    if False:\n"),
+    ("the machine's excludes count (4c)",
+     '"--exclude-per-directory=.gitignore",', '"--exclude-standard",'),
+    ("the committed .gitignore not honoured (4c)",
+     '"--exclude-per-directory=.gitignore",\n', ""),
+    ("an uncommitted .gitignore under the component accepted (4c)",
+     '        if p and posixpath.basename(p) == ".gitignore" and not any(',
+     "        if False and not any("),
+    ("a changed .gitignore above the component accepted (4c)",
+     "        elif got != r.stdout:", "        elif False:"),
     ("a missing checkout without the create command",
      "\"    %s\" % (checkout, create_command(top, tag)))",
      "\"%s\" % (checkout, \"\"))"),

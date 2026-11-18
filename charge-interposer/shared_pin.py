@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""The harness's shared code, from the read-only checkout of the tag the
-project pins.
+"""The harness's shared code, from the checkout of the tag the project pins,
+checked through git (shared/tools R23).
 
 Charge-interposer tester, port step 2a (the reviewer, 2026-11-03; port plan
 goal 20 item 8): the harness takes shared code only as a pinned tag, from
-its read-only sibling checkout ../shared-<tag>/ beside the worktree's root,
-checked against the project's committed pin file. This branch's own copy of
+its sibling checkout ../shared-<tag>/ beside the worktree's root, checked
+against the project's committed pin file. This branch's own copy of
 shared/ goes. The pin file is the IDF project's, beside the build tooling's
 own pin (shared/tools R23), and is owned per entry:
 
@@ -52,19 +52,47 @@ pinned one or the harness refuses it, as the build tooling's pin does
   2. the checkout ../shared-<tag>/ beside the worktree's root exists (if
      not, the refusal prints the command that creates it);
   3. its HEAD is the pin's commit, and the tag there marks that commit;
-  4. the component's folder in it has the pin's R7 digest, computed by that
-     checkout's own shared/tools (vtrux_build.digest, loaded by file, with
-     no bytecode written into the checkout).
+  4. the component's folder in it is the pinned commit's, by shared/tools
+     R23's git rule (changed 2026-11-17 from an R7 digest of the files on
+     disk; the charge-interposer reviewer's batch for tag 2026.11.17.3):
+     a. the pin's digest is R7 over the component's files at the commit,
+        read from git's objects (git_digest), not from the disk;
+     b. every file git tracks under the component at the commit is on disk
+        with exactly its bytes, read raw, so git's line-ending filters play
+        no part, and with the mode git records for it: a regular file, an
+        executable (the owner's execute bit) or a symbolic link (its
+        target is the blob's bytes). Other permission bits are not
+        compared, so a read-only file passes (a pinned checkout made before
+        R23 may be read-only), and a flipped execute bit is refused. None
+        is missing;
+     c. no other file is under the component, except files the checkout's
+        own committed .gitignore files list (`git ls-files --others
+        --exclude-per-directory=.gitignore`, never --exclude-standard, so a
+        machine's core.excludesFile and info/exclude hide nothing). A
+        .gitignore that could hide files must be the committed one: an
+        uncommitted one under the component, or one in a folder above it
+        that differs from the commit's, is refused.
+     shared/main's .gitignore lists Python's bytecode from tag 2026.11.17.3,
+     so a __pycache__ under a component pinned there passes. This check is
+     the harness's own, mirroring shared/tools' vtrux_build/pin.py at
+     2026.11.17.3 rather than loading the checkout's: a component may be
+     pinned at a tag whose shared/tools has no such check, and R7's
+     exclusions (EXCLUDED_NAMES, EXCLUDED_SUFFIXES) are R7's at every tag
+     so far. On Windows the execute bit is not compared (the disk has
+     none), and a symbolic link checked out as a plain file passes when its
+     bytes are the link's target.
 use_bench() then puts the checked shared/bench on sys.path. A vtrux_bench
 imported earlier is kept only if its own checkout passes checks 3 and 4
 against the pin, wherever it is (the acceptance runner's core, started from
 the pinned checkout, loads the harness from a checkout of the list's commit
 with no shared-<tag>/ beside it; 2026-11-04); else it is refused.
 """
-import importlib.util
+import hashlib
 import json
 import os
+import posixpath
 import re
+import stat
 import subprocess
 import sys
 
@@ -79,6 +107,13 @@ IDF_DEPS = (("shared/twai_port", "vtrux/twai_port"),
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _LOOKS_LIKE_COMMIT = re.compile(r"^[0-9a-fA-F]{7,40}$")
+# R7's exclusions (shared/tools vtrux_build/digest.py, the same at every tag
+# so far): in any folder, files named .gitignore and files ending .md
+EXCLUDED_NAMES = {".gitignore"}
+EXCLUDED_SUFFIXES = (".md",)
+REGULAR, EXECUTABLE, SYMLINK = "100644", "100755", "120000"
+_SHOWN = 20          # differences listed in a refusal
+_LINK_HOPS = 40      # symbolic links followed in a row before giving up
 
 
 class SharedPinError(RuntimeError):
@@ -158,22 +193,237 @@ def create_command(top, tag):
     return 'git -C "%s" worktree add --detach ../shared-%s %s' % (top, tag, tag)
 
 
-def digest_of(checkout, folder):
-    """R7 digest of folder, by the checkout's own shared/tools
-    (vtrux_build/digest.py, loaded by file; no bytecode is written)."""
-    src = os.path.join(checkout, "shared", "tools", "vtrux_build", "digest.py")
-    if not os.path.isfile(src):
-        raise SharedPinError("%s has no shared/tools/vtrux_build/digest.py, "
-                             "so the R7 digest cannot be taken" % checkout)
-    spec = importlib.util.spec_from_file_location("_shared_pin_digest", src)
-    mod = importlib.util.module_from_spec(spec)
-    was = sys.dont_write_bytecode
-    sys.dont_write_bytecode = True
+def _git_bytes(root, args, stdin=None):
+    """git's raw stdout. SharedPinError, with git's message, if it fails."""
     try:
-        spec.loader.exec_module(mod)
-    finally:
-        sys.dont_write_bytecode = was
-    return mod.component_digest(folder)
+        r = subprocess.run(["git", "-C", root] + list(args), input=stdin,
+                           capture_output=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise SharedPinError("git %s failed in %s: %s" % (" ".join(args), root, e))
+    if r.returncode != 0:
+        raise SharedPinError("git %s failed in %s: %s"
+                             % (" ".join(args), root,
+                                r.stderr.decode("utf-8", "replace").strip()))
+    return r.stdout
+
+
+def excluded(name):
+    """R7 leaves the file out (by its name, in any folder)."""
+    return name in EXCLUDED_NAMES or name.endswith(EXCLUDED_SUFFIXES)
+
+
+def tree(repo, commit):
+    """{path: (mode, type, object id)} for every entry of commit's tree,
+    recursively, paths from the repository's root with "/"."""
+    out = {}
+    raw = _git_bytes(repo, ["ls-tree", "-r", "-t", "-z", "--full-tree", commit])
+    for rec in raw.split(b"\0"):
+        if not rec:
+            continue
+        meta, path = rec.split(b"\t", 1)
+        mode, kind, oid = meta.decode("ascii").split(" ")
+        out[path.decode("utf-8")] = (mode, kind, oid)
+    return out
+
+
+def blobs(repo, oids):
+    """{object id: bytes} for the blobs oids, as git stores them: no
+    filter, so no line-ending conversion."""
+    oids = sorted(set(oids))
+    if not oids:
+        return {}
+    raw = _git_bytes(repo, ["cat-file", "--batch"],
+                     stdin="".join(o + "\n" for o in oids).encode("ascii"))
+    out, at = {}, 0
+    for oid in oids:
+        nl = raw.index(b"\n", at)
+        head = raw[at:nl].decode("ascii").split(" ")
+        if len(head) != 3 or head[0] != oid or head[1] != "blob":
+            raise SharedPinError("git cat-file gave %r for the blob %s in %s"
+                                 % (" ".join(head), oid, repo))
+        size = int(head[2])
+        out[oid] = raw[nl + 1:nl + 1 + size]
+        at = nl + 1 + size + 1
+    return out
+
+
+def _under(path, component):
+    return path.startswith(component + "/")
+
+
+def git_digest(repo, commit, component):
+    """R7 of component at commit, from git's objects: the digest R7 gives
+    for those files checked out. A symbolic link is read through, as R7
+    reads it on disk: its target's bytes when it leads to a file in the
+    commit, nothing when it leads to a folder, and SharedPinError when it
+    leads nowhere in the commit."""
+    entries = tree(repo, commit)
+    if component not in entries or entries[component][1] != "tree":
+        raise SharedPinError("%s has no folder %s at %s" % (repo, component, commit))
+    files = [p for p, (_m, kind, _o) in entries.items()
+             if _under(p, component) and kind == "blob"]
+    link_text = blobs(repo, [entries[p][2] for p in files
+                             if entries[p][0] == SYMLINK])
+    chosen = []                                  # (relative path, blob id)
+    for p in files:
+        if excluded(posixpath.basename(p)):
+            continue
+        q, hops = p, 0
+        while entries.get(q, (None,))[0] == SYMLINK:
+            hops += 1
+            oid = entries[q][2]
+            if oid not in link_text:
+                link_text.update(blobs(repo, [oid]))
+            q = posixpath.normpath(posixpath.join(
+                posixpath.dirname(q), link_text[oid].decode("utf-8")))
+            if hops > _LINK_HOPS or q.startswith("../") or q == "..":
+                q = None
+                break
+        if q is None or q not in entries:
+            raise SharedPinError("%s at %s is a symbolic link that leads to no "
+                                 "file in the commit, so it has no R7 digest"
+                                 % (p, commit))
+        if entries[q][1] == "tree":
+            continue
+        chosen.append((p[len(component) + 1:], entries[q][2]))
+    chosen.sort(key=lambda t: t[0].encode("utf-8"))
+    content = blobs(repo, [oid for _r, oid in chosen])
+    h = hashlib.sha256()
+    for rel, oid in chosen:
+        h.update(rel.encode("utf-8"))
+        h.update(b"\0")
+        h.update(content[oid])
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _disk(checkout, path):
+    return os.path.join(checkout, *path.split("/"))
+
+
+def _kind_of(st):
+    if stat.S_ISLNK(st.st_mode):
+        return "a symbolic link"
+    if stat.S_ISDIR(st.st_mode):
+        return "a folder"
+    if stat.S_ISREG(st.st_mode):
+        return "a regular file"
+    return "a special file"
+
+
+def tracked_differences(checkout, commit, component):
+    """["<path>: <what differs>"] for each file git tracks under component
+    at commit whose bytes or mode on disk are not the commit's, or that is
+    missing (check 4b)."""
+    entries = tree(checkout, commit)
+    files = sorted(p for p, (_m, kind, _o) in entries.items()
+                   if _under(p, component) and kind != "tree")
+    content = blobs(checkout, [entries[p][2] for p in files
+                               if entries[p][1] == "blob"])
+    windows = os.name == "nt"
+    out = []
+    for p in files:
+        mode, kind, oid = entries[p]
+        disk = _disk(checkout, p)
+        try:
+            st = os.lstat(disk)
+        except FileNotFoundError:
+            out.append("%s: missing" % p)
+            continue
+        except OSError as e:
+            out.append("%s: unreadable (%s)" % (p, e))
+            continue
+        if kind != "blob":
+            out.append("%s: git records it as %s %s, which a pinned checkout "
+                       "does not hold" % (p, kind, mode))
+            continue
+        want = content[oid]
+        if mode == SYMLINK:
+            if stat.S_ISLNK(st.st_mode):
+                got = os.fsencode(os.readlink(disk))
+                if got != want:
+                    out.append("%s: a symbolic link to %r, and git has %r"
+                               % (p, got, want))
+                continue
+            if not (windows and stat.S_ISREG(st.st_mode)):
+                out.append("%s: git records a symbolic link, and the disk has %s"
+                           % (p, _kind_of(st)))
+                continue
+        elif not stat.S_ISREG(st.st_mode):
+            out.append("%s: git records a %s file, and the disk has %s"
+                       % (p, "executable" if mode == EXECUTABLE else "regular",
+                          _kind_of(st)))
+            continue
+        elif not windows:
+            executable = bool(st.st_mode & stat.S_IXUSR)
+            if executable != (mode == EXECUTABLE):
+                out.append("%s: %s on disk, and git records it %s"
+                           % (p, "executable" if executable else "not executable",
+                              "executable" if mode == EXECUTABLE else "not executable"))
+                continue
+        try:
+            with open(disk, "rb") as f:
+                got = f.read()
+        except OSError as e:
+            out.append("%s: unreadable (%s)" % (p, e))
+            continue
+        if got != want:
+            out.append("%s: its bytes differ from the commit's (%d bytes on disk, "
+                       "%d in git%s)" % (p, len(got), len(want),
+                                         "; line endings differ" if
+                                         got.replace(b"\r\n", b"\n")
+                                         == want.replace(b"\r\n", b"\n") else ""))
+    return out
+
+
+def untracked_files(checkout, commit, component):
+    """["<path>: <why>"] for each file under component that git does not
+    track and that no committed .gitignore lists, and for each .gitignore
+    that could hide files without being the committed one (check 4c)."""
+    raw = _git_bytes(checkout, ["ls-files", "-z", "--others",
+                                "--exclude-per-directory=.gitignore",
+                                "--", component])
+    out = ["%s: not in the commit, and no committed .gitignore lists it"
+           % p.decode("utf-8") for p in raw.split(b"\0") if p]
+    # an uncommitted .gitignore under the component can hide itself, so
+    # list them with no excludes at all
+    raw = _git_bytes(checkout, ["ls-files", "-z", "--others", "--", component])
+    for p in raw.split(b"\0"):
+        p = p.decode("utf-8")
+        if p and posixpath.basename(p) == ".gitignore" and not any(
+                o.startswith(p + ":") for o in out):
+            out.append("%s: a .gitignore not in the commit, which could hide "
+                       "files" % p)
+    # the folders above the component: their .gitignore applies too, so it
+    # must be the commit's
+    parts = component.split("/")[:-1]
+    for i in range(len(parts) + 1):
+        gi = "/".join(parts[:i] + [".gitignore"])
+        disk = _disk(checkout, gi)
+        if not os.path.lexists(disk):
+            continue
+        r = subprocess.run(["git", "-C", checkout, "cat-file", "blob",
+                            "%s:%s" % (commit, gi)], capture_output=True)
+        try:
+            with open(disk, "rb") as f:
+                got = f.read()
+        except OSError as e:
+            out.append("%s: unreadable (%s)" % (gi, e))
+            continue
+        if r.returncode != 0:
+            out.append("%s: a .gitignore not in the commit, which could hide "
+                       "files under %s" % (gi, component))
+        elif got != r.stdout:
+            out.append("%s: differs from the commit's, and it could hide files "
+                       "under %s" % (gi, component))
+    return out
+
+
+def _listed(items):
+    shown = "\n".join("    " + s for s in items[:_SHOWN])
+    if len(items) > _SHOWN:
+        shown += "\n    ... and %d more" % (len(items) - _SHOWN)
+    return shown
 
 
 def folder(name, path=None, start=None):
@@ -184,7 +434,7 @@ def folder(name, path=None, start=None):
     checkout, top = checkout_dir(tag, start)
     if not os.path.isdir(checkout):
         raise SharedPinError("the pinned checkout %s does not exist. Create it, "
-                             "read-only and detached at the pin's tag, with:\n"
+                             "detached at the pin's tag, with:\n"
                              "    %s" % (checkout, create_command(top, tag)))
     return _checked(checkout, name, pin)
 
@@ -208,11 +458,22 @@ def _checked(checkout, name, pin):
     d = os.path.join(checkout, *name.split("/"))
     if not os.path.isdir(d):
         raise SharedPinError("the checkout %s has no %s" % (checkout, name))
-    got = digest_of(checkout, d)
+    got = git_digest(checkout, pin["commit"], name)
     if got != pin["digest"]:
-        raise SharedPinError("%s has the digest %s, and the %r pin says %s: it "
-                             "is not the pinned version, or a file in it was "
-                             "changed (R7)" % (d, got, name, pin["digest"]))
+        raise SharedPinError("%s at %s has the digest %s in git, and the %r pin "
+                             "says %s: the pin's digest is not that commit's "
+                             "(R23, R7)" % (name, pin["commit"], got, name,
+                                            pin["digest"]))
+    changed = tracked_differences(checkout, pin["commit"], name)
+    if changed:
+        raise SharedPinError("%d file(s) git tracks under %s differ on disk from "
+                             "the pinned commit %s (R23):\n%s"
+                             % (len(changed), d, pin["commit"], _listed(changed)))
+    extra = untracked_files(checkout, pin["commit"], name)
+    if extra:
+        raise SharedPinError("%s holds %d file(s) the pinned commit does not, "
+                             "beyond those its committed .gitignore files list "
+                             "(R23):\n%s" % (d, len(extra), _listed(extra)))
     return d
 
 
@@ -266,8 +527,7 @@ def entry(tag, name, start=None):
     if rc != 0 or rc2 != 0 or not tagged or tagged != head:
         raise SharedPinError("the checkout %s is at %s, and the tag %s marks %s"
                              % (checkout, head or "?", tag, tagged or "nothing"))
-    d = os.path.join(checkout, *name.split("/"))
-    return {"tag": tag, "commit": head, "digest": digest_of(checkout, d)}
+    return {"tag": tag, "commit": head, "digest": git_digest(checkout, head, name)}
 
 
 def idf_versions(path=None):
