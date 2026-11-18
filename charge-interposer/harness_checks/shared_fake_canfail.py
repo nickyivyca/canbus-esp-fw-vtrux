@@ -39,8 +39,9 @@ refused, nothing judged (no shared folders, a name mutate.py does not hold,
 a text not found exactly once, a run.sh refusal).
 
 The copies are made writable, every folder and file (writable_copy; the
-charge-interposer reviewer, 2026-11-17): the pinned checkout is read-only
-(AGENTS.md, from 2026-11-17) and copytree keeps the mode bits, so the
+charge-interposer reviewer, 2026-11-17): a pinned checkout is checked
+through git (shared/tools R23), and one made before R23 may still be
+read-only, and copytree keeps the mode bits, so the
 mutant could not otherwise be written, nor the build write beside it.
 
 Tests: ../twai_fake_option_test.py (with --can-fail).
@@ -75,7 +76,7 @@ class Refused(Exception):
 
 def writable(root):
     """The owner given write access to root and everything in it (a copy
-    of a read-only checkout)."""
+    of a pinned checkout made before R23 may be read-only)."""
     if not RULES["writable_copy"]:
         return
     for d, _dirs, files in os.walk(root):
@@ -91,8 +92,9 @@ def load_mutants(fake_dir):
     spec = importlib.util.spec_from_file_location("_shared_fake_mutate", p)
     mod = importlib.util.module_from_spec(spec)
     # no bytecode written beside it: the fake's folder is the pinned
-    # read-only checkout's, whose digest a __pycache__ would change
-    # (2026-11-09: a run without -B left one there)
+    # checkout's, checked through git (shared/tools R23), which refuses a
+    # __pycache__ its committed .gitignore does not list (2026.11.08's does
+    # not; 2026-11-09: a run without -B left one there)
     was = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
     try:

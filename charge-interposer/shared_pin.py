@@ -68,7 +68,9 @@ pinned one or the harness refuses it, as the build tooling's pin does
      c. no other file is under the component, except files the checkout's
         own committed .gitignore files list (`git ls-files --others
         --exclude-per-directory=.gitignore`, never --exclude-standard, so a
-        machine's core.excludesFile and info/exclude hide nothing). A
+        machine's core.excludesFile and info/exclude hide nothing), nor in
+        the checkout's index (`git ls-files --cached`, which --others
+        skips) without being in the commit's tree. A
         .gitignore that could hide files must be the committed one: an
         uncommitted one under the component, or one in a folder above it
         that differs from the commit's, is refused.
@@ -378,13 +380,22 @@ def tracked_differences(checkout, commit, component):
 
 def untracked_files(checkout, commit, component):
     """["<path>: <why>"] for each file under component that git does not
-    track and that no committed .gitignore lists, and for each .gitignore
+    track and that no committed .gitignore lists, for each path the
+    checkout's index holds that the commit does not, and for each .gitignore
     that could hide files without being the committed one (check 4c)."""
     raw = _git_bytes(checkout, ["ls-files", "-z", "--others",
                                 "--exclude-per-directory=.gitignore",
                                 "--", component])
     out = ["%s: not in the commit, and no committed .gitignore lists it"
            % p.decode("utf-8") for p in raw.split(b"\0") if p]
+    # --others skips what the index holds, so a file staged there and not
+    # in the commit is listed from the index against the commit's tree
+    committed = tree(checkout, commit)
+    raw = _git_bytes(checkout, ["ls-files", "-z", "--cached", "--", component])
+    for p in raw.split(b"\0"):
+        p = p.decode("utf-8")
+        if p and p not in committed:
+            out.append("%s: in the checkout's index, not in the commit" % p)
     # an uncommitted .gitignore under the component can hide itself, so
     # list them with no excludes at all
     raw = _git_bytes(checkout, ["ls-files", "-z", "--others", "--", component])

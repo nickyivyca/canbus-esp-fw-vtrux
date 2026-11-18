@@ -2309,7 +2309,8 @@ def test_scripts_in_tree():
                         os.path.dirname(os.path.normpath(script))) == \
                         os.path.normcase(os.path.join(B.SHARED_BENCH, "tests")):
                     # the pinned shared/bench's own tests (port step 2a),
-                    # from its read-only checkout, checked by the pin
+                    # from its checkout, checked through git by the pin
+                    # (shared/tools R23)
                     path = script
                 else:
                     raise AssertionError("%s/%s runs %s, not from this tree"
