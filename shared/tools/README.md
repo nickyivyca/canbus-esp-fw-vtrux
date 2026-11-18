@@ -68,8 +68,10 @@ A release build refuses to start, `--check-only` included, unless
   committed `.gitignore` files list. They are listed with `git ls-files
   --others --exclude-per-directory=.gitignore`, not `--exclude-standard`,
   so a machine's `core.excludesFile` or `.git/info/exclude` hides nothing;
-  and a `.gitignore` that is not the commit's, under `shared/tools` or in a
-  folder above it, is itself refused.
+  a file staged in the checkout's index (`git add`) but not in the commit,
+  which `--others` does not list, is found from `git ls-files --cached` and
+  refused; and a `.gitignore` that is not the commit's, under
+  `shared/tools` or in a folder above it, is itself refused.
 
 `shared/main`'s root `.gitignore` lists `__pycache__/` and `*.pyc`, so the
 bytecode Python writes when it runs from the checkout passes, and the
@@ -350,7 +352,7 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s and the command line's are in `test_release.py`, with the check that uses it; `project.py`'s variants are in `test_devbuild.py`); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests`. `test_buildenv.py`'s `RealConfigure` runs ESP-IDF itself, two configures of a small project (about 40 s), so it is skipped unless `VTRUX_IDF_TESTS=1` is set in an exported ESP-IDF shell; it runs in `build.slice` like a build (`AGENTS.md` "Parallel work on the shared machine") |
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
 | `tests/pinkit.py` | a pinned checkout for the tests: a small tagged repository at `<folder>/shared-<tag>/`, with a root `.gitignore` listing Python's bytecode as `shared/main`'s does, and the pin that matches it; `test_release.py` gives every test project one |
-| `tests/test_pin.py` | `pin.py`'s tests, among them R23's: a stray `__pycache__` or `.pyc` passes; a changed, CRLF-rewritten, missing or `.md` tracked file refuses; an execute bit flipped either way refuses and a read-only component passes; an untracked file refuses, and so does one hidden only by `core.excludesFile` or `info/exclude`, or by a `.gitignore` that is not the commit's; a pin digest that is not the commit's refuses. `--can-fail` runs them against 16 edited copies of `pin.py` and passes only if the unedited copy passes and every edited one fails |
+| `tests/test_pin.py` | `pin.py`'s tests, among them R23's: a stray `__pycache__` or `.pyc` passes; a changed, CRLF-rewritten, missing or `.md` tracked file refuses; an execute bit flipped either way refuses and a read-only component passes; an untracked file refuses, and so does one staged in the index but not in the commit, or hidden only by `core.excludesFile` or `info/exclude`, or by a `.gitignore` that is not the commit's; a pin digest that is not the commit's refuses. `--can-fail` runs them against 17 edited copies of `pin.py` and passes only if the unedited copy passes and every edited one fails |
 | `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/<pid>/`, the run's own, removed when the run ends, pass or fail; refused, with no other place, outside a git worktree or where git does not ignore `scratch/` (`AGENTS.md` "Files and folders"), and so under WSL in a worktree made by Git for Windows, whose `.git` file Linux git cannot follow. Its remover clears read-only flags and retries, uses `\\?\` paths on Windows and prints what it could not remove ("Removing scratch"): a copy of `verification/independent.py`'s, since the unit tests do not import the tester's files. Tested in `tests/test_scratch.py` |
 | `verification/` | the tester's: its verification of this tooling against `SPEC.md`, the evidence behind `VERIFICATION.md`, and the build checks' real-build cases; its `README.md` lists the files |
 | `vtrux_checks/` | the tester's: the build checks, SPEC R17 to R21, R29 and R30, reading a finished build through the interface above; their per-project data is the tester's `vtrux_checks.json` in the project's root; its `README.md` lists the checks |

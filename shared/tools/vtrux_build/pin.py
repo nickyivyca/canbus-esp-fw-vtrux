@@ -32,7 +32,9 @@ unless, in this order:
   - there is no other file under shared/tools, except files the checkout's
     own committed .gitignore files list: `git ls-files --others
     --exclude-per-directory=.gitignore`, never --exclude-standard, so a
-    machine's own core.excludesFile and info/exclude hide nothing. A
+    machine's own core.excludesFile and info/exclude hide nothing. A file
+    staged in the checkout's index (git add) is no exception: every path
+    the index holds under shared/tools must be a file of the commit. A
     .gitignore that could hide files must itself be the committed one: an
     uncommitted .gitignore under shared/tools, or one in a folder above it
     that differs from the commit's, is refused.
@@ -325,7 +327,8 @@ def _kind_of(st):
 
 def untracked_files(checkout, commit, component=COMPONENT):
     """["<path>: <why>"] for each file under component that git does not
-    track and that no committed .gitignore lists, and for each .gitignore
+    track and that no committed .gitignore lists, for each path staged in
+    the index that is not a file of the commit, and for each .gitignore
     that could hide files without being the committed one."""
     out = []
     raw = _git_bytes(checkout, ["ls-files", "-z", "--others",
@@ -333,6 +336,17 @@ def untracked_files(checkout, commit, component=COMPONENT):
                                 "--", component])
     out += ["%s: not in the commit, and no committed .gitignore lists it"
             % p.decode("utf-8") for p in raw.split(b"\0") if p]
+    # A file staged in the index (git add) is not "other" to ls-files, and
+    # tracked_differences walks only the commit's tree, so each path in the
+    # index must be a file of the commit's.
+    entries = tree(checkout, commit)
+    raw = _git_bytes(checkout, ["ls-files", "-z", "--cached", "--",
+                                component])
+    for p in sorted(set(raw.split(b"\0"))):
+        p = p.decode("utf-8")
+        if p and entries.get(p, (None, "tree"))[1] == "tree":
+            out.append("%s: staged in the checkout's index, and not in the "
+                       "commit" % p)
     # A .gitignore under the component that git does not track would count
     # in the listing above, and can hide itself, so list them without any
     # excludes.
