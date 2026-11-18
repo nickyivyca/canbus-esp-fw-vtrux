@@ -857,7 +857,22 @@ same folder.
   2026-11-03).
 - **Status:** validated.
 
-### R23. From a read-only checkout at the pin
+### R23. From a clean checkout at the pin
+- **The check through git, not read-only** (user, 2026-11-17, in the
+  charge-interposer reviewer's session: "should we swap from read only to
+  code integrity checked via git? I don't think we should be scared of
+  python cache files and such which tripped us up before"). Exposed by the
+  charge-interposer's acceptance run a91a (2026-11-16): another session's
+  tests wrote `__pycache__` into `../shared-2026.11.16.5/`, the on-disk R7
+  digest then differed, and the pin check refused. The interim answer, a
+  read-only `shared/` with `-B` (methodology 99fc947c, 2026-11-17), then
+  stopped six of shared/bench's own mutant runs, whose copies of a
+  read-only tree are read-only too (the charge-interposer tester,
+  2026-11-17). Checked through git, a changed, missing or added file still
+  refuses, and a file git is told to ignore does not. Only the checkout's
+  committed `.gitignore` counts, so a machine's own excludes cannot hide a
+  file. The bytes are compared without line-ending filters, so a file
+  rewritten with CRLF still refuses, as it did under the on-disk digest.
 - **Basis:** port plan goal 20 item 8 (user, 2026-10-23): shared Python
   tooling is used from a separate checkout at the pinned tag, with the
   harness checking the checkout's digest against the pin. Applied to the

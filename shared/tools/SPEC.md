@@ -21,7 +21,9 @@ other project's reviewer (charge interposer) reads it before it merges into
 
 Requirements are numbered R1 to R33. The numbers are stable: the two evidence
 documents cite them. R31 to R33 were added 2026-11-03 (user, in the
-gen-inhibit reviewer's session), for gen-inhibit's port step 1d.
+gen-inhibit reviewer's session), for gen-inhibit's port step 1d. R23 was
+changed 2026-11-17 (user, in the charge-interposer reviewer's session): the
+pinned checkout is checked through git, not kept read-only.
 
 ## Terms
 
@@ -342,13 +344,27 @@ unless the code hash changes, which the reproducible test (R19) shows.
   added to the caller's environment. R32 runs first, and R14 applies: a
   dev build need not meet the release rules.
 
-- **R23. From a read-only checkout at the pin.** The build tooling runs from
-  the shared checkout `../shared-<tag>/`, relative to the project's worktree
-  root, as the bench toolkit does (goal 20 item 8). A release build refuses
-  to start unless that checkout's digest (R7) matches the project's
-  committed pin. If
-  the checkout is missing, it refuses and prints the command that creates
-  it.
+- **R23. From a clean checkout at the pin** (changed 2026-11-17: the check
+  is made through git, and the checkout is no longer read-only). The build
+  tooling runs from the shared checkout `../shared-<tag>/`, relative to the
+  project's worktree root, as the bench toolkit does (goal 20 item 8). A
+  release build refuses to start unless all of these hold for that checkout:
+  - its HEAD is the pin's commit, and the pin's tag marks that commit;
+  - the pin's digest is R7 taken over the component's files at that
+    commit, read from git's objects rather than from the disk;
+  - every file git tracks under the component has, on disk, exactly its
+    bytes and mode at that commit, compared without git's line-ending
+    filters, and none is missing;
+  - there is no other file under the component, except files the
+    checkout's own committed `.gitignore` files list. A machine's own
+    excludes (`core.excludesFile`, `info/exclude`) do not count.
+
+  `shared/main`'s `.gitignore` lists Python's bytecode (`__pycache__/` and
+  `*.pyc`), so files Python writes beside the code are never a difference.
+  The checkout is not made read-only, and Python run from it needs no `-B`.
+  If the checkout is missing, the build refuses and prints the command that
+  creates it. A project's bench and test tooling that checks a pinned
+  checkout (goal 20 item 8) checks it the same way.
 - **R25. Tags on `shared/main`.** One sequence of tags covers the whole of
   `shared/main`: a tag marks the branch at one commit, and each project
   still pins each shared component at whichever tag it chooses. A tag is
