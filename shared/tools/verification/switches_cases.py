@@ -44,8 +44,8 @@ rows file) is VOID.
                       three; the control (MQTT and ELM327) must fail on those two and must not
                       name AutoPID
 
-Before each case it checks the bench lock, the "No builds" line and running simulators, as
-release_cases.py does.
+Nothing outside the build gates a case, as in release_cases.py (AGENTS.md "Parallel work
+on the shared machine").
 """
 
 import json
@@ -515,19 +515,12 @@ def main(argv):
             RC.git(TOOLS, "rev-parse", "HEAD"), RC.git(TOOLS, "status", "--porcelain", "--", ".") or "clean",
             a.base, names))
     if not os.path.exists(ctx.src):
-        if RC.bench_clear(ctx.log):
-            RC.report("fixture", "STOPPED", "bench not clear", ctx.log)
-            return 1
         os.makedirs(ctx.root, exist_ok=True)
         RC.make_fixture(ctx)
     RC.clones(ctx)
     for n, fn in CASES:
         if n not in names:
             continue
-        why = RC.bench_clear(ctx.log)
-        if why:
-            RC.report(n, "STOPPED", "; ".join(why), ctx.log)
-            break
         log = os.path.join(ctx.out, "switches_%s.log" % n)
         t0 = time.time()
         try:

@@ -59,8 +59,8 @@ none, and exit 1 when any rule has one. A case whose trigger does not show is VO
                         fails on it in the app's folder, and not in the bootloader's, which lacks it
 
 R26 is shown on CONFIG_EFUSE_VIRTUAL rather than CONFIG_SECURE_BOOT, which needs a signing key
-for the build to finish. Before each case it checks the bench lock, the "No builds" line and
-running simulators, as release_cases.py does.
+for the build to finish. Nothing outside the build gates a case, as in release_cases.py
+(AGENTS.md "Parallel work on the shared machine").
 """
 
 import json
@@ -703,10 +703,6 @@ def main(argv):
     for n, fn in CASES:
         if n not in names:
             continue
-        why = RC.bench_clear(ctx.log)
-        if why:
-            RC.report(n, "STOPPED", "; ".join(why), ctx.log)
-            break
         log = os.path.join(ctx.out, "options_%s.log" % n)
         t0 = time.time()
         try:
