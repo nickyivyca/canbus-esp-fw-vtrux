@@ -124,12 +124,8 @@ def open_gs_usb():
     returns [] for gs_usb on this machine even with the DLL bootstrap
     applied, so detection must never be the gate (python-executables-
     reference.md, 2026-10-04). On Linux by its serial (adapter_fixes.canchg,
-    2026-11-12)."""
-    import libusb_package
-    d = os.path.dirname(libusb_package.get_library_path())
-    if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(d)
-    os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
+    2026-11-12). canchg puts libusb's DLL folder on the path first on
+    Windows (adapter_fixes.libusb_bootstrap)."""
     return adapter_fixes.canchg(bitrate=BITRATE)     # by serial on Linux
 
 

@@ -165,12 +165,8 @@ class EchoWitness(object):
 
 
 def open_gs_usb():
-    import libusb_package
-    d = os.path.dirname(libusb_package.get_library_path())
-    if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(d)
-    os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-    return adapter_fixes.canchg(bitrate=BITRATE)     # by serial on Linux
+    # by serial on Linux; libusb's DLL folder first on Windows
+    return adapter_fixes.canchg(bitrate=BITRATE)
 
 
 def offer(bus, rate, seconds, burst, w):

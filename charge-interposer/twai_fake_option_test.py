@@ -716,8 +716,8 @@ def test_canfail_judges(ctx, work):
 
 def test_canfail_read_only(ctx, work):
     """The can-fail from a read-only checkout, as a pinned ../shared-<tag>
-    is (AGENTS.md, from 2026-11-17; the charge-interposer reviewer,
-    2026-11-17): every folder and file of the stand-in checkout made
+    made before R23 may be (a pinned checkout is checked through git,
+    shared/tools R23; the charge-interposer reviewer, 2026-11-17): every folder and file of the stand-in checkout made
     read-only, the can-fail still applies each mutant to its copy and
     passes (3 caught), each run can write beside the fake in its copy (as
     the build does), and the checkout is unchanged and still read-only."""
@@ -749,7 +749,8 @@ def test_canfail_read_only(ctx, work):
     rc = ctx["canfail"].judge(fd, w, runner, out.append)
     text = "\n".join(out)
     assert rc == 0 and text.count("-- caught") == 3, text
-    assert snap() == before, "the read-only checkout changed"
+    assert snap() == before, ("the read-only checkout (as a pinned checkout made "
+                              "before R23 may be) changed")
 
 
 def test_canfail_refusals(ctx, work):

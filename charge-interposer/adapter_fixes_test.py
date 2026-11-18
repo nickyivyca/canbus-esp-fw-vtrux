@@ -46,7 +46,16 @@ Each case names what it checks:
                     returns it when the device opened carries canchg's
                     serial, and shuts it down and refuses when it does not;
                     a refused target applies and opens nothing; off Linux
-                    it is index 0
+                    it is index 0, after libusb_bootstrap
+  9. libusb         libusb_bootstrap() on Linux and macOS returns None,
+                    changes no PATH, adds no DLL folder and imports no
+                    libusb_package (an import of it raises, as on madhouse);
+                    on Windows it adds libusb_package's DLL folder to the
+                    DLL search path and the front of PATH; on this host, as
+                    the harness calls it, it imports nothing. Case 5's scan
+                    also refuses any harness file importing libusb_package
+                    (a planted import and from-import are caught), and case
+                    6 needs bus.open_gs_usb to call libusb_bootstrap
 --can-fail runs the cases on the unedited adapter_fixes.py first (the
 control, which must pass), then on edited copies, one edit each; every edit
 must make a case fail. The edits include dropping the apply() call and each
@@ -55,7 +64,9 @@ canchg refusal.
 Charge-interposer tester, 2026-11-11 (the reviewer's ruling: the can-tools
 pin at fa6c0aea and linux_fixes applied explicitly, no local copy); cases
 7-8 and the canchg scan rule 2026-11-12 (the reviewer's E2: canchg opened
-by serial, refused unless in libusb mode).
+by serial, refused unless in libusb mode); case 9 and the libusb_package
+scan rule 2026-11-18 (the reviewer's ruling (a) on run 8b8e: the Windows
+DLL-path bootstrap only on Windows).
 """
 
 import ast
@@ -221,6 +232,13 @@ def scan(paths, fixed):
         with open(p, encoding="utf-8") as f:
             tree = ast.parse(f.read(), p)
         for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                mods = ([a.name for a in node.names] if isinstance(node, ast.Import)
+                        else [node.module or ""])
+                if any(m.split(".")[0] == "libusb_package" for m in mods):
+                    hits.append("%s:%d imports libusb_package, not through "
+                                "adapter_fixes.libusb_bootstrap" % (p, node.lineno))
+                continue
             if isinstance(node, ast.Call):
                 if _is_af(node.func, "canchg"):
                     n += 1
@@ -299,11 +317,15 @@ def case_scan(M, work):
                 "    return GsUsbBus(**t)\n"
                 "c = can.Bus(interface='pcan')\n"
                 "e = adapter_fixes.canchg(bitrate=500000)\n"
-                "f = adapter_fixes.bus(interface='kvaser', channel=0)\n")
+                "f = adapter_fixes.bus(interface='kvaser', channel=0)\n"
+                "import libusb_package\n"
+                "def boot():\n"
+                "    from libusb_package import get_library_path\n")
     hits, n, nc = scan([planted], M.FIXED)
-    # opener() lacks both calls (two hits at line 5), half() canchg_target
+    # opener() lacks both calls (two hits at line 5), half() canchg_target;
+    # 22 and 24 import libusb_package
     lines = sorted(int(h.split(":")[1].split()[0]) for h in hits)
-    assert lines == [2, 3, 4, 5, 5, 8, 9], hits
+    assert lines == [2, 3, 4, 5, 5, 8, 9, 22, 24], hits
     assert (n, nc) == (3, 1), (n, nc)
 
 
@@ -319,7 +341,8 @@ def case_bus_py(M, work):
     called = {x.func.attr for x in ast.walk(fn) if isinstance(x, ast.Call)
               and isinstance(x.func, ast.Attribute) and isinstance(x.func.value, ast.Name)
               and x.func.value.id == "adapter_fixes"}
-    missing = {"canchg_target", "gs_usb_kwargs", "check_opened", "apply"} - called
+    missing = {"canchg_target", "gs_usb_kwargs", "check_opened", "apply",
+               "libusb_bootstrap"} - called
     assert not missing, "bus.open_gs_usb does not call adapter_fixes.%s" % sorted(missing)
 
 
@@ -438,13 +461,65 @@ def case_canchg_open(M, work):
     except M.CanchgError:
         assert ev == [], ("a refused target must apply and open nothing", ev)
     ev = []
-    M.canchg("win32", FakeFixes(ev), FakeGsCan(ev, None), {}, root, bitrate=500000)
-    assert ev == [("bus", {"interface": "gs_usb", "channel": "can0", "index": 0,
-                           "bitrate": 500000})], ev
+    path = os.environ.get("PATH")
+    try:
+        M.canchg("win32", FakeFixes(ev), FakeGsCan(ev, None), {}, root,
+                 libusb=FakeLibusb(ev), bitrate=500000)
+    finally:
+        if path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = path
+    assert ev == ["libusb", ("bus", {"interface": "gs_usb", "channel": "can0", "index": 0,
+                                     "bitrate": 500000})], ev
+
+
+class FakeLibusb:
+    """libusb_package: its DLL's path, the call recorded."""
+    def __init__(self, ev):
+        self.ev = ev
+
+    def get_library_path(self):
+        self.ev.append("libusb")
+        return os.path.join("C:\\", "libusb_package", "libusb-1.0.dll")
+
+
+class _NoImport:
+    """sys.modules["libusb_package"] = None for the block: any import of it
+    raises ImportError, as on madhouse, where it is not installed."""
+    def __enter__(self):
+        self.was = sys.modules.get("libusb_package", _NoImport)
+        sys.modules["libusb_package"] = None
+
+    def __exit__(self, *a):
+        if self.was is _NoImport:
+            del sys.modules["libusb_package"]
+        else:
+            sys.modules["libusb_package"] = self.was
+
+
+def case_libusb(M, work):
+    for plat in ("linux", "darwin"):
+        env, dll = {"PATH": "/usr/bin"}, []
+        with _NoImport():
+            got = M.libusb_bootstrap(plat, None, env, dll.append)
+        assert got is None and env == {"PATH": "/usr/bin"} and dll == [], (plat, got, env, dll)
+        ev = []
+        got = M.libusb_bootstrap(plat, FakeLibusb(ev), env, dll.append)
+        assert got is None and ev == [] and dll == [], (plat, got, ev, dll)
+    ev, env, dll = [], {"PATH": "P"}, []
+    got = M.libusb_bootstrap("win32", FakeLibusb(ev), env, dll.append)
+    d = os.path.join("C:\\", "libusb_package")
+    assert ev == ["libusb"] and got == d and dll == [d], (ev, got, dll)
+    assert env == {"PATH": d + os.pathsep + "P"}, env
+    if M.linux():
+        # this host, as the harness calls it: no stand-ins, no import
+        with _NoImport():
+            assert M.libusb_bootstrap() is None
 
 
 CASES = [case_apply_linux, case_apply_other, case_bus_order, case_pinned_start, case_scan,
-         case_bus_py, case_canchg_target, case_canchg_open]
+         case_bus_py, case_canchg_target, case_canchg_open, case_libusb]
 
 MUTANTS = [
     ("bus() never applies the fixes", "    apply(platform, fixes)\n    if can_mod", "    if can_mod"),
@@ -483,6 +558,15 @@ MUTANTS = [
      "    b = bus(platform, fixes, can_mod, interface=\"gs_usb\", channel=\"can0\",\n"
      "            index=0, **kw)\n"
      "    target = canchg_target(0, platform, environ, root)\n"),
+    # libusb_package's DLL folder, Windows only (2026-11-18, ruling (a) on 8b8e)
+    ("libusb: bootstrapped on every system",
+     '    return (platform or sys.platform) == "win32"', "    return True"),
+    ("libusb: the DLL folder not added on Windows",
+     "    if add_dll is not None:\n        add_dll(d)\n", ""),
+    ("libusb: PATH left alone on Windows",
+     '    environ["PATH"] = d + os.pathsep + environ.get("PATH", "")\n', ""),
+    ("libusb: canchg skips the bootstrap",
+     "    libusb_bootstrap(platform, libusb)\n", ""),
 ]
 
 
