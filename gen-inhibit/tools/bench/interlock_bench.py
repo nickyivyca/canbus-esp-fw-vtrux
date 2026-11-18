@@ -410,6 +410,8 @@ class Witness(threading.Thread):
         with self.lock:
             fr, er = list(self.frames), list(self.errs)
         lags = [rx - hw for hw, rx, _, _ in fr]
+        if lags and WC.socketcan(getattr(self, "bus", None)):      # never hardware (2026-11-18)
+            return [(rx, a, h) for _, rx, a, h in fr], [rx for _, rx in er], WC.SOCKETCAN
         if lags and abs(statistics.median(lags)) < WC.MAX_LAG_S:
             note = WC.hw_note(statistics.median(lags))
             return [(hw, a, h) for hw, _, a, h in fr], [hw for hw, _ in er], note

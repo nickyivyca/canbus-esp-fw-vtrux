@@ -69,7 +69,9 @@ FAILS = []
 # Files that may open a bus in a form the scan flags: (calls flagged, why). Paths are relative
 # to gen-inhibit/, with forward slashes.
 ALLOWED = {
-    "tools/bench/kvaser_bus.py": (3, "the opener itself"),
+    "tools/bench/kvaser_bus.py": (4, "the opener itself (the fourth: socketcan on Linux, ruling (a), 2026-11-18)"),
+    "tools/bench/test_x2_jam_cases.py": (5, "Bus(api) is the test's own stand-in class for pcan_reopen, not "
+                                            "python-can's (on gen-inhibit/main from 4e81b9c2, 2026-11-16)"),
     "tools/vehicle_runner.py": (3, "the implementor's file (gen-inhibit README), not the bench harness. Its "
                                    "--interface auto imports canbench.live.receiver, which applies the "
                                    "fixes on import; an explicit --interface kvaser does not (told the "
@@ -181,6 +183,7 @@ class Fakes:
         kb = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(kb)
         kb._pin_tool = self.pin_tool
+        kb.PLATFORM = "win32"      # CANlib: the socketcan cases are SockFakes (2026-11-18)
         fakes = self
 
         def lock_holder():
@@ -201,6 +204,301 @@ class Fakes:
 
     def kinds(self):
         return [e[0] for e in self.log]
+
+
+class SockFakes(Fakes):
+    """The Kvaser on Linux (ruling (a), 2026-11-18): Fakes on PLATFORM linux, with a made-up
+    sysfs (netdev kvaser's device bound to `driver`, or no netdev with driver None), and a fake
+    _run that plays canctl (up/down change the fake link; rc from canctl_rc) and `ip -details
+    -json link show kvaser` (the fake link, with read_bitrate / read_lo / stuck_up to lie). The
+    fake socketcan Bus's socket reads back err_filter as its CAN_RAW_ERR_FILTER."""
+
+    def __init__(self, driver="kvaser_usb", canctl_rc=0, read_bitrate=None, read_lo=False, stuck_up=False,
+                 err_filter=0x1FFFFFFF, runs_dir=None, canctl_applies=False, **kw):
+        # canctl_applies: canctl changes the link even when it exits non-zero (it failed after
+        # its own `ip link set up`)
+        Fakes.__init__(self, **kw)
+        self.canctl_applies = canctl_applies
+        self.driver, self.canctl_rc, self.read_bitrate = driver, canctl_rc, read_bitrate
+        self.read_lo, self.stuck_up, self.runs_dir = read_lo, stuck_up, runs_dir
+        self.linkst = {"up": False, "bitrate": None}
+        self.root = gi_paths.scratch("kvaser-bus-sysfs-%d" % id(self))
+        gi_paths.remove_tree(self.root)
+        if driver is not None:
+            os.makedirs(os.path.join(self.root, "drivers", driver))
+            os.makedirs(os.path.join(self.root, "kvaser", "device"))
+            os.symlink(os.path.join(self.root, "drivers", driver),
+                       os.path.join(self.root, "kvaser", "device", "driver"))
+        log, fakes, base = self.log, self, self.can.Bus
+
+        class Sock:
+            def getsockopt(self, level, opt):
+                log.append(("getsockopt", level, opt))
+                return fakes.err_filter
+        self.err_filter = err_filter
+
+        class Bus(base):
+            def __init__(self, **kw):
+                base.__init__(self, **kw)
+                if kw.get("interface") == "socketcan":
+                    self.socket = Sock()
+        self.can.Bus = Bus
+
+    def run(self, argv):
+        if argv[:3] == ["sudo", "-n", "/usr/local/sbin/canctl"]:
+            args = argv[3:]
+            self.log.append(("canctl",) + tuple(args))
+            if self.canctl_rc == 0 or self.canctl_applies:
+                if args[0] == "up":
+                    self.linkst = {"up": True, "bitrate": int(args[2])}
+                elif args[0] == "down" and not self.stuck_up:
+                    self.linkst = dict(self.linkst, up=False)
+            return self.canctl_rc, "canctl said %s\n" % args[0]
+        if argv == ["ip", "-details", "-json", "link", "show", "kvaser"]:
+            self.log.append(("ip",))
+            st = self.linkst
+            info = {"state": "ERROR-ACTIVE" if st["up"] else "STOPPED", "restart_ms": 100}
+            if st["bitrate"] is not None:
+                info["bittiming"] = {"bitrate": self.read_bitrate or st["bitrate"]}
+            if self.read_lo:
+                info["ctrlmode"] = ["LISTEN-ONLY"]
+            flags = ["NOARP", "ECHO"] + (["UP", "LOWER_UP"] if st["up"] else [])
+            return 0, json.dumps([{"ifname": "kvaser", "flags": flags,
+                                   "linkinfo": {"info_kind": "can", "info_data": info}}])
+        self.log.append(("run?",) + tuple(argv))
+        return 127, "not faked"
+
+    def __enter__(self):
+        kb = Fakes.__enter__(self)
+        kb.PLATFORM = "linux"
+        kb.SYSFS_NET = self.root
+        kb._run = self.run
+        kb._open[:] = []
+        self.saved_runs = os.environ.get("GI_RUNS_DIR")
+        if self.runs_dir:
+            os.environ["GI_RUNS_DIR"] = self.runs_dir
+        else:
+            os.environ.pop("GI_RUNS_DIR", None)
+        return kb
+
+    def __exit__(self, *exc):
+        if self.saved_runs is None:
+            os.environ.pop("GI_RUNS_DIR", None)
+        else:
+            os.environ["GI_RUNS_DIR"] = self.saved_runs
+        gi_paths.remove_tree(self.root)
+        return Fakes.__exit__(self, *exc)
+
+    def canctls(self):
+        return [e[1:] for e in self.log if e[0] == "canctl"]
+
+
+def socketcan():
+    """The Kvaser on Linux through SocketCAN (gen-inhibit reviewer, 2026-11-18, ruling (a))."""
+    def opens():
+        runs = gi_paths.scratch("kvaser-bus-runs")
+        gi_paths.remove_tree(runs)
+        os.makedirs(runs)
+        try:
+            f = SockFakes(runs_dir=runs)
+            with f as kb:
+                b = kb.kvaser_bus(channel=0, bitrate=500000, driver_mode=True)
+                opened = [e for e in f.log if e[0] == "Bus"]
+                check("socketcan: the lock checked first; no CANlib pin or fixes; canctl up kvaser at the "
+                      "asked bitrate with restart-ms, read back, then the open",
+                      [k for k in f.kinds()] == ["lock", "canctl", "ip", "Bus", "getsockopt"]
+                      and f.canctls() == [("up", "kvaser", "500000", "restart-ms", "100")], f.log)
+                check("socketcan: python-can's socketcan on netdev kvaser, error frames not ignored",
+                      opened and opened[0][1] == {"interface": "socketcan", "channel": "kvaser",
+                                                  "ignore_rx_error_frames": False}, opened)
+                check("socketcan: the error mask read back is CAN_RAW_ERR_FILTER on SOL_CAN_RAW",
+                      ("getsockopt", 101, 2) in f.log, f.log)
+                check("socketcan: the bus says its backend", getattr(b, "vtrux_backend", None) == "socketcan")
+                del f.log[:]
+                b.shutdown()
+                check("socketcan: shutdown shuts the socket, then canctl down kvaser, read back",
+                      f.kinds() == ["shutdown", "canctl", "ip"] and f.canctls() == [("down", "kvaser")]
+                      and f.linkst["up"] is False, f.log)
+            with open(os.path.join(runs, "kvaser_opens.jsonl"), encoding="ascii") as fh:
+                evs = [json.loads(x) for x in fh]
+            check("socketcan: the open and the close recorded in GI_RUNS_DIR's kvaser_opens.jsonl, naming "
+                  "the backend, the channel asked and opened, the bitrate, the driver, the link and the mask",
+                  len(evs) == 2 and evs[0]["event"] == "open" and evs[0]["backend"] == "socketcan"
+                  and evs[0]["channel_asked"] == 0 and evs[0]["channel"] == "kvaser" and evs[0]["bitrate"] == 500000
+                  and evs[0]["driver"] == "kvaser_usb" and evs[0]["link"]["up"] is True
+                  and evs[0]["link"]["bitrate"] == 500000 and evs[0]["err_mask"] == "0x1FFFFFFF"
+                  and evs[1]["event"] == "close" and evs[1]["backend"] == "socketcan"
+                  and evs[1]["link"]["up"] is False, evs)
+        finally:
+            gi_paths.remove_tree(runs)
+    case("socketcan: opens", opens)
+
+    def two():
+        f = SockFakes()
+        with f as kb:
+            a = kb.kvaser_bus(channel=0, bitrate=250000)
+            b = kb.kvaser_bus(channel=0, bitrate=250000)
+            del f.log[:]
+            a.shutdown()
+            first = f.canctls()
+            b.shutdown()
+        check("socketcan: B9's 250000 asked of canctl", f.linkst["bitrate"] == 250000, f.linkst)
+        check("socketcan: the link goes down only when the last bus this process opened is shut",
+              first == [] and f.canctls() == [("down", "kvaser")], f.log)
+    case("socketcan: two buses", two)
+
+    def refuses(label, fk, kw, exc_name, opened_none=True):
+        def go():
+            f = fk()
+            raised = None
+            with f as kb:
+                try:
+                    kb.kvaser_bus(**kw)
+                except Exception as e:      # noqa: BLE001
+                    raised = e
+                want = getattr(kb, exc_name) if exc_name != "TypeError" else TypeError
+            check("socketcan: %s -> %s, nothing left open" % (label, exc_name),
+                  isinstance(raised, want) and ("Bus" not in f.kinds() if opened_none else True)
+                  and f.linkst["up"] is False, (raised, f.log))
+            return f
+        return go
+    std = {"channel": 0, "bitrate": 500000}
+    for label, fk, kw, exc in (
+            ("the Kvaser on linuxcan's leaf", lambda: SockFakes(driver="leaf"), std, "KvaserLinkError"),
+            ("no netdev kvaser", lambda: SockFakes(driver=None), std, "KvaserLinkError"),
+            ("driver_mode=False (CANlib's silent mode)", SockFakes, dict(std, driver_mode=False), "KvaserLinkError"),
+            ("a CANlib-only keyword (single_handle)", SockFakes, dict(std, single_handle=True), "TypeError"),
+            ("canctl up refused (rc 2)", lambda: SockFakes(canctl_rc=2), std, "KvaserLinkError"),
+            ("canctl up failing (rc 3) after the link came up", lambda: SockFakes(canctl_rc=3, canctl_applies=True),
+             std, "KvaserLinkError"),
+            ("the link read back at another bitrate", lambda: SockFakes(read_bitrate=250000), std, "KvaserLinkError"),
+            ("the link read back listen-only", lambda: SockFakes(read_lo=True), std, "KvaserLinkError")):
+        case("socketcan refuses: " + label, refuses(label, fk, kw, exc))
+    for label, fk in (("the Kvaser on linuxcan's leaf", lambda: SockFakes(driver="leaf")),
+                      ("driver_mode=False", SockFakes)):
+        def nocanctl(label=label, fk=fk):
+            f = fk()
+            with f as kb:
+                try:
+                    kb.kvaser_bus(channel=0, bitrate=500000, driver_mode=(label != "driver_mode=False"))
+                except Exception:       # noqa: BLE001
+                    pass
+            check("socketcan: %s -> canctl never asked" % label, f.canctls() == [], f.log)
+        case("socketcan no canctl: " + label, nocanctl)
+
+    def nomask():
+        f = SockFakes(err_filter=0)
+        raised = None
+        with f as kb:
+            try:
+                kb.kvaser_bus(channel=0, bitrate=500000)
+            except Exception as e:      # noqa: BLE001
+                raised = e
+            want = kb.KvaserLinkError
+        check("socketcan: an error mask that reads 0 -> KvaserLinkError, the bus shut and the link down",
+              isinstance(raised, want) and "shutdown" in f.kinds() and f.canctls()[-1] == ("down", "kvaser")
+              and f.linkst["up"] is False, (raised, f.log))
+    case("socketcan: no error mask", nomask)
+
+    def stuck():
+        f = SockFakes(stuck_up=True)
+        raised = None
+        with f as kb:
+            b = kb.kvaser_bus(channel=0, bitrate=500000)
+            try:
+                b.shutdown()
+            except Exception as e:      # noqa: BLE001
+                raised = e
+            want = kb.KvaserLinkError
+        check("socketcan: a link still UP after canctl down -> the close raises KvaserLinkError",
+              isinstance(raised, want), (raised, f.log))
+    case("socketcan: link stuck up", stuck)
+
+    def canlib_record():
+        runs = gi_paths.scratch("kvaser-bus-runs-canlib")
+        gi_paths.remove_tree(runs)
+        os.makedirs(runs)
+        saved = os.environ.get("GI_RUNS_DIR")
+        os.environ["GI_RUNS_DIR"] = runs
+        try:
+            f = Fakes()
+            with f as kb:
+                b = kb.kvaser_bus(channel=0, bitrate=500000)
+            with open(os.path.join(runs, "kvaser_opens.jsonl"), encoding="ascii") as fh:
+                evs = [json.loads(x) for x in fh]
+            check("canlib (off Linux): the open recorded with backend canlib, and the bus says so",
+                  len(evs) == 1 and evs[0]["backend"] == "canlib" and evs[0]["channel"] == 0
+                  and getattr(b, "vtrux_backend", None) == "canlib", evs)
+        finally:
+            if saved is None:
+                os.environ.pop("GI_RUNS_DIR", None)
+            else:
+                os.environ["GI_RUNS_DIR"] = saved
+            gi_paths.remove_tree(runs)
+    case("canlib: recorded", canlib_record)
+
+    def detect():
+        for label, fk, want in (("kvaser_usb", SockFakes, {"interface": "kvaser", "channel": "kvaser"}),
+                                ("leaf", lambda: SockFakes(driver="leaf"), None),
+                                ("no netdev", lambda: SockFakes(driver=None), None)):
+            f = fk()
+            with f as kb:
+                got = kb.detect()
+            check("detect on Linux, the Kvaser on %s -> %r" % (label, want), got == want, got)
+    case("socketcan: detect", detect)
+
+    def guard():
+        f = SockFakes(holder=None)
+        raised = None
+        with f as kb:
+            try:
+                kb.kvaser_bus(channel=0, bitrate=500000)
+            except kb.BenchNotHeld as e:
+                raised = e
+        check("socketcan: the lock free -> BenchNotHeld before canctl, sysfs or an open",
+              raised is not None and f.kinds() == ["lock"], (raised, f.log))
+    case("socketcan: guard", guard)
+
+    def backend():
+        spec = importlib.util.spec_from_file_location("kvaser_bus_be", os.path.join(SRC, "kvaser_bus.py"))
+        kb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(kb)
+        check("backend: socketcan on linux, canlib on win32",
+              kb.backend("linux") == "socketcan" and kb.backend("win32") == "canlib")
+    case("socketcan: backend", backend)
+
+
+# The real python-can's socketcan socket: the error mask kvaser_bus reads back is what
+# python-can set (a PF_CAN raw socket needs no interface or root until it is bound, so the
+# bind is skipped). ignore_rx_error_frames=True shows the read-back can tell.
+CHILD_MASK = r"""
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import kvaser_bus as K
+from can.interfaces.socketcan import socketcan as S
+S.bind_socket = lambda sock, channel="can0": None
+out = {}
+for ign in (False, True):
+    b = S.SocketcanBus(channel="kvaser", ignore_rx_error_frames=ign)
+    out[str(ign)] = K.err_mask(b)
+    b.socket.close()
+print("CHILD " + json.dumps(out))
+"""
+
+
+def real_mask():
+    if not sys.platform.startswith("linux"):
+        print("      real mask: not Linux, not checked")
+        return
+    r = subprocess.run([sys.executable, "-B", "-c", CHILD_MASK, SRC], capture_output=True, text=True, timeout=120)
+    line = [x for x in r.stdout.splitlines() if x.startswith("CHILD ")]
+    if r.returncode != 0 or not line:
+        check("real mask: the child ran", False, (r.returncode, r.stdout[-300:], r.stderr[-600:]))
+        return
+    out = json.loads(line[0][6:])
+    check("real mask: python-can's socketcan socket with error frames on reads back 0x1FFFFFFF through err_mask",
+          out.get("False") == 0x1FFFFFFF, out)
+    check("real mask: with error frames ignored it reads 0 (the read-back can tell)", out.get("True") == 0, out)
 
 
 def case(name, fn):
@@ -684,15 +982,15 @@ def scan_can_fail():
 
 MUTANTS = [
     (None, None, None),
-    ("kvaser_bus applies no fixes", "def kvaser_bus(**kw):\n    require_bench()\n    fixes()\n",
-     "def kvaser_bus(**kw):\n    require_bench()\n"),
+    ("kvaser_bus applies no fixes", "        return _socketcan_bus(**kw)\n    fixes()\n",
+     "        return _socketcan_bus(**kw)\n"),
     ("gs_usb_bus applies no fixes", "def gs_usb_bus(**kw):\n    require_bench()\n    fixes()\n",
      "def gs_usb_bus(**kw):\n    require_bench()\n"),
     # the bench guard (reviewer, 2026-11-12)
     ("kvaser_bus opens without the guard", "def kvaser_bus(**kw):\n    require_bench()\n", "def kvaser_bus(**kw):\n"),
     ("gs_usb_bus opens without the guard", "def gs_usb_bus(**kw):\n    require_bench()\n", "def gs_usb_bus(**kw):\n"),
-    ("the guard checks after the fixes", "def kvaser_bus(**kw):\n    require_bench()\n    fixes()\n",
-     "def kvaser_bus(**kw):\n    fixes()\n    require_bench()\n"),
+    ("the guard checks after the fixes", "def kvaser_bus(**kw):\n    require_bench()\n    if backend()",
+     "def kvaser_bus(**kw):\n    fixes()\n    require_bench()\n    if backend()"),
     ("a free lock passes", "    if h is None:\n        raise", "    if h is None:\n        return h\n        raise"),
     ("any holder's role passes", '    if h.get("who") not in ROLES:\n', "    if False:\n"),
     ("any holder's pid passes", '    if h.get("pid") not in anc:\n', "    if False:\n"),
@@ -735,6 +1033,42 @@ MUTANTS = [
      '    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n'),
     ("pcan_witness_bus resets on bus-off", "CanbenchPcanBus(canbench_busoff_reset=False, **kw)",
      "CanbenchPcanBus(**kw)"),
+    # the Kvaser on Linux through SocketCAN (gen-inhibit reviewer, 2026-11-18, ruling (a))
+    ("Linux keeps CANlib", '    return "socketcan" if (platform or PLATFORM).startswith("linux") else "canlib"',
+     '    return "canlib"'),
+    ("SocketCAN everywhere", '    return "socketcan" if (platform or PLATFORM).startswith("linux") else "canlib"',
+     '    return "socketcan"'),
+    ("socketcan: any driver opens", "    if drv != DRIVER:\n        raise KvaserLinkError(\"the Kvaser is not on",
+     "    if False:\n        raise KvaserLinkError(\"the Kvaser is not on"),
+    ("socketcan: no netdev reads as kvaser_usb", "    if not os.path.exists(p):\n        return None\n",
+     "    if not os.path.exists(p):\n        return DRIVER\n"),
+    ("socketcan: silent mode dropped without a word", "    if driver_mode is not True:\n", "    if False:\n"),
+    ("socketcan: CANlib keywords dropped without a word", "    if other:\n        raise TypeError(",
+     "    kw = {k: v for k, v in kw.items() if k in SOCKETCAN_KW}\n    if False:\n        raise TypeError("),
+    ("socketcan: the link not brought up", "    got = link_up(bitrate)\n", "    got = link()\n"),
+    ("socketcan: canctl's refusal ignored", '    if rc != 0:\n        _canctl("down", NETDEV)         # canctl may have failed',
+     '    if False:\n        _canctl("down", NETDEV)         # canctl may have failed'),
+    ("socketcan: the bitrate not read back", ' or got["bitrate"] != bitrate or got["listen_only"]:', ' or got["listen_only"]:'),
+    ("socketcan: listen-only not read back", ' or got["bitrate"] != bitrate or got["listen_only"]:', ' or got["bitrate"] != bitrate:'),
+    ("socketcan: a failed canctl up left up", '        _canctl("down", NETDEV)         # canctl may have failed',
+     '        pass         # canctl may have failed'),
+    ("socketcan: a bad read-back left up", '        _canctl("down", NETDEV)         # not left ACKing', '        pass         # not left ACKing'),
+    ("socketcan: no restart-ms", 'args = ("up", NETDEV, str(bitrate), "restart-ms", str(RESTART_MS))',
+     'args = ("up", NETDEV, str(bitrate))'),
+    ("socketcan: error frames ignored", 'channel=NETDEV, ignore_rx_error_frames=False, **kw)',
+     'channel=NETDEV, ignore_rx_error_frames=True, **kw)'),
+    ("socketcan: the error mask not checked", "    if mask != ERR_MASK:\n", "    if False:\n"),
+    ("socketcan: the mask's bus left open", "        _open.append(b)\n        _close(b, b.shutdown)\n", ""),
+    ("socketcan: the link left up at the close", "        if not _open:\n            ev = ", "        if False:\n            ev = "),
+    ("socketcan: the link down at the first close", "        if not _open:\n            ev = ", "        if True:\n            ev = "),
+    ("socketcan: the link down not read back", '    got = link()\n    if got["up"]:\n', '    got = link()\n    if False:\n'),
+    ("socketcan: the close not hooked", "    b.shutdown = lambda: _close(b, shut)\n", ""),
+    ("socketcan: the backend not recorded", '    record({"event": "open", "backend": "socketcan", ', '    record({"event": "open", '),
+    ("canlib: the open not recorded", '    record({"event": "open", "backend": "canlib", "channel_asked": kw.get("channel"),\n',
+     '    ({"event": "open", "backend": "canlib", "channel_asked": kw.get("channel"),\n'),
+    ("records not written to GI_RUNS_DIR", "    if d:\n        with open(", "    if False:\n        with open("),
+    ("detect: a leaf Kvaser found on Linux", 'return {"interface": "kvaser", "channel": NETDEV} if kvaser_driver() == DRIVER else None',
+     'return {"interface": "kvaser", "channel": NETDEV} if kvaser_driver() else None'),
     ("pcan_witness_bus: the class not taken from the pin",
      '    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n',
      '    mod = importlib.import_module("canbench.live.pcan_bus")\n'),
@@ -794,6 +1128,8 @@ def main(argv):
     if "--can-fail" in argv:
         return can_fail()
     unit()
+    socketcan()
+    real_mask()
     pin()
     guard_real()
     if "--no-scan" not in argv:

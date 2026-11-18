@@ -76,6 +76,16 @@ MUTANTS = [
      "        WC.void(rec, e.note)\n        print(rec[\"verdict\"])\n", "        pass\n"),
     ("x2_jammer.py", "the witness takes any offset as hardware time",
      "if abs(off) < WC.MAX_LAG_S:", "if abs(off) < 1e12:"),
+    # SocketCAN stamps never hardware (2026-11-18)
+    ("witness_clock.py", "socketcan() never true", '    return getattr(bus, "vtrux_backend", None) == "socketcan"',
+     "    return False"),
+    ("witness_clock.py", "the SocketCAN note judgeable", 'SOCKETCAN = "socketcan host stamps', 'SOCKETCAN = "kvaser_hw host stamps'),
+    ("interlock_bench.py", "SocketCAN stamps taken as hardware",
+     '        if lags and WC.socketcan(getattr(self, "bus", None)):', '        if False:'),
+    ("x2_jam_cases.py", "SocketCAN stamps taken as hardware",
+     '        if lags and WC.socketcan(getattr(self, "bus", None)):', '        if False:'),
+    ("x2_jammer.py", "SocketCAN stamps taken as hardware",
+     '        if WC.socketcan(getattr(self, "bus", None)):', '        if False:'),
     # A2 (a), 2026-11-11: the PCAN's own stamps
     ("witness_clock.py", "stamps on the epoch clock are not VOID",
      "    if abs(epoch_lag) < EPOCH_LAG_S:\n", "    if False:\n"),
@@ -506,6 +516,25 @@ def checks(work):
         lambda: (lambda r: (r[2] == WC.RECEIPT and r[0][0][0] > EPOCH, r[2]))(ib_rec(0, True)))
     add("interlock witness: a lag of -2.5 s -> receipt",
         lambda: (lambda r: (r[2] == WC.RECEIPT, r[2]))(ib_rec(-2.5, False)))
+
+    # a Kvaser opened through SocketCAN (kvaser_bus on Linux): its stamps are never hardware
+    # stamps, whatever their lag (gen-inhibit reviewer, 2026-11-18, until the Kvaser ruling)
+    SOCK = types.SimpleNamespace(vtrux_backend="socketcan")
+    CANLIB = types.SimpleNamespace(vtrux_backend="canlib")
+    add("not judgeable: the SocketCAN note", lambda: (not WC.judgeable(WC.SOCKETCAN), WC.SOCKETCAN))
+    add("interlock witness on SocketCAN, a 1 ms lag -> the SocketCAN note, receipt times, not judgeable",
+        lambda: (lambda r: (r[2] == WC.SOCKETCAN and r[0][0][0] == HW0 + 0.001, r[2]))(
+            bare(IB.REAL_WITNESS, frames=ib_frames(0.001, False), errs=[], bus=SOCK).recorded()))
+    add("interlock witness on CANlib, a 1 ms lag -> hardware stamps as before",
+        lambda: (lambda r: (WC.judgeable(r[2]) and r[0][0][0] == HW0, r[2]))(
+            bare(IB.REAL_WITNESS, frames=ib_frames(0.001, False), errs=[], bus=CANLIB).recorded()))
+    add("x2_jam_cases witness on SocketCAN, a 1 ms lag -> clocked() raises ReceiptClock with the SocketCAN note",
+        lambda: (lambda e: (e is not None and e.note == WC.SOCKETCAN, e))(
+            raises(WC.ReceiptClock, bare(XC.Witness, frames=[], errs=xc_errs(3, False), bus=SOCK).clocked)))
+    add("x2_jammer witness on SocketCAN, a 1 ms lag -> times() raises ReceiptClock with the SocketCAN note",
+        lambda: (lambda e: (e is not None and e.note == WC.SOCKETCAN, e))(
+            raises(WC.ReceiptClock, (lambda w: (setattr(w, "bus", SOCK), w)[1])(
+                xj_closed(XJ, xc_errs(2, False))).times)))
 
     # interlock_bench: run_case
     def ib_receipt():

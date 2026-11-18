@@ -699,6 +699,8 @@ class Witness(threading.Thread):
             e = list(self.err)
         if not e:
             return [], WC.NONE
+        if WC.socketcan(getattr(self, "bus", None)):               # never hardware (2026-11-18)
+            return [r for _, r in e], WC.SOCKETCAN
         off = statistics.median(r - h for h, r in e)
         if abs(off) < WC.MAX_LAG_S:
             return [h for h, _ in e], WC.hw_note(off, 3)

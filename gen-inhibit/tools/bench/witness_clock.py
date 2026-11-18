@@ -11,6 +11,12 @@ the checks went on to judge on it. Now a check is never judged on receipt time:
 it is VOID, with the clock note.
 
   hw_note(lag)        the note for hardware stamps, with the median lag
+  SOCKETCAN           the note for a Kvaser opened through SocketCAN (kvaser_bus on Linux,
+                      2026-11-18): python-can's socketcan stamps are the kernel's receive
+                      time, not the Leaf's hardware clock, so they are never hw_note's,
+                      whatever their lag (gen-inhibit reviewer, 2026-11-18, until the
+                      Kvaser ruling)
+  socketcan(bus)      True for a bus kvaser_bus opened through SocketCAN (vtrux_backend)
   RECEIPT             the note for receipt time (the stamps are not on the epoch clock)
   NONE                the note when the witness has no time to place (nothing heard)
   judgeable(note)     True for hw_note's notes and NONE; False for anything else
@@ -51,6 +57,7 @@ MAX_LAG_S = 2.0
 HW = "kvaser_hw"
 RECEIPT = "receipt (hw not epoch)"
 NONE = "none"
+SOCKETCAN = "socketcan host stamps (kernel receipt time, not the Leaf's hardware clock)"
 WHY = ("spec 12: the timing witness timestamps at the wire, in hardware; the Kvaser's "
        "hardware stamps were not on the epoch clock, so its times are host receipt times "
        "and nothing is judged on them (gen-inhibit reviewer, A2 (b), 2026-11-11)")
@@ -62,6 +69,10 @@ class ReceiptClock(Exception):
     def __init__(self, note):
         super().__init__("witness clock is %r: not judged on receipt time" % (note,))
         self.note = note
+
+
+def socketcan(bus):
+    return getattr(bus, "vtrux_backend", None) == "socketcan"
 
 
 def hw_note(lag, digits=4):

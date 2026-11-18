@@ -144,10 +144,16 @@ def post(path):
 def open_buses(want_ixxat):
     """PCAN FIRST. See rule 1 in the docstring before touching this order."""
     found = {}
-    for cfg in can.detect_available_configs(["pcan", "kvaser", "ixxat"]):
+    for cfg in can.detect_available_configs(["pcan", "ixxat"]):
         if "Virtual" in str(cfg.get("device_name", "")):
             continue
         found.setdefault(cfg["interface"], cfg)
+    # the Kvaser through kvaser_bus.detect: on Linux netdev kvaser on kvaser_usb, which CANlib's
+    # detection does not find (ruling (a), 2026-11-18); elsewhere CANlib's, as before
+    from kvaser_bus import detect as kvaser_detect  # noqa: E402
+    kv = kvaser_detect()
+    if kv is not None:
+        found["kvaser"] = kv
 
     order = ["pcan", "kvaser"] + (["ixxat"] if want_ixxat else [])
 
