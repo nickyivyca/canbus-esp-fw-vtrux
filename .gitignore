@@ -1,1 +1,5 @@
 /scratch/
+# Python's bytecode, written beside the code it runs. A pinned checkout's
+# check passes files only this committed list names (shared/tools SPEC R23).
+__pycache__/
+*.pyc

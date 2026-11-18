@@ -12,9 +12,11 @@ In order, each refusal an exit, never a warning:
   1. the project's build data reads (project.py);
      R23: this tooling is the version the project pins (pin.py): it runs
      from ../shared-<tag>/shared/tools beside the project's worktree root,
-     at the tag shared_pins.json names, with the pin's digest (R7) and
-     commit; a missing checkout is refused with the command that creates
-     it. R16, the tooling-pin clause: a pin naming a commit rather than a
+     at the tag and commit shared_pins.json names, the pin's digest (R7)
+     is that commit's in git, and the checkout, checked through git, holds
+     exactly the commit's files under shared/tools, besides those its
+     committed .gitignore files list; a missing checkout is refused with
+     the command that creates it. R16, the tooling-pin clause: a pin naming a commit rather than a
      tag is refused;
      R33: main/idf_component.yml under the project root names the ESP-IDF
      version as one exact version (5.4.2 or ==5.4.2); a range, or no

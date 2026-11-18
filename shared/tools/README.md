@@ -22,9 +22,10 @@ do not change it.
 
 ## Running it
 
-A project runs the tooling from the read-only checkout of the tag it pins,
+A project runs the tooling from the checkout of the tag it pins,
 `../shared-<tag>/` beside its worktree's root (R23), not from a worktree of
-its own. The pin is the `"shared/tools"` entry of `shared_pins.json` in the
+its own. The checkout is not made read-only: the release build checks it
+through git instead (below). The pin is the `"shared/tools"` entry of `shared_pins.json` in the
 project's root, committed with the project (`vtrux_build/pin.py`):
 
     {"shared/tools": {"tag": "2026.10.24",
@@ -38,9 +39,13 @@ per tag, from any worktree of the repository:
     git -C <worktree> worktree add --detach ../shared-<tag> <tag>
 
 and the digest for a new pin is `python -B -m vtrux_build digest
-../shared-<tag>/shared/tools`, run from that checkout.
+../shared-<tag>/shared/tools`, run from that checkout before anything else
+has run there (it reads the disk, and R7 counts every file, bytecode
+included). The release build compares the pin with the digest it takes
+from git, so a wrong one is refused, never used.
 
-A release build refuses to start, `--check-only` included, unless:
+A release build refuses to start, `--check-only` included, unless
+(`vtrux_build/pin.py`, in this order):
 - the project has the pin, and (R16) it names a tag, not a commit: an entry
   with no tag, or one that reads as a commit id (7 to 40 hex digits), is
   refused, and so is a tag the checkout's repository does not have (a
@@ -48,14 +53,33 @@ A release build refuses to start, `--check-only` included, unless:
 - the checkout exists; if not, the refusal prints the command above for it;
 - the `shared/tools` folder the tooling runs from is that checkout's, not a
   copy of it elsewhere;
-- its R7 digest is the pin's, so a changed file, or one added such as a
-  `__pycache__`, is refused;
 - the checkout's HEAD is the pin's commit, and the pin's tag marks that
-  commit.
+  commit;
+- the pin's digest is R7 of `shared/tools` at that commit, taken from
+  git's objects (`git ls-tree`, `git cat-file`), not from the disk;
+- every file git tracks under `shared/tools` is on disk with exactly its
+  bytes at that commit, read raw, so git's line-ending settings change
+  nothing and a file rewritten with CRLF is refused; with the mode git
+  records for it (a regular file, an executable, or a symbolic link whose
+  target is the blob), not its permission bits, so a read-only file
+  passes; and none is missing. A `.md` file is compared too, though R7
+  leaves it out;
+- there is no other file under `shared/tools`, except files the checkout's
+  committed `.gitignore` files list. They are listed with `git ls-files
+  --others --exclude-per-directory=.gitignore`, not `--exclude-standard`,
+  so a machine's `core.excludesFile` or `.git/info/exclude` hides nothing;
+  and a `.gitignore` that is not the commit's, under `shared/tools` or in a
+  folder above it, is itself refused.
+
+`shared/main`'s root `.gitignore` lists `__pycache__/` and `*.pyc`, so the
+bytecode Python writes when it runs from the checkout passes, and the
+checkout needs no `-B`. On Windows the execute bit is not compared, since
+the disk has none, and a symbolic link checked out as a plain file passes
+when its bytes are the link's target.
 
 The record's `tooling` holds the pin's tag, commit and digest, as checked,
 and `dirty`: whether git sees uncommitted changes under the checkout's
-`shared/tools`, which can only be in files the digest leaves out.
+`shared/tools`, which it cannot once the check has passed.
 
 A project usually starts the checkout's code through a small launcher of its
 own that reads the tag from its pin and nothing else, so that a missing
@@ -74,10 +98,6 @@ root, with `REVERSE_IT_DIR` set:
 
 `release` and `build` take `--project DIR`, the ESP-IDF project root, the
 current folder if not given.
-
-`-B` matters: a `__pycache__` written into this folder changes its own
-digest (R7 counts every file but those whose name ends `.md` and those named
-`.gitignore`, case-sensitively), and the record holds the tooling's digest.
 
 The release build runs at whatever priority it is started with. Builds run
 alongside wall-clock tests and the machine's other work, with no throttle
@@ -324,12 +344,13 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `vtrux_build/record.py` | the release record: R13 |
 | `vtrux_build/toolchain.py` | this IDF's toolchain, from its `tools.json` and toolchain file: R9's check that each chosen compiler is the toolchain's own |
 | `vtrux_build/buildenv.py` | a release build's environment, from an empty one, with no defaults: R24, and R9's `SOURCE_DATE_EPOCH` |
-| `vtrux_build/pin.py` | the tooling's own pin in `shared_pins.json`, and the check that the tooling runs from the pinned checkout: R23, R16's tooling-pin clause |
+| `vtrux_build/pin.py` | the tooling's own pin in `shared_pins.json`, and the check that the tooling runs from the pinned checkout, made through git (HEAD and tag, R7 from git's objects, tracked files' bytes and modes, no other file but what committed `.gitignore` files list): R23, R16's tooling-pin clause |
 | `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (both clauses, the tooling pin through `pin.py`), R21's one-board refusal, R23, R24, R32 (through `idfenv.py`), R33 |
 | `vtrux_build/cli.py`, `__main__.py`, `__init__.py` | the command line |
 | `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s and the command line's are in `test_release.py`, with the check that uses it; `project.py`'s variants are in `test_devbuild.py`); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests`. `test_buildenv.py`'s `RealConfigure` runs ESP-IDF itself, two configures of a small project (about 40 s), so it is skipped unless `VTRUX_IDF_TESTS=1` is set in an exported ESP-IDF shell; it runs in `build.slice` like a build (`AGENTS.md` "Parallel work on the shared machine") |
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
-| `tests/pinkit.py` | a pinned checkout for the tests: a small tagged repository at `<folder>/shared-<tag>/` and the pin that matches it; `test_release.py` gives every test project one |
+| `tests/pinkit.py` | a pinned checkout for the tests: a small tagged repository at `<folder>/shared-<tag>/`, with a root `.gitignore` listing Python's bytecode as `shared/main`'s does, and the pin that matches it; `test_release.py` gives every test project one |
+| `tests/test_pin.py` | `pin.py`'s tests, among them R23's: a stray `__pycache__` or `.pyc` passes; a changed, CRLF-rewritten, missing or `.md` tracked file refuses; an execute bit flipped either way refuses and a read-only component passes; an untracked file refuses, and so does one hidden only by `core.excludesFile` or `info/exclude`, or by a `.gitignore` that is not the commit's; a pin digest that is not the commit's refuses. `--can-fail` runs them against 16 edited copies of `pin.py` and passes only if the unedited copy passes and every edited one fails |
 | `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/<pid>/`, the run's own, removed when the run ends, pass or fail; refused, with no other place, outside a git worktree or where git does not ignore `scratch/` (`AGENTS.md` "Files and folders"), and so under WSL in a worktree made by Git for Windows, whose `.git` file Linux git cannot follow. Its remover clears read-only flags and retries, uses `\\?\` paths on Windows and prints what it could not remove ("Removing scratch"): a copy of `verification/independent.py`'s, since the unit tests do not import the tester's files. Tested in `tests/test_scratch.py` |
 | `verification/` | the tester's: its verification of this tooling against `SPEC.md`, the evidence behind `VERIFICATION.md`, and the build checks' real-build cases; its `README.md` lists the files |
 | `vtrux_checks/` | the tester's: the build checks, SPEC R17 to R21, R29 and R30, reading a finished build through the interface above; their per-project data is the tester's `vtrux_checks.json` in the project's root; its `README.md` lists the checks |

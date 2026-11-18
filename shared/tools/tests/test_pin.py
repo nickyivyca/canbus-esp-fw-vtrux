@@ -2,24 +2,36 @@
 tooling-pin clause, on scratch git repositories.
 
     python -B shared/tools/tests/test_pin.py
+    python -B shared/tools/tests/test_pin.py --can-fail
 
 Each project is a git worktree with shared_pins.json committed, and its
 pinned checkout is a separate repository at ../shared-<tag>/ (pinkit), except
 where a test needs the two in one repository, as the real worktrees are.
 Needs git.
+
+--can-fail runs this file against edited copies of vtrux_build/pin.py
+(MUTANTS), each a way the R23 check could be wrong, and passes only if the
+unedited copy passes and every edited one fails. The copy is imported
+through VTRUX_BUILD_UNDER_TEST, the folder holding its vtrux_build/.
 """
 
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+UNDER_TEST = os.environ.get("VTRUX_BUILD_UNDER_TEST")
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+if UNDER_TEST:
+    # Imported before pinkit, which puts the real shared/tools first.
+    sys.path.insert(0, UNDER_TEST)
+    import vtrux_build                           # noqa: E402,F401
 
 import pinkit                                    # noqa: E402
 import scratch                                   # noqa: E402
@@ -178,24 +190,204 @@ class Check(unittest.TestCase):
         shutil.copytree(tools, other)
         self.refused(root, other, "runs from", "R23")
 
-    def test_digest_differs(self):
-        root, tools, _ = project("pin_digest")
+    def test_changed_file_refused(self):
+        root, tools, _ = project("pin_changed")
         scratch.write(os.path.join(tools, "vtrux_build", "__init__.py"),
                       "x = 2\n")
-        self.refused(root, tools, "digest", "R23")
+        self.refused(root, tools, "vtrux_build/__init__.py",
+                     "bytes differ", "R23")
 
-    def test_new_file_changes_the_digest(self):
-        """A file the checkout never had, a __pycache__ for example, is
-        counted by R7 and refused."""
-        root, tools, _ = project("pin_pycache")
-        scratch.write(os.path.join(tools, "vtrux_build", "__pycache__",
-                                   "x.pyc"), b"\0")
-        self.refused(root, tools, "digest", "R23")
-
-    def test_md_only_change_is_dirty_not_refused(self):
-        root, tools, good = project("pin_md")
+    def test_md_change_refused(self):
+        """Every tracked file is compared, those R7 leaves out too."""
+        root, tools, _ = project("pin_md")
         scratch.write(os.path.join(tools, "README.md"), "edited\n")
-        self.assertEqual(pin.check(root, tools), dict(good, dirty=True))
+        self.refused(root, tools, "README.md", "bytes differ", "R23")
+
+    def test_crlf_rewritten_refused(self):
+        """The bytes on disk are compared raw: a file rewritten with CRLF
+        differs, whatever git's line-ending settings would say."""
+        root, tools, _ = project("pin_crlf")
+        co = os.path.dirname(os.path.dirname(tools))
+        git(co, "config", "core.autocrlf", "true")
+        scratch.write(os.path.join(tools, "vtrux_build", "__init__.py"),
+                      b"x = 1\r\n")
+        self.refused(root, tools, "vtrux_build/__init__.py",
+                     "line endings differ", "R23")
+
+    def test_missing_file_refused(self):
+        root, tools, _ = project("pin_missing_file")
+        os.remove(os.path.join(tools, "vtrux_build", "__init__.py"))
+        self.refused(root, tools, "vtrux_build/__init__.py: missing", "R23")
+
+    @unittest.skipIf(os.name == "nt", "no execute bit on Windows")
+    def test_executable_bit_flipped_refused(self):
+        root, tools, _ = project("pin_exec")
+        f = os.path.join(tools, "vtrux_build", "__init__.py")
+        os.chmod(f, os.stat(f).st_mode | stat.S_IXUSR)
+        self.refused(root, tools, "vtrux_build/__init__.py",
+                     "executable on disk", "R23")
+
+    @unittest.skipIf(os.name == "nt", "no execute bit on Windows")
+    def test_executable_file_cleared_refused(self):
+        """A file git records as executable must have the bit on disk."""
+        files = dict(pinkit.TOOL_FILES, **{"run.sh": "echo\n"})
+        d = scratch.fresh("pin_exec_cleared")
+        co = os.path.join(d, "shared-" + TAG)
+        tools = os.path.join(co, "shared", "tools")
+        for rel, text in files.items():
+            scratch.write(os.path.join(tools, *rel.split("/")), text)
+        scratch.write(os.path.join(co, ".gitignore"), pinkit.ROOT_GITIGNORE)
+        os.chmod(os.path.join(tools, "run.sh"), 0o755)
+        git(co, "init", "-q")
+        git(co, "add", "-A")
+        git(co, "commit", "-qm", "shared")
+        git(co, "tag", TAG)
+        good = pinkit.pin_of(tools)
+        top = os.path.join(d, "proj")
+        scratch.write(os.path.join(top, pin.PIN_FILE), pinkit.pins_text(good))
+        git(top, "init", "-q")
+        git(top, "add", "-A")
+        git(top, "commit", "-qm", "init")
+        self.assertEqual(pin.check(top, tools), dict(good, dirty=False))
+        os.chmod(os.path.join(tools, "run.sh"), 0o644)
+        self.refused(top, tools, "run.sh", "not executable on disk", "R23")
+
+    def test_read_only_passes(self):
+        """The mode compared is git's, not the permission bits: the whole
+        component made read-only (chmod -R a-w) still passes."""
+        root, tools, good = project("pin_read_only")
+        made = []
+        try:
+            for dirpath, dirs, files in os.walk(tools, topdown=False):
+                for p in [os.path.join(dirpath, n) for n in files] + [dirpath]:
+                    os.chmod(p, os.stat(p).st_mode & ~0o222)
+                    made.append(p)
+            self.assertEqual(pin.check(root, tools), dict(good, dirty=False))
+        finally:
+            for p in reversed(made):
+                os.chmod(p, os.stat(p).st_mode | stat.S_IWUSR)
+
+    def test_pycache_passes(self):
+        """Bytecode beside the code passes: the checkout's committed root
+        .gitignore lists __pycache__/ and *.pyc, as shared/main's does."""
+        root, tools, good = project("pin_pycache")
+        scratch.write(os.path.join(tools, "vtrux_build", "__pycache__",
+                                   "__init__.cpython-313.pyc"), b"\0")
+        scratch.write(os.path.join(tools, "stray.pyc"), b"\0")
+        self.assertEqual(pin.check(root, tools), dict(good, dirty=False))
+
+    def test_pycache_refused_without_the_gitignore(self):
+        """Only a committed .gitignore hides a file: without one, the same
+        bytecode is an extra file."""
+        d = scratch.fresh("pin_pycache_noignore")
+        tools, good = pinkit.checkout(d, gitignore=None)
+        top = os.path.join(d, "proj")
+        scratch.write(os.path.join(top, pin.PIN_FILE), pinkit.pins_text(good))
+        git(top, "init", "-q")
+        git(top, "add", "-A")
+        git(top, "commit", "-qm", "init")
+        scratch.write(os.path.join(tools, "vtrux_build", "__pycache__",
+                                   "__init__.cpython-313.pyc"), b"\0")
+        self.refused(top, tools, "__init__.cpython-313.pyc",
+                     "no committed .gitignore lists it", "R23")
+
+    def test_untracked_file_refused(self):
+        root, tools, _ = project("pin_untracked")
+        scratch.write(os.path.join(tools, "vtrux_build", "extra.py"), "y\n")
+        self.refused(root, tools, "vtrux_build/extra.py",
+                     "no committed .gitignore lists it", "R23")
+
+    def test_hidden_by_core_excludesfile_refused(self):
+        root, tools, _ = project("pin_excludesfile")
+        co = os.path.dirname(os.path.dirname(tools))
+        excludes = scratch.write(os.path.join(os.path.dirname(co),
+                                              "excludes"), "extra.py\n")
+        git(co, "config", "core.excludesFile", excludes)
+        scratch.write(os.path.join(tools, "vtrux_build", "extra.py"), "y\n")
+        self.assertEqual(git(co, "status", "--porcelain"), "",
+                         "the setup: git itself hides the file")
+        self.refused(root, tools, "vtrux_build/extra.py", "R23")
+
+    def test_hidden_by_info_exclude_refused(self):
+        root, tools, _ = project("pin_info_exclude")
+        co = os.path.dirname(os.path.dirname(tools))
+        scratch.write(os.path.join(co, ".git", "info", "exclude"),
+                      "extra.py\n")
+        scratch.write(os.path.join(tools, "vtrux_build", "extra.py"), "y\n")
+        self.assertEqual(git(co, "status", "--porcelain"), "",
+                         "the setup: git itself hides the file")
+        self.refused(root, tools, "vtrux_build/extra.py", "R23")
+
+    def test_uncommitted_gitignore_hiding_itself_refused(self):
+        """A .gitignore that is not the commit's cannot hide files, even
+        when it lists itself."""
+        root, tools, _ = project("pin_self_ignore")
+        scratch.write(os.path.join(tools, "vtrux_build", ".gitignore"), "*\n")
+        scratch.write(os.path.join(tools, "vtrux_build", "extra.py"), "y\n")
+        self.refused(root, tools, "vtrux_build/.gitignore",
+                     "not in the commit", "R23")
+
+    def test_changed_root_gitignore_refused(self):
+        """The .gitignore above the component counts only as committed."""
+        root, tools, _ = project("pin_root_ignore")
+        co = os.path.dirname(os.path.dirname(tools))
+        scratch.write(os.path.join(co, ".gitignore"),
+                      pinkit.ROOT_GITIGNORE + "extra.py\n")
+        scratch.write(os.path.join(tools, "vtrux_build", "extra.py"), "y\n")
+        self.refused(root, tools, ".gitignore", "differs from the commit's",
+                     "R23")
+
+    def test_pin_digest_not_the_commits_refused(self):
+        """HEAD and the tag match the pin and the disk is clean, but the
+        pin's digest is not R7 of that commit."""
+        root, tools, good = project("pin_digest")
+        bad = dict(good, digest="e" * 64)
+        scratch.write(os.path.join(root, pin.PIN_FILE), pinkit.pins_text(bad))
+        self.refused(root, tools, "digest", good["digest"], "R23")
+
+    def test_git_digest_is_r7(self):
+        """git_digest gives digest.component_digest's value for the same
+        files: nested folders, .md and .gitignore files left out, a
+        .markdown counted."""
+        files = {"vtrux_build/__init__.py": "x = 1\n", "README.md": "t\n",
+                 "a/b/c.txt": b"\x00\x01", "a/.gitignore": "z\n",
+                 "notes.markdown": "m\n", "README.MD": "M\n"}
+        d = scratch.fresh("pin_git_digest")
+        tools, good = pinkit.checkout(d, files=files)
+        co = os.path.dirname(os.path.dirname(tools))
+        self.assertEqual(pin.git_digest(co, good["commit"]), good["digest"])
+
+    @unittest.skipIf(os.name == "nt", "symbolic links need privileges")
+    def test_symlink(self):
+        """A committed symbolic link to a file passes, and R7 reads through
+        it, from git as from the disk; pointed elsewhere it is refused."""
+        d = scratch.fresh("pin_symlink")
+        co = os.path.join(d, "shared-" + TAG)
+        tools = os.path.join(co, "shared", "tools")
+        for rel, text in dict(pinkit.TOOL_FILES, **{"other.py": "o\n"}).items():
+            scratch.write(os.path.join(tools, *rel.split("/")), text)
+        scratch.write(os.path.join(co, ".gitignore"), pinkit.ROOT_GITIGNORE)
+        os.symlink("vtrux_build/__init__.py", os.path.join(tools, "link.py"))
+        git(co, "init", "-q")
+        git(co, "add", "-A")
+        git(co, "commit", "-qm", "shared")
+        git(co, "tag", TAG)
+        good = pinkit.pin_of(tools)
+        self.assertEqual(pin.git_digest(co, good["commit"]), good["digest"])
+        top = os.path.join(d, "proj")
+        scratch.write(os.path.join(top, pin.PIN_FILE), pinkit.pins_text(good))
+        git(top, "init", "-q")
+        git(top, "add", "-A")
+        git(top, "commit", "-qm", "init")
+        self.assertEqual(pin.check(top, tools), dict(good, dirty=False))
+        os.remove(os.path.join(tools, "link.py"))
+        os.symlink("other.py", os.path.join(tools, "link.py"))
+        self.refused(top, tools, "link.py", "symbolic link to", "R23")
+
+    @unittest.skipUnless(UNDER_TEST, "only under --can-fail")
+    def test_the_copy_under_test_is_imported(self):
+        self.assertTrue(os.path.realpath(pin.__file__).startswith(
+            os.path.realpath(UNDER_TEST)), pin.__file__)
 
     def test_head_differs(self):
         """A later commit that changes only a .md file keeps the digest, and
@@ -240,5 +432,102 @@ class Check(unittest.TestCase):
         self.assertEqual(pin.check(root, tools), dict(good, dirty=False))
 
 
+# (name, text of vtrux_build/pin.py, its replacement): each must make this
+# file fail. The text must occur in pin.py exactly once.
+MUTANTS = [
+    ("a machine's excludes counted (--exclude-standard)",
+     '"--exclude-per-directory=.gitignore",', '"--exclude-standard",'),
+    ("no check for other files",
+     '    extra = untracked_files(checkout, pin["commit"])\n',
+     '    extra = []\n'),
+    ("an uncommitted .gitignore may hide files",
+     'if p and posixpath.basename(p) == ".gitignore" and not any(',
+     'if False and not any('),
+    ("the .gitignore above the component not compared",
+     "        elif got != r.stdout:\n",
+     "        elif False:\n"),
+    ("tracked files not compared",
+     '    changed = tracked_differences(checkout, pin["commit"])\n',
+     '    changed = []\n'),
+    ("bytes not compared",
+     "        if got != want:\n            out.append(\"%s: its bytes",
+     "        if False:\n            out.append(\"%s: its bytes"),
+    ("bytes compared after line-ending conversion",
+     "        if got != want:\n            out.append(\"%s: its bytes",
+     "        if got.replace(b\"\\r\\n\", b\"\\n\") != want:\n"
+     "            out.append(\"%s: its bytes"),
+    ("a missing file passes",
+     '            out.append("%s: missing" % p)\n',
+     '            pass\n'),
+    ("the execute bit not compared",
+     "        elif not windows:\n", "        elif False:\n"),
+    ("the full permission bits compared",
+     "            if executable != (mode == EXECUTABLE):\n",
+     "            if executable != (mode == EXECUTABLE) or not "
+     "st.st_mode & stat.S_IWUSR:\n"),
+    ("a symbolic link's target not compared",
+     "                if got != want:\n                    out.append(\"%s: a "
+     "symbolic link to",
+     "                if False:\n                    out.append(\"%s: a "
+     "symbolic link to"),
+    ("the digest taken from the disk",
+     '    digest = git_digest(checkout, pin["commit"])\n',
+     '    from .digest import component_digest\n'
+     '    digest = component_digest(tools_root)\n'),
+    ("the pin's digest not compared",
+     '    if digest != pin["digest"]:\n', '    if False:\n'),
+    ("git_digest counts .md files",
+     "        if excluded(posixpath.basename(p)):\n",
+     "        if posixpath.basename(p) == \".gitignore\":\n"),
+    ("HEAD not compared",
+     '    if rc != 0 or head != pin["commit"]:\n', '    if False:\n'),
+    ("the tag's commit not compared",
+     '    if tagged != pin["commit"]:\n', '    if False:\n'),
+]
+
+
+def can_fail():
+    """Run this file against the unedited pin.py and each mutant; True if
+    the first passes and every mutant fails."""
+    src_pkg = os.path.join(os.path.dirname(HERE), "vtrux_build")
+    with open(os.path.join(src_pkg, "pin.py"), encoding="utf-8") as f:
+        source = f.read()
+    ok = True
+    for i, (name, old, new) in enumerate([("control", None, None)] + MUTANTS):
+        if old is not None and source.count(old) != 1:
+            print("%-52s BAD MUTANT (its text occurs %d times in pin.py)"
+                  % (name, source.count(old)))
+            ok = False
+            continue
+        base = scratch.fresh("canfail_%02d" % i)
+        pkg = os.path.join(base, "vtrux_build")
+        shutil.copytree(src_pkg, pkg,
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        if old is not None:
+            scratch.write(os.path.join(pkg, "pin.py"),
+                          source.replace(old, new))
+        env = dict(os.environ, VTRUX_BUILD_UNDER_TEST=base,
+                   PYTHONDONTWRITEBYTECODE="1")
+        r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__)],
+                           env=env, capture_output=True, text=True)
+        last = (r.stderr.strip().splitlines() or ["(no output)"])[-1]
+        if old is None:
+            good = r.returncode == 0
+            print("%-52s %s (%s)" % (name, "passes" if good else "FAILS", last))
+            if not good:
+                print(r.stderr[-3000:])
+        else:
+            good = r.returncode != 0
+            print("%-52s %s (%s)" % (name, "caught" if good else "MISSED",
+                                     last))
+        ok = ok and good
+    print("can-fail: %s, %s" % ("PASS" if ok else "FAIL",
+                                "the control passes and all %d mutants fail"
+                                % len(MUTANTS) if ok else "see above"))
+    return ok
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--can-fail"]:
+        sys.exit(0 if can_fail() else 1)
     unittest.main()
