@@ -43,8 +43,11 @@ far as the case needs. It never judges the wording. A case whose trigger did not
 happen (a watcher that never fired, a launcher CMake did not take) is VOID, never
 a pass.
 
-Before each case: the bench lock must be free, the "No builds" line clear, and no
-simulator running (AGENTS.md "Builds during wall-clock tests"). Otherwise it stops.
+Nothing outside the build gates a case (AGENTS.md "Parallel work on the shared machine"):
+builds run beside wall-clock tests and the machine's other work, so neither the bench
+lock, bench-holder.md's retired "No builds" line nor a running simulator stops one, as
+they did until 2026-11-17 (bench_clear). On madhouse-debian start it in build.slice.
+--self-test checks that no case script here reads any of them.
 
 Gen-inhibit tester, 2026-10-24 (C6f verification, part A real builds).
 """
@@ -314,6 +317,7 @@ def self_test():
     ok &= self_test_shared(I.scratch("release-cases-selftest-shared"))
     ok &= self_test_base(I.scratch("release-cases-selftest-base"))
     ok &= self_test_board(I.scratch("release-cases-selftest-board"))
+    ok &= self_test_ungated()
     rc, out = run([sys.executable, "-c", "print('PASS R30'); print('x')"])
     good = rc == 0 and out == "PASS R30\nx\n"
     print("  %s run(): a child's lines end in LF alone, so a judge's ^...$ matches them: %r" % ("ok  " if good else "FAIL", out))
@@ -369,41 +373,59 @@ def rmtree(p):
         raise RuntimeError("could not remove %s (the reasons are printed above)" % p)
 
 
-def bench_clear(log):
-    """AGENTS.md: before a build, the bench lock, the "No builds" line, and running simulators."""
-    ri = os.environ.get("REAL_REVERSE_IT_DIR") or ""
-    why = []
-    bench = os.path.join(os.path.dirname(os.path.dirname(TOOLS)), "shared", "bench")
-    if platform.system() != "Windows":
-        pass                # the bench and its lock are on NICKY-XPS; a build elsewhere does not touch it
-    elif os.path.isdir(os.path.join(bench, "vtrux_bench")):
-        _rc, out = run([sys.executable, "-B", "-m", "vtrux_bench.bench_lock", "status"], cwd=bench, env=dict(os.environ))
-        if "the lock is free" not in out:
-            why.append("bench lock: " + " | ".join(out.strip().splitlines()[:2]))
-    else:
-        why.append("no shared/bench here to read the lock with")
-    holder = os.path.join(ri, "firmware", "bench-holder.md")
-    if ri and os.path.exists(holder):
-        m = re.search(r"\*\*No builds:\*\*\s*(\S+)", open(holder, encoding="utf-8").read())
-        if not m or m.group(1) != "--":
-            why.append("No builds line: %s" % (m.group(1) if m else "not found"))
-    elif platform.system() == "Windows":
-        why.append("REAL_REVERSE_IT_DIR unset or no bench-holder.md: cannot read the No builds line")
-    sims = []
-    if platform.system() == "Windows":
-        ps = ("Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.ProcessId -ne $PID } | "
-              "ForEach-Object { $_.CommandLine }")
-        _rc, out = run(["powershell", "-NoProfile", "-Command", ps])
-    else:
-        _rc, out = run(["ps", "-eo", "args"])
-    for line in out.splitlines():
-        if re.search(r"charger_sim|charge-interposer[\\/].*sim|tools[\\/]gen_inhibit[\\/]gi_", line):
-            sims.append(line.strip()[:120])
-    if sims:
-        why.append("simulators running: %s" % sims)
-    with open(log, "a", encoding="utf-8") as f:
-        f.write("bench check: %s\n\n" % ("clear" if not why else "; ".join(why)))
-    return why
+def gate_uses(src):
+    """Where a case script's code (its docstrings aside) reads what bench_clear read until
+    2026-11-17: a bench_clear name, the bench lock's module, bench-holder.md or its "No builds"
+    line, each as (line, what). This check's own two functions are not read: their strings
+    name what they look for."""
+    import ast
+    tree = ast.parse(src)
+    docs = set()
+    for node in [tree] + [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.ClassDef))]:
+        if node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant):
+            docs.add(id(node.body[0].value))
+        if isinstance(node, ast.FunctionDef) and node.name in ("gate_uses", "self_test_ungated"):
+            docs.update(id(x) for x in ast.walk(node))
+    hits = []
+    for n in ast.walk(tree):
+        if id(n) in docs:
+            continue
+        if isinstance(n, ast.Name) and n.id == "bench_clear" or isinstance(n, ast.Attribute) and n.attr == "bench_clear":
+            hits.append((n.lineno, "bench_clear"))
+        elif isinstance(n, ast.FunctionDef) and n.name == "bench_clear":
+            hits.append((n.lineno, "def bench_clear"))
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs:
+            for what in ("No builds", "bench-holder", "bench_lock"):
+                if what in n.value:
+                    hits.append((n.lineno, what))
+    return hits
+
+
+def self_test_ungated():
+    """No case script here is gated on anything outside the build (AGENTS.md "Parallel work on
+    the shared machine"; the gate went 2026-11-17). Shown able to fail on the gate as it was."""
+    ok = True
+    old = ('def bench_clear(log):\n    """doc: No builds"""\n'
+           '    m = re.search(r"\\*\\*No builds:", open("bench-holder.md").read())\n'
+           '    run([sys.executable, "-m", "vtrux_bench.bench_lock", "status"])\n'
+           'for n in names:\n    why = RC.bench_clear(log)\n')
+    got = sorted(set(w for _, w in gate_uses(old)))
+    good = got == ["No builds", "bench-holder", "bench_clear", "bench_lock", "def bench_clear"]
+    print("  %s the gate check finds the old gate: %s" % ("ok  " if good else "FAIL", got))
+    ok &= good
+    good = gate_uses('"""No builds, bench-holder, bench_clear: a docstring only"""\n') == []
+    print("  %s the gate check passes a docstring that names them" % ("ok  " if good else "FAIL"))
+    ok &= good
+    here = os.path.dirname(os.path.abspath(__file__))
+    names = sorted(f for f in os.listdir(here) if f.endswith("_cases.py"))
+    for f in names:
+        with open(os.path.join(here, f), encoding="utf-8") as fh:
+            hits = gate_uses(fh.read())
+        print("  %s %s gates no case: %s" % ("ok  " if not hits else "FAIL", f, hits or "nothing read"))
+        ok &= not hits
+    good = len(names) >= 8
+    print("  %s every case script checked (%d)" % ("ok  " if good else "FAIL", len(names)))
+    return ok & good
 
 
 def layout_of(repo, rev):
@@ -2458,10 +2480,6 @@ def main(argv):
     for n, fn in CASES:
         if n not in names:
             continue
-        why = bench_clear(ctx.log)
-        if why:
-            report(n, "STOPPED", "; ".join(why), ctx.log)
-            break
         log = os.path.join(ctx.out, "case_%s.log" % n)
         t0 = time.time()
         try:

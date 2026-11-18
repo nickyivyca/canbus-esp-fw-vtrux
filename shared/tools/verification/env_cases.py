@@ -101,8 +101,8 @@ refusal with no reconfigure started is the FAIL above.
 
 Each case judges from outside: exit codes, output names (only that the refusal names the
 variable R32 requires it to), the record folder, the build folder, the process table. It never
-judges other wording. Before each case: the bench lock, the "No builds" line, simulators
-(release_cases.bench_clear).
+judges other wording. Nothing outside the build gates a case, as in release_cases.py
+(AGENTS.md "Parallel work on the shared machine").
 
 Gen-inhibit tester, 2026-11-03 (gen-inhibit port step 1d).
 """
@@ -1639,10 +1639,6 @@ def main(argv):
     for n, fn in CASES:
         if n not in names_:
             continue
-        why = R.bench_clear(ctx.log)
-        if why:
-            R.report(n, "STOPPED", "; ".join(why), ctx.log)
-            break
         log = os.path.join(ctx.out, "env_%s.log" % n)
         t0 = time.time()
         try:

@@ -41,8 +41,8 @@ none.
     new_reader     a release build of a commit making main/can.c include board_pins.h (not on
                    the list): fails naming main/can.c alone
 
-Before each case it checks the bench lock, the "No builds" line and running simulators, as
-release_cases.py does.
+Nothing outside the build gates a case, as in release_cases.py (AGENTS.md "Parallel work
+on the shared machine").
 """
 
 import json
@@ -655,10 +655,6 @@ def main(argv):
     for n, fn in CASES:
         if n not in names:
             continue
-        why = RC.bench_clear(ctx.log)
-        if why:
-            RC.report(n, "STOPPED", "; ".join(why), ctx.log)
-            break
         log = os.path.join(ctx.out, "pins_%s.log" % n)
         t0 = time.time()
         try:
