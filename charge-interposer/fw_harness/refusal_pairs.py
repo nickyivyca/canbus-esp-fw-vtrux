@@ -48,7 +48,10 @@ refusal_pairs_test.py tests the judging on synthetic builds (--can-fail).
 import os
 import sys
 
-# A __pycache__ written into the pinned checkout would change its R7 digest.
+# No bytecode in a pinned checkout: the harness's pins are checked through
+# git (shared/tools R23), but shared/tools at the tag the product pins may
+# still hash its files on disk (2026.11.08 does), where a __pycache__ would
+# change its R7 digest.
 sys.dont_write_bytecode = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))

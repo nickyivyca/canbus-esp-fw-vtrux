@@ -31,6 +31,7 @@ executable and, off Windows, a symbolic link to a file.
      changed, the same text with CRLF endings (named as line endings), a
      regular file made executable, an executable made not executable, a
      tracked file missing, a folder where git has a file, an untracked file,
+     a file staged in the checkout's index (git add) but not in the commit,
      one hidden only by the checkout's info/exclude or only by the global
      core.excludesFile (each shown first to hide it from git status), an
      uncommitted .gitignore under the component that hides a file and
@@ -291,6 +292,16 @@ def r23_cases(fx, co1, bench):
     write(bench, {"tests/stray.pyc": "bytecode"})
     passes("9 a *.pyc the committed .gitignore lists passes", *args)
     os.remove(os.path.join(bench, "tests", "stray.pyc"))
+
+    write(bench, {"staged.txt": "b\n"})
+    git(co1, "add", "--", "shared/bench/staged.txt")
+    check("9 (control) git ls-files --others skips the staged staged.txt",
+          "staged.txt" not in git(co1, "ls-files", "--others", "--", "shared/bench"))
+    refused("9 a file staged in the index (git add) but not in the commit",
+            P.folder, *args,
+            has="shared/bench/staged.txt: in the checkout's index, not in the commit")
+    git(co1, "rm", "-q", "--cached", "--", "shared/bench/staged.txt")
+    os.remove(os.path.join(bench, "staged.txt"))
 
     stray = os.path.join(bench, "stray.txt")
     excl = os.path.join(co1, git(co1, "rev-parse", "--git-path", "info/exclude"))
@@ -718,6 +729,8 @@ MUTANTS = [
      '"--exclude-per-directory=.gitignore",', '"--exclude-standard",'),
     ("the committed .gitignore not honoured (4c)",
      '"--exclude-per-directory=.gitignore",\n', ""),
+    ("a file staged in the index and not in the commit accepted (4c)",
+     "        if p and p not in committed:", "        if False:"),
     ("an uncommitted .gitignore under the component accepted (4c)",
      '        if p and posixpath.basename(p) == ".gitignore" and not any(',
      "        if False and not any("),

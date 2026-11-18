@@ -46,8 +46,8 @@ firmware/build/ itself, and shared/tools' checks read every CMake build
 folder under it.
 
 With --scratch-from DIR the worktrees go in a folder of the scratch/ of the
-worktree holding DIR instead (scratch_dir), with a read-only checkout
-shared-<tag> beside them for each tag the product commit's
+worktree holding DIR instead (scratch_dir), with a checkout shared-<tag>,
+checked through git (shared/tools R23), beside them for each tag the product commit's
 shared_pins.json pins, which their vtrux_tools.py needs. An acceptance list
 passes its {clone}: beside a runner's tree the build folders are too deep
 for ESP-IDF on Windows. Either way a build folder over MAX_BUILD_DIR
@@ -128,8 +128,8 @@ def too_deep(paths, limit=MAX_BUILD_DIR):
 
 
 def shared_tags(pins_text):
-    """The distinct tags a shared_pins.json pins, sorted: one read-only
-    checkout shared-<tag> each, which a worktree's vtrux_tools.py looks for
+    """The distinct tags a shared_pins.json pins, sorted: one checkout
+    shared-<tag> each, checked through git (shared/tools R23), which a worktree's vtrux_tools.py looks for
     beside it."""
     import json
     return sorted({v["tag"] for v in json.loads(pins_text).values()})

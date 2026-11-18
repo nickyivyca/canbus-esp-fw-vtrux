@@ -65,8 +65,8 @@ comment and a string, must still PASS (the stripping is not what passes).
 --mutant-build makes the one mutant build: run from a git checkout of this
 repo (the list's tree), in a shell exported for the interposer's ESP-IDF
 (the runner's "idf" shell), it clones the checkout's HEAD into this run's
-scratch folder with, beside it, a read-only checkout shared-<tag> for each
-tag firmware/shared_pins.json pins (detached at the tag, fetched from the
+scratch folder with, beside it, a checkout shared-<tag>, checked through git
+(shared/tools R23), for each tag firmware/shared_pins.json pins (detached at the tag, fetched from the
 checkout, its commit checked against the pin; the clone's vtrux_tools.py
 runs shared/tools from it, R23; removed with git worktree remove after the
 build), adds to firmware/main/main.cpp a global object whose
@@ -516,8 +516,8 @@ PINS_FILE = ("charge-interposer", "firmware", "shared_pins.json")
 
 
 def pinned_checkouts(pins_text, repo):
-    """[(tag, path, commit)]: the read-only checkouts the clone at repo needs
-    beside it, one shared-<tag> for each distinct tag shared_pins.json pins
+    """[(tag, path, commit)]: the checkouts, checked through git (shared/tools
+    R23), the clone at repo needs beside it, one shared-<tag> for each distinct tag shared_pins.json pins
     (vtrux_tools.py runs shared/tools from ../shared-<tag>/ beside the
     worktree's root, shared/tools R23), each to be detached at its tag,
     whose commit is the pins'. Refused if the pins are unreadable, or one

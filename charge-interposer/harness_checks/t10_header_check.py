@@ -47,8 +47,9 @@ idf_in_fake off, a fake-side mutant passes; an allowance nothing needs
 passes with allowances_needed off and fails with it on.
 
 Every mutant's fake comes from a read-only copy of the fake's twai_port,
-as from a pinned checkout, which is read-only (AGENTS.md, from 2026-11-17;
-the charge-interposer reviewer, 2026-11-17), and each copy made from it is
+as from a pinned checkout made before R23, which may be read-only (a
+pinned checkout is checked through git, shared/tools R23; the
+charge-interposer reviewer, 2026-11-17), and each copy made from it is
 made writable (writable_copy: copytree keeps the mode bits); with
 writable_copy off, a mutant cannot be written into its copy.
 
@@ -473,7 +474,7 @@ def _set_writable(root, on):
 
 def read_only_source(fake_dir, dest):
     """A copy of the fake's twai_port, made read-only, as a pinned checkout
-    is; its fake's folder."""
+    made before R23 may be; its fake's folder."""
     fd = copy_fake(fake_dir, dest)
     _set_writable(os.path.dirname(fd), False)
     return fd
@@ -486,7 +487,8 @@ def can_fail(fake_dir, root, out=print):
         rc = check(fake_dir, root, out=lambda s: None)
         out("%s  control: the unchanged files pass" % ("ok  " if rc == 0 else "FAIL"))
         bad += rc != 0
-        # every mutant's fake from a read-only source, as a pinned checkout is
+        # every mutant's fake from a read-only source, as a pinned checkout
+        # made before R23 may be
         src = read_only_source(fake_dir, os.path.join(work, "source"))
         for n, (side, rel, name, old, new) in enumerate(MUTANTS, 1):
             w = os.path.join(work, "m%d" % n)
