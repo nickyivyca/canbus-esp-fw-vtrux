@@ -28,6 +28,12 @@ NOACK, no socket opened. A link not as the phase needs is a VOID line with
 the kernel's USB/CAN lines, and the run stops there (exit 1, no RESULT
 line). Under CANlib, "closed" was enough for NOACK.
 
+A PCAN READER THAT DIES (the charge-interposer reviewer, 2026-11-19): the
+PCAN's receive thread runs under reader_death's guard, and a phase whose
+reader died is VOID with the error, its rows not judged; no later phase
+runs and no RESULT line follows (exit 1 with a VOID line: VOID). It was a
+TEST FAULT, which the suite counted FAIL.
+
 Phases:
   ACK     the Kvaser's link UP: CYCLES cycles, the measurement
   NOACK   the can-fail: the Kvaser's link DOWN (nothing acknowledges), CANFAIL
@@ -238,9 +244,85 @@ def self_test():
     check(not ok and ln.startswith("VOID: kvaser link: the kvaser link reads up")
           and "error -71" in ln,
           "link: an UP link under NOACK is caught, a VOID line with the kernel's lines")
+    Link.fail = None
+    for ok, what in reader_death_checks(Link):
+        check(ok, what)
     print("\nbench_switch_errors self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
+
+
+def reader_death_checks(link):
+    """-> [(ok, what)]. run_phases end to end with stand-ins: the PCAN gives
+    three bridged frames after the baseline take(), then raises a PCAN
+    status (a VOID line naming the error, no RESULT, no TEST FAULT, NOACK
+    not run) or goes quiet (the three are counted and both phases judged,
+    as before)."""
+    import types
+    import bench_usb_host as U
+    import reader_death
+    real = time
+
+    class Port(object):
+        stamped = []
+
+        def mark(self, text):
+            return real.perf_counter()
+
+    class Inno(object):
+        def recv(self, timeout=None):
+            real.sleep(0.005)
+
+        def send(self, msg, timeout=None):
+            pass
+
+    def frames():
+        return [types.SimpleNamespace(timestamp=1.0, arbitration_id=H.FILLER,
+                                      is_error_frame=False, is_rx=True,
+                                      data=bytes([0, 0, 0, i, 0, 0, 0, 0]))
+                for i in range(3)]
+
+    class QuietBus(reader_death.RaisingBus):
+        def recv(self, timeout=None):
+            real.sleep(self.delay)
+            if self.frames:
+                return self.frames.pop(0)
+
+    g = globals()
+    saved = (U.open_pcan, g["SETTLE_S"], g["ON_S"], g["CYCLE_S"])
+    out = []
+    try:
+        # frames at 40, 80, 120 ms, after the baseline take() at 20 ms; the
+        # raise at 160 ms, well inside the phase's 540 ms
+        g.update(SETTLE_S=0.02, ON_S=0.05, CYCLE_S=0.5)
+        U.open_pcan = lambda acks: reader_death.RaisingBus(
+            frames(), RuntimeError("A PCAN status 0x2 OVERRUN"), delay=0.04)
+        link.calls = []
+        logged = []
+        v = run_phases(Port(), Inno(), logged.append, 1, link)
+        voids = [x for x in logged if x.startswith("VOID")]
+        out.append((v is None and len(voids) == 1 and "OVERRUN" in voids[0]
+                    and "the pcan reader died" in voids[0]
+                    and not any(x.startswith("RESULT") or "TEST FAULT" in x
+                                for x in logged),
+                    "CAN-FAIL: a PCAN reader that raises mid-phase: no verdict "
+                    "on its rows, no TEST FAULT, one VOID line with the error: "
+                    "%s" % voids))
+        out.append((link.calls == [True],
+                    "... and the NOACK phase is not run after it: %s" % link.calls))
+        U.open_pcan = lambda acks: QuietBus(frames(), delay=0.04)
+        link.calls = []
+        logged = []
+        v = run_phases(Port(), Inno(), logged.append, 1, link)
+        seen = [x for x in logged if "3 seen complete" in x]
+        out.append((v is not None and set(v) == {"ACK", "NOACK"}
+                    and "void" not in v.values() and len(seen) == 2
+                    and not any(x.startswith("VOID") for x in logged),
+                    "the same rows from a reader that lived are counted, both "
+                    "phases judged: %s" % v))
+    finally:
+        U.open_pcan, g["SETTLE_S"], g["ON_S"], g["CYCLE_S"] = saved
+    return out
 
 
 def phase_link(acked, link):
@@ -296,7 +378,6 @@ def phase(name, hp, gs, acked, cycles, log):
     time.sleep(SETTLE_S)
     h1 = hp.mark("%s end" % name)
     rows = pc.take()
-    alive = pc.t.is_alive()
     logging.getLogger("can.pcan").removeHandler(hnd)
     gstop.set()
     gt.join(1.0)
@@ -308,19 +389,42 @@ def phase(name, hp, gs, acked, cycles, log):
                 f.write("%.6f %.6f %X %d %s\n" % (r[0], r[1], r[2],
                                                  1 if r[3] else 0,
                                                  r[4].hex()))
+    if pc.death.error:
+        # 2026-11-19, the charge-interposer reviewer: a reader that dies is
+        # not a product result; the phase is VOID, its rows not judged
+        log("phase %s: %d cycles, %d charger frames sent -> VOID" % (name, cycles, n))
+        log(pc.death.void_line())
+        return "void"
     smp = [x for x in samples(hp.stamped) if h0 - 5.5 <= x[0] <= h1]
     err_hosts = [r[1] for r in rows if r[3]]
     iv = intervals(smp, err_hosts)
     v, lines = judge(iv, acked)
-    if not alive:
-        v, lines = "fault", ["TEST FAULT: the PCAN's receive thread died (%s)"
-                             % pc.death.error] + lines
     bridged = sum(1 for r in rows if r[2] == H.FILLER and not r[3])
     log("phase %s: %d cycles, %d charger frames sent, %d seen complete on the "
         "vehicle wire by the PCAN, %d PCAN bus-state warning(s) -> %s"
         % (name, cycles, n, bridged, warn[0], v.upper()))
     for ln in lines:
         log("  " + ln)
+    return v
+
+
+def run_phases(hp, gs, log, cycles, link=kvaser_link):
+    """ACK then NOACK. -> {phase: verdict}, or None when a phase was not run
+    (its Kvaser link not as it needs) or not judged (its PCAN reader died,
+    the reviewer's ruling of 2026-11-19): then a VOID line is logged, no
+    later phase runs and no RESULT line follows; the exit code is 1 with a
+    VOID line and no FAIL line, which script_judge reads VOID."""
+    v = {}
+    for name, acked, n in (("ACK", True, cycles), ("NOACK", False, CANFAIL)):
+        ok, line = phase_link(acked, link)
+        log(line)
+        if not ok:
+            log("phase %s not run: the Kvaser's link is not as the phase needs" % name)
+            return None
+        v[name] = phase(name, hp, gs, acked, n, log)
+        if v[name] == "void":
+            log("phase %s not judged: its PCAN reader died" % name)
+            return None
     return v
 
 
@@ -341,19 +445,14 @@ def run_bench(a):
     ROWS_BASE = os.path.splitext(a.out)[0]
     hp = U.HostPort(a.port, os.path.splitext(a.out)[0] + "_serial.txt")
     gs = RF.open_gs_usb()
-    v = {}
     try:
-        for name, acked, cycles in (("ACK", True, a.cycles), ("NOACK", False, CANFAIL)):
-            ok, line = phase_link(acked, kvaser_link)
-            log(line)
-            if not ok:
-                log("phase %s not run: the Kvaser's link is not as the phase needs" % name)
-                out.close()
-                return 1
-            v[name] = phase(name, hp, gs, acked, cycles, log)
+        v = run_phases(hp, gs, log, a.cycles)
     finally:
         gs.shutdown()
         hp.close()
+    if v is None:
+        out.close()
+        return 1
     v1, v2 = v["ACK"], v["NOACK"]
     log("RESULT: ACK %s, NOACK (can-fail) %s" % (v1, v2))
     out.close()
@@ -368,6 +467,14 @@ MUTANTS = [
      "        return True, \"not set\""),
     ("link: a failure not VOID", "        return False, link.link_void(e, t0, time.time())",
      "        return True, str(e)"),
+    # 2026-11-19, the charge-interposer reviewer: a dead reader is VOID
+    ("reader death: a dead reader's rows judged",
+     "    if pc.death.error:\n", "    if False:\n"),
+    ("reader death: no VOID line", "        log(pc.death.void_line())\n", ""),
+    ("reader death: the phases go on after it",
+     "        if v[name] == \"void\":\n"
+     "            log(\"phase %s not judged: its PCAN reader died\" % name)\n"
+     "            return None\n", ""),
 ]
 
 
