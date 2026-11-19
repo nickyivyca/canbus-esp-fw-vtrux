@@ -313,7 +313,8 @@ def phase(name, hp, gs, acked, cycles, log):
     iv = intervals(smp, err_hosts)
     v, lines = judge(iv, acked)
     if not alive:
-        v, lines = "fault", ["TEST FAULT: the PCAN's receive thread died"] + lines
+        v, lines = "fault", ["TEST FAULT: the PCAN's receive thread died (%s)"
+                             % pc.death.error] + lines
     bridged = sum(1 for r in rows if r[2] == H.FILLER and not r[3])
     log("phase %s: %d cycles, %d charger frames sent, %d seen complete on the "
         "vehicle wire by the PCAN, %d PCAN bus-state warning(s) -> %s"

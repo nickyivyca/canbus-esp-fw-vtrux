@@ -79,6 +79,15 @@ which every case had its own folder):
     bench_powerup_round's invariant), so a failing boot is no longer a
     PASS of the case.
 
+A READER THAT DIES (the charge-interposer reviewer's PCAN ruling 1,
+2026-11-19): Rx, the PCAN reader thread here and in switch_pending,
+flight_silence, mcp_reset and switch_errors, reads under
+reader_death.guard, so a recv that raises (python-can raises on most PCAN
+statuses) is kept in Rx.death with its text. A not-reading or close boot
+whose PCAN reader died is VOID with that text (reader_death.DIED), and
+verdict_rc then exits 3 (VOID) unless another boot FAILED, even when the
+other boots passed.
+
 CAPACITY AND THE WICAN'S USB (reviewer ruling, 2026-10-22, after 700f's
 noread-ack VOID at 480 s: the host side held 12.6 kB on 2026-10-14 and
 98.6 kB on 700f, both with "rx asked for 64 B"):
@@ -113,6 +122,7 @@ sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 import adapter_roles               # noqa: E402  (every adapter by its bench role)
 import kvaser_link                  # noqa: E402  (the Kvaser on kvaser_usb)
+import reader_death                 # noqa: E402  (a reader that dies is VOID)
 import scratch_dir                  # noqa: E402
 
 INJECT_ID = 0x6A2          # clear of the truck, the WiCAN, the interposer
@@ -135,14 +145,35 @@ ESP_USB_JTAG = (0x303A, 0x1001)   # the X2's and the WiCAN's USB port
 
 def verdict_rc(oks):
     """A case's exit code from its items' verdicts (True / False / None for
-    VOID): 1 if any FAILED, 3 if there were none or every one was VOID, else
-    0. A case that tested nothing must not exit 0 (a25e noread-boots)."""
+    VOID, reader_death.DIED for an item whose reader died): 1 if any
+    FAILED, 3 if there were none, every one was VOID, or any item's reader
+    died (2026-11-19), else 0. A case that tested nothing must not exit 0
+    (a25e noread-boots)."""
     oks = list(oks)
     if any(o is False for o in oks):
         return 1
     if not oks or all(o is None for o in oks):
         return 3
+    if any(o == reader_death.DIED for o in oks):
+        return 3
     return 0
+
+
+class _RxMsg(object):
+    """A received frame for the self-test's Rx."""
+
+    def __init__(self, can_id, is_rx=True):
+        self.arbitration_id, self.is_rx = can_id, is_rx
+        self.timestamp, self.is_error_frame, self.data = 1.0, False, bytes(8)
+
+
+def void_if_dead(ok, lines, rx, tag):
+    """An item's (ok, lines), or (reader_death.DIED, [its VOID line]) when
+    its reader rx died (the charge-interposer reviewer's PCAN ruling 1,
+    2026-11-19): a reader that dies is not a product result."""
+    if rx is not None and rx.death.error:
+        return reader_death.DIED, [rx.death.void_line(tag)]
+    return ok, lines
 
 
 def baseline_boots_rc(vals):
@@ -624,20 +655,24 @@ class Rx(object):
         self.bus, self.name = bus, name
         self.rows, self.lock = [], threading.Lock()
         self.stop_ev = threading.Event()
+        self.death = reader_death.Death(name)
         self.t = threading.Thread(target=self._run, daemon=True)
         self.t.start()
 
     def _run(self):
-        while not self.stop_ev.is_set():
-            m = self.bus.recv(timeout=0.05)
-            if m is None:
-                continue
-            if getattr(m, "is_rx", True) is False:
-                continue                 # an echo of our own send
-            with self.lock:
-                self.rows.append((m.timestamp, time.perf_counter(),
-                                  m.arbitration_id, bool(m.is_error_frame),
-                                  bytes(m.data)))
+        # a raise ends the thread with the error kept (reader_death)
+        reader_death.guard(self.death, self.stop_ev, self._step)
+
+    def _step(self):
+        m = self.bus.recv(timeout=0.05)
+        if m is None:
+            return
+        if getattr(m, "is_rx", True) is False:
+            return                       # an echo of our own send
+        with self.lock:
+            self.rows.append((m.timestamp, time.perf_counter(),
+                              m.arbitration_id, bool(m.is_error_frame),
+                              bytes(m.data)))
 
     def take(self):
         with self.lock:
@@ -802,7 +837,8 @@ def case_noread_boots(a, out):
         write_rows(os.path.join(out, "witness_%s.txt" % tag), rows,
                    "PCAN %s" % ("normal" if a.ack else "listen-only"))
         st = [ln for h, ln in hp.stamped if not ln.startswith("# ")]
-        ok, ln = score_noread(st, off, hs, hr, base, tag)
+        ok, ln = void_if_dead(*score_noread(st, off, hs, hr, base, tag),
+                              rx=wit, tag=tag)
         lines.append("%s: rx %s; stop host %.3f, reset host %.3f, board "
                      "offset %s" % (tag, hp.rx_note, hs, hr, off))
         lines += ln
@@ -856,6 +892,8 @@ def case_close_boots(a, out):
         if not rebooted:
             ok, ln = None, ("VOID %s: no reboot seen after the close (first "
                             "t=%s)" % (tag, ts[0] if ts else None))
+        ok, ln = void_if_dead(ok, [ln], wit, tag)
+        ln = ln[0]
         near = [r for r in rows if hc - 0.5 <= r[1] <= hc + 3.0]
         lines.append("%s: rebooted=%s; boot line %s" % (
             tag, rebooted, "ARRIVED" if any("at boot" in x for x in st)
@@ -1355,6 +1393,48 @@ def self_test():
           "usb-host-baseline-noack)")
     check(baseline_boots_rc([{"ok_2p3": True}] * 3) == 0,
           "baseline-boots: three passing 2.3 verdicts PASS")
+
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1: a reader
+    # that dies is not a product result
+    D = reader_death.DIED
+    check(verdict_rc([True, D, True]) == 3,
+          "rc: a boot whose reader died among passes -> 3 (VOID), not 0")
+    check(verdict_rc([D, False]) == 1, "rc: a FAIL elsewhere still FAILS")
+    check(baseline_boots_rc([{"ok_2p3": True}, {"ok_2p3": D}]) == 3,
+          "baseline-boots: a boot whose witness died makes the case VOID")
+    rx = Rx(reader_death.RaisingBus(
+        [_RxMsg(0x7F4), _RxMsg(0x7F5, is_rx=False), _RxMsg(0x7F6)]), "pcan")
+    rx.t.join(2.0)
+    rows = rx.take()
+    check(not rx.t.is_alive() and rx.death.error is not None
+          and "BUSPASSIVE" in rx.death.error,
+          "Rx: a recv that raises ends the thread with the error kept: %s"
+          % rx.death.error)
+    check([r[2] for r in rows] == [0x7F4, 0x7F6],
+          "Rx: the rows before it kept, the echo skipped: %s"
+          % [hex(r[2]) for r in rows])
+    rx.close()
+    ok, ln = void_if_dead(True, ["  boot fine"], rx, "noread_ack_01")
+    check(ok == D and len(ln) == 1 and ln[0].startswith(
+        "VOID noread_ack_01: the pcan reader died") and "BUSPASSIVE" in ln[0],
+          "a boot whose reader died is VOID with the error: %s" % ln)
+    ok, ln = void_if_dead(False, ["FAIL x"], rx, "t")
+    check(ok == D, "... whatever its own verdict was (the rows are not judged)")
+    live = Rx(reader_death.RaisingBus([]), "pcan")
+    live.stop_ev.set()
+    live.t.join(2.0)
+    live.death.error = None
+    check(void_if_dead(True, ["x"], live, "t") == (True, ["x"])
+          and void_if_dead(None, ["v"], None, "t") == (None, ["v"]),
+          "a live reader (or none) leaves the verdict as it was")
+    live.close()
+    import inspect as _in
+    for fn in (case_noread_boots, case_close_boots):
+        src = _in.getsource(fn)
+        check(src.count("void_if_dead(") == 1 and "wit, tag" in src.replace(
+            "rx=wit, tag=tag", "wit, tag"),
+              "%s: its verdict goes through void_if_dead with its PCAN reader"
+              % fn.__name__)
     import types as _ty
     tdir = scratch_dir.make("usbhost-selftest")
     try:
@@ -1457,8 +1537,12 @@ def self_test():
             return 0.0
 
     class FakeRx(object):
+        dies = False
+
         def __init__(self, bus, name):
-            pass
+            self.death = reader_death.Death(name)
+            if self.dies:
+                self.death.record(RuntimeError("A PCAN status 0x10 BUSOFF"))
 
         def take(self):
             return []
@@ -1486,6 +1570,19 @@ def self_test():
             except Exception as e:                      # noqa: BLE001
                 ev.append("raised %s" % e)
             check(ev == want, "close-boots on %s: %s" % (plat, ev))
+        # 2026-11-19, PCAN ruling 1: the same boot with its PCAN reader dead
+        cargs = _ty.SimpleNamespace(ack=True, boots=1, platform="linux",
+                                    baseline_dir=None, port="X2")
+        rc0, ln0 = case_close_boots(cargs, tdir)
+        FakeRx.dies = True
+        rc1, ln1 = case_close_boots(cargs, tdir)
+        FakeRx.dies = False
+        vl = [x.strip() for x in ln1 if x.strip().startswith("VOID")]
+        check(rc0 == 0 and rc1 == 3 and len(vl) == 1 and "BUSOFF" in vl[0]
+              and "close_ack_01" in vl[0]
+              and not any(x.strip().startswith("FAIL") for x in ln1),
+              "close-boots: a passing boot (rc %s) whose PCAN reader died is "
+              "VOID with the error, rc %s: %s" % (rc0, rc1, vl))
     finally:
         g.update(saved)
 
@@ -1592,6 +1689,21 @@ MUTANTS = [
      "                except kvaser_link.Stall:\n                    raise\n", ""),
     ("injector: echoes never read", "                seq += 1\n                self.watch.poll(0.0)\n",
      "                seq += 1\n"),
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1
+    ("reader death: Rx's recv unguarded",
+     "        reader_death.guard(self.death, self.stop_ev, self._step)",
+     "        while not self.stop_ev.is_set():\n            self._step()"),
+    ("reader death: a dead reader's boot keeps its verdict",
+     "    if rx is not None and rx.death.error:", "    if False:"),
+    ("reader death: a dead reader among passes exits 0",
+     "    if any(o == reader_death.DIED for o in oks):\n        return 3",
+     "    if False:\n        return 3"),
+    ("reader death: noread-boots judged without it",
+     "        ok, ln = void_if_dead(*score_noread(st, off, hs, hr, base, tag),\n"
+     "                              rx=wit, tag=tag)",
+     "        ok, ln = score_noread(st, off, hs, hr, base, tag)"),
+    ("reader death: close-boots judged without it",
+     "        ok, ln = void_if_dead(ok, [ln], wit, tag)\n        ln = ln[0]\n", ""),
 ]
 
 

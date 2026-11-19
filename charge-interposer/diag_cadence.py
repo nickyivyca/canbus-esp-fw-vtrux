@@ -205,7 +205,9 @@ class DiagWitness(object):
             try:
                 m = self.bus.recv(timeout=0.2)
             except Exception as exc:                       # noqa: BLE001
-                self.error = str(exc)
+                # its type kept too (2026-11-19): run_scenario's
+                # witness_outcome makes the case NOT EXERCISED with it
+                self.error = "%s: %s" % (type(exc).__name__, exc)
                 return
             host = time.perf_counter()
             # the status frames, and the charger frames the board forwards:

@@ -22,6 +22,9 @@ FAILS.
 The application's start is shown on CAN instead: with --pcan the PCAN
 acknowledges on CAN1 and records the power-up round (spec 2.3), and 0x7F7
 is decoded with the diag DBC (cantools) for the build id, each phase.
+A phase whose PCAN reader died (bench_usb_host.Rx keeps the recv's error)
+is VOID with that error, its serial verdict printed but not judged (the
+charge-interposer reviewer's PCAN ruling 1, 2026-11-19).
 
 Can-fails: --self-test (synthetic streams: an app line after the banner
 FAILS, banner-only PASSES, nothing at all is VOID, a bootloader line is not
@@ -190,6 +193,46 @@ def self_test():
             (banner[:4] + own, "VOID", "a banner cut short -> VOID")):
         v, why = verdict_idf_log(classify(lines))
         check(v == want, "--idf-log: %s -> %s -> %s" % (what, v, why))
+
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1: with
+    # --pcan, a phase whose PCAN reader died is VOID with the error, whatever
+    # the serial showed (the rows only print here, so no can-fail)
+    import types
+    import reader_death
+
+    class Port(object):
+        def __init__(self, extra):
+            self.stamped = [(1.0, ln) for ln in banner + extra]
+
+        def stop_reading(self):
+            pass
+
+        def resume(self):
+            pass
+
+        def hard_reset(self):
+            return 0.5
+
+    class DeadRx(object):
+        def __init__(self, dies):
+            self.death = reader_death.Death("pcan")
+            if dies:
+                self.death.record(RuntimeError("A PCAN status 0x40 QOVERRUN"))
+
+        def take(self):
+            return []
+    a = types.SimpleNamespace(unread_s=0.0, drain_s=0.0, read_s=0.0, idf_log=False)
+    for extra, dies, want, what in (
+            ([], False, "PASS", "the banner alone, the reader alive -> PASS"),
+            ([], True, "VOID", "the banner alone, the reader dead -> VOID"),
+            (["Vtrux charge interposer"], True, "VOID",
+             "an app line, the reader dead -> VOID, not judged")):
+        logged = []
+        v = run_phase(Port(extra), DeadRx(dies), "read", a, logged.append)
+        vl = [x.strip() for x in logged if x.strip().startswith(("VOID", "FAIL"))]
+        check(v == want and (not dies or (len(vl) == 1 and "QOVERRUN" in vl[0]
+                                          and vl[0].startswith("VOID read:"))),
+              "--pcan: %s: %s" % (what, vl))
     print("\nbench_flight_silence self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -230,7 +273,14 @@ def run_phase(hp, rx, kind, a, log):
         (kind, t0, len(lines)))
     for ln in lines[:40]:
         log("    | %s" % ln[:120])
-    log("  %s -- %s" % (v, why))
+    if rx is not None and rx.death.error:
+        # the PCAN reader died: the phase is VOID with its error (the
+        # charge-interposer reviewer's PCAN ruling 1, 2026-11-19)
+        log("  " + rx.death.void_line(kind))
+        log("  (the serial verdict, not judged: %s -- %s)" % (v, why))
+        v = "VOID"
+    else:
+        log("  %s -- %s" % (v, why))
     if rx is not None:
         rows = rx.take()
         st = [r for r in rows if r[2] in STATUS_IDS and not r[3]]

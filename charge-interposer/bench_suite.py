@@ -258,6 +258,8 @@ SELF_TESTS = [
     "bench_canbench_smoke", "keepalive_probe", "rx_proc", "klog_windows",
     "bench_boot_reset", "bench_boot_reset_fixture", "bench_coredump_readback",
     "reset_check", "bench_layer_check",
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1
+    "reader_death", "bench_rate_feasibility",
 ]
 # Bench drivers whose --can-fail runs their self-test against each of their
 # MUTANTS (script_can_fail.py), run locally (test_script_coverage).
@@ -282,6 +284,9 @@ CAN_FAILS = [
     # 2026-11-19, the reviewer's bench-layer item: the hand-take bench check
     # of the harness's use of can-tools' bench_layer
     "bench_layer_check",
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1: a PCAN
+    # reader that dies is VOID, never judged on its rows
+    "reader_death", "bench_rate_feasibility",
 ]
 
 # bench_boot_reset (tracker I): chip resets per image, and the line the
