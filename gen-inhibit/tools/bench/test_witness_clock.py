@@ -148,6 +148,13 @@ MUTANTS = [
      '        m = BM.burst_measure(ms, c, BM.in_window(wire, BM.burst_window(st, cl, k)))\n',
      '        m = BM.burst_measure(ms, c, BM.in_window(wire, (s, st[k + 1] if k + 1 < len(st) else 1e9)))\n'),
     ("trip6_rearm_check.py", "B10 prints no burst timing VOID line", '        print(burst_line)\n', '        pass\n'),
+    # interlock_bench's reboot (2026-11-19)
+    ("interlock_bench.py", "the reboot passes in any mode", '    r["ok"] = bool(r["ok"]) and r.get("mode") == 0\n',
+     '    r["ok"] = bool(r["ok"])\n'),
+    ("interlock_bench.py", "the reboot assumed, as before", "    r = WR.reboot_in_check(wait=timeout)\n",
+     '    r = {"ok": True, "mode": 0, "why": "assumed"}\n'),
+    ("interlock_bench.py", "run_case ignores an unconfirmed reboot", '    if not rec["reboot"].get("ok"):\n',
+     "    if False:\n"),
     ("trip6_rearm_check.py", "B10 records no burst timing VOID", '        rec["burst_timing_void"] = burst_line\n', '        pass\n'),
 ]
 
@@ -259,6 +266,7 @@ def ib_frames(lag, epoch_rx):
 
 def ib_setup(IB, work):
     IB.REAL_WITNESS = IB.Witness          # run_case's Witness is replaced per run below
+    IB.REAL_REBOOT = IB.reboot            # the reboot's own checks (2026-11-19) call it with a fake wican_reboot
     IB.time = fast_time()
     IB.RUNS = os.path.join(work, "ib_runs")
     os.makedirs(IB.RUNS, exist_ok=True)
@@ -549,6 +557,45 @@ def checks(work):
     add("void: VOID verdict naming the note, and the note kept",
         lambda: (lambda r: (r["verdict"].startswith("VOID") and WC.RECEIPT in r["verdict"]
                             and r["witness_clock_void"] == WC.RECEIPT, r))(WC.void({}, WC.RECEIPT)))
+
+    # interlock_bench: its reboot before each case goes through wican_reboot.reboot_in_check (the page
+    # first, a confirmed new boot, the hotspot's rejoin) and passes only in mode 0; a reboot it cannot
+    # confirm voids the case before anything runs (gen-inhibit reviewer, 2026-11-19, after run cb08)
+    def ib_reboot(got):
+        asked = []
+        fake = types.ModuleType("wican_reboot")
+        fake.reboot_in_check = lambda **kw: asked.append(kw) or dict(got)
+        saved = sys.modules.get("wican_reboot")
+        sys.modules["wican_reboot"] = fake
+        try:
+            return IB.REAL_REBOOT(None, timeout=42.0), asked
+        finally:
+            if saved is None:
+                sys.modules.pop("wican_reboot", None)
+            else:
+                sys.modules["wican_reboot"] = saved
+    add("interlock reboot: wican_reboot.reboot_in_check, waiting the caller's timeout; a new boot in mode 0 is ok",
+        lambda: (lambda r: (r[0]["ok"] is True and r[0]["confirmed"] is True and r[1] == [{"wait": 42.0}], r))(
+            ib_reboot({"ok": True, "mode": 0, "why": "uptime lower"})))
+    add("interlock reboot: a new boot in another mode is not ok, and says so",
+        lambda: (lambda r: (r[0]["ok"] is False and r[0]["confirmed"] is True and "mode 3" in r[0]["why"], r))(
+            ib_reboot({"ok": True, "mode": 3, "why": "uptime lower"})))
+    add("interlock reboot: no page before (nothing sent) is not ok, with reboot_in_check's reason",
+        lambda: (lambda r: (r[0]["ok"] is False and r[0]["why"].startswith("no page before"), r))(
+            ib_reboot({"ok": False, "mode": None, "why": "no page before the reboot in 4 tries: nothing sent"})))
+
+    def ib_void():
+        saved = IB.reboot
+        IB.reboot = lambda LF=None, timeout=60.0: {"ok": False, "why": "no page after the reboot"}
+        try:
+            rec, calls = ib_run(IB, spy, ib_frames(0.001, False))
+        finally:
+            IB.reboot = saved
+        return rec, calls
+    add("interlock run_case: a reboot not confirmed voids the case, with its reason, judging nothing",
+        lambda: (lambda r: (r[0]["verdict"].startswith("VOID: the WiCAN's reboot before the case was not confirmed")
+                            and "no page after the reboot" in r[0]["verdict"] and r[1] == 0, r[0]["verdict"]))(
+            ib_void()))
 
     # interlock_bench: its witness
     def ib_rec(lag, epoch_rx):

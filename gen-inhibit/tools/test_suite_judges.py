@@ -129,6 +129,11 @@ EDITS = [
     # an arm VOID on its witness clock (the Kvaser's stamps not hardware time, 2026-11-18) makes
     # the check VOID, never PASS or FAIL; but another arm's FAIL still reads FAIL
     ("B4", "bench", r"B4_skip_method_stdout\.txt", r"^(l2 +)PASS", r"\g<1>VOID", "VOID"),
+    # B4 never PASSes with a case unjudged (gen-inhibit reviewer, 2026-11-19): an INCONCLUSIVE case is VOID,
+    # a missing case line ERROR, a case's ERROR ERROR
+    ("B4", "bench", r"B4_skip_method_stdout\.txt", r"^(l2 +)PASS", r"\g<1>INCONCLUSIVE", "VOID"),
+    ("B4", "bench", r"B4_skip_method_stdout\.txt", r"^l2 +PASS +witness.*\n", "", "ERROR"),
+    ("B4", "bench", r"B4_skip_method_stdout\.txt", r"^(l2 +)PASS", r"\g<1>ERROR", "ERROR"),
     ("B4", "bench", r"B4_skip_method_stdout\.txt", [(r"^(l2 +)PASS", r"\g<1>VOID"), (r"^(w3 +)PASS", r"\g<1>FAIL")],
      None, "FAIL"),
     ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"^(  \[idle\] provenance \(live\))",
@@ -317,12 +322,35 @@ EDITS = [
     ("B19absent", "bench", r"B19_absent_prod\.txt", r"^(OTA_HEALTH_FAULT_INJECT +)PASS", r"\g<1>FAIL", "FAIL"),
     ("B19page", "bench", r"B19_spec11_page_prod\.txt", r"^AS SPECIFIED", "NOT AS SPECIFIED", "FAIL"),
     ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^(gate-open +)AS SPECIFIED", r"\g<1>NOT AS SPECIFIED", "FAIL"),
+    # B21 NOT-RUN when the host is not on the WiCAN's hotspot (baseline_b21.sh's gate, 2026-11-19)
+    ("B21", "bench", "+B21_not_run.txt", None,
+     "NOT-RUN: the host is not on the WiCAN's hotspot: the page does not answer after 30 s and 6 rejoin(s) (x)\n",
+     "NOT-RUN"),
+    # B20 never PASSes with a requested scenario unjudged: a VOID case (run cb08's line, which the old
+    # pattern skipped), an INCONCLUSIVE one, or one with no verdict line (gen-inhibit reviewer, 2026-11-19)
+    ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^(gate-open +)AS SPECIFIED( +\(interlock_)",
+     r"\g<1>VOID: the WiCAN's reboot before the case was not confirmed in mode 0 (no page after the reboot)\g<2>", "VOID"),
+    ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^(gate-open +)AS SPECIFIED", r"\g<1>INCONCLUSIVE", "VOID"),
+    ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^gate-open +AS SPECIFIED +\(interlock_\S+\.json\)\n", "", "VOID"),
+    # ... and a NOT AS SPECIFIED beside a VOID is FAIL
+    ("B20", "bench", r"B20_interlock_bench_run\.txt",
+     [(r"^(gate-open +)AS SPECIFIED( +\(interlock_)", r"\g<1>VOID: x\g<2>"),
+      (r"^(soc-recovers +)AS SPECIFIED", r"\g<1>NOT AS SPECIFIED")], None, "FAIL"),
+    # no stimulus table, or a verdict for a case not asked for, is ERROR
+    ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^\S+ +\d+ frames +[\d.]+ s +sha .*\n", "", "ERROR all"),
+    ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^(gate-open +AS SPECIFIED +\(interlock_\S+\.json\)\n)",
+     r"\g<1>not-asked            AS SPECIFIED  (interlock_not-asked_1.json)\n", "ERROR"),
     ("B21", "bench", r"B21_bench_flash_guard\.txt", r"spec 5\.1 item 3 holds on the device", "spec 5.1 item 3 does not hold", "FAIL"),
     # the car-data sentence (spec 12.4, user 2026-11-16), present in the copy (B21_NOW below)
     ("B21", "bench", r"B21_bench_flash_guard\.txt", r" are not registered \(404 in every mode\)\.", " are registered.", "FAIL"),
     ("B21", "bench", r"B21_wire_image_e3d9437\.txt", r"^(PASSIVE  rep 2 .*?device_end )fin", r"\g<1>rst", "FAIL"),
     ("B21", "bench", r"B21_wire_multipart_e3d9437\.txt", r"^(OBSERVE  rep 3 .*? wire )403", r"\g<1>200", "FAIL"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"tx_fail=0", "tx_fail=1", "FAIL"),
+    # an arm not run because its reboot was not confirmed (baseline_b22.sh, 2026-11-19): void, so B22 is
+    # INCONCLUSIVE, never PASS, and a FAIL in the other arm still FAILs
+    ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"\A[\s\S]*\Z",
+     "ARM NOT RUN\n  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - the WiCAN's reboot before the arm was not confirmed in mode 0: no page after the reboot\n", "INCONCLUSIVE"),
     ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"\), 0 error frames", "), 4 error frames", "FAIL"),
     # the old trail-window count decides nothing (gen-inhibit reviewer, 2026-10-29): a
     # disagreement in it alone, printed either way, or as the only void reason, is a PASS ...
