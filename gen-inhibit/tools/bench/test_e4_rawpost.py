@@ -127,11 +127,12 @@ def run_arm_wiring(arm_after, raw_timeout):
     saved_kb = sys.modules.get("kvaser_bus")
     sys.modules["kvaser_bus"] = fake_kb
 
-    saved = {k: getattr(E4, k) for k in ("can", "gi", "ModePoster", "Witness", "device_sockets",
+    # the arm's witness is ArmWitness (proc_witness.ProcWitness, 2026-11-19); Witness is the thread class
+    saved = {k: getattr(E4, k) for k in ("can", "gi", "ModePoster", "ArmWitness", "device_sockets",
                                          "ARM_AFTER_S", "POST_RAW_TIMEOUT")}
     saved_sleep = E4.time.sleep
     try:
-        E4.can, E4.gi, E4.ModePoster, E4.Witness = fake_can, gi, Poster, witness
+        E4.can, E4.gi, E4.ModePoster, E4.ArmWitness = fake_can, gi, Poster, witness
         E4.device_sockets = lambda: []
         E4.ARM_AFTER_S, E4.POST_RAW_TIMEOUT = arm_after, raw_timeout
         E4.time.sleep = lambda s: None
@@ -287,6 +288,17 @@ def main():
                                                              ["50003", "198.51.100.1:80", "TIME_WAIT"]], rows)
 
     check_run_arm_wiring()
+
+    # the arm's witness out of the replay's process (F1, 2026-11-19): ProcWitness, and an arm whose
+    # witness child failed or did not end is VOID, its process recorded
+    import proc_witness as PW
+    check("run_arm's witness is proc_witness.ProcWitness (the thread witness lost 70-99 %% in run cb08)",
+          E4.ArmWitness is PW.ProcWitness, E4.ArmWitness)
+    src = open(E4.__file__, encoding="utf-8").read()
+    check("run_arm builds its witness as ArmWitness", '    w = ArmWitness("kvaser", kv)\n' in src)
+    check("run_arm voids the arm on a witness child that failed or did not end, and records the process",
+          '    if w.info.get("error") or w.info.get("exitcode") != 0:\n        void_reasons.append("the witness process:'
+          in src and '        "witness_process": dict(w.info),\n' in src)
 
     # arm_post_fields (2026-10-16): the --arm-after POST's raw record is kept
     class FakePoster:

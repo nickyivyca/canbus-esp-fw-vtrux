@@ -73,6 +73,8 @@ from e4_rig_calibration import (          # noqa: E402
     BITRATE, CAPTURE, FOREIGN_IDS, Witness, bus_errors, pct, settle_clock,
 )
 import witness_clock as WC                # noqa: E402
+import proc_witness as PW                 # noqa: E402  the witness out of the replay's process (F1)
+ArmWitness = PW.ProcWitness               # the arm's witness (run_arm); Witness stays the thread it replaced
 import raw_http_probe as RHP              # noqa: E402
 import subprocess                         # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
@@ -843,7 +845,10 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
             pre.update(uptime_ms=None)
         print("  pre: HTTP %s, %d bytes, uptime_ms %s, mode %s, device sockets %s"
               % (pst, pre["page_len"], pre.get("uptime_ms"), pre.get("mode"), pre["device_sockets"]))
-    w = Witness("kvaser", kv)
+    # The witness out of the replay's process (gen-inhibit reviewer's F1, 2026-11-19): the replay
+    # below paces with a busy-wait, and run cb08's witness, a thread here, kept 1.3-30 % of each
+    # replay. proc_witness.ProcWitness reads the Kvaser in a forked child, with Witness's interface.
+    w = ArmWitness("kvaser", kv)
     w.start()
 
     ham = None
@@ -1059,6 +1064,11 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
     print("  witness clock: %s" % witness_clock)
     if not WC.judgeable(witness_clock):
         void_reasons.append(WC.clock_void_reason(witness_clock))
+    # The witness in its own process (proc_witness, F1, 2026-11-19): a child that failed or did not end
+    # leaves a witness that may be short, so the arm is VOID, never judged on it.
+    print("  witness process: %s" % w.info)
+    if w.info.get("error") or w.info.get("exitcode") != 0:
+        void_reasons.append("the witness process: %s (exit code %r)" % (w.info.get("error"), w.info.get("exitcode")))
 
     raw_path = None
     if out.get("_raw_dir"):
@@ -1186,6 +1196,7 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         "hammer_errors": ham.errors if ham else 0,
         "device": st_end,
         "witness_raw": os.path.basename(raw_path) if raw_path else None,
+        "witness_process": dict(w.info),
         # WHEN the counters were read, in witness time, and whether the wire had
         # actually gone quiet first. Both exist because a status read landing
         # mid-traffic is indistinguishable, in the figures alone, from the device
