@@ -99,6 +99,9 @@ def judge_run(run_path, arm="idle"):
     wpath = os.path.join(os.path.dirname(run_path), os.path.basename(wit)) if wit else \
         run_path[:-5] + "_%s_witness.log.gz" % arm
     res = judge_frames(P.read_witness(wpath), prov)
+    if prov.get("arm_void"):                       # the arm's own VOID (2026-11-18)
+        res["verdict"] = "VOID"
+        res["faults"] = [["arm void", "; ".join(prov["arm_void"])]] + res["faults"]
     res["run"] = os.path.basename(run_path)
     return res
 

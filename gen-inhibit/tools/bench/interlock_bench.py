@@ -390,12 +390,12 @@ class Witness(threading.Thread):
         while not self.stop_flag.is_set():
             m = self.bus.recv(timeout=0.05)
             while m is not None:
-                rx = time.time()
+                rx = WC.receipt(m)
                 with self.lock:
                     if m.is_error_frame:
-                        self.errs.append((m.timestamp, rx))
+                        self.errs.append((WC.raw_stamp(m), rx))
                     else:
-                        self.frames.append((m.timestamp, rx, m.arbitration_id, bytes(m.data).hex()))
+                        self.frames.append((WC.raw_stamp(m), rx, m.arbitration_id, bytes(m.data).hex()))
                 m = self.bus.recv(timeout=0.0)
 
     def close(self):
@@ -409,9 +409,10 @@ class Witness(threading.Thread):
         and the witness file. A judgement first asks WC.judgeable(note)."""
         with self.lock:
             fr, er = list(self.frames), list(self.errs)
+        sc = WC.kvaser_times(getattr(self, "bus", None), fr, er)   # SocketCAN (2026-11-18)
+        if sc is not None:
+            return sc
         lags = [rx - hw for hw, rx, _, _ in fr]
-        if lags and WC.socketcan(getattr(self, "bus", None)):      # never hardware (2026-11-18)
-            return [(rx, a, h) for _, rx, a, h in fr], [rx for _, rx in er], WC.SOCKETCAN
         if lags and abs(statistics.median(lags)) < WC.MAX_LAG_S:
             note = WC.hw_note(statistics.median(lags))
             return [(hw, a, h) for hw, _, a, h in fr], [hw for hw, _ in er], note

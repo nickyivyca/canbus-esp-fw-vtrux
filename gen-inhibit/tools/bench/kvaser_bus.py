@@ -65,16 +65,24 @@ backend everywhere else (Windows). On Linux, after the guard:
   - the link is brought up at the asked bitrate through canctl (`up kvaser <bitrate> restart-ms
     RESTART_MS`; canctl names listen-only off at every up), then read back with `ip -details
     -json link show kvaser`: UP, that bitrate, no listen-only. Not: KvaserLinkError.
-  - the socket is python-can's socketcan with ignore_rx_error_frames=False, so the kernel's
-    error frames reach the caller with CAN_ERR_FLAG (is_error_frame True; python-can keeps the
-    class bits under 0x7FF in arbitration_id and the details in data). The socket's
-    CAN_RAW_ERR_FILTER is read back after the open (python-can only logs a failed set): not
-    the full mask 0x1FFFFFFF, and the bus is shut and KvaserLinkError raised.
+  - the bus is the pinned canbench's SocketcanHwBus (can-tools 5952c0c; the gen-inhibit
+    reviewer's ruling of 2026-11-18: the Kvaser keeps its witness roles, the hw-time judges
+    included, on its own SO_TIMESTAMPING raw stamps, read by canbench). The kernel's error
+    frames reach the caller with CAN_ERR_FLAG (is_error_frame True, the class bits in
+    arbitration_id, the details in data). The socket's CAN_RAW_ERR_FILTER is read back after
+    the open: not the full mask 0x1FFFFFFF, and the bus is shut and KvaserLinkError raised. An
+    open that raises takes the link down again.
   - an UP kvaser link ACKs with no socket open (kvaser_link's measurement, 2026-11-13), where
     the Kvaser on CANlib ACKed only while a handle was on bus. So the bus's shutdown() takes the
     link down (canctl down kvaser, read back) once the last bus this process opened is shut.
-  - timestamps: python-can's socketcan stamps are host software stamps (SO_TIMESTAMPNS, the
-    kernel's receive time), not the Leaf's hardware clock that CANlib's are.
+  - timestamps: msg.timestamp is the host's receive time (ts[0]); msg.hw_timestamp is the
+    Leaf's raw hardware stamp (ts[2]) or None. canbench checks each open's stamps on its first
+    CHECK_FRAMES data frames (bus.stamp_check: pending, hardware or host_only, with the
+    reason); host_only makes every hw_timestamp None. Error frames carry no hardware stamp on
+    kvaser_usb (0 of 835, can-tools' bench check of 2026-11-18): host time only places them.
+    The close records bus.stamp_stats() (the check, and zero or backward stamps after it) in
+    a "stamps" event. witness_clock.kvaser_times maps the hardware stamps onto the epoch
+    clock through device_fit, and only when the check reads "hardware".
   - error frames: the kernel sends controller-state (CRTL, BUSOFF) and RESTARTED frames as well
     as bus errors. bus_error(b, msg) / bus_error_class(b, can_id) count only the bus-error
     classes on SocketCAN, and every error frame on any other bus; the witnesses that count
@@ -115,6 +123,11 @@ RESTART_MS = 100
 ERR_MASK = 0x1FFFFFFF
 SOL_CAN_RAW, CAN_RAW_ERR_FILTER = 101, 2         # linux/can/raw.h (SOL_CAN_BASE + CAN_RAW)
 SOCKETCAN_KW = ("receive_own_messages", "can_filters")
+# canbench's per-open stamp check (SocketcanHwBus): the first CHECK_FRAMES data frames must carry
+# nonzero, advancing hardware stamps more than HOST_GAP_S from host time (can-tools 5952c0c's
+# defaults; the gen-inhibit reviewer's ruling of 2026-11-18: every open checks its stamps).
+CHECK_FRAMES = 20
+HOST_GAP_S = 2.0
 OPENS_FILE = "kvaser_opens.jsonl"
 _open = []                                        # this process's open socketcan Kvaser buses
 
@@ -298,10 +311,20 @@ def link_down():
     return got
 
 
+def stamp_stats(b):
+    """The bus's stamp check and what its stamps did after it (SocketcanHwBus.stamp_stats()), or
+    None for a bus with none (CANlib, a fake)."""
+    try:
+        return b.stamp_stats()
+    except Exception:       # noqa: BLE001  not a SocketcanHwBus
+        return None
+
+
 def err_mask(b):
     """The socket's CAN_RAW_ERR_FILTER, read back, or None when it cannot be read."""
     try:
-        return b.socket.getsockopt(SOL_CAN_RAW, CAN_RAW_ERR_FILTER)
+        sock = getattr(b, "socket", None) or getattr(b, "_sock")
+        return sock.getsockopt(SOL_CAN_RAW, CAN_RAW_ERR_FILTER)
     except Exception:       # noqa: BLE001  no socket, or not a CAN socket
         return None
 
@@ -342,8 +365,13 @@ def _socketcan_bus(channel=None, bitrate=500000, driver_mode=True, **kw):
                               "and this Leaf Light v2 has no silent mode" % (driver_mode,))
     drv = require_socketcan()
     got = link_up(bitrate)
-    import can
-    b = can.Bus(interface="socketcan", channel=NETDEV, ignore_rx_error_frames=False, **kw)
+    try:
+        _pin_tool().use()
+        hw = importlib.import_module("canbench.live.socketcan_hw")
+        b = hw.SocketcanHwBus(NETDEV, check_frames=CHECK_FRAMES, host_gap_s=HOST_GAP_S, **kw)
+    except BaseException:
+        _canctl("down", NETDEV)         # nothing open: not left ACKing
+        raise
     mask = err_mask(b)
     if mask != ERR_MASK:
         _open.append(b)
@@ -355,7 +383,9 @@ def _socketcan_bus(channel=None, bitrate=500000, driver_mode=True, **kw):
     b.shutdown = lambda: _close(b, shut)
     b.vtrux_backend = "socketcan"
     record({"event": "open", "backend": "socketcan", "channel_asked": channel, "channel": NETDEV,
-            "bitrate": bitrate, "driver": drv, "link": got, "err_mask": "0x%X" % mask})
+            "bitrate": bitrate, "driver": drv, "link": got, "err_mask": "0x%X" % mask,
+            "reader": "canbench.live.socketcan_hw.SocketcanHwBus", "check_frames": CHECK_FRAMES,
+            "host_gap_s": HOST_GAP_S})
     return b
 
 
@@ -364,9 +394,11 @@ def _close(b, shut):
     if b not in _open:
         return shut()
     _open.remove(b)
+    stamps = stamp_stats(b)
     try:
         shut()
     finally:
+        record({"event": "stamps", "backend": "socketcan", "channel": NETDEV, "stamp_stats": stamps})
         if not _open:
             ev = {"event": "close", "backend": "socketcan", "channel": NETDEV}
             try:

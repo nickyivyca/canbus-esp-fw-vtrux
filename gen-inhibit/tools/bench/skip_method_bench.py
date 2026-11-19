@@ -66,11 +66,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import can                                                      # noqa: E402
 import lowid_flood_skip_bench as LF                             # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+import witness_clock as WC  # noqa: E402  the Kvaser's own stamps on SocketCAN (2026-11-18)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 BITRATE = 500000
+# The note for the Kvaser on CANlib (off Linux): its hardware stamps as python-can reads them,
+# judged as before 2026-11-18.
+CANLIB_NOTE = WC.HW + " (CANlib stamps as read)"
 VCM_ID = 0x051
 FILLER_ID = 0x050
 FILLER_FRAMES = 9
@@ -102,8 +106,9 @@ class Witness(threading.Thread):
         super().__init__(daemon=True)
         self.bus = bus
         self.stop_flag = threading.Event()
-        self.frames = []        # (seq, hw_ts, arb, hex)
-        self.errors = []        # hw_ts
+        self.frames = []        # (seq, raw hw stamp, arb, hex)
+        self.errors = []        # raw hw stamp
+        self.frame_rx, self.error_rx = [], []      # receipt times, beside them
         self.lock = threading.Lock()
         self.seq = 0
 
@@ -111,11 +116,14 @@ class Witness(threading.Thread):
         while not self.stop_flag.is_set():
             m = self.bus.recv(timeout=0.05)
             while m is not None:
+                rx = WC.receipt(m)
                 with self.lock:
                     if m.is_error_frame:
-                        self.errors.append(m.timestamp)
+                        self.errors.append(WC.raw_stamp(m))
+                        self.error_rx.append(rx)
                     elif m.arbitration_id in KEEP_IDS:
-                        self.frames.append((self.seq, m.timestamp,
+                        self.frame_rx.append(rx)
+                        self.frames.append((self.seq, WC.raw_stamp(m),
                                             m.arbitration_id,
                                             bytes(m.data).hex()))
                     self.seq += 1
@@ -124,6 +132,22 @@ class Witness(threading.Thread):
     def mark(self):
         with self.lock:
             return len(self.frames)
+
+    def clocked(self, mark, err_mark):
+        """The frames [(seq, t, arb, hex)] and error times since the marks, and the clock note.
+        On SocketCAN (gen-inhibit reviewer, 2026-11-18) witness_clock.kvaser_times: the Leaf's
+        own stamps mapped by device_fit when the open's stamp check reads hardware, else
+        receipt times and a note that is not judgeable, so the arm is VOID; error frames on
+        receipt time. On CANlib the hardware stamps as read, as before."""
+        with self.lock:
+            fr, frx = self.frames[mark:], self.frame_rx[mark:]
+            er, erx = self.errors[err_mark:], self.error_rx[err_mark:]
+        sc = WC.kvaser_times(self.bus, [(f[1], rx, f[0], f[2], f[3]) for f, rx in zip(fr, frx)],
+                             list(zip(er, erx)))
+        if sc is None:
+            return fr, er, CANLIB_NOTE
+        mfr, mer, note = sc
+        return [(seq, t, arb, hx) for t, seq, arb, hx in mfr], mer, note
 
 
 class Player(threading.Thread):
@@ -293,6 +317,8 @@ def judge_arm(arm):
     filler, offs, want_cls, want_trip = ARMS[arm["name"]]
     evs = arm.get("events_classified") or []
     out = {"expected_class": want_cls, "expected_trip7": want_trip}
+    if arm.get("witness_clock_void"):
+        return dict(out, verdict=WC.void_verdict(arm["witness_clock_void"]), why=["witness clock"])
     problems, inconclusive = [], []
     if not arm.get("went_live"):
         return dict(out, verdict="INCONCLUSIVE", why=["never went live"])
@@ -356,6 +382,8 @@ def judge_arm_v2(arm):
     evs = arm.get("events_classified") or []
     out = {"rule": "reviewer 2026-10-07, spec 7 / 5.2 govern the split",
            "expected_trip7": want_trip}
+    if arm.get("witness_clock_void"):
+        return dict(out, verdict=WC.void_verdict(arm["witness_clock_void"]), why=["witness clock"])
     problems, inconclusive = [], []
     if not arm.get("went_live"):
         return dict(out, verdict="INCONCLUSIVE", why=["never went live"])
@@ -428,7 +456,10 @@ def run_arm(name, player, wit, rec_arm):
     time.sleep(offs[-1] + 2.5)
     rec_arm["post_events"] = snap(LF.page())
     rec_arm["events"] = player.done[n_done:]
-    frames = wit.frames[mark:]
+    frames, errs, clock = wit.clocked(mark, err_mark)
+    rec_arm["witness_clock"] = clock
+    if not WC.judgeable(clock):
+        rec_arm["witness_clock_void"] = clock
     # 0x7F9 (skips page): every one seen during the arm, raw, so the CAN-side
     # skip counts can be read against the page's (spec 10: skips go on both).
     rec_arm["wire_0x7F9"] = [(ts, hx) for _, ts, arb, hx in frames
@@ -438,7 +469,6 @@ def run_arm(name, player, wit, rec_arm):
         c, idx = classify_event(frames, ev, idx)
         out.append(c)
     rec_arm["events_classified"] = out
-    errs = wit.errors[err_mark:]
     rec_arm["witness_error_frames_arm"] = len(errs)
     for c, n_err in zip(out, errors_per_event([c.get("marker_ts") for c in out], errs)):
         c["witness_error_frames"] = n_err
@@ -495,10 +525,10 @@ def main():
             j = arm["judge"]
             print("%-4s %-12s witness never/late %s/%s device w/l %s/%s "
                   "abort %r -- %s"
-                  % (name, j["verdict"], j.get("witness_never_on_wire"),
+                  % (name, j["verdict"].split(":")[0], j.get("witness_never_on_wire"),
                      j.get("witness_late"), j.get("device_withdrawn_delta"),
                      j.get("device_late_delta"), j.get("abort_reason"),
-                     "; ".join(j.get("why") or [])))
+                     "; ".join(j.get("why") or []) + (" -- " + j["verdict"] if ":" in j["verdict"] else "")))
             for e in arm.get("events_classified") or []:
                 print("      %s" % e)
     finally:

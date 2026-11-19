@@ -69,7 +69,8 @@ FAILS = []
 # Files that may open a bus in a form the scan flags: (calls flagged, why). Paths are relative
 # to gen-inhibit/, with forward slashes.
 ALLOWED = {
-    "tools/bench/kvaser_bus.py": (4, "the opener itself (the fourth: socketcan on Linux, ruling (a), 2026-11-18)"),
+    "tools/bench/kvaser_bus.py": (3, "the opener itself (the SocketCAN open goes through canbench's SocketcanHwBus "
+                                     "from 2026-11-18, which the scan does not flag)"),
     "tools/bench/test_x2_jam_cases.py": (5, "Bus(api) is the test's own stand-in class for pcan_reopen, not "
                                             "python-can's (on gen-inhibit/main from 4e81b9c2, 2026-11-16)"),
     "tools/vehicle_runner.py": (3, "the implementor's file (gen-inhibit README), not the bench harness. Its "
@@ -211,10 +212,13 @@ class SockFakes(Fakes):
     sysfs (netdev kvaser's device bound to `driver`, or no netdev with driver None), and a fake
     _run that plays canctl (up/down change the fake link; rc from canctl_rc) and `ip -details
     -json link show kvaser` (the fake link, with read_bitrate / read_lo / stuck_up to lie). The
-    fake socketcan Bus's socket reads back err_filter as its CAN_RAW_ERR_FILTER."""
+    fake pinned canbench.live.socketcan_hw.SocketcanHwBus (can-tools 5952c0c, 2026-11-18) logs
+    ("HwBus", channel, kw), raises hw_raises if set, and its socket reads back err_filter as its
+    CAN_RAW_ERR_FILTER; stamp_stats() gives `stamps`."""
 
     def __init__(self, driver="kvaser_usb", canctl_rc=0, read_bitrate=None, read_lo=False, stuck_up=False,
-                 err_filter=0x1FFFFFFF, runs_dir=None, canctl_applies=False, **kw):
+                 err_filter=0x1FFFFFFF, runs_dir=None, canctl_applies=False, hw_raises=None,
+                 stamps=None, **kw):
         # canctl_applies: canctl changes the link even when it exits non-zero (it failed after
         # its own `ip link set up`)
         Fakes.__init__(self, **kw)
@@ -229,7 +233,9 @@ class SockFakes(Fakes):
             os.makedirs(os.path.join(self.root, "kvaser", "device"))
             os.symlink(os.path.join(self.root, "drivers", driver),
                        os.path.join(self.root, "kvaser", "device", "driver"))
-        log, fakes, base = self.log, self, self.can.Bus
+        log, fakes = self.log, self
+        self.stamps = stamps if stamps is not None else {"state": "hardware", "reason": "fake",
+                                                          "after_check": {"frames": 0}}
 
         class Sock:
             def getsockopt(self, level, opt):
@@ -237,12 +243,23 @@ class SockFakes(Fakes):
                 return fakes.err_filter
         self.err_filter = err_filter
 
-        class Bus(base):
-            def __init__(self, **kw):
-                base.__init__(self, **kw)
-                if kw.get("interface") == "socketcan":
-                    self.socket = Sock()
-        self.can.Bus = Bus
+        class SocketcanHwBus:
+            def __init__(self, channel, **kw):
+                log.append(("HwBus", channel, kw))
+                if hw_raises is not None:
+                    raise hw_raises
+                self._sock = Sock()
+
+            def stamp_stats(self):
+                return dict(fakes.stamps)
+
+            def shutdown(self):
+                log.append(("shutdown", self))
+                if fakes.shutdown_raises:
+                    raise OSError("shutdown failed")
+        hw = types.ModuleType("canbench.live.socketcan_hw")
+        hw.SocketcanHwBus = SocketcanHwBus
+        self.pinned["canbench.live.socketcan_hw"] = hw
 
     def run(self, argv):
         if argv[:3] == ["sudo", "-n", "/usr/local/sbin/canctl"]:
@@ -303,32 +320,35 @@ def socketcan():
             f = SockFakes(runs_dir=runs)
             with f as kb:
                 b = kb.kvaser_bus(channel=0, bitrate=500000, driver_mode=True)
-                opened = [e for e in f.log if e[0] == "Bus"]
-                check("socketcan: the lock checked first; no CANlib pin or fixes; canctl up kvaser at the "
-                      "asked bitrate with restart-ms, read back, then the open",
-                      [k for k in f.kinds()] == ["lock", "canctl", "ip", "Bus", "getsockopt"]
+                opened = [e for e in f.log if e[0] == "HwBus"]
+                check("socketcan: the lock checked first; no CANlib fixes; canctl up kvaser at the "
+                      "asked bitrate with restart-ms, read back, then the pin and the open",
+                      [k for k in f.kinds()] == ["lock", "canctl", "ip", "use", "HwBus", "getsockopt"]
                       and f.canctls() == [("up", "kvaser", "500000", "restart-ms", "100")], f.log)
-                check("socketcan: python-can's socketcan on netdev kvaser, error frames not ignored",
-                      opened and opened[0][1] == {"interface": "socketcan", "channel": "kvaser",
-                                                  "ignore_rx_error_frames": False}, opened)
+                check("socketcan: the pinned canbench's SocketcanHwBus on netdev kvaser, its stamp check "
+                      "on 20 data frames, 2 s from host time",
+                      opened and opened[0][1:] == ("kvaser", {"check_frames": 20, "host_gap_s": 2.0}), opened)
                 check("socketcan: the error mask read back is CAN_RAW_ERR_FILTER on SOL_CAN_RAW",
                       ("getsockopt", 101, 2) in f.log, f.log)
                 check("socketcan: the bus says its backend", getattr(b, "vtrux_backend", None) == "socketcan")
                 del f.log[:]
                 b.shutdown()
-                check("socketcan: shutdown shuts the socket, then canctl down kvaser, read back",
+                check("socketcan: shutdown shuts the bus, then canctl down kvaser, read back",
                       f.kinds() == ["shutdown", "canctl", "ip"] and f.canctls() == [("down", "kvaser")]
                       and f.linkst["up"] is False, f.log)
             with open(os.path.join(runs, "kvaser_opens.jsonl"), encoding="ascii") as fh:
                 evs = [json.loads(x) for x in fh]
-            check("socketcan: the open and the close recorded in GI_RUNS_DIR's kvaser_opens.jsonl, naming "
-                  "the backend, the channel asked and opened, the bitrate, the driver, the link and the mask",
-                  len(evs) == 2 and evs[0]["event"] == "open" and evs[0]["backend"] == "socketcan"
+            check("socketcan: the open, the stamp check and the close recorded in GI_RUNS_DIR's "
+                  "kvaser_opens.jsonl, naming the backend, the channel asked and opened, the bitrate, the "
+                  "driver, the link, the mask and the reader",
+                  len(evs) == 3 and evs[0]["event"] == "open"
+                  and evs[0]["reader"] == "canbench.live.socketcan_hw.SocketcanHwBus"
+                  and evs[1]["event"] == "stamps" and evs[1]["stamp_stats"]["state"] == "hardware" and evs[0]["backend"] == "socketcan"
                   and evs[0]["channel_asked"] == 0 and evs[0]["channel"] == "kvaser" and evs[0]["bitrate"] == 500000
                   and evs[0]["driver"] == "kvaser_usb" and evs[0]["link"]["up"] is True
                   and evs[0]["link"]["bitrate"] == 500000 and evs[0]["err_mask"] == "0x1FFFFFFF"
-                  and evs[1]["event"] == "close" and evs[1]["backend"] == "socketcan"
-                  and evs[1]["link"]["up"] is False, evs)
+                  and evs[2]["event"] == "close" and evs[2]["backend"] == "socketcan"
+                  and evs[2]["link"]["up"] is False, evs)
         finally:
             gi_paths.remove_tree(runs)
     case("socketcan: opens", opens)
@@ -356,9 +376,9 @@ def socketcan():
                     kb.kvaser_bus(**kw)
                 except Exception as e:      # noqa: BLE001
                     raised = e
-                want = getattr(kb, exc_name) if exc_name != "TypeError" else TypeError
+                want = {"TypeError": TypeError, "OSError": OSError}.get(exc_name) or getattr(kb, exc_name)
             check("socketcan: %s -> %s, nothing left open" % (label, exc_name),
-                  isinstance(raised, want) and ("Bus" not in f.kinds() if opened_none else True)
+                  isinstance(raised, want) and ("HwBus" not in f.kinds() if opened_none else True)
                   and f.linkst["up"] is False, (raised, f.log))
             return f
         return go
@@ -372,8 +392,11 @@ def socketcan():
             ("canctl up failing (rc 3) after the link came up", lambda: SockFakes(canctl_rc=3, canctl_applies=True),
              std, "KvaserLinkError"),
             ("the link read back at another bitrate", lambda: SockFakes(read_bitrate=250000), std, "KvaserLinkError"),
-            ("the link read back listen-only", lambda: SockFakes(read_lo=True), std, "KvaserLinkError")):
-        case("socketcan refuses: " + label, refuses(label, fk, kw, exc))
+            ("the link read back listen-only", lambda: SockFakes(read_lo=True), std, "KvaserLinkError"),
+            ("the reader's open raising after the link came up",
+             lambda: SockFakes(hw_raises=OSError("bind failed")), std, "OSError")):
+        # the reader's own open raising is past the open call: what matters is the link down
+        case("socketcan refuses: " + label, refuses(label, fk, kw, exc, opened_none=(exc != "OSError")))
     for label, fk in (("the Kvaser on linuxcan's leaf", lambda: SockFakes(driver="leaf")),
                       ("driver_mode=False", SockFakes)):
         def nocanctl(label=label, fk=fk):
@@ -468,20 +491,27 @@ def socketcan():
     case("socketcan: backend", backend)
 
 
-# The real python-can's socketcan socket: the error mask kvaser_bus reads back is what
-# python-can set (a PF_CAN raw socket needs no interface or root until it is bound, so the
-# bind is skipped). ignore_rx_error_frames=True shows the read-back can tell.
+# The pinned canbench's SocketcanHwBus socket (2026-11-18): the error mask kvaser_bus reads back
+# is what canbench set (a PF_CAN raw socket needs no interface or root until it is bound, so the
+# bind is skipped). A plain CAN_RAW socket reading 0 shows the read-back can tell.
 CHILD_MASK = r"""
-import json, sys
+import json, socket, sys
 sys.path.insert(0, sys.argv[1])
 import kvaser_bus as K
-from can.interfaces.socketcan import socketcan as S
-S.bind_socket = lambda sock, channel="can0": None
-out = {}
-for ign in (False, True):
-    b = S.SocketcanBus(channel="kvaser", ignore_rx_error_frames=ign)
-    out[str(ign)] = K.err_mask(b)
-    b.socket.close()
+K._pin_tool().use()
+import importlib
+hw = importlib.import_module("canbench.live.socketcan_hw")
+socket.socket.bind = lambda self, addr: None     # no interface or root needed until bound
+b = hw.SocketcanHwBus("kvaser")
+out = {"reader": K.err_mask(b)}
+b.shutdown()
+plain = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+class P:
+    pass
+p = P()
+p._sock = plain
+out["plain"] = K.err_mask(p)
+plain.close()
 print("CHILD " + json.dumps(out))
 """
 
@@ -496,9 +526,9 @@ def real_mask():
         check("real mask: the child ran", False, (r.returncode, r.stdout[-300:], r.stderr[-600:]))
         return
     out = json.loads(line[0][6:])
-    check("real mask: python-can's socketcan socket with error frames on reads back 0x1FFFFFFF through err_mask",
-          out.get("False") == 0x1FFFFFFF, out)
-    check("real mask: with error frames ignored it reads 0 (the read-back can tell)", out.get("True") == 0, out)
+    check("real mask: the pinned canbench's SocketcanHwBus socket reads back 0x1FFFFFFF through err_mask",
+          out.get("reader") == 0x1FFFFFFF, out)
+    check("real mask: a plain CAN_RAW socket reads 0 (the read-back can tell)", out.get("plain") == 0, out)
 
 
 def bus_errors():
@@ -1116,8 +1146,16 @@ MUTANTS = [
     ("socketcan: a bad read-back left up", '        _canctl("down", NETDEV)         # not left ACKing', '        pass         # not left ACKing'),
     ("socketcan: no restart-ms", 'args = ("up", NETDEV, str(bitrate), "restart-ms", str(RESTART_MS))',
      'args = ("up", NETDEV, str(bitrate))'),
-    ("socketcan: error frames ignored", 'channel=NETDEV, ignore_rx_error_frames=False, **kw)',
-     'channel=NETDEV, ignore_rx_error_frames=True, **kw)'),
+    # canbench's reader (can-tools 5952c0c; gen-inhibit reviewer, 2026-11-18)
+    ("socketcan: no stamp check (check_frames 0)", "CHECK_FRAMES = 20\n", "CHECK_FRAMES = 0\n"),
+    ("socketcan: host stamps pass the check (gap 0)", "HOST_GAP_S = 2.0\n", "HOST_GAP_S = 0.0\n"),
+    ("socketcan: the reader not taken from the pin",
+     "        _pin_tool().use()\n        hw = importlib.import_module(\"canbench.live.socketcan_hw\")\n",
+     "        hw = importlib.import_module(\"canbench.live.socketcan_hw\")\n"),
+    ("socketcan: a failed reader open left the link up",
+     "        _canctl(\"down\", NETDEV)         # nothing open: not left ACKing\n", "        pass\n"),
+    ("socketcan: the stamp check not recorded at the close",
+     '        record({"event": "stamps", "backend": "socketcan", "channel": NETDEV, "stamp_stats": stamps})\n', ""),
     ("socketcan: the error mask not checked", "    if mask != ERR_MASK:\n", "    if False:\n"),
     ("socketcan: the mask's bus left open", "        _open.append(b)\n        _close(b, b.shutdown)\n", ""),
     ("socketcan: the link left up at the close", "        if not _open:\n            ev = ", "        if False:\n            ev = "),

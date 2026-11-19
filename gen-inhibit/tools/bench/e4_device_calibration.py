@@ -70,8 +70,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from e4_rig_calibration import (          # noqa: E402
-    BITRATE, CAPTURE, FOREIGN_IDS, Witness, bus_errors, pct,
+    BITRATE, CAPTURE, FOREIGN_IDS, Witness, bus_errors, pct, settle_clock,
 )
+import witness_clock as WC                # noqa: E402
 import raw_http_probe as RHP              # noqa: E402
 import subprocess                         # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
@@ -1048,6 +1049,16 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
     #
     void_reasons = []
 
+    # THE WITNESS'S CLOCK (gen-inhibit reviewer, 2026-11-18). On the Kvaser through SocketCAN
+    # the frames go onto the Leaf's own stamps, mapped by device_fit, only when the open's
+    # stamp check reads hardware; otherwise they are on the kernel's receive time and the arm
+    # is VOID: the trail timing, B3's millisecond figures and B24's keys are not judged on
+    # host time. Settled before the raw log is written, so the log carries the same clock.
+    witness_clock = settle_clock(w)
+    print("  witness clock: %s" % witness_clock)
+    if not WC.judgeable(witness_clock):
+        void_reasons.append("witness clock %r: not judged on host time" % witness_clock)
+
     raw_path = None
     if out.get("_raw_dir"):
         raw_path = os.path.join(out["_raw_dir"],
@@ -1185,6 +1196,7 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         # The SAME list object that is appended to below, so reasons discovered
         # during the analysis land in the JSON without being re-attached.
         "void_reasons": void_reasons,
+        "witness_clock": witness_clock,
         # CARRIED LOAD ON THE WIRE, not the adapter's offered rate -- the lesson of
         # the abort bench, where those two were not the same number. A lower bound:
         # stuff bits cannot be recovered from a logged frame. The longest idle gap

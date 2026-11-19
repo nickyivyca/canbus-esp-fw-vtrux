@@ -79,6 +79,8 @@ def analyse(run):
     arm = list(d["arms"])[0]
     a = d["arms"][arm]
     r = P.rejudge(run, arm, keep_frames=True)
+    if r.get("arm_void"):                          # the arm's own VOID (2026-11-18)
+        return {"run": os.path.basename(run), "void": r["arm_void"]}
     rep_t = r["replayed_wire_times"]
     ep = entry_point(d.get("mode"), a)
     if ep is None or ep[0] >= len(rep_t):
