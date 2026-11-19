@@ -184,6 +184,8 @@ message it only reads costs as much as one it acts on.
   the same session is batched into one message where it can wait.
 - **Don't relay what the receiver can read** from origin, a tracker, the bench
   log or a file: name where it is only if it must act on it.
+- **A question is not a notice.** "Do you have, or need, X?" asks the
+  receiver for an answer, so it is sent.
 - **A report that asks the reviewer to merge or review always gets one
   answer:** merged, with the commit (and tag), or sent back, with why. Its
   sender is waiting on it, so it is a go signal, not a notice; one line is
@@ -284,6 +286,21 @@ version until it chooses to take the change. Writing a file first does not
 make a project its owner. A shared component's spec is drafted by the
 reviewer of the project that needs the change and ruled on by the user in
 that reviewer's session; the other reviewer reads it before merge.
+
+**Code both projects need starts as shared code.** Before writing new
+tooling or harness for something both projects touch, such as the bench, its
+adapters, flashing, the runner or a simulator's buses, look for an
+equivalent on the other project's main branch and in `shared/` (`git grep`
+on `origin/<other project>/main`), and ask the other reviewer when it is
+unclear whether it needs the same. If it has one or will need one, the
+generic part goes into `shared/<component>/`, or into `canbench` through the
+CAN replay tooling session for adapter access, and only the project's own
+parts stay in the project: its holder checks, run records and judgement
+rules. A copy in each project is the costlier path, however quick it is to
+merge: every feature, test and fix is made twice, and a bug one project
+finds stays in the other until it finds it again. A copy that already
+exists in each project moves its generic part to shared code at its next
+change.
 
 - **Never merge between `shared/main` and a project branch,** in either
   direction. A project takes shared code only as a pinned tag.
@@ -501,6 +518,13 @@ bench host is `madhouse-debian`.
   Innomaker's driver binding) go through `canctl`, run as `sudo -n
   /usr/local/sbin/canctl ...`. It is the CAN replay tooling session's, and
   its README is `$REVERSE_IT_DIR/tools/bench/canctl/README.md`.
+- **A tool asks for a bench adapter by its `canctl` role:** `canmain`,
+  `canchg`, `canx2`, `kvaser` or `pcanfd`, in every session and every tool
+  that opens one. Turning a role into a device (its serial, USB bus and
+  address, netdev or vendor channel) is `canctl`'s and `canbench`'s job.
+  Never take an adapter by an enumeration index, a channel number, or the
+  first one of its kind found: python-can's first gs_usb device can be
+  `canchg` rather than `canmain`. Details: SPEC section 8.
 - **Moving the bench to a new host** (SPEC section 4): on the old host, a role
   that may take runs `bench_lock.py retire --to <new host> --reason ...` while
   the lock is free; the new host runs `init` once the renamed log has synced

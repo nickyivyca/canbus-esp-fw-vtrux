@@ -39,6 +39,13 @@ gives them work, or on its own only if it changes what they are doing now.
 **Spec questions raised by other sessions come to you:** frame them, hold them
 in the tracker, and get them ruled here.
 
+**Before you assign a tooling or harness item** that touches something both
+projects use (the bench, its adapters, flashing, the runner), check the
+other project's main branch and `shared/` for an equivalent, and ask the
+other reviewer whether it needs the same. If either is so, assign the
+generic part on a `shared/<component>/<topic>` branch (AGENTS.md, "Shared
+code").
+
 You also decide file ownership when it is unclear, and record it in the file
 map. A file you rule a record gets the header in `AGENTS.md`, "Who owns
 what". Changes to the ownership split, the skills or `AGENTS.md` go to the
