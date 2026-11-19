@@ -253,7 +253,7 @@ SELF_TESTS = [
     "bench_switch_pending", "bench_vport", "bench_c12", "bench_flight_silence",
     "bench_usb_host", "bench_mcp_reset", "bench_hold12", "bench_topology",
     "bench_canbench_smoke", "keepalive_probe", "rx_proc", "klog_windows",
-    "bench_boot_reset",
+    "bench_boot_reset", "bench_boot_reset_fixture",
 ]
 # Bench drivers whose --can-fail runs their self-test against each of their
 # MUTANTS (script_can_fail.py), run locally (test_script_coverage).
@@ -266,8 +266,9 @@ CAN_FAILS = [
     # 2026-11-13, the reviewer's Kvaser rulings (kvaser_link, rx_proc)
     "keepalive_probe", "rx_proc", "bench_switch_pending", "bench_switch_errors",
     "klog_windows",
-    # 2026-11-18, tracker I: chip resets 0x15 with no boot panic
-    "bench_boot_reset",
+    # 2026-11-18, tracker I: chip resets 0x15 with no boot panic, and its
+    # bench can-fail's fixture build, flash and judging
+    "bench_boot_reset", "bench_boot_reset_fixture",
 ]
 
 # bench_boot_reset (tracker I): chip resets per image, and the line the

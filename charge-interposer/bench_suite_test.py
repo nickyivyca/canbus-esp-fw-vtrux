@@ -789,7 +789,10 @@ def test_suites():
     #      st.bench-boot-reset and cf.bench-boot-reset (chip resets 0x15 with
     #      no boot panic, spec 9 core dumps; tracker I, the reviewer,
     #      2026-11-18)
-    assert len(seen) == 302, "checks across the suites: %d" % len(seen)
+    # 304: st.bench-boot-reset-fixture and cf.bench-boot-reset-fixture
+    #      (boot-reset-0x15's bench can-fail, fixture cf2; tracker I, the
+    #      reviewer, 2026-11-18)
+    assert len(seen) == 304, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
