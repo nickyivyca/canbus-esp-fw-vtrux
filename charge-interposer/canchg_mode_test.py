@@ -1,49 +1,39 @@
 #!/usr/bin/env python3
 """Test of canchg_mode.py: the bench run puts canchg in libusb mode at its
-start and back on gs_usb at its end, through canctl, and reads each back
-from canctl's role table. No hardware and no real canctl: a fake canctl (a
-script this test writes) acts on a made-up sysfs holding canmain (bound,
-netdev canmain) and canchg, both 1d50:606f, and saves the mode it was given
-as canctl does; a stand-in role table (FakeRoles) resolves role canchg from
-that mode and the sysfs as canbench.bench_roles.resolve does (adapter roles,
-shared/bench SPEC section 8, 2026-11-18).
+start and back on gs_usb at its end, through can-tools' bench-role layer
+(bench_layer.to_libusb and to_socketcan), and judges what the layer read
+back. No hardware and no real canctl: a stand-in layer (FakeLayer) keeps
+canchg's mode, driver and netdev, records each call, and can be made to
+fail (a canctl that exits 2 or 3, a read-back that never settles, the bench
+guard refusing) or to return a state other than the one asked for. The
+layer itself, canctl and its read-back from canctl's role table, is
+can-tools' (tests/test_bench_layer.py there).
 
-    python3.13 -B charge-interposer/canchg_mode_test.py [--can-fail]     (madhouse)
-    py -3.14 -B charge-interposer/canchg_mode_test.py [--can-fail]       (Windows)
+    python3.13 -B charge-interposer/canchg_mode_test.py [--can-fail]
 
 Each case names what it checks:
-  1. off-linux      off Linux, start() and end() are ok, say so and run no
-                    canctl
-  2. start          canchg bound: start() runs `canctl mode canchg libusb`
-                    (exactly that) once, and is ok with canchg unbound and
-                    canmain untouched; its log is in logdir
-  3. start-canctl   canctl exiting 2 (doing nothing) or 3 (even with canchg
-                    unbound): not ok, the detail naming canctl, its rc and
-                    what the rc means
-  4. start-recheck  canctl exiting 0 but changing nothing (the canctl
-                    installed before 2026-11-12 did that when an unbind did
-                    not take), the role table not resolving canchg (not
-                    attached), or resolving it in a mode other than libusb:
-                    not ok, the detail naming the re-check and not canctl
-  5. end            canchg unbound: end() runs `canctl mode canchg
-                    socketcan --wait 10` once and is ok with interface 0 on
-                    gs_usb and netdev canchg present
-The fake canctl refuses (exit 2) what the real one refuses: anything but
-`mode canchg libusb|socketcan`, with `--wait 1..99` only after socketcan
-(canctl's header, 2026-11-12).
-  6. end-check      canctl exiting 0 but changing nothing, or binding
-                    interface 0 to another driver (usbfs, a pyusb claim), or
-                    binding with no netdev ever: not ok, "not bound again";
-                    canctl exiting 3: not ok, naming canctl and its rc
-  7. end-poll       the netdev appearing only after two polls: ok, within
-                    BIND_WAIT_S; it never appearing: not ok once BIND_WAIT_S
-                    has passed on the (fake) clock, not before
-  8. hooks          hooks(): on the X2, the start step runs before the hook
+  1. off-linux      off Linux, start() and end() are ok, say so, and the
+                    layer is not asked
+  2. start          canchg on gs_usb: start() asks the layer for
+                    to_libusb("canchg") (exactly that) once, and is ok with
+                    the bus and address read back; its log is in logdir;
+                    with no stand-in, the layer is adapter_roles.layer()'s
+  3. start-fails    the layer raising (canctl refused, did not take, the
+                    guard): not ok, the detail naming to_libusb and what the
+                    layer said
+  4. start-state    the layer returning canchg in another mode: not ok
+  5. end            canchg in libusb: end() asks for to_socketcan("canchg",
+                    wait_s=10) once and is ok with netdev canchg read back
+  6. end-fails      the layer raising: not ok, "not back on gs_usb", naming
+                    to_socketcan and what the layer said; the layer
+                    returning another driver (usbfs), no netdev, or libusb
+                    mode: not ok
+  7. hooks          hooks(): on the X2, the start step runs before the hook
                     given and the end step after it; the end step runs, and
                     the result is not ok, when the hook given fails or
                     raises; a failed step makes the result not ok with the
                     hook given ok; on the WiCAN the hook given runs alone,
-                    its result as it returned it, and no canctl runs
+                    its result as it returned it, and the layer is not asked
 --can-fail runs the cases on the unedited canchg_mode.py first (the
 control, which must pass), then on edited copies, one edit each; every edit
 must make a case fail. The edits include skipping the end step, the end
@@ -51,11 +41,12 @@ step only after a hook that succeeded, and each check dropped.
 
 Charge-interposer tester, 2026-11-12 (the charge-interposer reviewer's
 canchg-mode batch: a fake canctl, a control and a can-fail for a skipped
-end step).
+end step); 2026-11-19, the reviewer's bench-layer item: the steps are the
+layer's to_libusb and to_socketcan, and the stand-in layer replaces the fake
+canctl and sysfs.
 """
 
 import importlib.util
-import json
 import os
 import sys
 
@@ -66,42 +57,8 @@ if HERE not in sys.path:
 import scratch_dir                                      # noqa: E402
 
 MODULE = os.path.join(HERE, "canchg_mode.py")
-SER_MAIN, SER_CHG = "00AA00BB1111222233334444", "00CC00DD5555666677778888"
-CHG = ("1-3.3", SER_CHG)
-MAIN = ("1-3.2.3", SER_MAIN)
-END_CALL = "canctl mode canchg socketcan --wait 10"      # BIND_WAIT_S 10
-
-FAKE_CANCTL = r'''
-import json, os, sys
-ctl, args = sys.argv[1], sys.argv[2:]
-with open(ctl, encoding="utf-8") as f:
-    c = json.load(f)
-with open(c["log"], "a", encoding="utf-8") as f:
-    f.write("canctl " + " ".join(args) + "\n")
-ok = len(args) == 3 or (len(args) == 5 and args[2] == "socketcan" and args[3] == "--wait"
-                        and args[4].isdigit() and 1 <= int(args[4]) <= 99)
-if not ok or args[:2] != ["mode", "canchg"] or args[2] not in ("libusb", "socketcan"):
-    print("canctl: refused")       # as the real one, --wait only with socketcan, 1..99 s
-    sys.exit(2)
-if not c.get("keep_mode"):         # canctl saves the mode even when it does not take
-    with open(c["modefile"], "w") as f:
-        f.write(args[2])
-if c.get("act", True):
-    drv = os.path.join(c["intf"], "driver")
-    net = os.path.join(c["net"], "canchg")
-    if args[2] == "libusb":
-        if os.path.lexists(drv):
-            os.unlink(drv)
-        if os.path.isdir(net):
-            os.rmdir(net)
-    else:
-        if not os.path.lexists(drv):
-            os.symlink(os.path.join(c["drivers"], c.get("driver", "gs_usb")), drv)
-        if c.get("netdev", True) and not os.path.isdir(net):
-            os.makedirs(net)
-print("canchg: mode %s" % args[2])
-sys.exit(c.get("rc", 0))
-'''
+START_CALL = "to_libusb canchg"
+END_CALL = "to_socketcan canchg wait_s=10.0"            # BIND_WAIT_S 10
 
 
 def load(path):
@@ -116,107 +73,60 @@ class _NS(object):
         self.__dict__.update(kw)
 
 
-class FakeRoles:
-    """A stand-in for adapter_roles over the made-up sysfs: resolve("canchg")
-    as canbench.bench_roles.resolve reports a gs_usb role, from the mode the
-    fake canctl saved and the driver and netdev on disk (raising as it does
-    for libusb mode still on gs_usb, socketcan mode with no netdev, and
-    `err`, e.g. not attached)."""
+class LayerError(RuntimeError):
+    """The stand-in layer's failure (bench_layer.BenchLayerError's place)."""
 
-    def __init__(self, bench):
-        self.b, self.err, self.asked = bench, None, []
 
-    def resolve(self, role):
-        self.asked.append(role)
-        if self.err:
-            raise RuntimeError(self.err)
-        with open(self.b.modefile) as f:
-            mode = f.read().strip()
-        drv, net = self.b.driver(CHG), self.b.netdev("canchg")
-        r = _NS(role=role, kind="gs_usb", mode=mode, driver=drv,
-                netdev="canchg" if net else None, busnum=1, devnum=38)
-        if mode == "libusb":
-            if drv == "gs_usb":
-                raise RuntimeError("%s is in libusb mode but still bound to the kernel's gs_usb "
-                                   "driver" % role)
-            return _NS(role=r, mode="libusb", netdev=None, busnum=1, devnum=38)
-        if not net:
-            raise RuntimeError("%s is in socketcan mode but has no netdev" % role)
-        return _NS(role=r, mode="socketcan", netdev="canchg", busnum=1, devnum=38)
+class FakeLayer:
+    """A stand-in for canbench.bench_layer: canchg's mode, driver and netdev,
+    each call recorded in .calls (shared with the hooks' own lines).
+    fail={step: text}: that step raises LayerError(text), changing nothing;
+    lie={step: {field: value}}: that step returns a state with those fields
+    changed (the read-back the module must judge)."""
+
+    def __init__(self, calls, mode="socketcan", fail=None, lie=None):
+        self.calls, self.fail, self.lie = calls, dict(fail or {}), dict(lie or {})
+        self.set(mode)
+
+    def set(self, mode):
+        self.mode = mode
+        self.driver = "gs_usb" if mode == "socketcan" else None
+        self.netdev = "canchg" if mode == "socketcan" else None
+
+    def _res(self, step, role):
+        f = dict(mode=self.mode, driver=self.driver, netdev=self.netdev)
+        f.update(self.lie.get(step, {}))
+        return _NS(role=_NS(role=role, kind="gs_usb", driver=f["driver"]), mode=f["mode"],
+                   netdev=f["netdev"], busnum=1, devnum=38)
+
+    def to_libusb(self, role, wait_s=None):
+        self.calls.append("to_libusb %s" % role + ("" if wait_s is None else " wait_s=%s"
+                                                     % wait_s))
+        if "to_libusb" in self.fail:
+            raise LayerError(self.fail["to_libusb"])
+        self.set("libusb")
+        return self._res("to_libusb", role)
+
+    def to_socketcan(self, role, wait_s=None):
+        self.calls.append("to_socketcan %s wait_s=%s" % (role, wait_s))
+        if "to_socketcan" in self.fail:
+            raise LayerError(self.fail["to_socketcan"])
+        self.set("socketcan")
+        return self._res("to_socketcan", role)
 
 
 class Bench:
-    """A made-up sysfs (USB devices, drivers, net), a fake canctl on it and
-    a stand-in role table over it, patched into the module M."""
+    """A stand-in layer patched into the module M, and a log folder."""
 
-    def __init__(self, M, work, chg_bound, **ctl):
-        self.M, self.work = M, work
-        sysd = os.path.join(work, "sys")
-        self.root = os.path.join(sysd, "bus", "usb", "devices")
-        self.drivers = os.path.join(sysd, "bus", "usb", "drivers")
-        self.net = os.path.join(sysd, "class", "net")
-        for d in (self.root, self.net, os.path.join(self.drivers, "gs_usb"),
-                  os.path.join(self.drivers, "usbfs")):
-            os.makedirs(d, exist_ok=True)
-        for (name, serial), bound in ((MAIN, True), (CHG, chg_bound)):
-            self._device(name, serial, bound)
-        self.log = os.path.join(work, "calls.txt")
-        open(self.log, "w").close()
-        self.modefile = os.path.join(work, "canchg.mode")
-        with open(self.modefile, "w") as f:
-            f.write(ctl.get("keep_mode") or ("socketcan" if chg_bound else "libusb"))
-        self.roles = M.ROLES = FakeRoles(self)
-        self.ctl = os.path.join(work, "canctl.json")
-        self.set(**ctl)
-        script = os.path.join(work, "fake_canctl.py")
-        with open(script, "w", encoding="utf-8", newline="\n") as f:
-            f.write(FAKE_CANCTL)
+    def __init__(self, M, work, chg_bound=True, **kw):
+        self.log = []
+        self.layer = M.LAYER = FakeLayer(self.log, "socketcan" if chg_bound else "libusb",
+                                         **kw)
         self.logdir = os.path.join(work, "logdir")
         os.makedirs(self.logdir)
-        M.CANCTL = [sys.executable, "-B", script, self.ctl]
-        self.clock = [0.0]
-        self.sleeps = []
-        M.monotonic = lambda: self.clock[0]
-        M.sleep = self._sleep
-        self.on_sleep = None
-
-    def _device(self, name, serial, bound):
-        d = os.path.join(self.root, name)
-        os.makedirs(d)
-        for k, v in (("idVendor", "1d50"), ("idProduct", "606f"), ("serial", serial),
-                     ("busnum", "1"), ("devnum", "38" if serial == SER_CHG else "34")):
-            with open(os.path.join(d, k), "w", encoding="ascii") as f:
-                f.write("%s\n" % v)
-        for i in ("1.0", "1.1"):
-            os.makedirs(os.path.join(self.root, "%s:%s" % (name, i)))
-        if bound:
-            os.symlink(os.path.join(self.drivers, "gs_usb"),
-                       os.path.join(self.root, name + ":1.0", "driver"))
-            os.makedirs(os.path.join(self.net, "canchg" if serial == SER_CHG else "canmain"))
-
-    def set(self, **ctl):
-        c = dict(log=self.log, intf=os.path.join(self.root, CHG[0] + ":1.0"), net=self.net,
-                 drivers=self.drivers, modefile=self.modefile)
-        c.update(ctl)
-        with open(self.ctl, "w", encoding="utf-8") as f:
-            json.dump(c, f)
-
-    def _sleep(self, s):
-        self.sleeps.append(s)
-        self.clock[0] += s
-        if self.on_sleep:
-            self.on_sleep(len(self.sleeps))
 
     def calls(self):
-        with open(self.log, encoding="utf-8") as f:
-            return [ln.strip() for ln in f if ln.strip()]
-
-    def driver(self, dev):
-        p = os.path.join(self.root, dev[0] + ":1.0", "driver")
-        return os.path.basename(os.path.realpath(p)) if os.path.lexists(p) else None
-
-    def netdev(self, name):
-        return os.path.isdir(os.path.join(self.net, name))
+        return list(self.log)
 
 
 def _sub(work, name):
@@ -231,144 +141,134 @@ def case_off_linux(M, work):
         out = fn(b.logdir, "win32")
         assert out["ok"] is True and "off Linux" in out["detail"], out
     assert b.calls() == [], b.calls()
-    assert b.driver(CHG) == "gs_usb", b.driver(CHG)
+    assert b.layer.mode == "socketcan"
 
 
 def case_start(M, work):
     b = Bench(M, work, chg_bound=True)
     out = M.start(b.logdir, "linux")
     assert out["ok"] is True, out
-    assert b.calls() == ["canctl mode canchg libusb"], b.calls()
-    assert b.driver(CHG) is None and not b.netdev("canchg"), (b.driver(CHG), b.netdev("canchg"))
-    assert b.driver(MAIN) == "gs_usb" and b.netdev("canmain")
+    assert b.calls() == [START_CALL], b.calls()
+    assert b.layer.mode == "libusb"
     assert out["found"]["bus"] == 1 and out["found"]["address"] == 38, out
+    assert out["found"]["mode"] == "libusb", out
     logs = os.listdir(b.logdir)
     assert len(logs) == 1 and logs[0].startswith("canchg_start_"), logs
+    with open(os.path.join(b.logdir, logs[0]), encoding="utf-8") as f:
+        assert "libusb mode" in f.read()
+    # with no stand-in, the layer is adapter_roles.layer()'s (the guard set there)
+    M.LAYER = None
+    saved = sys.modules.get("adapter_roles")
+    sys.modules["adapter_roles"] = type("AR", (), {"layer": staticmethod(lambda: b.layer)})
+    try:
+        out = M.end(b.logdir, "linux")
+    finally:
+        if saved is None:
+            del sys.modules["adapter_roles"]
+        else:
+            sys.modules["adapter_roles"] = saved
+    assert out["ok"] and b.calls()[-1] == END_CALL, (out, b.calls())
 
 
-def case_start_canctl(M, work):
-    b = Bench(M, _sub(work, "rc2"), chg_bound=True, rc=2, act=False)
-    out = M.start(b.logdir, "linux")
-    assert out["ok"] is False and "canctl mode canchg libusb failed (rc 2, refused)" in out["detail"], out
-    b = Bench(M, _sub(work, "rc3"), chg_bound=True, rc=3)
-    out = M.start(b.logdir, "linux")
-    assert b.driver(CHG) is None, b.driver(CHG)
-    assert out["ok"] is False and "canctl mode canchg libusb failed (rc 3, did not take)" in out["detail"], out
+def case_start_fails(M, work):
+    for name, text in (("rc2", "canctl mode canchg libusb failed (rc 2, refused): x"),
+                       ("rc3", "canctl mode canchg libusb failed (rc 3, did not take): x"),
+                       ("guard", "the bench lock is free: the bench is used only under the lock")):
+        b = Bench(M, _sub(work, name), chg_bound=True, fail={"to_libusb": text})
+        out = M.start(b.logdir, "linux")
+        assert out["ok"] is False and "bench_layer.to_libusb canchg failed" in out["detail"] \
+            and text in out["detail"], (name, out)
+        assert b.calls() == [START_CALL], (name, b.calls())
+        assert os.listdir(b.logdir), (name, "no log")
 
 
-def case_start_recheck(M, work):
-    b = Bench(M, _sub(work, "noop"), chg_bound=True, act=False)
+def case_start_state(M, work):
+    b = Bench(M, work, chg_bound=True, lie={"to_libusb": {"mode": "socketcan"}})
     out = M.start(b.logdir, "linux")
-    assert b.calls() == ["canctl mode canchg libusb"], b.calls()
-    assert out["ok"] is False and "re-check" in out["detail"] and "bound to the kernel" in \
-        out["detail"] and "failed (rc" not in out["detail"], out
-    # the role table cannot resolve canchg (unplugged, two devices): not ok
-    b = Bench(M, _sub(work, "unresolved"), chg_bound=True)
-    b.roles.err = "canchg is not attached"
-    out = M.start(b.logdir, "linux")
-    assert out["ok"] is False and "re-check" in out["detail"] and \
-        "canchg is not attached" in out["detail"], out
-    # resolved, but not in libusb mode (canctl saved another mode): not ok
-    b = Bench(M, _sub(work, "mode"), chg_bound=True, keep_mode="socketcan", act=False)
-    out = M.start(b.logdir, "linux")
-    assert out["ok"] is False and "re-check" in out["detail"] and \
-        "not libusb" in out["detail"], out
+    assert out["ok"] is False and "not libusb" in out["detail"], out
 
 
 def case_end(M, work):
     b = Bench(M, work, chg_bound=False)
-    assert b.driver(CHG) is None and not b.netdev("canchg")
     out = M.end(b.logdir, "linux")
     assert out["ok"] is True, out
     assert b.calls() == [END_CALL], b.calls()
-    assert b.driver(CHG) == "gs_usb" and b.netdev("canchg"), (b.driver(CHG), b.netdev("canchg"))
+    assert b.layer.mode == "socketcan"
     f = out["found"]
-    assert f["canctl_rc"] == 0 and f["bound"] is True and f["netdev"] is True, f
+    assert f["mode"] == "socketcan" and f["driver"] == "gs_usb" and f["netdev"] == "canchg", f
     logs = os.listdir(b.logdir)
     assert len(logs) == 1 and logs[0].startswith("canchg_end_"), logs
 
 
-def case_end_check(M, work):
-    for name, ctl in (("noop", dict(act=False)), ("usbfs", dict(driver="usbfs")),
-                      ("nonet", dict(netdev=False))):
-        b = Bench(M, _sub(work, name), chg_bound=False, **ctl)
+def case_end_fails(M, work):
+    for name, kw in (("rc3", dict(fail={"to_socketcan": "canctl mode canchg socketcan --wait "
+                                                        "10 failed (rc 3, did not take): x"})),
+                     ("unsettled", dict(fail={"to_socketcan": "canctl mode canchg socketcan "
+                                                              "exited 0 but canchg is not "
+                                                              "settled in socketcan after 10 s"})),
+                     ("guard", dict(fail={"to_socketcan": "the bench lock is free"}))):
+        b = Bench(M, _sub(work, name), chg_bound=False, **kw)
         out = M.end(b.logdir, "linux")
-        assert out["ok"] is False and "not bound again" in out["detail"], (name, out)
+        assert out["ok"] is False and "not back on gs_usb" in out["detail"] and \
+            "bench_layer.to_socketcan canchg failed" in out["detail"] and \
+            kw["fail"]["to_socketcan"] in out["detail"], (name, out)
         assert b.calls() == [END_CALL], (name, b.calls())
-    b = Bench(M, _sub(work, "rc3"), chg_bound=False, rc=3, act=False)
-    out = M.end(b.logdir, "linux")
-    assert out["ok"] is False and "canctl mode canchg socketcan failed (rc 3, did not take)" in \
-        out["detail"], out
-
-
-def case_end_poll(M, work):
-    b = Bench(M, _sub(work, "late"), chg_bound=False, netdev=False)
-
-    def late(n):
-        if n == 2:
-            os.makedirs(os.path.join(b.net, "canchg"))
-    b.on_sleep = late
-    out = M.end(b.logdir, "linux")
-    assert out["ok"] is True and len(b.sleeps) == 2, (out, b.sleeps)
-    b = Bench(M, _sub(work, "never"), chg_bound=False, netdev=False)
-    out = M.end(b.logdir, "linux")
-    assert out["ok"] is False and "has no netdev" in out["detail"], out
-    assert b.clock[0] >= M.BIND_WAIT_S and b.clock[0] - M.POLL_S < M.BIND_WAIT_S, \
-        (b.clock[0], b.sleeps)
+    for name, lie in (("usbfs", {"driver": "usbfs"}), ("nonet", {"netdev": None}),
+                      ("libusb", {"mode": "libusb"})):
+        b = Bench(M, _sub(work, name), chg_bound=False, lie={"to_socketcan": lie})
+        out = M.end(b.logdir, "linux")
+        assert out["ok"] is False and "not back on gs_usb" in out["detail"], (name, out)
 
 
 def case_hooks(M, work):
     b = Bench(M, _sub(work, "x2"), chg_bound=True)
 
-    def inner(step, ok=True, boom=False):
+    def inner(bench, step, ok=True, boom=False):
         def hook(board, img, ctx, logdir):
-            with open(b.log, "a", encoding="utf-8") as f:
-                f.write("inner %s %s\n" % (step, board))
+            bench.log.append("inner %s %s" % (step, board))
             if boom:
                 raise RuntimeError("inner %s raised" % step)
             return dict(ok=ok, detail="inner %s %s" % (step, board), found={"k": step})
         return hook
 
-    s, e = M.hooks(inner("start"), inner("end"), platform="linux")
+    s, e = M.hooks(inner(b, "start"), inner(b, "end"), platform="linux")
     out = s("x2", None, None, b.logdir)
-    assert out["ok"] is True and b.calls() == ["canctl mode canchg libusb", "inner start x2"], \
-        (out, b.calls())
-    assert out["found"]["k"] == "start" and out["found"]["canchg"]["canctl_rc"] == 0, out
+    assert out["ok"] is True and b.calls() == [START_CALL, "inner start x2"], (out, b.calls())
+    assert out["found"]["k"] == "start" and out["found"]["canchg"]["mode"] == "libusb", out
     out = e("x2", None, None, b.logdir)
-    assert out["ok"] is True and b.calls()[2:] == ["inner end x2", END_CALL], \
-        (out, b.calls())
-    assert b.driver(CHG) == "gs_usb" and b.netdev("canchg")
+    assert out["ok"] is True and b.calls()[2:] == ["inner end x2", END_CALL], (out, b.calls())
+    assert b.layer.mode == "socketcan"
     # the hook given fails, or raises: the end step still runs
-    for name, hk in (("fails", inner("end", ok=False)), ("raises", inner("end", boom=True))):
+    for name, boom, ok in (("fails", False, False), ("raises", True, True)):
         b = Bench(M, _sub(work, name), chg_bound=False)
-        _s, e = M.hooks(inner("start"), hk, platform="linux")
+        _s, e = M.hooks(inner(b, "start"), inner(b, "end", ok=ok, boom=boom), platform="linux")
         out = e("x2", None, None, b.logdir)
         assert b.calls() == ["inner end x2", END_CALL], (name, b.calls())
-        assert out["ok"] is False and b.driver(CHG) == "gs_usb", (name, out)
+        assert out["ok"] is False and b.layer.mode == "socketcan", (name, out)
         if name == "raises":
             assert "inner end raised" in out["detail"], out
     # a failed step with the hook given ok
-    b = Bench(M, _sub(work, "stepfails"), chg_bound=True, act=False)
-    s, e = M.hooks(inner("start"), inner("end"), platform="linux")
+    b = Bench(M, _sub(work, "stepfails"), chg_bound=True, fail={"to_libusb": "refused"})
+    s, e = M.hooks(inner(b, "start"), inner(b, "end"), platform="linux")
     out = s("x2", None, None, b.logdir)
-    assert out["ok"] is False and "re-check" in out["detail"] and \
+    assert out["ok"] is False and "to_libusb canchg failed" in out["detail"] and \
         "inner start x2" in out["detail"], out
-    b = Bench(M, _sub(work, "endfails"), chg_bound=False, act=False)
-    s, e = M.hooks(inner("start"), inner("end"), platform="linux")
+    b = Bench(M, _sub(work, "endfails"), chg_bound=False, fail={"to_socketcan": "refused"})
+    s, e = M.hooks(inner(b, "start"), inner(b, "end"), platform="linux")
     out = e("x2", None, None, b.logdir)
-    assert out["ok"] is False and "not bound again" in out["detail"], out
+    assert out["ok"] is False and "not back on gs_usb" in out["detail"], out
     # the WiCAN: the hook given alone, as it returned it
     b = Bench(M, _sub(work, "wican"), chg_bound=True)
-    s, e = M.hooks(inner("start"), inner("end"), platform="linux")
+    s, e = M.hooks(inner(b, "start"), inner(b, "end"), platform="linux")
     for hk, step in ((s, "start"), (e, "end")):
         out = hk("wican", None, None, b.logdir)
         assert out == dict(ok=True, detail="inner %s wican" % step, found={"k": step}), out
     assert b.calls() == ["inner start wican", "inner end wican"], b.calls()
-    assert b.driver(CHG) == "gs_usb"
+    assert b.layer.mode == "socketcan"
 
 
-CASES = [case_off_linux, case_start, case_start_canctl, case_start_recheck, case_end,
-         case_end_check, case_end_poll, case_hooks]
+CASES = [case_off_linux, case_start, case_start_fails, case_start_state, case_end,
+         case_end_fails, case_hooks]
 
 MUTANTS = [
     ("the end step skipped (hooks)",
@@ -400,43 +300,43 @@ MUTANTS = [
     ("the hook given's failure ignored in the result",
      "    return dict(ok=bool(mine.get(\"ok\")) and bool(theirs.get(\"ok\")),",
      "    return dict(ok=bool(mine.get(\"ok\")),"),
-    ("start: canctl's exit code ignored",
-     "    if rc != 0:\n        return dict(ok=False, detail=\"canchg: canctl mode canchg libusb",
-     "    if False:\n        return dict(ok=False, detail=\"canchg: canctl mode canchg libusb"),
-    ("start: the re-check dropped",
-     "        res = _resolve()\n        if res.mode != \"libusb\":",
-     "        res = type(\"R\", (), {\"busnum\": 1, \"devnum\": 38})()\n        if False:"),
-    ("start: the re-check's mode not compared",
-     "        if res.mode != \"libusb\":", "        if False:"),
-    ("start: the wrong mode", "    rc, last = _canctl(\"libusb\", logdir, \"start\")",
-     "    rc, last = _canctl(\"socketcan\", logdir, \"start\")"),
-    ("start: canctl run off Linux",
-     "        return dict(ok=True, detail=\"canchg: no mode step off Linux\")\n"
-     "    rc, last = _canctl(\"libusb\"",
-     "        pass\n    rc, last = _canctl(\"libusb\""),
-    ("end: canctl run off Linux",
-     "        return dict(ok=True, detail=\"canchg: no mode step off Linux\")\n"
-     "    rc, last = _canctl(\"socketcan\"",
-     "        pass\n    rc, last = _canctl(\"socketcan\""),
-    ("end: canctl's exit code ignored",
-     "    if rc != 0:\n        return dict(ok=False, detail=\"canchg: canctl mode canchg socketcan",
-     "    if False:\n        return dict(ok=False, detail=\"canchg: canctl mode canchg socketcan"),
-    ("end: the bound check dropped", "    if not (bound and netdev):", "    if False:"),
-    ("end: any driver counts as gs_usb", "    bound = r.driver == GS_USB_DRIVER",
-     "    bound = r.driver is not None"),
-    ("end: no poll", "        if (bound and netdev) or monotonic() >= t_end:",
-     "        if True:"),
-    ("end: polls without end", "        if (bound and netdev) or monotonic() >= t_end:",
-     "        if (bound and netdev) or monotonic() >= t_end + 100:"),
-    ("end: the wrong mode",
-     "    rc, last = _canctl(\"socketcan\", logdir, \"end\", [\"--wait\", \"%d\" % BIND_WAIT_S])",
-     "    rc, last = _canctl(\"libusb\", logdir, \"end\", [\"--wait\", \"%d\" % BIND_WAIT_S])"),
-    ("end: --wait not passed",
-     "    rc, last = _canctl(\"socketcan\", logdir, \"end\", [\"--wait\", \"%d\" % BIND_WAIT_S])",
-     "    rc, last = _canctl(\"socketcan\", logdir, \"end\")"),
-    ("start: --wait passed with libusb (canctl refuses it)",
-     "    rc, last = _canctl(\"libusb\", logdir, \"start\")",
-     "    rc, last = _canctl(\"libusb\", logdir, \"start\", [\"--wait\", \"%d\" % BIND_WAIT_S])"),
+    ("start: the layer's failure taken as ok",
+     "        out = dict(ok=False, detail=\"canchg: bench_layer.to_libusb %s failed: %s: %s\"",
+     "        out = dict(ok=True, detail=\"canchg: bench_layer.to_libusb %s failed: %s: %s\""),
+    ("start: the mode read back not compared", "    if f[\"mode\"] != \"libusb\":",
+     "    if False:"),
+    ("start: the wrong mode", "        res = _layer().to_libusb(ROLE)",
+     "        res = _layer().to_socketcan(ROLE)"),
+    ("start: the layer asked off Linux",
+     "        return dict(ok=True, detail=\"canchg: no mode step off Linux\")\n    try:\n"
+     "        res = _layer().to_libusb(ROLE)",
+     "        pass\n    try:\n        res = _layer().to_libusb(ROLE)"),
+    ("end: the layer asked off Linux",
+     "        return dict(ok=True, detail=\"canchg: no mode step off Linux\")\n    try:\n"
+     "        res = _layer().to_socketcan(ROLE, wait_s=BIND_WAIT_S)",
+     "        pass\n    try:\n        res = _layer().to_socketcan(ROLE, wait_s=BIND_WAIT_S)"),
+    ("end: the layer's failure taken as ok",
+     "        out = dict(ok=False, detail=\"canchg: not back on gs_usb: bench_layer.to_socketcan %s \"\n"
+     "                   \"failed",
+     "        out = dict(ok=True, detail=\"canchg: not back on gs_usb: bench_layer.to_socketcan %s \"\n"
+     "                   \"failed"),
+    ("end: the read-back not judged",
+     "    if f[\"mode\"] != \"socketcan\" or f[\"driver\"] != \"gs_usb\" or not f[\"netdev\"]:",
+     "    if False:"),
+    ("end: any driver counts as gs_usb",
+     "    if f[\"mode\"] != \"socketcan\" or f[\"driver\"] != \"gs_usb\" or not f[\"netdev\"]:",
+     "    if f[\"mode\"] != \"socketcan\" or not f[\"netdev\"]:"),
+    ("end: no netdev accepted",
+     "    if f[\"mode\"] != \"socketcan\" or f[\"driver\"] != \"gs_usb\" or not f[\"netdev\"]:",
+     "    if f[\"mode\"] != \"socketcan\" or f[\"driver\"] != \"gs_usb\":"),
+    ("end: the wrong mode", "        res = _layer().to_socketcan(ROLE, wait_s=BIND_WAIT_S)",
+     "        res = _layer().to_libusb(ROLE, wait_s=BIND_WAIT_S)"),
+    ("end: the wait not passed", "        res = _layer().to_socketcan(ROLE, wait_s=BIND_WAIT_S)",
+     "        res = _layer().to_socketcan(ROLE)"),
+    ("the layer not adapter_roles'", "    import adapter_roles\n    return adapter_roles.layer()",
+     "    raise RuntimeError(\"no layer\")"),
+    ("no log written", "        with open(os.path.join(logdir, \"canchg_%s_%s.txt\"",
+     "        with open(os.devnull + (\"\" if 1 else \"canchg_%s_%s.txt\""),
 ]
 
 

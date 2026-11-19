@@ -18,6 +18,16 @@ beside a sender in the same check, runs here.
     res["recv_errors"]      # the CanError texts recv() raised (a PCAN queue
                             # overrun shows here), with their host times
     res["status"]           # the bus's status() at the end, if it has one
+    res["not_bus_errors"]   # error frames that are not bus errors (below)
+
+An error frame is a row (is_err True) only when it counts as a bus error by
+can-tools' classifier (adapter_roles.bus_error, canbench.bench_layer's; the
+charge-interposer reviewer's bench-layer item, 2026-11-19): on SocketCAN
+only the bus-error classes (TX timeout, lost arbitration, protocol,
+transceiver, ACK, bus error), not a controller-state change, bus-off,
+restarted, or the error counters alone, which are counted in
+not_bus_errors and kept out of the rows; on any other backend every error
+frame is a row, as before.
 
 The opener is named by module and function, with keyword arguments, so the
 child (a spawn, not a fork: the parent may hold threads) imports and calls it
@@ -49,17 +59,24 @@ READY_S = 30.0
 LOST_RE = re.compile(r"\blost\b|overrun|overflow", re.I)
 
 
+def bus_error(bus, msg):
+    """can-tools' classifier (adapter_roles.bus_error): whether the error
+    frame msg, read from bus, counts as a bus error."""
+    import adapter_roles
+    return adapter_roles.bus_error(bus, msg)
+
+
 def _child(mod, fn, kw, keep_echoes, conn, ready, stop, paths, count_ids=(), count=None):
     for p in paths:
         if p not in sys.path:
             sys.path.insert(0, p)
     import importlib
-    rows, errs, status = [], [], None
+    rows, errs, status, not_bus = [], [], None, 0
     try:
         bus = getattr(importlib.import_module(mod), fn)(**kw)
     except Exception as e:                              # noqa: BLE001
         conn.send({"opened": False, "error": "%s: %s" % (type(e).__name__, e),
-                   "rows": [], "recv_errors": [], "status": None})
+                   "rows": [], "recv_errors": [], "status": None, "not_bus_errors": 0})
         conn.close()
         ready.set()
         return
@@ -77,6 +94,9 @@ def _child(mod, fn, kw, keep_echoes, conn, ready, stop, paths, count_ids=(), cou
                 errs.append((time.perf_counter(), "%s: %s" % (type(e).__name__, e)))
                 continue
             if m is None:
+                continue
+            if getattr(m, "is_error_frame", False) and not bus_error(bus, m):
+                not_bus += 1
                 continue
             is_rx = bool(getattr(m, "is_rx", True))
             if not is_rx and not keep_echoes:
@@ -97,7 +117,7 @@ def _child(mod, fn, kw, keep_echoes, conn, ready, stop, paths, count_ids=(), cou
         except Exception as e:                          # noqa: BLE001
             errs.append((time.perf_counter(), "shutdown: %s" % e))
     conn.send({"opened": True, "error": None, "rows": rows, "recv_errors": errs,
-               "status": status})
+               "status": status, "not_bus_errors": not_bus})
     conn.close()
 
 
@@ -143,6 +163,7 @@ class ProcReader:
             self._p.join(5.0)
         if res is None:
             res = {"opened": None, "rows": [], "recv_errors": [], "status": None,
+                   "not_bus_errors": 0,
                    "error": "the %s reader process sent nothing (exit %s)"
                             % (self.name, self._p.exitcode)}
         self._res = res
@@ -188,21 +209,39 @@ def as_msgs(res):
 # --- self-test -----------------------------------------------------------------
 
 class _Msg:
-    def __init__(self, i, is_rx=True):
+    def __init__(self, i, is_rx=True, err_id=None):
         self.timestamp, self.arbitration_id, self.is_extended_id = 1000.0 + i, 0x100 + i, False
         self.dlc, self.data, self.is_rx, self.is_error_frame = 1, bytes([i]), is_rx, False
+        if err_id is not None:
+            self.arbitration_id, self.is_error_frame, self.dlc = err_id, True, 8
+            self.data = bytes(8)
+
+
+# SocketCAN error classes (linux/can/error.h): a controller-state change
+# alone, and a protocol error with the bus-error flag
+ERR_CRTL_ONLY = 0x004
+ERR_PROT_BUSERROR = 0x008 | 0x080
 
 
 class FakeBus:
     """For the self-test, opened in the child: offers n frames (every third
-    an own echo), raises one recv error after the first, then goes quiet."""
+    an own echo), raises one recv error after the first, then goes quiet.
+    errors: then a controller-state error frame and a bus-error one.
+    socketcan: it reads as a SocketCAN bus to the classifier (bench_role's
+    interface, as canbench's opens set it)."""
 
-    def __init__(self, n=6, fail_open=False, hang=False, delay=0.0):
+    def __init__(self, n=6, fail_open=False, hang=False, delay=0.0, errors=False,
+                 socketcan=False):
         if fail_open:
             raise OSError("no such adapter")
         self.n, self.i, self.hang = n, 0, hang
         self.raised = False
         self.t_free = time.monotonic() + delay
+        self.errs = [ERR_CRTL_ONLY, ERR_PROT_BUSERROR] if errors else []
+        if socketcan:
+            import types
+            self.bench_role = types.SimpleNamespace()
+            self.bench_role.interface = "socketcan"
 
     def recv(self, timeout=None):
         if self.hang:
@@ -216,6 +255,8 @@ class FakeBus:
         if self.i < self.n:
             self.i += 1
             return _Msg(self.i - 1, is_rx=(self.i - 1) % 3 != 2)
+        if self.errs:
+            return _Msg(0x40, err_id=self.errs.pop(0))
         time.sleep(timeout or 0)
         return None
 
@@ -272,6 +313,21 @@ def self_test():
     res = r.finish()
     check([x[6] for x in res["rows"]].count(False) == 2,
           "keep_echoes keeps them, is_rx False: %s" % [x[6] for x in res["rows"]])
+    # error frames, classified by can-tools' bus_error (the reviewer's
+    # bench-layer item, 2026-11-19)
+    for sc, want_rows, want_not in ((True, [ERR_PROT_BUSERROR], 1),
+                                    (False, [ERR_CRTL_ONLY, ERR_PROT_BUSERROR], 0)):
+        r = ProcReader(me, "open_fake", {"n": 1, "errors": True, "socketcan": sc}, name="fake")
+        r.wait_ready(30)
+        time.sleep(0.3)
+        res = r.finish()
+        errs = [x[2] for x in res["rows"] if x[7]]
+        check(errs == want_rows and res.get("not_bus_errors") == want_not
+              and [x[2] for x in res["rows"] if not x[7]] == [0x100],
+              "%s: error-frame rows %s, not bus errors %s (want %s, %d)"
+              % ("SocketCAN: a controller-state frame is not a bus error" if sc else
+                 "not SocketCAN: every error frame is a row", [hex(i) for i in errs],
+                 res.get("not_bus_errors"), [hex(i) for i in want_rows], want_not))
     r = ProcReader(me, "open_fake", {"n": 2, "delay": 0.25}, name="fake")
     r.wait_ready(30)
     res = r.finish()
@@ -348,6 +404,15 @@ MUTANTS = [
     ("witness_void: recv errors ignored", "    elif res.get(\"recv_errors\"):", "    elif False:"),
     ("witness_void: a reader that did not open judged", "    if not res.get(\"opened\"):",
      "    if False:"),
+    ("every error frame a row (no classifier)",
+     "            if getattr(m, \"is_error_frame\", False) and not bus_error(bus, m):",
+     "            if False:"),
+    ("no error frame a row",
+     "            if getattr(m, \"is_error_frame\", False) and not bus_error(bus, m):",
+     "            if getattr(m, \"is_error_frame\", False):"),
+    ("not-bus-errors not counted", "                not_bus += 1\n", ""),
+    ("the classifier not can-tools'", "    return adapter_roles.bus_error(bus, msg)",
+     "    return bool(msg.is_error_frame)"),
     ("the host time not perf_counter",
      "            rows.append((m.timestamp, time.perf_counter(), m.arbitration_id,",
      "            rows.append((m.timestamp, time.time(), m.arbitration_id,"),

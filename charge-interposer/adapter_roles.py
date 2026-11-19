@@ -1,52 +1,62 @@
 #!/usr/bin/env python3
-"""Every real bench adapter the harness opens, opened by its canctl role.
+"""Every real bench adapter the harness opens, opened by its canctl role,
+through can-tools' bench-role layer.
 
 Charge-interposer tester, 2026-11-18: shared/bench SPEC section 8's adapter
 roles (user, 2026-11-18, the whole bench; shared/main b4e95179, tag
-2026.11.18.2), assigned by the charge-interposer reviewer the same day. A
-tool asks for a bench adapter by its canctl role -- canmain, canchg, canx2,
-kvaser, pcanfd -- and never by an enumeration index, a channel number or
-the first one of its kind it finds; turning a role into a device is
-canctl's and canbench's job.
+2026.11.18.2). A tool asks for a bench adapter by its canctl role --
+canmain, canchg, canx2, kvaser, pcanfd -- and never by an enumeration index,
+a channel number or the first one of its kind it finds.
 
-So this module is the harness's one way to a real adapter. It loads the
-pinned can-tools' canbench.bench_roles (can_tools_pin.use: the commit in
-pins.json, 5220d374 or later), asks `canctl roles` (read-only, no root)
-where the role is now, and opens it with bench_roles' own resolve() and
-open_role(), which also apply canbench.live.linux_fixes and, for a gs_usb
-role in libusb mode, release the USB claim on shutdown:
+Since 2026-11-19 (the charge-interposer reviewer's bench-layer item) this
+module is a thin caller of canbench.bench_layer, the bench-role layer both
+ESP projects share (can-tools ec7cefe9, pinned in pins.json and loaded by
+can_tools_pin.use; reverse-it tools/plans/bench-role-layer.md). The layer
+brings a role to the mode asked for, brings a SocketCAN link up, opens the
+role through canbench.bench_roles (which applies canbench.live.linux_fixes
+and releases a libusb role's USB claim on shutdown), and with restore=True
+(the default) puts the role back as found on shutdown. It refuses a pick by
+index, channel, USB bus or address, device id, serial or interface. What is
+left here: the role names, the canctl path, and the bench guard.
 
-    pcanfd(bitrate, **kw)    the PEAK PCAN-USB FD on the vehicle segment:
-                             open_role("pcanfd", modes=("pcan",)), python-can
-                             pcan by the device id canctl reads from the
-                             driver (no PCAN_USBBUSn)
-    canchg(bitrate, **kw)    the charger segment's Innomaker:
-                             open_role("canchg", modes=("libusb",)), python-
-                             can gs_usb by USB bus and address (no index, no
-                             serial), refused while the kernel's gs_usb holds
-                             it
-    kvaser_netdev()          the vehicle segment's Kvaser's netdev, from
-                             resolve("kvaser") in socketcan mode
-                             (kvaser_link opens and watches it)
+    open_bench(role, bitrate, mode=None, restore=True, **kw)
+                             the layer's open_bench for a name in ROLES, in
+                             the layer's DEFAULT_MODES unless mode= is given
+                             (pcanfd pcan, canchg libusb, canmain libusb,
+                             kvaser socketcan; canx2 has none)
+    pcanfd(bitrate, **kw)    the PEAK PCAN-USB FD on the vehicle segment
+                             (pcan, by the device id canctl reads)
+    canchg(bitrate, **kw)    the charger segment's Innomaker (libusb, by USB
+                             bus and address)
     kvaser_canlib(bitrate, **kw)
-                             the Kvaser on CANlib: open_role("kvaser",
-                             modes=("linuxcan",)), only for
+                             the Kvaser on CANlib (mode="linuxcan": the
+                             layer moves it there and back), only for
                              bench_rate_feasibility's hand-run witness
-    resolve(role) / open_role(role, ...)
-                             the same for any role, the name checked
-                             against ROLES first
+    kvaser_netdev()          the Kvaser's netdev, from resolve("kvaser") in
+                             socketcan mode (kvaser_link opens and watches
+                             it)
+    resolve(role)            where a role is now (read-only `canctl roles`)
+    layer()                  the pinned bench_layer with CANCTL and the guard
+                             set, for kvaser_link (link_up, link_down, the
+                             recovery's usbreset) and canchg_mode (to_libusb,
+                             to_socketcan)
+    bus_error(bus, msg)      the layer's error-frame classifier: on
+                             SocketCAN only the bus-error classes count
 
-A role canbench cannot resolve or open as asked raises RoleError (canbench's
-own class), naming why: canctl missing (off the bench host, or Windows: no
-role is opened there), a device not attached or two matching, a mode the
-caller does not take, a netdev down. Nothing here brings a link up or down,
-changes a mode or picks among devices: that is canctl's (kvaser_link and
-canchg_mode run canctl for that).
+THE GUARD. The layer touches nothing on the bench unless a guard is set
+(bench_layer.set_guard). layer() always sets _guard, which runs shared/
+bench's bench_lock.guard(bench_lock.default_log(), HOLDER_ROLES) at each
+call: the bench log must replay on this host, be held by this project's
+tester or implementor (a loan), under this process's pid or an ancestor's
+(a run's checks under the runner, a hand take's tools under the session).
+Otherwise bench_lock.NotHeld, and nothing is run. A pinned shared/bench with
+no bench_lock.guard refuses the same way (BenchGuardMissing).
 
-CANCTL is the canctl the role table is read from, a module global read at
-each call, so adapter_roles_test.py points it at a fake canctl. The
-harness's own openers are listed, with their roles, in adapter_roles_test's
-OPENERS, and its scan refuses any other real-adapter open in the harness.
+CANCTL, LAYER, BENCH_ROLES and BENCH_LOCK are module globals read at each
+call, so adapter_roles_test.py points them at a fake canctl and stand-ins.
+The harness's own openers are listed, with their roles, in
+adapter_roles_test's OPENERS, and canbench.bench_scan, run there, refuses any
+other real-adapter open in the harness.
 
     python3.13 -B charge-interposer/adapter_roles.py [ROLE ...]
         resolves each role (all of ROLES by default) and prints where it is
@@ -57,80 +67,125 @@ import sys
 
 # canctl's roles (shared/bench SPEC section 8)
 ROLES = ("canmain", "canchg", "canx2", "kvaser", "pcanfd")
-# read-only, no root (canbench.bench_roles: `canctl roles`)
+# read-only `canctl roles` with no root; the layer runs the rest as root
+# through sudo -n
 CANCTL = "/usr/local/sbin/canctl"
+# the bench log's holders that may use the bench from this harness
+HOLDER_ROLES = ("tester (charge-interposer)", "implementor (charge-interposer)")
+LAYER = None            # canbench.bench_layer, or a stand-in (tests)
+BENCH_ROLES = None      # canbench.bench_roles, or a stand-in (tests)
+BENCH_LOCK = None       # shared/bench's vtrux_bench.bench_lock, or a stand-in (tests)
 
 
-def bench_roles(mod=None):
-    """The pinned canbench.bench_roles (can_tools_pin.use). mod: a stand-in
-    (tests)."""
-    if mod is not None:
-        return mod
+class NotARole(ValueError):
+    """A name that is not one of canctl's roles."""
+
+
+class BenchGuardMissing(RuntimeError):
+    """The pinned shared/bench has no bench_lock.guard."""
+
+
+def _check(role):
+    if role not in ROLES:
+        raise NotARole("%r is not a bench role (canctl's roles: %s); an adapter is asked "
+                       "for by its role, never by index, channel or first found"
+                       % (role, ", ".join(ROLES)))
+
+
+def _pinned_layer():
+    """The pinned canbench.bench_layer (can_tools_pin.use)."""
+    import can_tools_pin
+    can_tools_pin.use()
+    from canbench import bench_layer
+    return bench_layer
+
+
+def bench_roles():
+    """The pinned canbench.bench_roles (or BENCH_ROLES)."""
+    if BENCH_ROLES is not None:
+        return BENCH_ROLES
     import can_tools_pin
     can_tools_pin.use()
     from canbench import bench_roles as br
     return br
 
 
-def _table(br):
-    return br.canctl_roles_text(CANCTL)
+def bench_guard():
+    """shared/bench's guard for this harness: bench_lock.guard over the
+    bench log for HOLDER_ROLES."""
+    bl = BENCH_LOCK
+    if bl is None:
+        import shared_pin
+        shared_pin.use_bench()
+        from vtrux_bench import bench_lock as bl
+    if not hasattr(bl, "guard"):
+        raise BenchGuardMissing("the pinned shared/bench has no bench_lock.guard: nothing on "
+                                "the bench is touched until the harness is re-pinned to it")
+    return bl.guard(bl.default_log(), HOLDER_ROLES)
 
 
-def _check(role, br):
-    if role not in ROLES:
-        raise br.RoleError("%r is not a bench role (canctl's roles: %s); an adapter is asked "
-                           "for by its role, never by index, channel or first found"
-                           % (role, ", ".join(ROLES)))
+def _guard():
+    """The guard the layer runs before every canctl call and every open."""
+    bench_guard()()
 
 
-def resolve(role, mod=None):
-    """canbench's Resolved for role: where it is now and how it opens."""
-    br = bench_roles(mod)
-    _check(role, br)
-    return br.resolve(role, text=_table(br))
+def layer():
+    """The pinned canbench.bench_layer (or LAYER), its canctl CANCTL and its
+    guard _guard, set at each call."""
+    L = LAYER if LAYER is not None else _pinned_layer()
+    L.CANCTL = CANCTL
+    L.set_guard(_guard)
+    return L
 
 
-def open_role(role, bitrate=None, modes=None, hw_timestamps=False, mod=None, **kw):
-    """canbench's open_role(role, ...): an open python-can bus."""
-    br = bench_roles(mod)
-    _check(role, br)
-    return br.open_role(role, bitrate=bitrate, modes=modes, hw_timestamps=hw_timestamps,
-                        text=_table(br), **kw)
+def resolve(role):
+    """canbench's Resolved for role: where it is now and how it opens
+    (read-only)."""
+    _check(role)
+    br = bench_roles()
+    return br.resolve(role, text=br.canctl_roles_text(CANCTL))
 
 
-def pcanfd(bitrate, mod=None, **kw):
-    """The PCAN-USB FD (role pcanfd), python-can pcan by canctl's device
-    id. kw: python-can's pcan keywords (auto_reset, state, fd, ...), never
-    channel or device_id."""
-    for k in ("channel", "device_id"):
-        if k in kw:
-            raise bench_roles(mod).RoleError("pcanfd is opened by its role, not by %s=%r"
-                                             % (k, kw[k]))
-    return open_role("pcanfd", bitrate=bitrate, modes=("pcan",), mod=mod, **kw)
+def open_bench(role, bitrate=None, mode=None, restore=True, **kw):
+    """The layer's open_bench(role, ...): an open python-can bus, the role
+    brought to mode (or the layer's default) first."""
+    _check(role)
+    return layer().open_bench(role, bitrate, mode=mode, restore=restore, **kw)
 
 
-def canchg(bitrate, mod=None, **kw):
-    """The charger segment's Innomaker (role canchg) in libusb mode, by USB
-    bus and address. kw: never index, bus, address or channel."""
-    for k in ("index", "bus", "address", "channel"):
-        if k in kw:
-            raise bench_roles(mod).RoleError("canchg is opened by its role, not by %s=%r"
-                                             % (k, kw[k]))
-    return open_role("canchg", bitrate=bitrate, modes=("libusb",), mod=mod, **kw)
+def pcanfd(bitrate, **kw):
+    """The PCAN-USB FD (role pcanfd) in pcan mode. kw: python-can's pcan
+    keywords (auto_reset, state, fd, ...), never a pick."""
+    return open_bench("pcanfd", bitrate, **kw)
 
 
-def kvaser_netdev(mod=None):
+def canchg(bitrate, **kw):
+    """The charger segment's Innomaker (role canchg) in libusb mode."""
+    return open_bench("canchg", bitrate, **kw)
+
+
+def kvaser_canlib(bitrate, **kw):
+    """The Kvaser on CANlib (role kvaser, mode linuxcan: linuxcan's leaf)."""
+    return open_bench("kvaser", bitrate, mode="linuxcan", **kw)
+
+
+def kvaser_netdev():
     """The Kvaser's netdev (role kvaser, socketcan mode on kvaser_usb)."""
-    res = resolve("kvaser", mod)
+    res = resolve("kvaser")
     if res.mode != "socketcan" or not res.netdev:
-        raise bench_roles(mod).RoleError("kvaser is in mode %s, not socketcan (kvaser_usb): the "
-                                         "harness opens it as a SocketCAN netdev" % res.mode)
+        raise bench_roles().RoleError("kvaser is in mode %s, not socketcan (kvaser_usb): the "
+                                      "harness opens it as a SocketCAN netdev" % res.mode)
     return res.netdev
 
 
-def kvaser_canlib(bitrate, mod=None, **kw):
-    """The Kvaser on CANlib (role kvaser in linuxcan mode, linuxcan's leaf)."""
-    return open_role("kvaser", bitrate=bitrate, modes=("linuxcan",), mod=mod, **kw)
+def bus_error(bus, msg):
+    """Whether msg, read from bus, is an error frame that counts as a bus
+    error (the layer's classifier: on SocketCAN the bus-error classes only;
+    on any other backend every error frame). Reads nothing on the bench. A
+    wrapper that names the bus underneath as .inner (kvaser_link.WatchedBus)
+    is classified on that bus."""
+    L = LAYER if LAYER is not None else _pinned_layer()
+    return L.bus_error(getattr(bus, "inner", bus), msg)
 
 
 def main(argv):

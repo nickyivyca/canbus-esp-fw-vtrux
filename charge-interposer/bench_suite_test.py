@@ -79,25 +79,23 @@ from vtrux_bench.run.model import CheckRun, validate      # noqa: E402
 TMP = None
 
 # No test here runs the real canctl or reads the real role table
-# (canchg_mode.py, the bench suite's X2 hooks on Linux): its canctl is a
-# command that changes nothing and exits 9, its role table a stand-in that
-# resolves nothing, and the tests that drive the hooks stub canchg_mode.start
-# and .end (_canchg_stubs).
-B.canchg_mode.CANCTL = [sys.executable, "-B", "-c", "import sys; sys.exit(9)"]
+# (canchg_mode.py, the bench suite's X2 hooks on Linux): its bench-role
+# layer is a stand-in that refuses everything, and the tests that drive the
+# hooks stub canchg_mode.start and .end (_canchg_stubs).
+class _NoLayer(object):
+    def __getattr__(self, name):
+        def refuse(*a, **kw):
+            raise RuntimeError("bench_suite_test: no bench layer (%s)" % name)
+        return refuse
 
 
-class _NoRoles(object):
-    @staticmethod
-    def resolve(role):
-        raise RuntimeError("bench_suite_test: no role table (%s)" % role)
-
-
-B.canchg_mode.ROLES = _NoRoles
+B.canchg_mode.LAYER = _NoLayer()
 B.canchg_mode.BIND_WAIT_S = 0
-# Nor canx2_slcan's (the X2's start hook detaches canx2): the same canctl
-# that exits 9, sysfs and /proc roots that do not exist, and the tests that
-# drive the hooks stub canx2_slcan.start (inside _canchg_stubs).
-B.canx2_slcan.CANCTL = list(B.canchg_mode.CANCTL)
+# Nor canx2_slcan's (the X2's start hook detaches canx2): a canctl that
+# changes nothing and exits 9, sysfs and /proc roots that do not exist, and
+# the tests that drive the hooks stub canx2_slcan.start (inside
+# _canchg_stubs).
+B.canx2_slcan.CANCTL = [sys.executable, "-B", "-c", "import sys; sys.exit(9)"]
 B.canx2_slcan.SYSFS_NET = B.canx2_slcan.PROC = os.path.join(HERE, "no-such-sysfs")
 B.canx2_slcan.DETACH_WAIT_S = 0
 
