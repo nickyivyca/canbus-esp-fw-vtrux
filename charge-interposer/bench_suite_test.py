@@ -841,7 +841,10 @@ def test_suites():
                  "charge-interposer/firmware/main/idf_component.yml",
                  "charge-interposer/firmware/main/main.cpp",
                  "charge-interposer/firmware/main/machine.h",
-                 "charge-interposer/firmware/main/board_ports.h"):
+                 "charge-interposer/firmware/main/board_ports.h",
+                 # tracker I (the charge-interposer reviewer, 2026-11-18):
+                 # the partition table read in ESP-IDF's core startup stage
+                 "charge-interposer/firmware/main/boot_partitions.c"):
         assert must in pf, must
     for never in ("run_scenario.py", "vehicle_sim.py", "charger_sim.py",
                   "interposer_sim.py", "pack.py", "protocol.py", "bus.py",
