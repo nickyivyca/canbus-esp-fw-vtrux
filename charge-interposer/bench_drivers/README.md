@@ -53,10 +53,11 @@ exception's type, text and time; the boot or phase whose window the reader
 covered is VOID with it (a FAIL from a boot or phase whose reader lived
 still stands): `bench_powerup_round`'s witness, `bench_usb_host.Rx` (its
 not-reading and close boots, and `bench_switch_pending`,
-`bench_flight_silence` and `bench_mcp_reset`), `reset_check` (RESET
-PROVEN: NOT-PROVEN with the reason), `keepalive_probe` and
-`bench_rate_feasibility`'s drains and witness. `bench_switch_errors`
-already judged a dead `Rx` a TEST FAULT, and now names its error.
+`bench_switch_errors`, `bench_flight_silence` and `bench_mcp_reset`),
+`reset_check` (RESET PROVEN: NOT-PROVEN with the reason), `keepalive_probe`
+and `bench_rate_feasibility`'s drains and witness. `bench_switch_errors`
+judged a dead `Rx` a TEST FAULT, counted FAIL, until the reviewer ruled
+it VOID too (2026-11-19).
 
 | File | What |
 |---|---|
