@@ -78,12 +78,21 @@ from vtrux_bench.run.model import CheckRun, validate      # noqa: E402
 # (2026-10-31: before, a fixed folder in the machine temp folder)
 TMP = None
 
-# No test here runs the real canctl or reads the real sysfs (canchg_mode.py,
-# the bench suite's X2 hooks on Linux): its canctl is a command that changes
-# nothing and exits 9, its sysfs roots a folder that does not exist, and the
-# tests that drive the hooks stub canchg_mode.start and .end (_canchg_stubs).
+# No test here runs the real canctl or reads the real role table
+# (canchg_mode.py, the bench suite's X2 hooks on Linux): its canctl is a
+# command that changes nothing and exits 9, its role table a stand-in that
+# resolves nothing, and the tests that drive the hooks stub canchg_mode.start
+# and .end (_canchg_stubs).
 B.canchg_mode.CANCTL = [sys.executable, "-B", "-c", "import sys; sys.exit(9)"]
-B.canchg_mode.SYSFS_USB = B.canchg_mode.SYSFS_NET = os.path.join(HERE, "no-such-sysfs")
+
+
+class _NoRoles(object):
+    @staticmethod
+    def resolve(role):
+        raise RuntimeError("bench_suite_test: no role table (%s)" % role)
+
+
+B.canchg_mode.ROLES = _NoRoles
 B.canchg_mode.BIND_WAIT_S = 0
 # Nor canx2_slcan's (the X2's start hook detaches canx2): the same canctl
 # that exits 9, sysfs and /proc roots that do not exist, and the tests that
@@ -95,14 +104,14 @@ B.canx2_slcan.DETACH_WAIT_S = 0
 
 def _canchg_stubs(calls):
     """canchg_mode.start / .end and canx2_slcan.start replaced by stubs
-    recording (step, environ) in calls (canx2's as ("canx2", {})) and
-    returning ok; -> the originals, to put back with _canchg_restore."""
+    recording (step, {}) in calls (canx2's as ("canx2", {})) and returning
+    ok; -> the originals, to put back with _canchg_restore."""
     M = B.canchg_mode
     keep = (M.start, M.end, B.canx2_slcan.start)
 
     def stub(step):
-        def fn(environ, logdir, platform=None):
-            calls.append((step, dict(environ)))
+        def fn(logdir, platform=None):
+            calls.append((step, {}))
             return dict(ok=True, detail="canchg %s stub" % step, found={})
         return fn
 
@@ -1245,15 +1254,13 @@ def test_wican_board():
 def test_canchg_mode_hooks():
     """The bench suite's hooks set canchg's mode (canchg_mode.py; tester,
     2026-11-12, the reviewer's canchg-mode batch): on the X2, on_start runs
-    canchg_mode.start and on_end canchg_mode.end, once each, with the
-    settings' canchg_device as VTRUX_CANCHG_DEVICE; on the WiCAN neither
-    runs (bench_wican's hooks alone). The emulated and harness suites have
-    no hooks. canchg_mode_test.py tests the steps themselves, and the end
-    step running whatever the WiCAN's hook returned or raised."""
+    canchg_mode.start and on_end canchg_mode.end, once each (canchg by its
+    role, nothing from the settings: SPEC section 8, 2026-11-18); on the
+    WiCAN neither runs (bench_wican's hooks alone). The emulated and harness
+    suites have no hooks. canchg_mode_test.py tests the steps themselves,
+    and the end step running whatever the WiCAN's hook returned or raised."""
     s = _settings()
-    s["canchg_device"] = dict(CHG_DEV)
-    want = _ORIG["canchg_env"](s)
-    assert want, want
+    want = {}
     b = B.bench(s)
     W = B.bench_wican
     d = os.path.join(TMP, "canchg_hooks")
@@ -1288,7 +1295,6 @@ def test_canx2_slcan_hooks():
     (nothing put back); on the WiCAN neither hook runs it.
     canx2_slcan_test.py tests the step itself."""
     s = _settings()
-    s["canchg_device"] = dict(CHG_DEV)
     b = B.bench(s)
     W = B.bench_wican
     d = os.path.join(TMP, "canx2_hooks")
@@ -1323,40 +1329,44 @@ def test_canx2_slcan_hooks():
 
 # a made-up Innomaker serial (24 hex digits, the real ones' shape)
 CHG_DEV = {"vid": "1D50", "pid": "606f", "serial": "00CC00DD5555666677778888"}
+# what names an adapter by its identity rather than its role (shared/bench
+# SPEC section 8, 2026-11-18): a PCAN channel, a settings key that held one,
+# canchg's serial and the variable it was passed in until then
+_IDENTITY = re.compile(r"PCAN_USBBUS|pcan_channel|--pcan-channel|canchg_device|"
+                       r"VTRUX_CANCHG_DEVICE|" + CHG_DEV["serial"], re.I)
 
 
-def test_canchg_env():
-    """The reviewer's E2 (tester, 2026-11-12): the settings' canchg_device
-    reaches every check of every bench group as VTRUX_CANCHG_DEVICE
-    "<vid>:<pid>:<serial>", vid and pid lower-cased, and survives the
-    runner's formatting; without the setting no bench check carries it; a
-    malformed entry is refused (ValueError); the emulated and harness
-    suites never carry it."""
+def test_adapters_by_role():
+    """Every bench adapter by its canctl role (shared/bench SPEC section 8,
+    2026-11-18; adapter_roles.py): with the old pcan_channel and
+    canchg_device still in the settings, as madhouse's file has them, no
+    check of any suite names a PCAN channel, a settings key or variable
+    that carried an adapter's identity, or canchg's serial, in its argv,
+    env or cwd; the scenario checks that drive the board name the
+    charger's Innomaker as role canchg (--charger-channel canchg) and the
+    diag witness as role pcanfd; keepalive-probe passes no PCAN channel."""
     s = _settings()
     s["canchg_device"] = dict(CHG_DEV)
-    want = "1d50:606f:" + CHG_DEV["serial"]
-    b = B.bench(s)
-    checks = [c for g in b.groups for c in g.checks]
-    assert len(checks) > 30, len(checks)
-    off = [c.id for c in checks if c.env.get(B.CANCHG_ENV) != want]
-    assert not off, off
-    from vtrux_bench.run.engine import fmt
-    assert fmt(want, {}) == want
-    for k, f in (("emulated", B.emulated), ("harness", B.harness)):
-        assert not [c.id for g in f(s).groups for c in g.checks
-                    if B.CANCHG_ENV in (c.env or {})], k
-    s2 = _settings()
-    assert not [c.id for g in B.bench(s2).groups for c in g.checks
-                if B.CANCHG_ENV in c.env]
-    for bad in ("1d50:606f:" + CHG_DEV["serial"], dict(CHG_DEV, vid="1d5"),
-                dict(CHG_DEV, pid="60zf"), dict(CHG_DEV, serial=""),
-                dict(CHG_DEV, serial="00CC 00DD"), dict(CHG_DEV, serial="{x}")):
-        s2["canchg_device"] = bad
-        try:
-            B.canchg_env(s2)
-        except ValueError:
-            continue
-        raise AssertionError("canchg_device %r not refused" % (bad,))
+    s["pcan_channel"] = "PCAN_USBBUS1"
+    for name, f in (("bench", B.bench), ("emulated", B.emulated), ("harness", B.harness)):
+        su = f(s)
+        checks = [c for g in su.groups for c in g.checks]
+        bad = [(c.id, x) for c in checks
+               for x in list(c.argv) + ["%s=%s" % kv for kv in (c.env or {}).items()]
+               + [c.cwd or ""] if _IDENTITY.search(str(x))]
+        assert not bad, (name, bad)
+    checks = [c for g in B.bench(s).groups for c in g.checks]
+    board = [c for c in checks if "--external-interposer" in c.argv]
+    assert len(board) >= 5, [c.id for c in board]
+    for c in board:
+        a = c.argv
+        assert a[a.index("--charger-transport") + 1] == "gs_usb" and \
+            a[a.index("--charger-channel") + 1] == "canchg", (c.id, a)
+        assert a[a.index("--vehicle-channel") + 1] == "kvaser", (c.id, a)
+        assert a[a.index("--diag-witness") + 1] == "pcanfd", (c.id, a)
+    ka = [c for c in checks if c.id == "keepalive-probe"]
+    assert len(ka) == 1 and ka[0].argv[-2:] == ["--port", "{serial_port}"], \
+        [c.argv for c in ka]
 
 
 def test_esptool_env():
@@ -2498,7 +2508,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
-         test_m_lanes_host, test_idle_safe, test_canchg_env, test_esptool_env,
+         test_m_lanes_host, test_idle_safe, test_adapters_by_role, test_esptool_env,
          test_canchg_mode_hooks, test_canx2_slcan_hooks,
          test_x2_test_images_identify, test_slcan_spi_identity,
          test_x2_test_image_flash_first]
@@ -2808,7 +2818,6 @@ _ORIG["_hb_list"] = B._hb_list
 _ORIG["_Build.mgroup"] = B._Build.mgroup
 _ORIG["_Build.mpy"] = B._Build.mpy
 _ORIG["M_LANES_HOSTS"] = B.M_LANES_HOSTS
-_ORIG["canchg_env"] = B.canchg_env
 _ORIG["esptool_env"] = B.esptool_env
 _ORIG["canchg_mode.hooks"] = B.canchg_mode.hooks
 _ORIG["canx2_slcan.hooks"] = B.canx2_slcan.hooks
@@ -2861,20 +2870,16 @@ def _x2_on_start_anyway(on_start, on_end, **kw):
     return s, on_end
 
 
-def _hooks_start_only(on_start, on_end, environ, **kw):
-    return _ORIG["canchg_mode.hooks"](on_start, on_end, environ, **kw)[0], on_end
+def _hooks_start_only(on_start, on_end, **kw):
+    return _ORIG["canchg_mode.hooks"](on_start, on_end, **kw)[0], on_end
 
 
-def _hooks_end_only(on_start, on_end, environ, **kw):
-    return on_start, _ORIG["canchg_mode.hooks"](on_start, on_end, environ, **kw)[1]
+def _hooks_end_only(on_start, on_end, **kw):
+    return on_start, _ORIG["canchg_mode.hooks"](on_start, on_end, **kw)[1]
 
 
-def _hooks_no_device(on_start, on_end, environ, **kw):
-    return _ORIG["canchg_mode.hooks"](on_start, on_end, {}, **kw)
-
-
-def _hooks_on_wican(on_start, on_end, environ, **kw):
-    return _ORIG["canchg_mode.hooks"](on_start, on_end, environ,
+def _hooks_on_wican(on_start, on_end, **kw):
+    return _ORIG["canchg_mode.hooks"](on_start, on_end,
                                       board=B.bench_wican.BOARD, **kw)
 
 
@@ -2888,25 +2893,37 @@ def _esptool_space_joined(settings):
     return out and {B.ESPTOOL_ENV: " ".join(settings["esptool"]["argv"])}
 
 
-def _canchg_unchecked(settings):
-    d = settings.get("canchg_device")
-    return {} if d is None else {B.CANCHG_ENV: "%s:%s:%s" % (
-        d["vid"].lower(), d["pid"].lower(), d["serial"])}
-
-
-def _canchg_case_kept(settings):
-    d = settings.get("canchg_device")
-    out = _ORIG["canchg_env"](settings)
-    return out and {B.CANCHG_ENV: "%s:%s:%s" % (d["vid"], d["pid"], d["serial"])}
-
-
-def _canchg_dropped_from(group, key=None):
+def _env_dropped_from(group, key):
     def fn(s):
         for g in s.groups:
             if g.name == group:
                 for c in g.checks:
-                    c.env.pop(key or B.CANCHG_ENV, None)
+                    c.env.pop(key, None)
     return fn
+
+
+# test_adapters_by_role's mutants: an adapter named by its identity again
+def _keepalive_pcan_channel(s):
+    _check(s, "keepalive-probe").argv += ["--pcan-channel", "{pcan_channel}"]
+
+
+def _canchg_serial_env(s):
+    _check(s, "rx-order").env["VTRUX_CANCHG_DEVICE"] = "{canchg_device}"
+
+
+def _witness_by_channel(s):
+    for g in s.groups:
+        for c in g.checks:
+            if "--diag-witness" in c.argv:
+                c.argv[c.argv.index("--diag-witness") + 1] = "PCAN_USBBUS1"
+
+
+def _charger_no_role(s):
+    for g in s.groups:
+        for c in g.checks:
+            if "--charger-channel" in c.argv:
+                i = c.argv.index("--charger-channel")
+                del c.argv[i:i + 2]
 
 
 def _mgroup_always_madhouse(self, name, checks):
@@ -3169,14 +3186,17 @@ MUTANTS = {
         ("esptool_env", _esptool_unchecked, "a malformed esptool.argv passed on"),
         ("esptool_env", _esptool_space_joined,
          "the argv passed space-joined, not as JSON"),
-        ("bench", _wrap_suite("bench", _canchg_dropped_from("b-c12", B.ESPTOOL_ENV)),
+        ("bench", _wrap_suite("bench", _env_dropped_from("b-c12", B.ESPTOOL_ENV)),
          "one bench group's checks without it")],
-    "test_canchg_env": [
-        ("canchg_env", lambda settings: {}, "canchg_device never passed on"),
-        ("canchg_env", _canchg_unchecked, "a malformed canchg_device passed on"),
-        ("canchg_env", _canchg_case_kept, "vid and pid passed on in the settings' case"),
-        ("bench", _wrap_suite("bench", _canchg_dropped_from("b-c12")),
-         "one bench group's checks without it")],
+    "test_adapters_by_role": [
+        ("bench", _wrap_suite("bench", _keepalive_pcan_channel),
+         "keepalive-probe passed the PCAN's channel again"),
+        ("bench", _wrap_suite("bench", _canchg_serial_env),
+         "a check given canchg's serial again"),
+        ("bench", _wrap_suite("bench", _witness_by_channel),
+         "the diag witness named by its PCAN channel"),
+        ("bench", _wrap_suite("bench", _charger_no_role),
+         "the charger's Innomaker with no role named")],
     "test_idle_safe": [
         ("bench", _wrap_suite("bench", _vport_left_safe),
          "vport_bench left idle-safe"),
@@ -3215,8 +3235,6 @@ MUTANTS = {
          "the canchg end step left out of the bench suite's end hook"),
         ("canchg_mode.hooks", _hooks_end_only,
          "the canchg start step left out of the bench suite's start hook"),
-        ("canchg_mode.hooks", _hooks_no_device,
-         "the hooks not given the settings' canchg_device"),
         ("canchg_mode.hooks", _hooks_on_wican,
          "the canchg step on the WiCAN, not the X2")],
     "test_canx2_slcan_hooks": [

@@ -10,7 +10,11 @@ a fake bus and clock drive the stall rule, and the kernel log is planted.
 Each case names what it checks:
   1. link-state     IFF_UP set reads "up", clear reads "down"; a missing
                     netdev or unparseable flags is LinkError (the check
-                    VOID), never a state
+                    VOID), never a state; read on the netdev a stand-in
+                    role table gives role kvaser (not named "kvaser", so a
+                    sysfs holding only "kvaser" does not read); a role that
+                    does not resolve, or resolves to nothing or a path, is
+                    LinkError (shared/bench SPEC section 8, 2026-11-18)
   2. set-up         an ACK check: `canctl up kvaser 500000` (exactly that),
                     once, then IFF_UP read back
   3. set-down       a no-ACK check: `canctl down kvaser`, IFF_UP read back
@@ -20,10 +24,12 @@ Each case names what it checks:
                     one left DOWN under an ACK check; canctl exiting 3 is
                     LinkError naming canctl, its rc and what it means; off
                     Linux it is LinkError and no canctl runs
-  5. open-bus       python-can's socketcan on channel "kvaser", echoes kept,
-                    after IFF_UP reads set; refused, opening nothing, when
-                    the link is down or unreadable, when the channel is None
-                    (a netdev by position) or another name, and off Linux
+  5. open-bus       python-can's socketcan on the role table's netdev for
+                    role kvaser, echoes kept, after IFF_UP reads set;
+                    refused, opening nothing, when the role does not
+                    resolve, when the link is down or unreadable, when the
+                    channel is None (a netdev by position), another name or
+                    the netdev itself rather than the role, and off Linux
   6. echo-watch     every send echoed: sent count = sends, no stall; an
                     echo missing: no stall at 99 ms after send returned,
                     Stall past 100 ms with that time; ENOBUFS on send:
@@ -118,15 +124,36 @@ def load(path):
     return mod
 
 
+# the netdev the stand-in role table gives role kvaser: not the role's own
+# name, so a netdev the harness named itself is caught (SPEC section 8)
+NETDEV = "kvnet7"
+
+
+class FakeRoles:
+    """A stand-in for adapter_roles: role kvaser resolves to `dev`, or
+    raises `err`."""
+
+    def __init__(self, dev=NETDEV, err=None):
+        self.dev, self.err, self.asked = dev, err, 0
+
+    def kvaser_netdev(self):
+        self.asked += 1
+        if self.err:
+            raise RuntimeError(self.err)
+        return self.dev
+
+
 class Bench:
-    """A made-up /sys/class/net with netdev kvaser and a fake canctl on it,
-    patched into the module M."""
+    """A made-up /sys/class/net with the role table's netdev for kvaser, a
+    stand-in role table and a fake canctl on it, patched into the module
+    M."""
 
     def __init__(self, M, work, up=False, **ctl):
         self.M, self.work = M, work
         self.net = os.path.join(work, "sys", "class", "net")
-        os.makedirs(os.path.join(self.net, "kvaser"))
-        self.flags = os.path.join(self.net, "kvaser", "flags")
+        os.makedirs(os.path.join(self.net, NETDEV))
+        self.roles = M.ROLES = FakeRoles()
+        self.flags = os.path.join(self.net, NETDEV, "flags")
         self.set_flags(0x40081 if up else 0x40080)
         self.log = os.path.join(work, "calls.txt")
         open(self.log, "w").close()
@@ -173,6 +200,19 @@ def case_link_state(M, work):
     e = _raises(M.LinkError, M.link_state, b.net)
     assert "cannot be read" in e, e
     _raises(M.LinkError, M.link_state, os.path.join(work, "nothing"))
+    # read on the role table's netdev, never one named here: a sysfs that
+    # has only "kvaser" (the role's name) does not read
+    os.makedirs(os.path.join(work, "named", "kvaser"))
+    with open(os.path.join(work, "named", "kvaser", "flags"), "w") as f:
+        f.write("0x40081\n")
+    _raises(M.LinkError, M.link_state, os.path.join(work, "named"))
+    # a role that does not resolve, or resolves to a path, is LinkError
+    b.set_flags(0x40081)
+    for roles in (FakeRoles(err="kvaser is not attached"), FakeRoles(dev=""),
+                  FakeRoles(dev="../kvnet7"), FakeRoles(dev=None)):
+        M.ROLES = roles
+        e = _raises(M.LinkError, M.link_state, b.net)
+        assert "role kvaser" in e, e
 
 
 def case_set_up(M, work):
@@ -230,9 +270,15 @@ def case_open_bus(M, work):
     b = Bench(M, work, up=True)
     fc = FakeCan()
     assert M.open_bus(root=b.net, can_mod=fc, platform="linux") == "a bus"
-    assert fc.opened == [{"interface": "socketcan", "channel": "kvaser",
+    assert fc.opened == [{"interface": "socketcan", "channel": NETDEV,
                           "receive_own_messages": True}], fc.opened
-    for ch in (None, "can0", "canmain", 0):
+    assert b.roles.asked >= 1, "the netdev not taken from the role table"
+    fc = FakeCan()
+    M.ROLES = FakeRoles(err="kvaser is not attached")
+    e = _raises(M.LinkError, M.open_bus, root=b.net, can_mod=fc, platform="linux")
+    assert "role kvaser" in e and fc.opened == [], (e, fc.opened)
+    M.ROLES = b.roles
+    for ch in (None, "can0", "canmain", 0, NETDEV):
         fc = FakeCan()
         _raises(M.LinkError, M.open_bus, channel=ch, root=b.net, can_mod=fc, platform="linux")
         assert fc.opened == [], (ch, fc.opened)
@@ -691,23 +737,36 @@ MUTANTS = [
     ("IFF_UP ignored: any flags read up", "    return \"up\" if flags & IFF_UP else \"down\"",
      "    return \"up\""),
     ("an unreadable state read as down",
-     "        raise LinkError(\"the %s link state cannot be read (%s: %s)\" % (NETDEV, p, e))",
+     "        raise LinkError(\"the %s link state cannot be read (%s: %s)\" % (dev, p, e))",
      "        return \"down\""),
+    # the role (shared/bench SPEC section 8, 2026-11-18)
+    ("netdev: the role's own name, not the role table's",
+     "        dev = roles.kvaser_netdev()\n", "        dev = ROLE\n"),
+    ("netdev: an unresolved role taken as the role's name",
+     "        raise LinkError(\"role %s does not resolve to a netdev: %s\" % (ROLE, e))",
+     "        dev = ROLE"),
+    ("netdev: a path or nothing accepted",
+     "    if not dev or os.sep in dev or dev in (\".\", \"..\"):", "    if False:"),
+    ("link_state: read on the role's name",
+     "    p = os.path.join(root, dev, \"flags\")", "    p = os.path.join(root, ROLE, \"flags\")"),
+    ("open_bus: opened on the role's name, not its netdev",
+     "    return can_mod.Bus(interface=\"socketcan\", channel=dev,",
+     "    return can_mod.Bus(interface=\"socketcan\", channel=ROLE,"),
     ("set_link: the read-back dropped", "    require(up, root)\n    return \"%s link %s",
      "    return \"%s link %s"),
     ("set_link: canctl's exit code ignored",
      "    if rc != 0:\n        raise LinkError(\"canctl %s failed", "    if False:\n        raise LinkError(\"canctl %s failed"),
-    ("set_link: down for up", "    args = (\"up\", NETDEV, str(BITRATE)) if up else (\"down\", NETDEV)",
-     "    args = (\"down\", NETDEV)"),
+    ("set_link: down for up", "    args = (\"up\", ROLE, str(BITRATE)) if up else (\"down\", ROLE)",
+     "    args = (\"down\", ROLE)"),
     ("set_link: run off Linux",
-     "    if not linux(platform):\n        raise LinkError(\"the Kvaser is opened on Linux only (netdev %s, canctl)",
-     "    if False:\n        raise LinkError(\"the Kvaser is opened on Linux only (netdev %s, canctl)"),
-    ("open_bus: the link not read", "    check_channel(channel)\n    require(True, root)",
-     "    check_channel(channel)"),
-    ("open_bus: any channel", "    if channel != NETDEV:", "    if False:"),
+     "    if not linux(platform):\n        raise LinkError(\"the Kvaser is opened on Linux only (role %s, canctl)",
+     "    if False:\n        raise LinkError(\"the Kvaser is opened on Linux only (role %s, canctl)"),
+    ("open_bus: the link not read", "    dev = netdev()\n    require(True, root)\n",
+     "    dev = netdev()\n"),
+    ("open_bus: any channel", "    if channel != ROLE:", "    if False:"),
     ("open_bus: echoes dropped", "                       receive_own_messages=receive_own_messages)",
      "                       receive_own_messages=False)"),
-    ("open_bus: by position", "    return can_mod.Bus(interface=\"socketcan\", channel=NETDEV,",
+    ("open_bus: by position", "    return can_mod.Bus(interface=\"socketcan\", channel=dev,",
      "    return can_mod.Bus(interface=\"socketcan\", channel=None,"),
     ("kernel lines left off the VOID line",
      "    return \"VOID: %s; kernel USB/CAN lines %s\" % (cause, tail)",
@@ -729,11 +788,11 @@ MUTANTS = [
     ("kernel lines: the window cut short", "    since, until = int(t0) - 1, int(t1) + 2",
      "    since, until = int(t0) + 30, int(t1) + 2"),
     ("recover: usbreset skipped",
-     "    steps = [(\"down\", NETDEV), (\"usbreset\", NETDEV), (\"up\", NETDEV, str(BITRATE))]",
-     "    steps = [(\"down\", NETDEV), (\"up\", NETDEV, str(BITRATE))]"),
+     "    steps = [(\"down\", ROLE), (\"usbreset\", ROLE), (\"up\", ROLE, str(BITRATE))]",
+     "    steps = [(\"down\", ROLE), (\"up\", ROLE, str(BITRATE))]"),
     ("recover: usbreset before down (canctl refuses an up netdev)",
-     "    steps = [(\"down\", NETDEV), (\"usbreset\", NETDEV), (\"up\", NETDEV, str(BITRATE))]",
-     "    steps = [(\"usbreset\", NETDEV), (\"down\", NETDEV), (\"up\", NETDEV, str(BITRATE))]"),
+     "    steps = [(\"down\", ROLE), (\"usbreset\", ROLE), (\"up\", ROLE, str(BITRATE))]",
+     "    steps = [(\"usbreset\", ROLE), (\"down\", ROLE), (\"up\", ROLE, str(BITRATE))]"),
     ("recover: a failed step ignored", "        if rc != 0:\n            why = ",
      "        if False:\n            why = "),
     ("recover: no read-back", "    try:\n        require(True, root)\n    except LinkError as e:\n        return False",

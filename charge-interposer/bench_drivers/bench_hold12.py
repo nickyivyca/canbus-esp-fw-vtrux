@@ -852,10 +852,11 @@ def gap_stats(gaps_ms, nominal_ms):
 def proc_identifier(go, done, out_path, seconds):
     """The PCAN sends the identifier, paced, when `go` is set."""
     import can
+    import adapter_roles
     import bench_pacer
     prio = above_normal()
-    bus = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE,
-                  auto_reset=True)
+    # role pcanfd (shared/bench SPEC section 8, 2026-11-18)
+    bus = adapter_roles.pcanfd(BITRATE, auto_reset=True)
     buf = bytearray(3)
     msg = can.Message(arbitration_id=ID, is_extended_id=True, data=buf)
 

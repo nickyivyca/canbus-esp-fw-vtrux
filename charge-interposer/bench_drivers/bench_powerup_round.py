@@ -460,13 +460,15 @@ class Witness(object):
 
     def __init__(self, acks):
         import can
-        kw = dict(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
+        import adapter_roles
+        kw = {}
         if acks:
             kw["auto_reset"] = True
         else:
             kw["state"] = can.BusState.PASSIVE
         self.mode = "normal (ACKs)" if acks else "listen-only"
-        self.bus = can.Bus(**kw)
+        # role pcanfd (shared/bench SPEC section 8, 2026-11-18)
+        self.bus = adapter_roles.pcanfd(500000, **kw)
         self.rows, self.lock = [], threading.Lock()
         self.stop_ev = threading.Event()
         self.t = threading.Thread(target=self._run, daemon=True)

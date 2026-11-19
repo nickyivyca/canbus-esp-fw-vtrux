@@ -8,16 +8,18 @@ this smoke on the bench. It was a scratch script at the cutover; it is
 committed harness now, because a check a VERIFICATION.md entry rests on is
 (AGENTS.md "Spec, validation and verification", 2026-11-01).
 
-  1. refusal: a child with CAN_TOOLS_DIR unset gets paths.PathsError naming
-     CAN_TOOLS_DIR from open_bus(pcan), and imports no canbench;
+  1. refusal: a child with CAN_TOOLS_DIR unset gets a refusal naming
+     CAN_TOOLS_DIR from open_bus(pcan, role pcanfd), and imports no
+     canbench;
   2. the sys.path entries holding a canbench/ (the .pth's clone) are taken
-     off, then open_bus(pcan) on the vehicle side: canbench must be loaded
-     from scratch/can-tools/<pin>/canbench after the pin's check, and no
-     sys.path entry may hold a canbench/ afterwards; then open_bus(kvaser,
-     channel kvaser), which must be bus.open_kvaser's WatchedBus (the
-     Kvaser on kvaser_usb takes no canbench path since 2026-11-13, so the
-     PCAN carries steps 1 and 2, which were the Kvaser's);
-  3. open_bus(gs_usb) as the charger side;
+     off, then open_bus(pcan, role pcanfd) on the vehicle side: canbench
+     must be loaded from scratch/can-tools/<pin>/canbench after the pin's
+     check, and no sys.path entry may hold a canbench/ afterwards, and the
+     bus must be canbench's open of role pcanfd (its bench_role); then
+     open_bus(kvaser, role kvaser), which must be bus.open_kvaser's
+     WatchedBus on the netdev canctl's role table names for kvaser;
+  3. open_bus(gs_usb, role canchg) as the charger side, canbench's open of
+     role canchg in libusb mode (canctl mode canchg libusb first, by hand);
   4. quiet: both listen 3 s (counted by ID, not judged: the board is
      listen-only while the charger is silent, spec 2.3);
   5. charger up: gs_usb sends the charger status frame (0x18FFD4C0, spec
@@ -28,6 +30,11 @@ committed harness now, because a check a VERIFICATION.md entry rests on is
      bench_identify.py does); they must agree, and equal --expect-x2 when
      given;
   6. fall-back: both listen 3 s more (not judged).
+
+Every adapter by its canctl role since 2026-11-18 (shared/bench SPEC
+section 8; adapter_roles.py): the smoke is the role opens' bench check, and
+it records where each role resolved (canctl roles: bus and address, device
+id, netdev) beside what opened.
 
 Observations go to <out>/canbench_smoke.json and the judged lines to
 <out>/canbench_smoke.txt. The judge works on the observations alone, so the
@@ -66,11 +73,11 @@ import argparse, os, sys
 sys.path[:] = [p for p in sys.path
                if not os.path.isdir(os.path.join(p or ".", "canbench"))]
 sys.path.insert(0, %r)
-import bus, paths
-ns = argparse.Namespace(transport="pcan", channel=None, port=0, bitrate=500000)
+import bus, can_tools_pin
+ns = argparse.Namespace(transport="pcan", channel="pcanfd", port=0, bitrate=500000)
 try:
     b = bus.open_bus(ns)
-except paths.PathsError as e:
+except can_tools_pin.CanToolsPinError as e:
     print("REFUSED", e)
     print("canbench imported:", "canbench" in sys.modules)
     sys.exit(0)
@@ -121,10 +128,20 @@ def judge(obs, expect_x2=None):
     say(not pin["on_path_after"],
         "  no sys.path entry holds a canbench/ after the open (%s)"
         % (pin["on_path_after"] or "none"))
+    roles = obs.get("roles") or {}
+    say(obs["pcan"].get("role") == "pcanfd",
+        "  the PCAN is canbench's open of role pcanfd (%s; resolved %s)"
+        % (obs["pcan"].get("role"), roles.get("pcanfd")))
     say(obs["kvaser"]["type"] == "WatchedBus",
-        "  kvaser opened through bus.open_kvaser, netdev kvaser, no canbench (%s)"
-        % obs["kvaser"]["type"])
-    lines.append("3 --   gs_usb opened (%s)" % obs["gs_usb"]["type"])
+        "  kvaser opened through bus.open_kvaser (%s)" % obs["kvaser"]["type"])
+    kv_dev = (roles.get("kvaser") or {}).get("netdev")
+    say(bool(kv_dev) and obs["kvaser"].get("netdev") == kv_dev,
+        "  on the netdev canctl's role table names for kvaser (%s; resolved %s)"
+        % (obs["kvaser"].get("netdev"), kv_dev))
+    say(obs["gs_usb"].get("role") == "canchg"
+        and (roles.get("canchg") or {}).get("mode") == "libusb",
+        "3 gs_usb is canbench's open of role canchg in libusb mode (%s, %s; resolved %s)"
+        % (obs["gs_usb"]["type"], obs["gs_usb"].get("role"), roles.get("canchg")))
     lines.append("4 --   quiet 3 s: kvaser heard %s; gs_usb heard %s"
                  % (fmt(obs["quiet"]["kvaser"]), fmt(obs["quiet"]["gs_usb"])))
     up = obs["up"]
@@ -192,23 +209,37 @@ def observe():
     p = can_tools_pin.pin()
     folder = can_tools_pin.verify(can_tools_pin.folder(p), p, can_tools_pin.clone())
 
-    def ns(t, channel=None):
+    def ns(t, channel):
         return _a.Namespace(transport=t, channel=channel, port=0, bitrate=BITRATE)
+
+    def role_of(b):
+        r = getattr(b, "bench_role", None)
+        return r.role.role if r is not None else None
     t0 = time.monotonic()
-    # the PCAN takes canbench's path (the pin's detection); the Kvaser on
-    # kvaser_usb no longer does (bus.open_kvaser, 2026-11-13)
-    pb = bus.open_bus(ns("pcan"))
-    obs["pcan"] = {"type": type(pb).__name__, "s": round(time.monotonic() - t0, 2)}
+    # every adapter by its role (adapter_roles, 2026-11-18): the PCAN and
+    # canchg through canbench's open_role, the Kvaser through
+    # bus.open_kvaser on the role's netdev
+    pb = bus.open_bus(ns("pcan", "pcanfd"))
+    obs["pcan"] = {"type": type(pb).__name__, "s": round(time.monotonic() - t0, 2),
+                   "role": role_of(pb)}
     vb = bus.open_bus(ns("kvaser", "kvaser"))
-    obs["kvaser"] = {"type": type(vb).__name__}
+    # the netdev the socket was opened on (python-can's socketcan .channel)
+    obs["kvaser"] = {"type": type(vb).__name__,
+                     "netdev": getattr(getattr(vb, "bus", None), "channel", None)}
     obs["pin"] = {
         "commit": p["commit"], "taken_off_path": len(held),
         "canbench_file": os.path.abspath(sys.modules["canbench"].__file__),
         "want_file": os.path.join(folder, "canbench", "__init__.py"),
         "on_path_after": [q for q in sys.path
                           if os.path.isdir(os.path.join(q or ".", "canbench"))]}
-    cb = bus.open_bus(ns("gs_usb"))
-    obs["gs_usb"] = {"type": type(cb).__name__}
+    cb = bus.open_bus(ns("gs_usb", "canchg"))
+    obs["gs_usb"] = {"type": type(cb).__name__, "role": role_of(cb)}
+    import adapter_roles
+    obs["roles"] = {}
+    for name in ("pcanfd", "kvaser", "canchg"):
+        r = adapter_roles.resolve(name)
+        obs["roles"][name] = {"mode": r.mode, "python_can": r.interface,
+                              "kwargs": r.kwargs, "netdev": r.netdev}
     dv, dc, dp = Drain(vb), Drain(cb), Drain(pb)
     try:
         time.sleep(3.0)
@@ -258,9 +289,16 @@ def _good():
                                     "canbench imported: False"},
         "pin": {"commit": "c" * 40, "taken_off_path": 1, "canbench_file": f,
                 "want_file": f, "on_path_after": []},
-        "pcan": {"type": "PcanBus", "s": 0.1},
-        "kvaser": {"type": "WatchedBus"},
-        "gs_usb": {"type": "GsUsbNoEcho"},
+        "pcan": {"type": "PcanBus", "s": 0.1, "role": "pcanfd"},
+        "kvaser": {"type": "WatchedBus", "netdev": "kvaser"},
+        "gs_usb": {"type": "GsUsbBus", "role": "canchg"},
+        "roles": {"pcanfd": {"mode": "pcan", "python_can": "pcan",
+                             "kwargs": {"device_id": 0}, "netdev": None},
+                  "kvaser": {"mode": "socketcan", "python_can": "socketcan",
+                             "kwargs": {"channel": "kvaser"}, "netdev": "kvaser"},
+                  "canchg": {"mode": "libusb", "python_can": "gs_usb",
+                             "kwargs": {"channel": "gs_usb:canchg", "bus": 1, "address": 40},
+                             "netdev": None}},
         "quiet": {"kvaser": {}, "gs_usb": {}},
         "up": {"sent": 40, "errs": 0, "kvaser": pages, "gs_usb": {},
                "x7f7": [_frame_7f7(0x756d6714)] * 4},
@@ -302,6 +340,17 @@ def self_test():
          lambda o: o["pin"].update(on_path_after=["Git/can-tools"])),
         ("the kvaser opened by CANlib (KvaserBus), not bus.open_kvaser",
          lambda o: o["kvaser"].update(type="KvaserBus")),
+        ("the PCAN not opened by its role (the first PCAN found)",
+         lambda o: o["pcan"].update(role=None)),
+        ("the Innomaker opened as canmain",
+         lambda o: o["gs_usb"].update(role="canmain")),
+        ("canchg resolved in socketcan mode",
+         lambda o: o["roles"]["canchg"].update(mode="socketcan")),
+        ("the Kvaser on another netdev than its role's",
+         lambda o: o["kvaser"].update(netdev="can0")),
+        ("the Kvaser's role not resolved to a netdev",
+         lambda o: o["roles"]["kvaser"].update(netdev=None) or o["kvaser"].update(
+             netdev=None)),
         ("kvaser heard three diag pages",
          lambda o: o["up"]["kvaser"].pop("0x7F6")),
         ("gs_usb had send errors", lambda o: o["up"].update(errs=2)),
@@ -394,6 +443,17 @@ MUTANTS = [
     ("any kvaser opener passes",
      'say(obs["kvaser"]["type"] == "WatchedBus",',
      'say(True,'),
+    ("any PCAN passes", 'say(obs["pcan"].get("role") == "pcanfd",', 'say(True,'),
+    ("any Kvaser netdev passes",
+     'say(bool(kv_dev) and obs["kvaser"].get("netdev") == kv_dev,', 'say(True,'),
+    ("an unresolved Kvaser role passes",
+     'say(bool(kv_dev) and obs["kvaser"].get("netdev") == kv_dev,',
+     'say(obs["kvaser"].get("netdev") == kv_dev,'),
+    ("any Innomaker role passes",
+     'say(obs["gs_usb"].get("role") == "canchg"\n', 'say(True\n'),
+    ("canchg in any mode passes",
+     '        and (roles.get("canchg") or {}).get("mode") == "libusb",',
+     '        and True,'),
 ]
 
 if __name__ == "__main__":

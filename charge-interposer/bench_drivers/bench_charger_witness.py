@@ -53,9 +53,9 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import adapter_roles               # noqa: E402  (every adapter by its bench role)
 
-import bench_pacer                                            # noqa: E402
+import bench_pacer                                           # noqa: E402
 import can                                                    # noqa: E402
 
 class Tee(object):
@@ -165,8 +165,8 @@ class EchoWitness(object):
 
 
 def open_gs_usb():
-    # by serial on Linux; libusb's DLL folder first on Windows
-    return adapter_fixes.canchg(bitrate=BITRATE)
+    # role canchg in libusb mode (shared/bench SPEC section 8, 2026-11-18)
+    return adapter_roles.canchg(BITRATE)
 
 
 def offer(bus, rate, seconds, burst, w):
