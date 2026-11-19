@@ -1178,7 +1178,7 @@ def test_sim_timing(A, work):
             "figure sim.y vehicle.p99_gap_ms: b 0 outside [60, 60] (serial 60 60)",
             "figure sim.y vehicle.stalls: b 3 outside [-1, 2] (serial 0 1)"]
     assert got == want, got
-    # the margin's rel part, x the larger end, widens both ends
+    # the margin's rel part widens each end by that part of itself
     sp = {"tolerance": dict(tol, margin=dict(tol["margin"], p99_gap_ms={"rel": 3.5}))}
     assert not any("p99" in x for x in lines(s1, b, sp)), lines(s1, b, sp)
     # a sim on one side only
@@ -1199,9 +1199,33 @@ def test_sim_timing(A, work):
                fps={"x": {"vehicle": 110.0, "charger": 49.0},
                     "y": {"vehicle": 120.0, "charger": 50.0}})
     sp = {"tolerance": dict(tol, fps="a")}
-    assert lines(a, b, sp) == ["figure sim.x fps.charger: b 49 outside [50, 52] (a's range)"], \
-        lines(a, b, sp)
+    assert lines(a, b, sp) == ["figure sim.x fps.charger: b 49 outside [49.5, 52.52] "
+                               "(a's range)"], lines(a, b, sp)
     assert lines(a, b) == [], "fps judged without tolerance.fps"
+    # the fps margin, 1 % of each end of side a's range (the user, 2026-11-19):
+    # 1 % under the low end (49.5) or over the high end (52.52) is within it,
+    # more than 1 % is a difference
+    assert A.FPS_MARGIN == {"rel": 0.01}, A.FPS_MARGIN
+    b, _ = run("b5m", {"x": ((0, 0, 0), quiet), "y": ((0, 0, 0), gap)},
+               fps={"x": {"vehicle": 99.01, "charger": 49.51},
+                    "y": {"vehicle": 121.19, "charger": 52.51}})
+    assert lines(a, b, sp) == [], lines(a, b, sp)
+    b, _ = run("b5n", {"x": ((0, 0, 0), quiet), "y": ((0, 0, 0), gap)},
+               fps={"x": {"vehicle": 98.99, "charger": 49.49},
+                    "y": {"vehicle": 121.21, "charger": 52.53}})
+    assert lines(a, b, sp) == [
+        "figure sim.x fps.charger: b 49.49 outside [49.5, 52.52] (a's range)",
+        "figure sim.x fps.vehicle: b 98.99 outside [99, 121.2] (a's range)",
+        "figure sim.y fps.charger: b 52.53 outside [49.5, 52.52] (a's range)",
+        "figure sim.y fps.vehicle: b 121.21 outside [99, 121.2] (a's range)"], lines(a, b, sp)
+    # a list's own fps margin is used in its place (the slot trial's margin 0)
+    sp0 = {"tolerance": dict(tol, fps="a", margin=dict(tol["margin"], fps={"abs": 0}))}
+    b, _ = run("b5o", {"x": ((0, 0, 0), quiet), "y": ((0, 0, 0), gap)},
+               fps={"x": {"vehicle": 100.0, "charger": 49.51},
+                    "y": {"vehicle": 120.0, "charger": 52.0}})
+    assert lines(a, b, sp0) == ["figure sim.x fps.charger: b 49.51 outside [50, 52] "
+                                "(a's range)"], lines(a, b, sp0)
+    assert lines(a, b, sp) == [], lines(a, b, sp)
     # refusals
     no_trace, _ = run("b6", {"x": ((0, 0, 0), None), "y": ((0, 0, 0), gap)})
     no_events, _ = run("a7", {"x": ((0, 0, 0), quiet), "y": ((0, 0, 0), gap)})
@@ -1397,10 +1421,22 @@ MUTANTS = [
      "                med = sorted(gaps)[len(gaps) // 2]\n", "                med = 0\n"),
     ("sim-timing: an id with few frames counted as periodic",
      "                if k != key or len(ts) < PERIODIC_MIN:\n", "                if k != key:\n"),
-    ("sim-timing: no margin", '    m = float(margin.get("abs") or 0) + float(margin.get("rel") or 0)',
-     '    m = 0 * float(margin.get("abs") or 0) + float(margin.get("rel") or 0)'),
+    ("sim-timing: no margin",
+     '    a, r = float(margin.get("abs") or 0), float(margin.get("rel") or 0)',
+     '    a, r = 0, float(margin.get("rel") or 0)'),
     ("sim-timing: the rel margin not used",
-     ' + float(margin.get("rel") or 0) * max(abs(lo), abs(hi))', ""),
+     '    a, r = float(margin.get("abs") or 0), float(margin.get("rel") or 0)',
+     '    a, r = float(margin.get("abs") or 0), 0'),
+    ("sim-timing: rel x the larger end at both ends (more than 1 % under passes)",
+     "    return lo - a - r * abs(lo), hi + a + r * abs(hi)",
+     "    return lo - a - r * max(abs(lo), abs(hi)), hi + a + r * max(abs(lo), abs(hi))"),
+    ("sim-timing: no fps margin by default (the user's 1 % not applied)",
+     'FPS_MARGIN = {"rel": 0.01}', 'FPS_MARGIN = {"rel": 0}'),
+    ("sim-timing: a 2 % fps margin (more than 1 % under passes)",
+     'FPS_MARGIN = {"rel": 0.01}', 'FPS_MARGIN = {"rel": 0.02}'),
+    ("sim-timing: a list's own fps margin ignored",
+     'lo, hi = _band(vals, margin.get("fps", FPS_MARGIN))',
+     'lo, hi = _band(vals, FPS_MARGIN)'),
     ("sim-timing: the band's low end not judged", "            if not lo <= got[fig] <= hi:",
      "            if not got[fig] <= hi:"),
     ("sim-timing: a figure missing in b taken", "            if fig not in got:\n",

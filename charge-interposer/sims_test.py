@@ -619,27 +619,31 @@ def vport_problems(port_cls=None, src=None):
         src = open(os.path.join(HERE, "interposer_sim.py"),
                    encoding="utf-8").read()
     loop = src[src.index("while running[0]:"):]
+    # the frame handlers drain_ports calls (2026-11-19: the drain moved out
+    # of the loop into drain_ports, its handlers defined before the loop)
+    handlers = src[src.index("    def on_charger("):src.index("while running[0]:")]
 
-    def order(*needles):
+    def order(*needles, within=None):
         """each needle found AFTER the previous one, the first anywhere;
         the next occurrence of the first needle must not come before the
         last one (so the three belong to one call site)"""
-        at = loop.find(needles[0])
+        loop_ = loop if within is None else within
+        at = loop_.find(needles[0])
         if at < 0:
             return False
         for n in needles[1:]:
-            nxt = loop.find(n, at + 1)
+            nxt = loop_.find(n, at + 1)
             if nxt < 0:
                 return False
             at = nxt
-        again = loop.find(needles[0], loop.find(needles[0]) + 1)
+        again = loop_.find(needles[0], loop_.find(needles[0]) + 1)
         return again < 0 or again > at
     if not order('core.diag_frames(now_ms, 0, 0, now_ms, True',
-                 'apply_mode("power-up round")', "veh.recv(timeout=0.0)"):
+                 'apply_mode("power-up round")', "drain_ports(veh, chg"):
         probs.append("the power-up round and its first apply do not come "
                      "before the first drain")
     if not order("core.on_charger_frame(", 'apply_mode("charger frame',
-                 "for out in outs:"):
+                 "for out in outs:", within=handlers):
         probs.append("a charger frame's call is not applied before its "
                      "frames are emitted")
     if not order("core.tick(now_ms)", 'apply_mode("tick")', "for out in outs:"):
@@ -721,6 +725,116 @@ def help_problems():
             probs.append("%s --help exited %d: %s"
                          % (sim, r.returncode, r.stderr.strip()[-200:]))
     return probs
+
+
+def chg_read_problems(chg_every=None, drain=None):
+    """interposer_sim's drain on a gs_usb charger bus (the charge-interposer
+    reviewer, 2026-11-19): with 600 vehicle frames queued (DRAIN_LIMIT 512
+    of them retired in one pass), each forwarded as one frame to chg, chg's
+    unread TX echoes never go over 128 between two reads, a read retiring
+    every echo queued (bus.drop_echoes). `chg_every`: the cadence under test
+    (interposer_sim's, for a gs_usb run, when None); `drain`: drain_ports or
+    a wrong one, for the can-fail."""
+    import types
+    import interposer_sim as IS
+    out = []
+    gs = types.SimpleNamespace(charger_transport="gs_usb")
+    if IS.chg_read_every(gs) != 128:
+        out.append("chg_every on gs_usb is %r, not 128" % (IS.chg_read_every(gs),))
+    every = IS.chg_read_every(gs) if chg_every is None else chg_every
+    for t in ("virtual", "pcan", "kvaser"):
+        e = IS.chg_read_every(types.SimpleNamespace(charger_transport=t))
+        if e is not None:
+            out.append("chg_every on %s is %r: chg read more than once per pass "
+                       "where no echo stalls" % (t, e))
+
+    class Veh(object):
+        def __init__(self, n):
+            self.q = [i for i in range(n)]
+
+        def recv(self, timeout=None):
+            return self.q.pop(0) if self.q else None
+
+    class Chg(object):
+        unread, worst, reads = 0, 0, 0
+
+        def send(self):
+            self.unread += 1
+            self.worst = max(self.worst, self.unread)
+
+        def recv(self, timeout=None):
+            if self.unread:
+                self.reads += 1
+            self.unread = 0
+            return None
+
+    veh, chg, sent = Veh(600), Chg(), [0]
+
+    def on_vehicle(msg):
+        chg.send()
+        sent[0] += 1
+    n_v, n_c, hit = (drain or IS.drain_ports)(veh, chg, on_vehicle, lambda m: None, sent,
+                                             every)
+    if IS.DRAIN_LIMIT != 512 or n_v != 512 or not hit:
+        out.append("one pass: %d vehicle frames, hit %s (DRAIN_LIMIT %d; want 512, True)"
+                   % (n_v, hit, IS.DRAIN_LIMIT))
+    if chg.worst > 128:
+        out.append("chg's unread echoes reached %d between two reads (over 128)" % chg.worst)
+    if chg.unread:
+        out.append("%d echoes left unread at the end of the pass" % chg.unread)
+    # the other transports: chg read once per pass, after the vehicle port
+    veh, chg, sent = Veh(600), Chg(), [0]
+    calls = []
+    chg.recv = lambda timeout=None: calls.append(len(veh.q)) or None
+    (drain or IS.drain_ports)(veh, chg, on_vehicle, lambda m: None, sent, None)
+    if len(calls) != 1 or calls[0] != 600 - 513:
+        out.append("chg_every None: chg read at %s vehicle frames left, not once after the "
+                   "vehicle port" % calls)
+    return out
+
+
+def vehicle_drain_problems(drain_for=None):
+    """vehicle_sim's drain choice (the charge-interposer reviewer,
+    2026-11-19): open_bus(drain=True) for --mode replay on gs_usb only, and
+    main() passes it to open_bus. `drain_for`: a wrong choice, for the
+    can-fail (set as vehicle_sim.drain_for while main runs)."""
+    import types
+    out = []
+    fn = drain_for or VS.drain_for
+    for mode, t, want in (("replay", "gs_usb", True), ("model", "gs_usb", False),
+                          ("replay", "virtual", False), ("replay", "kvaser", False),
+                          ("replay", "pcan", False), ("model", "virtual", False)):
+        got = fn(types.SimpleNamespace(mode=mode, transport=t))
+        if got is not want:
+            out.append("--mode %s on %s: drain %r, want %r" % (mode, t, got, want))
+
+    class Opened(Exception):
+        pass
+    seen = []
+
+    def fake_open(args, **kw):
+        if getattr(args, "transport", None) is not None and kw.get("default_channel") \
+                == VS.busmod.VEHICLE_SEGMENT:
+            seen.append((args.mode, args.transport, kw.get("drain")))
+        raise Opened()
+    real = (VS.busmod.open_bus, VS.drain_for, sys.argv)
+    VS.busmod.open_bus = fake_open
+    if drain_for:
+        VS.drain_for = drain_for
+    try:
+        for mode, t, ch, want in (("replay", "gs_usb", "canchg", True),
+                                  ("model", "gs_usb", "canchg", False)):
+            sys.argv = ["vehicle_sim.py", "--mode", mode, "--transport", t, "--channel", ch]
+            try:
+                VS.main()
+            except Opened:
+                pass
+            if not seen or seen[-1] != (mode, t, want):
+                out.append("main(): --mode %s on %s opened with %s, want drain=%r"
+                           % (mode, t, seen[-1:] or "no open_bus call", want))
+    finally:
+        VS.busmod.open_bus, VS.drain_for, sys.argv = real
+    return out
 
 
 def main():
@@ -954,6 +1068,24 @@ def main():
     check(bool(recommand_problems(vcu_cls=ReCutVCU)),
           "can fail: a VCU that cuts off again after the re-command is "
           "caught")
+
+    for p in chg_read_problems():
+        check(False, "interposer_sim: " + p)
+    check(not chg_read_problems(), "interposer_sim on a gs_usb charger bus reads chg after "
+          "at most 128 frames sent to it: at DRAIN_LIMIT 512 its unread echoes never go "
+          "over 128; other transports read chg once per pass")
+    check(bool(chg_read_problems(chg_every=0)),
+          "can fail: chg read only once per pass on gs_usb (512 unread) is caught")
+    check(bool(chg_read_problems(chg_every=256)),
+          "can fail: chg read every 256 frames on gs_usb is caught")
+    for p in vehicle_drain_problems():
+        check(False, "vehicle_sim: " + p)
+    check(not vehicle_drain_problems(), "vehicle_sim opens its bus with drain=True for "
+          "--mode replay on gs_usb only, and main() passes it to open_bus")
+    check(bool(vehicle_drain_problems(drain_for=lambda a: False)),
+          "can fail: no drain for replay on gs_usb is caught")
+    check(bool(vehicle_drain_problems(drain_for=lambda a: a.transport == "gs_usb")),
+          "can fail: the drain for model mode too (a reader shares the handle) is caught")
 
     for p in guard_problems():
         check(False, "bus.py guard: " + p)
