@@ -511,7 +511,44 @@ def echo_tests(m):
           e3.get("echoes") == 0 and e3.get("sent") == pl3.sent > 0 and e3.get("echoes_equal_sent") is False, e3)
 
 
+def witness_tests(m):
+    """The PCAN witness reads on past a bus state python-can's pcan raises from recv (2026-11-19: error passive
+    killed canmain_burst_check's witness on the bench)."""
+    import time
+    import types as T
+
+    class FakePcan:
+        def __init__(self):
+            self.script = ["f", "f", "raise", "f", "f", "f"]
+
+        def recv(self, timeout=None):
+            if not self.script:
+                time.sleep(timeout or 0.0)
+                return None
+            k = self.script.pop(0)
+            if k == "raise":
+                raise RuntimeError("Bus error: The CAN controller is error passive")
+            return T.SimpleNamespace(timestamp=time.perf_counter(), arbitration_id=0x123, dlc=1, data=b"\x01",
+                                     is_error_frame=False)
+    w = m.Witness(FakePcan())
+    w.start()
+    time.sleep(0.3)
+    w.stop.set()
+    w.join(2)
+    check("witness: a bus state raised from recv is recorded and the witness reads on (5 frames, 1 state)",
+          len(w.msgs) == 5 and len(w.states) == 1 and "error passive" in w.states[0][1] and not w.is_alive(),
+          (len(w.msgs), w.states))
+
+
 MUTANTS += [
+    ("the witness stops at a bus state raised from recv",
+     "                    self.states.append((time.perf_counter(), \"%s: %s\" % (type(e).__name__, e)))\n"
+     "                time.sleep(0.001)\n",
+     "                    self.states.append((time.perf_counter(), \"%s: %s\" % (type(e).__name__, e)))\n"
+     "                return\n"),
+    ("the witness's bus states not kept",
+     "                    self.states.append((time.perf_counter(), \"%s: %s\" % (type(e).__name__, e)))\n",
+     "                    pass\n"),
     # the replayer's echo drain (the gen-inhibit reviewer's ruling (C), 2026-11-19)
     ("the replayer opened without its drain (stopped at once)",
      "    return kv, KB.echo_drain(kv, REPLAYER_ROLE, what)\n",
@@ -567,5 +604,9 @@ if __name__ == "__main__":
         echo_tests(load())
     except Exception as e:      # noqa: BLE001
         check("echo tests ran without raising", False, repr(e))
+    try:
+        witness_tests(load())
+    except Exception as e:      # noqa: BLE001
+        check("witness tests ran without raising", False, repr(e))
     print("\n%d ok, %d FAIL" % (oks, len(fails)))
     sys.exit(1 if fails else 0)

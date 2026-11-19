@@ -430,17 +430,25 @@ class Witness(threading.Thread):
         super().__init__(daemon=True)
         self.bus = bus
         self.msgs = []      # (perf, hw_us, id, dlc, hex, is_error, epoch): epoch for device_fit (condition 5)
+        self.states = []    # (perf, text): bus states python-can's pcan raised from recv (2026-11-19)
         self.stop = threading.Event()
         self.lock = threading.Lock()
 
     def run(self):
         while not self.stop.is_set():
-            m = self.bus.recv(timeout=0.05)
-            while m is not None:
+            try:
+                m = self.bus.recv(timeout=0.05)
+                while m is not None:
+                    with self.lock:
+                        self.msgs.append((time.perf_counter(), m.timestamp * 1e6, m.arbitration_id, m.dlc,
+                                          bytes(m.data).hex(), bool(m.is_error_frame), time.time()))
+                    m = self.bus.recv(timeout=0.0)
+            except Exception as e:      # noqa: BLE001  a bus state (error passive), not an end: recorded, read on
+                # python-can's pcan raises the PCAN's error-passive state from recv; canmain_burst_check's witness
+                # died of it on the bench (2026-11-19), and this PCAN, passive, counts receive errors in the silence
                 with self.lock:
-                    self.msgs.append((time.perf_counter(), m.timestamp * 1e6, m.arbitration_id, m.dlc,
-                                      bytes(m.data).hex(), bool(m.is_error_frame), time.time()))
-                m = self.bus.recv(timeout=0.0)
+                    self.states.append((time.perf_counter(), "%s: %s" % (type(e).__name__, e)))
+                time.sleep(0.001)
 
     def mark(self):
         with self.lock:
@@ -730,6 +738,7 @@ def main():
             time.sleep(2.0)
         wit.stop.set()
         wit.join(3)
+        rec["witness_states"] = [(round(t, 6), s) for t, s in wit.states]    # host perf s
     finally:
         try:
             LF.dev_post("/gen_inhibit_set?mode=0")

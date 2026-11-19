@@ -15,7 +15,9 @@ THE BENCH, READ BACK AND RECORDED before anything is sent (REFUSED, exit 2, if n
   Kvaser  link down (kvaser_bus.link_down, read back): an up kvaser link ACKs with no socket.
 So only canmain and the PCAN can ACK on CAN1.
   PCAN    500 kbit, NORMAL (it ACKs canmain's frames), the witness: every message with its own
-          stamp, mapped onto perf_counter by witness_clock.device_fit.
+          stamp, mapped onto perf_counter by witness_clock.device_fit. A bus state python-can's pcan
+          raises from recv (error passive, once the probe goes unACKed) is recorded in
+          witness_states and the witness reads on (2026-11-19: the first bench run lost it there).
 
 (b) THE 5 ms CLOSE, at 500 kbit (first, so its frames give the fit its points):
   canmain sends REPLAY_ID every --replay-period-ms for --replay-s, each frame with its own count,
@@ -75,11 +77,19 @@ class Witness(threading.Thread):
     def __init__(self, bus):
         super().__init__(daemon=True)
         self.bus, self.msgs = bus, []
+        self.states = []        # (perf, text): bus states python-can's pcan raised from recv
         self.stop = threading.Event()
 
     def run(self):
         while not self.stop.is_set():
-            m = self.bus.recv(timeout=0.05)
+            try:
+                m = self.bus.recv(timeout=0.05)
+            except Exception as e:      # noqa: BLE001  a bus state (error passive after the probe), not an end
+                # python-can's pcan raises the PCAN's own error-passive state from recv; the first bench run of
+                # 2026-11-19 lost its witness there, after the probe, and saw none of (a)'s bursts
+                self.states.append((time.perf_counter(), "%s: %s" % (type(e).__name__, e)))
+                time.sleep(0.001)
+                continue
             if m is None:
                 continue
             self.msgs.append((time.perf_counter(), time.time(), m.timestamp, m.arbitration_id,
@@ -265,6 +275,8 @@ def main(argv=None):
                      "times_s": {k: (None if v is None else round(v - times["close"], 6)) for k, v in times.items()}}
     rec.update(judge(wit.msgs, times, last_payload, starts, echo))
     rec["witness_messages"] = len(wit.msgs)
+    t_c = times["close"]
+    rec["witness_states"] = [(round(t - t_c, 6), s) for t, s in wit.states]   # host s from the replay's close
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(rec, fh, indent=1)
     print(WC.fit_line(rec["fit"]))

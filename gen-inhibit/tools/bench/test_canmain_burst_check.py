@@ -228,6 +228,8 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
 
     class Pcan:
         def recv(self, timeout=None):
+            if wire.pop("state", False):    # as python-can's pcan raised error passive on the bench (2026-11-19)
+                raise CanError("Bus error: The CAN controller is error passive")
             end = time.perf_counter() + (timeout or 0.0)
             while True:
                 with wire["lock"]:
@@ -243,6 +245,7 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
                 t = time.perf_counter()
                 for k in range(5):
                     put(t + k * 0.0004, 0x20, err=True)       # unACKed: ACK error frames
+                wire["state"] = True                          # and the PCAN goes error passive
 
         def status_string(self):
             return "OK"
@@ -357,6 +360,10 @@ def checks(C):
     shuts = [e for e in log if e[0] == "gs shutdown"]
     check("control: the drain stopped before the replay's close (not running at canmain's shutdown), once",
           shuts and shuts[0][1:] == (500000, False) and sum(1 for e in log if e[0] == "echoes") == 1, (shuts, log[-8:]))
+    ws = rec.get("witness_states") or []
+    check("control: the PCAN's error-passive state raised from recv after the probe is recorded, and the witness "
+          "read on (the bursts above were witnessed)", len(ws) == 1 and "error passive" in ws[0][1] and ws[0][0] > 0.020,
+          ws)
     rc, rec, log, out = run(C, [], drop_echoes=True)
     check("one frame in ten giving no echo: FAIL by its verdict naming the echo count, exit 1",
           rc == 1 and "echoes for" in str(rec.get("verdict")) and "verdict: FAIL" in out, (rc, rec.get("verdict")))
@@ -404,6 +411,12 @@ MUTANTS_ECHO = [
      '    elif echo.get("echoes") != echo.get("sent"):\n', "    elif False:\n"),
     ("canmain_burst_check.py", "the echo measure left out of the verdict",
      '([out["echoes"]] if "echoes" in out else [])', "[]"),
+    # the witness reads on past a bus state (2026-11-19)
+    ("canmain_burst_check.py", "the witness stops at a bus state raised from recv",
+     "                time.sleep(0.001)\n                continue\n            if m is None:",
+     "                return\n            if m is None:"),
+    ("canmain_burst_check.py", "the witness's bus states not recorded",
+     '    rec["witness_states"] = [(round(t - t_c, 6), s) for t, s in wit.states]', '    rec["witness_states"] = []'),
 ]
 
 MUTANTS = [

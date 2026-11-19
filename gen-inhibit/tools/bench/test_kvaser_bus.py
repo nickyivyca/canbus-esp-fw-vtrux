@@ -194,6 +194,9 @@ class Fakes:
                     self.channel_info = kv_info
                 log.append(("Bus", kw))
 
+            def send(self, msg, timeout=None):  # can-tools 0f9c85f's open_role wraps a libusb gs_usb bus's send
+                log.append(("send", msg))
+
             def recv(self, timeout=None):       # for an echo drain (2026-11-19): nothing queued
                 if getattr(self, "shut", False):
                     raise OSError("recv after shutdown")
@@ -1596,6 +1599,33 @@ try:
     kv.canOpenChannel = trip("canOpenChannel")
 except Exception:
     pass
+# The bench's root operations and CAN sockets too (2026-11-19): with only python-can tripwired, a mutant
+# that broke the guard let the real bench_layer run the real `sudo -n canctl up kvaser` and `canctl mode
+# canmain libusb` from this child, with no lock held, during other sessions' holds.
+import socket, subprocess
+ROOT_CMDS = ("sudo", "canctl", "ip")
+def _argv0s(a, kw):
+    args = a[0] if a else kw.get("args")
+    if isinstance(args, (str, bytes)):
+        args = str(args).split()
+    return [os.path.basename(str(x)) for x in (args or [])[:3]]
+def guard_proc(name, real):
+    def f(*a, **kw):
+        if any(x in ROOT_CMDS for x in _argv0s(a, kw)):
+            trips.append("%s %s" % (name, " ".join(_argv0s(a, kw))))
+            raise RuntimeError("TRIPWIRE: %s %s reached" % (name, _argv0s(a, kw)))
+        return real(*a, **kw)
+    return f
+for _n in ("run", "Popen", "call", "check_call", "check_output"):
+    setattr(subprocess, _n, guard_proc("subprocess." + _n, getattr(subprocess, _n)))
+_real_socket = socket.socket
+class _GuardSocket(_real_socket):
+    def __init__(self, family=-1, *a, **kw):
+        if family == getattr(socket, "AF_CAN", 29):
+            trips.append("socket AF_CAN")
+            raise RuntimeError("TRIPWIRE: a CAN socket reached")
+        super().__init__(family, *a, **kw)
+socket.socket = _GuardSocket
 import kvaser_bus as K
 out = {"refused": {}, "trips": trips}
 # a tool module with its own fake can, as test_e4_rawpost faked e4_device_calibration
@@ -1613,6 +1643,19 @@ for name, call in (("kvaser_bus", lambda: K.kvaser_bus(channel=0, bitrate=500000
         out["refused"][name] = "BenchNotHeld: %s" % e
     except Exception as e:
         out["refused"][name] = "OTHER %s: %s" % (type(e).__name__, e)
+out["trips"] = list(trips)
+# the tripwires themselves, shown to stand (each must trip, nothing reaches the bench)
+selftest = []
+for label, call in (("canctl", lambda: subprocess.run(["sudo", "-n", "/usr/local/sbin/canctl", "roles"])),
+                    ("ip", lambda: subprocess.check_output(["ip", "-details", "-json", "link", "show", "kvaser"])),
+                    ("socket", lambda: socket.socket(getattr(socket, "AF_CAN", 29), socket.SOCK_RAW, 1)),
+                    ("a harmless command still runs", lambda: subprocess.run([sys.executable, "-c", "pass"]))):
+    try:
+        call()
+        selftest.append((label, "ran"))
+    except RuntimeError as e:
+        selftest.append((label, "tripped" if "TRIPWIRE" in str(e) else "other"))
+out["selftest"] = selftest
 print("CHILD " + json.dumps(out))
 """
 
@@ -1629,8 +1672,13 @@ def guard_real():
     for name, why in sorted(out["refused"].items()):
         check("guard (real): a host test's %s, the real can and no lock held, refuses with BenchNotHeld" % name,
               isinstance(why, str) and why.startswith("BenchNotHeld"), why)
-    check("guard (real): no tripwire on the real python-can or CANlib was reached", out["trips"] == [],
-          out["trips"])
+    check("guard (real): no tripwire on the real python-can, CANlib, canctl/sudo/ip or a CAN socket was reached",
+          out["trips"] == [], out["trips"])
+    check("guard (real): the child's tripwires stand: canctl, ip and a CAN socket trip, a harmless command runs",
+          [tuple(x) for x in out.get("selftest", [])] == [("canctl", "tripped"), ("ip", "tripped"),
+                                                          ("socket", "tripped"),
+                                                          ("a harmless command still runs", "ran")],
+          out.get("selftest"))
     print("      guard (real): %s" % (out["refused"].get("kvaser_bus") or "")[:160])
 
 
