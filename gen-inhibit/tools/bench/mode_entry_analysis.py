@@ -81,11 +81,18 @@ def analyse(run):
     r = P.rejudge(run, arm, keep_frames=True)
     if r.get("arm_void"):                          # the arm's own VOID (2026-11-18)
         return {"run": os.path.basename(run), "void": r["arm_void"]}
+    import witness_clock as WC  # noqa: E402
+    wv = WC.window_void(r)                          # the witness short of the replay (2026-11-19)
+    if wv:
+        return {"run": os.path.basename(run), "void": wv}
     rep_t = r["replayed_wire_times"]
     ep = entry_point(d.get("mode"), a)
-    if ep is None or ep[0] >= len(rep_t):
+    if ep is None:
         return {"run": os.path.basename(run),
                 "error": "no entry in the run (neither --arm-after nor a --post-schedule entry into 3)"}
+    if ep[0] >= len(rep_t):
+        return {"run": os.path.basename(run),
+                "error": "the entry's replay frame %d is past the %d on the witness" % (ep[0], len(rep_t))}
     pi, how, entered = ep
     t_post = rep_t[pi]
     wire = P.read_witness(os.path.join(os.path.dirname(run), a["witness_raw"]))
@@ -122,8 +129,17 @@ def analyse(run):
             "b2b_200ms_after_post": b2b(near), "b2b_rest": b2b(rest)}
 
 
+def analyse_row(run):
+    """analyse(run), or a row with its "error" when it raised: the judge reads it ERROR, never a crash
+    of the whole analysis (2026-11-19)."""
+    try:
+        return analyse(run)
+    except Exception as e:      # noqa: BLE001
+        return {"run": os.path.basename(run), "error": "analysis raised %s: %s" % (type(e).__name__, e)}
+
+
 def main():
-    rows = [analyse(r) for r in sys.argv[1:] if not r.endswith("_provenance.json")]
+    rows = [analyse_row(r) for r in sys.argv[1:] if not r.endswith("_provenance.json")]
     for x in rows:
         print(json.dumps(x))
     return 0

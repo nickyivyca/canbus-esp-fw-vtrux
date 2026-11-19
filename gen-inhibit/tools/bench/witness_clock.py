@@ -172,6 +172,19 @@ def arm_clock_void(arm):
     return [r for r in (arm.get("void_reasons") or []) if str(r).startswith(CLOCK_VOID_PREFIX)]
 
 
+def window_void(prov):
+    """[reason] when the witness does not hold the whole replay in order (the provenance classifier's
+    replayed_found short of replayed_frames): nothing after the first frame it missed can be placed, so
+    the arm's window is empty or short and a desk judge reads the arm VOID, never a result or a crash
+    (gen-inhibit reviewer, 2026-11-19: run cb08's witness kept 1.3-30 % of each replay, and B3's and
+    B11's desk tools raised on it). [] when the replay is all there, or no provenance was computed."""
+    prov = prov if isinstance(prov, dict) else {}
+    n, p = prov.get("replayed_frames"), prov.get("replayed_found")
+    if not isinstance(n, int) or not isinstance(p, int) or p >= n:
+        return []
+    return ["the witness holds %d of %d replayed frames in order: the window cannot be judged" % (p, n)]
+
+
 def void_verdict(note):
     return "VOID: witness clock %r, not judged (%s)" % (note, WHY)
 

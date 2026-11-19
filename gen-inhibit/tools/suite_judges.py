@@ -210,33 +210,41 @@ B3_MODES = ("off", "observe", "passive", "respond")
 
 @judge("B3", "B")
 def b3(F):
-    rows = re.findall(r"^B3_e4_golive_(\w+?)_%s_%s_arm\d\.json +\S+ +dev0x051 +(\d+|None) +stale (\d+) +(.+?) *$" % (C7, TS),
-                      text(F.one(r"B3_golive_stale_check\.txt")), re.M)
+    rows = re.findall(r"^(B3_e4_golive_(\w+?)_%s_%s_arm\d\.json) +\S+ +dev0x051 +(\d+|None) +stale (\d+) +(.+?) *$"
+                      % (C7, TS), text(F.one(r"B3_golive_stale_check\.txt")), re.M)
     entries = json_lines(F.one(r"B3_mode_entry_analysis\.txt"))
-    figs = {"arms": fig(len(rows)), "stale": fig(sum(int(r[2]) for r in rows))}
-    # an arm VOID in its own run (the witness clock not hardware time, 2026-11-18) is no
-    # judgement: B3 VOID unless another arm fails
-    void = ["%s arm (stale check)" % r[0] for r in rows if r[3].startswith("VOID: arm void")]
-    void += [e["run"] for e in entries if e.get("void")]
-    void_modes = {r[0] for r in rows if r[3].startswith("VOID: arm void")} | \
-        {m for e in entries if e.get("void") for m in B3_MODES if re.match(r"B3_e4_golive_%s_" % m, e["run"])}
-    bad = [r[0] for r in rows if not r[3].startswith("VOID: arm void")
-           and (r[3] != "as specified" or int(r[2]) or not int(r[1]))]
-    entries = [e for e in entries if not e.get("void")]
+    figs = {"arms": fig(len(rows)), "stale": fig(sum(int(r[3]) for r in rows))}
+    # An arm VOID in its own run on its witness clock (2026-11-18), or whose witness does not hold the
+    # whole replay (an empty or short window, 2026-11-19), is no judgement: B3 VOID unless another arm
+    # fails. Each arm counts once, by its run file (the stale check and the entry analysis name the
+    # same arm; the figure counted it twice before 2026-11-19).
+    void = {r[0] for r in rows if r[4].startswith("VOID: arm void")}
+    void |= {e["run"] for e in entries if e.get("void")}
+    void_modes = {m for run in void for m in B3_MODES if re.match(r"B3_e4_golive_%s_" % m, run)}
+    bad = [r[1] for r in rows if r[0] not in void
+           and (r[2] == "None" or r[4] != "as specified" or int(r[3]) or not int(r[2]))]
+    # an entry the analysis could not make (its "error") is ERROR, never a crash (run cb08's KeyError)
+    err = ["%s: %s" % (e.get("run"), e["error"]) for e in entries if e.get("error") and e.get("run") not in void]
+    entries = [e for e in entries if not e.get("void") and not e.get("error") and e.get("run") not in void]
     for m in B3_MODES:
-        ms = [e["first_answer_after_post_ms"] for e in entries
+        ms = [e.get("first_answer_after_post_ms") for e in entries
               if re.match(r"B3_e4_golive_%s_" % m, e["run"])]
         if len(ms) != 5 and m in void_modes:
             continue
         if len(ms) != 5:
             bad.append("%s: %d entries" % (m, len(ms)))
             continue
+        if None in ms:
+            bad.append("%s: %d entries with no answer after the post" % (m, ms.count(None)))
+            continue
         figs["first_answer_ms_%s_min" % m] = fig(min(ms), "ms")
         figs["first_answer_ms_%s_max" % m] = fig(max(ms), "ms")
     bad += [e["run"] for e in entries if e.get("provenance") != "as specified" or e.get("post_http") != 200]
+    if err:
+        return [result("B3", "ERROR", figs, "; ".join(err))]
     if void and not bad:
-        figs["void_arms"] = fig(len(set(void)))
-        return [result("B3", "VOID", figs, "arms VOID: %s" % ", ".join(sorted(set(void))))]
+        figs["void_arms"] = fig(len(void))
+        return [result("B3", "VOID", figs, "arms VOID: %s" % ", ".join(sorted(void)))]
     ok = len(rows) == 20 and len(entries) == 20 and not bad
     return [result("B3", "PASS" if ok else "FAIL", figs, "; ".join(bad) or "20 arms, stale 0")]
 
@@ -505,16 +513,20 @@ def b11(F):
     rows = json_lines(F.one(r"B11_quiesce_analysis\.txt"))
     # an arm its e4 run voided on its witness clock (quiesce_analysis's "void", 2026-11-18) is no
     # judgement: B11 VOID unless another arm fails
+    # an arm voided on its witness clock, or whose witness does not hold the whole replay (an empty or
+    # short window, 2026-11-19; quiesce_analysis's "void"), is no judgement: B11 VOID unless another fails
     void = [r["run"] for r in rows if r.get("void")]
-    bad = [r["run"] for r in rows if not r.get("void") and (
+    bad = [r["run"] for r in rows if not r.get("void") and not r.get("error") and (
            r.get("provenance") != "as specified" or r.get("late") or r.get("double")
-           or (r["initial_mode"] == "inhibit" and not (r.get("tx_ok_vs_last_inhibit_span") or {}).get("agree")))]
-    ok = len(rows) == 6 and not bad
+           or (r.get("initial_mode") == "inhibit" and not (r.get("tx_ok_vs_last_inhibit_span") or {}).get("agree")))]
     err = row_errors(rows)
+    if not err and len(rows) != 6:      # run cb08: the analysis died on its first arm and wrote no row
+        err = "%d analysis rows, 6 arms expected" % len(rows)
     if void and not bad and not err:
         return [result("B11", "VOID", {"arms": fig(len(rows)), "void_arms": fig(len(void))},
-                       "arms VOID on the witness clock: %s" % ", ".join(void))]
-    return [result("B11", "ERROR" if err else "PASS" if ok else "FAIL", {"arms": fig(len(rows))},
+                       "arms VOID: %s" % "; ".join("%s (%s)" % (r["run"], "; ".join(r["void"]))
+                                                   for r in rows if r.get("void")))]
+    return [result("B11", "ERROR" if err else "FAIL" if bad else "PASS", {"arms": fig(len(rows))},
                    err or "; ".join(bad) or "6 arms as specified, tx_ok agrees with every INHIBIT span")]
 
 

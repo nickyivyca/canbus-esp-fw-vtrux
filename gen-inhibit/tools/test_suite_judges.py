@@ -150,6 +150,18 @@ EDITS = [
       (r"(T213056_arm1\.json +observe +dev0x051 \d+ +)stale 0", r"\g<1>stale 2")], None, "FAIL"),
     ("B3", "bench", r"B3_mode_entry_analysis\.txt", r'^\{"run": "(B3_e4_golive_respond_e3d9437_20261016T213601_arm3\.json)".*$',
      r'{"run": "\g<1>", "void": ["witness clock (test)"]}', "VOID"),
+    # the witness short of the replay (an empty or short window, run cb08, 2026-11-19): VOID, in both
+    # files at once as the desk tools write it, and never a crash
+    ("B3", "bench", r"B3_golive_stale_check\.txt", r"(T213601_arm3\.json +respond +dev0x051 1498 +stale 0 +)as specified",
+     r"\g<1>VOID: arm void: the witness holds 248 of 82555 replayed frames in order: the window cannot be judged", "VOID"),
+    # an entry the analysis could not make (run cb08's KeyError) is ERROR
+    ("B3", "bench", r"B3_mode_entry_analysis\.txt", r'^\{"run": "(B3_e4_golive_respond_e3d9437_20261016T213601_arm3\.json)".*$',
+     r'{"run": "\g<1>", "error": "no entry in the run (test)"}', "ERROR"),
+    # an entry with no answer after the post, and a stale row whose device count is None, are FAIL, not a crash
+    ("B3", "bench", r"B3_mode_entry_analysis\.txt",
+     r'("run": "B3_e4_golive_respond_e3d9437_20261016T213601_arm3\.json".*?"first_answer_after_post_ms": )[\d.]+',
+     r"\g<1>null", "FAIL"),
+    ("B3", "bench", r"B3_golive_stale_check\.txt", r"(T213601_arm3\.json +respond +)dev0x051 1498", r"\g<1>dev0x051 None", "FAIL"),
     ("B24", "bench", r"B24_frame_content_e3d9437\.txt", r"(B3_e4_golive_observe_e3d9437_20261016T213056_arm1\.json +)AS SPECIFIED    ",
      r"\g<1>VOID            ", "VOID"),
     ("B24", "bench", r"B24_frame_content_e3d9437\.txt",
@@ -252,6 +264,15 @@ EDITS = [
     # an analysis row's "error" (a judged figure without decodable pages) is ERROR (reading Q9)
     ("B11", "bench", r"B11_quiesce_analysis\.txt", r'^(\{"run": "B11_e4_quiesce_inhibit_e3d9437_20261016T215437_arm4\.json".*)\}$',
      r'\g<1>, "error": "planted"}', "ERROR"),
+    # quiesce_analysis's row for an arm whose analysis raised (no initial_mode), and an analysis that wrote
+    # no rows at all (run cb08), are ERROR, never a crash or a FAIL that reads "6 arms as specified"
+    ("B11", "bench", r"B11_quiesce_analysis\.txt", r'^\{"run": "(B11_e4_quiesce_inhibit_e3d9437_20261016T215437_arm4\.json)".*$',
+     r'{"run": "\g<1>", "error": "analysis raised IndexError: list index out of range"}', "ERROR"),
+    ("B11", "bench", r"B11_quiesce_analysis\.txt", r'^\{"run": .*\n', "", "ERROR all"),
+    # the witness short of the replay: VOID
+    ("B11", "bench", r"B11_quiesce_analysis\.txt", r'^\{"run": "(B11_e4_quiesce_inhibit_e3d9437_20261016T215437_arm4\.json)".*$',
+     r'{"run": "\g<1>", "initial_mode": "inhibit", "void": ["the witness holds 1 of 2 replayed frames in order: the window cannot be judged"]}',
+     "VOID"),
     ("B11raw", "bench", r"B11raw_quiesce_analysis\.txt", r'^(\{"run": "B11raw_e4_quiesce_passive_e3d9437_20261017T010417_arm3\.json".*)\}$',
      r'\g<1>, "error": "planted"}', "ERROR"),
     ("B12", "bench", r"B12_2_live_crash\.txt", r"reset \['PANIC'\]", "reset ['SW']", "FAIL"),
@@ -660,6 +681,26 @@ def main():
         check("edit %d: %s reads %s after %r -> %r" % (n, cid, want, old[:40], new[:30]),
               lambda: v == [want] and not moved, (v, after[cid][0]["detail"], moved))
         gi_paths.remove_tree(d)
+
+    # 2a. B3's void arm counted once (2026-11-19): one arm void in both desk files, as the desk tools
+    #     write a window the witness left short, is one void arm, not two (the figure counted it twice).
+    d = os.path.join(scratch, "b3_void_once")
+    shutil.copytree(real, d)
+    reason = "the witness holds 248 of 82555 replayed frames in order: the window cannot be judged"
+    for name, pat, rep in (
+            ("B3_golive_stale_check.txt", r"(T213601_arm3\.json +respond +dev0x051 1498 +stale 0 +)as specified",
+             r"\g<1>VOID: arm void: " + reason),
+            ("B3_mode_entry_analysis.txt", r'^\{"run": "(B3_e4_golive_respond_e3d9437_20261016T213601_arm3\.json)".*$',
+             r'{"run": "\g<1>", "void": ["%s"]}' % reason)):
+        p = os.path.join(d, "bench", name)
+        s, k = re.subn(pat, rep, open(p, encoding="utf-8").read(), flags=re.M)
+        check("B3 void once: %s edited once" % name, lambda: k == 1, k)
+        open(p, "w", encoding="utf-8").write(s)
+    r3 = judge_all(d)["B3"][0]
+    check("B3 void once: VOID, one void arm, named once",
+          lambda: r3["verdict"] == "VOID" and r3["figures"].get("void_arms", {}).get("value") == 1
+          and r3["detail"].count("T213601_arm3") == 1, (r3["verdict"], r3["figures"].get("void_arms"), r3["detail"]))
+    gi_paths.remove_tree(d)
 
     # 2b. B18's schema 8 form (port step 0c), which no baseline file has: the check's verdict
     #     block as diag_build_page_check.py prints it, then one change per case.

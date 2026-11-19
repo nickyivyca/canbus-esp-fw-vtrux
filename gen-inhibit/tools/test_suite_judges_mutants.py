@@ -31,6 +31,16 @@ MUTANTS = [
     ("B11raw: an analysis row's error is ignored", 'return [result("B11raw", "ERROR" if err else', 'return [result("B11raw", "ERROR" if False else'),
     ("B13: an analysis row's error is ignored", 'return [result("B13", "ERROR" if err else', 'return [result("B13", "ERROR" if False else'),
     ("B1: no commands is a pass", 'if ok and s["commands"] > 0 and not not_run:', 'if ok and not not_run:'),
+    # B3 and B11 read VOID on void arms or a window the witness left short, and never raise (2026-11-19)
+    ("B3: a void arm counted twice, by label and by run, as before",
+     '    void = {r[0] for r in rows if r[4].startswith("VOID: arm void")}',
+     '    void = {r[1] + " arm (stale check)" for r in rows if r[4].startswith("VOID: arm void")}'),
+    ("B3: an entry the analysis could not make is not ERROR", "    if err:\n        return [result(\"B3\", \"ERROR\"",
+     "    if False:\n        return [result(\"B3\", \"ERROR\""),
+    ("B3: an entry with no answer reaches min()", "        if None in ms:\n", "        if False:\n"),
+    ("B3: a None device count reaches int()", '           and (r[2] == "None" or r[4] != "as specified"',
+     '           and (r[4] != "as specified"'),
+    ("B11: an analysis with too few rows is not ERROR", "    if not err and len(rows) != 6:", "    if False:"),
     # B1's ERROR and NOT-RUN (run cb08's ws arm; gen-inhibit reviewer, 2026-11-19)
     ("B1: an ERROR line is not counted", 'errors = sum(1 for a, b in lines if "ERROR" in (a, b))', 'errors = 0'),
     ("B1: a line with a reason is not read", r'''lines = re.findall(r"-> (\w+)[^|\n]*\| counted (\w+)", t)''',
