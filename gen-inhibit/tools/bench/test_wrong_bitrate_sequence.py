@@ -126,6 +126,8 @@ def fakes(log, running_after, stamps="device", late=False):
         def __init__(self, interface=None, channel=None, bitrate=None):
             self.interface = interface
             log.add("bus open", interface)
+            if interface == "pcan":     # kvaser_bus.pcan_bus's record of bus states read past (F6, 2026-11-19)
+                self.vtrux_states = [(12.5, "PcanCanOperationError: Bus error: The CAN controller is error passive")]
             if interface == "gs_usb":
                 # bus-on at the wrong rate: the witness sees an error frame while the open
                 # is still returning (step 1a's acceptance, 2026-10-29)
@@ -293,6 +295,9 @@ def order_cases(W):
           log.ev[-8:])
     check("main: driver_running_before_slice recorded true", rec.get("driver_running_before_slice") is True,
           rec.get("driver_running_before_slice"))
+    check("main: the bus states the witness PCAN read past are recorded (F6, 2026-11-19)",
+          rec.get("pcan_states") == [[12.5, "PcanCanOperationError: Bus error: The CAN controller is error passive"]],
+          rec.get("pcan_states"))
     w = rec.get("pre_burst_window") or {}
     check("main: pre_burst_window recorded, 0 frames from a clean live sample",
           w.get("errors") == 0 and isinstance(w.get("from_s"), float) and -1.0 < w["from_s"] < 0, w)

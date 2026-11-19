@@ -200,6 +200,12 @@ class Fakes:
             def recv(self, timeout=None):       # for an echo drain (2026-11-19): nothing queued
                 if getattr(self, "shut", False):
                     raise OSError("recv after shutdown")
+                script = getattr(self, "script", None)     # a test's reads, in order (2026-11-19)
+                if script:
+                    item = script.pop(0)
+                    if isinstance(item, Exception):
+                        raise item
+                    return item
                 time.sleep(max(timeout or 0.0, 0.001))
                 return None
 
@@ -1046,6 +1052,39 @@ def pcan():
         check("pcan_bus: no char device opens anyway (only the witness needs its sysfs entry), recorded as None",
               b.vtrux_chardev is None and "Bus" in f.kinds(), f.log)
     case("pcan: refusals", refusals)
+
+    def read_on():
+        """Every PCAN reader reads on past a bus state python-can's pcan raises from recv (F6, 2026-11-19:
+        run cb08's B9, B10 and B14 PCAN readers died of "error passive")."""
+        class PcanCanOperationError(Exception):
+            pass
+        passive = PcanCanOperationError("Bus error: The CAN controller is error passive")
+        heavy = PcanCanOperationError("Bus error: an error counter reached the 'heavy'/'warning' limit")
+        f = Fakes()
+        with f as kb:
+            b = kb.pcan_bus(bitrate=500000)
+            b.script = ["f1", passive, "f2", heavy, "f3"]
+            got = [b.recv(timeout=0.01) for _ in range(5)]
+            check("pcan_bus: a bus state raised from recv reads as None and the reads go on",
+                  got == ["f1", None, "f2", None, "f3"], got)
+            check("pcan_bus: each bus state is kept in vtrux_states with its text, in order",
+                  [s[1] for s in getattr(b, "vtrux_states", [])]
+                  == ["PcanCanOperationError: " + str(passive), "PcanCanOperationError: " + str(heavy)],
+                  getattr(b, "vtrux_states", None))
+            check("pcan_bus: a bus state's time is the perf_counter's",
+                  all(isinstance(s[0], float) and 0 < time.perf_counter() - s[0] < 60 for s in b.vtrux_states))
+            b.script = [PcanCanOperationError("The handle is invalid")]
+            other = None
+            try:
+                b.recv(timeout=0.01)
+            except PcanCanOperationError as e:
+                other = e
+            check("pcan_bus: any other error from recv is raised as before, and not kept",
+                  other is not None and len(b.vtrux_states) == 2, (other, b.vtrux_states))
+            b.script = []
+            check("pcan_bus: nothing queued still reads as None, no state kept",
+                  b.recv(timeout=0.0) is None and len(b.vtrux_states) == 2)
+    case("pcan: reads on past a bus state", read_on)
 
 
 def socketcan():
@@ -2153,6 +2192,17 @@ MUTANTS = [
      "        import gi_paths as mod\n        if False:\n"),
     ("by file: gi_paths looked for beside the tools folder, not beside kvaser_bus",
      'os.path.join(HERE, "gi_paths.py")', 'os.path.join(os.path.dirname(HERE), "gi_paths.py")'),
+    # the PCAN's readers read on past a bus state (F6, 2026-11-19)
+    ("pcan_bus: recv raises bus states, as in run cb08",
+     '    return _read_on_bus_states(_pcan_record(b, r, bitrate, "canbench.bench_layer.open_bench"))',
+     '    return _pcan_record(b, r, bitrate, "canbench.bench_layer.open_bench")'),
+    ("pcan_bus: every error read as a bus state", "            if not PCAN_BUS_STATE.match(str(e)):\n                raise\n",
+     ""),
+    ("pcan_bus: bus states not kept",
+     '            b.vtrux_states.append((time.perf_counter(), "%s: %s" % (type(e).__name__, e)))\n', ""),
+    ("pcan_bus: a bus state's read is retried until it returns a frame",
+     "            time.sleep(0.001)\n            return None\n    b.recv = recv",
+     "            time.sleep(0.001)\n            return raw(timeout=timeout)\n    b.recv = recv"),
 ]
 
 

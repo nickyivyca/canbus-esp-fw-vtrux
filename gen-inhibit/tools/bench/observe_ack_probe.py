@@ -119,16 +119,27 @@ def one_arm(LF, can, mode, a):
                              data=bytes([0xA5, mode, 0, 0, 0, 0, 0, 0])))
         t0 = time.perf_counter()
         n_rx = n_err = 0
+        states = []
         while time.perf_counter() - t0 < a.hold_s:
-            m = bus.recv(timeout=0.05)
+            try:
+                m = bus.recv(timeout=0.05)
+            except Exception as e:      # noqa: BLE001  a bus state, not an end: recorded, read on
+                # python-can's pcan raises the PCAN's error-passive state from recv. Here that is the
+                # stimulus working (an unACKed frame's ACK errors); run cb08's B14 died of it at the
+                # mode-0 control (2026-11-19), as canmain_burst_check's witness had before 45f0332d
+                states.append([round(time.perf_counter() - t0, 4), "%s: %s" % (type(e).__name__, e)])
+                time.sleep(0.001)
+                continue
             if m is not None:
                 n_rx += 1
                 n_err += 1 if m.is_error_frame else 0
+        # and those kvaser_bus.pcan_bus's recv read past itself (F6, 2026-11-19), on the arm's clock
+        states += [[round(p - t0, 4), s] for p, s in (getattr(bus, "vtrux_states", None) or [])]
         st = bus.status()
     finally:
         bus.shutdown()
     rec.update({"pcan_status_open": status_name(st0), "pcan_status": status_name(st),
-                "pcan_rx": n_rx, "pcan_error_frames": n_err})
+                "pcan_rx": n_rx, "pcan_error_frames": n_err, "pcan_states": states})
     rec["ack_errors"] = ack_errors(rec["pcan_status"])
     p2 = LF.page() or {}
     rec["drv_after"] = {k: (p2.get("drv") or {}).get(k) for k in ("state", "tec", "rec", "rx_missed",
@@ -146,9 +157,9 @@ def main():
         for m in [int(x) for x in a.modes.split(",")]:
             arm = one_arm(LF, can, m, a)
             rec["arms"].append(arm)
-            print("mode %d (%s): page mode %s, drv %s -> PCAN %s (rx %d, err frames %d)"
+            print("mode %d (%s): page mode %s, drv %s -> PCAN %s (rx %d, err frames %d, bus states raised %d)"
                   % (m, MODE_NAMES.get(m), arm["mode_read"], arm["drv_state"],
-                     arm["pcan_status"], arm["pcan_rx"], arm["pcan_error_frames"]))
+                     arm["pcan_status"], arm["pcan_rx"], arm["pcan_error_frames"], len(arm["pcan_states"])))
     finally:
         LF.dev_post("/gen_inhibit_set?mode=0")
         time.sleep(1.0)

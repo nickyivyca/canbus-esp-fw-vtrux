@@ -27,6 +27,8 @@ MUTANTS = [
     ("the slice starts before the arm, as before", "        wit.start()\n",
      "        wit.start()\n        S.Player(pc, stim).start()\n"),
     ("no wait for the driver", "        while time.perf_counter() - t0 < 3.0:\n", "        while False:\n"),
+    ("the witness PCAN's bus states not recorded (F6, 2026-11-19)",
+     '    rec["pcan_states"] = [[round(p, 6), s] for p, s in (getattr(pc, "vtrux_states", None) or [])]\n', ""),
     ("the disarm comes before the slice stops, as before", END_ORDER, END_OLD),
     ("the window counts every frame before the burst", "if t0 <= e < first_burst]", "if e < first_burst]"),
     ("the window counts the burst's own frame", "if t0 <= e < first_burst]", "if t0 <= e <= first_burst]"),
