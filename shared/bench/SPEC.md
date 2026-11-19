@@ -300,6 +300,17 @@ way, the Holder is not its own.
   `$REVERSE_IT_DIR/firmware/bench-holder.md`, not here.
   Down means its link is down, or the device unbound if a down link turns
   out still to ACK; step 3's adapter characterisation settles which.
+- **A tool asks for a bench adapter by its `canctl` role** (user,
+  2026-11-18): `canmain`, `canchg`, `canx2`, `kvaser` or `pcanfd`. This
+  holds for every tool that opens one, in any session: the testers'
+  harnesses, the shared runner, the Android sessions' tools and the CAN
+  replay tooling's. Turning a role into a device (its serial, USB bus and
+  address, netdev or vendor channel) is the job of `canctl` and `canbench`,
+  not the tool's. A tool never takes an adapter by an enumeration index, a
+  channel number, or the first one of its kind it finds. Found when
+  `bench_census`'s gs_usb row opened python-can's first gs_usb device,
+  which can be `canchg` on the X2's CAN2 rather than `canmain`
+  (gen-inhibit tester, 2026-11-18).
 - **The lock is a mutex, not a hand-over guarantee** (user, 2026-11-13, in
   the Git based CANBus Android development session: "the goal of the bench
   lock is a mutex; not to have a guarantee that it's left in a known state
@@ -492,3 +503,10 @@ way, the Holder is not its own.
   from its nested runs, so no waiter takes the bench partway through the
   acceptance. Drafted by the charge-interposer reviewer, approved by the
   user in its session; read by the gen-inhibit reviewer before merge.
+- **A tool asks for a bench adapter by its `canctl` role** (user,
+  2026-11-18, in the gen-inhibit reviewer's session: "the tool should
+  request canmain/canchg, it doesn't need to care about serial or
+  whatever", "common across the whole test suite (for the whole bench, not
+  just the esp dev)"), as section 8 sets out. Drafted by the gen-inhibit
+  reviewer, approved by the user in its session; read by the
+  charge-interposer reviewer before merge.
