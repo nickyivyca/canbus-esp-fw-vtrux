@@ -1699,13 +1699,14 @@ bench could not give it a fair reading, for one of these reasons:
 - there is no witness log, or the witness left it short of the arm's window;
 - the replay was refused;
 - the stimulus fell short of what the arm asked for;
-- the device went silent, so its own figures could not be read.
+- the device went silent, so its own figures could not be read;
+- attribution: the device's count and the witness's count disagree when both
+  are counted over the same window. A device counter resets on every arm, so
+  that window starts at the arm.
 
 A check made of arms reads VOID when any arm it asked for is void. It never
 reads PASS while an arm it asked for is void or unjudged. A FAIL in an arm
-that was read fairly stands, whatever the other arms read. A mismatch between
-the device's count and the witness's count over an arm (attribution) is not
-on the list yet (`VALIDATION.md` 12.1, basis pending).
+that was read fairly stands, whatever the other arms read.
 
 Every arm must report the rolling-counter check (`ctr_bad`), which must be
 zero. Under load the device is allowed to be **late but never lossy**: the

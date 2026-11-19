@@ -1195,12 +1195,26 @@ was read as a logger on the truck dropping frames).
     witness's about 2000). Carried as void, B3 reads VOID; dropped, it FAILs.
   - The ruling: the listed reasons, all an incomplete stimulus or reading,
     make the check VOID.
-  - Attribution waits on the tester's check of whether the 20 s re-arm resets
-    `tx_ok`. If it does, the attribution check is changed to count both sides
-    over the same window, the baseline B3 is judged again, and attribution
-    joins the list. If it does not, it goes back to the user.
-- **Status:** validated, except attribution: basis pending (the re-arm
-  `tx_ok` check).
+  - Attribution waited on the tester's check of whether the 20 s re-arm
+    resets `tx_ok`. If it did, the attribution check would count both sides
+    over the same window, the baseline B3 would be judged again, and
+    attribution would join the list. Otherwise it went back to the user.
+  - **The re-arm check, 2026-11-19 (tester, read from the records of the
+    baseline B3's RESPOND arms 1-5):**
+    - In each arm the mode-3 POST went at 20.000 s, and its reply came at
+      20.03-20.05 s.
+    - All 2000-2001 probes the witness saw lay before that POST.
+    - `tx_ok` (1497-1499) equalled, arm by arm, the count of device `0x051`
+      frames after it. `ctr_ok` and the `rx_gap` count were each `tx_ok`
+      - 1, with a 10.0 ms mean gap: about 15 s, from 20 s to 35 s.
+    - Counted over the same window, device and witness agree in all five.
+    - This matches the spec's "The count resets on every arm, as `tx_ok`
+      does".
+    - So attribution joins the list as a same-window comparison.
+    - Its limit: the records hold no device read before the POST. The reset
+      shows in which window the counters cover, not in a reading taken
+      before and after.
+- **Status:** validated.
 
 ### 12.2 Fidelity the simple bench does not have
 - **Batched timestamps** (measured 2026-09-26). The truck logs are
