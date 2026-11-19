@@ -279,6 +279,9 @@ class Fakes:
                        "canbench.live.pcan_bus": pb, "canbench.bench_roles": br, "canbench.errors": errs,
                        "canbench.bench_layer": bl}
         self.saved = {}
+        # the Kvaser state file (Q2, 2026-11-19): a case's own, in scratch/, never the user's runtime one;
+        # a case that follows one tool into the next sets state_path to share it
+        self.state_path = None
 
     def pin_tool(self):
         fakes = self
@@ -312,6 +315,13 @@ class Fakes:
             return fakes.holder
         kb._lock_holder = lock_holder
         kb._run = self.run
+        self.saved_state = os.environ.get("GI_KVASER_STATE")
+        self.own_state = None
+        if self.state_path:
+            os.environ["GI_KVASER_STATE"] = self.state_path
+        else:
+            self.own_state = os.path.join(gi_paths.scratch("kvaser-bus-state"), "state_%d.json" % id(self))
+            os.environ["GI_KVASER_STATE"] = self.own_state
         self.saved_runs = os.environ.get("GI_RUNS_DIR")
         if hasattr(self, "runs_dir"):            # SockFakes, InnoFakes: their own runs dir, or none
             if self.runs_dir:
@@ -337,6 +347,12 @@ class Fakes:
         return 127, "not faked"
 
     def __exit__(self, *exc):
+        if self.saved_state is None:
+            os.environ.pop("GI_KVASER_STATE", None)
+        else:
+            os.environ["GI_KVASER_STATE"] = self.saved_state
+        if self.own_state and os.path.exists(self.own_state):
+            os.remove(self.own_state)
         if self.saved_runs is None:
             os.environ.pop("GI_RUNS_DIR", None)
         else:
@@ -1279,6 +1295,30 @@ def socketcan():
               first == [] and f.canctls() == [("down", "kvaser")], f.log)
     case("socketcan: two buses", two)
 
+    def two_failed():
+        """(2026-11-19) a second bus whose reader's open raises: the first bus's link is not taken down."""
+        f = SockFakes()
+        raised = None
+        with f as kb:
+            a = kb.kvaser_bus(channel=0, bitrate=500000)
+
+            class Raising:
+                def __init__(self, channel, **kw):
+                    raise OSError("bind failed (test)")
+            f.pinned["canbench.live.socketcan_hw"].SocketcanHwBus = Raising
+            del f.log[:]
+            try:
+                kb.kvaser_bus(channel=0, bitrate=500000)
+            except OSError as e:
+                raised = e
+            after = (f.linkst["up"], f.canctls())
+            a.shutdown()
+        check("socketcan: a second bus failing to open leaves the first bus's link up (no canctl down)",
+              raised is not None and after == (True, []), (raised, after, f.log))
+        check("socketcan: the first bus's close then takes it down", f.linkst["up"] is False
+              and ("down", "kvaser") in f.canctls(), f.log)
+    case("socketcan: a second bus fails", two_failed)
+
     def refuses(label, fk, kw, exc_name, opened_none=True):
         def go():
             f = fk()
@@ -1314,8 +1354,6 @@ def socketcan():
             ("the link read back listen-only", lambda: SockFakes(read_lo=True), std, "KvaserLinkError"),
             ("the reader's open raising after the link came up",
              lambda: SockFakes(hw_raises=OSError("bind failed")), std, "OSError"),
-            ("the link found up at the bitrate (bench_layer leaves it) and the reader's open raising",
-             lambda: SockFakes(found_up=500000, hw_raises=OSError("bind failed")), std, "OSError"),
             ("open_role finding the link down after canctl up (canbench refuses a down link)",
              lambda: SockFakes(role_link_lags=True), std, "KvaserLinkError")):
         # the reader's own open raising is past the open call: what matters is the link down
@@ -1361,6 +1399,71 @@ def socketcan():
         check("socketcan: a link still UP after canctl down -> the close raises KvaserLinkError",
               isinstance(raised, want), (raised, f.log))
     case("socketcan: link stuck up", stuck)
+
+    def found_up():
+        """Q2 (the gen-inhibit reviewer, 2026-11-19): the Kvaser's open is open_bench(if_up="refuse"). A tool
+        that dies with the Kvaser open leaves its link up; every later open is refused, recorded as a finding,
+        the link left as it is, and each refusal names the FIRST finding and who left it up, never a cascade
+        of unrelated errors. A link_down() read back down, or the close that takes it down, ends it."""
+        runs = gi_paths.scratch("kvaser-bus-foundup-kvaser")
+        gi_paths.remove_tree(runs)
+        os.makedirs(runs)
+        state = os.path.join(runs, "state.json")
+        rd = lambda: json.load(open(state, encoding="ascii")) if os.path.exists(state) else None
+
+        def attempt(**k):
+            f = SockFakes(runs_dir=runs, **k)
+            f.state_path = state
+            raised = None
+            with f as kb:
+                try:
+                    kb.kvaser_bus(channel=0, bitrate=500000)
+                except Exception as e:      # noqa: BLE001
+                    raised = e
+            return f, raised
+        f1, e1 = attempt()                  # opened and never shut: the tool died with it open
+        st1 = rd() or {}
+        check("found up: an open records who has the Kvaser (the state file), no finding yet",
+              e1 is None and (st1.get("open") or {}).get("pid") == os.getpid() and "first_found_up" not in st1, st1)
+        fa, ea = attempt(found_up=500000)
+        st2 = rd() or {}
+        fb, eb = attempt(found_up=500000)
+        check("found up: the next open is refused (KvaserLinkError), no canctl, no reader, its link left up",
+              type(ea).__name__ == "KvaserLinkError" and fa.canctls() == [] and "HwBus" not in fa.kinds()
+              and fa.linkst["up"] is True, (ea, fa.log))
+        check("found up: the refusal names the tool that left it up, with its pid",
+              "left up by" in str(ea) and "pid %d" % os.getpid() in str(ea), str(ea))
+        check("found up: the first refusal is kept as the episode's first finding",
+              (st2.get("first_found_up") or {}).get("pid") == os.getpid() and st2.get("open") == st1.get("open"), st2)
+        check("found up: a later refusal names the same first finding and who left it up, not a new cause",
+              type(eb).__name__ == "KvaserLinkError" and fb.linkst["up"] is True
+              and "First found up %s" % (st2.get("first_found_up") or {}).get("t") in str(eb)
+              and "left up by" in str(eb) and (rd() or {}).get("first_found_up") == st2.get("first_found_up"), str(eb))
+        evs = [json.loads(x) for x in open(os.path.join(runs, "kvaser_opens.jsonl"), encoding="ascii")]
+        ref = [e for e in evs if e.get("event") == "refused"]
+        check("found up: each refusal recorded in kvaser_opens.jsonl as a finding, by canbench's if_up='refuse', "
+              "the second with the first finding beside it",
+              [(e.get("finding"), e.get("by")) for e in ref] == [("found up", "canbench open_bench if_up='refuse'")] * 2
+              and ref[0].get("first_found_up") is None and ref[1].get("first_found_up") == st2.get("first_found_up")
+              and all(e.get("left_open_by") == st1.get("open") for e in ref)
+              and "found up, refused (if_up='refuse')" in ref[0].get("refusal", ""), ref)
+        f = SockFakes(found_up=500000)
+        f.state_path = state
+        with f as kb:
+            kb.link_down()
+        check("found up: link_down() read back down clears the state file", rd() is None, rd())
+        fc, ec = attempt(found_up=500000)
+        check("found up: after that, a refusal is its own first finding, with no record of who left it up",
+              type(ec).__name__ == "KvaserLinkError" and "no record of who left it up" in str(ec)
+              and (rd() or {}).get("first_found_up", {}).get("pid") == os.getpid(), str(ec))
+        f = SockFakes()
+        f.state_path = state
+        with f as kb:
+            kb.link_down()
+            kb.kvaser_bus(channel=0, bitrate=500000).shutdown()
+        check("found up: an open shut by its close (the link taken down) leaves no state", rd() is None, rd())
+        gi_paths.remove_tree(runs)
+    case("socketcan: found up, the first finding named", found_up)
 
     def canlib_record():
         runs = gi_paths.scratch("kvaser-bus-runs-canlib")
@@ -1993,8 +2096,9 @@ SCAN_ALLOWED = {
         "its fake PCAN buses' channel_info (a second channel, refused)"),
     ("tools/bench/test_kvaser_bus.py", "adapter-class", "names CanbenchPcanBus"): (2,
         "its fake pinned canbench.live.pcan_bus.CanbenchPcanBus"),
-    ("tools/bench/test_kvaser_bus.py", "adapter-class", "names SocketcanHwBus"): (2,
-        "its fake pinned canbench.live.socketcan_hw.SocketcanHwBus"),
+    ("tools/bench/test_kvaser_bus.py", "adapter-class", "names SocketcanHwBus"): (3,
+        "its fake pinned canbench.live.socketcan_hw.SocketcanHwBus, and a raising one put in its place "
+        "(a second bus fails, 2026-11-19)"),
     ("tools/bench/test_kvaser_bus.py", "pcan-channel",
      "names PCAN channel PCAN_USBBUS1 (the n-th PCAN found, not the role pcanfd)"): (1,
         "its refusal cases ask the openers by channel and must be refused"),
@@ -2246,11 +2350,25 @@ MUTANTS = [
      'mode="socketcan", restore=False,'),
     ("socketcan: open_bench restores at the close", 'mode="socketcan", hw_timestamps=True, restore=False,',
      'mode="socketcan", hw_timestamps=True, restore=True,'),
-    ("socketcan: the stamp check's frames not asked", "check_frames=CHECK_FRAMES, host_gap_s=HOST_GAP_S, **kw)",
-     "host_gap_s=HOST_GAP_S, **kw)"),
+    ("socketcan: the stamp check's frames not asked", "check_frames=CHECK_FRAMES, host_gap_s=HOST_GAP_S, if_up=",
+     "host_gap_s=HOST_GAP_S, if_up="),
     ("socketcan: a failed open leaves the link as found",
-     "        try:\n            link_down()             # nothing open: not left ACKing, also when the link was found up\n",
-     "        try:\n            pass\n"),
+     "    try:\n        link_down()\n    except Exception:               # noqa: BLE001  the open's error is the one raised\n",
+     "    try:\n        pass\n    except Exception:               # noqa: BLE001  the open's error is the one raised\n"),
+    ("socketcan: a failed second open pulls the link from under the first bus",
+     "    if _open:\n        return\n    try:\n        link_down()\n", "    try:\n        link_down()\n"),
+    # Q2 (the gen-inhibit reviewer, 2026-11-19): the Kvaser found up is refused, the first finding named
+    ("socketcan: a link found up taken, not refused", 'if_up="take" if _open else "refuse", **kw)', 'if_up="take", **kw)'),
+    ("socketcan: a second bus in the same process refused", 'if_up="take" if _open else "refuse", **kw)',
+     'if_up="refuse", **kw)'),
+    ("socketcan: a found-up refusal takes the link down",
+     "            raise _found_up(e) from e.__cause__     # its link left as it is",
+     "            link_down()\n            raise _found_up(e) from e.__cause__     # its link left as it is"),
+    ("socketcan: the first finding not kept", "        _state_write(dict(st, first_found_up=first))\n", "        pass\n"),
+    ("socketcan: who opened the Kvaser not kept", '    _state_write({"open": _who()})', "    pass"),
+    ("socketcan: link_down leaves the state", "    _state_write({})\n    return out\n", "    return out\n"),
+    ("socketcan: the refusal does not name who left it up",
+     '    lefttxt = ("; left up by %s', '    left = None\n    lefttxt = ("; left up by %s'),
     ("socketcan: the leaf not asked before the open",
      "    kvaser_role()                   # RoleError / KvaserLinkError (leaf) before anything is changed\n", ""),
     ("socketcan: the close leaves the link up", '                ev["link"] = link_down()\n', '                ev["link"] = link()\n'),
@@ -2357,7 +2475,8 @@ MUTANTS = [
      '                  restore=restore, if_up="refuse", drain=drain, **kw)\n',
      '                  restore=restore, drain=drain, **kw)\n'),
     ("innomaker: canbench's found-up refusal not recorded as the finding",
-     "        if FOUND_UP_REFUSAL in str(e.__cause__ or \"\"):\n", "        if False:\n"),
+     "        if FOUND_UP_REFUSAL in str(e.__cause__ or \"\"):\n            record({\"event\": \"refused\", \"backend\": \"gs_usb\"",
+     "        if False:\n            record({\"event\": \"refused\", \"backend\": \"gs_usb\""),
     # gi_paths for the guard in a process without this folder on sys.path (run ffdf, 2026-11-19)
     ("by file: gi_paths only by a plain import (the run ffdf defect)",
      "        try:\n            import gi_paths as mod\n        except ImportError:\n",

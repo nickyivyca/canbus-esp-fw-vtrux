@@ -85,6 +85,15 @@ backend everywhere else (Windows). On Linux, after the guard:
     restart_ms=RESTART_MS, restore=False) (2026-11-19): the link brought up at the bitrate and read
     back (UP, that bitrate, no listen-only, restart-ms), then open_role's SocketcanHwBus. canbench's
     refusal is KvaserLinkError, and the link is taken down again.
+  - FOUND UP, REFUSED (the gen-inhibit reviewer's Q2, 2026-11-19): open_bench(if_up="refuse"). A link
+    found up is interference (an up kvaser link ACKs with no socket open, below): the open is refused
+    before anything is touched, recorded in kvaser_opens.jsonl as a finding ("found up"), and the link
+    left as it is. So a tool that died with the Kvaser open leaves every later open refused, and each
+    of those refusals names the FIRST finding, not a cascade of unrelated errors: a state file
+    (KVASER_STATE, GI_KVASER_STATE or this user's runtime folder) keeps which tool opened the Kvaser
+    and has not closed it (written at the open, cleared at the close that takes the link down) and
+    the first found-up refusal (its time, tool and runs folder); every refusal while the link stays
+    up names both. A link_down() read back down clears the file.
   - driver_mode=False (CANlib's silent mode) is refused: kvaser_usb has no listen-only, and this
     Leaf Light v2 has no silent mode either (bench_census, 2026-10-09). Any keyword but channel,
     bitrate, driver_mode, receive_own_messages and can_filters is refused (TypeError): a CANlib
@@ -401,9 +410,76 @@ def link():
 
 
 def link_down():
-    """bench_layer.link_down("kvaser"): canctl down, read back not UP. KvaserLinkError otherwise."""
+    """bench_layer.link_down("kvaser"): canctl down, read back not UP. KvaserLinkError otherwise. Read back
+    down, it clears the Kvaser state file: no tool has it open, and a found-up episode is over."""
     bl = layer()
-    return _call(KvaserLinkError, "link down %s" % KVASER_ROLE, bl.link_down, KVASER_ROLE)
+    out = _call(KvaserLinkError, "link down %s" % KVASER_ROLE, bl.link_down, KVASER_ROLE)
+    _state_write({})
+    return out
+
+
+def kvaser_state_path():
+    """The Kvaser state file (module docstring, "FOUND UP, REFUSED"): GI_KVASER_STATE, else this user's
+    runtime folder (XDG_RUNTIME_DIR, else the system temp folder)."""
+    p = os.environ.get("GI_KVASER_STATE")
+    if p:
+        return p
+    import tempfile
+    d = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    return os.path.join(d, "gen-inhibit-kvaser-state-%s.json" % (os.getuid() if hasattr(os, "getuid") else "0"))
+
+
+def _state_read():
+    try:
+        with open(kvaser_state_path(), encoding="ascii") as f:
+            st = json.load(f)
+        return st if isinstance(st, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _state_write(st):
+    p = kvaser_state_path()
+    try:
+        if not st:
+            if os.path.exists(p):
+                os.remove(p)
+            return
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="ascii") as f:
+            json.dump(st, f, sort_keys=True)
+        os.replace(tmp, p)
+    except OSError as e:            # a state not kept is said, never fatal to the open or close
+        sys.stderr.write("kvaser_bus: the Kvaser state file %s not written: %s\n" % (p, e))
+
+
+def _who():
+    return {"t": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "pid": os.getpid(),
+            "tool": os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0] else None,
+            "runs_dir": os.environ.get("GI_RUNS_DIR")}
+
+
+def _found_up(e):
+    """canbench's found-up refusal of the Kvaser (open_bench if_up="refuse"): recorded as a finding with the
+    first one and the tool that left the link up, from the state file; the first refusal of an episode
+    becomes its first finding. Returns the KvaserLinkError to raise."""
+    st = _state_read()
+    first, left = st.get("first_found_up"), st.get("open")
+    ev = record({"event": "refused", "backend": "socketcan", "role": KVASER_ROLE, "finding": "found up",
+                 "by": "canbench open_bench if_up='refuse'", "refusal": str(e.__cause__),
+                 "first_found_up": first, "left_open_by": left})
+    if first is None:
+        first = {k: ev.get(k) for k in ("t", "pid", "tool")}
+        first["runs_dir"] = os.environ.get("GI_RUNS_DIR")
+        _state_write(dict(st, first_found_up=first))
+    lefttxt = ("; left up by %s (pid %s, opened %s, runs folder %s), which never closed it"
+               % (left.get("tool"), left.get("pid"), left.get("t"), left.get("runs_dir")) if left
+               else "; no record of who left it up")
+    return KvaserLinkError("%s: link %s found up, which is interference (an up kvaser link ACKs with no socket "
+                           "open); recorded as a finding, its link not touched, the open refused. First found up "
+                           "%s by %s (runs folder %s)%s (%s)"
+                           % (KVASER_ROLE, NETDEV, first.get("t"), first.get("tool"), first.get("runs_dir"),
+                              lefttxt, e.__cause__))
 
 
 def stamp_stats(b):
@@ -436,6 +512,18 @@ def bus_error(b, msg):
     return layer().bus_error(b, msg)
 
 
+def _failed_open_down():
+    """After a failed open: the link down, so nothing is left ACKing (canbench's open_bench puts a failed
+    open back as found as well), unless this process still has another Kvaser bus open on it, whose link
+    that would pull from under it (2026-11-19). The open's error is the one raised."""
+    if _open:
+        return
+    try:
+        link_down()
+    except Exception:               # noqa: BLE001  the open's error is the one raised
+        pass
+
+
 def _socketcan_bus(channel=None, bitrate=500000, driver_mode=True, **kw):
     other = sorted(set(kw) - set(SOCKETCAN_KW))
     if other:
@@ -448,16 +536,19 @@ def _socketcan_bus(channel=None, bitrate=500000, driver_mode=True, **kw):
     bl = layer()
     try:
         # canbench's open_bench: the link up at bitrate (restart-ms RESTART_MS, read back), then open_role's
-        # SocketcanHwBus with its per-open stamp check. restore=False: the close below takes the link down,
-        # whatever it was found at.
+        # SocketcanHwBus with its per-open stamp check. restore=False: the close below takes the link down.
+        # if_up="refuse" (Q2, 2026-11-19): a link found up is refused before anything is touched, unless this
+        # process already has a Kvaser bus open (the link is then up because it brought it up).
         b = _call(KvaserLinkError, "open_bench %s" % KVASER_ROLE, bl.open_bench, KVASER_ROLE, bitrate,
                   mode="socketcan", hw_timestamps=True, restore=False, restart_ms=RESTART_MS,
-                  check_frames=CHECK_FRAMES, host_gap_s=HOST_GAP_S, **kw)
+                  check_frames=CHECK_FRAMES, host_gap_s=HOST_GAP_S, if_up="take" if _open else "refuse", **kw)
+    except KvaserLinkError as e:
+        if FOUND_UP_REFUSAL in str(e.__cause__ or ""):
+            raise _found_up(e) from e.__cause__     # its link left as it is: the finding, not undone
+        _failed_open_down()
+        raise
     except BaseException:
-        try:
-            link_down()             # nothing open: not left ACKing, also when the link was found up
-        except Exception:           # noqa: BLE001  the open's error is the one raised
-            pass
+        _failed_open_down()
         raise
     mask = err_mask(b)
     if mask != ERR_MASK:
@@ -476,6 +567,7 @@ def _socketcan_bus(channel=None, bitrate=500000, driver_mode=True, **kw):
             "found": lay.get("found"), "err_mask": "0x%X" % mask,
             "reader": "canbench.bench_layer.open_bench -> SocketcanHwBus", "check_frames": CHECK_FRAMES,
             "host_gap_s": HOST_GAP_S})
+    _state_write({"open": _who()})      # found down and opened: who has it, until the close takes it down
     return b
 
 
