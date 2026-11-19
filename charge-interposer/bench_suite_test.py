@@ -807,7 +807,10 @@ def test_suites():
     # 310: st.bench-layer-check and cf.bench-layer-check (the hand-take bench
     #      check of the harness on can-tools' bench-role layer, the reviewer's
     #      bench-layer item, 2026-11-19)
-    assert len(seen) == 310, "checks across the suites: %d" % len(seen)
+    # 314: st.reader-death, cf.reader-death, st.bench-rate-feasibility and
+    #      cf.bench-rate-feasibility (a PCAN reader that dies is VOID, the
+    #      reviewer's PCAN ruling 1, 2026-11-19)
+    assert len(seen) == 314, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -2218,9 +2221,11 @@ def test_script_coverage():
         src = open(os.path.join(art, n), encoding="utf-8",
                    errors="replace").read()
         # keepalive_probe and rx_proc have one since 2026-11-13 (kvaser_link)
-        # reset_check since 2026-11-18 (its X2 port from --port)
+        # reset_check since 2026-11-18 (its X2 port from --port), reader_death
+        # since 2026-11-19 (the reviewer's PCAN ruling 1)
         if (n.startswith("bench_") or n in ("keepalive_probe.py", "rx_proc.py",
-                                            "klog_windows.py", "reset_check.py")) \
+                                            "klog_windows.py", "reset_check.py",
+                                            "reader_death.py")) \
                 and '"--self-test"' in src:
             st.add(n[:-3])
         if "script_can_fail.run(" in src and n != "script_can_fail.py":

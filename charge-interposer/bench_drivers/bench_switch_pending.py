@@ -19,7 +19,10 @@ the charger stops, and 2 s later the port falls back to listen-only.
           every bridged frame is acknowledged and nothing is pending.
 A link not set as the phase needs is a VOID line with the kernel's USB/CAN
 lines and no RESULT line (phase_link); switch_pending_judge reads it as
-VOID.
+VOID. So is a phase whose PCAN reader died (the charge-interposer
+reviewer's PCAN ruling 1, 2026-11-19): bench_usb_host.Rx keeps the
+recv's error, the phase logs one VOID line with it and is not counted, and
+no later phase runs (run_phases).
 The board's serial status block (every 5 s) gives, before and after each
 phase: c2v (frames forwarded toward the vehicle), the LOSS line's vehicle
 tx drops and bridge drops, and the MODE line's suppressed count, switch
@@ -168,9 +171,83 @@ def self_test():
     check(not ok and ln.startswith("VOID: kvaser link: the kvaser link reads up")
           and "error -71" in ln,
           "link: an UP link under NOACK is caught, a VOID line with the kernel's lines")
+
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1: run_phases
+    # with the real Rx on a stand-in PCAN bus, the port and the Innomaker
+    # stand-ins, the waits short
+    Link.fail, Link.calls = None, []
+    for ok, what in reader_death_checks(Link):
+        check(ok, what)
     print("\nbench_switch_pending self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
+
+
+def reader_death_checks(link):
+    """-> [(ok, what)]. The PCAN gives three of the bridged frames, then
+    raises a PCAN status (no RESULT, a VOID line naming the error) or goes
+    quiet (the three are counted: an UNACCOUNTED figure from a short row
+    list, judged as before)."""
+    import types
+    import bench_usb_host as U
+    import reader_death
+    real = time
+    status = [(1.0, "t=5s state=MONITOR | v2c=10 c2v=10 mod=0")]
+
+    class Port(object):
+        stamped = status
+
+        def mark(self, text):
+            return real.perf_counter()
+
+    class Inno(object):
+        def recv(self, timeout=None):
+            real.sleep(0.005)
+
+        def send(self, msg, timeout=None):
+            pass
+
+    def frames():
+        return [types.SimpleNamespace(timestamp=1.0, arbitration_id=H.FILLER,
+                                      is_error_frame=False, is_rx=True,
+                                      data=bytes([0, 0, 0, i, 0, 0, 0, 0]))
+                for i in range(3)]
+
+    class QuietBus(reader_death.RaisingBus):
+        def recv(self, timeout=None):
+            if self.frames:
+                return self.frames.pop(0)
+            real.sleep(0.005)
+
+    g = globals()
+    saved = (U.open_pcan, g["STATUS_WAIT_S"], g["ON_S"], g["FALLBACK_WAIT_S"])
+    out = []
+    try:
+        g.update(STATUS_WAIT_S=0.05, ON_S=0.05, FALLBACK_WAIT_S=0.05)
+        # the PCAN delivers its frames after the baseline take(): slowly
+        U.open_pcan = lambda acks: reader_death.RaisingBus(
+            frames(), RuntimeError("A PCAN status 0x2 OVERRUN"), delay=0.03)
+        logged = []
+        un = run_phases(Port(), Inno(), logged.append, link)
+        voids = [x for x in logged if x.startswith("VOID:")]
+        out.append((un is None and len(voids) == 1 and "OVERRUN" in voids[0]
+                    and "the pcan reader died" in voids[0]
+                    and not any(x.startswith(("RESULT", "FAIL")) for x in logged)
+                    and not any("UNACCOUNTED" in x for x in logged),
+                    "CAN-FAIL: a PCAN reader that raises mid-phase: no count, "
+                    "no RESULT, one VOID line with the error: %s" % voids))
+        out.append((link.calls == [False],
+                    "... and the ACK phase is not run after it: %s" % link.calls))
+        U.open_pcan = lambda acks: QuietBus(frames(), delay=0.03)
+        logged = []
+        un = run_phases(Port(), Inno(), logged.append, link)
+        out.append((un is not None and set(un) == {"NOACK", "ACK"}
+                    and not any(x.startswith("VOID") for x in logged),
+                    "the same rows from a reader that lived are counted, both "
+                    "phases judged: %s" % un))
+    finally:
+        U.open_pcan, g["STATUS_WAIT_S"], g["ON_S"], g["FALLBACK_WAIT_S"] = saved
+    return out
 
 
 def phase_link(ack, link):
@@ -222,6 +299,12 @@ def phase(name, hp, ack, log, gs):
     gstop.set()
     gt.join(1.0)
     pc.close()
+    if pc.death.error:
+        # the PCAN reader died: no count from its rows (the charge-interposer
+        # reviewer's PCAN ruling 1, 2026-11-19); switch_pending_judge reads
+        # the VOID line
+        log(pc.death.void_line())
+        return None, None
     seen = sorted(set(H.seq_of(r[4].hex()[:6]) if False else
                       ((r[4][0] << 24) | (r[4][1] << 16) | (r[4][2] << 8) | r[4][3])
                       for r in rows if r[2] == H.FILLER and not r[3]
@@ -256,25 +339,40 @@ def run_bench(a):
     # one Innomaker handle for both phases: an in-process gs_usb reopen
     # fails on this host (the first run's ACK phase died on it)
     gs = RF.open_gs_usb()
-    un = {}
+    un = None
     try:
-        for name, ack in (("NOACK", False), ("ACK", True)):
-            ok, line = phase_link(ack, kvaser_link)
-            log(line)
-            if not ok:
-                # no RESULT line: switch_pending_judge reads the VOID line
-                log("phase %s not run: the Kvaser's link is not as the phase needs"
-                    % name)
-                return 0
-            un[name], _d = phase(name, hp, ack, log, gs)
+        un = run_phases(hp, gs, log)
     finally:
         gs.shutdown()
         hp.close()
-        if len(un) < 2:
+        if un is None:
             out.close()
+    if un is None:
+        return 0
     log("RESULT: unaccounted NOACK %d, ACK %d" % (un["NOACK"], un["ACK"]))
     out.close()
     return 0
+
+
+def run_phases(hp, gs, log, link=kvaser_link):
+    """NOACK then ACK. -> {phase: unaccounted}, or None when a phase was not
+    run (its Kvaser link not as it needs) or not judged (its PCAN reader
+    died): then a VOID line is logged and no RESULT line follows, which
+    switch_pending_judge reads as VOID."""
+    un = {}
+    for name, ack in (("NOACK", False), ("ACK", True)):
+        ok, line = phase_link(ack, link)
+        log(line)
+        if not ok:
+            log("phase %s not run: the Kvaser's link is not as the phase needs"
+                % name)
+            return None
+        u, _d = phase(name, hp, ack, log, gs)
+        if u is None:
+            log("phase %s not judged: its PCAN reader died" % name)
+            return None
+        un[name] = u
+    return un
 
 
 # --can-fail (script_can_fail.py): each edit must make --self-test fail
@@ -285,6 +383,12 @@ MUTANTS = [
      "        return True, \"not set\""),
     ("link: a failure not VOID", "        return False, link.link_void(e, t0, time.time())",
      "        return True, str(e)"),
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1
+    ("reader death: a dead reader's rows counted",
+     "    if pc.death.error:\n", "    if False:\n"),
+    ("reader death: the phases go on after it",
+     "        if u is None:\n            log(\"phase %s not judged: its PCAN reader died\" % name)\n"
+     "            return None\n", ""),
 ]
 
 

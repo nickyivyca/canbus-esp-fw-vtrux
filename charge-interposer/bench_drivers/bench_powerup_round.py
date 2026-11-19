@@ -52,6 +52,13 @@ discriminator): u <= 1 and t <= 1 independently; u + t <= 1 is dropped.
 0, t <= 1. Off by default on the Arduino baseline, and no suite line passes
 it (the suite's own test pins that).
 
+Since 2026-11-19 (the charge-interposer reviewer's PCAN ruling 1): the
+witness reads under reader_death.guard, so a recv that raises (python-can
+raises on most PCAN statuses) is kept with its text, and that boot is VOID
+with it, never judged on the rows read before; the exit code is then 1
+with a VOID line and no FAIL line, which the bench suite reads VOID. A FAIL
+on a boot whose witness lived still stands.
+
     py -3.14 bench_powerup_round.py --can-fail        # self-test vs MUTANTS
 """
 
@@ -69,6 +76,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
+
+import reader_death                                         # noqa: E402
 
 STATUS_IDS = (0x7F4, 0x7F5, 0x7F6, 0x7F7)
 ROUND_RE = re.compile(r"\bround=(\d)/4\b")
@@ -471,17 +480,21 @@ class Witness(object):
         self.bus = adapter_roles.pcanfd(500000, **kw)
         self.rows, self.lock = [], threading.Lock()
         self.stop_ev = threading.Event()
+        self.death = reader_death.Death("pcan witness")
         self.t = threading.Thread(target=self._run, daemon=True)
         self.t.start()
 
     def _run(self):
-        while not self.stop_ev.is_set():
-            m = self.bus.recv(timeout=0.05)
-            if m is not None:
-                with self.lock:
-                    self.rows.append((m.timestamp, m.arbitration_id,
-                                      bool(m.is_error_frame), bytes(m.data),
-                                      time.time()))
+        # a raise ends the thread with the error kept (reader_death)
+        reader_death.guard(self.death, self.stop_ev, self._step)
+
+    def _step(self):
+        m = self.bus.recv(timeout=0.05)
+        if m is not None:
+            with self.lock:
+                self.rows.append((m.timestamp, m.arbitration_id,
+                                  bool(m.is_error_frame), bytes(m.data),
+                                  time.time()))
 
     def take(self):
         with self.lock:
@@ -581,6 +594,10 @@ def run_boot(args, out_dir, n, mode):
                                    adapters, args.wican_state, len(pre))]
     for ln in parse_serial(ser)["lines"]:
         rec.append("  serial> " + ln)
+    if wit and wit.death.error:
+        # the witness died: VOID with its error, the rows never judged
+        # (the charge-interposer reviewer's PCAN ruling 1, 2026-11-19)
+        return reader_death.DIED, rec + [wit.death.void_line(tag)]
     if mode in ("ack", "noack"):
         # the quiet window is judged on the HOST clock at both ends
         ok, lines = score_boot(args, mode, rows, ser, end_t)
@@ -622,13 +639,21 @@ def run_bench(args):
                 print(ln)
             verdicts.append((mode, n, ok))
     print("\n== verdicts")
-    rc = 0
     for mode, n, ok in verdicts:
-        print("  %-18s %2d  %s" % (mode, n, {True: "PASS", False: "FAIL",
-                                             None: "recorded"}[ok]))
-        if ok is False:
-            rc = 1
-    return rc
+        print("  %-18s %2d  %s" % (mode, n, VERDICT_WORD[ok]))
+    return bench_rc(v for _m, _n, v in verdicts)
+
+
+VERDICT_WORD = {True: "PASS", False: "FAIL", None: "recorded",
+                reader_death.DIED: "VOID (the witness died)"}
+
+
+def bench_rc(oks):
+    """The exit code from the boots' verdicts: 1 if any FAILED or any
+    boot's witness died (reader_death.DIED: its VOID line and no FAIL line
+    make bench_suite's script_judge read the check VOID), else 0."""
+    oks = list(oks)
+    return 1 if any(o is False or o == reader_death.DIED for o in oks) else 0
 
 
 # --- self-test: no hardware -------------------------------------------------
@@ -966,9 +991,100 @@ def self_test():
           and "error -71" in ln,
           "link: an UP link under noack is caught, a VOID line with the kernel's lines")
 
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1: a witness
+    # whose recv raises mid-window makes the boot VOID with the error, never
+    # judged on the rows it read before. run_boot end to end, with the real
+    # Witness on a stand-in bus, the serial tap a stand-in, sleeps short.
+    for line in reader_death_checks():
+        check(*line)
+
     print("\nbench_powerup_round self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
+
+
+def reader_death_checks():
+    """-> [(ok, what)]: run_boot with the PCAN witness on a stand-in bus.
+    The bus gives three 0x7F4 attempts, then either raises a PCAN status
+    (the boot is VOID with the error, no FAIL line, and the case's exit
+    code VOID's) or goes quiet (the same three rows are judged: a FAIL, the
+    short row list a dead reader would have left)."""
+    import types
+    import adapter_roles
+    import run_scenario
+    import scratch_dir
+    real_time = time
+    out = []
+    serial = ["ESP-ROM:esp32s3-20210327",
+              "spec 2.3: vehicle port in normal mode for 61000 us at boot, "
+              "round 0 of 4 sent in 50025 us",
+              "  MODE veh=listen-only core wants listen-only | switches=1 "
+              "refused=0 suppressed=0 | round=0/4 in 50025us | boot=61000us"]
+
+    class Tap(object):
+        def __init__(self, port, baud, log):
+            self.log = log
+            open(log, "w").close()
+
+        def start(self):
+            pass
+
+        def reset_board(self):
+            with open(self.log, "a") as f:
+                f.write("RESET SENT\n" + "\n".join(serial) + "\n")
+
+        def stop(self):
+            pass
+
+    def frames():
+        return [types.SimpleNamespace(timestamp=1.0 + i * 0.000258,
+                                      arbitration_id=0x7F4, is_error_frame=False,
+                                      data=bytes(8)) for i in range(3)]
+
+    class QuietBus(reader_death.RaisingBus):
+        def recv(self, timeout=None):
+            if self.frames:
+                return self.frames.pop(0)
+            real_time.sleep(0.005)
+            return None
+
+    exc = RuntimeError("A PCAN status 0x40000 BUSPASSIVE")
+    saved = (adapter_roles.pcanfd, run_scenario.SerialTap, globals()["time"])
+    d = scratch_dir.make("powerup-reader-death")
+    try:
+        run_scenario.SerialTap = Tap
+        globals()["time"] = types.SimpleNamespace(
+            sleep=lambda s: real_time.sleep(0.05), time=real_time.time,
+            perf_counter=real_time.perf_counter)
+        args = types.SimpleNamespace(port="/dev/x2", wican_state="test")
+        for mode in ("noack", "ack"):
+            adapter_roles.pcanfd = lambda *a, **k: reader_death.RaisingBus(frames(), exc)
+            ok, lines = run_boot(args, d, 1, mode)
+            voids = [x for x in lines if x.startswith("VOID")]
+            out.append((ok == reader_death.DIED and len(voids) == 1
+                        and "VOID %s_01: the pcan witness reader died" % mode in voids[0]
+                        and "BUSPASSIVE" in voids[0]
+                        and not any(x.startswith("FAIL") for x in lines),
+                        "%s CAN-FAIL: a witness that raises mid-window makes "
+                        "the boot VOID with the error, no FAIL line: %s"
+                        % (mode, voids or lines[-1:])))
+            adapter_roles.pcanfd = lambda *a, **k: QuietBus(frames())
+            ok, lines = run_boot(args, d, 2, mode)
+            out.append((ok is False and any(x.startswith("FAIL") for x in lines),
+                        "%s: the same three rows from a witness that lived are "
+                        "judged, a FAIL (what a dead reader's rows were before)"
+                        % mode))
+        out.append((bench_rc([True, reader_death.DIED]) == 1
+                    and bench_rc([True, None]) == 0
+                    and bench_rc([False, True]) == 1,
+                    "the exit code: a dead witness's boot is not a pass (1, "
+                    "VOID by its line), recorded and PASS boots 0, a FAIL 1"))
+        out.append((VERDICT_WORD[reader_death.DIED].startswith("VOID"),
+                    "its verdict word is VOID"))
+    finally:
+        adapter_roles.pcanfd, run_scenario.SerialTap, globals()["time"] = saved
+        scratch_dir.remove(d)
+    return out
 
 
 def build_parser():
@@ -1064,6 +1180,15 @@ MUTANTS = [
      "    return int(gap / act) + 1, gap, act"),
     ("timing: the 16 judged on rows", "    if n_lead != ERROR_ACTIVE_ATTEMPTS:",
      "    if len(lead) != ERROR_ACTIVE_ATTEMPTS:"),
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1
+    ("reader death: the witness's recv unguarded",
+     "        reader_death.guard(self.death, self.stop_ev, self._step)",
+     "        while not self.stop_ev.is_set():\n            self._step()"),
+    ("reader death: a dead witness's rows judged",
+     "    if wit and wit.death.error:", "    if False:"),
+    ("reader death: a dead witness's boot exits 0",
+     "    return 1 if any(o is False or o == reader_death.DIED for o in oks) else 0",
+     "    return 1 if any(o is False for o in oks) else 0"),
 ]
 
 

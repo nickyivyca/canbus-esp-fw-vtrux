@@ -20,6 +20,12 @@ Since 2026-11-18 (shared/bench SPEC section 8's adapter roles): every
 adapter by its role, the PCAN as pcanfd (adapter_roles.pcanfd), so the
 --pcan-channel the bench suite passed from 2026-11-13 is gone and refused.
 
+Since 2026-11-19 (the charge-interposer reviewer's PCAN ruling 1): each
+adapter's reader runs under reader_death.guard, so a recv that raises
+(python-can raises on most PCAN statuses) is kept with its text; the run
+then prints a VOID line per dead reader instead of the counts, and exits 3,
+which recorded_judge reads VOID.
+
     python3.13 -B keepalive_probe.py --port /dev/...
     python3.13 -B keepalive_probe.py --self-test | --can-fail
 """
@@ -37,8 +43,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.dirname(HERE))
 import kvaser_link                                          # noqa: E402
+import reader_death                                         # noqa: E402
 
 KA = 0x18FF5AC0
+# (settle, send for, after, send every) in seconds
+TIMING = (2.0, 6.0, 3.0, 0.5)
 
 
 def run(a, link=kvaser_link, opener=None, out=print):
@@ -62,29 +71,45 @@ def run(a, link=kvaser_link, opener=None, out=print):
                 ln, _, buf = buf.partition(b"\n")
                 lines.append((time.perf_counter(), ln.decode("ascii", "replace").rstrip()))
 
+    deaths = {n: reader_death.Death(n) for n in ("kvaser", "pcan", "innomaker")}
+
     def drain(bus, name):
-        while not stop.is_set():
+        def step():
             m = bus.recv(timeout=0.05)
             if m is not None:
                 got.append((time.perf_counter(), name, m))
+        # a raise ends the thread with the error kept (reader_death)
+        reader_death.guard(deaths[name], stop, step)
     import can
     ths = [threading.Thread(target=tap, daemon=True)] + [
         threading.Thread(target=drain, args=(b, n), daemon=True)
         for b, n in ((kv, "kvaser"), (pc, "pcan"), (tx, "innomaker"))]
     for t in ths:
         t.start()
-    time.sleep(2.0)
+    settle_s, send_s, after_s, every_s = TIMING
+    time.sleep(settle_s)
     t0 = time.perf_counter()
-    out("t0 %.6f; sending 0x%X every 0.5 s for 6 s" % (t0, KA))
+    out("t0 %.6f; sending 0x%X every %.1f s for %.0f s" % (t0, KA, every_s, send_s))
     sent = 0
-    while time.perf_counter() - t0 < 6.0:
+    while time.perf_counter() - t0 < send_s:
         tx.send(can.Message(arbitration_id=KA, is_extended_id=True,
                             data=bytes([0xA5, 0, 0, 0, 0, 0, 0, 0])), timeout=0.2)
         sent += 1
-        time.sleep(0.5)
-    time.sleep(3.0)
+        time.sleep(every_s)
+    time.sleep(after_s)
     stop.set()
     time.sleep(0.3)
+    dead = [deaths[n] for n in ("kvaser", "pcan", "innomaker") if deaths[n].error]
+    if dead:
+        # a reader that died: the record is VOID with its error, not printed
+        # as what reached each segment (the charge-interposer reviewer's PCAN
+        # ruling 1, 2026-11-19)
+        for d in dead:
+            out(d.void_line())
+        for b in (tx, kv, pc):
+            b.shutdown()
+        ser.close()
+        return 3
     out("sent %d" % sent)
     cnt = collections.Counter()
     for h, name, m in got:
@@ -182,6 +207,52 @@ def self_test():
             check(False, "%s accepted (%s)" % (argv, why))
         except SystemExit:
             check(True, "%s refused: %s" % (argv, why))
+
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1: run() with
+    # stand-in adapters, the timings short; the PCAN raises a PCAN status
+    # mid-window, or lives
+    import types
+
+    class Ser(object):
+        def read(self, n):
+            time.sleep(0.01)
+            return b""
+
+        def close(self):
+            pass
+
+    class Quiet(reader_death.RaisingBus):
+        def recv(self, timeout=None):
+            if self.frames:
+                return self.frames.pop(0)
+            time.sleep(0.005)
+
+    def frame():
+        return types.SimpleNamespace(arbitration_id=0x7F4, is_extended_id=False,
+                                     is_rx=True, data=bytes(8))
+    global TIMING
+    saved_timing = TIMING
+    try:
+        TIMING = (0.05, 0.1, 0.05, 0.05)
+        for dies in (True, False):
+            pcan = (reader_death.RaisingBus([frame()], RuntimeError(
+                "A PCAN status 0x40000 BUSPASSIVE"), delay=0.03) if dies
+                    else Quiet([frame()]))
+            outl = []
+            rc = run(a, Link, lambda port, _p=pcan: (Ser(), Quiet([]), Quiet([]), _p),
+                     outl.append)
+            voids = [x for x in outl if x.startswith("VOID")]
+            if dies:
+                check(rc == 3 and len(voids) == 1 and "the pcan reader died" in voids[0]
+                      and "BUSPASSIVE" in voids[0]
+                      and not any(x.startswith("sent ") for x in outl),
+                      "CAN-FAIL: a PCAN reader that raises mid-window: rc 3, one VOID "
+                      "line with the error, no counts: rc %s %s" % (rc, voids))
+            else:
+                check(rc == 0 and not voids and any(x.startswith("sent ") for x in outl),
+                      "the same with the PCAN reader alive: rc 0, the counts printed")
+    finally:
+        TIMING = saved_timing
     print("\nkeepalive_probe self-test: %s" % ("all checks OK" if not fails
                                               else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -211,6 +282,14 @@ MUTANTS = [
      "    ap.add_argument(\"--pcan-channel\")\n    return ap.parse_args(argv)"),
     ("the port optional", "    ap.add_argument(\"--port\", required=\"--self-test\" not in argv",
      "    ap.add_argument(\"--port\", required=False and \"--self-test\" not in argv"),
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1
+    ("reader death: the readers unguarded",
+     "        reader_death.guard(deaths[name], stop, step)",
+     "        while not stop.is_set():\n            step()"),
+    ("reader death: a dead reader's counts printed",
+     "    if dead:\n        # a reader", "    if False:\n        # a reader"),
+    ("reader death: a dead reader exits 0",
+     "        ser.close()\n        return 3", "        ser.close()\n        return 0"),
 ]
 
 

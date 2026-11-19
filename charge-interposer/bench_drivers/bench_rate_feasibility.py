@@ -44,6 +44,13 @@ It transmits. The board is the only other node and acknowledges, so there
 is no unacknowledged-transmitter storm (spec 2.2).
 
     py -3.14 charge-interposer/bench_drivers/bench_rate_feasibility.py
+    python3.13 -B bench_rate_feasibility.py --self-test | --can-fail
+
+A READER THAT DIES IS VOID (the charge-interposer reviewer's PCAN ruling 1,
+2026-11-19): the drains and the witness kept no error, returning without a
+word, so a dead reader read as a quiet adapter or a short count. They run
+under reader_death.guard now, and a plan whose drain or witness died by
+its end is VOID with the error (plan_verdict), the run exiting 3.
 
 Output is written to bench_rate_feasibility_<date>.txt beside this script
 as well as to stdout, because the run that produced the 1,869 left no
@@ -63,6 +70,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adapter_roles               # noqa: E402  (every adapter by its bench role)
+import reader_death                # noqa: E402  (a reader that dies is VOID)
 
 import bench_pacer                                           # noqa: E402
 import can                                                    # noqa: E402
@@ -153,9 +161,16 @@ def open_witness():
     return adapter_roles.kvaser_canlib(BITRATE, receive_own_messages=False)
 
 
-def drain(bus, stop, counter):
+def drain(bus, stop, counter, death):
     """Mandatory for gs_usb -- an undrained transmitter runs out of echo
     slots and starts failing -- and harmless everywhere else.
+
+    A RECV THAT RAISES IS KEPT, NOT SWALLOWED (the charge-interposer
+    reviewer's PCAN ruling 1, 2026-11-19). This returned on any exception
+    without a word, so a dead drain read as a quiet adapter. It now runs
+    under reader_death.guard: the error is kept in death (a
+    reader_death.Death), and every plan on that adapter from then on is
+    VOID with it (plan_verdict).
 
     ON ITS OWN THREAD, ALWAYS, and that is load-bearing rather than
     tidiness. The generator-inhibit session measured this on this bench
@@ -167,13 +182,10 @@ def drain(bus, stop, counter):
     1.91 ms -- had this one cause, and sleep() granularity was a
     contributing factor that got the blame.
     """
-    while not stop.is_set():
-        try:
-            m = bus.recv(timeout=0.05)
-        except Exception:
-            return
-        if m is not None:
+    def step():
+        if bus.recv(timeout=0.05) is not None:
             counter[0] += 1
+    reader_death.guard(death, stop, step)
 
 
 class Witness(object):
@@ -230,32 +242,34 @@ class Witness(object):
         # (driver timestamp, sequence number or None), arrival order.
         self.stamps = []
         self._stop = threading.Event()
+        # a recv that raises is kept, not swallowed (2026-11-19): the plan
+        # is then VOID with it (plan_verdict)
+        self.death = reader_death.Death("witness")
         self._t = threading.Thread(target=self._run)
         self._t.daemon = True
 
     def _run(self):
-        while not self._stop.is_set():
-            try:
-                m = self.bus.recv(timeout=0.05)
-            except Exception:
-                return
-            if m is None:
-                continue
-            if getattr(m, "is_error_frame", False):
-                continue
-            if m.arbitration_id != self.want_id:
-                self.other += 1
-                continue
-            now = time.perf_counter()
-            if self.first is None:
-                self.first = now
-            self.last = now
-            self.count += 1
-            seq = None
-            d = m.data
-            if d is not None and len(d) >= 3:
-                seq = (d[0] << 16) | (d[1] << 8) | d[2]
-            self.stamps.append((m.timestamp, seq))
+        reader_death.guard(self.death, self._stop, self._step)
+
+    def _step(self):
+        m = self.bus.recv(timeout=0.05)
+        if m is None:
+            return
+        if getattr(m, "is_error_frame", False):
+            return
+        if m.arbitration_id != self.want_id:
+            self.other += 1
+            return
+        now = time.perf_counter()
+        if self.first is None:
+            self.first = now
+        self.last = now
+        self.count += 1
+        seq = None
+        d = m.data
+        if d is not None and len(d) >= 3:
+            seq = (d[0] << 16) | (d[1] << 8) | d[2]
+        self.stamps.append((m.timestamp, seq))
 
     def start(self):
         self._t.start()
@@ -450,7 +464,17 @@ def main():
                     help="artifact path; default is beside this script")
     ap.add_argument("--selftest-only", action="store_true",
                     help="run the no-hardware pacer check and stop")
+    ap.add_argument("--self-test", action="store_true",
+                    help="the readers' and verdict's checks, no hardware, no "
+                         "artifact (2026-11-19)")
+    ap.add_argument("--can-fail", action="store_true",
+                    help="run --self-test against each MUTANTS edit")
     args = ap.parse_args()
+    if args.self_test:
+        return self_test()
+    if args.can_fail:
+        import script_can_fail
+        return script_can_fail.run(__file__, MUTANTS)
 
     # with no --out, the default output goes where it went before the
     # move: SeaDrive's interposer-firmware/ folder, never this tree
@@ -490,6 +514,19 @@ def main():
         sys.stdout = tee.out
         tee.f.close()
         print("\nsaved verbatim to %s" % out)
+
+
+def plan_verdict(ok, reason, had_witness, void=None):
+    """One plan's verdict text. void, the VOID line of a drain or witness
+    that died by the plan's end (reader_death), wins: the plan's figures
+    then came from a reader that stopped, so neither ACHIEVED nor NOT
+    achieved (the charge-interposer reviewer's PCAN ruling 1, 2026-11-19).
+    Otherwise as before: unwitnessed is never achieved."""
+    if void:
+        return void
+    if not had_witness:
+        return "UNWITNESSED, queue-accept only -- " + reason
+    return ("ACHIEVED " if ok else "NOT achieved -- ") + reason
 
 
 def run(args, out):
@@ -535,14 +572,16 @@ def run(args, out):
          "vehicle target, burst 4 (comparison)"),
     ]
 
-    buses, stops, threads, rx = {}, {}, {}, {}
+    buses, stops, threads, rx, deaths = {}, {}, {}, {}, {}
     for name in sorted(set(p[0] for p in plans)):
         try:
             buses[name] = OPENERS[name]()
             rx[name] = [0]
             stops[name] = threading.Event()
+            deaths[name] = reader_death.Death(name)
             t = threading.Thread(target=drain,
-                                 args=(buses[name], stops[name], rx[name]))
+                                 args=(buses[name], stops[name], rx[name],
+                                       deaths[name]))
             t.daemon = True
             t.start()
             threads[name] = t
@@ -616,27 +655,33 @@ def run(args, out):
                 sv = o.sender_vs_wire()
                 if sv:
                     print("    %s" % sv)
-            results.append((name, why, o, w is not None))
+            # a drain or witness that died by now: this plan is VOID with it
+            dead = reader_death.first_dead([deaths.get(name),
+                                            w.death if w is not None else None])
+            results.append((name, why, o, w is not None,
+                            dead.void_line() if dead else None))
             print("%-10s %-38s %s"
                   % (name, why, o.line(require_witness=(w is not None))))
             if o.first_err:
                 print("    first send error: %s" % o.first_err)
 
         print("\nverdict:")
-        for name, why, o, had_witness in results:
+        voids = 0
+        for name, why, o, had_witness, void in results:
             ok, reason = o.verdict(require_witness=had_witness)
-            tag = "ACHIEVED " if ok else "NOT achieved -- "
-            if not had_witness:
-                tag = "UNWITNESSED, queue-accept only -- "
-                ok = False
-            print("  %-10s %-38s %s" % (name, why, tag + reason))
+            text = plan_verdict(ok, reason, had_witness, void)
+            voids += text.startswith("VOID")
+            print("  %-10s %-38s %s" % (name, why, text))
+        if voids:
+            print("VOID: %d plan(s) with a reader that died; their figures are "
+                  "not a measurement" % voids)
 
         print("\nA rate that is not achieved here cannot be achieved by the")
         print("arm either, and an arm that offers less than the spec says is")
         print("not the specified run however it is labelled. A rate that is")
         print("achieved on the mean but fails the steadiness check is also")
         print("not the specified run: entry 2 says OFFERED STEADILY.")
-        return 0
+        return 3 if voids else 0
     finally:
         for name in buses:
             stops[name].set()
@@ -652,6 +697,87 @@ def run(args, out):
                 witness_bus.shutdown()
             except Exception:
                 pass
+
+
+def self_test():
+    """No hardware: a drain and a witness whose recv raises keep the error
+    (they returned without a word before 2026-11-19), the frames before it
+    counted; a plan with a dead reader is VOID whatever its figures; run()
+    takes each plan's dead reader into its verdict and exits 3 on any."""
+    import inspect
+    import types
+    fails = []
+
+    def check(ok, what):
+        print("  %s  %s" % ("ok  " if ok else "FAIL", what))
+        if not ok:
+            fails.append(what)
+
+    def frame(can_id, seq):
+        return types.SimpleNamespace(arbitration_id=can_id, is_error_frame=False,
+                                     timestamp=1.0 + seq * 0.0005,
+                                     data=bytes([0, 0, seq]))
+    exc = RuntimeError("A PCAN status 0x40 QOVERRUN")
+    d, stop, n = reader_death.Death("pcan"), threading.Event(), [0]
+    t = threading.Thread(target=drain, args=(reader_death.RaisingBus(
+        [frame(1, 0), None, frame(1, 1)], exc), stop, n, d), daemon=True)
+    t.start()
+    t.join(2.0)
+    check(not t.is_alive() and n[0] == 2 and d.error == "RuntimeError: %s" % exc,
+          "drain: a recv that raises ends it with the error kept, the frames "
+          "before it counted (%d, %s)" % (n[0], d.error))
+    w = Witness(reader_death.RaisingBus([frame(TARGET_ID, 0), frame(0x100, 0),
+                                         frame(TARGET_ID, 1)], exc), TARGET_ID).start()
+    w._t.join(2.0)
+    check(w.death.error is not None and "QOVERRUN" in w.death.error
+          and w.count == 2 and w.other == 1,
+          "witness: a recv that raises is kept, the frames before it counted "
+          "(%d, %d other, %s)" % (w.count, w.other, w.death.error))
+    w.stop()
+    void = d.void_line()
+    check(plan_verdict(True, "2000 fps, steady", True, void) == void
+          and void.startswith("VOID"),
+          "a plan with a dead reader is VOID even when its figures read ACHIEVED")
+    check(plan_verdict(False, "1500 fps", True, void) == void,
+          "... and when they read NOT achieved")
+    check(plan_verdict(True, "2000 fps", True) == "ACHIEVED 2000 fps"
+          and plan_verdict(False, "1500 fps", True) == "NOT achieved -- 1500 fps"
+          and plan_verdict(True, "2000 fps", False).startswith("UNWITNESSED"),
+          "with no dead reader: ACHIEVED, NOT achieved, UNWITNESSED as before")
+    src = inspect.getsource(run)
+    check("reader_death.first_dead([deaths.get(name)," in src
+          and "w.death if w is not None else None])" in src,
+          "run(): each plan's verdict takes its adapter's drain and its "
+          "witness, if either died")
+    check("args=(buses[name], stops[name], rx[name],\n" in src
+          and "deaths[name]))" in src,
+          "run(): each drain runs with its adapter's Death")
+    check("return 3 if voids else 0" in src,
+          "run(): exits 3 when any plan was VOID")
+    print("\nbench_rate_feasibility self-test: %s"
+          % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
+    return 1 if fails else 0
+
+
+# --can-fail (script_can_fail.py): each edit must make --self-test fail
+MUTANTS = [
+    ("drain: the error swallowed again",
+     "    reader_death.guard(death, stop, step)",
+     "    try:\n        while not stop.is_set():\n            step()\n"
+     "    except Exception:\n        return"),
+    ("witness: the error swallowed again",
+     "        reader_death.guard(self.death, self._stop, self._step)",
+     "        try:\n            while not self._stop.is_set():\n                self._step()\n"
+     "        except Exception:\n            return"),
+    ("a dead reader's plan judged on its figures",
+     "    if void:\n        return void\n", ""),
+    ("run(): no dead reader taken",
+     "            dead = reader_death.first_dead([deaths.get(name),\n"
+     "                                            w.death if w is not None else None])",
+     "            dead = None"),
+    ("run(): exits 0 on a VOID plan",
+     "        return 3 if voids else 0", "        return 0"),
+]
 
 
 if __name__ == "__main__":

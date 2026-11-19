@@ -22,6 +22,12 @@ line (kvaser_link) makes a case NOT EXERCISED through evaluate(), its line
 (the kernel's USB/CAN lines included) in the reason; three more mutants
 (the line never read, a link VOID not read, the premise ignored by the
 verdict).
+
+The PCAN diag witness's premise (tester, 2026-11-19; the charge-interposer
+reviewer's PCAN ruling 1): a witness whose reader died makes the case NOT
+EXERCISED with its error (run_scenario.witness_outcome), where it was an
+8.2 FAIL; four more mutants (the old FAIL, the dead witness's rows scored,
+the premise dropped by evaluate, the premise ignored by the verdict).
 """
 
 import os
@@ -134,7 +140,64 @@ def test_kvaser_premise():
     assert R.kvaser_void("x VOID: kvaser linked") is None
 
 
-TESTS = [test_forced_order_premise, test_kvaser_premise]
+def test_witness_premise():
+    """The PCAN diag witness's reader died (the charge-interposer reviewer's
+    PCAN ruling 1, 2026-11-19): the case is NOT EXERCISED with its error,
+    never an 8.2 FAIL (it was "8.2: the witness failed", a FAIL); a live
+    witness is scored as before. DiagWitness keeps the error's type."""
+    import inspect
+    import types
+    from pathlib import Path
+    import adapter_roles
+    import diag_cadence
+    import scratch_dir
+    sys.path.insert(0, os.path.join(HERE, "bench_drivers"))
+    import reader_death
+    called = []
+
+    def score():
+        called.append(1)
+        return (True, "8.2: planted")
+    err = "RuntimeError: A PCAN status 0x40000 BUSPASSIVE"
+    assert R.witness_outcome(None, score) == (None, None) and not called
+    d82, void = R.witness_outcome(types.SimpleNamespace(error=err), score)
+    assert d82 is None and void and err in void and "not judged" in void, (d82, void)
+    assert not called, "a dead witness's rows were scored"
+    assert R.witness_outcome(types.SimpleNamespace(error=None), score) == (
+        (True, "8.2: planted"), None) and called
+    src = inspect.getsource(R.run_one)
+    assert "diag82, witness_void = witness_outcome(witness, score82)" in src
+    assert "witness_void=witness_void)" in src, "run_one does not pass it on"
+    assert "the witness failed" not in src, "run_one still FAILS 8.2 on it"
+    with scratch_dir.run("forced-order-witness") as d:
+        d = Path(d)
+        logs = [d / "v.log", d / "c.log", d / "i.log"]
+        for p in logs:
+            p.write_text("")
+        res = R.evaluate(R.BY_NAME["normal-full"], *logs, False, witness_void=void)
+        v, why = R.verdict_of(res)
+        assert v == "NOT EXERCISED" and err in why, (v, why)
+        assert not any(w.startswith("spec 8.2") for _ok, w in res["results"])
+        res = R.evaluate(R.BY_NAME["normal-full"], *logs, False)
+        assert R.verdict_of(res)[0] != "NOT EXERCISED", res["premises"]
+        # the old form, for contrast: an 8.2 FAIL line is a FAIL of the case
+        res = R.evaluate(R.BY_NAME["normal-full"], *logs, False,
+                         diag82=(False, "8.2: the witness failed: %s" % err))
+        assert R.verdict_of(res)[0] == "FAIL"
+        # DiagWitness on a stand-in bus that raises: the error with its type
+        saved = adapter_roles.pcanfd
+        try:
+            adapter_roles.pcanfd = lambda *a, **k: reader_death.RaisingBus(
+                [], RuntimeError("A PCAN status 0x40000 BUSPASSIVE"))
+            w = diag_cadence.DiagWitness(str(d / "w.txt")).start()
+            w._t.join(2.0)
+            w.stop()
+        finally:
+            adapter_roles.pcanfd = saved
+        assert w.error == err, w.error
+
+
+TESTS = [test_forced_order_premise, test_kvaser_premise, test_witness_premise]
 
 
 # ---- can-fail -------------------------------------------------------------
@@ -162,6 +225,25 @@ _ORIG_PREMISE = R._forced_order
 _ORIG_VERDICT = R.verdict_of
 _ORIG_SCEN = R.SCENARIOS
 _ORIG_KV = R.kvaser_void
+_ORIG_WO = R.witness_outcome
+_ORIG_EVAL = R.evaluate
+
+
+def _outcome_as_before(witness, score):
+    """witness_outcome as it was before 2026-11-19: a dead witness an 8.2 FAIL."""
+    if witness is None:
+        return None, None
+    if witness.error:
+        return (False, "8.2: the witness failed: %s" % witness.error), None
+    return score(), None
+
+
+def _outcome_scores_dead(witness, score):
+    """A dead witness's rows scored as well as voided."""
+    d82, void = _ORIG_WO(witness, score)
+    return (score() if witness is not None else d82), void
+
+
 MUTANTS = {
     "test_forced_order_premise": [
         ("_forced_order", lambda: _premise_always, "the premise always held"),
@@ -175,6 +257,15 @@ MUTANTS = {
                                  else None), "a link VOID not read"),
         ("verdict_of", lambda: _verdict_no_premises,
          "a Kvaser premise ignored by the verdict")],
+    "test_witness_premise": [
+        ("witness_outcome", lambda: _outcome_as_before,
+         "a dead witness an 8.2 FAIL, as before 2026-11-19"),
+        ("witness_outcome", lambda: _outcome_scores_dead,
+         "a dead witness's rows scored"),
+        ("evaluate", lambda: (lambda *a, **k: _ORIG_EVAL(*a, **dict(k, witness_void=None))),
+         "the witness premise dropped by evaluate"),
+        ("verdict_of", lambda: _verdict_no_premises,
+         "a witness premise ignored by the verdict")],
 }
 
 
@@ -206,6 +297,8 @@ def main():
                 R.verdict_of = _ORIG_VERDICT
                 R.SCENARIOS = _ORIG_SCEN
                 R.kvaser_void = _ORIG_KV
+                R.witness_outcome = _ORIG_WO
+                R.evaluate = _ORIG_EVAL
     print("\n%d of %d %s" % (n - bad, n, "mutants caught" if can_fail else "passed"))
     return 1 if bad else 0
 

@@ -55,6 +55,12 @@ normal: the charger segment back to normal after canfail -- a 500 kbit/s
 stream, every frame echoed, and the board's LOSS line showing no chg
 bus-off and no chg err added during it.
 
+A PCAN READER THAT DIES (the charge-interposer reviewer's PCAN ruling 1,
+2026-11-19): bench_usb_host.Rx keeps its recv's error, and run and normal
+then print one VOID line with it (pcan_void) and exit 3 before any boot is
+judged: run's ESP-down windows come from the PCAN's rows, so a dead
+reader's short list would read as no reset seen, or a window cut short.
+
     py -3.14 bench_mcp_reset.py --self-test
     py -3.14 bench_mcp_reset.py run --port COM3 --resets 5 --holds 3 --out X
     py -3.14 bench_mcp_reset.py canfail --out Y
@@ -424,6 +430,15 @@ def esptool(argv0, port, before, after, *args):
     return p.returncode, p.stdout + p.stderr
 
 
+def pcan_void(pc):
+    """The VOID line when the PCAN reader pc (bench_usb_host.Rx) died, else
+    None (the charge-interposer reviewer's PCAN ruling 1, 2026-11-19)."""
+    death = getattr(pc, "death", None)
+    if death is not None and death.error:
+        return death.void_line()
+    return None
+
+
 def run_bench(a):
     import bench_usb_host as U
     import run_scenario as R
@@ -523,6 +538,10 @@ def run_bench(a):
         for r in rows:
             fh.write("%.6f %.6f %X %d %s\n" % (r[0], r[1], r[2], int(r[3]),
                                                r[4].hex()))
+    void = pcan_void(pc)
+    if void:
+        print(void)
+        return 3
     print("baseline %.1f s: %d echoes of %d sends; echo-gap threshold %s; "
           "sender max lag %.1f ms; Innomaker error frames %d, other rx %d"
           % (BASELINE_S, sum(1 for t in echo_t if t_base0 <= t <= t_base1),
@@ -632,6 +651,10 @@ def run_normal(a):
     pc.t.join(2.0)
     pc.bus.shutdown()
     inno.shutdown()
+    void = pcan_void(pc)
+    if void:
+        print(void)
+        return 3
     sent = sum(1 for x in snd.log if x[2])
     v, lines = judge_normal(len(ech.rows), sent, before, after)
     for ln in lines:
@@ -819,6 +842,30 @@ def self_test():
         except ValueError:
             refused = True
         check(refused, "esptool argv %s is refused" % what)
+
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1: a PCAN
+    # reader that dies VOIDs run and normal before anything is judged
+    import inspect
+    import bench_usb_host as U
+    import reader_death
+    rx = U.Rx(reader_death.RaisingBus([], RuntimeError("A PCAN status 0x10 BUSOFF")),
+              "pcan")
+    rx.t.join(2.0)
+    v = pcan_void(rx)
+    check(v is not None and v.startswith("VOID: the pcan reader died")
+          and "BUSOFF" in v, "pcan_void: a dead PCAN reader -> its VOID line: %s" % v)
+    rx.close()
+
+    class Live(object):
+        death = reader_death.Death("pcan")
+    check(pcan_void(Live()) is None and pcan_void(object()) is None,
+          "pcan_void: a live reader -> None")
+    for fn, judge in ((run_bench, "boot_timeline("), (run_normal, "judge_normal(")):
+        src = inspect.getsource(fn)
+        at = src.find("void = pcan_void(pc)")
+        check(0 <= at < src.find(judge) and "return 3" in src[at:src.find(judge)],
+              "%s: a dead PCAN reader exits 3 (VOID) before %s judges"
+              % (fn.__name__, judge.rstrip("(")))
     print("\nbench_mcp_reset self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -859,6 +906,17 @@ MUTANTS = [
     ("esptool: a malformed argv taken",
      "        if not (isinstance(argv, list) and argv\n",
      "        if not (argv\n"),
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1
+    ("reader death: pcan_void never voids",
+     "    if death is not None and death.error:", "    if False:"),
+    ("reader death: run judges a dead reader's rows",
+     "                                               r[4].hex()))\n"
+     "    void = pcan_void(pc)\n    if void:\n        print(void)\n        return 3\n",
+     "                                               r[4].hex()))\n"),
+    ("reader death: normal judged with a dead reader",
+     "    inno.shutdown()\n    void = pcan_void(pc)\n    if void:\n        print(void)\n"
+     "        return 3\n",
+     "    inno.shutdown()\n"),
 ]
 
 

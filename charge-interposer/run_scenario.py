@@ -2285,19 +2285,16 @@ def run_one(sc, args, outdir):
         reset = board_reset_proof(
             diag_cadence_rows(tap.stamped_path), veh_log.read_text(
                 errors="replace"), tap.reset_host_t, veh_start)
-    diag82 = None
-    if witness is not None:
+    def score82():
         import diag_cadence
-        if witness.error:
-            diag82 = (False, "8.2: the witness failed: %s" % witness.error)
-        else:
-            diag82 = diag_cadence.score(
-                diag_cadence.read_witness(str(witness_path)),
-                diag_cadence.read_stamped(tap.stamped_path),
-                # a board reset is a power-up (diag_cadence.reset_round)
-                reset_host=(tap.reset_host_t
-                            if sc.board_reset_at_s is not None else None),
-                prechg_unjudged=prechg)
+        return diag_cadence.score(
+            diag_cadence.read_witness(str(witness_path)),
+            diag_cadence.read_stamped(tap.stamped_path),
+            # a board reset is a power-up (diag_cadence.reset_round)
+            reset_host=(tap.reset_host_t
+                        if sc.board_reset_at_s is not None else None),
+            prechg_unjudged=prechg)
+    diag82, witness_void = witness_outcome(witness, score82)
     if args.external_interposer or args.no_l1:
         # Said out loud (tester, 2026-10-07): rev 1 appended nothing here,
         # so a run with the flight core unchecked printed the same PASS as
@@ -2356,7 +2353,25 @@ def run_one(sc, args, outdir):
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
                     order=order, hold=hold, diag82=diag82, reset=reset,
                     acker_first=acker_first, stimulus=stimulus, vstim=vstim,
-                    hold_wire=hold_wire, wrows=wrows, prio=prio)
+                    hold_wire=hold_wire, wrows=wrows, prio=prio,
+                    witness_void=witness_void)
+
+
+def witness_outcome(witness, score):
+    """-> (diag82, witness_void) for the PCAN diag witness after a run:
+    (None, None) with no witness; (None, a premise text with its error)
+    when its reader died (DiagWitness.error), so the case is NOT EXERCISED
+    (bench_suite's scenario_judge: VOID), never an 8.2 FAIL (the
+    charge-interposer reviewer's PCAN ruling 1, 2026-11-19: a reader that
+    dies is not a product result; it was "8.2: the witness failed", a FAIL,
+    before); else (score(), None)."""
+    if witness is None:
+        return None, None
+    if witness.error:
+        return None, ("bench premise, the PCAN witness: its reader died (%s), "
+                      "so spec 8.2 and every check read from its rows are not "
+                      "judged" % witness.error)
+    return score(), None
 
 
 VEH_ROW = re.compile(
@@ -4016,7 +4031,7 @@ def _wsl_path(p):
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
              order=None, hold=None, diag82=None, reset=None, acker_first=None,
              stimulus=None, vstim=None, hold_wire=None, wrows=None,
-             prio=None):
+             prio=None, witness_void=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -4058,6 +4073,9 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
     kv = kvaser_void(veh)
     if kv:
         premises.append((False, "bench premise, the Kvaser: %s" % kv))
+    # the PCAN diag witness's reader died (witness_outcome, 2026-11-19)
+    if witness_void:
+        premises.append((False, witness_void))
     for kind, val in sc.expect:
         if kind == "forced_order":
             ok, why = _forced_order(order, val["first"], val["min_gap_s"])

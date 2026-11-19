@@ -31,6 +31,13 @@ suite's reset-check FAILs; it exited 0 either way before, so the check
 could not fail. The judging is judge(), with no hardware, so the
 self-test covers YES and each way to NO.
 
+Since 2026-11-19 (the charge-interposer reviewer's PCAN ruling 1): the PCAN
+reader runs under reader_death.guard, so a recv that raises (python-can
+raises on most PCAN statuses) is kept with its text; the uptime wait stops
+there, and the verdict is RESET PROVEN: NOT-PROVEN with that reason and a
+VOID line, exit 3 (VOID), never an unexplained NO judged on the frames read
+before.
+
     python3.13 -B reset_check.py --port /dev/... [--serial-log FILE] > reset_check.txt
     python3.13 -B reset_check.py --self-test | --can-fail
 """
@@ -47,8 +54,11 @@ sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
 import paths                                                # noqa: E402
+import reader_death                                         # noqa: E402
 
 KA = 0x18FF5AC0
+UPTIME_WAIT_S = 200.0     # for 0x7F7's uptime to reach 2 min
+WATCH_S = 25.0            # after the reset
 
 
 def default_serial_log():
@@ -73,20 +83,25 @@ def open_all(port, serial_log):
 def run(a, out=print):
     """-> rc: 0 when the reset is proven (RESET PROVEN: YES), 1 when not, so
     the bench suite's script_judge reads it FAIL (it exited 0 either way
-    until 2026-11-19)."""
+    until 2026-11-19), 3 when not judged (NOT-PROVEN: the PCAN reader
+    died), which script_judge reads VOID by its VOID line."""
     ok, lines = judge(*collect(a, out))
     for ln in lines:
         out(ln)
-    return 0 if ok else 1
+    return {True: 0, False: 1}.get(ok, 3)
 
 
-def judge(rh, rows, frames, pre_up, uptime_of):
+def judge(rh, rows, frames, pre_up, uptime_of, reader_void=None):
     """-> (ok, lines). No hardware: rh the reset's host time (None if it was
     never sent), rows the serial log's (host t, text), frames the PCAN's
     (host t, id, data) for 0x7F4-0x7F7, pre_up 0x7F7's uptime before the
     reset, uptime_of(data) 0x7F7's uptime in minutes. Proven: the reset
     sent, a boot line after it, uptime >= 2 min before it and 0 in the
-    first 0x7F7 after it, and the serial port not left NOT BACK."""
+    first 0x7F7 after it, and the serial port not left NOT BACK.
+    reader_void, the PCAN reader's VOID line when it died (reader_death):
+    then ok is None, RESET PROVEN: NOT-PROVEN with the reason, never judged
+    on the frames it read before (the charge-interposer reviewer's PCAN
+    ruling 1, 2026-11-19)."""
     from run_scenario import BOOT_LINE
     lines = []
     out = lines.append
@@ -110,6 +125,11 @@ def judge(rh, rows, frames, pre_up, uptime_of):
     out("first status frames after the reset (s, id): %s"
         % ", ".join("%.3f:%X" % r for r in rnd))
     gap = [x for _dt, x in marks if x.startswith("# SERIAL BACK")]
+    if reader_void:
+        out("RESET PROVEN: NOT-PROVEN (the PCAN reader died, so its 0x7F7 "
+            "frames end there: not judged)")
+        out(reader_void)
+        return None, lines
     ok = (rh is not None and bool(boots) and pre_up is not None and pre_up >= 2
           and bool(post) and post[0][1] == 0 and not any(
               "NOT BACK" in x for _d, x in marks))
@@ -145,12 +165,17 @@ def collect(a, out=print):
                 m = tx.recv(timeout=0.0)
             time.sleep(0.1)
 
+    death = reader_death.Death("pcan")
+
+    def pcan_step():
+        m = pc.recv(timeout=0.1)
+        if m is not None and 0x7F4 <= m.arbitration_id <= 0x7F7:
+            frames.append((time.perf_counter(), m.arbitration_id,
+                           bytes(m.data)))
+
     def pcan_rx():
-        while not stop.is_set():
-            m = pc.recv(timeout=0.1)
-            if m is not None and 0x7F4 <= m.arbitration_id <= 0x7F7:
-                frames.append((time.perf_counter(), m.arbitration_id,
-                               bytes(m.data)))
+        # a raise ends the thread with the error kept (reader_death)
+        reader_death.guard(death, stop, pcan_step)
 
     ths = [threading.Thread(target=f, daemon=True) for f in (keepalive, pcan_rx)]
     for t in ths:
@@ -162,14 +187,15 @@ def collect(a, out=print):
         return u[-1] if u else None
 
     t0 = time.perf_counter()
-    out("waiting for 0x7F7 uptime >= 2 min (up to 200 s)")
-    while time.perf_counter() - t0 < 200 and (uptime() or 0) < 2:
+    out("waiting for 0x7F7 uptime >= 2 min (up to %.0f s)" % UPTIME_WAIT_S)
+    while (time.perf_counter() - t0 < UPTIME_WAIT_S and (uptime() or 0) < 2
+           and death.error is None):
         time.sleep(1.0)
     pre_up = uptime()
     out("0x7F7 uptime before the reset: %s min (%.0f s waited)"
         % (pre_up, time.perf_counter() - t0))
     tap.reset_board()
-    time.sleep(25.0)
+    time.sleep(WATCH_S)
     stop.set()
     for t in ths:
         t.join(timeout=2.0)
@@ -183,7 +209,8 @@ def collect(a, out=print):
             h, _, text = ln.rstrip("\n").partition("\t")
             rows.append((float(h), text))
     return (tap.reset_host_t, rows, frames, pre_up,
-            lambda d: db.decode_message(0x7F7, d)["intp_uptime_min"])
+            lambda d: db.decode_message(0x7F7, d)["intp_uptime_min"],
+            death.void_line() if death.error else None)
 
 
 def self_test():
@@ -303,9 +330,112 @@ def self_test():
                   % (rc, want))
     finally:
         globals()["collect"] = saved_collect
+
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1: a PCAN
+    # reader that dies is NOT-PROVEN with the reason, never an unexplained NO
+    void = "VOID: the pcan reader died at host 1.000 (RuntimeError: A PCAN status 0x10 BUSOFF)"
+    ok, lines = judge(*(good + (void,)))
+    proven = [ln for ln in lines if ln.startswith("RESET PROVEN")]
+    check(ok is None and proven and proven[0].startswith("RESET PROVEN: NOT-PROVEN")
+          and void in lines and not any(ln.startswith("FAIL") for ln in lines),
+          "a dead PCAN reader: NOT-PROVEN with its VOID line, no FAIL line, "
+          "even on frames that would prove it: %s" % proven)
+    try:
+        globals()["collect"] = lambda _a, _out=print: good + (void,)
+        seen = []
+        rc = run(parse(["--port", "/dev/x2"]), out=seen.append)
+        check(rc == 3 and void in seen, "run() exits 3 (VOID) on it: %s" % rc)
+    finally:
+        globals()["collect"] = saved_collect
+    for ok, what in collect_checks():
+        check(ok, what)
     print("\nreset_check self-test: %s" % ("all checks OK" if not fails
                                           else "%d FAILED" % len(fails)))
     return 1 if fails else 0
+
+
+def collect_checks():
+    """-> [(ok, what)]: collect() with stand-in adapters and short waits.
+    The PCAN gives one 0x7F7, then raises a PCAN status (collect returns
+    its VOID line, and the uptime wait stops at it) or goes quiet (no VOID
+    line: the short frame list is judged, a NO)."""
+    import types
+    real = time
+    seven = types.SimpleNamespace(arbitration_id=0x7F7, data=bytes(8))
+
+    class Tap(object):
+        def __init__(self, path):
+            # always in the scratch folder, whatever path a mutant passes
+            path = os.path.join(d, "stamped.log")
+            self.stamped_path, self.reset_host_t = path, None
+            open(path, "w").close()
+
+        def reset_board(self):
+            self.reset_host_t = real.perf_counter()
+
+        def stop(self):
+            pass
+
+    class Tx(object):
+        def send(self, msg, timeout=None):
+            pass
+
+        def recv(self, timeout=None):
+            return None
+
+        def shutdown(self):
+            pass
+
+    class QuietBus(reader_death.RaisingBus):
+        def recv(self, timeout=None):
+            if self.frames:
+                return self.frames.pop(0)
+            real.sleep(0.01)
+
+    import scratch_dir
+    g = globals()
+    saved = (g["open_all"], g["time"], g["UPTIME_WAIT_S"], g["WATCH_S"])
+    d = scratch_dir.make("reset-check-collect")
+    out = []
+    try:
+        g.update(time=types.SimpleNamespace(sleep=lambda s: real.sleep(0.02),
+                                            perf_counter=real.perf_counter),
+                 UPTIME_WAIT_S=5.0, WATCH_S=0.05)
+        a = parse(["--port", "/dev/x2", "--serial-log", os.path.join(d, "s.log")])
+        for bus, dies in ((reader_death.RaisingBus(
+                [seven], RuntimeError("A PCAN status 0x10 BUSOFF")), True),
+                          (QuietBus([seven]), False)):
+            g["open_all"] = lambda port, log, _b=bus: (Tap(log), _b, Tx())
+            t0 = real.perf_counter()
+            got = collect(a, out=lambda s: None)
+            took = real.perf_counter() - t0
+            if dies:
+                out.append((len(got) == 6 and got[5] is not None
+                            and got[5].startswith("VOID: the pcan reader died")
+                            and "BUSOFF" in got[5] and took < 2.0,
+                            "CAN-FAIL collect: a PCAN reader that raises -> its "
+                            "VOID line, the wait cut short (%.1f s): %s" % (took, got[5:])))
+                out.append((judge(*got)[0] is None and run_rc(got) == 3,
+                            "... judged NOT-PROVEN, exit 3"))
+            else:
+                out.append((len(got) == 6 and got[5] is None
+                            and judge(*got)[0] is False,
+                            "collect: the same frame from a reader that lived "
+                            "-> no VOID line, judged (a NO)"))
+    finally:
+        g["open_all"], g["time"], g["UPTIME_WAIT_S"], g["WATCH_S"] = saved
+        scratch_dir.remove(d)
+    return out
+
+
+def run_rc(collected):
+    """run()'s exit code for collect()'s result (the self-test's)."""
+    saved = globals()["collect"]
+    try:
+        globals()["collect"] = lambda _a, _out=print: collected
+        return run(parse(["--port", "/dev/x2"]), out=lambda s: None)
+    finally:
+        globals()["collect"] = saved
 
 
 def parse(argv):
@@ -341,7 +471,7 @@ MUTANTS = [
      "                    default=\"COM3\", help=\"the X2's USB Serial/JTAG port\")"),
     # the verdict (2026-11-19)
     ("the exit code 0 whatever the verdict",
-     "    return 0 if ok else 1", "    return 0"),
+     "    return {True: 0, False: 1}.get(ok, 3)", "    return 0"),
     ("run's verdict not judge's",
      "    ok, lines = judge(*collect(a, out))",
      "    ok, lines = True, judge(*collect(a, out))[1]"),
@@ -362,6 +492,17 @@ MUTANTS = [
      "for h, i, d in frames if i == 0x7F7 and rh]"),
     ("the port NOT BACK ignored",
      "\"NOT BACK\" in x for _d, x in marks", "\"NOT BACK\" in x for _d, x in []"),
+    # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1
+    ("reader death: the PCAN's recv unguarded",
+     "        reader_death.guard(death, stop, pcan_step)",
+     "        while not stop.is_set():\n            pcan_step()"),
+    ("reader death: judged on a dead reader's frames",
+     "    if reader_void:\n", "    if False:\n"),
+    ("reader death: NOT-PROVEN exits 1",
+     "    return {True: 0, False: 1}.get(ok, 3)", "    return 0 if ok else 1"),
+    ("reader death: collect drops the VOID line",
+     "            death.void_line() if death.error else None)",
+     "            None)"),
 ]
 
 
