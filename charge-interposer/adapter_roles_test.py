@@ -442,7 +442,7 @@ OPENERS = [
     ("bench_drivers/bench_mcp_reset.py", "open_innomaker", "canchg"),
     ("bench_drivers/keepalive_probe.py", "open_all", "pcanfd"),
     ("bench_drivers/keepalive_probe.py", "open_all", "kvaser"),
-    ("bench_drivers/reset_check.py", "<module>", "pcanfd"),
+    ("bench_drivers/reset_check.py", "open_all", "pcanfd"),
 ]
 # how each role is asked for: the adapter_roles opener of that role, or
 # open_role / resolve with it named, or (kvaser) kvaser_link's opener

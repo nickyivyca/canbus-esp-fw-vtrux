@@ -257,6 +257,7 @@ SELF_TESTS = [
     "bench_usb_host", "bench_mcp_reset", "bench_hold12", "bench_topology",
     "bench_canbench_smoke", "keepalive_probe", "rx_proc", "klog_windows",
     "bench_boot_reset", "bench_boot_reset_fixture", "bench_coredump_readback",
+    "reset_check",
 ]
 # Bench drivers whose --can-fail runs their self-test against each of their
 # MUTANTS (script_can_fail.py), run locally (test_script_coverage).
@@ -275,6 +276,9 @@ CAN_FAILS = [
     # 2026-11-18, the reviewer's follow-on to tracker I step 2: spec 9's core
     # dump read off over USB (coredump-readback)
     "bench_coredump_readback",
+    # 2026-11-18, the reviewer's follow-on to the adapter roles: reset_check
+    # takes the X2's port from --port (it was COM3 in the code)
+    "reset_check",
 ]
 
 # bench_boot_reset (tracker I): chip resets per image, and the line the
@@ -1181,9 +1185,12 @@ def bench(settings):
         bpy("mcp-reset-canfail", "bench_mcp_reset.py",
             ["canfail", "--port", "{serial_port}", "--out", "{outdir}"]),
         # moved from reverse-it's runs/step4_nohands_20261014T1730/; the
-        # serial log now goes to the check's own folder
+        # serial log now goes to the check's own folder; the X2's port is
+        # the settings' as for every other driver (it was COM3 in the
+        # script until 2026-11-18)
         bpy("reset-check", "reset_check.py",
-            ["--serial-log", "{outdir}/reset_check.serial.log"]),
+            ["--port", "{serial_port}",
+             "--serial-log", "{outdir}/reset_check.serial.log"]),
         # spec 8.3 from port step 2a: no framework log line from the image
         # (ESP-IDF's esp_log, the Arduino core's log_x), its own lines
         # allowed; the truck's flight-silence is the stronger form (the
