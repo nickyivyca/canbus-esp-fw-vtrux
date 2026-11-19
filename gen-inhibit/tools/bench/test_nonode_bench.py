@@ -498,8 +498,7 @@ def echo_tests(m):
           got == "bus" and inno.calls == [(500000, {"drain": True})], inno.calls)
 
     g = FG.drained(FG.StallingGs(cap=256), kb=kb)
-    pl = m.Player(g, stim, None)
-    pl.start()
+    pl = m.player_start(g, stim, None, "nonode slice", KB=kb)
     time.sleep(0.4)
     t_stop = []
     real_stop = kb.drain_stop
@@ -527,8 +526,7 @@ def echo_tests(m):
           and t_close >= t_call, (last, t_call))
 
     g2 = FG.drained(FG.StallingGs(cap=256), kb=kb)
-    pl2 = m.Player(g2, stim, None)
-    pl2.start()
+    pl2 = m.player_start(g2, stim, None, "nonode back", KB=kb)
     time.sleep(0.3)
     t0 = time.perf_counter()
     e2 = m.back_stop(pl2, g2, KB=kb)
@@ -549,20 +547,61 @@ def echo_tests(m):
                 e = self.q.pop()
             threading.Timer(0.002, lambda: self.put(e)).start()
     g4 = FG.drained(LateEchoGs(cap=256), kb=kb)
-    pl4 = m.Player(g4, stim, None)
-    pl4.start()
+    pl4 = m.player_start(g4, stim, None, "nonode back", KB=kb)
     time.sleep(0.1)
     e4 = m.back_stop(pl4, g4, KB=kb)
     check("echo: echoes 2 ms behind their frames are all counted by back_stop (its settle before the stop)",
           e4.get("sent") == pl4.sent == e4.get("echoes") and pl4.sent > 0, e4)
 
     g3 = FG.drained(FG.StallingGs(cap=256, acked=lambda n: False), kb=kb)
-    pl3 = m.Player(g3, stim, None)
-    pl3.start()
+    pl3 = m.player_start(g3, stim, None, "nonode back", KB=kb)
     time.sleep(0.1)
     e3 = m.back_stop(pl3, g3, KB=kb)
     check("echo: with nothing ACKing, no echoes: recorded as fewer echoes than frames sent (not judged)",
           e3.get("echoes") == 0 and e3.get("sent") == pl3.sent > 0 and e3.get("echoes_equal_sent") is False, e3)
+
+    # LEFTOVER FRAMES (the gen-inhibit reviewer's Q1 (i), 2026-11-19): a leftover echo at the open must not make up
+    # for an unACKed frame (acked_<phase>, the unsafe side)
+    def run_slice(acked, leftover, snapshot=True):
+        g = FG.StallingGs(cap=256, acked=acked)
+        if leftover:
+            g.put(FG.Msg(0x6A9, b"\x01", is_rx=False))      # handed up by the device at the open
+        FG.drained(g, kb=kb)
+        if snapshot:
+            p = m.player_start(g, stim, None, "nonode slice", KB=kb)
+        else:                       # a Player started as before player_start, no snapshot taken
+            p = m.Player(g, stim, None)
+            p.start()
+        time.sleep(0.15)
+        return m.slice_close(p, g, KB=kb)[1], p
+    ok_back = {"sent": 400, "echoes": 400, "rx": 0, "errors": 0, "echoes_equal_sent": True}
+    del evs[:]
+    e5, pl5 = run_slice(lambda n: True, True)
+    a = base_arm()
+    a.update(driver_running=True, echoes_slice=e5, echoes_back=ok_back)
+    v5 = m.judge_arm(a)
+    bs = e5.get("before_send") or {}
+    check("echo: a leftover echo at the open -> counted before the slice's first frame (player_start), kind echo, "
+          "the echoes after it == frames sent, the arm not voided by it",
+          bs.get("echoes") == 1 and bs.get("kind") == ["echo"] and bs.get("what") == "nonode slice"
+          and e5.get("echoes") == pl5.sent > 0 and e5["drained"]["echoes"] == pl5.sent + 1
+          and "acked_slice" not in v5 and [x.get("event") for x in evs] == ["before_send", "echoes"], (e5, v5, evs))
+    e6, pl6 = run_slice(lambda n: n != 3, True)
+    a = base_arm()
+    a.update(driver_running=True, echoes_slice=e6, echoes_back=ok_back)
+    v6 = m.judge_arm(a)
+    check("echo: CAN-FAIL a leftover echo and one unACKed frame -> one echo short after the snapshot, the arm VOID "
+          "on acked_slice (the whole count would have matched)",
+          e6.get("echoes") == pl6.sent - 1 and e6["drained"]["echoes"] == pl6.sent
+          and v6.get("acked_slice", "").startswith("VOID: %d echoes for %d" % (pl6.sent - 1, pl6.sent))
+          and m.arm_verdict(v6)[0] == "VOID", (e6, v6.get("acked_slice")))
+    e7, _pl7 = run_slice(lambda n: True, True, snapshot=False)
+    a = base_arm()
+    a.update(driver_running=True, echoes_slice=e7, echoes_back=ok_back)
+    v7 = m.judge_arm(a)
+    check("echo: a Player started with no snapshot -> the drain's stop names it, the arm VOID on acked_slice",
+          "no before_send snapshot" in str(e7.get("error")) and v7.get("acked_slice", "").startswith("VOID")
+          and "no before_send snapshot" in v7["acked_slice"], (e7, v7.get("acked_slice")))
 
 
 def precondition_tests(m):
@@ -657,6 +696,14 @@ MUTANTS += [
     ("the back phase's drain stopped with no settle", "    time.sleep(ECHO_SETTLE_S)\n", ""),
     ("the back phase's drain not stopped", '    return KB.drain_stop(kv, pl.sent, "nonode back")\n',
      "    return {}\n"),
+    # leftover frames at the open (the gen-inhibit reviewer's Q1 (i), 2026-11-19)
+    ("player_start takes no snapshot", "    _kb(KB).drain_before_send(kv, what)\n", ""),
+    ("player_start takes the snapshot after the Player starts",
+     "    _kb(KB).drain_before_send(kv, what)\n    pl = Player(kv, stim, kf)\n    pl.start()\n",
+     "    pl = Player(kv, stim, kf)\n    pl.start()\n    _kb(KB).drain_before_send(kv, what)\n"),
+    ("player_start starts no Player", "    pl.start()\n    return pl\n", "    return pl\n"),
+    ("the slice's echoes judged only when fewer is dropped (any count passes)",
+     ' or e["echoes"] < e["sent"]:', ' or False:'),
 ]
 
 

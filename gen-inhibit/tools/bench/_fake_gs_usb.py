@@ -79,8 +79,9 @@ class StallingGs:
 
 def drained(bus, role="canmain", kb=None):
     """The pinned canbench's drain on `bus`, as bench_layer.open_bench(drain=True) starts it (its _start_drain,
-    reached through kvaser_bus.layer(), which loads canbench from the pin); bus.vtrux_role set as kvaser_bus's
-    open sets it. Returns the bus."""
+    reached through kvaser_bus.layer(), which loads canbench from the pin); bus.vtrux_role and bus.vtrux_opened_at
+    set as kvaser_bus's open sets them. A frame put() on the bus before this is one the device hands up at the
+    open (a leftover from its previous session). Returns the bus."""
     if kb is None:
         import importlib.util
         import os
@@ -90,4 +91,5 @@ def drained(bus, role="canmain", kb=None):
         spec.loader.exec_module(kb)
     bus.vtrux_role = role
     kb.layer()._start_drain(bus, role)
+    bus.vtrux_opened_at = time.perf_counter()
     return bus

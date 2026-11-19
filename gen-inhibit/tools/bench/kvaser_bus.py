@@ -147,6 +147,17 @@ and any error. canbench's stop reads nothing after it, so a sender stops the dra
 has had time to come back (canmain_burst_check and NONODE: DRAIN_LEAD_S before the 5 ms close). Each close
 records the drain's counts as the device closed it ("drain"). canmain_burst_check's replay and NONODE's
 Player open with it. The earlier thin drain here (echo_drain) is gone.
+LEFTOVER FRAMES AT THE OPEN (the gen-inhibit reviewer's Q1 (i), 2026-11-19). In the short bench check of
+63e90da0 (runs/benchcheck_63e90da_20261119T101544/) every replay's drain read one frame more than it sent:
+the first run of the take as an echo (502 echoes for 501 frames, a FAIL), the later ones as another frame;
+not yet known: whether the device hands up a frame left from its previous session at the open. A leftover echo
+would also hide one unACKed frame in NONODE, whose void item counts fewer echoes than frames. So a sender calls
+drain_before_send(bus, what) just before its first frame: it waits BEFORE_SEND_SETTLE_S from the open, takes
+the drain's counts as "before_send" (with the kinds that moved; canbench's drain keeps no frame ids, so the id
+is not told) and records them; drain_stop then judges only the counts after it, and records the snapshot and
+the drain's whole counts ("drained") beside them. A drain stopped with no snapshot taken is an "error" in its
+echoes event, so a sender that skips it is judged as a failed drain. When can-tools' drain reports the frames
+read before the first send itself, drain_before_send becomes a thin wrapper over it.
 
 THE PCAN, BY ROLE (the same ruling, 2026-11-18). PCAN-Basic numbers PCAN-USB channels
 PCAN_USBBUS1, 2, ... in the order it finds them, so channel PCAN_USBBUS1 is the first found.
@@ -578,6 +589,7 @@ def _innomaker_open(role, bitrate, kw, restore, drain, what):
         raise
     res = getattr(b, "bench_role", None)
     b.vtrux_backend, b.vtrux_role = "gs_usb", role
+    b.vtrux_opened_at = time.perf_counter()     # drain_before_send's settle runs from here
     record({"event": "open", "backend": "gs_usb", "role": role, "usb": res.role.usb if res else None,
             "bus": res.busnum if res else None, "address": res.devnum if res else None, "bitrate": bitrate,
             "found": (getattr(b, "bench_layer", None) or {}).get("found"),
@@ -668,11 +680,47 @@ class innomaker_held:
         return False
 
 
+BEFORE_SEND_SETTLE_S = 0.05    # drain_before_send: the drain reads this long from the open before the snapshot
+DRAIN_COUNTS = (("echoes", "echo"), ("rx", "rx"), ("errors", "error frame"))
+NO_ID = "not told: canbench's drain keeps counts only"
+
+
+def drain_before_send(bus, what, settle_s=BEFORE_SEND_SETTLE_S):
+    """The drain's counts just before a sender's first frame (the gen-inhibit reviewer's Q1 (i), 2026-11-19):
+    waits until settle_s after the open (bus.vtrux_opened_at; from now if the open left none), so what the device
+    hands up at the open has been read, then snapshots bus.bench_drain's counts onto bus.vtrux_before_send,
+    records a "before_send" event and returns it: echoes, rx, errors, settle_s, since_open_ms, kind (the counters
+    that moved: "echo", "rx", "error frame"; the leftover's kind), id (NO_ID: canbench's drain keeps no ids), and
+    "error" when the bus has no drain. drain_stop judges only what came after it (module docstring, "LEFTOVER
+    FRAMES AT THE OPEN")."""
+    ev = {"event": "before_send", "backend": "gs_usb", "role": getattr(bus, "vtrux_role", None), "what": what,
+          "settle_s": settle_s}
+    opened = getattr(bus, "vtrux_opened_at", None)
+    t_from = opened if opened is not None else time.perf_counter()
+    time.sleep(max(0.0, t_from + settle_s - time.perf_counter()))
+    st = getattr(bus, "bench_drain", None)
+    if not isinstance(st, dict):
+        ev["error"] = "no echo drain on this bus (not opened with drain=True)"
+    else:
+        snap = dict(st)
+        ev.update({k: snap.get(k) for k, _kind in DRAIN_COUNTS})
+        ev["kind"] = [kind for k, kind in DRAIN_COUNTS if snap.get(k)]
+        ev["id"] = NO_ID if ev["kind"] else None
+        if snap.get("error"):
+            ev["error"] = snap["error"]
+    ev["since_open_ms"] = None if opened is None else round((time.perf_counter() - opened) * 1000, 3)
+    bus.vtrux_before_send = ev
+    record(ev)
+    return ev
+
+
 def drain_stop(bus, sent, what):
     """Stops canbench's echo drain on `bus` (opened with drain=True: bus.stop_drain(), which waits out at most one
-    1 ms read and puts recv back), records an "echoes" event and returns it: sent, echoes, rx (other frames),
-    errors (error frames), stop_ms (how long the stop took), echoes_equal_sent, and "error" when the drain's read
-    failed or the bus has no drain (module docstring, "A SENDER ON A libusb ROLE READS ITS ECHOES")."""
+    1 ms read and puts recv back), records an "echoes" event and returns it: sent; echoes, rx (other frames) and
+    errors (error frames) counted AFTER drain_before_send's snapshot; before_send (that snapshot); drained (the
+    drain's whole counts); stop_ms (how long the stop took); echoes_equal_sent; and "error" when the drain's read
+    failed, the bus has no drain, or no snapshot was taken before the first send (module docstring, "A SENDER ON A
+    libusb ROLE READS ITS ECHOES" and "LEFTOVER FRAMES AT THE OPEN")."""
     ev = {"event": "echoes", "backend": "gs_usb", "role": getattr(bus, "vtrux_role", None), "what": what,
           "sent": sent}
     stop = getattr(bus, "stop_drain", None)
@@ -687,8 +735,18 @@ def drain_stop(bus, sent, what):
         ev.update(echoes=None, echoes_equal_sent=None, error="%s: %s" % (type(e).__name__, e))
         record(ev)
         return ev
-    ev.update(echoes=st.get("echoes"), rx=st.get("rx"), errors=st.get("errors"), stop_ms=st.get("stop_ms"),
-              echoes_equal_sent=(None if sent is None else st.get("echoes") == sent))
+    before = getattr(bus, "vtrux_before_send", None)
+    ev["drained"] = {k: st.get(k) for k, _kind in DRAIN_COUNTS}
+    ev["before_send"] = before
+    if before is None or before.get("error"):
+        ev.update(echoes=None, echoes_equal_sent=None, stop_ms=st.get("stop_ms"),
+                  error=("no before_send snapshot (drain_before_send) before the first send"
+                         if before is None else "the before_send snapshot failed: %s" % before["error"]))
+        record(ev)
+        return ev
+    after = {k: (None if st.get(k) is None else st.get(k) - (before.get(k) or 0)) for k, _kind in DRAIN_COUNTS}
+    ev.update(after, stop_ms=st.get("stop_ms"),
+              echoes_equal_sent=(None if sent is None else after["echoes"] == sent))
     if st.get("error"):
         ev["error"] = st["error"]
     record(ev)

@@ -914,6 +914,7 @@ def echo():
         with InnoFakes() as kb:
             kb.record = evs.append
             g = FG.drained(FG.StallingGs(cap=256), kb=kb)
+            bs = kb.drain_before_send(g, "test")
             got = send(g, 700)
             g.put(FG.Msg(0x123, b"\x01"))                       # another node's frame
             g.put(FG.Msg(0x20000004, b"", is_error_frame=True))  # an error frame
@@ -927,7 +928,7 @@ def echo():
         check("echo: the stop's time recorded (stop_ms, canbench's measure of the stop)",
               isinstance(ev.get("stop_ms"), (int, float)) and ev["stop_ms"] >= 0, ev)
         check("echo: the counts recorded once, as an echoes event naming the role and what",
-              evs == [ev] and ev.get("event") == "echoes" and ev.get("role") == "canmain" and ev.get("what") == "test"
+              evs == [bs, ev] and ev.get("event") == "echoes" and ev.get("role") == "canmain" and ev.get("what") == "test"
               and ev.get("backend") == "gs_usb", evs)
         check("echo: drain_stop stopped the reader (not running at the bus's shutdown)",
               g.drain_alive_at_shutdown is False, g.drain_alive_at_shutdown)
@@ -937,6 +938,7 @@ def echo():
         with InnoFakes() as kb:
             kb.record = lambda ev: None
             g = FG.drained(FG.StallingGs(cap=256, acked=lambda n: n % 10 != 0), kb=kb)
+            kb.drain_before_send(g, "test")
             got = send(g, 300)
             time.sleep(0.02)
             ev = kb.drain_stop(g, got, "test")
@@ -959,12 +961,99 @@ def echo():
         with InnoFakes() as kb:
             kb.record = lambda ev: None
             g = FG.drained(FG.StallingGs(cap=256), kb=kb)
+            kb.drain_before_send(g, "test")
             g.closed = True
             time.sleep(0.01)
             ev = kb.drain_stop(g, 0, "test")
         check("echo: a read that raises ends the drain and is recorded at its stop",
               "recv after shutdown" in str(ev.get("error")), ev)
     case("echo: recv raises", recv_raises)
+
+    def leftover():
+        """LEFTOVER FRAMES AT THE OPEN (the gen-inhibit reviewer's Q1 (i), 2026-11-19): what the device hands up
+        at the open is counted before the first send, with its kind, and only what follows is judged."""
+        for label, msg, kind, key in (("echo", FG.Msg(0x6A9, b"\x01", is_rx=False), "echo", "echoes"),
+                                      ("frame from another node", FG.Msg(0x6A9, b"\x01"), "rx", "rx"),
+                                      ("error frame", FG.Msg(0x20000004, b"", is_error_frame=True), "error frame",
+                                       "errors")):
+            evs = []
+            with InnoFakes() as kb:
+                kb.record = evs.append
+                g = FG.StallingGs(cap=256)
+                g.put(msg)                          # queued in the device before the open
+                FG.drained(g, kb=kb)
+                bs = kb.drain_before_send(g, "test")
+                got = send(g, 300)
+                time.sleep(0.02)
+                ev = kb.drain_stop(g, got, "test")
+            check("echo: a leftover %s at the open -> before_send counts it (%s 1), kind [%r], the id not told" % (
+                  label, key, kind), bs.get(key) == 1 and bs.get("kind") == [kind] and bs.get("id") == kb.NO_ID
+                  and "error" not in bs and bs.get("event") == "before_send" and bs.get("role") == "canmain", bs)
+            check("echo: a leftover %s -> the counts after it judged (echoes 300 == sent 300), the snapshot and "
+                  "the drain's whole counts recorded beside them" % label,
+                  (ev.get("echoes"), ev.get("echoes_equal_sent"), ev.get("before_send")) == (300, True, bs)
+                  and ev["drained"][key] == (301 if key == "echoes" else 1) and ev.get(key if key != "echoes" else
+                                                                                      "rx") == 0
+                  and "error" not in ev and evs == [bs, ev], (ev, evs))
+        with InnoFakes() as kb:
+            kb.record = lambda ev: None
+            g = FG.StallingGs(cap=256, acked=lambda n: n != 5)
+            g.put(FG.Msg(0x6A9, b"\x01", is_rx=False))
+            FG.drained(g, kb=kb)
+            kb.drain_before_send(g, "test")
+            got = send(g, 300)
+            time.sleep(0.02)
+            ev = kb.drain_stop(g, got, "test")
+        check("echo: CAN-FAIL a leftover echo and one frame unACKed -> 299 echoes for 300 sent, not equal (the whole "
+              "count, 300, would have hidden it)", (ev.get("echoes"), ev.get("echoes_equal_sent"),
+                                                    ev["drained"]["echoes"]) == (299, False, 300), ev)
+        evs = []
+        with InnoFakes() as kb:
+            kb.record = evs.append
+            g = FG.drained(FG.StallingGs(cap=256), kb=kb)
+            got = send(g, 20)
+            time.sleep(0.02)
+            ev = kb.drain_stop(g, got, "test")
+        check("echo: no before_send snapshot -> an error naming it, no counts judged, the whole counts kept",
+              "no before_send snapshot" in str(ev.get("error")) and ev.get("echoes") is None
+              and ev.get("echoes_equal_sent") is None and ev["drained"]["echoes"] == 20 and evs == [ev], ev)
+        with InnoFakes() as kb:
+            kb.record = lambda ev: None
+            g = FG.drained(FG.StallingGs(cap=256), kb=kb)
+            g.closed = True
+            time.sleep(0.01)
+            bs = kb.drain_before_send(g, "test", settle_s=0.0)
+            ev = kb.drain_stop(g, 0, "test")
+        check("echo: a snapshot of a drain that already failed -> its error kept, and drain_stop names the failed "
+              "snapshot, no counts judged", "recv after shutdown" in str(bs.get("error"))
+              and "before_send snapshot failed" in str(ev.get("error")) and ev.get("echoes") is None, (bs, ev))
+        with InnoFakes() as kb:
+            kb.record = lambda ev: None
+            bs = kb.drain_before_send(FG.StallingGs(cap=256), "test", settle_s=0.0)
+        check("echo: a snapshot of a bus with no drain -> an error naming it", "not opened with drain=True"
+              in str(bs.get("error")) and "echoes" not in bs, bs)
+
+    def settle():
+        with InnoFakes() as kb:
+            kb.record = lambda ev: None
+            g = FG.drained(FG.StallingGs(cap=256), kb=kb)
+            t0 = g.vtrux_opened_at
+            bs = kb.drain_before_send(g, "test")
+            t1 = time.perf_counter()
+            g.shutdown()
+            g2 = FG.drained(FG.StallingGs(cap=256), kb=kb)
+            g2.vtrux_opened_at -= 1.0           # opened a second ago
+            t2 = time.perf_counter()
+            bs2 = kb.drain_before_send(g2, "test")
+            t3 = time.perf_counter()
+            g2.shutdown()
+        check("echo: the snapshot waits BEFORE_SEND_SETTLE_S (%g s) from the open, and records it" %
+              kb.BEFORE_SEND_SETTLE_S, kb.BEFORE_SEND_SETTLE_S == 0.05 and t1 - t0 >= kb.BEFORE_SEND_SETTLE_S
+              and bs.get("settle_s") == kb.BEFORE_SEND_SETTLE_S and bs.get("since_open_ms") >= 50.0, (t1 - t0, bs))
+        check("echo: from the open, not from the call: an open a second old -> no wait",
+              t3 - t2 < 0.02 and bs2.get("since_open_ms") >= 1000.0, (t3 - t2, bs2))
+    case("echo: leftover", leftover)
+    case("echo: settle", settle)
 
     def opens():
         runs = gi_paths.scratch("kvaser-bus-echo-opens")
@@ -978,7 +1067,8 @@ def echo():
                 plain.shutdown()
                 b = kb.innomaker_bus("canmain", drain=True)
                 bus_drain = isinstance(getattr(b, "bench_drain", None), dict) and hasattr(b, "stop_drain")
-                time.sleep(0.005)
+                stamped = isinstance(getattr(b, "vtrux_opened_at", None), float)
+                kb.drain_before_send(b, "test bus")
                 ev = kb.drain_stop(b, 0, "test bus")
                 b.shutdown()
                 with kb.innomaker_held("canmain") as inno:
@@ -996,6 +1086,7 @@ def echo():
               not plain_drain and not h0_drain, (plain_drain, h0_drain))
         check("echo: innomaker_bus(drain=True) -> canbench's drain on the bus (bench_drain, stop_drain), stopped by "
               "drain_stop with no error", bus_drain and "error" not in ev and ev.get("echoes") == 0, ev)
+        check("echo: the open stamps its time on the bus (drain_before_send's settle runs from it)", stamped, stamped)
         check("echo: inno.open(drain=True) -> canbench's drain on the held bus, reading",
               held_drain and running_in, (held_drain, running_in))
         check("echo: innomaker_held's exit shuts a bus whose drain still runs: the drain stopped before the device "
@@ -2221,9 +2312,36 @@ MUTANTS = [
      '        b = _innomaker_open(self.role, bitrate, kw, False, False, "innomaker_held open")\n'),
     ("echo: drain_stop does not stop the drain", "        st = stop()\n", "        st = dict(bus.bench_drain)\n"),
     ("echo: echoes == sent not compared",
-     '              echoes_equal_sent=(None if sent is None else st.get("echoes") == sent))\n',
+     '              echoes_equal_sent=(None if sent is None else after["echoes"] == sent))\n',
      '              echoes_equal_sent=True)\n'),
-    ("echo: stop_ms not recorded", ' stop_ms=st.get("stop_ms"),\n', "\n"),
+    ("echo: stop_ms not recorded", '    ev.update(after, stop_ms=st.get("stop_ms"),\n', "    ev.update(after,\n"),
+    # leftover frames at the open (the gen-inhibit reviewer's Q1 (i), 2026-11-19)
+    ("echo: the snapshot not subtracted", 'st.get(k) - (before.get(k) or 0)) for k', "st.get(k)) for k"),
+    ("echo: no settle before the snapshot",
+     "    time.sleep(max(0.0, t_from + settle_s - time.perf_counter()))\n", ""),
+    ("echo: the settle from the call, not the open",
+     "    t_from = opened if opened is not None else time.perf_counter()\n", "    t_from = time.perf_counter()\n"),
+    ("echo: the settle is 10 ms", "BEFORE_SEND_SETTLE_S = 0.05 ", "BEFORE_SEND_SETTLE_S = 0.01 "),
+    ("echo: the leftover's kind not recorded",
+     '        ev["kind"] = [kind for k, kind in DRAIN_COUNTS if snap.get(k)]\n', '        ev["kind"] = []\n'),
+    ("echo: the id note missing", '        ev["id"] = NO_ID if ev["kind"] else None\n', '        ev["id"] = None\n'),
+    ("echo: a missing snapshot judged on the whole counts",
+     '    if before is None or before.get("error"):\n',
+     '    if before is not None and before.get("error"):\n'
+     '        pass\n    if before is None:\n        before = {}\n    if before.get("error"):\n'),
+    ("echo: a failed snapshot judged anyway",
+     '    if before is None or before.get("error"):\n', "    if before is None:\n"),
+    ("echo: the snapshot not kept on the bus", "    bus.vtrux_before_send = ev\n", ""),
+    ("echo: the snapshot not recorded", "    bus.vtrux_before_send = ev\n    record(ev)\n", "    bus.vtrux_before_send = ev\n"),
+    ("echo: the snapshot not in the echoes event", '    ev["before_send"] = before\n', ""),
+    ("echo: the whole counts not recorded",
+     '    ev["drained"] = {k: st.get(k) for k, _kind in DRAIN_COUNTS}\n', ""),
+    ("echo: a snapshot of a bus with no drain not reported",
+     '        ev["error"] = "no echo drain on this bus (not opened with drain=True)"\n    else:\n',
+     '        pass\n    else:\n'),
+    ("echo: a snapshot's drain error not kept", '        if snap.get("error"):\n', "        if False:\n"),
+    ("echo: the open time not stamped",
+     "    b.vtrux_opened_at = time.perf_counter()     # drain_before_send's settle runs from here\n", ""),
     ("echo: the counts not recorded", '        ev["error"] = st["error"]\n    record(ev)\n    return ev\n',
      '        ev["error"] = st["error"]\n    return ev\n'),
     ("echo: a read that raises not recorded", '    if st.get("error"):\n        ev["error"] = st["error"]\n', ""),

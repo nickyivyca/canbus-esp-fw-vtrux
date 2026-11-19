@@ -144,12 +144,13 @@ def real_kb(log):
     spec = importlib.util.spec_from_file_location("kvaser_bus_echo_cbc", os.path.join(HERE, "kvaser_bus.py"))
     kb = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(kb)
-    kb.record = lambda ev: log.append(("echoes", ev))
+    kb.record = lambda ev: log.append((ev.get("event"), ev))      # "before_send" and "echoes" events
     return kb
 
 
 def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late=0.0, wican_mode=0,
-          x2_held=True, kvaser_up=False, drop_echoes=False, slow_recv=0.0):
+          x2_held=True, kvaser_up=False, drop_echoes=False, slow_recv=0.0, leftover=None, drop_one=False,
+          no_snapshot=False):
     DEV0 = 5000.0
     EPOCH = time.time() - time.perf_counter()
 
@@ -197,7 +198,9 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
                         log.append(("gs stall", self.sent))
                         raise CanError("The message could not be sent")
                 put(time.perf_counter(), msg.arbitration_id, data=msg.data)
-                if not (drop_echoes and self.sent % 10 == 9):
+                if self.sent == 0:
+                    log.append(("gs first send", self.bitrate))
+                if not (drop_echoes and self.sent % 10 == 9) and not (drop_one and self.sent == 7):
                     with self.elock:
                         self.echoes.append(Message(msg.arbitration_id, data=msg.data, is_rx=False))
                 self.sent += 1
@@ -260,6 +263,7 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
     KB.fixes = lambda: {"kvaser": False, "gs_usb": True}
     kb = real_kb(log)
     KB.drain_stop = kb.drain_stop
+    KB.drain_before_send = (lambda bus, what: None) if no_snapshot else kb.drain_before_send
 
     def link_down():
         log.append(("kvaser down",))
@@ -282,8 +286,11 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
         def open(self, bitrate=500000, drain=False, **kw):
             g = Gs(bitrate)
             if drain:       # as open_bench(drain=True): the pinned canbench's reader on the bus
+                if leftover:    # a frame the device hands up at the open (its previous session's)
+                    g.echoes.append(Message(0x6A9, data=b"\x01", is_rx=(leftover == "rx")))
                 g.vtrux_role = self.role
                 kb.layer()._start_drain(g, self.role)
+                g.vtrux_opened_at = time.perf_counter()     # as kvaser_bus._innomaker_open sets it
             log.append(("held open", bitrate, bool(drain)))
             return g
 
@@ -378,6 +385,16 @@ def checks(C):
     check("control: the drain stopped (drain_stop, recorded once) before the replay's close, not by the close",
           shuts and shuts[0][1:] == (500000, False) and sum(1 for e in log if e[0] == "echoes") == 1
           and k.index("echoes") < k.index("gs shutdown"), (shuts, log[-8:]))
+    bsend = [e[1] for e in log if e[0] == "before_send"]
+    check("control: the drain's counts taken once, before the replay's first send and at least the settle after "
+          "its open, nothing yet (kind none, no id), kept with the replay, in the measure and printed",
+          len(bsend) == 1 and "gs first send" in k and k.index("before_send") < k.index("gs first send")
+          and (bsend[0].get("echoes"), bsend[0].get("rx"), bsend[0].get("errors"), bsend[0].get("kind"),
+               bsend[0].get("id")) == (0, 0, 0, [], None)
+          and bsend[0]["since_open_ms"] >= bsend[0]["settle_s"] * 1000 - 0.01
+          and ed.get("before_send") == bsend[0] and (rec.get("echoes") or {}).get("before_send") == bsend[0]
+          and ed.get("drained", {}).get("echoes") == rp.get("frames")
+          and "\nbefore the first send: 0 echoes, 0 rx, 0 error frames (kind none, id -), " in out, (bsend, ed))
     ws = rec.get("witness_states") or []
     check("control: the PCAN's error-passive state raised from recv after the probe is recorded, and the witness "
           "read on (the bursts above were witnessed)", len(ws) == 1 and "error passive" in ws[0][1] and ws[0][0] > 0.020,
@@ -389,6 +406,33 @@ def checks(C):
     check("a drain whose stop takes ~18 ms (each empty read 20 ms): FAIL by its verdict naming the stop past its "
           "lead, exit 1", rc == 1 and "echo drain's stop took" in str(rec.get("verdict")) and "verdict: FAIL" in out,
           (rc, rec.get("verdict")))
+
+    # LEFTOVER FRAMES (the gen-inhibit reviewer's Q1 (i), 2026-11-19): a frame the device hands up at the open
+    for kind in ("echo", "rx"):
+        rc, rec, log, out = run(C, [], leftover=kind)
+        ed = (rec.get("replay") or {}).get("echo_drain") or {}
+        bs = ed.get("before_send") or {}
+        n = (rec.get("replay") or {}).get("frames")
+        check("a leftover %s at the open: PASS, exit 0; counted before the first send with its kind (the id not "
+              "told: canbench's drain keeps counts), the echoes judged after it, the drain's whole count kept" % kind,
+              rc == 0 and rec.get("verdict") == "PASS" and bs.get("kind") == [kind]
+              and bs.get("echoes" if kind == "echo" else "rx") == 1 and "counts only" in str(bs.get("id"))
+              and ed.get("echoes") == n
+              and (ed.get("drained") or {}).get("echoes") == n + (1 if kind == "echo" else 0)
+              and "(kind %s, id not told" % kind in out, (rc, rec.get("verdict"), ed))
+    rc, rec, log, out = run(C, [], leftover="echo", drop_one=True)
+    n = (rec.get("replay") or {}).get("frames")
+    check("CAN-FAIL: a leftover echo and one frame giving no echo: FAIL by its verdict naming one echo short "
+          "(the whole count, %s, would have matched), exit 1" % n,
+          rc == 1 and n and "replay: %d echoes for %d frames sent" % (n - 1, n) in str(rec.get("verdict"))
+          and ((rec.get("replay") or {}).get("echo_drain") or {}).get("drained", {}).get("echoes") == n,
+          (rc, rec.get("verdict")))
+    rc, rec, log, out = run(C, [], drop_one=True)
+    check("one frame giving no echo, no leftover: FAIL naming one echo short, exit 1",
+          rc == 1 and "echoes for" in str(rec.get("verdict")), (rc, rec.get("verdict")))
+    rc, rec, log, out = run(C, [], no_snapshot=True)
+    check("no before_send snapshot taken: FAIL by its verdict naming the missing snapshot, exit 1",
+          rc == 1 and "no before_send snapshot" in str(rec.get("verdict")), (rc, rec.get("verdict")))
 
     for label, argv, kw, want in (
             ("--hold-extra-ms 20 (can-fail)", ["--hold-extra-ms", "20"], {}, "over"),
@@ -431,11 +475,23 @@ MUTANTS_ECHO = [
     ("canmain_burst_check.py", "the drain's stop time not judged",
      '    if echo.get("stop_ms") is not None and echo["stop_ms"] > DRAIN_LEAD_S * 1000:\n', "    if False:\n"),
     ("canmain_burst_check.py", "the drain's stop time not kept in the measure",
-     '"stop_ms": echo.get("stop_ms"), "breaches": []}', '"breaches": []}'),
+     '"echoes": echo.get("echoes"), "stop_ms": echo.get("stop_ms"),', '"echoes": echo.get("echoes"),'),
     ("canmain_burst_check.py", "the echo count not checked",
      '    elif echo.get("echoes") != echo.get("sent"):\n', "    elif False:\n"),
     ("canmain_burst_check.py", "the echo measure left out of the verdict",
      '([out["echoes"]] if "echoes" in out else [])', "[]"),
+    # leftover frames at the open (the gen-inhibit reviewer's Q1 (i), 2026-11-19)
+    ("canmain_burst_check.py", "no before_send snapshot before the replay's first send",
+     '        KB.drain_before_send(b, "canmain_burst_check replay")', "        pass"),
+    ("canmain_burst_check.py", "the snapshot taken after the replay's sends",
+     '        KB.drain_before_send(b, "canmain_burst_check replay")     # what the open handed up, apart (LEFTOVER '
+     'FRAMES)\n        t0 = time.perf_counter()\n',
+     "        t0 = time.perf_counter()\n"
+     '        threading.Timer(0.05, KB.drain_before_send, (b, "canmain_burst_check replay")).start()\n'),
+    ("canmain_burst_check.py", "the snapshot not kept in the measure",
+     '         "before_send": echo.get("before_send"), ', "         "),
+    ("canmain_burst_check.py", "the snapshot not printed",
+     '        print("before the first send: ', '        0 and print("before the first send: '),
     # the witness reads on past a bus state (2026-11-19)
     ("canmain_burst_check.py", "the witness stops at a bus state raised from recv",
      "                time.sleep(0.001)\n                continue\n            if m is None:",

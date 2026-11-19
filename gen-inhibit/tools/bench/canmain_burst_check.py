@@ -34,6 +34,11 @@ So only canmain and the PCAN can ACK on CAN1.
   stop_ms. echo_measure checks one echo per frame sent (the PCAN ACKs each), and that the stop took
   at most DRAIN_LEAD_S, so the close is not late for it; another count, a stop past the lead, or a
   drain error, is a breach.
+  LEFTOVER FRAMES (the gen-inhibit reviewer's Q1 (i), 2026-11-19): every replay of the short bench
+  check of 63e90da0 drained one frame more than it sent, the first run's as an echo (a FAIL). So
+  kvaser_bus.drain_before_send takes the drain's counts just before the first frame (settled
+  BEFORE_SEND_SETTLE_S from the open) as before_send, with their kind, and the echoes judged are those
+  after it; the snapshot and the drain's whole counts are recorded with the replay and printed.
 (a) BURST LENGTH, at 250 kbit: for each --bursts-ms (1, 5, 20: every length B9's and B10's
   schedules use), --repeats times, --gap-s apart, wrong_bitrate_errors.burst (open canmain, one
   send of its SOURCE_ID, hold, close). burst_measure on its window: at least one error frame; the
@@ -132,9 +137,11 @@ def replay_and_close(inno, pc, a, can, KB):
     b = inno.open(bitrate=REPLAY_BITRATE, drain=True)
     echo = None
     period = a.replay_period_ms / 1000.0
-    n, t0 = 0, time.perf_counter()
+    n = 0
     last_send = None
     try:
+        KB.drain_before_send(b, "canmain_burst_check replay")     # what the open handed up, apart (LEFTOVER FRAMES)
+        t0 = time.perf_counter()
         while True:
             b.send(can.Message(arbitration_id=REPLAY_ID, is_extended_id=False, data=n.to_bytes(4, "big")),
                    timeout=0.05)
@@ -173,9 +180,11 @@ def replay_and_close(inno, pc, a, can, KB):
 
 def echo_measure(echo):
     """The replay's echoes against its frames: every frame the PCAN ACKed completes, so each gives one echo.
-    {"sent", "echoes", "stop_ms", "breaches"}; fewer or more echoes than frames (or a drain error) is a breach,
-    and so is a drain stop longer than DRAIN_LEAD_S (the close would be late for it)."""
-    m = {"sent": echo.get("sent"), "echoes": echo.get("echoes"), "stop_ms": echo.get("stop_ms"), "breaches": []}
+    {"sent", "echoes", "stop_ms", "before_send", "drained", "breaches"}; echoes are those after the before_send
+    snapshot (kvaser_bus.drain_stop); fewer or more echoes than frames (or a drain error, a missing snapshot among
+    them) is a breach, and so is a drain stop longer than DRAIN_LEAD_S (the close would be late for it)."""
+    m = {"sent": echo.get("sent"), "echoes": echo.get("echoes"), "stop_ms": echo.get("stop_ms"),
+         "before_send": echo.get("before_send"), "drained": echo.get("drained"), "breaches": []}
     if echo.get("error"):
         m["breaches"].append("replay: the echo drain failed: %s" % echo["error"])
     elif echo.get("echoes") != echo.get("sent"):
@@ -293,6 +302,10 @@ def main(argv=None):
         e = rec.get("echoes") or {}
         print("echoes: %s for %s frames sent, drain stopped in %s ms" % (e.get("echoes"), e.get("sent"),
                                                                        e.get("stop_ms")))
+        bs = e.get("before_send") or {}
+        print("before the first send: %s echoes, %s rx, %s error frames (kind %s, id %s), %s ms after the open"
+              % (bs.get("echoes"), bs.get("rx"), bs.get("errors"), ", ".join(bs.get("kind") or []) or "none",
+                 bs.get("id") or "-", bs.get("since_open_ms")))
         for m in rec["bursts"]:
             print("burst %g ms (held %g): %d error frames, span %s ms, last %s ms after the close"
                   % (m["asked_ms"], m["held_ms"], m["n"], m["span_ms"], m["last_after_close_ms"]))
