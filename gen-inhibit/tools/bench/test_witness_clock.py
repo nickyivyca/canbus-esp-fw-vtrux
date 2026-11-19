@@ -70,8 +70,8 @@ MUTANTS = [
     ("x2_jam_cases.py", "nothing heard reads as receipt time",
      "note = WC.RECEIPT if lags else WC.NONE", "note = WC.RECEIPT"),
     ("x2_jammer.py", "times() does not refuse receipt time",
-     "        ts, note = self.recorded()\n        WC.require(note)\n",
-     "        ts, note = self.recorded()\n"),
+     "            return ts, host_note(host_bound)\n        WC.require(note)\n",
+     "            return ts, host_note(host_bound)\n"),
     ("x2_jammer.py", "run_guarded does not void",
      "        WC.void(rec, e.note)\n        print(rec[\"verdict\"])\n", "        pass\n"),
     ("x2_jammer.py", "the witness takes any offset as hardware time",
@@ -86,6 +86,20 @@ MUTANTS = [
      '        if sc is not None:\n            return sc\n', '        if False:\n            return sc\n'),
     ("x2_jammer.py", "SocketCAN stamps taken as hardware",
      '        if WC.socketcan(getattr(self, "bus", None)):', '        if False:'),
+    # ruling (B), 2026-11-18: host time per sub on the SocketCAN Kvaser
+    ("x2_jammer.py", "host time accepted whatever the bound",
+     "            if host_bound is None or host_bound < HOST_FACTOR * HOST_STAMP_ERROR_S:\n",
+     "            if host_bound is None:\n"),
+    ("x2_jammer.py", "the factor 1, not 10", "HOST_FACTOR = 10\n", "HOST_FACTOR = 1\n"),
+    ("x2_jammer.py", "the half-interval not a bound", '    if getattr(a, "sub", None) in ("pulses", "can2-check"):\n',
+     '    if getattr(a, "sub", None) in ():\n'),
+    ("x2_jammer.py", "the closing edge 0.5 s", "CLOSING_EDGE_S = 0.05 ", "CLOSING_EDGE_S = 0.5 "),
+    ("x2_jammer.py", "pulses' call passes no bound",
+     "ts, clock = wit.times(timing=True, host_bound=host_bound_s(a))   # the PULSES",
+     "ts, clock = wit.times(timing=True)   # the PULSES"),
+    ("x2_jammer.py", "the SocketCAN path keeps the hardware lag check",
+     "            return ts, host_note(host_bound)\n",
+     "            require_timing_lag(self.lag()) if timing else None\n            return ts, host_note(host_bound)\n"),
     # A2 (a), 2026-11-11: the PCAN's own stamps
     ("witness_clock.py", "stamps on the epoch clock are not VOID",
      "    if abs(epoch_lag) < EPOCH_LAG_S:\n", "    if False:\n"),
@@ -546,10 +560,41 @@ def checks(work):
     add("x2_jam_cases witness on SocketCAN, a 1 ms lag -> clocked() raises ReceiptClock with the SocketCAN note",
         lambda: (lambda e: (e is not None and e.note.startswith(WC.SOCKETCAN), e))(
             raises(WC.ReceiptClock, bare(XC.Witness, frames=[], errs=xc_errs(3, False), bus=SOCK).clocked)))
-    add("x2_jammer witness on SocketCAN, a 1 ms lag -> times() raises ReceiptClock with the SocketCAN note",
-        lambda: (lambda e: (e is not None and e.note == WC.SOCKETCAN, e))(
+    add("x2_jammer witness on SocketCAN with no sub bound -> times() raises ReceiptClock with the SocketCAN note",
+        lambda: (lambda e: (e is not None and e.note.startswith(WC.SOCKETCAN), e))(
             raises(WC.ReceiptClock, (lambda w: (setattr(w, "bus", SOCK), w)[1])(
                 xj_closed(XJ, xc_errs(2, False))).times)))
+    # ruling (B), 2026-11-18: host time accepted per sub, when its smallest bound is >= 10 x ~1 ms
+    def xj_sock():
+        return (lambda w: (setattr(w, "bus", SOCK), w)[1])(xj_closed(XJ, xc_errs(2, False)))
+    add("x2_jammer witness on SocketCAN, a sub bound of 50 ms -> host receipt times, the note saying so",
+        lambda: (lambda r: (r[0] == [x[1] for x in xc_errs(2, False)] and r[1] == XJ.host_note(0.05)
+                            and r[1].startswith(WC.SOCKETCAN) and "ruling (B)" in r[1], r))(
+            xj_sock().times(host_bound=0.05)))
+    add("x2_jammer witness on SocketCAN, a bound of exactly 10 x the host stamp's error -> accepted",
+        lambda: (xj_sock().times(host_bound=0.010)[1] == XJ.host_note(0.010), None))
+    add("x2_jammer witness on SocketCAN, a bound of 9 ms (under 10 x 1 ms) -> ReceiptClock naming it",
+        lambda: (lambda e: (e is not None and "under 10 x" in e.note and "session" in e.note, e and e.note))(
+            raises(WC.ReceiptClock, lambda: xj_sock().times(host_bound=0.009))))
+    def xj_sock_leaf():
+        # error frames as kvaser_usb gives them: their stamps on the Leaf's own clock (~1.8e9 s off)
+        errs = [(hw - 1.795e9, rx) for hw, rx in xc_errs(2, False)]
+        return (lambda w: (setattr(w, "bus", SOCK), w)[1])(xj_closed(XJ, errs))
+
+    def safe(fn):
+        try:
+            return fn()
+        except Exception as e:      # noqa: BLE001  a FAIL, not a crash
+            return e
+    add("x2_jammer witness on SocketCAN, timing=True: the hardware lag check does not apply (Leaf-clock stamps)",
+        lambda: (lambda r: (isinstance(r, tuple) and r[1] == XJ.host_note(0.05), r))(
+            safe(lambda: xj_sock_leaf().times(timing=True, host_bound=0.05))))
+    NS = types.SimpleNamespace
+    add("host_bound_s: the closing edge (50 ms) for every sub; pulses and can2-check also half their interval",
+        lambda: (lambda b: (b == [0.05, 0.005, 0.015, 0.05, 0.05, 0.05], b))(
+            [XJ.host_bound_s(NS(sub="pulses", interval_ms=1000)), XJ.host_bound_s(NS(sub="pulses", interval_ms=10)),
+             XJ.host_bound_s(NS(sub="can2-check", interval_ms=30)), XJ.host_bound_s(NS(sub="timeout", interval_ms=10)),
+             XJ.host_bound_s(NS(sub="noduration", interval_ms=10)), XJ.host_bound_s(NS(sub="boot-silence", interval_ms=10))]))
 
     # interlock_bench: run_case
     def ib_receipt():
@@ -737,6 +782,12 @@ def checks(work):
         lambda: (len(recorded_calls(XC.__file__)) == 1, recorded_calls(XC.__file__)))
     add("scan: x2_jammer calls recorded() only inside times()",
         lambda: (recorded_calls(XJ.__file__) == [], recorded_calls(XJ.__file__)))
+
+    def times_calls():
+        src = open(XJ.__file__, encoding="utf-8").read()
+        return [ln for ln in src.splitlines() if "wit.times(" in ln and not ln.lstrip().startswith("#")]
+    add("scan: every single-check sub's wit.times() passes its host bound (ruling (B), 2026-11-18)",
+        lambda: (lambda c: (len(c) == 5 and all("host_bound=host_bound_s(a)" in ln for ln in c), c))(times_calls()))
     return out
 
 

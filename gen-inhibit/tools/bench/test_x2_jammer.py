@@ -481,7 +481,7 @@ class PulseWit:
         self.con = con
         self.asked = []
 
-    def times(self, timing=False):
+    def times(self, timing=False, host_bound=None):
         # one error frame per PULSE line: the command's and the closing pulse's (2026-11-13)
         self.asked.append(timing)
         return ([t + 0.002 for t, _x, p in self.con.lines if p and p["kind"] == "PULSE"],
@@ -496,7 +496,7 @@ class DeafAtTheEnd:
         self.t_open = getattr(inner, "t_open", 0.0)
         self.asked = []
 
-    def times(self, timing=False):
+    def times(self, timing=False, host_bound=None):
         ts, note = self.inner.times(timing)
         return sorted(ts)[:-1], note
 
@@ -561,7 +561,7 @@ class TrainWit:
         self.t_open = time.time() - 100.0
         self.asked = []
 
-    def times(self, timing=False):
+    def times(self, timing=False, host_bound=None):
         self.asked.append(timing)
         t0 = self.con.lines[0][0]
         ts = [t0 + 0.005 * k for k in range(int(self.last / 0.005) + 1)] + [t0 + e for e in self.extra]
@@ -655,7 +655,7 @@ def fake_noduration(deaf_at_end=False, extra_at=None):
             inner = wit
 
             class Extra:
-                def times(self, timing=False):
+                def times(self, timing=False, host_bound=None):
                     ts, note = inner.times(timing)
                     return sorted(ts + [con.lines[0][0] + extra_at]), note
             wit = Extra()
@@ -750,7 +750,7 @@ class BootWit:
     def __init__(self, con, control=True, after_reset=None):
         self.con, self.control, self.after_reset = con, control, after_reset
 
-    def times(self):
+    def times(self, host_bound=None):
         ts = []
         for t, _x, p in self.con.lines:
             if p and p["kind"] == "PULSE" and self.control:

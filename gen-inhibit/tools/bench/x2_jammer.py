@@ -93,8 +93,11 @@ witness_clock's 2 s sanity limit.
 WITNESSES since the Kvaser moved to kvaser_usb (2026-11-13, ruling (C)): the session's checks on
 the PCAN; can2-isolation on the Kvaser through SocketCAN (bench_witness.SocketcanWitness: `kvaser`
 only, software stamps used only for the gaps in its groups, counts only, berr off: kvaser_usb_flex
-refuses it); id on none; the single-check subs as before on the Kvaser through CANlib (kvaser_bus),
-which no longer opens while the Kvaser is on kvaser_usb. Every record says which.
+refuses it); id on none; the single-check subs on the Kvaser through kvaser_bus, which on Linux is
+SocketCAN (2026-11-18): its error frames carry only the host's receipt time, accepted per sub when
+the sub's smallest bound is at least 10 x the host stamp's error, about 1 ms (the gen-inhibit
+reviewer's ruling (B), 2026-11-18; host_bound_s, HOST_STAMP_ERROR_S), and refused (VOID, run it in
+session) otherwise. Every record says which.
 
 EVERY JUDGED SILENCE ENDS WITH A FRAME THE SAME WITNESS MUST COUNT (gen-inhibit reviewer,
 2026-11-13, after CAN replay's degraded-USB advisory): boot silence, pulses' and the timeout's
@@ -626,6 +629,35 @@ class LagVoid(RuntimeError):
         self.lag = lag
 
 
+# HOST TIME ON THE SOCKETCAN KVASER, PER SUB (the gen-inhibit reviewer's ruling (B), 2026-11-18,
+# on the B6 principle). kvaser_usb gives error frames no hardware stamp, so the single-check subs'
+# witness has only the host's receipt time. That is accepted for a sub whose smallest judged
+# bound is at least HOST_FACTOR times the host stamp's error, HOST_STAMP_ERROR_S: the tester's
+# 2026-11-18 measurement (hardware minus host within +/-85 us, plus USB batching), about 1 ms.
+# A tighter sub is refused (VOID) and runs in `session`, on the PCAN's device time. No bound
+# changes. Each sub's smallest bound is host_bound_s's.
+HOST_STAMP_ERROR_S = 0.001
+HOST_FACTOR = 10
+CLOSING_EDGE_S = 0.05        # every judged window ends this far before the closing pulse's send
+
+
+def host_bound_s(a):
+    """The smallest bound (s) a single-check sub's judge applies to witness times: the closing
+    pulse's window edge (CLOSING_EDGE_S; boot-silence, pulses, timeout, noduration and their
+    0.3 s margins are all wider), and for pulses and can2-check also the half-interval that
+    groups error frames into pulses."""
+    b = CLOSING_EDGE_S
+    if getattr(a, "sub", None) in ("pulses", "can2-check"):
+        b = min(b, a.interval_ms / 2000.0)
+    return b
+
+
+def host_note(bound_s):
+    return ("%s accepted: the sub's smallest bound %.3f s is at least %d x the host stamp's error %.3f s "
+            "(gen-inhibit reviewer's ruling (B), 2026-11-18)" % (WC.SOCKETCAN, bound_s, HOST_FACTOR,
+                                                                 HOST_STAMP_ERROR_S))
+
+
 def require_timing_lag(lag):
     """Raises LagVoid unless lag (s; None when nothing was heard) is under TIMING_LAG_S
     either way."""
@@ -712,16 +744,26 @@ class Witness(threading.Thread):
             e = list(self.err)
         return statistics.median(r - h for h, r in e) if e else None
 
-    def times(self, timing=False):
+    def times(self, timing=False, host_bound=None):
         """recorded(), for a judgement: raises WC.ReceiptClock on receipt time, so the
         run is VOID and never judged on it (A2 (b), 2026-11-11). Raises WitnessDown when
         down() says the record is cut short (2026-11-13). timing=True (the subs whose
         judges have margins: pulses, timeout and their after-DONE count) also raises
-        LagVoid unless the median lag is under TIMING_LAG_S (2026-11-13)."""
+        LagVoid unless the median lag is under TIMING_LAG_S (2026-11-13). On the SocketCAN
+        Kvaser (host receipt time only, 2026-11-18): accepted, with host_note, when host_bound
+        (the sub's smallest bound, host_bound_s) is at least HOST_FACTOR x HOST_STAMP_ERROR_S;
+        otherwise ReceiptClock naming the bound (ruling (B)). The lag check reads hardware
+        stamps, so it does not apply there."""
         why = self.down()
         if why:
             raise WitnessDown(why)
         ts, note = self.recorded()
+        if note == WC.SOCKETCAN:
+            if host_bound is None or host_bound < HOST_FACTOR * HOST_STAMP_ERROR_S:
+                raise WC.ReceiptClock("%s: the sub's smallest bound %s s is under %d x the host stamp's error "
+                                      "%.3f s: run it in session, on the PCAN's device time (ruling (B), "
+                                      "2026-11-18)" % (WC.SOCKETCAN, host_bound, HOST_FACTOR, HOST_STAMP_ERROR_S))
+            return ts, host_note(host_bound)
         WC.require(note)
         if timing:
             require_timing_lag(self.lag())
@@ -894,7 +936,7 @@ def judge_boot_silence_run(a, inp, ts, clock):
 
 def sub_boot_silence(a, rec, con, wit):
     inp = drive_boot_silence(a, con)
-    ts, clock = wit.times()
+    ts, clock = wit.times(host_bound=host_bound_s(a))
     rec.update(judge_boot_silence_run(a, inp, ts, clock))
 
 
@@ -964,7 +1006,7 @@ def judge_pulses_run(a, inp, ts, clock):
 def sub_pulses(a, rec, con, wit):
     rec["wican_mode"] = a.wican_mode
     inp = drive_pulses(a, con)
-    ts, clock = wit.times(timing=True)   # the PULSES judge's margins (TIMING_LAG_S)
+    ts, clock = wit.times(timing=True, host_bound=host_bound_s(a))   # the PULSES judge's margins (TIMING_LAG_S)
     rec.update(judge_pulses_run(a, inp, ts, clock))
 
 
@@ -1104,7 +1146,7 @@ def sub_timeout(a, rec, con, wit):
     if "no_ack" in inp:
         rec.update(judge_timeout_run(a, inp, [], None))
         return
-    ts, clock = wit.times(timing=True)   # judge_stop's 0.3 s margin (TIMING_LAG_S)
+    ts, clock = wit.times(timing=True, host_bound=host_bound_s(a))   # judge_stop's 0.3 s margin (TIMING_LAG_S)
     rec.update(judge_timeout_run(a, inp, ts, clock))
 
 
@@ -1137,7 +1179,7 @@ def judge_noduration_run(a, inp, ts, clock):
 
 def sub_noduration(a, rec, con, wit):
     inp = drive_noduration(a, con)
-    ts, clock = wit.times()
+    ts, clock = wit.times(host_bound=host_bound_s(a))
     rec.update(judge_noduration_run(a, inp, ts, clock))
 
 
@@ -1187,7 +1229,7 @@ def sub_can2_check(a, rec, con, wit):
         stop.set()
         th.join(timeout=2.0)
         inno.shutdown()
-    ts, clock = wit.times()
+    ts, clock = wit.times(host_bound=host_bound_s(a))
     groups = clusters([t for t in ts if t >= t0 - 0.3], a.interval_ms / 2000.0)
     kv_pages = wit.frames - f0
     test = [x for x in log if x[0] == "test"]
