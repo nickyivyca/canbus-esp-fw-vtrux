@@ -12,9 +12,10 @@ working tree or HEAD instead of the pin is caught. The pinned commit has a
 `* text eol=crlf` .gitattributes, so a checkout-style export (which
 converts) is told apart from the raw blobs. No network is needed.
 
-  1. pin(): the committed entry is the reviewer's (repo, fa6c0aea...; it
+  1. pin(): the committed entry is the reviewer's (repo, 5220d374...; it
      was 14f8ee60... until the pin move of 2026-11-01, then 1cd39420...
-     until 2026-11-11's, which took canbench.live.linux_fixes); a
+     until 2026-11-11's, which took canbench.live.linux_fixes, then
+     fa6c0aea... until 2026-11-18's, which took canbench.bench_roles); a
      pins file with no can-tools entry, a commit that is short or not
      lower-case hex, or no repo, is refused.
   2. clone(): CAN_TOOLS_DIR unset is refused, naming it; a folder with no
@@ -43,7 +44,8 @@ converts) is told apart from the raw blobs. No network is needed.
      .git anywhere it is refused.
   7. Every .py under charge-interposer/ (firmware/ aside) that imports
      canbench calls paths.import_canbench or can_tools_pin.use first, and
-     bus.py is among them. Control: a planted file importing canbench
+     adapter_roles.py is among them (bus.py until 2026-11-18, when every
+     real adapter moved to its bench role). Control: a planted file importing canbench
      without either is flagged; with one, not.
   8. On the bench host (CAN_TOOLS_DIR set) the real install of the pin
      passes verify(). Elsewhere (madhouse) it is reported as not checked.
@@ -74,7 +76,7 @@ import can_tools_pin  # noqa: E402
 import scratch_dir  # noqa: E402
 
 REPO = "https://github.com/nickyivyca/can-tools"
-COMMIT = "fa6c0aea5399ab1ac887d95a6edb381590e1c644"
+COMMIT = "5220d37478541e40182c379efd6ba0edb993ee97"
 OTHER = "0123456789abcdef0123456789abcdef01234567"
 FAILS = []
 
@@ -304,7 +306,7 @@ def checks():
     try:
         # 1. the pin
         p = can_tools_pin.pin()
-        check("1 pins.json's can-tools entry is the reviewer's (repo, fa6c0aea...)",
+        check("1 pins.json's can-tools entry is the reviewer's (repo, 5220d374...)",
               p == {"repo": REPO, "commit": COMMIT}, p)
         for name, entry in (("no can-tools entry", None),
                             ("a short commit", dict(p, commit=COMMIT[:7])),
@@ -490,8 +492,8 @@ def checks():
         # 7. every importer goes through the pin
         found = importers(HERE)
         names = sorted(os.path.basename(f) for f, _ in found)
-        check("7 the canbench importers are found (bus.py among them)",
-              "bus.py" in names, names)
+        check("7 the canbench importers are found (adapter_roles.py among them)",
+              "adapter_roles.py" in names, names)
         check("7 every one of them calls paths.import_canbench or "
               "can_tools_pin.use", all(ok for _, ok in found),
               [f for f, ok in found if not ok])

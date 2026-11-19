@@ -5,9 +5,9 @@
     "version": "0.1.0",
     "commit": "ffbe0291f7b817360f03f1082e07240804cf6084"
   },
-  "_comment_can-tools": "can-tools, whose canbench/ is the CAN adapter package bus.open_bus uses for real dongles, at one commit (user ruling 2026-10-30, via the reviewer: each project pins its own can-tools and moves it itself): can_tools_pin.py writes that commit's canbench/ out of the CAN_TOOLS_DIR clone into the worktree's scratch/ and refuses any other canbench.",
+  "_comment_can-tools": "can-tools, whose canbench/ is the CAN adapter package, at one commit (user ruling 2026-10-30, via the reviewer: each project pins its own can-tools and moves it itself): can_tools_pin.py writes that commit's canbench/ out of the CAN_TOOLS_DIR clone into the worktree's scratch/ and refuses any other canbench. Since 5220d374 (2026-11-18, shared/bench SPEC section 8's adapter roles) every real bench adapter is opened by its canctl role through its canbench.bench_roles (adapter_roles.py), and the Linux fixes come from its canbench.live.linux_fixes.",
   "can-tools": {
     "repo": "https://github.com/nickyivyca/can-tools",
-    "commit": "fa6c0aea5399ab1ac887d95a6edb381590e1c644"
+    "commit": "5220d37478541e40182c379efd6ba0edb993ee97"
   }
 }

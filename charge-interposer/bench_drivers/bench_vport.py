@@ -109,7 +109,7 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import adapter_roles               # noqa: E402  (every adapter by its bench role)
 import kvaser_link                 # noqa: E402  (the Kvaser on kvaser_usb)
 import scratch_dir                  # noqa: E402
 
@@ -1006,10 +1006,10 @@ def _open_witness_reader(acks, spec=None, mode="classic"):
                            lambda: "fake bus OK", mode)
     import can
     from can.interfaces.pcan import pcan as pc
-    bus = can.Bus(interface="pcan", channel="PCAN_USBBUS1",
-                  bitrate=BUS_BITRATE,
-                  state=(can.BusState.ACTIVE if acks
-                         else can.BusState.PASSIVE))
+    # role pcanfd (shared/bench SPEC section 8, 2026-11-18)
+    bus = adapter_roles.pcanfd(BUS_BITRATE,
+                               state=(can.BusState.ACTIVE if acks
+                                      else can.BusState.PASSIVE))
     if getattr(bus, "_can_protocol", None) is can.CanProtocol.CAN_FD:
         bus.shutdown()
         raise RuntimeError("the witness opened as CAN FD: its reads are "
@@ -3389,9 +3389,9 @@ def self_test():
     # the node's bus is opened in its process function since 2026-10-16
     nsrc = inspect.getsource(_node_proc) + inspect.getsource(Node)
     wcode = wsrc.split('"""')[2] + wsrc.split('"""')[-1]
-    check('interface="pcan"' in wcode and "BusState.PASSIVE" in wcode
+    check("adapter_roles.pcanfd(" in wcode and "BusState.PASSIVE" in wcode
           and "kvaser" not in wcode,
-          "the witness is the PCAN, opened PASSIVE (not the Kvaser)")
+          "the witness is the PCAN, role pcanfd, opened PASSIVE (not the Kvaser)")
     check("kvaser_link.open_bus(receive_own_messages=True)" in nsrc
           and "kvaser_link.set_link(True)" in nsrc,
           "the node is the Kvaser on kvaser_usb, its link brought up first, its "

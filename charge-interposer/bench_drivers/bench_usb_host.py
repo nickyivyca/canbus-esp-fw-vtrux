@@ -111,7 +111,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
-import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import adapter_roles               # noqa: E402  (every adapter by its bench role)
 import kvaser_link                  # noqa: E402  (the Kvaser on kvaser_usb)
 import scratch_dir                  # noqa: E402
 
@@ -651,25 +651,26 @@ class Rx(object):
 
 
 def open_pcan(acks):
+    """The PCAN witness, role pcanfd (adapter_roles; shared/bench SPEC
+    section 8, 2026-11-18: by its role, never PCAN_USBBUSn)."""
     import can
-    kw = dict(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
+    kw = {}
     if acks:
         kw["auto_reset"] = True
     else:
         kw["state"] = can.BusState.PASSIVE
-    return can.Bus(**kw)
+    return adapter_roles.pcanfd(500000, **kw)
 
 
 def open_kvaser():
-    """The Kvaser on kvaser_usb, netdev kvaser, its echoes kept for the
+    """The Kvaser on kvaser_usb, role kvaser, its echoes kept for the
     stall rule (kvaser_link; the link already up: main() sets it)."""
     return kvaser_link.open_bus(receive_own_messages=True)
 
 
 def open_innomaker():
-    import can
-    # by serial on Linux; libusb's DLL folder first on Windows
-    return adapter_fixes.canchg(bitrate=500000)
+    # role canchg in libusb mode (shared/bench SPEC section 8, 2026-11-18)
+    return adapter_roles.canchg(500000)
 
 
 class Injector(object):

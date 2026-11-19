@@ -10,21 +10,21 @@ Two transport families:
             *segment* gets its own multicast group, so the interposer really
             does sit between two separate buses.
 
-  real    : a physical dongle brand (ixxat / kvaser / pcan / socketcan /
-            gs_usb), channel auto-detected via canbench.live.receiver, so the
-            same simulator code drives real silicon once the board exists.
-            gs_usb is the exception: opened by device index (--channel N,
-            default 0) on Windows, and on Linux as canchg by its USB serial
-            from VTRUX_CANCHG_DEVICE, refused unless in libusb mode
-            (adapter_fixes.canchg_target); its TX echoes drained and
-            dropped (open_gs_usb). On Linux the pinned canbench's
-            linux_fixes are applied first (adapter_fixes), so a gs_usb open
-            there needs the can-tools pin installed; on Windows it does
-            not. kvaser and socketcan are the Kvaser on the kernel's
-            kvaser_usb, Linux only, netdev "kvaser" named with --channel
-            (open_kvaser, kvaser_link; 2026-11-13): the link brought up
-            and read back first, the bus returned keeping the TX stall
-            rule (kvaser_link.WatchedBus).
+  real    : a physical dongle brand (kvaser / pcan / socketcan / gs_usb),
+            opened by the bench role --channel names (shared/bench SPEC
+            section 8's adapter roles, 2026-11-18; adapter_roles), so the
+            same simulator code drives real silicon. Never an index, a
+            channel number or the first adapter detected: a real transport
+            with no role, or a role that is not its brand's (ROLE_OF), is
+            refused, and ixxat, which has no bench role, is refused. pcan is
+            pcanfd (adapter_roles.pcanfd). gs_usb is canchg in libusb mode
+            (adapter_roles.canchg), its TX echoes drained and dropped
+            (open_gs_usb). kvaser and socketcan are the Kvaser on the
+            kernel's kvaser_usb, role kvaser (open_kvaser, kvaser_link;
+            2026-11-13): the link brought up and read back first, the bus
+            returned keeping the TX stall rule (kvaser_link.WatchedBus).
+            Each needs the can-tools pin installed (can_tools_pin.py) and
+            canctl, so the bench host only.
 
 Segment map for this bench:
 
@@ -39,8 +39,7 @@ import can
 # Nothing here imports canre (replay.py takes the pinned one through
 # paths.add_canre), so bus.py puts no canre on sys.path. canbench is the
 # pinned can-tools commit's (can_tools_pin.py, from the clone at
-# CAN_TOOLS_DIR), through paths.import_canbench(), only when a real dongle
-# other than gs_usb is opened.
+# CAN_TOOLS_DIR), through adapter_roles, only when a real dongle is opened.
 
 VEHICLE_SEGMENT = "239.0.2.1"
 CHARGER_SEGMENT = "239.0.2.2"
@@ -75,6 +74,25 @@ PHYS_VOLTAGE_ID = 0x7F1    # pack -> charger: terminal voltage
 VIRTUAL_DEFAULT_PORT = VEHICLE_PORT
 
 REAL_BRANDS = ("ixxat", "kvaser", "pcan", "socketcan", "gs_usb")
+# the bench role each real brand may name with --channel (shared/bench SPEC
+# section 8); ixxat has none on this bench, and canmain is the Android
+# app's (SPEC section 8), so the harness names it for no transport
+ROLE_OF = {"pcan": ("pcanfd",), "kvaser": ("kvaser",), "socketcan": ("kvaser",),
+           "gs_usb": ("canchg",)}
+
+
+def check_role(transport, channel):
+    """-> channel, when it names a bench role transport may open; else
+    ValueError (no role named, another brand's role, or a brand with no
+    bench role)."""
+    ok = ROLE_OF.get(transport, ())
+    if channel not in ok:
+        raise ValueError("transport %s: --channel must name its bench role (%s), not %r; "
+                         "never an index, a channel number or the first adapter found "
+                         "(shared/bench SPEC section 8)"
+                         % (transport, " or ".join(ok) or "it has none on this bench",
+                            channel))
+    return channel
 
 
 # Wall time a sim process spent FROZEN must not become simulated time.
@@ -158,7 +176,8 @@ def add_bus_args(parser, *, default_channel=VEHICLE_SEGMENT, prefix="",
     parser.add_argument(
         "--%schannel" % p, dest=dest + "channel", default=None,
         help="virtual: multicast group IP (default %s); "
-             "real: dongle channel (default: first auto-detected)"
+             "real: the adapter's bench role (pcan: pcanfd; kvaser, "
+             "socketcan: kvaser; gs_usb: canchg), required"
              % default_channel)
     if default_port is None:
         default_port = {CHARGER_SEGMENT: CHARGER_PORT,
@@ -204,6 +223,10 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
         _enlarge_rx_buffer(b, logger)
         return b
 
+    # a real dongle: by the bench role --channel names (ROLE_OF), nothing
+    # detected, nothing picked by position (SPEC section 8, 2026-11-18)
+    check_role(transport, channel)
+
     if transport == "gs_usb":
         return open_gs_usb(channel, bitrate,
                            receive_own_messages=receive_own_messages,
@@ -214,44 +237,34 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
                            receive_own_messages=receive_own_messages,
                            logger=logger)
 
-    import paths
-    paths.import_canbench()     # the pinned canbench, nothing on sys.path
-    # the Kvaser's linuxcan fix, explicitly, not as the receiver's import
-    # side effect (adapter_fixes; reviewer, 2026-11-11)
-    import adapter_fixes
-    adapter_fixes.apply()
-    from canbench.live.receiver import detect_all_can_interfaces
-    if logger:
-        logger.info("Detecting %s interfaces at %d bps...", transport, bitrate)
-    interfaces = detect_all_can_interfaces(bitrate, brands={transport})
-    matches = [i for i in interfaces if i[0] == transport]
-    if not matches:
-        raise RuntimeError("no %s interface detected" % transport)
-    iface, ch, desc = matches[0]
-    if channel is not None:
-        ch = channel
-    if logger:
-        logger.info("Using real interface: %s", desc)
+    return open_pcan(channel, bitrate, receive_own_messages=receive_own_messages,
+                     logger=logger)
 
-    kwargs = dict(bitrate=bitrate, receive_own_messages=receive_own_messages)
-    if iface == "pcan":
-        # see canbench/live/pcan-busoff-recovery.md. On Linux PCAN-Basic
-        # 9.3.3, auto_reset alone does not clear a bus-off: the reset only
-        # flushes the queues unless PCAN_HARD_RESET_STATUS is on, and the
-        # write path's auto-reset never fires (that note at can-tools
-        # 521eb24). Recovery there needs canbench's own PCAN class
-        # (backends.install()), which this harness does not use.
-        kwargs["auto_reset"] = True
-    if isinstance(ch, dict):
-        bus = can.interface.Bus(interface=iface, **kwargs, **ch)
-    else:
-        bus = can.interface.Bus(interface=iface, channel=ch, **kwargs)
-    if iface == "pcan":
-        try:
-            bus.reset()
-        except Exception as e:
-            if logger:
-                logger.debug("pcan reset() at startup failed (non-fatal): %s", e)
+
+def open_pcan(channel, bitrate, *, receive_own_messages=False, logger=None,
+              _roles=None):
+    """The vehicle segment's PCAN-USB FD, role pcanfd (adapter_roles.pcanfd:
+    python-can pcan by the device id canctl reads, never PCAN_USBBUSn).
+    _roles exists only for bus_gs_usb_test (a stand-in for adapter_roles)."""
+    roles = _roles
+    if roles is None:
+        import adapter_roles as roles
+    check_role("pcan", channel)
+    if logger:
+        logger.info("Opening role %s (pcan) at %d bps", channel, bitrate)
+    # see canbench/live/pcan-busoff-recovery.md. On Linux PCAN-Basic 9.3.3,
+    # auto_reset alone does not clear a bus-off: the reset only flushes the
+    # queues unless PCAN_HARD_RESET_STATUS is on, and the write path's
+    # auto-reset never fires (that note at can-tools 521eb24). Recovery
+    # there needs canbench's own PCAN class (backends.install()), which this
+    # harness does not use.
+    bus = roles.pcanfd(bitrate, receive_own_messages=receive_own_messages,
+                       auto_reset=True)
+    try:
+        bus.reset()
+    except Exception as e:
+        if logger:
+            logger.debug("pcan reset() at startup failed (non-fatal): %s", e)
     return bus
 
 
@@ -259,9 +272,9 @@ def open_kvaser(channel, bitrate, *, receive_own_messages=False, logger=None,
                 _link=None, _can_mod=None):
     """The vehicle segment's Kvaser on the kernel's kvaser_usb (tester,
     2026-11-13, the charge-interposer reviewer's rulings A, D and D6):
-    netdev "kvaser", named (--channel kvaser; none given, which would pick a
-    netdev by position, or any other netdev is refused by
-    kvaser_link.check_channel). The run is an ACK check, so the link is
+    role kvaser, named (--channel kvaser; check_role and
+    kvaser_link.check_channel refuse anything else), its netdev from
+    canctl's role table (kvaser_link.netdev). The run is an ACK check, so the link is
     brought up at `bitrate` through canctl and IFF_UP read back
     (kvaser_link.set_link) before the socket opens. The bus returned keeps
     the stall rule (kvaser_link.WatchedBus): its own echoes are read and
@@ -285,58 +298,50 @@ def open_kvaser(channel, bitrate, *, receive_own_messages=False, logger=None,
     return link.WatchedBus(b)
 
 
-class _DropEchoes:
-    """Mixin for a python-can bus whose device returns an echo frame
-    (is_rx False) for every frame it sends, whatever receive_own_messages
-    says -- python-can's gs_usb does (4.6.1, GsUsbBus._recv_internal). A sim
-    that read its own echoes as received frames would answer itself. With
-    receive_own_messages False the echoes are read (gs_usb stalls its TX if
-    they are not drained, bringup 2026-10-06) and dropped here; with it
-    True they are passed through."""
+def drop_echoes(bus, keep=False):
+    """For a python-can bus whose device returns an echo frame (is_rx
+    False) for every frame it sends, whatever receive_own_messages says --
+    python-can's gs_usb does (4.6.1, GsUsbBus._recv_internal). A sim that
+    read its own echoes as received frames would answer itself. With keep
+    False the echoes are read (gs_usb stalls its TX if they are not
+    drained, bringup 2026-10-06) and dropped; with it True they are passed
+    through. Wraps the open bus's own _recv_internal on the instance (the
+    bus is opened by adapter_roles, so its class is not the harness's to
+    subclass; until 2026-11-18 a GsUsbBus subclass did this). -> bus."""
+    import time as _t
+    inner = bus._recv_internal
 
-    def _recv_internal(self, timeout):
-        import time as _t
+    def _recv_internal(timeout):
         end = None if timeout is None else _t.monotonic() + timeout
         while True:
             left = None if end is None else max(0.0, end - _t.monotonic())
-            msg, filtered = super()._recv_internal(left)
-            if msg is None or msg.is_rx or self._keep_echoes:
+            msg, filtered = inner(left)
+            if msg is None or msg.is_rx or bus._keep_echoes:
                 return msg, filtered
             if end is not None and _t.monotonic() >= end:
                 return None, False
 
+    bus._recv_internal = _recv_internal
+    bus._keep_echoes = bool(keep)
+    return bus
+
 
 def open_gs_usb(channel, bitrate, *, receive_own_messages=False,
-                logger=None, _bus_cls=None, _target=None):
-    """The Innomaker USB2CAN (gs_usb / candleLight), opened by INDEX off
-    Linux: detect_available_configs(['gs_usb']) returns [] even when the
-    device works (bringup, 2026-10-04), so auto-detection cannot find it.
-    `channel` is the device index ("0" if omitted; on Linux only 0, and the
-    device is canchg by its serial). `_bus_cls` exists only for
-    bus_gs_usb_test (a fake in place of python-can's GsUsbBus)."""
-    import adapter_fixes
-    index = int(channel) if channel not in (None, "") else 0
-    # which device: index 0 off Linux; on Linux canchg by its serial, refused
-    # unless in libusb mode (adapter_fixes.canchg_target). _target exists
-    # only for bus_gs_usb_test.
-    if _target is None:
-        _target = adapter_fixes.canchg_target(index)
-    if _bus_cls is None:
-        # libusb's DLL folder on Windows; nothing elsewhere (adapter_fixes)
-        adapter_fixes.libusb_bootstrap()
-        # gs_usb's start() without its USB reset, on Linux (adapter_fixes)
-        adapter_fixes.apply()
-        from can.interfaces.gs_usb import GsUsbBus as _bus_cls
-    cls = type("GsUsbNoEcho", (_DropEchoes, _bus_cls), {})
-    kw = adapter_fixes.gs_usb_kwargs(_target)
+                logger=None, _roles=None):
+    """The charger segment's Innomaker USB2CAN (gs_usb / candleLight), role
+    canchg in libusb mode (adapter_roles.canchg: python-can gs_usb by the
+    USB bus and address canctl reports, refused while the kernel's gs_usb
+    holds it; never an index or a serial). `channel` must be "canchg"
+    (check_role). The bus's echoes go through drop_echoes. `_roles` exists
+    only for bus_gs_usb_test (a stand-in for adapter_roles)."""
+    roles = _roles
+    if roles is None:
+        import adapter_roles as roles
+    check_role("gs_usb", channel)
     if logger:
-        logger.info("Opening gs_usb device %s at %d bps (echoes %s)",
-                    ", ".join("%s %s" % kv for kv in sorted(kw.items())), bitrate,
-                    "kept" if receive_own_messages else "drained and dropped")
-    bus = cls(channel="can%d" % index, bitrate=bitrate, **kw)
-    adapter_fixes.check_opened(bus, _target)
-    bus._keep_echoes = bool(receive_own_messages)
-    return bus
+        logger.info("Opening role %s (gs_usb, libusb) at %d bps (echoes %s)", channel,
+                    bitrate, "kept" if receive_own_messages else "drained and dropped")
+    return drop_echoes(roles.canchg(bitrate), receive_own_messages)
 
 
 def _confine_to_host(b, logger=None):

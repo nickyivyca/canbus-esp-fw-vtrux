@@ -667,14 +667,29 @@ def main():
     w = DC.DiagWitness("unused")
     check(w.acks is True,
           "a DiagWitness acknowledges unless asked not to")
+    check(w.role == "pcanfd", "a DiagWitness is the PCAN by its bench role pcanfd")
+    # by its role, never a channel number or another role (shared/bench SPEC
+    # section 8, 2026-11-18): refused before anything opens
+    for bad in ("PCAN_USBBUS1", "kvaser", None):
+        try:
+            DC.DiagWitness("unused", role=bad)
+            check(False, "a DiagWitness on %r refused" % (bad,))
+        except ValueError:
+            check(True, "a DiagWitness on %r refused" % (bad,))
+        try:
+            R.build_parser().parse_args(
+                ["charger-fault-stop", "--external-interposer", "--diag-witness", str(bad)])
+            check(False, "--diag-witness %r refused" % (bad,))
+        except SystemExit:
+            check(True, "--diag-witness %r refused" % (bad,))
     a = R.build_parser().parse_args(
         ["charger-fault-stop", "--external-interposer", "--diag-witness",
-         "PCAN_USBBUS1"])
-    check(a.diag_witness_mode == "acks",
+         "pcanfd"])
+    check(a.diag_witness_mode == "acks" and a.diag_witness == "pcanfd",
           "a board run's witness acknowledges by default")
     a = R.build_parser().parse_args(
         ["charger-fault-stop", "--external-interposer", "--diag-witness",
-         "PCAN_USBBUS1", "--diag-witness-mode", "passive"])
+         "pcanfd", "--diag-witness-mode", "passive"])
     check(a.diag_witness_mode == "passive", "...passive only on request")
     partial_line_case(R)
     wall_cases(R)

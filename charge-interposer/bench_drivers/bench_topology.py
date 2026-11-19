@@ -65,7 +65,7 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import adapter_roles               # noqa: E402  (every adapter by its bench role)
 import kvaser_link                 # noqa: E402  (the Kvaser on kvaser_usb)
 
 import can                                                   # noqa: E402
@@ -120,22 +120,19 @@ def classify_charger_up(windows, min_pages=MIN_DIAG_PAGES):
 
 
 def open_gs_usb():
-    """The Innomaker. Addressed by INDEX on Windows: can.detect_available_configs
-    returns [] for gs_usb on this machine even with the DLL bootstrap
-    applied, so detection must never be the gate (python-executables-
-    reference.md, 2026-10-04). On Linux by its serial (adapter_fixes.canchg,
-    2026-11-12). canchg puts libusb's DLL folder on the path first on
-    Windows (adapter_fixes.libusb_bootstrap)."""
-    return adapter_fixes.canchg(bitrate=BITRATE)     # by serial on Linux
+    """The Innomaker, role canchg in libusb mode (adapter_roles.canchg;
+    shared/bench SPEC section 8, 2026-11-18: never an index, a serial or
+    the first found)."""
+    return adapter_roles.canchg(BITRATE)
 
 
 OPENERS = {
     # auto_reset on the PCAN is not optional: phase 2 transmits, and a
     # python-can PCAN bus without it latches BUS-OFF silently, turning a
-    # reachability test into one that cannot fail honestly.
-    "pcan": lambda: can.Bus(interface="pcan", channel="PCAN_USBBUS1",
-                            bitrate=BITRATE, auto_reset=True),
-    # the Kvaser on kvaser_usb, netdev kvaser (2026-11-13): its echoes kept
+    # reachability test into one that cannot fail honestly. Role pcanfd
+    # (2026-11-18).
+    "pcan": lambda: adapter_roles.pcanfd(BITRATE, auto_reset=True),
+    # the Kvaser on kvaser_usb, role kvaser (2026-11-13): its echoes kept
     # and consumed by the stall rule, never counted as heard (WatchedBus)
     "kvaser": lambda: kvaser_link.WatchedBus(kvaser_link.open_bus(receive_own_messages=True)),
     "innomaker": open_gs_usb,

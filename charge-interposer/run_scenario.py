@@ -2197,7 +2197,7 @@ def run_one(sc, args, outdir):
                 prev_stop = read_last_charger(outdir)
                 open_t = time.perf_counter()
                 witness = diag_cadence.DiagWitness(
-                    str(witness_path), channel=args.diag_witness,
+                    str(witness_path), role=args.diag_witness,
                     acks=(args.diag_witness_mode == "acks")).start()
                 prechg = pre_charger_premise(prev_stop, open_t)
                 print("   2.3 before the first charger frame: %s"
@@ -4260,11 +4260,13 @@ def build_parser():
                          "output is captured to <scenario>.interposer.log so "
                          "the existing event expectations evaluate unchanged.")
     ap.add_argument("--serial-baud", type=int, default=115200)
-    ap.add_argument("--diag-witness", default=None, metavar="PCAN_CHANNEL",
-                    help="with --external-interposer: a PCAN (e.g. "
-                         "PCAN_USBBUS1) on the vehicle segment logs every "
-                         "0x7F4-0x7F7, and the scenario is also judged on "
-                         "spec 8.2's cadence and 50 ms rule (diag_cadence.py)")
+    ap.add_argument("--diag-witness", default=None, choices=("pcanfd",),
+                    metavar="ROLE",
+                    help="with --external-interposer: the PCAN, by its "
+                         "bench role pcanfd (shared/bench SPEC section 8), "
+                         "on the vehicle segment logs every 0x7F4-0x7F7, "
+                         "and the scenario is also judged on spec 8.2's "
+                         "cadence and 50 ms rule (diag_cadence.py)")
     ap.add_argument("--diag-witness-mode", choices=("acks", "passive"),
                     default="acks",
                     help="the PCAN witness in normal mode, acknowledging on "

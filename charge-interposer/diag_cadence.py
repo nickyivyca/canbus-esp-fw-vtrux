@@ -172,11 +172,19 @@ class DiagWitness(object):
     0x18EFC000 (VCU_PAGE00_ID, every page) and the BMS frames BMS_IDS:
     'host<TAB>device<TAB>id<TAB>hex' per line, host = time.perf_counter()
     at recv. Drained throughout. acks=True opens it in normal mode, so it
-    is the vehicle segment's acknowledger (witness_bus_state)."""
+    is the vehicle segment's acknowledger (witness_bus_state). The PCAN is
+    asked for by its bench role, ROLE (shared/bench SPEC section 8,
+    2026-11-18; adapter_roles.pcanfd): any other role, a PCAN_USBBUSn
+    channel or none is refused before anything opens."""
 
-    def __init__(self, path, channel="PCAN_USBBUS1", bitrate=500000,
-                 acks=True):
-        self.path, self.channel, self.bitrate = path, channel, bitrate
+    ROLE = "pcanfd"
+
+    def __init__(self, path, role=ROLE, bitrate=500000, acks=True):
+        if role != self.ROLE:
+            raise ValueError("the diag witness is the PCAN, asked for by its bench role %r, "
+                             "not %r (never a channel number or the first found)"
+                             % (self.ROLE, role))
+        self.path, self.role, self.bitrate = path, role, bitrate
         self.acks = acks
         self._stop = threading.Event()
         self._t = None
@@ -184,10 +192,9 @@ class DiagWitness(object):
         self.error = None
 
     def start(self):
-        import can
-        self.bus = can.Bus(interface="pcan", channel=self.channel,
-                           bitrate=self.bitrate,
-                           state=witness_bus_state(self.acks))
+        import adapter_roles
+        self.bus = adapter_roles.pcanfd(self.bitrate,
+                                        state=witness_bus_state(self.acks))
         self.fh = open(self.path, "w")
         self._t = threading.Thread(target=self._run, daemon=True)
         self._t.start()

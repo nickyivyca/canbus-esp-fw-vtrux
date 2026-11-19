@@ -1,43 +1,40 @@
-"""bus.open_gs_usb's own test, no hardware (tester, 2026-10-13).
+"""bus.open_bus's real-adapter path, its own test, no hardware (tester,
+2026-10-13; by bench role since 2026-11-18).
 
-The Innomaker (gs_usb) is the charger segment's only adapter, and step 4's
-closed loop on the board runs charger_sim through it. bus.open_bus used to
-auto-detect every real brand, which finds no gs_usb device (bringup,
-2026-10-04), and python-can's gs_usb hands back the device's TX echoes as
-received frames (is_rx False) whatever receive_own_messages says, so a sim
-would read its own frames back. This drives open_gs_usb against a fake
-GsUsbBus and checks each half can fail:
+Every real adapter bus.open_bus opens is asked for by its canctl role
+(shared/bench SPEC section 8, 2026-11-18; adapter_roles.py): --channel names
+the role, bus.ROLE_OF says which role each brand may name, and nothing is
+detected or picked by position. python-can's gs_usb hands back the device's
+TX echoes as received frames (is_rx False) whatever receive_own_messages
+says, so a sim would read its own frames back; open_gs_usb's echo filter
+(drop_echoes) drops them. This drives open_bus against stand-ins and checks
+each half can fail:
 
-  - the device is opened by index, from --channel, default 0, and the
-    auto-detection path is not touched (the Windows form; on Linux the
-    device is canchg by its serial, adapter_fixes.canchg_target, tested in
-    adapter_fixes_test.py; here only that open_gs_usb opens the target's
-    bus and address and refuses a device with another serial, 2026-11-12);
-  - echoes are drained and dropped by default, kept when asked for;
-  - a recv() that sees only echoes inside its timeout returns None, not an
-    echo and not a hang;
-  - gs_usb needs no canbench: it opens with CAN_TOOLS_DIR unset, while
-    pcan is refused with the PathsError naming the setting;
+  - check_role: pcan names pcanfd, kvaser and socketcan name kvaser, gs_usb
+    names canchg; no role (None), an index ("0", "1"), a PCAN channel
+    (PCAN_USBBUS1), canmain, another brand's role, and ixxat (no bench
+    role), are refused by open_bus with ValueError before anything opens,
+    and open_gs_usb and open_pcan refuse a wrong role themselves too;
+  - gs_usb is role canchg through adapter_roles.canchg (bitrate, modes
+    libusb), with no index, bus, address, serial or channel from the
+    harness, the bus it opened returned; its echoes are drained and dropped
+    by default, kept when asked for, and a recv() that sees only echoes
+    inside its timeout returns None, not an echo and not a hang;
+  - pcan is role pcanfd through adapter_roles.pcanfd (modes pcan, by the
+    device id canctl reads), with auto_reset and a reset() at startup;
   - the Kvaser (transport kvaser or socketcan; 2026-11-13, the
-    charge-interposer reviewer's A, D and D6) never reaches canbench's
-    detection: bus.open_kvaser brings its link up (kvaser_link.set_link)
-    BEFORE it opens netdev "kvaser" with its echoes kept, and returns a
-    kvaser_link.WatchedBus (the stall rule); no channel (a netdev by
-    position), another netdev, echoes asked for, another bit rate, or a
-    link that does not come up is refused with nothing opened;
-  - the other brands open what canbench detected, in the shape can-tools
-    1cd3942 gives it (charge-interposer tester, 2026-11-01, the pin move):
-    an Adapter that unpacks as (interface, channel, desc), with .ids and a
-    desc ending in the id list. open_bus takes the first adapter of the
-    brand asked for, opens it by its channel (never from desc or .ids),
-    and gives a PCAN auto_reset and a reset(); two PCANs that both carry
-    pcan-id:0 (PEAK's default device number) still open by channel.
+    charge-interposer reviewer's A, D and D6) is role kvaser: bus.open_kvaser
+    brings its link up (kvaser_link.set_link) BEFORE it opens the role with
+    its echoes kept, and returns a kvaser_link.WatchedBus (the stall rule);
+    echoes asked for, another bit rate, or a link that does not come up is
+    refused with nothing opened;
+  - none of it imports canbench's detection, or canbench at all with the
+    stand-ins in place.
 
-canbench is the pinned commit's, installed by can_tools_pin.py from a
-stand-in can-tools clone at CAN_TOOLS_DIR (can_tools_pin_test.fixture),
-built in a throwaway folder beside this file and removed, with the
-machine's own canbench (the can-tools.pth) taken off sys.path first, so no
-real clone and no adapter is needed.
+adapter_roles' own canchg and pcanfd run here, over a stand-in for
+canbench.bench_roles (FakeBR, passed as their mod): what reaches it is what
+adapter_roles would hand the pinned canbench. adapter_roles_test.py tests
+adapter_roles against the real pinned canbench and a fake canctl.
 
 Run: python bus_gs_usb_test.py  (exit 0 = all checks passed)
      python bus_gs_usb_test.py --can-fail
@@ -47,8 +44,6 @@ Run: python bus_gs_usb_test.py  (exit 0 = all checks passed)
        copy must pass.
 """
 
-import collections
-import logging
 import os
 import subprocess
 import sys
@@ -61,6 +56,7 @@ sys.path.insert(0, str(HERE))
 
 import can                                                  # noqa: E402
 import scratch_dir                                          # noqa: E402
+import adapter_roles                                        # noqa: E402
 
 # --can-fail runs this test on a mutated copy of bus.py: the child loads
 # the module at BUS_UNDER_TEST as "bus" in place of the one beside it.
@@ -91,18 +87,13 @@ class FakeGsUsb(can.BusABC):
     """Stands in for can.interfaces.gs_usb.GsUsbBus: records how it was
     opened and returns a scripted sequence from _recv_internal, as the real
     one does (one frame per call, None when the script is empty)."""
-    opened = []
 
-    def __init__(self, channel, bitrate=500000, index=None, **kw):
-        FakeGsUsb.opened.append(dict(channel=channel, bitrate=bitrate,
-                                     index=index))
-        for k in ("bus", "address", "serial"):
-            if k in kw:
-                FakeGsUsb.opened[-1][k] = kw.pop(k)
+    def __init__(self, channel, bitrate=500000, **kw):
+        self.opened = dict(channel=channel, bitrate=bitrate, **kw)
         self.shut = False
         self.script = []
         self.channel_info = channel
-        super().__init__(channel=channel, **kw)
+        super().__init__(channel=channel)
 
     def _recv_internal(self, timeout):
         if self.script:
@@ -119,47 +110,9 @@ class FakeGsUsb(can.BusABC):
         super().shutdown()
 
 
-def args(channel):
-    return types.SimpleNamespace(transport="gs_usb", channel=channel,
-                                 port=0, bitrate=500000)
-
-
-class Adapter(collections.namedtuple("Adapter", "interface channel desc")):
-    """The shape of canbench.live.receiver.Adapter at can-tools 1cd3942: it
-    unpacks as (interface, channel, desc); ids name the physical adapter,
-    and desc ends in them. Mirrored here because the stand-in clone's
-    canbench is not the real one."""
-
-    def __new__(cls, interface, channel, desc, ids=()):
-        self = super().__new__(cls, interface, channel, desc)
-        self.ids = tuple(ids)
-        return self
-
-
-# What 1cd3942 detects on a Windows bench with a two-channel Kvaser and two
-# PCANs whose device numbers were never set (both pcan-id:0), and what it
-# gives for a PCAN behind Linux's peak_usb driver when asked for 'pcan' (a
-# socketcan entry, listed first).
-DETECTED = [
-    Adapter("socketcan", "can0",
-            "socketcan can0 (peak_usb) [usb:1-2, socketcan:can0]",
-            ("usb:1-2", "socketcan:can0")),
-    Adapter("kvaser", 0, "kvaser channel 0 [serial:44544#1, serial:44544]",
-            ("serial:44544#1", "serial:44544", "kvaser:0")),
-    Adapter("pcan", "PCAN_USBBUS1", "pcan PCAN_USBBUS1 [pcan-id:0]",
-            ("pcan-id:0", "pcan:PCAN_USBBUS1")),
-    Adapter("pcan", "PCAN_USBBUS2", "pcan PCAN_USBBUS2 [pcan-id:0]",
-            ("pcan-id:0", "pcan:PCAN_USBBUS2")),
-]
-
-
-class FakeBus:
-    """Stands in for can.interface.Bus: records how it was opened."""
-    opened = []
-
+class FakePcan(object):
     def __init__(self, **kw):
-        FakeBus.opened.append(dict(kw))
-        self.resets = 0
+        self.opened, self.resets = dict(kw), 0
 
     def reset(self):
         self.resets += 1
@@ -168,177 +121,165 @@ class FakeBus:
         pass
 
 
-class _Lines(logging.Handler):
-    def __init__(self):
-        super().__init__()
-        self.lines = []
+class FakeBR(object):
+    """Stands in for canbench.bench_roles: records each open_role call
+    (role, bitrate, modes, the keywords) and returns a FakeGsUsb for a
+    gs_usb role, a FakePcan for any other."""
 
-    def emit(self, record):
-        self.lines.append(record.getMessage())
+    class RoleError(RuntimeError):
+        pass
+
+    calls = []
+
+    @staticmethod
+    def canctl_roles_text(canctl):
+        return "a role table"
+
+    @classmethod
+    def open_role(cls, role, bitrate=None, modes=None, hw_timestamps=False, text=None,
+                  **kw):
+        cls.calls.append((role, bitrate, tuple(modes or ()), dict(kw)))
+        if role in ("canchg", "canmain"):
+            return FakeGsUsb("gs_usb:%s" % role, bitrate, bus=1, address=40)
+        return FakePcan(role=role, bitrate=bitrate, **kw)
+
+
+# bus.open_gs_usb / open_pcan's _roles: adapter_roles' own canchg and
+# pcanfd, over FakeBR
+ROLES = types.SimpleNamespace(
+    canchg=lambda bitrate, **kw: adapter_roles.canchg(bitrate, mod=FakeBR, **kw),
+    pcanfd=lambda bitrate, **kw: adapter_roles.pcanfd(bitrate, mod=FakeBR, **kw))
+
+
+def args(transport, channel, bitrate=500000):
+    return types.SimpleNamespace(transport=transport, channel=channel,
+                                 port=0, bitrate=bitrate)
 
 
 def main():
     if sys.argv[1:] == ["--can-fail"]:
         return can_fail()
-    import can_tools_pin_test as CT
-    saved = os.environ.pop("CAN_TOOLS_DIR", None)
-    base = scratch_dir.make("bus-gs-usb-test")
-    path_in = CT.off_pth()
+    return run()
+
+
+def run():
+    gone = [m for m in sys.modules if m == "canbench" or m.startswith("canbench.")]
+    for m in gone:
+        del sys.modules[m]
+    real = (busmod.open_gs_usb, busmod.open_pcan)
+    busmod.open_gs_usb = lambda ch, br, **kw: real[0](ch, br, _roles=ROLES, **kw)
+    busmod.open_pcan = lambda ch, br, **kw: real[1](ch, br, _roles=ROLES, **kw)
     try:
-        # the pinned commit's canbench detects nothing
-        fix = CT.fixture(base)
-        with CT.pointed(fix) as ctp:
-            ctp.install()
-            os.environ.pop("CAN_TOOLS_DIR")
-            return run(fix)
+        return _run(real)
     finally:
-        sys.path[:] = path_in
-        scratch_dir.remove(base)
-        if saved is not None:
-            os.environ["CAN_TOOLS_DIR"] = saved
+        busmod.open_gs_usb, busmod.open_pcan = real
 
 
-def run(fix):
-    import paths
-    import adapter_fixes
-    # the index cases below are the Windows form, on any host; on Linux the
-    # device is canchg by its serial (adapter_fixes.canchg_target, tested in
-    # adapter_fixes_test.py), checked here only as open_gs_usb passes it on
-    real_target = adapter_fixes.canchg_target
-    adapter_fixes.canchg_target = lambda index=0, *a, **k: real_target(index, "win32")
-    print("CAN_TOOLS_DIR unset: gs_usb opens, pcan is refused")
-    real_open = busmod.open_gs_usb
-    busmod.open_gs_usb = lambda ch, br, **kw: real_open(
-        ch, br, _bus_cls=FakeGsUsb, **kw)
+def _try(fn, *a, **kw):
+    del FakeBR.calls[:]
     try:
-        FakeGsUsb.opened.clear()
-        try:
-            busmod.open_bus(args(None)).shutdown()
-            err = None
-        except Exception as e:
-            err = "%s: %s" % (type(e).__name__, e)
-        check(err is None and len(FakeGsUsb.opened) == 1,
-              "gs_usb opens with CAN_TOOLS_DIR unset -> %s"
-              % (err or FakeGsUsb.opened))
-        try:
-            busmod.open_bus(types.SimpleNamespace(
-                transport="pcan", channel=None, port=0, bitrate=500000))
-            refused = None
-        except Exception as e:
-            refused = "%s: %s" % (type(e).__name__, e)
-        check(refused is not None and refused.startswith("PathsError")
-              and "CAN_TOOLS_DIR is not set" in refused,
-              "pcan with CAN_TOOLS_DIR unset is refused, naming the "
-              "setting -> %s" % refused)
-        check("canbench" not in sys.modules,
-              "... and no canbench was imported")
-    finally:
-        busmod.open_gs_usb = real_open
-    os.environ["CAN_TOOLS_DIR"] = fix["clone"]
+        return fn(*a, **kw), None
+    except Exception as e:                              # noqa: BLE001
+        return None, "%s: %s" % (type(e).__name__, e)
 
-    print("open by index, not by auto-detection")
-    # open_bus must never reach canbench's detection for gs_usb: replace it
-    # with one that fails loudly if called
-    cb = paths.import_canbench()
-    check(os.path.dirname(os.path.dirname(os.path.abspath(cb.__file__)))
-          == os.path.abspath(fix["folder"]),
-          "canbench is the pinned commit's, installed from the stand-in "
-          "clone at CAN_TOOLS_DIR")
-    import canbench.live.receiver as rcv
-    real_detect = rcv.detect_all_can_interfaces
 
-    def no_detect(*a, **k):
-        raise AssertionError("open_bus auto-detected a gs_usb device")
-    rcv.detect_all_can_interfaces = no_detect
-    real_open = busmod.open_gs_usb
-    seen = {}
+def _open(transport, channel, **kw):
+    return _try(busmod.open_bus, args(transport, channel), **kw)
 
-    def spy(channel, bitrate, **kw):
-        seen.update(channel=channel, bitrate=bitrate, **kw)
-        return real_open(channel, bitrate, _bus_cls=FakeGsUsb, **kw)
-    busmod.open_gs_usb = spy
-    try:
-        FakeGsUsb.opened.clear()
-        b = busmod.open_bus(args(None))
-        check(FakeGsUsb.opened[-1]["index"] == 0
-              and FakeGsUsb.opened[-1]["channel"] == "can0",
-              "no --channel opens device index 0 -> %s" % FakeGsUsb.opened)
-        b.shutdown()
-        b = busmod.open_bus(args("1"))
-        check(FakeGsUsb.opened[-1]["index"] == 1,
-              "--channel 1 opens device index 1 -> %s"
-              % FakeGsUsb.opened[-1])
-        b.shutdown()
-        check(seen.get("bitrate") == 500000,
-              "the bitrate reaches the device -> %s" % seen)
-    finally:
-        busmod.open_gs_usb = real_open
-        rcv.detect_all_can_interfaces = real_detect
-    # and the detection path is still the one taken for other brands: the
-    # guard above would have raised for them too
-    rcv.detect_all_can_interfaces = no_detect
-    try:
-        try:
-            busmod.open_bus(types.SimpleNamespace(
-                transport="pcan", channel=None, port=0, bitrate=500000))
-            took_detect = False
-        except AssertionError:
-            took_detect = True
-        check(took_detect, "pcan still goes through auto-detection (the "
-              "guard can fail)")
-    finally:
-        rcv.detect_all_can_interfaces = real_detect
 
-    print("detected adapters (can-tools 1cd3942's Adapter): opened by channel")
-    asked = []
+def _run(real):
+    print("check_role: --channel names the brand's bench role, nothing else")
+    for t, ch in (("pcan", "pcanfd"), ("kvaser", "kvaser"), ("socketcan", "kvaser"),
+                  ("gs_usb", "canchg")):
+        check(busmod.check_role(t, ch) == ch, "%s %s accepted" % (t, ch))
+    for t, ch in (("gs_usb", None), ("gs_usb", "0"), ("gs_usb", "1"), ("gs_usb", "canmain"),
+                  ("gs_usb", "kvaser"), ("pcan", None), ("pcan", "PCAN_USBBUS1"),
+                  ("pcan", "kvaser"), ("pcan", "canchg"), ("ixxat", None),
+                  ("ixxat", "pcanfd"), ("kvaser", "pcanfd")):
+        b, err = _open(t, ch)
+        check(b is None and err and err.startswith("ValueError") and FakeBR.calls == [],
+              "%s %r: refused before anything opens -> %s %s" % (t, ch, err, FakeBR.calls))
+    # each opener checks its role itself too, called without open_bus
+    for fn, ch in ((real[0], "canmain"), (real[0], "0"), (real[1], "PCAN_USBBUS1"),
+                   (real[1], "canchg")):
+        b, err = _try(fn, ch, 500000, _roles=ROLES)
+        check(b is None and err and err.startswith("ValueError") and FakeBR.calls == [],
+              "%s(%r) alone: refused, nothing opened -> %s" % (fn.__name__, ch, err))
 
-    def detect(bitrate, brands=None, **kw):
-        asked.append((bitrate, brands))
-        return list(DETECTED)
-    rcv.detect_all_can_interfaces = detect
-    real_bus = busmod.can.interface.Bus
-    busmod.can.interface.Bus = FakeBus
-    log = logging.getLogger("bus_gs_usb_test.adapters")
-    log.setLevel(logging.INFO)
-    lines = _Lines()
-    log.addHandler(lines)
+    print("gs_usb: role canchg in libusb mode, its echoes filtered")
+    b, err = _open("gs_usb", "canchg")
+    check(err is None and FakeBR.calls == [("canchg", 500000, ("libusb",), {})],
+          "opened by role canchg, libusb mode, no index, bus, address, serial or channel "
+          "from the harness -> %s %s" % (err, FakeBR.calls))
+    check(type(b) is FakeGsUsb and b.opened["channel"] == "gs_usb:canchg",
+          "the bus returned is the one the role opened -> %r" % (b,))
+    b.script = [msg(1, False), msg(2, True), msg(3, False), msg(4, False), msg(5, True)]
+    got = [b.recv(timeout=0.2), b.recv(timeout=0.2)]
+    check([m.arbitration_id for m in got if m] == [0x102, 0x105] and b.script == [],
+          "recv() returns only the received frames, reading past three echoes -> %s"
+          % [hex(m.arbitration_id) for m in got if m])
+    b.shutdown()
+    b, err = _open("gs_usb", "canchg", receive_own_messages=True)
+    b.script = [msg(1, False), msg(2, True)]
+    got = [b.recv(timeout=0.2), b.recv(timeout=0.2)]
+    check([(m.arbitration_id, m.is_rx) for m in got if m] == [(0x101, False), (0x102, True)],
+          "receive_own_messages=True passes the echo through -> %s"
+          % [(hex(m.arbitration_id), m.is_rx) for m in got if m])
+    b.shutdown()
+    raw = FakeGsUsb(channel="gs_usb:canchg")
+    raw.script = [msg(1, False)]
+    m = raw.recv(timeout=0.2)
+    check(m is not None and not m.is_rx,
+          "the bare fake returns the echo (so the drop above is the filter's doing)")
+    raw.shutdown()
+    raw = FakeGsUsb(channel="gs_usb:canchg")
+    busmod.drop_echoes(raw)
+    raw.script = [msg(1, False), msg(2, True)]
+    m = raw.recv(timeout=0.2)
+    check(m is not None and m.arbitration_id == 0x102 and type(raw) is FakeGsUsb,
+          "drop_echoes on an open bus: the echo dropped, the bus's class untouched")
+    raw.shutdown()
+    b, err = _open("gs_usb", "canchg")
+    b.script = [msg(i, False) for i in range(6)]
+    t0 = time.monotonic()
+    m = b.recv(timeout=0.1)
+    dt = time.monotonic() - t0
+    check(m is None and dt < 1.0, "six echoes and nothing received: None after %.3f s" % dt)
+    b.shutdown()
 
-    def real(transport, channel=None):
-        FakeBus.opened.clear()
-        return busmod.open_bus(types.SimpleNamespace(
-            transport=transport, channel=channel, port=0, bitrate=500000),
-            logger=log)
-    try:
-        b = real("pcan")
-        check(FakeBus.opened == [dict(interface="pcan",
-                                      channel="PCAN_USBBUS1", bitrate=500000,
-                                      receive_own_messages=False,
-                                      auto_reset=True)],
-              "pcan: the first PCAN detected, not the socketcan entry "
-              "listed before it, opened by channel with auto_reset -> %s"
-              % FakeBus.opened)
-        check(asked[-1] == (500000, {"pcan"}),
-              "detection is asked for that brand alone -> %s" % (asked[-1],))
-        check(any(ln == "Using real interface: pcan PCAN_USBBUS1 [pcan-id:0]"
-                  for ln in lines.lines),
-              "the log names the adapter by its whole desc, id list and all")
-        check(b.resets == 1, "... and reset() once at startup -> %d"
-              % b.resets)
-        b = real("pcan", "PCAN_USBBUS2")
-        check([o.get("channel") for o in FakeBus.opened] == ["PCAN_USBBUS2"],
-              "--channel PCAN_USBBUS2 opens the second PCAN, though both "
-              "carry pcan-id:0 -> %s" % FakeBus.opened)
-    finally:
-        busmod.can.interface.Bus = real_bus
-        rcv.detect_all_can_interfaces = real_detect
-        log.removeHandler(lines)
+    class Endless(FakeGsUsb):
+        def _recv_internal(self, timeout):
+            time.sleep(0.001)
+            return msg(9, False), False
+    import threading
+    e = busmod.drop_echoes(Endless(channel="gs_usb:canchg"))
+    got = []
+    t = threading.Thread(target=lambda: got.append(e.recv(timeout=0.1)), daemon=True)
+    t0 = time.monotonic()
+    t.start()
+    t.join(2.0)
+    check(not t.is_alive() and got == [None],
+          "echoes without end: None once the timeout is up (%.3f s), not a hang"
+          % (time.monotonic() - t0))
+    if not t.is_alive():
+        e.shutdown()
 
-    print("the Kvaser: kvaser_usb netdev 'kvaser', link up first, never detection")
+    print("pcan: role pcanfd, auto_reset, reset() at startup")
+    b, err = _open("pcan", "pcanfd")
+    check(err is None and FakeBR.calls == [("pcanfd", 500000, ("pcan",),
+                                            {"receive_own_messages": False,
+                                             "auto_reset": True})],
+          "opened by role pcanfd, pcan mode, auto_reset, no channel or device id from the "
+          "harness -> %s %s" % (err, FakeBR.calls))
+    check(err is None and b.resets == 1, "... and reset() once at startup -> %s"
+          % (b and b.resets))
+
+    print("the Kvaser: role kvaser on kvaser_usb, link up first")
     import kvaser_link
     calls = []
 
     class Link:
-        NETDEV, BITRATE = kvaser_link.NETDEV, kvaser_link.BITRATE
+        ROLE, BITRATE = kvaser_link.ROLE, kvaser_link.BITRATE
         LinkError, WatchedBus = kvaser_link.LinkError, kvaser_link.WatchedBus
         check_channel = staticmethod(kvaser_link.check_channel)
         fail = None
@@ -353,37 +294,27 @@ def run(fix):
         @staticmethod
         def open_bus(channel, receive_own_messages, can_mod=None):
             calls.append(("open_bus", channel, receive_own_messages))
-            return FakeBus(interface="socketcan", channel=channel)
+            return FakePcan(interface="socketcan", channel=channel)
 
-    rcv.detect_all_can_interfaces = no_detect
     real_kv = busmod.open_kvaser
     busmod.open_kvaser = lambda ch, br, **kw: real_kv(ch, br, _link=Link, **kw)
 
     def kv(transport="kvaser", channel="kvaser", bitrate=500000, **kw):
         del calls[:]
         try:
-            return busmod.open_bus(types.SimpleNamespace(
-                transport=transport, channel=channel, port=0, bitrate=bitrate), **kw), None
+            return busmod.open_bus(args(transport, channel, bitrate), **kw), None
         except Exception as e:                      # noqa: BLE001
             return None, "%s: %s" % (type(e).__name__, e)
     try:
         b, err = kv()
         check(err is None and calls == [("set_link", True), ("open_bus", "kvaser", True)],
-              "kvaser: the link brought up, then netdev kvaser opened with its echoes "
-              "kept, no detection -> %s %s" % (err, calls))
+              "kvaser: the link brought up, then role kvaser opened with its echoes kept "
+              "-> %s %s" % (err, calls))
         check(isinstance(b, kvaser_link.WatchedBus),
               "... and the bus returned keeps the stall rule (WatchedBus) -> %r" % (b,))
         b, err = kv("socketcan")
         check(err is None and calls[-1] == ("open_bus", "kvaser", True),
               "socketcan, channel kvaser: the same opener -> %s %s" % (err, calls))
-        for ch in (None, "can0", "canmain"):
-            b, err = kv(channel=ch)
-            check(err and "LinkError" in err and calls == [],
-                  "channel %r (by position, or another netdev): refused, nothing set "
-                  "or opened -> %s %s" % (ch, err, calls))
-        b, err = kv("socketcan", None)
-        check(err and "LinkError" in err and calls == [],
-              "socketcan with no channel: refused -> %s %s" % (err, calls))
         b, err = kv(receive_own_messages=True)
         check(err and "receive_own_messages" in err and calls == [],
               "echoes asked for: refused (they are the stall rule's) -> %s" % err)
@@ -395,78 +326,25 @@ def run(fix):
         check(err and "LinkError" in err and calls == [("set_link", True)],
               "a link that does not come up: refused, nothing opened -> %s %s"
               % (err, calls))
+        # the Kvaser's own channel check, under open_bus's: a call that skips
+        # check_role still reaches no adapter on another name
+        Link.fail = None
+        del calls[:]
+        try:
+            busmod.open_kvaser("can0", 500000)
+            err = None
+        except Exception as e:                      # noqa: BLE001
+            err = "%s: %s" % (type(e).__name__, e)
+        check(err and "LinkError" in err and calls == [],
+              "open_kvaser on another name: refused by kvaser_link.check_channel, nothing "
+              "set or opened -> %s %s" % (err, calls))
     finally:
         Link.fail = None
         busmod.open_kvaser = real_kv
-        rcv.detect_all_can_interfaces = real_detect
 
-    print("echoes: drained and dropped by default, kept when asked for")
-    b = busmod.open_gs_usb("0", 500000, _bus_cls=FakeGsUsb)
-    b.script = [msg(1, False), msg(2, True), msg(3, False), msg(4, False),
-                msg(5, True)]
-    got = [b.recv(timeout=0.2), b.recv(timeout=0.2)]
-    check([m.arbitration_id for m in got] == [0x102, 0x105]
-          and b.script == [],
-          "recv() returns only the received frames, reading past three "
-          "echoes -> %s" % [hex(m.arbitration_id) for m in got if m])
-    b.shutdown()
-    b = busmod.open_gs_usb("0", 500000, _bus_cls=FakeGsUsb,
-                           receive_own_messages=True)
-    b.script = [msg(1, False), msg(2, True)]
-    got = [b.recv(timeout=0.2), b.recv(timeout=0.2)]
-    check([(m.arbitration_id, m.is_rx) for m in got]
-          == [(0x101, False), (0x102, True)],
-          "receive_own_messages=True passes the echo through -> %s"
-          % [(hex(m.arbitration_id), m.is_rx) for m in got if m])
-    b.shutdown()
-    # the mixin is what drops them: without it the echo comes back
-    raw = FakeGsUsb(channel="can0", index=0)
-    raw.script = [msg(1, False)]
-    m = raw.recv(timeout=0.2)
-    check(m is not None and not m.is_rx,
-          "the bare fake returns the echo (so the drop above is the "
-          "mixin's doing)")
-    raw.shutdown()
-
-    print("only echoes inside the timeout")
-    b = busmod.open_gs_usb("0", 500000, _bus_cls=FakeGsUsb)
-    b.script = [msg(i, False) for i in range(6)]
-    t0 = time.monotonic()
-    m = b.recv(timeout=0.1)
-    dt = time.monotonic() - t0
-    check(m is None and dt < 1.0,
-          "six echoes and nothing received: None after %.3f s" % dt)
-    b.shutdown()
-
-    print("the Linux target: canchg by bus and address, its serial checked")
-    made = []
-
-    class Serialed(FakeGsUsb):
-        serial = "S1"
-
-        def __init__(self, *a, **kw):
-            super().__init__(*a, **kw)
-            self.gs_usb = types.SimpleNamespace(serial_number=self.serial)
-            made.append(self)
-
-    class OtherSerial(Serialed):
-        serial = "S2"
-
-    target = {"bus": 1, "address": 38, "serial": "S1"}
-    FakeGsUsb.opened.clear()
-    b = busmod.open_gs_usb("0", 500000, _bus_cls=Serialed, _target=dict(target))
-    check(FakeGsUsb.opened == [dict(channel="can0", bitrate=500000, index=None,
-                                    bus=1, address=38)],
-          "opened by bus 1 address 38, no index, no serial keyword -> %s"
-          % FakeGsUsb.opened)
-    b.shutdown()
-    try:
-        busmod.open_gs_usb("0", 500000, _bus_cls=OtherSerial, _target=dict(target))
-        err = None
-    except adapter_fixes.CanchgError as e:
-        err = str(e)
-    check(err is not None and "S2" in err and made[-1].shut,
-          "a device carrying another serial is shut down and refused -> %s" % err)
+    print("no detection, no canbench")
+    check(not [m for m in sys.modules if m == "canbench" or m.startswith("canbench.")],
+          "no canbench module was imported by any of it")
 
     print("\nbus_gs_usb_test: %s" % ("all checks OK" if not FAILS else
                                      "%d FAILED" % len(FAILS)))
@@ -475,31 +353,40 @@ def run(fix):
 
 # (what, text in bus.py, its replacement): each must make the test fail.
 MUTANTS = [
-    ("gs_usb loads canbench before it opens",
-     '    if transport == "gs_usb":\n        return open_gs_usb(',
-     '    if transport == "gs_usb":\n        import paths\n'
-     '        paths.import_canbench()\n        return open_gs_usb('),
-    ("a refused canbench is swallowed and detection skipped",
-     '    paths.import_canbench()     # the pinned canbench',
-     '    try:\n        paths.import_canbench()\n'
-     '    except paths.PathsError:\n'
-     '        raise RuntimeError("no kvaser interface detected")\n'
-     '    pass     # the pinned canbench'),
-    ("the first adapter of any brand is taken",
-     "    matches = [i for i in interfaces if i[0] == transport]\n",
-     "    matches = list(interfaces)\n"),
-    ("the channel is read from the end of desc",
-     "    if channel is not None:\n        ch = channel\n",
-     "    ch = channel if channel is not None else desc.split()[-1].strip('[]')\n"),
+    ("check_role: any channel", "    if channel not in ok:", "    if False:"),
+    ("gs_usb may name canmain", '"gs_usb": ("canchg",)}', '"gs_usb": ("canchg", "canmain")}'),
+    ("open_bus does not check the role (ixxat reaches the PCAN)",
+     "    check_role(transport, channel)\n\n", "\n"),
+    ("open_pcan does not check the role", '    check_role("pcan", channel)\n', ""),
+    ("open_gs_usb does not check the role", '    check_role("gs_usb", channel)\n', ""),
+    ("the old detection path again (first pcan found)",
+     "    return open_pcan(channel, bitrate, receive_own_messages=receive_own_messages,\n"
+     "                     logger=logger)\n",
+     "    from canbench.live.receiver import detect_all_can_interfaces\n"
+     "    return detect_all_can_interfaces(bitrate, brands={transport})[0]\n"),
+    ("the PCAN by its channel number",
+     "    bus = roles.pcanfd(bitrate, receive_own_messages=receive_own_messages,\n"
+     "                       auto_reset=True)\n",
+     "    bus = roles.pcanfd(bitrate, receive_own_messages=receive_own_messages,\n"
+     "                       auto_reset=True, channel=\"PCAN_USBBUS1\")\n"),
     ("a PCAN opens without auto_reset",
-     '        kwargs["auto_reset"] = True\n',
-     '        pass\n'),
-    ("gs_usb opened by index whatever the target",
-     '    bus = cls(channel="can%d" % index, bitrate=bitrate, **kw)\n',
-     '    bus = cls(channel="can%d" % index, bitrate=bitrate, index=index)\n'),
-    ("the opened device's serial not checked",
-     '    adapter_fixes.check_opened(bus, _target)\n', ''),
-    ("the Kvaser by detection again",
+     "                       auto_reset=True)\n", "                       )\n"),
+    ("no reset() at startup", "        bus.reset()\n", "        pass\n"),
+    ("gs_usb without the echo filter",
+     "    return drop_echoes(roles.canchg(bitrate), receive_own_messages)\n",
+     "    return roles.canchg(bitrate)\n"),
+    ("gs_usb echoes always kept", "    bus._keep_echoes = bool(keep)\n",
+     "    bus._keep_echoes = True\n"),
+    ("gs_usb echoes never kept",
+     "    return drop_echoes(roles.canchg(bitrate), receive_own_messages)\n",
+     "    return drop_echoes(roles.canchg(bitrate))\n"),
+    ("the echo filter without its timeout",
+     "            if end is not None and _t.monotonic() >= end:\n                return None, False\n",
+     ""),
+    ("gs_usb by index",
+     "    return drop_echoes(roles.canchg(bitrate), receive_own_messages)\n",
+     "    return drop_echoes(roles.canchg(bitrate, index=0), receive_own_messages)\n"),
+    ("the Kvaser not through open_kvaser",
      '    if transport in ("kvaser", "socketcan"):\n        return open_kvaser(',
      '    if False:\n        return open_kvaser('),
     ("the Kvaser's link not brought up", "    line = link.set_link(True)\n",
@@ -511,7 +398,7 @@ MUTANTS = [
      "    b = link.open_bus(channel=ch, receive_own_messages=True, can_mod=_can_mod)\n"
      "    line = link.set_link(True)\n"),
     ("the Kvaser by position", "    ch = link.check_channel(channel)\n",
-     "    ch = channel or link.NETDEV\n"),
+     "    ch = channel\n"),
     ("the Kvaser without the stall rule", "    return link.WatchedBus(b)\n", "    return b\n"),
     ("the Kvaser's echoes not kept",
      "    b = link.open_bus(channel=ch, receive_own_messages=True, can_mod=_can_mod)\n",

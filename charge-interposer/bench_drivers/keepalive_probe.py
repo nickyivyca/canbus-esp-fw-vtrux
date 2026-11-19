@@ -8,16 +8,19 @@ then does not reset the X2). Recorded, not judged (bench_suite's
 recorded_judge).
 
 Since 2026-11-13 (tester; the charge-interposer reviewer's E and A): the
-board's port and the PCAN's channel come from the command line (the bench
-suite passes {serial_port} and {pcan_channel}; they were COM3 and
-PCAN_USBBUS1 in the code), and the Kvaser is the kernel's kvaser_usb,
-netdev kvaser: an ACK check, so its link is brought up and read back first
-(kvaser_link.set_link), and a link that does not come up is one VOID line
-with the kernel's USB/CAN lines, before any adapter opens. The Kvaser only
-receives here (one frame every 0.5 s goes out, on the Innomaker), so no
-stall rule and no reader process: nothing sends busily.
+board's port comes from the command line (the bench suite passes
+{serial_port}; it was COM3 in the code), and the Kvaser is the kernel's
+kvaser_usb, role kvaser: an ACK check, so its link is brought up and read
+back first (kvaser_link.set_link), and a link that does not come up is one
+VOID line with the kernel's USB/CAN lines, before any adapter opens. The
+Kvaser only receives here (one frame every 0.5 s goes out, on the
+Innomaker), so no stall rule and no reader process: nothing sends busily.
 
-    python3.13 -B keepalive_probe.py --port /dev/... --pcan-channel PCAN_USBBUS1
+Since 2026-11-18 (shared/bench SPEC section 8's adapter roles): every
+adapter by its role, the PCAN as pcanfd (adapter_roles.pcanfd), so the
+--pcan-channel the bench suite passed from 2026-11-13 is gone and refused.
+
+    python3.13 -B keepalive_probe.py --port /dev/...
     python3.13 -B keepalive_probe.py --self-test | --can-fail
 """
 import argparse
@@ -39,15 +42,15 @@ KA = 0x18FF5AC0
 
 
 def run(a, link=kvaser_link, opener=None, out=print):
-    """-> rc. opener(port, pcan_channel) -> (ser, tx, kv, pc): the
-    adapters (tests pass a stand-in that must not be reached)."""
+    """-> rc. opener(port) -> (ser, tx, kv, pc): the adapters (tests pass a
+    stand-in that must not be reached)."""
     t_start = time.time()
     try:
         out(link.set_link(True))
     except link.LinkError as e:
         out(link.link_void(e, t_start, time.time()))
         return 1
-    ser, tx, kv, pc = (opener or open_all)(a.port, a.pcan_channel)
+    ser, tx, kv, pc = (opener or open_all)(a.port)
     lines, got = [], []
     stop = threading.Event()
 
@@ -105,22 +108,24 @@ def run(a, link=kvaser_link, opener=None, out=print):
     return 0
 
 
-def open_all(port, pcan_channel):
+def open_all(port):
+    """The board's port; canchg, kvaser and pcanfd, each by its role."""
     import can
+    import adapter_roles
     import bench_charger_witness as bcw
     import serial_open
     ser = serial_open.open_quiet(port, 115200, 0.2)
     tx = bcw.open_gs_usb()
     kv = kvaser_link.open_bus(receive_own_messages=False)
-    pc = can.Bus(interface="pcan", channel=pcan_channel, bitrate=500000,
-                 state=can.BusState.PASSIVE)
+    pc = adapter_roles.pcanfd(500000, state=can.BusState.PASSIVE)
     return ser, tx, kv, pc
 
 
 def self_test():
     """No hardware: the link set before anything opens; a link that does
     not come up is a VOID line naming the kernel's lines, rc 1, nothing
-    opened; the port and PCAN channel are required arguments."""
+    opened; the port is a required argument, and a PCAN channel is refused
+    (the PCAN is opened by its role)."""
     fails = []
 
     def check(ok, what):
@@ -147,10 +152,10 @@ def self_test():
 
     opened = []
 
-    def opener(port, ch):
-        opened.append((port, ch))
+    def opener(port):
+        opened.append(port)
         raise RuntimeError("stop here: the adapters would open")
-    a = argparse.Namespace(port="/dev/x2", pcan_channel="PCAN_USBBUS1")
+    a = argparse.Namespace(port="/dev/x2")
     Link.fail = "the kvaser link reads down in sysfs, and this check needs it up"
     outl = []
     rc = run(a, Link, opener, outl.append)
@@ -164,15 +169,19 @@ def self_test():
         run(a, Link, opener, outl.append)
     except RuntimeError:
         pass
-    check(Link.calls == [True] and opened == [("/dev/x2", "PCAN_USBBUS1")],
-          "the link brought up (an ACK check) before the adapters open, on the port and "
-          "channel given: %s %s" % (Link.calls, opened))
-    for argv in ([], ["--port", "/dev/x2"], ["--pcan-channel", "PCAN_USBBUS1"]):
+    check(Link.calls == [True] and opened == ["/dev/x2"],
+          "the link brought up (an ACK check) before the adapters open, on the port "
+          "given: %s %s" % (Link.calls, opened))
+    check(parse(["--port", "/dev/x2"]).port == "/dev/x2", "--port alone is accepted")
+    for argv, why in (([], "--port is required"),
+                      (["--pcan-channel", "PCAN_USBBUS1"], "--port is required"),
+                      (["--port", "/dev/x2", "--pcan-channel", "PCAN_USBBUS1"],
+                       "a PCAN channel is refused: the PCAN is opened by its role")):
         try:
             parse(argv)
-            check(False, "%s accepted without both --port and --pcan-channel" % argv)
+            check(False, "%s accepted (%s)" % (argv, why))
         except SystemExit:
-            check(True, "%s refused: --port and --pcan-channel are required" % argv)
+            check(True, "%s refused: %s" % (argv, why))
     print("\nkeepalive_probe self-test: %s" % ("all checks OK" if not fails
                                               else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -184,8 +193,6 @@ def parse(argv):
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--can-fail", action="store_true")
     ap.add_argument("--port", required="--self-test" not in argv and "--can-fail" not in argv)
-    ap.add_argument("--pcan-channel",
-                    required="--self-test" not in argv and "--can-fail" not in argv)
     return ap.parse_args(argv)
 
 
@@ -197,8 +204,11 @@ MUTANTS = [
      "        out(\"link: %s\" % e)\n        return 1"),
     ("a link failure goes on", "        out(link.link_void(e, t_start, time.time()))\n        return 1",
      "        out(link.link_void(e, t_start, time.time()))"),
-    ("the port hard-coded", "    ser, tx, kv, pc = (opener or open_all)(a.port, a.pcan_channel)",
-     "    ser, tx, kv, pc = (opener or open_all)(\"COM3\", \"PCAN_USBBUS1\")"),
+    ("the port hard-coded", "    ser, tx, kv, pc = (opener or open_all)(a.port)",
+     "    ser, tx, kv, pc = (opener or open_all)(\"COM3\")"),
+    ("a PCAN channel accepted again",
+     "    return ap.parse_args(argv)",
+     "    ap.add_argument(\"--pcan-channel\")\n    return ap.parse_args(argv)"),
     ("the port optional", "    ap.add_argument(\"--port\", required=\"--self-test\" not in argv",
      "    ap.add_argument(\"--port\", required=False and \"--self-test\" not in argv"),
 ]

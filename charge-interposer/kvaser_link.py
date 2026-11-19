@@ -53,16 +53,24 @@ devices by ID (BENCH_USB_IDS), besides gs_usb, kvaser_usb, peak_usb, pcan,
 WiCAN failure: "usb 1-3.2-port4: disabled by hub (EMI?)", error -32).
 
 THE OPENER (D). open_bus() is the only way a harness file opens the
-Kvaser: python-can's socketcan on channel "kvaser", named, after IFF_UP is
-read; a down or unreadable link is refused, and so is any other channel
-(check_channel: a netdev picked by position, as canbench's detection would,
-or none). CANlib's interface "kvaser" (linuxcan's leaf) is refused on Linux
-by kvaser_link_test's scan. Off Linux the Kvaser is refused: the bench host
-is madhouse-debian from port step 3.
+Kvaser: python-can's socketcan on the netdev of bench role "kvaser", after
+IFF_UP is read; a down or unreadable link is refused, and so is any channel
+but the role's name (check_channel: a netdev picked by position, as
+canbench's detection would, or none). CANlib's interface "kvaser"
+(linuxcan's leaf) is refused on Linux by kvaser_link_test's scan. Off Linux
+the Kvaser is refused: the bench host is madhouse-debian from port step 3.
 
-canctl, the sysfs root, journalctl and the clocks are module globals read at
-each call, so kvaser_link_test.py points them at a fake canctl, a made-up
-sysfs and a planted kernel log.
+THE ROLE (shared/bench SPEC section 8, 2026-11-18). The harness asks for the
+Kvaser by its canctl role, ROLE: canctl's up, down and usbreset take it, and
+its netdev, which IFF_UP is read from and the socket opens on, is the one
+canctl's role table names (netdev(): adapter_roles.kvaser_netdev, in
+socketcan mode on kvaser_usb), never a name of the harness's own. A role
+that does not resolve is LinkError, as an unreadable link is.
+
+canctl, the role table (ROLES), the sysfs root, journalctl and the clocks are
+module globals read at each call, so kvaser_link_test.py points them at a
+fake canctl, a stand-in role table, a made-up sysfs and a planted kernel
+log.
 
     python3.13 -B charge-interposer/kvaser_link.py state|up|down|recover
 """
@@ -76,7 +84,8 @@ import sys
 import threading
 import time
 
-NETDEV = "kvaser"
+ROLE = "kvaser"                     # canctl's role (shared/bench SPEC section 8)
+ROLES = None                        # the role table: adapter_roles, or a stand-in (tests)
 BITRATE = 500000
 STALL_S = 0.100                     # D5: no own echo this long after send returns
 CANCTL = ["sudo", "-n", "/usr/local/sbin/canctl"]
@@ -131,17 +140,35 @@ def linux(platform=None):
 
 # ---- link state -------------------------------------------------------------
 
+def netdev():
+    """The netdev of role ROLE, from canctl's role table (ROLES, else
+    adapter_roles.kvaser_netdev: socketcan mode on kvaser_usb). LinkError
+    if the role does not resolve to one."""
+    roles = ROLES
+    if roles is None:
+        import adapter_roles as roles
+    try:
+        dev = roles.kvaser_netdev()
+    except Exception as e:                              # noqa: BLE001
+        raise LinkError("role %s does not resolve to a netdev: %s" % (ROLE, e))
+    if not dev or os.sep in dev or dev in (".", ".."):
+        raise LinkError("role %s resolves to netdev %r: refused" % (ROLE, dev))
+    return dev
+
+
 def link_state(root=None):
-    """-> "up" or "down", from IFF_UP in sysfs. LinkError if the netdev is
-    missing or its flags cannot be read."""
+    """-> "up" or "down", from IFF_UP in sysfs on the role's netdev.
+    LinkError if the role does not resolve, or the netdev is missing or its
+    flags cannot be read."""
     root = root or SYSFS_NET
-    p = os.path.join(root, NETDEV, "flags")
+    dev = netdev()
+    p = os.path.join(root, dev, "flags")
     try:
         with open(p, encoding="ascii") as f:
             raw = f.read().strip()
         flags = int(raw, 16)
     except (OSError, ValueError) as e:
-        raise LinkError("the %s link state cannot be read (%s: %s)" % (NETDEV, p, e))
+        raise LinkError("the %s link state cannot be read (%s: %s)" % (dev, p, e))
     return "up" if flags & IFF_UP else "down"
 
 
@@ -151,7 +178,7 @@ def require(up, root=None):
     got = link_state(root)
     if got != want:
         raise LinkError("the %s link reads %s in sysfs, and this check needs it %s"
-                        % (NETDEV, got, want))
+                        % (ROLE, got, want))
     return got
 
 
@@ -185,38 +212,40 @@ def set_link(up, root=None, platform=None):
     check) through canctl, then read it back in sysfs. -> a line saying
     so; LinkError if canctl fails or the read-back is not what was asked."""
     if not linux(platform):
-        raise LinkError("the Kvaser is opened on Linux only (netdev %s, canctl): the bench "
-                        "host is madhouse-debian from port step 3" % NETDEV)
-    args = ("up", NETDEV, str(BITRATE)) if up else ("down", NETDEV)
+        raise LinkError("the Kvaser is opened on Linux only (role %s, canctl): the bench "
+                        "host is madhouse-debian from port step 3" % ROLE)
+    args = ("up", ROLE, str(BITRATE)) if up else ("down", ROLE)
     rc, last = _canctl(*args)
     if rc != 0:
         raise LinkError("canctl %s failed (%s): %s" % (" ".join(args), _rc_text(rc), last))
     require(up, root)
-    return "%s link %s (canctl %s, IFF_UP read back)" % (NETDEV, "up" if up else "down",
+    return "%s link %s (canctl %s, IFF_UP read back)" % (ROLE, "up" if up else "down",
                                                           " ".join(args))
 
 
 def check_channel(channel):
-    """The Kvaser is netdev "kvaser", named; anything else (None: the first
-    netdev found, by position; another name) is refused."""
-    if channel != NETDEV:
-        raise LinkError("the Kvaser is opened as netdev %r by name, not %r (a netdev picked "
-                        "by position, or another adapter's, is refused)" % (NETDEV, channel))
+    """The Kvaser is asked for by its role, "kvaser"; anything else (None:
+    the first netdev found, by position; another name) is refused."""
+    if channel != ROLE:
+        raise LinkError("the Kvaser is opened by its role %r, not %r (a netdev picked by "
+                        "position, or another adapter's, is refused)" % (ROLE, channel))
     return channel
 
 
-def open_bus(channel=NETDEV, receive_own_messages=True, root=None, can_mod=None,
+def open_bus(channel=ROLE, receive_own_messages=True, root=None, can_mod=None,
              platform=None):
-    """python-can's socketcan Bus on netdev kvaser, after the link reads up.
-    Echoes are kept by default (EchoWatch counts them as "sent")."""
+    """python-can's socketcan Bus on role kvaser's netdev (netdev()), after
+    its link reads up. Echoes are kept by default (EchoWatch counts them as
+    "sent")."""
     if not linux(platform):
-        raise LinkError("the Kvaser is opened on Linux only (netdev %s): the bench host is "
-                        "madhouse-debian from port step 3" % NETDEV)
+        raise LinkError("the Kvaser is opened on Linux only (role %s): the bench host is "
+                        "madhouse-debian from port step 3" % ROLE)
     check_channel(channel)
+    dev = netdev()
     require(True, root)
     if can_mod is None:
         import can as can_mod
-    return can_mod.Bus(interface="socketcan", channel=NETDEV,
+    return can_mod.Bus(interface="socketcan", channel=dev,
                        receive_own_messages=receive_own_messages)
 
 
@@ -448,7 +477,7 @@ def recover(root=None, environ=None, platform=None):
     stopped (the STOP file VTRUX_KVASER_STOP names), and the line says so."""
     if not linux(platform):
         return False, "kvaser recovery: Linux only"
-    steps = [("down", NETDEV), ("usbreset", NETDEV), ("up", NETDEV, str(BITRATE))]
+    steps = [("down", ROLE), ("usbreset", ROLE), ("up", ROLE, str(BITRATE))]
     for args in steps:
         rc, last = _canctl(*args)
         if rc != 0:

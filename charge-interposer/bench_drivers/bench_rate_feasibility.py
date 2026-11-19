@@ -62,9 +62,9 @@ import time
 # the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import adapter_roles               # noqa: E402  (every adapter by its bench role)
 
-import bench_pacer                                            # noqa: E402
+import bench_pacer                                           # noqa: E402
 import can                                                    # noqa: E402
 
 BITRATE = 500000
@@ -119,13 +119,12 @@ class Tee(object):
 
 
 def open_gs_usb():
-    # by serial on Linux; libusb's DLL folder first on Windows
-    return adapter_fixes.canchg(bitrate=BITRATE)
+    # role canchg in libusb mode (shared/bench SPEC section 8, 2026-11-18)
+    return adapter_roles.canchg(BITRATE)
 
 
 OPENERS = {
-    "pcan": lambda: can.Bus(interface="pcan", channel="PCAN_USBBUS1",
-                            bitrate=BITRATE, auto_reset=True),
+    "pcan": lambda: adapter_roles.pcanfd(BITRATE, auto_reset=True),
     "innomaker": open_gs_usb,
 }
 
@@ -142,13 +141,16 @@ def open_witness():
     were CANlib's device stamps. On Linux the Kvaser is the kernel's
     kvaser_usb (software stamps, two per 1 ms USB frame), so the witness is
     refused there rather than measured on a clock it was not written for.
-    The other drivers import this file only for open_gs_usb."""
+    The other drivers import this file only for open_gs_usb. Since
+    2026-11-18 (shared/bench SPEC section 8) it is role kvaser on CANlib
+    (adapter_roles.kvaser_canlib, linuxcan mode), never canlib channel 0;
+    the roles come from canctl, on the bench host only, so with E's refusal
+    on Linux this witness opens nowhere until it is ported."""
     if sys.platform.startswith("linux"):
         raise RuntimeError("bench_rate_feasibility's witness is CANlib-only: on Linux the "
                            "Kvaser is kvaser_usb (software stamps); not ported (reviewer's E, "
                            "2026-11-13)")
-    return adapter_fixes.bus(interface="kvaser", channel=0, bitrate=BITRATE,
-                             receive_own_messages=False)
+    return adapter_roles.kvaser_canlib(BITRATE, receive_own_messages=False)
 
 
 def drain(bus, stop, counter):

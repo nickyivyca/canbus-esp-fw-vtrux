@@ -79,7 +79,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # from the working folder (port step 0, 2026-10-26).
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
-import adapter_fixes               # noqa: E402  (Linux adapter fixes)
+import adapter_roles               # noqa: E402  (every adapter by its bench role)
 
 STREAM_ID = 0x0CFF01C0
 RATE = 500.0
@@ -313,8 +313,8 @@ def judge_normal(echoes, sent, before, after):
 
 def open_innomaker(bitrate):
     import can
-    # by serial on Linux; libusb's DLL folder first on Windows
-    bus = adapter_fixes.canchg(bitrate=bitrate)
+    # role canchg in libusb mode (shared/bench SPEC section 8, 2026-11-18)
+    bus = adapter_roles.canchg(bitrate)
     from gs_usb.constants import GS_CAN_MODE_HW_TIMESTAMP as HW
     flags = getattr(getattr(bus, "gs_usb", None), "device_flags", None)
     return bus, bool(flags is not None and flags & HW)

@@ -72,13 +72,16 @@ identified by their @HELLO and ELF sha256.
 
 Settings beyond the core's (see the NICKY-XPS settings JSON in reverse-it
 interposer-firmware/): interposer_code,
-images_dir, images_src, serial_port, pcan_channel, wican_state,
+images_dir, images_src, serial_port, wican_state,
 madhouse_pio; for the bench suite's WiCAN (bench_wican.py),
 wican_image_dir (the pinned image's files, wican_pin.json), wican_mac and
 wican_esptool_device (its USB load, identify and resets;
-wican_esptool_port on Windows); canchg_device (adapter_fixes, and
-canchg_mode: on Linux the run puts canchg in libusb mode through canctl in
-the X2's start hook and back on gs_usb in its end hook). canx2_slcan, with
+wican_esptool_port on Windows). No CAN adapter is named in the settings:
+each is opened by its canctl role (adapter_roles; shared/bench SPEC section
+8, 2026-11-18), so pcan_channel and canchg_device are no longer read.
+canchg_mode, with no setting: on Linux the run puts canchg in libusb mode
+through canctl in the X2's start hook and back on gs_usb in its end hook,
+each read back from canctl's role table. canx2_slcan, with
 no setting: on Linux the X2's start hook detaches canx2 from the kernel's
 SLCAN through canctl if it is attached, before the X2 is identified or
 flashed. The diag DBC
@@ -196,7 +199,7 @@ HARNESS_PY_TESTS = [
     "build_lookup_offline_test.py", "paths_test.py", "diag_cadence_test.py",
     "bus_gs_usb_test.py", "canre_pin_test.py", "can_tools_pin_test.py",
     "twai_fake_option_test.py", "scratch_dir_test.py", "scratch_run_test.py",
-    "hw_mechanics_test.py", "serial_open_test.py", "adapter_fixes_test.py",
+    "hw_mechanics_test.py", "serial_open_test.py", "adapter_roles_test.py",
     "wican_pin_test.py", "canchg_mode_test.py", "canx2_slcan_test.py",
     "kvaser_link_test.py", "bus_alloc_test.py",
 ]
@@ -206,7 +209,7 @@ HARNESS_PY_CANFAILS = [
     "canre_pin_test.py", "can_tools_pin_test.py", "bus_gs_usb_test.py",
     "paths_test.py", "twai_fake_option_test.py", "scratch_dir_test.py",
     "scratch_run_test.py", "hw_mechanics_test.py", "serial_open_test.py",
-    "adapter_fixes_test.py", "wican_pin_test.py", "canchg_mode_test.py",
+    "adapter_roles_test.py", "wican_pin_test.py", "canchg_mode_test.py",
     "canx2_slcan_test.py", "kvaser_link_test.py", "bus_alloc_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
@@ -1090,33 +1093,12 @@ def emulated(settings):
 
 
 # ---- bench --------------------------------------------------------------
-# The local settings' canchg_device {vid, pid, serial} names the charger
-# segment's Innomaker (madhouse also has canmain, the same model). Every
-# bench check gets it as VTRUX_CANCHG_DEVICE "<vid>:<pid>:<serial>", which
-# adapter_fixes.canchg_target reads on Linux; unset there, each Innomaker
-# open refuses (tester, 2026-11-12, the reviewer's E2). Off Linux it is not
-# needed: the Windows bench opens index 0 as before.
-CANCHG_SETTING = "canchg_device"
-CANCHG_ENV = "VTRUX_CANCHG_DEVICE"
-_HEX4 = re.compile(r"[0-9a-f]{4}\Z")
-
-
-def canchg_env(settings):
-    """{VTRUX_CANCHG_DEVICE: "<vid>:<pid>:<serial>"} from the settings'
-    canchg_device, {} when it is absent; ValueError when it is malformed."""
-    dev = settings.get(CANCHG_SETTING)
-    if dev is None:
-        return {}
-    if not isinstance(dev, dict):
-        raise ValueError("settings %s is %r, not {vid, pid, serial}" % (CANCHG_SETTING, dev))
-    vid, pid, serial = (str(dev.get(k) or "").strip() for k in ("vid", "pid", "serial"))
-    if not (_HEX4.match(vid.lower()) and _HEX4.match(pid.lower())):
-        raise ValueError("settings %s: vid %r / pid %r are not four hex digits"
-                         % (CANCHG_SETTING, vid, pid))
-    if not serial or any(c.isspace() or c in "{}" for c in serial):
-        raise ValueError("settings %s: serial %r is empty or holds a space or brace"
-                         % (CANCHG_SETTING, serial))
-    return {CANCHG_ENV: "%s:%s:%s" % (vid.lower(), pid.lower(), serial)}
+# Every bench adapter a check opens is asked for by its canctl role
+# (shared/bench SPEC section 8, 2026-11-18; adapter_roles.py): canchg,
+# kvaser, pcanfd. So no check takes an adapter's identity from the settings:
+# the PCAN's channel ({pcan_channel}, PCAN_USBBUS1) and canchg's USB serial
+# (canchg_device, passed as VTRUX_CANCHG_DEVICE from 2026-11-12, the
+# reviewer's E2) are no longer read; a settings file may still hold them.
 
 
 # The esptool a bench driver runs itself (bench_mcp_reset's ROM holds) is
@@ -1154,8 +1136,8 @@ def bench(settings):
     bpy = b.bpy
     board_args = ["--external-interposer", "--serial-port", "{serial_port}",
                   "--vehicle-transport", "kvaser", "--vehicle-channel",
-                  "kvaser", "--charger-transport",
-                  "gs_usb", "--diag-witness", "{pcan_channel}",
+                  "kvaser", "--charger-transport", "gs_usb",
+                  "--charger-channel", "canchg", "--diag-witness", "pcanfd",
                   "--outdir", "{outdir}"]
 
     def boot_reset(image):
@@ -1210,7 +1192,7 @@ def bench(settings):
             ["--idf-log", "--port", "{serial_port}", "--out", "{outdir}/idf_log_bridge.txt"]),
         boot_reset("bridge"),
         bpy("keepalive-probe", "keepalive_probe.py",
-            ["--port", "{serial_port}", "--pcan-channel", "{pcan_channel}"],
+            ["--port", "{serial_port}"],
             judge=recorded_judge),
         bpy("usb-host-baseline-ack", "bench_usb_host.py",
             ["--port", "{serial_port}", "--case", "baseline-boots", "--ack",
@@ -1367,14 +1349,13 @@ def bench(settings):
     images[bench_wican.IMAGE] = wican["image"]
     for g in (b_bridge, b_witness, b_truck, b_c12, b_vport):
         g.image = [g.image, bench_wican.IMAGE]
-    # which Innomaker is canchg, for every check that may open it (on Linux
-    # by its serial, adapter_fixes.canchg_target; the reviewer's E2), and
-    # the core flasher's esptool for a driver that runs esptool itself
-    # and where a check that met a Kvaser TX stall it could not recover
-    # from stops the bench: the run's own STOP file, so every later case is
+    # the core flasher's esptool for a driver that runs esptool itself, and
+    # where a check that met a Kvaser TX stall it could not recover from
+    # stops the bench: the run's own STOP file, so every later case is
     # NOT-RUN "STOP: kvaser recovery failed ..." (kvaser_link.recover; the
-    # charge-interposer reviewer, 2026-11-13)
-    env = dict(canchg_env(settings), **esptool_env(settings))
+    # charge-interposer reviewer, 2026-11-13). No adapter identity: each is
+    # opened by its role (adapter_roles; SPEC section 8, 2026-11-18)
+    env = dict(esptool_env(settings))
     env[KVASER_STOP_ENV] = "{run_dir}/STOP"
     for g in (b_bridge, b_witness, b_truck, b_c12, b_vport, truck_only):
         for c in g.checks:
@@ -1391,8 +1372,7 @@ def bench(settings):
     # `canctl mode canchg socketcan` and the bound-again check in its end
     # hook, after every check's process has exited, however the run ended
     # (canchg_mode.py). The WiCAN keeps bench_wican's hooks alone.
-    on_start, on_end = canchg_mode.hooks(wican["on_start"], wican["on_end"],
-                                         canchg_env(settings))
+    on_start, on_end = canchg_mode.hooks(wican["on_start"], wican["on_end"])
     # Before that, on the X2 (tester, 2026-11-13, the reviewer's run-start
     # batch; shared/bench SPEC section 8, the lock as a mutex): canx2
     # detached from the kernel's SLCAN through canctl if it is attached,

@@ -31,6 +31,7 @@ sys.path.insert(0, HERE)
 
 import can
 import cantools
+import adapter_roles
 import bench_charger_witness as bcw
 from run_scenario import SerialTap, BOOT_LINE
 import paths
@@ -50,7 +51,8 @@ frames = []                       # (host t, id, data)
 
 tap = SerialTap("COM3", 115200, SERIAL_LOG)
 tap.start()
-pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
+# role pcanfd, NORMAL mode (shared/bench SPEC section 8, 2026-11-18)
+pc = adapter_roles.pcanfd(500000)
 tx = bcw.open_gs_usb()
 
 
