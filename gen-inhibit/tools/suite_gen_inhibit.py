@@ -821,6 +821,12 @@ def suite(settings):
     # the settings.ota block for the tools' joins (gi_wifi), its braces doubled for the core's
     # placeholder formatting
     env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in ota_tools_env(settings, ssid).items()})
+    # the esptool argv and the boards' USB IDs for the checks' tools, as the hooks' base_env has
+    # them, braces doubled likewise (run gen-inhibit-bench_20261119T032517_cb08: B5-B8's jammer
+    # refused "GI_X2_DEVICE is not set", and NONODE's `x2_hold.py pins` refused "GI_ESPTOOL_ARGV
+    # is not set"; gen-inhibit reviewer, 2026-11-19)
+    env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in esptool_env(settings).items()})
+    env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in serial_env(settings).items()})
 
     def chk(cid, script, args, judge=None, outputs=(), timeout=3600, pw="wican_man", env=None, cls="wallclock"):
         e = dict(env0, GI_PW_IMAGE=desc[pw])

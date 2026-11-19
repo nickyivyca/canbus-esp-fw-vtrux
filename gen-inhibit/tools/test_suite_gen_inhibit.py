@@ -1933,6 +1933,27 @@ def test_ota(settings, bench):
     check("tools: a check's GI_OTA_SETTINGS reads back as the block after the core's formatting",
           back == OTA_BLOCK, got)
 
+    # Every check's tools get the esptool argv and both boards' USB IDs, as the hooks' tools do
+    # (run cb08, 2026-11-19: the jammer's B5-B8 refused "GI_X2_DEVICE is not set" and NONODE's
+    # `x2_hold.py pins` refused "GI_ESPTOOL_ARGV is not set"; gen-inhibit reviewer, 2026-11-19).
+    want = dict(SG.esptool_env(settings), **SG.serial_env(settings))
+    check("tools: the fixture names the esptool argv and both boards' IDs",
+          sorted(want) == ["GI_ESPTOOL_ARGV", "GI_WICAN_DEVICE", "GI_X2_DEVICE"], sorted(want))
+    short = []
+    for g in bench.groups:
+        for c in g.checks:
+            if c.skip:
+                continue
+            for k, v in want.items():
+                try:
+                    have = fmt(c.env.get(k, ""), dict(settings, outdir="o", run_dir="r"))
+                except Exception as e:      # noqa: BLE001 -- a value the core cannot format is short
+                    have = "FORMAT FAILED %r" % e
+                if have != v:
+                    short.append((g.name, c.id, k, have))
+    check("tools: every check gets GI_ESPTOOL_ARGV, GI_X2_DEVICE and GI_WICAN_DEVICE, reading back "
+          "as the settings' after the core's formatting", not short, short[:4])
+
     for name, bad in [("no settings.ota", dict(settings, ota=None)),
                       ("a block without its interface", dict(settings, ota=dict(OTA_BLOCK, iface=""))),
                       ("the SSID itself in the block", dict(settings, ota=dict(OTA_BLOCK, ssid="x"))),

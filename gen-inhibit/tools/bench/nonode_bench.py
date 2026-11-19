@@ -523,7 +523,12 @@ def x2_pins(logdir, tool=None):
     """`x2_hold.py pins` (the tool beside this one): whether the X2's CAN1 TX is driven. The tool's verdict line."""
     p = subprocess.run([sys.executable, "-B", tool or X2_HOLD, "pins"], capture_output=True,
                        text=True, timeout=120, cwd=os.getcwd())
-    line = next((l for l in p.stdout.splitlines() if l.startswith("pins:")), "no pins line (rc %s)" % p.returncode)
+    line = next((l for l in p.stdout.splitlines() if l.startswith("pins:")), None)
+    if line is None:
+        # the tool's own last line, so a refusal says why (run cb08, 2026-11-19, kept only "rc 2":
+        # the tool had refused "GI_ESPTOOL_ARGV is not set")
+        said = [l for l in p.stdout.splitlines() if l.strip()]
+        line = "no pins line (rc %s): %s" % (p.returncode, said[-1] if said else "no output")
     return line
 
 
