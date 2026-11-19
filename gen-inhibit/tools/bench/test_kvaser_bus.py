@@ -115,6 +115,8 @@ PCAN_LITERAL_EXEMPT = {
     "tools/bench/test_kvaser_bus.py": "its refusal cases ask the openers by channel and must be refused",
     "tools/bench/test_jammer_witnesses.py": "its fake PCAN buses' channel_info, as PCAN-Basic names the channel found",
     "tools/bench/test_diag_build_open.py": "its fake detection lists the PCAN, to show the script no longer asks it",
+    "tools/test_vehicle_runner_roles.py": "the implementor's test (1bb455f6, on gen-inhibit/main 28cdc2d6): a --role run "
+                                          "asked for channel PCAN_USBBUS1 must be refused",
 }
 # The by-index Innomaker openers, removed 2026-11-18 (the user's ruling: by role, innomaker_bus)
 REMOVED = {"gs_usb_bus", "close_gs_usb"}
