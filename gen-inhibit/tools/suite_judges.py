@@ -318,8 +318,9 @@ def livetrain_arm(v):
 def jam_void(t):
     """x2_jam_cases' run VOID on its witness clock (witness_clock.void_verdict, run_guarded,
     2026-11-18) or on its witness's child process failing or stopping (proc_witness.void_verdict,
-    2026-11-19): its last verdict line. The arms judged before it keep their verdicts."""
-    return bool(re.search(r"^verdict VOID: (witness clock |the witness (child|thread) )", t, re.M))
+    2026-11-19), or on its witness's load (proc_witness.load_reason, "witness load", 2026-11-19):
+    its last verdict line. The arms judged before it keep their verdicts."""
+    return bool(re.search(r"^verdict VOID: (witness clock |the witness (child|thread) |witness load: )", t, re.M))
 
 
 @judge("B5", "B")

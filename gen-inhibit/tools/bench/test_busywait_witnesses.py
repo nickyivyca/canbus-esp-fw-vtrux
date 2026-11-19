@@ -51,6 +51,18 @@ witness reads the other end through a bus object with recv(timeout).
                     sending the slice as it is, with no other event or flood. The witnesses also read
                     what is not in these tables: the boards' own frames, and on B9, B10 and B5-B8 the
                     error frames of a burst or jam.
+  load guard        (the reviewer's answer (b) to 1bcd2aa9, 2026-11-19) what the tables cannot hold, at run
+                    time: each of the six witness loops reads through proc_witness's ThreadWitness.recv,
+                    which counts every frame read (data frames, ids the witness keeps no record of, error
+                    frames) and the most in any LOAD_WINDOW_S (1 s); over LOAD_LIMIT (500) every judgement
+                    after it is VOID "witness load" (proc_witness.load_reason, through void_reason). Checked:
+                    the counter at the limit's edge (501 in 0.95 s VOID; 501 2 ms apart, 500 in any 1 s, not;
+                    500 in 0.5 s not); each tool's own witness counting all 600 frames of a fast bus (100 of
+                    them error frames) and VOID, 400 not; a scan that each run() reads only through
+                    self.recv; and each tool's VOID path on that load: void_line (the suite's B9 and B10
+                    judges), B4's run_arm and both judges, B1's command_result, x2_jam_cases' clocked() and
+                    run_guarded (the suite's jam judge), B20's run_case. The six regression cases above also
+                    print each witness's peak, and FAIL on a load VOID.
 
 Then each tool's VOID path for a witness whose loop died (its bus raised): void_reason and void_line name
 a dead thread and a dead child; B4's run_arm marks the arm and both judges VOID it; B1's witness dies
@@ -355,9 +367,11 @@ def wire_cases(only):
         got = w.count()
         check("%s regression: %s, a thread witness, read every frame under its own pacer at %d/s"
               % (cid, what, rate), took == n and got == n, "read %d, the socket took %d, of %d sent" % (got, took, n))
-        check("%s regression: its thread ended with no error recorded" % cid,
+        check("%s regression: its thread ended with no error recorded, and no load VOID" % cid,
               not w.is_alive() and w.proc_info["error"] is None and PW.void_reason(w, running=False) is None,
               w.proc_info)
+        ld = w.proc_info.get("load") or {}
+        print("     %s: %s reads, the most in any %g s %s" % (cid, ld.get("reads"), PW.LOAD_WINDOW_S, ld.get("peak")))
 
 
 # ---------------------------------------------------------------------- the rate guard
@@ -699,13 +713,214 @@ def void_cases():
         gi_paths.remove_tree(ibw)
 
 
+# ---------------------------------------------------------------------- the run-time load guard
+# (gen-inhibit reviewer's answer (b) to 1bcd2aa9, 2026-11-19): every frame a thread witness reads counts,
+# and over proc_witness.LOAD_LIMIT in any LOAD_WINDOW_S its arm or check is VOID "witness load".
+
+class EMsg(Msg):
+    def __init__(self, ident, k, t, error=False):
+        Msg.__init__(self, ident, k, t)
+        self.is_error_frame = error
+
+
+class ListBus(object):
+    """Serves its messages as fast as they are asked for, then nothing: a load no pacer could keep a
+    thread under. n data frames cycling through ids, then n_err error frames."""
+
+    def __init__(self, ids, n, n_err=0):
+        t = time.time()
+        self.q = [Msg(ids[k % len(ids)], k, t) for k in range(n)] + [EMsg(0x20000004, k, t, True) for k in range(n_err)]
+        self.q.reverse()
+
+    def recv(self, timeout=None):
+        if self.q:
+            return self.q.pop()
+        time.sleep(min(timeout or 0, 0.02))
+        return None
+
+    def shutdown(self):
+        pass
+
+
+LOAD_CASES = [("B4", B4_W, KEEP_B4), ("B1", B1_W, ANY_IDS), ("B9", B9_W, ANY_IDS), ("B10", B10_W, ANY_IDS),
+              ("B20", B20_W, ANY_IDS), ("B5-B8", X2J_W, KEEP_X2J)]
+LOAD_CLASSES = [("B4", "skip_method_bench", "Witness"), ("B1", "slcan_refusal_probe", "Witness"),
+                ("B9", "wrong_bitrate_errors", "PcanWitness"), ("B10", "trip6_rearm_check", "Witness"),
+                ("B20", "interlock_bench", "Witness"), ("B5-B8", "x2_jam_cases", "Witness")]
+
+
+def loaded(make, ids, n, n_err):
+    """make's witness after reading a ListBus of n frames and n_err error frames, still running."""
+    w = make(ListBus(ids + [0x123], n, n_err))
+    w.start()
+    t_end = time.time() + 5.0
+    while time.time() < t_end and (w.proc_info.get("load") or {}).get("reads", 0) < n + n_err:
+        time.sleep(0.02)
+    return w
+
+
+def load_cases():
+    import inspect
+    import skip_method_bench as S
+    import slcan_refusal_probe as P
+    import suite_judges as SJ
+    import x2_jam_cases as X
+
+    # the window, on proc_witness's counter alone, at the limit's edge
+    class Bare(PW.ThreadWitness):
+        def run(self):
+            pass
+    for name, n, step, over in (("501 reads in 0.95 s", 501, 0.0019, True),
+                                ("501 reads 2 ms apart (1.000 s first to last: 500 in any 1 s)", 501, 0.002, False),
+                                ("500 reads in 0.5 s", 500, 0.001, False)):
+        b = Bare(daemon=True)
+        b._twin_th = threading.Thread(target=lambda: None)     # started, as void_reason asks
+        for k in range(n):
+            b._count_read(100.0 + k * step)
+        why = PW.void_reason(b, running=False)
+        check("load counter: %s -> peak %d, %s" % (name, b.proc_info["load"]["peak"], "VOID witness load" if over
+                                                   else "no load VOID"),
+              (why or "").startswith("witness load: ") == over and (why is None) == (not over), why)
+
+    # each of the six: every frame its loop reads counts, error frames and ids it keeps no record of too
+    over = {}
+    for cid, make, ids in LOAD_CASES:
+        w = loaded(make, ids, 500, 100)
+        ld = w.proc_info.get("load") or {}
+        why = PW.void_reason(w)
+        check("%s load: its witness counted all 600 frames read (500 data, ids it keeps and not, 100 error "
+              "frames) and is VOID \"witness load\"" % cid,
+              ld.get("reads") == 600 and ld.get("peak", 0) > PW.LOAD_LIMIT and (why or "").startswith("witness load: "),
+              (ld, why))
+        over[cid] = w
+        c = loaded(make, ids, 350, 50)
+        cld = c.proc_info.get("load") or {}
+        check("%s load: 400 frames read -> no load VOID (the control)" % cid,
+              cld.get("reads") == 400 and PW.void_reason(c) is None, (cld, PW.void_reason(c)))
+        c.stop_ev.set()
+        c.join(3.0)
+    for cid, module, cls in LOAD_CLASSES:
+        src = inspect.getsource(getattr(__import__(module), cls).run)
+        check("%s load scan: %s.%s.run reads through self.recv (counted), never its bus's recv" % (cid, module, cls),
+              "self.recv(" in src and ".bus.recv(" not in src, src[:300])
+
+    # the VOID paths, each the tool's own, on an overloaded witness
+    reason, line = PW.void_line(over["B10"])
+    check("load void_line: the witness VOID line names the load, which the suite reads",
+          (reason or "").startswith("witness load: ") and bool(SJ.WITNESS_VOID_RE.search(line or "")), line)
+    w = over["B4"]
+
+    class LF(object):
+        @staticmethod
+        def dev_post(path, timeout=None):
+            return True
+
+        @staticmethod
+        def page():
+            return {"mode": 3, "inhibit_live": True, "skips_withdrawn": 0, "skips_late": 0}
+
+    class Player(object):
+        done = []
+
+        def request(self, *a):
+            pass
+    saved = (S.LF, S.time)
+    S.LF, S.time = LF, types.SimpleNamespace(sleep=lambda s: None, perf_counter=time.perf_counter)
+    try:
+        arm = {"name": "w3"}
+        S.run_arm("w3", Player(), w, arm)
+    finally:
+        S.LF, S.time = saved
+    check("load B4 run_arm: the arm is marked witness_proc_void, witness load",
+          (arm.get("witness_proc_void") or "").startswith("witness load: "), arm.get("witness_proc_void"))
+    for name, fn in (("judge_arm", S.judge_arm), ("judge_arm_v2", S.judge_arm_v2)):
+        v = fn(dict(arm, went_live=True))["verdict"]
+        check("load B4 %s: VOID witness load" % name, v.startswith("VOID: witness load: "), v)
+    why1 = PW.void_reason(over["B1"])
+    pre = {"mode": 0, "tx_ok": 1, "refused_slcan": 0, "refused_can_send": 0, "keys": []}
+    r = P.command_result("off", "tcp", "O", True, "no reply", pre, dict(pre, refused_slcan=1), [], 0, why1)
+    check("load B1 command_result: a command that would pass is VOID witness load",
+          r["verdict"] == "VOID" and r["why"][0].startswith("witness load: "), r)
+    xw = over["B5-B8"]
+    try:
+        xw.clocked()
+        raised = None
+    except PW.WitnessFailed as e:
+        raised = e.reason
+    except Exception as e:      # noqa: BLE001  any other raise is this check's FAIL
+        raised = "%s: %s" % (type(e).__name__, e)
+    check("load x2_jam_cases clocked(): raises WitnessFailed, witness load", (raised or "").startswith("witness load: "),
+          raised)
+    rec = {}
+
+    def case(a, rec, con, wit):
+        wit.clocked()
+    X.run_guarded(case, None, rec, None, xw)
+    check("load x2_jam_cases run_guarded: the run VOID witness load, which the suite's jam judge reads",
+          (rec.get("verdict") or "").startswith("VOID: witness load: ")
+          and SJ.jam_void("verdict %s\n" % rec.get("verdict")), rec.get("verdict"))
+    for w in over.values():
+        w.stop_ev.set()
+        w.join(3.0)
+    xw.close()
+
+    # B20: run_case VOID witness load, nothing judged (stubbed as void_cases stubs it)
+    spec = importlib.util.spec_from_file_location("twc_for_busywait_load", os.path.join(HERE, "test_witness_clock.py"))
+    TWC = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(TWC)
+    ib_path = os.path.join(HERE, "interlock_bench.py")
+    if os.environ.get("BUSYWAIT_MUTANT", "").startswith("interlock_bench="):
+        ib_path = os.environ["BUSYWAIT_MUTANT"].split("=", 1)[1]
+    spec = importlib.util.spec_from_file_location("ib_for_busywait_load", ib_path)
+    IB = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(IB)
+    ibw = gi_paths.scratch("busywait-witnesses-ib-load")
+    gi_paths.remove_tree(ibw)
+    os.makedirs(ibw)
+    try:
+        spy = TWC.ib_setup(IB, ibw)
+        real = IB.REAL_WITNESS
+
+        def ib(bus):
+            class W(real):
+                def __init__(self, can):
+                    PW.ThreadWitness.__init__(self, daemon=True)
+                    self.bus = bus
+                    self.stop_flag = self.event()
+                    self.frames, self.errs = [], []
+                    self.lock = threading.Lock()
+
+                def start(self):    # run_case's sleeps are stubbed: its stop must not come before the reads
+                    real.start(self)
+                    t_end = time.time() + 5.0
+                    while time.time() < t_end and (self.proc_info.get("load") or {}).get("reads", 0) < 600:
+                        time.sleep(0.02)
+            IB.Witness = W
+            can = types.SimpleNamespace(Bus=lambda **k: TWC.FakeBus())
+            kb = types.ModuleType("kvaser_bus")
+            kb.pcan_bus = lambda **k: TWC.FakeBus()
+            before = spy.calls
+            rec = with_module("kvaser_bus", kb, lambda: IB.run_case(
+                can, TWC.FakeLF, {"case": IB.CASES[0][0], "judge": IB.CASES[0][2]},
+                {"frames": [], "modes": [], "end": 1000}, "stub", time.strftime("%Y%m%dT%H%M%S")))
+            return rec, spy.calls - before
+
+        rec, n = ib(ListBus(ANY_IDS, 500, 100))
+        check("load B20 run_case: VOID witness load, nothing judged",
+              (rec.get("verdict") or "").startswith("VOID: witness load: ") and n == 0 and rec.get("judged") is None,
+              (rec.get("verdict"), n, (rec.get("witness_proc") or {}).get("load")))
+    finally:
+        gi_paths.remove_tree(ibw)
+
+
 def main(argv):
     only = None
     if "--case" in argv:
         only = set(argv[argv.index("--case") + 1].split(","))
-    own = {"void", "rates"}
+    own = {"void", "rates", "load"}
     for part, run_it, arg in ((void_cases, not only or "void" in only, ()),
                               (rate_cases, not only or "rates" in only, ()),
+                              (load_cases, not only or "load" in only, ()),
                               (wire_cases, not only or bool(only - own), (only - own if only else None,))):
         if not run_it:
             continue
@@ -764,7 +979,7 @@ MUTANTS = [
      "    t = text(F.one(r\"B10_trip6_rearm_check\\.txt\"))\n    pv = WITNESS_VOID_RE.search(t)\n",
      "    t = text(F.one(r\"B10_trip6_rearm_check\\.txt\"))\n    pv = None\n"),
     ("suite_judges", "void", "suite jam judge misses a dead witness",
-     "(witness clock |the witness (child|thread) )", "(witness clock )"),
+     "(witness clock |the witness (child|thread) |witness load: )", "(witness clock |witness load: )"),
     # B4's raw pairs (ruling 2 to 860e32c9, 2026-11-19)
     ("skip_method_bench", "void", "B4 run_arm keeps no raw pairs", "    rec_arm[\"witness_raw_pairs\"] = wit.raw_pairs(mark)\n",
      ""),
@@ -781,6 +996,25 @@ MUTANTS = [
     ("x2_jam_cases", "rates", "B5-B8's replay floods", "args=(tx, stim, seconds),", "args=(tx, stim, seconds, 0.001),"),
     ("interlock_bench", "rates", "B20's slice cases at twice the rate", "        fr = slice_frames()\n",
      "        fr = sorted(slice_frames() * 2)\n"),
+    # the run-time load guard (answer (b) to 1bcd2aa9, 2026-11-19)
+    ("proc_witness", "load", "void_reason ignores the load",
+     "        load = load_reason(w)\n        if load:\n            return load\n", ""),
+    ("proc_witness", "load", "the limit taken as 600", "    if not ld or ld[\"peak\"] <= ld[\"limit\"]:\n",
+     "    if not ld or ld[\"peak\"] <= ld[\"limit\"] + 100:\n"),
+    ("proc_witness", "load", "a load at the limit is VOID", "    if not ld or ld[\"peak\"] <= ld[\"limit\"]:\n",
+     "    if not ld or ld[\"peak\"] < ld[\"limit\"]:\n"),
+    ("proc_witness", "load", "the window never slides", "        while t - win[0] >= LOAD_WINDOW_S:\n",
+     "        while t - win[0] >= 10 * LOAD_WINDOW_S:\n"),
+    ("proc_witness", "load", "error frames not counted",
+     "        m = getattr(self, self.BUS).recv(timeout=timeout)\n        if m is not None:\n",
+     "        m = getattr(self, self.BUS).recv(timeout=timeout)\n        if m is not None and not m.is_error_frame:\n"),
+    ("skip_method_bench", "load", "B4's loop reads its bus directly", "            m = self.recv(timeout=0.05)\n",
+     "            m = self.bus.recv(timeout=0.05)\n"),
+    ("trip6_rearm_check", "load", "B10's loop reads its bus directly", "            m = self.recv(timeout=0.1)\n",
+     "            m = self.bus.recv(timeout=0.1)\n"),
+    ("x2_jam_cases", "load", "B5-B8's inner read not counted", "                m = self.recv(timeout=0.0)\n",
+     "                m = self.bus.recv(timeout=0.0)\n"),
+    ("suite_judges", "load", "suite jam judge misses a load VOID", "|witness load: )", ")"),
 ]
 
 

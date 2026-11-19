@@ -165,7 +165,7 @@ class Witness(PW.ThreadWitness):
 
     def run(self):
         while not self.stop.is_set():
-            m = self.bus.recv(timeout=0.1)
+            m = self.recv(timeout=0.1)
             if m is None:
                 continue
             t, e = time.perf_counter(), time.time()

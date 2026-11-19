@@ -25,6 +25,7 @@ info records how the witness ran: the child's pid, how many threads the parent h
 error it raised, which also goes in the frames' place: no frame, the error kept, never a short
 witness passed off as a whole one).
 """
+import collections
 import multiprocessing
 import sys
 import threading
@@ -186,12 +187,37 @@ class ProcWitness(object):
 # reviewer's answer (5) to message 43ffe9bb, 2026-11-19: the other busy-wait tools' witnesses).
 # ---------------------------------------------------------------------------------------------------
 
+# The witness load (gen-inhibit reviewer's answer (b) to message 1bcd2aa9, 2026-11-19): a thread witness
+# counts every frame its loop reads (self.recv: board frames, error frames, every kind), and the most it
+# read in any LOAD_WINDOW_S; over LOAD_LIMIT its judgements are VOID "witness load". The six tools' tables
+# keep their rate under the limit (test_busywait_witnesses' rate guard); this guards what no table holds:
+# the boards' own frames, and the error frames of a burst or a jam. The basis: a thread under a continuous
+# spin read about 1000 frames/s (test_busywait_witnesses, B12's can-fail, 2026-11-19), and the limit is half.
+LOAD_WINDOW_S = 1.0
+LOAD_LIMIT = 500
+
+
+def load_reason(w):
+    """'witness load: ...' when a thread witness read more than LOAD_LIMIT frames in any LOAD_WINDOW_S
+    so far, else None. Only a ThreadWitness (or a thread twin) is judged on it: a child's reads are
+    counted in the child, where no pacer shares its process."""
+    if not getattr(w, "_thread_mode", False):
+        return None
+    ld = (getattr(w, "proc_info", None) or {}).get("load")
+    if not ld or ld["peak"] <= ld["limit"]:
+        return None
+    return ("witness load: %d frames read in %g s (at %.1f s), over %d (half the ~1000/s a thread kept "
+            "under a continuous spin)" % (ld["peak"], ld["window_s"], ld["peak_at_s"], ld["limit"]))
+
+
 def void_reason(w, running=True):
     """Why what a ProcThread read cannot be judged, or None: the child's error (its run raised, it
     ended without its end message, or it did not end and was killed); with running, also the child
     no longer running when the reader still needs it (a witness that stopped reading mid-run is a
     short witness, never passed off as a whole one). A ThreadWitness the same, for its thread: the
-    loop raised, or it is no longer running. None for anything not started (a test's fake)."""
+    loop raised, or it is no longer running; and its load over LOAD_LIMIT (load_reason), so a
+    judgement made after the load went over is VOID, as one made after the loop died. None for
+    anything not started (a test's fake)."""
     if not isinstance(w, ProcThread):
         return None
     if getattr(w, "_thread_mode", False):
@@ -200,6 +226,9 @@ def void_reason(w, running=True):
         err = w.proc_info.get("error")
         if err:
             return "the witness thread failed: %s" % err
+        load = load_reason(w)
+        if load:
+            return load
         if running and not w.is_alive():
             return "the witness thread is not running"
         return None
@@ -368,6 +397,34 @@ class ProcThread(object):
 
     def run(self):              # the subclass's loop
         raise NotImplementedError
+
+    def recv(self, timeout=None):
+        """The witness loop's read: the BUS attribute's recv(timeout), each frame it gives counted
+        (_count_read) for the load guard (load_reason). A loop reads through this, never its bus's
+        recv directly (test_busywait_witnesses' load scan)."""
+        m = getattr(self, self.BUS).recv(timeout=timeout)
+        if m is not None:
+            self._count_read(time.perf_counter())
+        return m
+
+    def _count_read(self, t):
+        """One frame read at t (perf_counter): the frames read in the last LOAD_WINDOW_S, and the
+        most there have been, kept in proc_info["load"]."""
+        win = self.__dict__.get("_load_win")
+        if win is None:
+            win = self._load_win = collections.deque()
+            info = getattr(self, "proc_info", None)
+            if info is None:
+                info = self.proc_info = {}
+            info["load"] = {"window_s": LOAD_WINDOW_S, "limit": LOAD_LIMIT, "reads": 0, "peak": 0,
+                            "peak_at_s": 0.0, "first_read": t}
+        ld = self.proc_info["load"]
+        win.append(t)
+        while t - win[0] >= LOAD_WINDOW_S:
+            win.popleft()
+        ld["reads"] += 1
+        if len(win) > ld["peak"]:
+            ld["peak"], ld["peak_at_s"] = len(win), round(t - ld["first_read"], 3)
 
     def _raw_bus(self):
         b = getattr(self, self.BUS, None) if self.BUS else None

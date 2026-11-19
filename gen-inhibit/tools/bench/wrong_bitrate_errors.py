@@ -135,7 +135,7 @@ class PcanWitness(PW.ThreadWitness):
 
     def run(self):
         while not self.stop.is_set():
-            m = self.bus.recv(timeout=0.1)
+            m = self.recv(timeout=0.1)
             if m is None:
                 continue
             p, e = time.perf_counter(), time.time()

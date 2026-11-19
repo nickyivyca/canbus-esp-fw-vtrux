@@ -514,7 +514,7 @@ class Witness(PW.ThreadWitness):
             if time.time() >= self._next_status:
                 self._next_status = time.time() + STATUS_EVERY_S
                 self._sample_status()
-            m = self.bus.recv(timeout=0.05)
+            m = self.recv(timeout=0.05)
             while m is not None:
                 rx = WC.receipt(m)
                 with self.lock:
@@ -526,7 +526,7 @@ class Witness(PW.ThreadWitness):
                     elif m.arbitration_id in KEEP_IDS:
                         self.frames.append((WC.raw_stamp(m), rx, m.arbitration_id,
                                             bytes(m.data).hex()))
-                m = self.bus.recv(timeout=0.0)
+                m = self.recv(timeout=0.0)
 
     def close(self):
         self.stop_flag.set()
