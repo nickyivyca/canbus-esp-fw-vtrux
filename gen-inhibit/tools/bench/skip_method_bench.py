@@ -67,6 +67,7 @@ import can                                                      # noqa: E402
 import lowid_flood_skip_bench as LF                             # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import witness_clock as WC  # noqa: E402  the Kvaser's own stamps on SocketCAN (2026-11-18)
+import proc_witness as PW  # noqa: E402  the witness out of the Player's process (2026-11-19)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
@@ -101,11 +102,18 @@ def snap(p):
                                   "skips_withdrawn", "skips_late")}
 
 
-class Witness(threading.Thread):
+class Witness(PW.ThreadWitness):
+    """The Kvaser's frames and error frames, read in a thread beside the Player (whose pacer sleeps
+    to 2 ms before each frame, then spins: at the slice's rate it did not starve a thread witness,
+    test_busywait_witnesses). A loop that dies is recorded and the arm VOID (proc_witness.ThreadWitness,
+    gen-inhibit reviewer 2026-11-19)."""
+    LISTS = ("frames", "errors", "frame_rx", "error_rx")
+    VALUES = ("seq",)
+
     def __init__(self, bus):
         super().__init__(daemon=True)
         self.bus = bus
-        self.stop_flag = threading.Event()
+        self.stop_flag = self.event()
         self.frames = []        # (seq, raw hw stamp, arb, hex)
         self.errors = []        # raw hw stamp
         self.frame_rx, self.error_rx = [], []      # receipt times, beside them
@@ -130,15 +138,19 @@ class Witness(threading.Thread):
                 m = self.bus.recv(timeout=0.0)
 
     def mark(self):
+        """(frames, error frames) read so far, synced first (a no-op for the thread)."""
+        self.sync()
         with self.lock:
-            return len(self.frames)
+            return len(self.frames), len(self.errors)
 
     def clocked(self, mark, err_mark):
         """The frames [(seq, t, arb, hex)] and error times since the marks, and the clock note.
         On SocketCAN (gen-inhibit reviewer, 2026-11-18) witness_clock.kvaser_times: the Leaf's
         own stamps mapped by device_fit when the open's stamp check reads hardware, else
         receipt times and a note that is not judgeable, so the arm is VOID; error frames on
-        receipt time. On CANlib the hardware stamps as read, as before."""
+        receipt time. On CANlib the hardware stamps as read, as before. Synced first: every frame
+        the witness had read when asked."""
+        self.sync()
         with self.lock:
             fr, frx = self.frames[mark:], self.frame_rx[mark:]
             er, erx = self.errors[err_mark:], self.error_rx[err_mark:]
@@ -317,6 +329,8 @@ def judge_arm(arm):
     filler, offs, want_cls, want_trip = ARMS[arm["name"]]
     evs = arm.get("events_classified") or []
     out = {"expected_class": want_cls, "expected_trip7": want_trip}
+    if arm.get("witness_proc_void"):
+        return dict(out, verdict=PW.void_verdict(arm["witness_proc_void"]), why=["witness process"])
     if arm.get("witness_clock_void"):
         return dict(out, verdict=WC.void_verdict(arm["witness_clock_void"]), why=["witness clock"])
     problems, inconclusive = [], []
@@ -382,6 +396,8 @@ def judge_arm_v2(arm):
     evs = arm.get("events_classified") or []
     out = {"rule": "reviewer 2026-10-07, spec 7 / 5.2 govern the split",
            "expected_trip7": want_trip}
+    if arm.get("witness_proc_void"):
+        return dict(out, verdict=PW.void_verdict(arm["witness_proc_void"]), why=["witness process"])
     if arm.get("witness_clock_void"):
         return dict(out, verdict=WC.void_verdict(arm["witness_clock_void"]), why=["witness clock"])
     problems, inconclusive = [], []
@@ -447,8 +463,7 @@ def run_arm(name, player, wit, rec_arm):
         return
     time.sleep(2.0)
     rec_arm["pre_events"] = snap(LF.page())
-    mark = wit.mark()
-    err_mark = len(wit.errors)
+    mark, err_mark = wit.mark()
     n_done = len(player.done)
     base = time.perf_counter() + 0.3
     for k, off in enumerate(offs):
@@ -460,6 +475,9 @@ def run_arm(name, player, wit, rec_arm):
     rec_arm["witness_clock"] = clock
     if not WC.judgeable(clock):
         rec_arm["witness_clock_void"] = clock
+    why = PW.void_reason(wit)
+    if why:
+        rec_arm["witness_proc_void"] = why
     # 0x7F9 (skips page): every one seen during the arm, raw, so the CAN-side
     # skip counts can be read against the page's (spec 10: skips go on both).
     rec_arm["wire_0x7F9"] = [(ts, hx) for _, ts, arb, hx in frames
@@ -545,6 +563,7 @@ def main():
             wit.stop_flag.set()
             wit.join(timeout=3.0)
             rec["witness_error_frames"] = len(wit.errors)
+            rec["witness_proc"] = wit.proc_info
         for b in (pc, kv):
             if b is not None:
                 try:

@@ -383,10 +383,39 @@ def order_cases(W):
           log.index(lambda e: e == ("held exit", "canmain")) is not None, log.ev[-5:])
 
 
+def dead_witness_cases(W):
+    """(2026-11-19, the gen-inhibit reviewer's ruling (i)) a witness loop that dies VOIDs the run: the
+    record's verdict and the "witness VOID" line the suite's B9 judge reads first, never a count of
+    error frames from a witness that stopped reading."""
+    real = W.PcanWitness
+
+    class Dies(real):
+        def run(self):
+            raise OSError("the PCAN went away (test)")
+    W.PcanWitness = Dies
+    try:
+        import contextlib
+        import io
+        with contextlib.redirect_stderr(io.StringIO()):      # the dead thread's traceback, expected
+            rc, _log, rec = run_main(W, running_after=2)
+    finally:
+        W.PcanWitness = real
+    t = OUT.get("text", "")
+    check("main, the witness loop dies: ran and wrote one record", rc == 0 and rec, rc)
+    check("main, the witness loop dies: the record VOID, naming the dead thread",
+          (rec.get("verdict") or "").startswith("VOID: the witness thread failed") and
+          "went away" in (rec.get("witness_proc_void") or ""), (rec.get("verdict"), rec.get("witness_proc_void")))
+    check("main, the witness loop dies: prints the witness VOID line",
+          any(ln.startswith("witness VOID: the witness thread failed") for ln in t.splitlines()), t[-300:])
+    rc, _log, rec = run_main(W, running_after=2)
+    check("main, the witness whole: no witness VOID (the control)",
+          "witness_proc_void" not in rec and "witness VOID:" not in OUT.get("text", ""), rec.get("verdict"))
+
+
 def main():
     gi_paths.remove_tree(SCRATCH)
     W = load()
-    for part in (window_cases, order_cases):
+    for part in (window_cases, order_cases, dead_witness_cases):
         try:
             part(W)
         except Exception as e:      # noqa: BLE001  a crash is this part's FAIL

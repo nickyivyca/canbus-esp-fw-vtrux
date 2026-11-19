@@ -73,6 +73,7 @@ import gi_ecc as GE                                             # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 import witness_clock as WC  # noqa: E402  never judged on receipt time (A2 (b), 2026-11-11)
+import proc_witness as PW  # noqa: E402  the witness out of the replay's process (2026-11-19)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
@@ -468,16 +469,22 @@ def witness_state_summary(status, lo, hi):
             "flags_seen": sorted(set().union(*names))}
 
 
-class Witness(threading.Thread):
+class Witness(PW.ThreadWitness):
     """Kvaser, NORMAL mode: KEEP_IDS frames and error frames, hw and receipt time;
-    and its own controller state every STATUS_EVERY_S (status)."""
+    and its own controller state every STATUS_EVERY_S (status). Read in a thread beside
+    the replay (lowid_flood_skip_bench.play: at the slice's rate its pacer did not starve
+    a thread witness, test_busywait_witnesses). A judgement whose witness loop died
+    raises PW.WitnessFailed, and the run is VOID (run_guarded; proc_witness.ThreadWitness,
+    gen-inhibit reviewer 2026-11-19)."""
+    LISTS = ("frames", "errs", "status")
+    VALUES = ("not_bus_errors", "status_error")
 
     def __init__(self):
         super().__init__(daemon=True)
         from kvaser_bus import kvaser_bus, bus_error  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
         self.bus = kvaser_bus(channel=0, bitrate=BITRATE)
         self.bus_error = lambda m: bus_error(self.bus, m)
-        self.stop_flag = threading.Event()
+        self.stop_flag = self.event()
         self.frames = []     # (hw, rx, arb, hex)
         self.errs = []       # (hw, rx): bus errors only (kvaser_bus.bus_error)
         self.not_bus_errors = 0
@@ -529,7 +536,9 @@ class Witness(threading.Thread):
     def recorded(self):
         """(frames [(t, arb, hex)], errs [t], clock note): on the hardware stamps when
         they are on the epoch clock, else on receipt time (WC.RECEIPT), or WC.NONE with
-        nothing heard. For the record and the witness file only; judging uses clocked()."""
+        nothing heard. For the record and the witness file only; judging uses clocked().
+        Synced first (a no-op for the thread; a child witness's reads so far)."""
+        self.sync()
         with self.lock:
             fr, er = list(self.frames), list(self.errs)
         sc = WC.kvaser_times(getattr(self, "bus", None), fr, er)   # SocketCAN (2026-11-18)
@@ -544,8 +553,10 @@ class Witness(threading.Thread):
 
     def clocked(self):
         """recorded(), for a judgement: raises WC.ReceiptClock on receipt time, so the
-        run is VOID and never judged on it (A2 (b), 2026-11-11)."""
+        run is VOID and never judged on it (A2 (b), 2026-11-11); raises PW.WitnessFailed
+        when the witness loop died (2026-11-19)."""
         fr, er, note = self.recorded()
+        PW.require(self)
         WC.require(note)
         return fr, er, note
 
@@ -1536,11 +1547,16 @@ def session_record(a, build, decoder, serial_devices):
 def run_guarded(case, a, rec, con, wit):
     """Run one case. If the witness is on receipt time when a judgement asks for its
     times (Witness.clocked() raises WC.ReceiptClock), the run is VOID: arms judged
-    before that keep their judge in the record, and the run's verdict is the VOID."""
+    before that keep their judge in the record, and the run's verdict is the VOID. So is a
+    witness whose loop died (PW.WitnessFailed, 2026-11-19)."""
     try:
         case(a, rec, con, wit)
     except WC.ReceiptClock as e:
         WC.void(rec, e.note)
+        print(rec["verdict"])
+    except PW.WitnessFailed as e:
+        rec["verdict"] = PW.void_verdict(e.reason)
+        rec["why"] = "witness: %s" % e.reason
         print(rec["verdict"])
 
 
@@ -1625,6 +1641,8 @@ def main():
         con.stop_flag.set()
         con.join(timeout=2.0)
         if wit is not None:
+            wit.close()         # stopped and joined first, so its death is known
+            rec["witness_proc"] = getattr(wit, "proc_info", None)
             frames, errs, clock = wit.recorded()     # on either clock, labelled: kept, not judged
             rec["witness_clock"] = clock
             rec["witness_err_total"] = len(errs)
@@ -1634,7 +1652,6 @@ def main():
             rec["witness_file"] = os.path.basename(save_witness(
                 os.path.join(RUNS, "x2_jam_%s_%s_witness.json.gz" % (a.case, rec["when"])),
                 frames, errs, clock))
-            wit.close()
         rec["post"] = snapx(LF.page())
         rec["live_totals"] = live_totals(rec.get("arms") or [])
         fields, line = console_totals(CC)

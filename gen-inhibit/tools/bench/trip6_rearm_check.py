@@ -47,7 +47,6 @@ import argparse
 import json
 import os
 import sys
-import threading
 import time
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
@@ -55,6 +54,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import witness_clock as WC  # noqa: E402  the PCAN's own stamps, mapped (A2 (a), 2026-11-11)
 import burst_measures as BM  # noqa: E402  burst length and close on those stamps (condition 5, 2026-11-18)
+import proc_witness as PW  # noqa: E402  the witness out of the Player's process (2026-11-19)
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 TRIP6 = "error-frame rate exceeded"
@@ -147,10 +147,13 @@ def wire_errors(detail):
     return [d for d in detail if d[1] != 0]
 
 
-class Witness(threading.Thread):
+class Witness(PW.ThreadWitness):
     """The PCAN's messages. Receipt times (perf_counter) pace the live sequence; the PCAN's
     own stamps, mapped onto perf_counter after the run, are what is judged (judge_arms,
-    A2 (a), 2026-11-11). points: every message's (perf, epoch, stamp), for the clock fit."""
+    A2 (a), 2026-11-11). points: every message's (perf, epoch, stamp), for the clock fit.
+    Read in a thread beside the Player (at the slice's rate its pacer did not starve a thread
+    witness, test_busywait_witnesses); a loop that dies is recorded and the run VOID, with the
+    "witness VOID" line (proc_witness.ThreadWitness, gen-inhibit reviewer 2026-11-19)."""
 
     def __init__(self, bus):
         super().__init__(daemon=True)
@@ -158,7 +161,7 @@ class Witness(threading.Thread):
         self.dev051_ts = []         # the PCAN's stamp of each device 0x051, beside dev051
         self.error_detail = []      # (perf, arbitration_id, data hex, stamp): what the PCAN reported
         self.points = []
-        self.stop = threading.Event()
+        self.stop = self.event()
 
     def run(self):
         while not self.stop.is_set():
@@ -302,6 +305,7 @@ def main():
     def poll_arm(name, seconds):
         """Arm (mode 3) on a quiet bus, start the slice once the driver runs, and poll;
         returns the arm record (times from t0)."""
+        wit.sync()
         n_err, n_051 = len(wit.errors), len(wit.dev051)
         pre = read(LF, t0)          # the trip 6 history the arm is about to act on
         ta = time.perf_counter()
@@ -319,6 +323,7 @@ def main():
             reads.append(read(LF, t0))
             time.sleep(1.0 / a.poll_hz)
         t_end = time.perf_counter()
+        wit.sync()
         kinds = {}
         for d in wit.error_detail[n_err:]:
             kinds["%X:%s" % (d[1], d[2])] = kinds.get("%X:%s" % (d[1], d[2]), 0) + 1
@@ -339,9 +344,11 @@ def main():
 
     def flood(name):
         arm = poll_arm(name, 4.0)
+        wit.sync()
         n_err = len(wit.errors)
         tb, opened, tc = W.burst(a.burst_ms, inno)      # from the source's open since 2026-10-29 (recorded only)
         time.sleep(1.0)
+        wit.sync()
         arm["_burst"] = (tb, a.burst_ms, tc)
         arm["burst_at"] = round(tb - t0, 3)
         arm["burst_open_s"] = round(opened, 4)
@@ -380,6 +387,7 @@ def main():
         wit.start()
         post(0)
         time.sleep(2.0)
+        wit.sync()
         rec["errors_quiet_before"] = len(wit.errors)
         last = flood("A0 flood")
         rec["A0_last_error_at_receipt"] = round(last[0] - t0, 3) if last else None
@@ -405,6 +413,7 @@ def main():
         if wit is not None:
             wit.stop.set()
             wit.join(3)
+            rec["witness_proc"] = wit.proc_info
         if pc is not None:
             try:
                 rec["pcan_status_end"] = pc.status_string()
@@ -422,6 +431,10 @@ def main():
     rec["witness_clock"] = fit
     if fit["void"]:
         rec["witness_clock_void"] = fit["void"]
+    # the witness loop died before the run's end: a short witness, never judged
+    proc_void, void_line = PW.void_line(wit) if wit is not None else (None, None)
+    if proc_void:
+        rec["witness_proc_void"] = proc_void
     burst_line = BM.breach_line([arm["burst_measure"] for arm in rec["arms"] if "burst_measure" in arm])
     if burst_line:
         rec["burst_timing_void"] = burst_line
@@ -433,6 +446,9 @@ def main():
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(rec, fh, indent=1)
     print(WC.fit_line(fit))
+    if void_line:
+        # the suite's B10 judge reads this line before the others: VOID, never judged (2026-11-19)
+        print(void_line)
     if fit["void"]:
         # the suite's B10 judge reads this line first: VOID, never judged (A2 (a))
         print("witness clock VOID: %s" % fit["void"])

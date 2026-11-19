@@ -42,12 +42,12 @@ import json
 import os
 import socket
 import sys
-import threading
 import time
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import proc_witness as PW  # noqa: E402  the witness out of the Player's process (2026-11-19)
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 
@@ -119,11 +119,18 @@ def judge(cond, pre, post, wire_ids):
     return {"verdict": "FAIL" if why else "PASS", "why": why, "new_page_keys": new_keys}
 
 
-class Witness(threading.Thread):
+class Witness(PW.ThreadWitness):
+    """The Kvaser's ids and error frames, read in a thread beside the Player (at the slice's rate its
+    pacer did not starve a thread witness, test_busywait_witnesses). A loop that dies is recorded and
+    the commands after it VOID where they would pass (proc_witness.ThreadWitness, gen-inhibit reviewer
+    2026-11-19). Each command's window is read after sync()."""
+    LISTS = ("ids",)
+    VALUES = ("errors",)
+
     def __init__(self, bus):
         super().__init__(daemon=True)
         self.bus, self.ids, self.errors = bus, [], 0
-        self.stop = threading.Event()
+        self.stop = self.event()
 
     def run(self):
         while not self.stop.is_set():
@@ -177,12 +184,18 @@ def channel_send(kind, host, port, text, timeout=0.6):
         return False, "ERROR %s: %s" % (type(e).__name__, e)
 
 
-def command_result(cond, ch, name, sent, reply, pre, post, ids, error_frames):
-    """One command's record. A command whose send raised is ERROR, and neither judge runs."""
+def command_result(cond, ch, name, sent, reply, pre, post, ids, error_frames, witness_void=None):
+    """One command's record. A command whose send raised is ERROR, and neither judge runs. One sent
+    after the witness's loop died (witness_void, proc_witness.void_reason) is VOID
+    where it would have passed: the ids between are a short witness's, so no frame seen is not
+    "no frame on the wire". A FAIL stands (a page change, or a frame the witness did see); the
+    count is judged either way."""
     if not sent:
         j = {"verdict": "ERROR", "why": [reply], "new_page_keys": [], "counted": "ERROR"}
     else:
         j = judge(cond, pre, post, set(ids))
+        if witness_void and j["verdict"] == "PASS":
+            j.update(verdict="VOID", why=[witness_void])
         j.update(judge_counted(pre, post))
     return {"cond": cond, "channel": ch, "cmd": name, "reply": reply,
             "witness_ids_between": [hex(x) for x in ids], "witness_error_frames": error_frames,
@@ -203,6 +216,7 @@ def summary(results):
     fails = [r for r in results if r.get("verdict") == "FAIL"]
     return {"commands": sum(1 for r in results if "verdict" in r), "fail": len(fails),
             "error": sum(1 for r in results if r.get("verdict") == "ERROR"),
+            "void": sum(1 for r in results if r.get("verdict") == "VOID"),
             "not_run": ["%s/%s: %s" % (r["cond"], r["channel"], r["not_run"]) for r in results if "not_run" in r],
             "counted": sorted({r.get("counted") for r in results if "counted" in r}),
             "any_new_page_key": sorted({k for r in results for k in r.get("new_page_keys", [])}),
@@ -254,12 +268,14 @@ def main():
                     continue
                 for name, text in COMMANDS:
                     pre = state(LF.page())
+                    wit.sync()
                     i0, e0 = len(wit.ids), wit.errors
                     sent, reply = channel_send(ch, LF.HOST, int(cfg.get("port") or 3333), text)
                     time.sleep(0.6)
                     post = state(LF.page())
+                    wit.sync()
                     r = command_result(cond, ch, name, sent, reply, pre, post, sorted(set(wit.ids[i0:])),
-                                       wit.errors - e0)
+                                       wit.errors - e0, PW.void_reason(wit))
                     rec["results"].append(r)
                     print(line(r))
     finally:
@@ -273,6 +289,7 @@ def main():
         if wit is not None:
             wit.stop.set()
             wit.join(timeout=3.0)
+            rec["witness_proc"] = wit.proc_info
         for b in (pc, kv):
             if b is not None:
                 try:

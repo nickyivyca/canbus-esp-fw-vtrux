@@ -69,6 +69,7 @@ import interlock_judge as J                                      # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import bench_held  # noqa: E402  the bench lock is the bench log (2026-10-25)
 import witness_clock as WC  # noqa: E402  never judged on receipt time (A2 (b), 2026-11-11)
+import proc_witness as PW  # noqa: E402  the witness out of the replay's process (2026-11-19)
 
 ROOT = J.project_root()
 sys.path.insert(1, ROOT)
@@ -375,14 +376,18 @@ def stimulus_ok(info):
 
 # --------------------------------------------------------------------- bench
 
-class Witness(threading.Thread):
-    """Kvaser, normal mode: every frame and error frame, hardware and receipt time."""
+class Witness(PW.ThreadWitness):
+    """Kvaser, normal mode: every frame and error frame, hardware and receipt time. Read in a
+    thread beside play() (which sleeps to 2 ms before each frame, then spins: at the slice's rate
+    it did not starve a thread witness, test_busywait_witnesses); a loop that dies is recorded and
+    the case VOID (proc_witness.ThreadWitness, gen-inhibit reviewer 2026-11-19)."""
+    LISTS = ("frames", "errs")
 
     def __init__(self, can):
         super().__init__(daemon=True)
         from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
         self.bus = kvaser_bus(channel=0, bitrate=BITRATE)
-        self.stop_flag = threading.Event()
+        self.stop_flag = self.event()
         self.frames, self.errs = [], []
         self.lock = threading.Lock()
 
@@ -636,8 +641,9 @@ def run_case(can, LF, info, parsed, power, stamp):
         time.sleep(0.5)
         pol.stop_flag.set()
         pol.join(timeout=3.0)
+        wit.close()         # stopped and joined first, so its death is known (2026-11-19)
+        rec["witness_proc"] = getattr(wit, "proc_info", None)
         frames, errs, clock = wit.recorded()
-        wit.close()
         pc.shutdown()
     rec.update(posts=posts, samples=pol.samples, witness_clock=clock, witness_frames=len(frames),
                witness_error_frames=len(errs), sent_ok=sum(s[3] for s in sent),
@@ -665,6 +671,14 @@ def run_case(can, LF, info, parsed, power, stamp):
         case["resume_at_epoch"] = rec["t0_epoch"] + info["resume_at_s"]
     if "injected_hex" in info:
         case["alias"] = {info["injected_hex"]: info["original_hex"]}
+    proc_void = PW.void_reason(wit, running=False)
+    if proc_void:
+        # a witness whose loop died read a short witness: never judged (2026-11-19)
+        rec["judged"] = None
+        rec["witness_proc_void"] = proc_void
+        rec["verdict"] = PW.void_verdict(proc_void)
+        rec["why"] = "witness: %s" % proc_void
+        return rec
     if not WC.judgeable(clock):
         # never judged on receipt time (A2 (b), 2026-11-11): the witness file is kept
         rec["judged"] = None

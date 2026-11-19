@@ -54,6 +54,7 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import proc_witness as PW  # noqa: E402  the witness out of the replay's process (2026-11-19)
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 CLUMP_GAP_S = 0.001          # error frames closer than this are one clump
@@ -70,6 +71,22 @@ def witness_take(kv, m, got, errs, not_bus, bus_error):
         (errs if bus_error(kv, m) else not_bus).append(m.timestamp)
     else:
         got.append((m.timestamp, m.arbitration_id, bytes(m.data)))
+
+
+def kvaser_witness(kv, got, errs, not_bus, stop, bus_error):
+    """The Kvaser witness: every message kv delivers, through witness_take into got, errs and
+    not_bus, until stop (a proc_witness.event()) is set. Its loop runs in a forked child
+    (proc_witness.ProcThread, gen-inhibit reviewer 2026-11-19): the replay in this process paces
+    every frame with a busy-wait (`while perf() < due: pass`, at the e4 window's ~2350 frames/s),
+    which starved a thread witness of its reads (run cb08). The three lists are shipped back
+    into the same objects; read them after join()."""
+    def wit():
+        while not stop.is_set():
+            m = kv.recv(timeout=0.1)
+            if m is None:
+                continue
+            witness_take(kv, m, got, errs, not_bus, bus_error)
+    return PW.ProcThread(target=wit, lists={"got": got, "errs": errs, "not_bus": not_bus}, name="kvaser witness")
 
 
 def clumps(times, gap=CLUMP_GAP_S):
@@ -286,15 +303,8 @@ def main():
         kv = kvaser_bus(channel=0, bitrate=500000)
         got, errs, fails, sent_epoch, reads = [], [], [], [], []
         not_bus = []        # error frames that are not bus errors (kvaser_usb CRTL/RESTARTED): kept out of errs
-        stop = threading.Event()
+        stop = PW.event()
         ev = {}
-
-        def wit():
-            while not stop.is_set():
-                m = kv.recv(timeout=0.1)
-                if m is None:
-                    continue
-                witness_take(kv, m, got, errs, not_bus, bus_error)
 
         def poll():
             while not stop.is_set():
@@ -314,7 +324,7 @@ def main():
             except Exception as e:                # the device may reset before answering
                 ev[what + "_http"] = repr(e)[:80]
         perf = time.perf_counter
-        wt = threading.Thread(target=wit, daemon=True)
+        wt = kvaser_witness(kv, got, errs, not_bus, stop, bus_error)
         pt = threading.Thread(target=poll, daemon=True)
         wt.start()
         pt.start()
@@ -343,6 +353,12 @@ def main():
             stop.set()
             wt.join(3)
             pt.join(3)
+            rec["witness_proc"] = wt.proc_info
+            # a witness child that failed or stopped before the cycle's end read a short witness:
+            # its error-frame count is not "no error frames" (the suite's B12 judge reads the line)
+            proc_void, rec["witness_void_line"] = PW.void_line(wt)
+            if proc_void:
+                rec["witness_proc_void"] = proc_void
             try:
                 rec["pcan_status_end"] = tx.status_string()
             except Exception as e:
@@ -422,6 +438,8 @@ def main():
                   len(fails), rec["loss_excluding_0x051"]["lost"],
                   (rec["loss_in_restart_window_excluding_0x051"] or {}).get("lost"),
                   os.path.basename(path)))
+        if rec.get("witness_void_line"):
+            print(rec["witness_void_line"])
         for k in extra_keys:
             print("    %s: before %r, after %r" % (k, rec["page_before"].get(k), rec["page_after"].get(k)))
         # wait for the device to answer in mode 0 again before the next cycle
