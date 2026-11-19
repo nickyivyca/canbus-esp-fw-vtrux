@@ -804,7 +804,10 @@ def test_suites():
     #      step 2, 2026-11-18)
     # 308: st.reset-check and cf.reset-check (its X2 port from --port, the
     #      reviewer's follow-on to the adapter roles, 2026-11-18)
-    assert len(seen) == 308, "checks across the suites: %d" % len(seen)
+    # 310: st.bench-layer-check and cf.bench-layer-check (the hand-take bench
+    #      check of the harness on can-tools' bench-role layer, the reviewer's
+    #      bench-layer item, 2026-11-19)
+    assert len(seen) == 310, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
