@@ -139,9 +139,8 @@ echo_drain(bus, role, what) starts a thread that reads the bus (DRAIN_RECV_S, 1 
 counts what it reads: echoes, other frames, error frames. drain.stop(sent) asks it to stop, it reads what is
 queued to the first empty read (at most DRAIN_SWEEP_MAX_S), and joins it, before the bus's shutdown, and records an "echoes" event (sent, echoes, rx, errors, whether echoes == sent).
 innomaker_held's exit stops a drain still running before it shuts a bus. canmain_burst_check's replay and
-NONODE's Player use it. Kept thin, for canbench's own (the can-tools request, 2026-11-19) to replace.
-Known limit: a frame nothing ACKs never completes, so it gives no echo and holds one of the device's TX
-slots; once they are all held, each send blocks the same 1 s before it raises.
+NONODE's Player use it. Kept thin, for canbench's own to replace once its drain stops within the 5 ms
+close (the gen-inhibit reviewer's ruling (c), 2026-11-19: can-tools 0f9c85f's drain reads 50 ms at a time).
 
 THE PCAN, BY ROLE (the same ruling, 2026-11-18). PCAN-Basic numbers PCAN-USB channels
 PCAN_USBBUS1, 2, ... in the order it finds them, so channel PCAN_USBBUS1 is the first found.
