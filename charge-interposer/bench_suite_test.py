@@ -785,7 +785,11 @@ def test_suites():
     #      shared/bench 2026.11.17, ACCEPT-SPEC A18)
     # 297: sb.test-readonly-copy, plain and with --can-fail (the re-pin to
     #      shared/bench 2026.11.17.3)
-    assert len(seen) == 297, "checks across the suites: %d" % len(seen)
+    # 302: boot-reset-0x15 in b-bridge, b-witness and b-truck, and
+    #      st.bench-boot-reset and cf.bench-boot-reset (chip resets 0x15 with
+    #      no boot panic, spec 9 core dumps; tracker I, the reviewer,
+    #      2026-11-18)
+    assert len(seen) == 302, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -1069,6 +1073,62 @@ def test_idf_log_checks():
             and a[a.index("--out") + 1].startswith("{outdir}"), (group, a)
     t = argv("b-truck", "flight-silence")
     assert "--idf-log" not in t and "--pcan" in t, t
+
+
+def test_boot_reset_checks():
+    """Spec 9, core dumps (tracker I, the reviewer, 2026-11-18): each image
+    the suite loads from the product, bridge, witness and truck, runs
+    bench_boot_reset.py's chip resets 0x15 on its own port, BOOT_RESETS of
+    them; the bridge and witness must print spec 8.3's banner after each,
+    the truck (no line of its own, spec 8.3) is given none."""
+    _s, su = _all()
+    g = {x.name: x for x in su["bench"].groups}
+    assert B.BOOT_RESETS >= 50, B.BOOT_RESETS
+    for group in ("b-bridge", "b-witness", "b-truck"):
+        cs = [c for c in g[group].checks if c.id == "boot-reset-0x15"]
+        assert len(cs) == 1 and not cs[0].skip, (group, [c.id for c in g[group].checks])
+        a = [str(x) for x in cs[0].argv]
+        assert a[0].endswith("bench_drivers/bench_boot_reset.py"), a
+        assert a[a.index("--port") + 1] == "{serial_port}", a
+        assert a[a.index("--resets") + 1] == str(B.BOOT_RESETS), a
+        assert a[a.index("--out") + 1].startswith("{outdir}"), a
+        if group == "b-truck":
+            assert "--app-line" not in a, a
+        else:
+            assert a[a.index("--app-line") + 1] == "Vtrux charge interposer", a
+        assert cs[0].judge is B.script_judge, (group, cs[0].judge)
+    others = [(x.name, c.id) for x in su["bench"].groups for c in x.checks
+              if c.id == "boot-reset-0x15" and x.name not in ("b-bridge", "b-witness", "b-truck")]
+    assert not others, others
+
+
+def _drop_truck_boot_reset(s):
+    for g in s.groups:
+        if g.name == "b-truck":
+            g.checks = [c for c in g.checks if c.id != "boot-reset-0x15"]
+
+
+def _boot_reset_no_app_line(s):
+    for g in s.groups:
+        for c in g.checks:
+            if g.name == "b-bridge" and c.id == "boot-reset-0x15":
+                a = list(c.argv)
+                i = a.index("--app-line")
+                c.argv = a[:i] + a[i + 2:]
+
+
+def _boot_reset_truck_app_line(s):
+    for g in s.groups:
+        for c in g.checks:
+            if g.name == "b-truck" and c.id == "boot-reset-0x15":
+                c.argv = list(c.argv) + ["--app-line", "Vtrux charge interposer"]
+
+
+def _boot_reset_recorded(s):
+    for g in s.groups:
+        for c in g.checks:
+            if c.id == "boot-reset-0x15":
+                c.judge = B.recorded_judge
 
 
 def _drop_witness_idf_log(s):
@@ -2425,7 +2485,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_switch_pending_judge,
          test_host_bridge_judge,
          test_suites, test_interposer_images, test_list_build_images, test_idf_log_checks,
-         test_mutant_wiring,
+         test_boot_reset_checks, test_mutant_wiring,
          test_identify, test_pycache_ignored,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
          test_script_coverage, test_shared_bench_tests,
@@ -2878,6 +2938,7 @@ _ORIG["_STAGED"] = B._STAGED
 _ORIG["scratch_dir.make"] = scratch_dir.make
 _ORIG["_interposer_image"] = B._interposer_image
 _ORIG["INTERPOSER_IDF"] = B.INTERPOSER_IDF
+_ORIG["BOOT_RESETS"] = B.BOOT_RESETS
 _ORIG["_md5"] = B._md5
 _ORIG["_sha256"] = B._sha256
 
@@ -3363,6 +3424,15 @@ MUTANTS = {
          "idf-log run without --idf-log (total silence on a printing image)"),
         ("bench", _wrap_suite("bench", _truck_idf_log),
          "the truck's flight-silence weakened to --idf-log")],
+    "test_boot_reset_checks": [
+        ("bench", _wrap_suite("bench", _drop_truck_boot_reset), "no boot-reset-0x15 on the truck"),
+        ("bench", _wrap_suite("bench", _boot_reset_no_app_line),
+         "the bridge's boot-reset-0x15 without its banner line"),
+        ("bench", _wrap_suite("bench", _boot_reset_truck_app_line),
+         "the truck asked for a banner it never prints"),
+        ("bench", _wrap_suite("bench", _boot_reset_recorded),
+         "boot-reset-0x15 judged as a recording, never FAIL"),
+        ("BOOT_RESETS", 5, "5 resets per image")],
     "test_list_build_images": [
         ("_interposer_image", _image_folder_pins,
          "the pins recomputed from the build folders, not the records'"),
