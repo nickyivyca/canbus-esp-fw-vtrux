@@ -178,7 +178,7 @@ class PinTool(unittest.TestCase):
     # pin()
     def test_the_committed_pin_is_a_full_commit(self):
         p = ctp.pin()
-        self.assertEqual(p["commit"], "5952c0c2820f2c27d5f6a982879927de469c24b4")
+        self.assertEqual(p["commit"], "5220d37478541e40182c379efd6ba0edb993ee97")
         self.assertEqual(p["repo"], "https://github.com/nickyivyca/can-tools")
 
     def test_an_incomplete_or_short_pin_is_refused(self):
@@ -398,6 +398,8 @@ class RealPin(unittest.TestCase):
         self.assertIn("live/backends.py", files)
         # the reason for the 5952c0c pin: the Kvaser on Linux with its hardware stamps
         self.assertIn("live/socketcan_hw.py", files)
+        # the reason for the 5220d37 pin: open a bench adapter by its canctl role
+        self.assertIn("bench_roles.py", files)
 
 
 if __name__ == "__main__":
