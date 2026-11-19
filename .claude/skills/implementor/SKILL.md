@@ -19,6 +19,10 @@ tests of the core's internals.
 **Self-checking:** run the emulated harness as often as you like. Those runs are
 for you. They are not verification and do not go in `VERIFICATION.md`.
 
+**Before writing a piece the other project may also need,** look for it on
+the other project's main branch and in `shared/`; if it is there or would be
+shared, tell your reviewer before you write it (AGENTS.md, "Shared code").
+
 **When something disagrees with you, tell the reviewer, citing the spec section:**
 - A harness check fails on behaviour you believe matches the spec. Do not work around the check.
 - The spec is wrong or ambiguous. Do not code to your own reading of it.
