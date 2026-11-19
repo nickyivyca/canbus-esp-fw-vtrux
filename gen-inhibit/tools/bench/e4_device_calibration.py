@@ -70,7 +70,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from e4_rig_calibration import (          # noqa: E402
-    BITRATE, CAPTURE, FOREIGN_IDS, Witness, pct,
+    BITRATE, CAPTURE, FOREIGN_IDS, Witness, bus_errors, pct,
 )
 import raw_http_probe as RHP              # noqa: E402
 import subprocess                         # noqa: E402
@@ -1083,7 +1083,7 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
           % (util * 100.0, BITRATE, worst_idle * 1e6))
 
     got = [f for f in w.frames if not f[3] and not (f[1] in FOREIGN_IDS and not f[4])]
-    errf = [f for f in w.frames if f[3]]
+    errf, not_bus = bus_errors(w)      # bus errors only; kvaser_usb CRTL/RESTARTED kept out (2026-11-18)
     cmd = [f for f in got if f[1] == CMD_ID and not f[4]]
 
     # OURS AGAINST THE VCM'S, TOLD APART BY TRAIL TIMING. The VCM's 0x051 runs
@@ -1146,6 +1146,7 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         "witness_frames": len(got),
         "witness_fps": round(len(got) / elapsed, 1),
         "error_frames": len(errf),
+        "not_bus_error_frames": not_bus,
         "cmd_on_wire": len(cmd),
         "vcm_cmd": len(vcm),
         "ours_trailing": len(ours),

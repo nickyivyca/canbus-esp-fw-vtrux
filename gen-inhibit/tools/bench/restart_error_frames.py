@@ -62,6 +62,16 @@ WINDOW_BEFORE_S = 1.0        # the restart window: POST - 1 s ...
 WINDOW_AFTER_BOOT_S = 3.0    # ... to boot + 3 s
 
 
+def witness_take(kv, m, got, errs, not_bus, bus_error):
+    """One message from the witness kv: a bus error's stamp to errs; any other error frame's
+    (kvaser_usb controller state or RESTARTED, gen-inhibit reviewer 2026-11-18) to not_bus,
+    out of the count; a data frame to got. bus_error is kvaser_bus.bus_error."""
+    if m.is_error_frame:
+        (errs if bus_error(kv, m) else not_bus).append(m.timestamp)
+    else:
+        got.append((m.timestamp, m.arbitration_id, bytes(m.data)))
+
+
 def clumps(times, gap=CLUMP_GAP_S):
     """Sorted error times -> [(start, end, n)], a new clump wherever the gap exceeds gap."""
     out = []
@@ -246,9 +256,10 @@ def main():
                "post_at": a.post_at, "build_before": LF.build_id(),
                "page_before": {k: p0.get(k) for k in ("mode", "drv", "uptime_ms", "reset_reason") + extra_keys}}
         tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000, auto_reset=True)
-        from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+        from kvaser_bus import kvaser_bus, bus_error  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
         kv = kvaser_bus(channel=0, bitrate=500000)
         got, errs, fails, sent_epoch, reads = [], [], [], [], []
+        not_bus = []        # error frames that are not bus errors (kvaser_usb CRTL/RESTARTED): kept out of errs
         stop = threading.Event()
         ev = {}
 
@@ -257,10 +268,7 @@ def main():
                 m = kv.recv(timeout=0.1)
                 if m is None:
                     continue
-                if m.is_error_frame:
-                    errs.append(m.timestamp)
-                else:
-                    got.append((m.timestamp, m.arbitration_id, bytes(m.data)))
+                witness_take(kv, m, got, errs, not_bus, bus_error)
 
         def poll():
             while not stop.is_set():
@@ -352,6 +360,7 @@ def main():
             "last_read_after_boot": post_reads[-1] if post_reads else None,
             "reads_after_boot": len(post_reads),
             "witness_error_frames_total": len(errs),
+            "witness_not_bus_error_frames": len(not_bus),
             "burst": (burst_summary(errs, post_wire, boot_wire) if post_wire is not None
                       else "no POST time on the wire clock"),
             "replay_sends": {"sent": len(sent_epoch), "failed": len(fails),

@@ -474,11 +474,13 @@ class Witness(threading.Thread):
 
     def __init__(self):
         super().__init__(daemon=True)
-        from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+        from kvaser_bus import kvaser_bus, bus_error  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
         self.bus = kvaser_bus(channel=0, bitrate=BITRATE)
+        self.bus_error = lambda m: bus_error(self.bus, m)
         self.stop_flag = threading.Event()
         self.frames = []     # (hw, rx, arb, hex)
-        self.errs = []       # (hw, rx)
+        self.errs = []       # (hw, rx): bus errors only (kvaser_bus.bus_error)
+        self.not_bus_errors = 0
         self.status = []     # (t, tec, rec, overrun, flags, err_frames, overruns)
         self.status_error = None
         self.lock = threading.Lock()
@@ -510,7 +512,10 @@ class Witness(threading.Thread):
                 rx = time.time()
                 with self.lock:
                     if m.is_error_frame:
-                        self.errs.append((m.timestamp, rx))
+                        if self.bus_error(m):
+                            self.errs.append((m.timestamp, rx))
+                        else:       # controller state or RESTARTED (kvaser_usb): kept out, counted
+                            self.not_bus_errors += 1
                     elif m.arbitration_id in KEEP_IDS:
                         self.frames.append((m.timestamp, rx, m.arbitration_id,
                                             bytes(m.data).hex()))
@@ -1621,6 +1626,7 @@ def main():
             frames, errs, clock = wit.recorded()     # on either clock, labelled: kept, not judged
             rec["witness_clock"] = clock
             rec["witness_err_total"] = len(errs)
+            rec["witness_not_bus_error_frames"] = wit.not_bus_errors
             rec["witness_frames_kept"] = len(frames)
             os.makedirs(RUNS, exist_ok=True)
             rec["witness_file"] = os.path.basename(save_witness(

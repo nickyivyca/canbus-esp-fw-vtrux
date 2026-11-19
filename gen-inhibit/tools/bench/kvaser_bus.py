@@ -75,6 +75,11 @@ backend everywhere else (Windows). On Linux, after the guard:
     link down (canctl down kvaser, read back) once the last bus this process opened is shut.
   - timestamps: python-can's socketcan stamps are host software stamps (SO_TIMESTAMPNS, the
     kernel's receive time), not the Leaf's hardware clock that CANlib's are.
+  - error frames: the kernel sends controller-state (CRTL, BUSOFF) and RESTARTED frames as well
+    as bus errors. bus_error(b, msg) / bus_error_class(b, can_id) count only the bus-error
+    classes on SocketCAN, and every error frame on any other bus; the witnesses that count
+    error frames (x2_jam_cases, restart_error_frames, e4_rig_calibration) count through them
+    and record the frames they left out.
 Every open, on either backend, is recorded: one line on stderr, and, when GI_RUNS_DIR is set
 (the chain runner points it at the check's folder), a JSON line in kvaser_opens.jsonl there:
 the backend ("socketcan" or "canlib"), the channel asked for and opened, the bitrate, and on
@@ -299,6 +304,32 @@ def err_mask(b):
         return b.socket.getsockopt(SOL_CAN_RAW, CAN_RAW_ERR_FILTER)
     except Exception:       # noqa: BLE001  no socket, or not a CAN socket
         return None
+
+
+# The kernel's error classes (linux/can/error.h), as python-can leaves them in an error
+# frame's arbitration_id. A bus error is one of BUS_ERROR_CLASSES. CRTL (controller state),
+# BUSOFF and RESTARTED report the controller, not an error on the wire, and CNT rides on
+# real bus errors too (every one on the 2026-11-18 measurement carried it), so it decides
+# nothing. Gen-inhibit reviewer, 2026-11-18: on kvaser_usb, B6, B12 and B22 count bus errors only.
+CAN_ERR_TX_TIMEOUT, CAN_ERR_LOSTARB, CAN_ERR_CRTL, CAN_ERR_PROT = 0x1, 0x2, 0x4, 0x8
+CAN_ERR_TRX, CAN_ERR_ACK, CAN_ERR_BUSOFF, CAN_ERR_BUSERROR = 0x10, 0x20, 0x40, 0x80
+CAN_ERR_RESTARTED, CAN_ERR_CNT = 0x100, 0x200
+BUS_ERROR_CLASSES = (CAN_ERR_TX_TIMEOUT | CAN_ERR_LOSTARB | CAN_ERR_PROT | CAN_ERR_TRX
+                     | CAN_ERR_ACK | CAN_ERR_BUSERROR)
+
+
+def bus_error_class(b, can_id):
+    """For an error frame read from bus b with arbitration_id can_id: does it count as a bus
+    error? On SocketCAN (b.vtrux_backend "socketcan"), only if it carries a bus-error class.
+    On any other bus (CANlib, the PCAN), every error frame is a bus error, as before."""
+    if getattr(b, "vtrux_backend", None) != "socketcan":
+        return True
+    return bool(can_id & BUS_ERROR_CLASSES)
+
+
+def bus_error(b, msg):
+    """Whether msg, read from bus b, is an error frame that counts as a bus error."""
+    return bool(msg.is_error_frame) and bus_error_class(b, msg.arbitration_id)
 
 
 def _socketcan_bus(channel=None, bitrate=500000, driver_mode=True, **kw):

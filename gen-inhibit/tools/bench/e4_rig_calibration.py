@@ -211,6 +211,17 @@ class Witness(threading.Thread):
                         bool(m.is_error_frame), bool(m.is_extended_id)))
 
 
+def bus_errors(w):
+    """(the error frames witness w kept that count as bus errors, how many it left out).
+    On the Kvaser through SocketCAN, controller-state and RESTARTED frames are not bus errors
+    (kvaser_bus.bus_error_class; gen-inhibit reviewer, 2026-11-18); on any other bus every
+    error frame is one."""
+    from kvaser_bus import bus_error_class  # noqa: E402
+    errs = [f for f in w.frames if f[3]]
+    errf = [f for f in errs if bus_error_class(w.bus, f[1])]
+    return errf, len(errs) - len(errf)
+
+
 def frame_bits(dlc, extended):
     """Bit count of one frame including the 3-bit interframe space, unstuffed.
 
@@ -792,7 +803,7 @@ def phase_replay(seconds, speeds, out, foreign_fps, heard_foreign):
                  arm["send_error_us"]["p99"], arm["send_error_us"]["max"]))
 
         for w in ws:
-            errf = [f for f in w.frames if f[3]]
+            errf, not_bus = bus_errors(w)
             # Split by ID, not by guesswork: the stimulus tops out at 0x6A0 and
             # every FOREIGN_IDS entry is above 0x7F0.
             # Both benched boards' diag IDs are 11-bit, so an extended frame is
@@ -802,6 +813,7 @@ def phase_replay(seconds, speeds, out, foreign_fps, heard_foreign):
             fgn = [f for f in w.frames
                    if not f[3] and f[1] in FOREIGN_IDS and not f[4]]
             wr = {"frames": len(got), "error_frames": len(errf),
+                  "not_bus_error_frames": not_bus,
                   "foreign_frames": len(fgn)}
             # The witness reference. The interposer's burst is externally paced
             # at 1 Hz and does not care how loaded the segment is, so the share

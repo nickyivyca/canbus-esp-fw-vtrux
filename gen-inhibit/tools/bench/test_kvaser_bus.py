@@ -501,6 +501,46 @@ def real_mask():
     check("real mask: with error frames ignored it reads 0 (the read-back can tell)", out.get("True") == 0, out)
 
 
+def bus_errors():
+    """Error frames on kvaser_usb (gen-inhibit reviewer, 2026-11-18): B6, B12 and B22 count bus
+    errors only. The kernel's classes (linux/can/error.h) are written out here from the header,
+    not from kvaser_bus. The can-fail is a real frame: the first error frame of the 2026-11-18
+    measurement (runs/kvaser_usb_measure_20261118T154231), id 0x20000288 (PROT | BUSERROR | CNT),
+    data 0000020800000000, which must count."""
+    import can
+    spec = importlib.util.spec_from_file_location("kvaser_bus_err", os.path.join(SRC, "kvaser_bus.py"))
+    kb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kb)
+    TX_TIMEOUT, LOSTARB, CRTL, PROT, TRX, ACK, BUSOFF, BUSERROR, RESTARTED, CNT = (
+        0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200)
+    sock, canlib, pcan = (types.SimpleNamespace(vtrux_backend="socketcan"),
+                          types.SimpleNamespace(vtrux_backend="canlib"), types.SimpleNamespace())
+
+    def err(cid, data=bytes(8)):
+        return can.Message(arbitration_id=cid, is_error_frame=True, is_extended_id=False, data=data)
+
+    real = err(0x288, bytes.fromhex("0000020800000000"))
+    check("bus errors: the 2026-11-18 frame (PROT | BUSERROR | CNT) counts on SocketCAN (can-fail)",
+          kb.bus_error(sock, real) is True and kb.bus_error_class(sock, 0x288) is True)
+    for name, cid in (("PROT", PROT), ("BUSERROR", BUSERROR), ("ACK", ACK), ("TX_TIMEOUT", TX_TIMEOUT),
+                      ("LOSTARB", LOSTARB), ("TRX", TRX), ("PROT | CRTL", PROT | CRTL),
+                      ("ACK | CNT", ACK | CNT)):
+        check("bus errors: %s counts on SocketCAN" % name, kb.bus_error(sock, err(cid)) is True, hex(cid))
+    for name, cid in (("CRTL", CRTL), ("CRTL | CNT", CRTL | CNT), ("RESTARTED", RESTARTED),
+                      ("BUSOFF", BUSOFF), ("BUSOFF | CRTL | CNT", BUSOFF | CRTL | CNT), ("CNT", CNT),
+                      ("no class", 0)):
+        check("bus errors: %s alone does not count on SocketCAN" % name, kb.bus_error(sock, err(cid)) is False,
+              hex(cid))
+    check("bus errors: a data frame is never one, whatever its id",
+          kb.bus_error(sock, can.Message(arbitration_id=0x288, data=bytes(8))) is False)
+    for name, b in (("CANlib", canlib), ("a bus with no backend tag (the PCAN)", pcan)):
+        check("bus errors: on %s every error frame counts, CRTL alone or no class" % name,
+              kb.bus_error(b, err(CRTL)) is True and kb.bus_error(b, err(0)) is True
+              and kb.bus_error_class(b, RESTARTED) is True)
+        check("bus errors: on %s a data frame does not" % name,
+              kb.bus_error(b, can.Message(arbitration_id=0x100, data=bytes(8))) is False)
+
+
 def case(name, fn):
     """A case that raises where it should not is a FAIL, not a crash."""
     try:
@@ -982,6 +1022,27 @@ def scan_can_fail():
 
 MUTANTS = [
     (None, None, None),
+    # bus errors only on kvaser_usb (reviewer, 2026-11-18)
+    ("bus errors: controller state counts", "| CAN_ERR_ACK | CAN_ERR_BUSERROR)",
+     "| CAN_ERR_ACK | CAN_ERR_BUSERROR | CAN_ERR_CRTL)"),
+    ("bus errors: RESTARTED counts", "| CAN_ERR_ACK | CAN_ERR_BUSERROR)",
+     "| CAN_ERR_ACK | CAN_ERR_BUSERROR | CAN_ERR_RESTARTED)"),
+    ("bus errors: BUSOFF counts", "| CAN_ERR_ACK | CAN_ERR_BUSERROR)",
+     "| CAN_ERR_ACK | CAN_ERR_BUSERROR | CAN_ERR_BUSOFF)"),
+    ("bus errors: PROT and BUSERROR are not bus errors",
+     "BUS_ERROR_CLASSES = (CAN_ERR_TX_TIMEOUT | CAN_ERR_LOSTARB | CAN_ERR_PROT | CAN_ERR_TRX\n"
+     "                     | CAN_ERR_ACK | CAN_ERR_BUSERROR)",
+     "BUS_ERROR_CLASSES = (CAN_ERR_TX_TIMEOUT | CAN_ERR_LOSTARB | CAN_ERR_TRX\n"
+     "                     | CAN_ERR_ACK)"),
+    ("bus errors: ACK is not one", "| CAN_ERR_ACK | CAN_ERR_BUSERROR)", "| CAN_ERR_BUSERROR)"),
+    ("bus errors: CNT excludes a frame", "    return bool(can_id & BUS_ERROR_CLASSES)\n",
+     "    return bool(can_id & BUS_ERROR_CLASSES) and not can_id & CAN_ERR_CNT\n"),
+    ("bus errors: every SocketCAN error frame counts", "    return bool(can_id & BUS_ERROR_CLASSES)\n",
+     "    return True\n"),
+    ("bus errors: filtered on every bus but CANlib", '    if getattr(b, "vtrux_backend", None) != "socketcan":\n',
+     '    if getattr(b, "vtrux_backend", None) == "canlib":\n'),
+    ("bus errors: a data frame can count", "    return bool(msg.is_error_frame) and bus_error_class(",
+     "    return bus_error_class("),
     ("kvaser_bus applies no fixes", "        return _socketcan_bus(**kw)\n    fixes()\n",
      "        return _socketcan_bus(**kw)\n"),
     ("gs_usb_bus applies no fixes", "def gs_usb_bus(**kw):\n    require_bench()\n    fixes()\n",
@@ -1129,6 +1190,7 @@ def main(argv):
         return can_fail()
     unit()
     socketcan()
+    bus_errors()
     real_mask()
     pin()
     guard_real()
