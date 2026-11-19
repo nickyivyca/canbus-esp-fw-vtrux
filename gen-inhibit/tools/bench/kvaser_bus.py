@@ -169,6 +169,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -739,16 +740,45 @@ def _pcan_record(b, r, bitrate, reader):
     return b
 
 
+# python-can's pcan raises PCAN-Basic's bus-error statuses from recv (python-can 4.6.1:
+# "Bus error: The CAN controller is error passive", "Bus error: an error counter reached the
+# 'heavy'/'warning' limit", ...). Each is a state change, not a lost frame and not an end.
+PCAN_BUS_STATE = re.compile(r"^Bus error: ")
+
+
+def _read_on_bus_states(b):
+    """Every PCAN reader in this harness reads on past a bus state (gen-inhibit reviewer's F6,
+    2026-11-19: run cb08's B9, B10 and B14 PCAN readers died of "error passive", as
+    canmain_burst_check's witness had before 45f0332d). The bus's recv records each bus state
+    raised, (perf_counter, text), in b.vtrux_states and returns None for that read, after 1 ms;
+    any other exception is raised as before."""
+    raw = b.recv
+    b.vtrux_states = []
+
+    def recv(timeout=None):
+        try:
+            return raw(timeout=timeout)
+        except Exception as e:      # noqa: BLE001  only a bus state is kept; anything else is re-raised
+            if not PCAN_BUS_STATE.match(str(e)):
+                raise
+            b.vtrux_states.append((time.perf_counter(), "%s: %s" % (type(e).__name__, e)))
+            time.sleep(0.001)
+            return None
+    b.recv = recv
+    return b
+
+
 def pcan_bus(bitrate=500000, **kw):
     """The PCAN by its canctl role pcanfd: bench_layer.open_bench("pcanfd", bitrate) (the guard, then
     open_role: python-can's pcan by the role's device id) with the caller's other arguments. A pick keyword
-    (channel, device_id, interface, ...) is refused by the layer (RoleError). The open is recorded."""
+    (channel, device_id, interface, ...) is refused by the layer (RoleError). The open is recorded. Its recv
+    reads on past a bus state, kept in bus.vtrux_states (_read_on_bus_states)."""
     bl = layer()
     b = _call(RoleError, "open_bench %s" % PCAN_ROLE, bl.open_bench, PCAN_ROLE, bitrate, mode="pcan", **kw)
     res = getattr(b, "bench_role", None)
     r = {"role": PCAN_ROLE, "device_id": res.kwargs.get("device_id") if res else None,
          "chardev": res.role.chardev if res else None}
-    return _pcan_record(b, r, bitrate, "canbench.bench_layer.open_bench")
+    return _read_on_bus_states(_pcan_record(b, r, bitrate, "canbench.bench_layer.open_bench"))
 
 
 def pcan_witness_bus(bitrate=500000, **kw):

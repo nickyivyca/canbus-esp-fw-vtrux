@@ -118,6 +118,9 @@ def judge_file(path):
         prov = a.get("provenance") or {}
         if isinstance(prov, str) or not prov:
             return {"run": os.path.basename(path), "verdict": "UNRESOLVED: no provenance (%s)" % prov}
+        wv = WC.window_void(prov)                # the witness short of the replay (2026-11-19)
+        if wv:
+            return {"run": os.path.basename(path), "verdict": "VOID: arm void: %s" % "; ".join(wv)}
         if d.get("mode") == "inhibit" and not d.get("arm_after_s"):
             return {"run": os.path.basename(path), "verdict": "VOID: armed INHIBIT from the start, no entry"}
         n_dev = prov.get("device_frames") or 0

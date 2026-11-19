@@ -20,14 +20,25 @@ mkdir -p "$D"
 ARMS=${*:-a b}
 for a in $ARMS; do
   echo "== $(date +%H:%M:%S) arm $a: reboot"
-  $PY -B - "$A" <<'PY'
+  n=B22_case3_${C}_man_$a
+  # interlock_bench.reboot: confirmed by a new boot in mode 0, with the hotspot's rejoin. An arm whose
+  # reboot is not confirmed is not run, and its file says why in the form the suite's B22 judge reads
+  # as void (gen-inhibit reviewer, 2026-11-19: run cb08 ran both arms after unconfirmed reboots).
+  $PY -B - "$A" "$D/$n.txt" <<'PY'
+import json
 import sys
 sys.path.insert(0, sys.argv[1])
 import interlock_bench as I
-import lowid_flood_skip_bench as LF
-print("reboot", I.reboot(LF))
+r = I.reboot()
+print("reboot", json.dumps({k: r.get(k) for k in ("ok", "confirmed", "why", "s", "uptime_ms", "reset_reason",
+                                                    "mode", "rejoin", "rejoins")}))
+if not r.get("ok"):
+    with open(sys.argv[2], "w", encoding="utf-8") as f:
+        f.write("ARM NOT RUN\n  ---- ARM VOID: the figures above do not support a verdict ----\n"
+                "       - the WiCAN's reboot before the arm was not confirmed in mode 0: %s\n" % (r.get("why"),))
+    sys.exit(1)
 PY
-  n=B22_case3_${C}_man_$a
+  if [ $? -ne 0 ]; then echo "  arm $a not run: its reboot was not confirmed"; continue; fi
   $PY -B $A/e4_device_calibration.py --capture "$(hpath "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
     --window-start 0 --seconds 90 --arm idle --flood-slcan --out "$D/$n.json" > "$D/$n.txt" 2>&1
   echo "  e4 exit $?"

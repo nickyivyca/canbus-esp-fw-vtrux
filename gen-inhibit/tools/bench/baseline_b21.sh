@@ -31,6 +31,25 @@ IFACE=${GI_CAPTURE_IFACE:-$GI_HOST_IFACE}   # bench_host.sh: none on Linux
 mkdir -p "$D"
 export GI_RUNS_DIR="${GI_RUNS_DIR:-$(hpath "$PWD/$DATA/runs")}"   # the guards and the probe write their records there
 STEPS=${GI_B21_STEPS:-guards probe}
+case " $STEPS " in *" probe "*) need_iface ;; esac   # refused before anything runs, as before
+# The host on the WiCAN's hotspot first, rejoined through gi_wifi if the page does not answer
+# (wican_reboot.on_hotspot). If it still does not, B21 is NOT-RUN with the reason, never judged on an
+# unread page (gen-inhibit reviewer, 2026-11-19: run cb08's guards failed on "returned None").
+if ! $PY -B - "$A" "$D/B21_not_run.txt" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import wican_reboot as W
+ok, why = W.on_hotspot()
+print("hotspot: %s" % why)
+if not ok:
+    with open(sys.argv[2], "w", encoding="utf-8") as f:
+        f.write("NOT-RUN: the host is not on the WiCAN's hotspot: %s\n" % why)
+    sys.exit(1)
+PY
+then
+  echo "B21 not run: the host is not on the WiCAN's hotspot"
+  exit 0
+fi
 case " $STEPS " in *" guards "*)
 $PY -B "$(dirname "$A")/bench_flash_guard.py" --check-accepted > "$D/B21_bench_flash_guard.txt" 2>&1; echo "flash guard exit $?"
 $PY -B "$(dirname "$A")/bench_ota_guard.py" --host 192.168.80.1 --allow-ota-write > "$D/B21_bench_ota_guard.txt" 2>&1; echo "ota guard exit $?"

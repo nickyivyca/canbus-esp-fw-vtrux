@@ -398,6 +398,63 @@ def desk():
                 json.dump(rec, f)
             check("provenance_classifier.rejudge: an arm void only on attribution carries arm_void [] (judged as "
                   "before)", P.rejudge(path, "idle")["arm_void"] == [])
+
+            # The witness short of the replay, an empty or short window (run cb08, 2026-11-19): every
+            # desk tool reads the arm VOID, and an analysis that raises gives an error row, never a crash.
+            WCm = mod("witness_clock")
+            why = "the witness holds 10 of 100 replayed frames in order: the window cannot be judged"
+            check("witness_clock.window_void: short -> the reason; whole, absent or not a dict -> []",
+                  WCm.window_void({"replayed_frames": 100, "replayed_found": 10}) == [why]
+                  and WCm.window_void({"replayed_frames": 100, "replayed_found": 100}) == []
+                  and WCm.window_void({"replayed_frames": 100}) == [] and WCm.window_void({}) == []
+                  and WCm.window_void(None) == [] and WCm.window_void("UNRESOLVED") == [],
+                  WCm.window_void({"replayed_frames": 100, "replayed_found": 10}))
+            rec["arms"]["idle"]["void"] = False
+            rec["arms"]["idle"]["void_reasons"] = []
+            rec["arms"]["idle"]["provenance"] = {"device_frames": 3, "replayed_frames": 100, "replayed_found": 10,
+                                                 "verdict": "UNRESOLVED", "unresolved": ["count: 10 of 100"]}
+            rec["post_schedule"] = []
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(rec, f)
+            r = G.judge_file(path)
+            check("golive_stale_check: the witness short of the replay -> VOID: arm void, with the reason",
+                  r["verdict"] == "VOID: arm void: " + why, r)
+            rec["arms"]["idle"]["provenance"] = {"device_frames": 3, "replayed_frames": 100, "replayed_found": 100}
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(rec, f)
+            check("golive_stale_check: the whole replay on the witness is judged",
+                  not G.judge_file(path)["verdict"].startswith("VOID: arm void"), G.judge_file(path)["verdict"])
+            short = {"verdict": "UNRESOLVED", "replayed_frames": 100, "replayed_found": 10, "device_times": [],
+                     "vcm_times": [], "replayed_wire_times": [float(k) for k in range(10)]}
+            P.classify = lambda *a, **k: dict(short)
+            r = MEA.analyse(path)
+            check("mode_entry_analysis: the witness short of the replay gives {run, void}, no figures, not an error",
+                  r.get("void") == [why] and "error" not in r and "first_answer_after_post_ms" not in r, r)
+            QA = mod("quiesce_analysis")
+            r = QA.analyse(path)
+            check("quiesce_analysis: the witness short of the replay gives {run, initial_mode, void} (run cb08 "
+                  "raised IndexError)", r.get("void") == [why] and r.get("initial_mode") == "inhibit", r)
+            P.classify = lambda *a, **k: (_ for _ in ()).throw(IndexError("list index out of range"))
+            try:
+                r = MEA.analyse_row(path)
+            except Exception as e:      # noqa: BLE001  the row's absence is the failure, not a crash here
+                r = {"raised": repr(e)}
+            check("mode_entry_analysis: an analysis that raises gives an error row naming it",
+                  r.get("run") == os.path.basename(path) and "IndexError" in (r.get("error") or ""), r)
+            import contextlib
+            import io
+            buf, argv = io.StringIO(), sys.argv
+            sys.argv = ["quiesce_analysis.py", path]
+            try:
+                with contextlib.redirect_stdout(buf):
+                    rc = QA.main()
+            except Exception as e:      # noqa: BLE001
+                rc = "raised %r" % e
+            finally:
+                sys.argv = argv
+            rows = [json.loads(x) for x in buf.getvalue().splitlines() if x.startswith("{")]
+            check("quiesce_analysis: an analysis that raises prints an error row and exits 0",
+                  rc == 0 and len(rows) == 1 and "IndexError" in (rows[0].get("error") or ""), (rc, rows))
         finally:
             if saved[0] is None:
                 sys.modules.pop("e4_device_calibration", None)
@@ -458,6 +515,20 @@ MUTANTS = [
     ("b24_frame_content_judge.py", "        res[\"verdict\"] = \"VOID\"\n", "        pass\n"),
     ("mode_entry_analysis.py", "    if r.get(\"arm_void\"):                          # the arm's own VOID (2026-11-18)\n",
      "    if False:\n"),
+    # the witness short of the replay reads VOID; an analysis that raises gives an error row (2026-11-19)
+    ("witness_clock.py", "    if not isinstance(n, int) or not isinstance(p, int) or p >= n:\n        return []\n",
+     "    return []\n"),
+    ("golive_stale_check.py", "        wv = WC.window_void(prov)                # the witness short of the replay (2026-11-19)\n",
+     "        wv = []\n"),
+    ("mode_entry_analysis.py", "    wv = WC.window_void(r)                          # the witness short of the replay (2026-11-19)\n",
+     "    wv = []\n"),
+    ("quiesce_analysis.py",
+     "    wv = WC.window_void(r)    # the witness short of the replay (run cb08 raised IndexError here, 2026-11-19)\n",
+     "    wv = []\n"),
+    ("quiesce_analysis.py", "            except Exception as e:      # noqa: BLE001  a row the judge reads as ERROR",
+     "            except ImportError as e:      # noqa: BLE001  a row the judge reads as ERROR"),
+    ("mode_entry_analysis.py", "    except Exception as e:      # noqa: BLE001\n        return {\"run\": os.path.basename(run), \"error\": \"analysis raised",
+     "    except ImportError as e:      # noqa: BLE001\n        return {\"run\": os.path.basename(run), \"error\": \"analysis raised"),
 ]
 
 

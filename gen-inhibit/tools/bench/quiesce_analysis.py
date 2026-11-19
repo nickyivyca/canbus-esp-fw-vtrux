@@ -68,6 +68,10 @@ def analyse(run):
     r = P.rejudge(run, arm, keep_frames=True)
     if r.get("arm_void"):     # the arm's witness clock refused in its run (2026-11-18): nothing judged
         return {"run": os.path.basename(run), "initial_mode": d.get("mode"), "void": r["arm_void"]}
+    import witness_clock as WC  # noqa: E402
+    wv = WC.window_void(r)    # the witness short of the replay (run cb08 raised IndexError here, 2026-11-19)
+    if wv:
+        return {"run": os.path.basename(run), "initial_mode": d.get("mode"), "void": wv}
     rep = r["replayed_wire_times"]
     wire = P.read_witness(os.path.join(os.path.dirname(run), a["witness_raw"]))
     dev_cmd = sorted(r["device_times"])
@@ -124,7 +128,11 @@ def analyse(run):
 def main():
     for run in sys.argv[1:]:
         if not run.endswith("_provenance.json"):
-            print(json.dumps(analyse(run)))
+            try:
+                row = analyse(run)
+            except Exception as e:      # noqa: BLE001  a row the judge reads as ERROR, never a crash (2026-11-19)
+                row = {"run": os.path.basename(run), "error": "analysis raised %s: %s" % (type(e).__name__, e)}
+            print(json.dumps(row))
     return 0
 
 

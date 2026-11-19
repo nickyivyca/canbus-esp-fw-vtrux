@@ -37,6 +37,11 @@ MUTANTS = [
     ("pre-read never made",
      "    if pre_read:\n",
      "    if False:\n"),
+    # the witness out of the replay's process (F1, 2026-11-19)
+    ("the arm's witness is the thread again, as in run cb08",
+     "ArmWitness = PW.ProcWitness ", "ArmWitness = Witness "),
+    ("a failed witness child does not void the arm",
+     '    if w.info.get("error") or w.info.get("exitcode") != 0:\n', '    if False:\n'),
     ("deferred branch builds no poster",
      "        poster = ModePoster(mode)\n        print(\"  arm: deferred",
      "        poster = None\n        print(\"  arm: deferred"),

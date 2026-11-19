@@ -100,6 +100,21 @@ EDITS = [
     ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", r"'fail': 0", "'fail': 1", "FAIL"),
     ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", [(r"'commands': 20", "'commands': 0"), (r"^.*-> \w+ +\| counted .*\n", "")],
      None, "FAIL all"),
+    # A command whose send raised is ERROR, and an arm not run is NOT-RUN, never PASS (run cb08's ws
+    # arm, gen-inhibit reviewer 2026-11-19).
+    ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", r"^(  armed ws  O    reply )no reply       -> PASS  \| counted PASS .*$",
+     r"\g<1>ERROR ModuleNo -> ERROR ModuleNotFoundError: x | counted ERROR ", "ERROR"),
+    ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", [(r"^  (off|armed) +ws .*\n", ""), (r"'commands': 20", "'commands': 10"),
+                                                      (r"^(== armed: .*\n)", r"  off   ws  NOT-RUN websockets missing\n\g<1>"),
+                                                      (r"^(summary .*'fail': 0,)", r"\g<1> 'error': 0, 'not_run': ['off/ws: websockets missing', 'armed/ws: websockets missing'],"),
+                                                      (r"^(summary )", r"  armed ws  NOT-RUN websockets missing\n\g<1>")],
+     None, "NOT-RUN all"),
+    # the NOT-RUN lines and the summary must agree: a lost line is ERROR, not PASS
+    ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", [(r"^  (off|armed) +ws .*\n", ""), (r"'commands': 20", "'commands': 10"),
+                                                      (r"^(summary .*'fail': 0,)", r"\g<1> 'error': 0, 'not_run': ['off/ws: websockets missing', 'armed/ws: websockets missing'],")],
+     None, "ERROR all"),
+    # the summary's error count alone (no ERROR line) is ERROR
+    ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", r"^(summary .*'fail': 0,)", r"\g<1> 'error': 1,", "ERROR"),
     ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"device 0x051 670 \(device says 670\)",
      "device 0x051 670 (device says 671)", "FAIL"),
     ("B17a", "bench", "+B17_spec11_page_aaaaaaa_man.txt", None, "AS SPECIFIED\n", "ERROR"),
@@ -114,6 +129,11 @@ EDITS = [
     # an arm VOID on its witness clock (the Kvaser's stamps not hardware time, 2026-11-18) makes
     # the check VOID, never PASS or FAIL; but another arm's FAIL still reads FAIL
     ("B4", "bench", r"B4_skip_method_stdout\.txt", r"^(l2 +)PASS", r"\g<1>VOID", "VOID"),
+    # B4 never PASSes with a case unjudged (gen-inhibit reviewer, 2026-11-19): an INCONCLUSIVE case is VOID,
+    # a missing case line ERROR, a case's ERROR ERROR
+    ("B4", "bench", r"B4_skip_method_stdout\.txt", r"^(l2 +)PASS", r"\g<1>INCONCLUSIVE", "VOID"),
+    ("B4", "bench", r"B4_skip_method_stdout\.txt", r"^l2 +PASS +witness.*\n", "", "ERROR"),
+    ("B4", "bench", r"B4_skip_method_stdout\.txt", r"^(l2 +)PASS", r"\g<1>ERROR", "ERROR"),
     ("B4", "bench", r"B4_skip_method_stdout\.txt", [(r"^(l2 +)PASS", r"\g<1>VOID"), (r"^(w3 +)PASS", r"\g<1>FAIL")],
      None, "FAIL"),
     ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"^(  \[idle\] provenance \(live\))",
@@ -135,6 +155,18 @@ EDITS = [
       (r"(T213056_arm1\.json +observe +dev0x051 \d+ +)stale 0", r"\g<1>stale 2")], None, "FAIL"),
     ("B3", "bench", r"B3_mode_entry_analysis\.txt", r'^\{"run": "(B3_e4_golive_respond_e3d9437_20261016T213601_arm3\.json)".*$',
      r'{"run": "\g<1>", "void": ["witness clock (test)"]}', "VOID"),
+    # the witness short of the replay (an empty or short window, run cb08, 2026-11-19): VOID, in both
+    # files at once as the desk tools write it, and never a crash
+    ("B3", "bench", r"B3_golive_stale_check\.txt", r"(T213601_arm3\.json +respond +dev0x051 1498 +stale 0 +)as specified",
+     r"\g<1>VOID: arm void: the witness holds 248 of 82555 replayed frames in order: the window cannot be judged", "VOID"),
+    # an entry the analysis could not make (run cb08's KeyError) is ERROR
+    ("B3", "bench", r"B3_mode_entry_analysis\.txt", r'^\{"run": "(B3_e4_golive_respond_e3d9437_20261016T213601_arm3\.json)".*$',
+     r'{"run": "\g<1>", "error": "no entry in the run (test)"}', "ERROR"),
+    # an entry with no answer after the post, and a stale row whose device count is None, are FAIL, not a crash
+    ("B3", "bench", r"B3_mode_entry_analysis\.txt",
+     r'("run": "B3_e4_golive_respond_e3d9437_20261016T213601_arm3\.json".*?"first_answer_after_post_ms": )[\d.]+',
+     r"\g<1>null", "FAIL"),
+    ("B3", "bench", r"B3_golive_stale_check\.txt", r"(T213601_arm3\.json +respond +)dev0x051 1498", r"\g<1>dev0x051 None", "FAIL"),
     ("B24", "bench", r"B24_frame_content_e3d9437\.txt", r"(B3_e4_golive_observe_e3d9437_20261016T213056_arm1\.json +)AS SPECIFIED    ",
      r"\g<1>VOID            ", "VOID"),
     ("B24", "bench", r"B24_frame_content_e3d9437\.txt",
@@ -237,6 +269,15 @@ EDITS = [
     # an analysis row's "error" (a judged figure without decodable pages) is ERROR (reading Q9)
     ("B11", "bench", r"B11_quiesce_analysis\.txt", r'^(\{"run": "B11_e4_quiesce_inhibit_e3d9437_20261016T215437_arm4\.json".*)\}$',
      r'\g<1>, "error": "planted"}', "ERROR"),
+    # quiesce_analysis's row for an arm whose analysis raised (no initial_mode), and an analysis that wrote
+    # no rows at all (run cb08), are ERROR, never a crash or a FAIL that reads "6 arms as specified"
+    ("B11", "bench", r"B11_quiesce_analysis\.txt", r'^\{"run": "(B11_e4_quiesce_inhibit_e3d9437_20261016T215437_arm4\.json)".*$',
+     r'{"run": "\g<1>", "error": "analysis raised IndexError: list index out of range"}', "ERROR"),
+    ("B11", "bench", r"B11_quiesce_analysis\.txt", r'^\{"run": .*\n', "", "ERROR all"),
+    # the witness short of the replay: VOID
+    ("B11", "bench", r"B11_quiesce_analysis\.txt", r'^\{"run": "(B11_e4_quiesce_inhibit_e3d9437_20261016T215437_arm4\.json)".*$',
+     r'{"run": "\g<1>", "initial_mode": "inhibit", "void": ["the witness holds 1 of 2 replayed frames in order: the window cannot be judged"]}',
+     "VOID"),
     ("B11raw", "bench", r"B11raw_quiesce_analysis\.txt", r'^(\{"run": "B11raw_e4_quiesce_passive_e3d9437_20261017T010417_arm3\.json".*)\}$',
      r'\g<1>, "error": "planted"}', "ERROR"),
     ("B12", "bench", r"B12_2_live_crash\.txt", r"reset \['PANIC'\]", "reset ['SW']", "FAIL"),
@@ -281,12 +322,35 @@ EDITS = [
     ("B19absent", "bench", r"B19_absent_prod\.txt", r"^(OTA_HEALTH_FAULT_INJECT +)PASS", r"\g<1>FAIL", "FAIL"),
     ("B19page", "bench", r"B19_spec11_page_prod\.txt", r"^AS SPECIFIED", "NOT AS SPECIFIED", "FAIL"),
     ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^(gate-open +)AS SPECIFIED", r"\g<1>NOT AS SPECIFIED", "FAIL"),
+    # B21 NOT-RUN when the host is not on the WiCAN's hotspot (baseline_b21.sh's gate, 2026-11-19)
+    ("B21", "bench", "+B21_not_run.txt", None,
+     "NOT-RUN: the host is not on the WiCAN's hotspot: the page does not answer after 30 s and 6 rejoin(s) (x)\n",
+     "NOT-RUN"),
+    # B20 never PASSes with a requested scenario unjudged: a VOID case (run cb08's line, which the old
+    # pattern skipped), an INCONCLUSIVE one, or one with no verdict line (gen-inhibit reviewer, 2026-11-19)
+    ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^(gate-open +)AS SPECIFIED( +\(interlock_)",
+     r"\g<1>VOID: the WiCAN's reboot before the case was not confirmed in mode 0 (no page after the reboot)\g<2>", "VOID"),
+    ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^(gate-open +)AS SPECIFIED", r"\g<1>INCONCLUSIVE", "VOID"),
+    ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^gate-open +AS SPECIFIED +\(interlock_\S+\.json\)\n", "", "VOID"),
+    # ... and a NOT AS SPECIFIED beside a VOID is FAIL
+    ("B20", "bench", r"B20_interlock_bench_run\.txt",
+     [(r"^(gate-open +)AS SPECIFIED( +\(interlock_)", r"\g<1>VOID: x\g<2>"),
+      (r"^(soc-recovers +)AS SPECIFIED", r"\g<1>NOT AS SPECIFIED")], None, "FAIL"),
+    # no stimulus table, or a verdict for a case not asked for, is ERROR
+    ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^\S+ +\d+ frames +[\d.]+ s +sha .*\n", "", "ERROR all"),
+    ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^(gate-open +AS SPECIFIED +\(interlock_\S+\.json\)\n)",
+     r"\g<1>not-asked            AS SPECIFIED  (interlock_not-asked_1.json)\n", "ERROR"),
     ("B21", "bench", r"B21_bench_flash_guard\.txt", r"spec 5\.1 item 3 holds on the device", "spec 5.1 item 3 does not hold", "FAIL"),
     # the car-data sentence (spec 12.4, user 2026-11-16), present in the copy (B21_NOW below)
     ("B21", "bench", r"B21_bench_flash_guard\.txt", r" are not registered \(404 in every mode\)\.", " are registered.", "FAIL"),
     ("B21", "bench", r"B21_wire_image_e3d9437\.txt", r"^(PASSIVE  rep 2 .*?device_end )fin", r"\g<1>rst", "FAIL"),
     ("B21", "bench", r"B21_wire_multipart_e3d9437\.txt", r"^(OBSERVE  rep 3 .*? wire )403", r"\g<1>200", "FAIL"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"tx_fail=0", "tx_fail=1", "FAIL"),
+    # an arm not run because its reboot was not confirmed (baseline_b22.sh, 2026-11-19): void, so B22 is
+    # INCONCLUSIVE, never PASS, and a FAIL in the other arm still FAILs
+    ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"\A[\s\S]*\Z",
+     "ARM NOT RUN\n  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - the WiCAN's reboot before the arm was not confirmed in mode 0: no page after the reboot\n", "INCONCLUSIVE"),
     ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"\), 0 error frames", "), 4 error frames", "FAIL"),
     # the old trail-window count decides nothing (gen-inhibit reviewer, 2026-10-29): a
     # disagreement in it alone, printed either way, or as the only void reason, is a PASS ...
@@ -645,6 +709,26 @@ def main():
         check("edit %d: %s reads %s after %r -> %r" % (n, cid, want, old[:40], new[:30]),
               lambda: v == [want] and not moved, (v, after[cid][0]["detail"], moved))
         gi_paths.remove_tree(d)
+
+    # 2a. B3's void arm counted once (2026-11-19): one arm void in both desk files, as the desk tools
+    #     write a window the witness left short, is one void arm, not two (the figure counted it twice).
+    d = os.path.join(scratch, "b3_void_once")
+    shutil.copytree(real, d)
+    reason = "the witness holds 248 of 82555 replayed frames in order: the window cannot be judged"
+    for name, pat, rep in (
+            ("B3_golive_stale_check.txt", r"(T213601_arm3\.json +respond +dev0x051 1498 +stale 0 +)as specified",
+             r"\g<1>VOID: arm void: " + reason),
+            ("B3_mode_entry_analysis.txt", r'^\{"run": "(B3_e4_golive_respond_e3d9437_20261016T213601_arm3\.json)".*$',
+             r'{"run": "\g<1>", "void": ["%s"]}' % reason)):
+        p = os.path.join(d, "bench", name)
+        s, k = re.subn(pat, rep, open(p, encoding="utf-8").read(), flags=re.M)
+        check("B3 void once: %s edited once" % name, lambda: k == 1, k)
+        open(p, "w", encoding="utf-8").write(s)
+    r3 = judge_all(d)["B3"][0]
+    check("B3 void once: VOID, one void arm, named once",
+          lambda: r3["verdict"] == "VOID" and r3["figures"].get("void_arms", {}).get("value") == 1
+          and r3["detail"].count("T213601_arm3") == 1, (r3["verdict"], r3["figures"].get("void_arms"), r3["detail"]))
+    gi_paths.remove_tree(d)
 
     # 2b. B18's schema 8 form (port step 0c), which no baseline file has: the check's verdict
     #     block as diag_build_page_check.py prints it, then one change per case.

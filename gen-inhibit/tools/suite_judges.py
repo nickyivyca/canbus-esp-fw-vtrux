@@ -128,12 +128,27 @@ def b1(F):
     if not m:
         return [result("B1", "ERROR", detail="no summary line")]
     s = ast.literal_eval(m.group(1))
-    lines = re.findall(r"-> (\w+) +\| counted (\w+)", t)
+    lines = re.findall(r"-> (\w+)[^|\n]*\| counted (\w+)", t)    # a FAIL or ERROR line carries its reasons
     passed = sum(1 for a, b in lines if a == "PASS" and b == "PASS")
-    ok = s["commands"] > 0 and s["fail"] == 0 and passed == s["commands"] == len(lines)
-    return [result("B1", "PASS" if ok else "FAIL",
-                   {"commands": fig(s["commands"]), "passed": fig(passed), "fail": fig(s["fail"])},
-                   "%d of %d refused and counted" % (passed, s["commands"]))]
+    # A command whose send raised is ERROR, and an arm not run is a NOT-RUN line; B1 never
+    # reads PASS with either (gen-inhibit reviewer, 2026-11-19: run cb08 judged the ws arm's
+    # ModuleNotFoundError "-> PASS"). Summaries from before then carry neither key.
+    errors = sum(1 for a, b in lines if "ERROR" in (a, b))
+    not_run = re.findall(r"^  (\w+) +(\w+) +NOT-RUN (.+?) *$", t, re.M)
+    figs = {"commands": fig(s["commands"]), "passed": fig(passed), "fail": fig(s["fail"])}
+    detail = "%d of %d refused and counted" % (passed, s["commands"])
+    if not_run:
+        detail += "; NOT-RUN: " + ", ".join("%s/%s %s" % g for g in not_run)
+    if errors or s.get("error"):
+        return [result("B1", "ERROR", figs, "%d command(s) raised; %s" % (max(errors, s.get("error") or 0), detail))]
+    if len(not_run) != len(s.get("not_run") or []):
+        return [result("B1", "ERROR", figs, "NOT-RUN lines and the summary disagree; " + detail)]
+    ok = s["fail"] == 0 and passed == s["commands"] == len(lines)
+    if ok and s["commands"] > 0 and not not_run:
+        return [result("B1", "PASS", figs, detail)]
+    if ok and not_run:
+        return [result("B1", "NOT-RUN", figs, detail)]
+    return [result("B1", "FAIL", figs, detail)]
 
 
 PROV = re.compile(r"provenance \(live\): (.+?) -- replayed (\d+)/(\d+) found, device 0x051 (\d+) "
@@ -195,33 +210,41 @@ B3_MODES = ("off", "observe", "passive", "respond")
 
 @judge("B3", "B")
 def b3(F):
-    rows = re.findall(r"^B3_e4_golive_(\w+?)_%s_%s_arm\d\.json +\S+ +dev0x051 +(\d+|None) +stale (\d+) +(.+?) *$" % (C7, TS),
-                      text(F.one(r"B3_golive_stale_check\.txt")), re.M)
+    rows = re.findall(r"^(B3_e4_golive_(\w+?)_%s_%s_arm\d\.json) +\S+ +dev0x051 +(\d+|None) +stale (\d+) +(.+?) *$"
+                      % (C7, TS), text(F.one(r"B3_golive_stale_check\.txt")), re.M)
     entries = json_lines(F.one(r"B3_mode_entry_analysis\.txt"))
-    figs = {"arms": fig(len(rows)), "stale": fig(sum(int(r[2]) for r in rows))}
-    # an arm VOID in its own run (the witness clock not hardware time, 2026-11-18) is no
-    # judgement: B3 VOID unless another arm fails
-    void = ["%s arm (stale check)" % r[0] for r in rows if r[3].startswith("VOID: arm void")]
-    void += [e["run"] for e in entries if e.get("void")]
-    void_modes = {r[0] for r in rows if r[3].startswith("VOID: arm void")} | \
-        {m for e in entries if e.get("void") for m in B3_MODES if re.match(r"B3_e4_golive_%s_" % m, e["run"])}
-    bad = [r[0] for r in rows if not r[3].startswith("VOID: arm void")
-           and (r[3] != "as specified" or int(r[2]) or not int(r[1]))]
-    entries = [e for e in entries if not e.get("void")]
+    figs = {"arms": fig(len(rows)), "stale": fig(sum(int(r[3]) for r in rows))}
+    # An arm VOID in its own run on its witness clock (2026-11-18), or whose witness does not hold the
+    # whole replay (an empty or short window, 2026-11-19), is no judgement: B3 VOID unless another arm
+    # fails. Each arm counts once, by its run file (the stale check and the entry analysis name the
+    # same arm; the figure counted it twice before 2026-11-19).
+    void = {r[0] for r in rows if r[4].startswith("VOID: arm void")}
+    void |= {e["run"] for e in entries if e.get("void")}
+    void_modes = {m for run in void for m in B3_MODES if re.match(r"B3_e4_golive_%s_" % m, run)}
+    bad = [r[1] for r in rows if r[0] not in void
+           and (r[2] == "None" or r[4] != "as specified" or int(r[3]) or not int(r[2]))]
+    # an entry the analysis could not make (its "error") is ERROR, never a crash (run cb08's KeyError)
+    err = ["%s: %s" % (e.get("run"), e["error"]) for e in entries if e.get("error") and e.get("run") not in void]
+    entries = [e for e in entries if not e.get("void") and not e.get("error") and e.get("run") not in void]
     for m in B3_MODES:
-        ms = [e["first_answer_after_post_ms"] for e in entries
+        ms = [e.get("first_answer_after_post_ms") for e in entries
               if re.match(r"B3_e4_golive_%s_" % m, e["run"])]
         if len(ms) != 5 and m in void_modes:
             continue
         if len(ms) != 5:
             bad.append("%s: %d entries" % (m, len(ms)))
             continue
+        if None in ms:
+            bad.append("%s: %d entries with no answer after the post" % (m, ms.count(None)))
+            continue
         figs["first_answer_ms_%s_min" % m] = fig(min(ms), "ms")
         figs["first_answer_ms_%s_max" % m] = fig(max(ms), "ms")
     bad += [e["run"] for e in entries if e.get("provenance") != "as specified" or e.get("post_http") != 200]
+    if err:
+        return [result("B3", "ERROR", figs, "; ".join(err))]
     if void and not bad:
-        figs["void_arms"] = fig(len(set(void)))
-        return [result("B3", "VOID", figs, "arms VOID: %s" % ", ".join(sorted(set(void))))]
+        figs["void_arms"] = fig(len(void))
+        return [result("B3", "VOID", figs, "arms VOID: %s" % ", ".join(sorted(void)))]
     ok = len(rows) == 20 and len(entries) == 20 and not bad
     return [result("B3", "PASS" if ok else "FAIL", figs, "; ".join(bad) or "20 arms, stale 0")]
 
@@ -245,16 +268,31 @@ def b24(F):
                    "; ".join(bad) or "%d arms as specified, %d RESPOND arm(s) with no device frames" % (spec, len(none)))]
 
 
+B4_CASES = 6        # skip_method_bench's cases, as in the e3d9437 index (cases 6)
+
+
 @judge("B4", "B")
 def b4(F):
     t = text(F.one(r"B4_skip_method_stdout\.txt"))
     rows = re.findall(r"^(\S+) +(PASS|FAIL|INCONCLUSIVE|ERROR|VOID)\b +witness", t, re.M)
     passed = sum(1 for _, v in rows if v == "PASS")
     void = sum(1 for _, v in rows if v == "VOID")
-    ok = rows and passed == len(rows) and "player sent" in t
+    ok = len(rows) == B4_CASES and passed == len(rows) and "player sent" in t
     # an arm VOID on the witness clock (the Kvaser's stamps not taken as hardware time,
-    # 2026-11-18) is no judgement: B4 VOID, unless another arm FAILed
-    verdict = ("PASS" if ok else "VOID" if void and not any(v == "FAIL" for _, v in rows) else "FAIL")
+    # 2026-11-18) is no judgement: B4 VOID, unless another arm FAILed. B4 never PASSes while
+    # a case is unjudged (gen-inhibit reviewer, 2026-11-19): an INCONCLUSIVE case reads VOID too,
+    # and fewer case lines than B4_CASES never PASS.
+    unjudged = void + sum(1 for _, v in rows if v == "INCONCLUSIVE")
+    if ok:
+        verdict = "PASS"
+    elif any(v == "FAIL" for _, v in rows):
+        verdict = "FAIL"
+    elif any(v == "ERROR" for _, v in rows) or len(rows) != B4_CASES:
+        verdict = "ERROR" if not unjudged else "VOID"
+    elif unjudged:
+        verdict = "VOID"
+    else:
+        verdict = "FAIL"
     figs = {"cases": fig(len(rows)), "passed": fig(passed)}
     if void:
         figs["void"] = fig(void)
@@ -490,16 +528,20 @@ def b11(F):
     rows = json_lines(F.one(r"B11_quiesce_analysis\.txt"))
     # an arm its e4 run voided on its witness clock (quiesce_analysis's "void", 2026-11-18) is no
     # judgement: B11 VOID unless another arm fails
+    # an arm voided on its witness clock, or whose witness does not hold the whole replay (an empty or
+    # short window, 2026-11-19; quiesce_analysis's "void"), is no judgement: B11 VOID unless another fails
     void = [r["run"] for r in rows if r.get("void")]
-    bad = [r["run"] for r in rows if not r.get("void") and (
+    bad = [r["run"] for r in rows if not r.get("void") and not r.get("error") and (
            r.get("provenance") != "as specified" or r.get("late") or r.get("double")
-           or (r["initial_mode"] == "inhibit" and not (r.get("tx_ok_vs_last_inhibit_span") or {}).get("agree")))]
-    ok = len(rows) == 6 and not bad
+           or (r.get("initial_mode") == "inhibit" and not (r.get("tx_ok_vs_last_inhibit_span") or {}).get("agree")))]
     err = row_errors(rows)
+    if not err and len(rows) != 6:      # run cb08: the analysis died on its first arm and wrote no row
+        err = "%d analysis rows, 6 arms expected" % len(rows)
     if void and not bad and not err:
         return [result("B11", "VOID", {"arms": fig(len(rows)), "void_arms": fig(len(void))},
-                       "arms VOID on the witness clock: %s" % ", ".join(void))]
-    return [result("B11", "ERROR" if err else "PASS" if ok else "FAIL", {"arms": fig(len(rows))},
+                       "arms VOID: %s" % "; ".join("%s (%s)" % (r["run"], "; ".join(r["void"]))
+                                                   for r in rows if r.get("void")))]
+    return [result("B11", "ERROR" if err else "FAIL" if bad else "PASS", {"arms": fig(len(rows))},
                    err or "; ".join(bad) or "6 arms as specified, tx_ok agrees with every INHIBIT span")]
 
 
@@ -801,11 +843,30 @@ def b19page(F):
 @judge("B20", "B")
 def b20(F):
     t = text(F.one(r"B20_interlock_bench_run\.txt"))
-    cases = re.findall(r"^(\S+) +(AS SPECIFIED|NOT AS SPECIFIED|[A-Z][A-Z ]+?) +\(interlock_\S+\.json\)$", t, re.M)
-    spec = sum(1 for _, v in cases if v == "AS SPECIFIED")
-    ok = cases and spec == len(cases)
-    return [result("B20", "PASS" if ok else "FAIL", {"cases": fig(len(cases)), "as_specified": fig(spec)},
-                   "%d of %d AS SPECIFIED" % (spec, len(cases)))]
+    # The requested scenarios are interlock_bench's stimulus table (one line per case asked for, before
+    # any runs); each one's verdict is its "<case> <verdict>  (interlock_<case>_<stamp>.json)" line.
+    # B20 never reads PASS while a requested scenario is unjudged: a VOID, INCONCLUSIVE or missing case
+    # makes it VOID unless another is NOT AS SPECIFIED (gen-inhibit reviewer, 2026-11-19: run cb08 read
+    # "1 of 1 AS SPECIFIED" PASS with 28 cases VOID, whose lines this pattern did not match).
+    requested = re.findall(r"^(\S+) +\d+ frames +[\d.]+ s +sha ", t, re.M)
+    got = {}
+    for name, verdict in re.findall(r"^(\S+) +(.+?) +\(interlock_\S+\.json\)$", t, re.M):
+        got[name] = verdict
+    spec = [n for n in requested if got.get(n) == "AS SPECIFIED"]
+    notspec = [n for n in requested if got.get(n) == "NOT AS SPECIFIED"]
+    unjudged = ["%s (%s)" % (n, got.get(n, "no verdict line")) for n in requested
+                if got.get(n) not in ("AS SPECIFIED", "NOT AS SPECIFIED")]
+    extra = sorted(set(got) - set(requested))
+    figs = {"cases": fig(len(requested)), "as_specified": fig(len(spec))}
+    detail = "%d of %d AS SPECIFIED" % (len(spec), len(requested))
+    if not requested or extra:
+        return [result("B20", "ERROR", figs, "no stimulus table" if not requested
+                       else "verdicts for cases not requested: %s" % ", ".join(extra))]
+    if notspec:
+        return [result("B20", "FAIL", figs, "%s; NOT AS SPECIFIED: %s" % (detail, ", ".join(notspec)))]
+    if unjudged:
+        return [result("B20", "VOID", figs, "%s; unjudged: %s" % (detail, "; ".join(unjudged)))]
+    return [result("B20", "PASS", figs, detail)]
 
 
 # The flash guard's PASS line from 2026-11-16 (spec 12.4's flash-write row, user 2026-11-16):
@@ -817,6 +878,10 @@ B21_UNREGISTERED = "/store_car_data and /upload/car_data.json are not registered
 @judge("B21", "B")
 def b21(F):
     bad, figs = [], {}
+    # the host not on the WiCAN's hotspot after a rejoin (baseline_b21.sh, 2026-11-19): NOT-RUN, with why
+    nr = F.all(r"B21_not_run\.txt")
+    if nr:
+        return [result("B21", "NOT-RUN", figs, text(nr[0]).strip()[:300])]
     fg = text(F.one(r"B21_bench_flash_guard\.txt"))
     if "spec 5.1 item 3 holds on the device" not in fg:
         bad.append("flash guard")
@@ -847,6 +912,12 @@ def b22(F):
     figs, bad, void = {}, [], []
     for arm in ("a", "b"):
         t = text(F.one(r"B22_case3_%s_man_%s\.txt" % (C7, arm)))
+        # an arm whose reboot before it was not confirmed was never run (baseline_b22.sh, 2026-11-19:
+        # run cb08's arms ran after unconfirmed reboots): void, judged on nothing
+        rb = re.search(r"^       - (the WiCAN's reboot before the arm was not confirmed.*)$", t, re.M)
+        if rb:
+            void.append("%s: void (%s)" % (arm, rb.group(1)))
+            continue
         p = e4_prov(t)
         r = e4_response(t)
         d = re.search(r"device: tx_ok=(\d+) tx_fail=(\d+) ctr_ok=\d+ ctr_bad=(\d+) tx_queued_behind=(\d+)", t)

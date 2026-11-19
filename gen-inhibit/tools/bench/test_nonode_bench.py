@@ -213,6 +213,14 @@ def tests():
     got = m.x2_pins("", tool=fake)
     os.remove(fake)
     check("x2: x2_pins asks for pins and returns the pins line", got == "pins: TX (GPIO7) recessive -- x; RX (GPIO6) level 1", got)
+    # a refusing tool: its rc and its own last line, so the record says why (run cb08, 2026-11-19)
+    open(fake, "w").write("import sys\nprint('REFUSED: GI_ESPTOOL_ARGV is not set (nothing run, no record)')\n"
+                          "sys.exit(2)\n")
+    got = m.x2_pins("", tool=fake)
+    os.remove(fake)
+    check("x2: a refusing x2_hold gives its rc and its refusal, and is not held",
+          got == "no pins line (rc 2): REFUSED: GI_ESPTOOL_ARGV is not set (nothing run, no record)"
+          and not m.x2_held(got), got)
     # the run's verdict over its arms, main and answer-stuck alike
     def arm(kind, trip="error-frame rate exceeded", **items):
         v = {k: "PASS: x" for k in ("void", "no051", "latch", "back", "keyon", "latched_wire", "latched_tx")}
@@ -422,7 +430,10 @@ MUTANTS = [
      "m.group(1) in (\"not driven, level unreadable\",)"),
     ("x2_pins takes the first line", "line = next((l for l in p.stdout.splitlines() if l.startswith(\"pins:\")), ",
      "line = next((l for l in p.stdout.splitlines()), "),
-    ("x2_pins asks for hold", "[sys.executable, \"-B\", tool or X2_HOLD, \"pins\"]", "[sys.executable, \"-B\", tool or X2_HOLD, \"hold\"]"),
+    ("x2_pins drops the tool's refusal, as in run cb08",
+     "        line = \"no pins line (rc %s): %s\" % (p.returncode, said[-1] if said else \"no output\")",
+     "        line = \"no pins line (rc %s)\" % p.returncode"),
+    ("x2_pins asks for hold","[sys.executable, \"-B\", tool or X2_HOLD, \"pins\"]", "[sys.executable, \"-B\", tool or X2_HOLD, \"hold\"]"),
     ("the X2 start gate is not applied", "    if not x2_held(rec[\"x2_pins_start\"]):", "    if False:"),
     ("the run ignores answer-stuck arms", "judged = [x for x in arms if x[\"kind\"] in (\"main\", \"answer-stuck\")]",
      "judged = [x for x in arms if x[\"kind\"] in (\"main\",)]"),

@@ -134,6 +134,106 @@ def new_boot(before, after):
     return False, "uptime_ms %d, boot time unchanged (within %.1f s)" % (ua, BOOT_MARGIN_S)
 
 
+class Rejoin(object):
+    """The hotspot's rejoin while the page cannot be read after a restart: select (hotspot_select's, or
+    None) called at most once every SELECT_EVERY_S, each call appended to `rejoins` (after_s from the
+    restart, ok, why). Used by step 3 here and by the tools that read the page across a restart of their
+    own (restart_error_frames, for B12 and B19present; gen-inhibit reviewer, 2026-11-19)."""
+
+    def __init__(self, select, rejoins):
+        self.select, self.rejoins, self.last_select = select, rejoins, None
+
+    def unreadable(self, t_post):
+        """A read failed: select again if the last select is SELECT_EVERY_S old (or there was none)."""
+        select, last_select = self.select, self.last_select
+        if select is not None and (last_select is None or time.time() - last_select >= SELECT_EVERY_S):
+            self.last_select = last_select = time.time()
+            try:
+                ok, how = select()
+            except Exception as e:      # a select that crashes is a select that failed
+                ok, how = False, repr(e)[:160]
+            self.rejoins.append({"after_s": round(last_select - t_post, 1), "ok": bool(ok), "why": how})
+
+
+def await_new_boot(before, t_post, wait, poll, timeout, select, errors, rejoins):
+    """Step 3: read the page until it shows a later boot than `before` ((state, t0, t1)), for up to
+    `wait` s, rejoining the hotspot (Rejoin) while the page cannot be read. Returns (the later read
+    or None, why)."""
+    after, why = None, "no page after the reboot"
+    t_end = time.time() + wait
+    rejoin = Rejoin(select, rejoins)
+    while True:
+        got = read_tries(1, 0, timeout, errors)
+        if got is not None:
+            yes, why = new_boot(before, got)
+            if yes:
+                after = got
+                break
+        else:
+            rejoin.unreadable(t_post)
+        if time.time() >= t_end:
+            break
+        time.sleep(poll)
+    return after, why
+
+
+def on_hotspot(wait=30.0, poll=2.0, timeout=8.0, environ=None):
+    """(True, how) when the page answers, at once or after the hotspot's rejoin; (False, why) when it
+    still does not after `wait` s of rejoins: the host is not on the WiCAN's hotspot, and a check that
+    needs it is NOT-RUN, not judged on an unread page (B21's guards; gen-inhibit reviewer, 2026-11-19:
+    run cb08's B21 failed its preconditions on "GET /gen_inhibit returned None")."""
+    errors, rejoins = [], []
+    if read_tries(1, 0, timeout, errors) is not None:
+        return True, "the page answers"
+    try:
+        select, how = hotspot_select(environ)
+    except Exception as e:      # gi_wifi.Refused, or a core that cannot be loaded
+        return False, "the page does not answer, and GI_OTA_SETTINGS: %s" % e
+    if select is None:
+        return False, "the page does not answer, and no GI_OTA_SETTINGS to rejoin the hotspot with"
+    rejoin = Rejoin(select, rejoins)
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        rejoin.unreadable(t0)
+        time.sleep(poll)
+        if read_tries(1, 0, timeout, errors) is not None:
+            return True, "the page answers after %d rejoin(s)" % len(rejoins)
+    return False, "the page does not answer after %.0f s and %d rejoin(s) (%s)" % (wait, len(rejoins), how)
+
+
+def reboot_in_check(wait=60.0, poll=1.0, settle=3.0, timeout=8.0, environ=None):
+    """A reboot inside a check (interlock_bench's before each case, B22's before each arm), confirmed
+    as the board step confirms one, with the same hotspot rejoin (gen-inhibit reviewer, 2026-11-19:
+    run cb08's in-check reboots never asked the phone back, and B20 VOIDed 28 of 29 cases). The page
+    is read first; without it nothing is sent and the reboot is refused, never assumed. Then POST
+    /system_reboot and await_new_boot with gi_wifi.select from GI_OTA_SETTINGS (None without it).
+    Returns {ok: a new boot seen, why, s, before, after (states), uptime_ms, reset_reason, mode,
+    rejoin, rejoins, errors}; no disarm and no image check, which the caller judges."""
+    t = time.time()
+    out = {"ok": False, "why": None, "s": None, "before": None, "after": None, "uptime_ms": None,
+           "reset_reason": None, "mode": None, "rejoin": None, "rejoins": [], "errors": []}
+    try:
+        select, out["rejoin"] = hotspot_select(environ)
+    except Exception as e:      # gi_wifi.Refused, or a core that cannot be loaded
+        out.update(why="GI_OTA_SETTINGS: %s: nothing sent" % e, s=round(time.time() - t, 1))
+        return out
+    before = read_tries(4, 1.0, timeout, out["errors"])
+    if before is None:
+        out.update(why="no page before the reboot in 4 tries: nothing sent, the reboot cannot be confirmed",
+                   s=round(time.time() - t, 1))
+        return out
+    out["before"] = before[0]
+    out["reboot_post"] = post("/system_reboot", timeout)
+    t_post = time.time()
+    time.sleep(settle)
+    after, why = await_new_boot(before, t_post, wait, poll, timeout, select, out["errors"], out["rejoins"])
+    out.update(ok=after is not None, why=why, s=round(time.time() - t, 1))
+    if after is not None:
+        a = after[0]
+        out.update(after=a, uptime_ms=a.get("uptime_ms"), reset_reason=a.get("reset_reason"), mode=a.get("mode"))
+    return out
+
+
 def clean(p):
     """The latch and disable checks on a page: [(name, ok, detail)]."""
     r = p.get("reasons") or {}
@@ -221,26 +321,7 @@ def main(argv=None):
     rec["reboot_post"] = post("/system_reboot", a.timeout)
     t_post = time.time()
     time.sleep(a.settle)
-    after, why = None, "no page after the reboot"
-    t_end = time.time() + a.wait
-    last_select = None
-    while True:
-        got = read_tries(1, 0, a.timeout, rec["errors"])
-        if got is not None:
-            yes, why = new_boot(before, got)
-            if yes:
-                after = got
-                break
-        elif select is not None and (last_select is None or time.time() - last_select >= SELECT_EVERY_S):
-            last_select = time.time()
-            try:
-                ok, how = select()
-            except Exception as e:      # a select that crashes is a select that failed
-                ok, how = False, repr(e)[:160]
-            rec["rejoins"].append({"after_s": round(last_select - t_post, 1), "ok": bool(ok), "why": how})
-        if time.time() >= t_end:
-            break
-        time.sleep(a.poll)
+    after, why = await_new_boot(before, t_post, a.wait, a.poll, a.timeout, select, rec["errors"], rec["rejoins"])
     chk("a new boot", after is not None, why)
     if after is None:
         return finish()

@@ -315,6 +315,9 @@ def main():
             pc.shutdown()
         held.__exit__(*sys.exc_info())      # canmain back to socketcan, down, read back
     st = [s for s, _ms, _c in starts]
+    # the bus states the witness PCAN raised and read on past (kvaser_bus.pcan_bus; run cb08's witness
+    # thread died of the first, "error passive", after burst 1; F6, 2026-11-19), on the perf clock
+    rec["pcan_states"] = [[round(p, 6), s] for p, s in (getattr(pc, "vtrux_states", None) or [])]
     errs, fit, figures_clock = judged_errors(wit)
     rec["witness_clock"] = fit
     rec["witness_clock_figures"] = figures_clock

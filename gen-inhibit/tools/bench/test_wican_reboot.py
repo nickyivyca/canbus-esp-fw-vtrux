@@ -195,6 +195,34 @@ def run(srv, tmp, name, dev, args, env=None, script=None):
     return r.returncode, rec, text, list(dev.paths), time.time() - t0
 
 
+IN_CHECK = '''import json
+import sys
+sys.path.insert(0, sys.argv[1])
+import wican_reboot as W
+print("RESULT " + json.dumps(W.reboot_in_check(wait=3.0, poll=0.2, settle=0.2, timeout=2.0)))
+'''
+
+
+ON_HOTSPOT = '''import json
+import sys
+sys.path.insert(0, sys.argv[1])
+import wican_reboot as W
+print("RESULT " + json.dumps(list(W.on_hotspot(wait=3.0, poll=0.2, timeout=2.0))))
+'''
+
+
+def in_check(srv, tool, dev, env=None, child=IN_CHECK):
+    """reboot_in_check (or `child`) run in a child from the rejoin tool's folder (the script under test
+    beside the fake gi_wifi): (its result, the paths the fake was asked for)."""
+    Fake.dev = dev
+    e = {k: v for k, v in os.environ.items() if k != "GI_OTA_SETTINGS"}
+    e.update(env or {}, GI_WICAN_HOST="127.0.0.1:%d" % srv.server_address[1])
+    r = subprocess.run([sys.executable, "-B", "-c", child, os.path.dirname(tool)], capture_output=True,
+                       text=True, timeout=120, env=e)
+    line = next((l for l in r.stdout.splitlines() if l.startswith("RESULT ")), None)
+    return (json.loads(line[len("RESULT "):]) if line else {"raised": r.stderr[-300:]}), list(dev.paths)
+
+
 ALLOWED = {"GET /gen_inhibit", "POST /system_reboot", "POST /gen_inhibit_set?mode=0"}
 
 
@@ -377,6 +405,75 @@ def tests():
         check("no page at all: FAIL and nothing sent",
               rc == 1 and not any(p.startswith("POST") for p in paths) and failed(rec, "page before the reboot"),
               (rc, paths, rec.get("detail")))
+
+        # reboot_in_check, for a check that reboots the WiCAN inside its run (interlock_bench's before each
+        # case, B22's before each arm; gen-inhibit reviewer, 2026-11-19): the page first, the same new-boot
+        # rule and the same rejoin as the board step
+        ota = {"GI_OTA_SETTINGS": json.dumps({"profile": "79", "wifi": "adb"})}
+        dev = Dev(rejoin=True)
+        r, paths = in_check(srv, tool, dev, ota)
+        check("in check: rejoined through the settings' select, a new boot by uptime, ok with its reason, SW",
+              r.get("ok") is True and dev.selects and (r.get("rejoins") or [{}])[0].get("ok") is True
+              and "uptime_ms" in (r.get("why") or "") and r.get("reset_reason") == "SW" and r.get("mode") == 0
+              and "gi_wifi.select" in (r.get("rejoin") or ""), r)
+        check("in check: the page read before the one reboot POST, nothing else asked for",
+              paths[:1] == ["GET /gen_inhibit"] and paths.count("POST /system_reboot") == 1
+              and set(paths) <= {"GET /gen_inhibit", "POST /system_reboot"}, paths)
+        dev = Dev(down=True)
+        r, paths = in_check(srv, tool, dev, ota)
+        check("in check: no page before: refused, nothing sent, not ok",
+              r.get("ok") is False and (r.get("why") or "").startswith("no page before the reboot")
+              and not any(p.startswith("POST") for p in paths), (r, paths))
+        dev = Dev(reboot="nothing")
+        r, paths = in_check(srv, tool, dev, ota)
+        check("in check: a reboot POST that does nothing is not ok (the POST is never trusted)",
+              r.get("ok") is False and "boot time unchanged" in (r.get("why") or ""), r)
+        dev = Dev(rejoin=True)
+        r, paths = in_check(srv, tool, dev, None)
+        check("in check: no GI_OTA_SETTINGS: no select, so a board that needs one is not ok",
+              r.get("ok") is False and not dev.selects and r.get("rejoin") is None, r)
+        r, paths = in_check(srv, tool, Dev(), {"GI_OTA_SETTINGS": "not json"})
+        check("in check: GI_OTA_SETTINGS set but unusable: not ok, nothing asked for or sent",
+              r.get("ok") is False and "GI_OTA_SETTINGS" in (r.get("why") or "") and paths == [], (r, paths))
+
+        # on_hotspot, B21's gate (2026-11-19): the page answering, at once or after a rejoin; else not
+        r, paths = in_check(srv, tool, Dev(), ota, ON_HOTSPOT)
+        check("on hotspot: the page answers at once -> True, no select", r == [True, "the page answers"], r)
+        dev = Dev(rejoin=True)
+        dev.selected = False                    # the phone off the hotspot
+        r, paths = in_check(srv, tool, dev, ota, ON_HOTSPOT)
+        check("on hotspot: the page answers after the settings' select -> True, saying so",
+              r[:1] == [True] and "after 1 rejoin" in r[1] and len(dev.selects) == 1, (r, dev.selects))
+        dev = Dev(rejoin=True)
+        dev.selected = False
+        r, paths = in_check(srv, tool, dev, None, ON_HOTSPOT)
+        check("on hotspot: no answer and no GI_OTA_SETTINGS -> False at once, saying why",
+              r[:1] == [False] and "no GI_OTA_SETTINGS" in r[1] and not dev.selects, r)
+        dev = Dev(down=True)
+        r, paths = in_check(srv, tool, dev, ota, ON_HOTSPOT)
+        check("on hotspot: no answer after the wait's rejoins -> False, with how many",
+              r[:1] == [False] and "rejoin(s)" in r[1] and "does not answer after" in r[1], r)
+        check("on hotspot: only the page asked for", set(paths) <= {"GET /gen_inhibit"}, paths)
+        # baseline_b21.sh's gate on that: the host off the hotspot makes B21 NOT-RUN, its file saying why,
+        # and nothing after the gate runs (GI_B21_STEPS none: no guard can reach a real device)
+        out = os.path.join(tmp, "b21gate")
+        os.makedirs(out)
+        Fake.dev = Dev(down=True)
+        e = {k: v for k, v in os.environ.items() if k not in ("GI_OTA_SETTINGS", "GI_FW_TOOLS")}
+        e.update(GI_WICAN_HOST="127.0.0.1:%d" % srv.server_address[1], REVERSE_IT_DIR=tmp, GI_COMMIT="c0ffee12",
+                 GI_OUT=out, GI_WICAN_SSID="WiCAN_testssid", GI_B21_STEPS="none", GI_RUNS_DIR=out,
+                 PYTHONDONTWRITEBYTECODE="1")
+        b21 = os.path.join(os.path.dirname(tool), "baseline_b21.sh")
+        if not os.path.exists(b21):
+            shutil.copy(os.path.join(os.path.dirname(SCRIPT), "baseline_b21.sh"), b21)
+            shutil.copy(os.path.join(HERE, "bench_host.sh"), os.path.join(os.path.dirname(tool), "bench_host.sh"))
+        r = subprocess.run(["bash", b21, "img.bin"], capture_output=True, text=True, timeout=120, env=e)
+        nr = os.path.join(out, "B21_not_run.txt")
+        got = open(nr).read() if os.path.exists(nr) else ""
+        check("B21 gate: off the hotspot -> exit 0, B21_not_run.txt saying why, nothing else written",
+              r.returncode == 0 and got.startswith("NOT-RUN: the host is not on the WiCAN's hotspot: ")
+              and "no GI_OTA_SETTINGS" in got and sorted(os.listdir(out)) == ["B21_not_run.txt"],
+              (r.returncode, got, sorted(os.listdir(out)), r.stdout[-300:], r.stderr[-300:]))
     except Exception as e:                      # a crash is reported, never a pass
         check("ran without raising", False, repr(e))
     finally:
@@ -419,7 +516,8 @@ MUTANTS = [
     ("the first disarm not reported", '            bits.append("disarmed before the reboot: %s"',
      '            bits.append("before the reboot: %s"'),
     # the hotspot's rejoin (2026-11-18)
-    ("no rejoin", "        elif select is not None and (", "        elif False and ("),
+    ("no rejoin", "            rejoin.unreadable(t_post)\n", "            pass\n"),
+    ("the rejoin never selects", "        if select is not None and (last_select is None", "        if False and (last_select is None"),
     ("a select every poll", "(last_select is None or time.time() - last_select >= SELECT_EVERY_S)", "True"),
     ("unusable settings ignored",
      '        chk("hotspot rejoin settings", False, "GI_OTA_SETTINGS: %s: nothing sent" % e)\n        return finish()\n',
@@ -427,7 +525,25 @@ MUTANTS = [
     ("a select that raises not caught", "            try:\n                ok, how = select()\n"
      "            except Exception as e:      # a select that crashes is a select that failed\n"
      "                ok, how = False, repr(e)[:160]\n", "            ok, how = select()\n"),
+    ("the select's time not kept, so it selects every poll",
+     "            self.last_select = last_select = time.time()\n", "            last_select = time.time()\n"),
     ("a failed select recorded as ok", '"ok": bool(ok), "why": how})', '"ok": True, "why": how})'),
+    # reboot_in_check (2026-11-19)
+    ("in check: POST without a page first", "    if before is None:\n        out.update(why=\"no page before the reboot",
+     "    if before is None and False:\n        out.update(why=\"no page before the reboot"),
+    ("in check: no rejoin", "        select, out[\"rejoin\"] = hotspot_select(environ)\n",
+     "        select, out[\"rejoin\"] = None, None\n"),
+    ("in check: the POST trusted", "    out.update(ok=after is not None, why=why", "    out.update(ok=True, why=why"),
+    ("in check: unusable settings ignored",
+     "        out.update(why=\"GI_OTA_SETTINGS: %s: nothing sent\" % e, s=round(time.time() - t, 1))\n        return out\n",
+     "        select = None\n"),
+    # on_hotspot (B21's gate, 2026-11-19)
+    ("on hotspot: no rejoin when the page does not answer",
+     "        rejoin.unreadable(t0)\n        time.sleep(poll)\n", "        time.sleep(poll)\n"),
+    ("on hotspot: an unanswered page taken as on it",
+     '    return False, "the page does not answer after %.0f s', '    return True, "the page does not answer after %.0f s'),
+    ("on hotspot: the first read not tried",
+     '    if read_tries(1, 0, timeout, errors) is not None:\n        return True, "the page answers"\n', ""),
     ("the rejoin's how not recorded", "        select, rec[\"rejoin\"] = hotspot_select()\n",
      "        select, _ = hotspot_select()\n"),
 ]

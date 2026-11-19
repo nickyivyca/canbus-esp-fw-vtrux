@@ -259,6 +259,21 @@ def kvaser_link_down(settings, logdir):
 
 B27_SKIP ="needs the user at the bench, USB plugged in (deferred by the user 2026-10-17, paired with the WiCAN config reset)"
 
+# The checks that capture the host's Wi-Fi with dumpcap (B11raw's arms and desk step, B21's probe).
+CAPTURE_CHECKS = ("B11rawarms", "B11raw", "B21")
+
+
+def capture_skip(environ=None, platform=None):
+    """The skip reason for CAPTURE_CHECKS, or None. On Linux bench_host.sh has no default capture
+    interface (madhouse-debian has no Wi-Fi adapter of its own), so with GI_CAPTURE_IFACE unset they
+    are NOT-RUN "no capture interface", recorded, not run to the scripts' exit 2 (run cb08; gen-inhibit
+    reviewer, 2026-11-19). On Git Bash the scripts default to NICKY-XPS's Wi-Fi."""
+    environ = os.environ if environ is None else environ
+    platform = sys.platform if platform is None else platform
+    if platform.startswith("linux") and not (environ.get("GI_CAPTURE_IFACE") or "").strip():
+        return "no capture interface: GI_CAPTURE_IFACE is not set, and this host has no default (bench_host.sh)"
+    return None
+
 
 def need(settings, key):
     v = settings.get(key)
@@ -821,6 +836,14 @@ def suite(settings):
     # the settings.ota block for the tools' joins (gi_wifi), its braces doubled for the core's
     # placeholder formatting
     env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in ota_tools_env(settings, ssid).items()})
+    # the esptool argv and the boards' USB IDs for the checks' tools, as the hooks' base_env has
+    # them, braces doubled likewise (run gen-inhibit-bench_20261119T032517_cb08: B5-B8's jammer
+    # refused "GI_X2_DEVICE is not set", and NONODE's `x2_hold.py pins` refused "GI_ESPTOOL_ARGV
+    # is not set"; gen-inhibit reviewer, 2026-11-19)
+    env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in esptool_env(settings).items()})
+    env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in serial_env(settings).items()})
+
+    cap_skip = capture_skip()
 
     def chk(cid, script, args, judge=None, outputs=(), timeout=3600, pw="wican_man", env=None, cls="wallclock"):
         e = dict(env0, GI_PW_IMAGE=desc[pw])
@@ -829,6 +852,8 @@ def suite(settings):
                   timeout_s=timeout, cls=cls, outputs=list(outputs) + ["check.log"])
         if judge:
             kw["judge"] = judge
+        if cid in CAPTURE_CHECKS and cap_skip:
+            kw["skip"] = cap_skip
         return Check(**kw)
 
     def desk(cid, step, inputs, judge, outputs):

@@ -1,12 +1,22 @@
-"""Harness test for restart_error_frames' analysis (no bus).
+"""Harness test for restart_error_frames' analysis and its poll read (no bus).
 
-    py -3.14 gen-inhibit/tools/bench/test_restart_error_frames.py   (from the repo root)
+    python3.13 -B gen-inhibit/tools/bench/test_restart_error_frames.py [--mutants]   (from the repo root)
+
+--mutants applies each edit in MUTANTS to a copy of restart_error_frames.py in the worktree's scratch/
+and requires a FAIL line from this test on each.
 """
+import importlib.util
 import os
+import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import restart_error_frames as R                                   # noqa: E402
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import gi_paths  # noqa: E402  scratch/ folders
+SCRIPT = os.environ.get("RESTART_ERROR_FRAMES") or os.path.join(HERE, "restart_error_frames.py")
+_spec = importlib.util.spec_from_file_location("restart_error_frames", SCRIPT)
+R = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(R)
 
 
 def f(t, i, d):
@@ -77,6 +87,38 @@ def main():
         ("hook: no POST time -> nothing judged",
          R.hook_judged(hook_reads, None, True)["readback_before_restart"] is None),
     ]
+
+    # the poll thread's read: the page kept, or after the restart POST the hotspot's rejoin (2026-11-19)
+    class LFp(object):
+        def __init__(self, page):
+            self.p = page
+
+        def page(self):
+            return self.p
+
+    class Spy(object):
+        def __init__(self):
+            self.calls = []
+
+        def unreadable(self, t_post):
+            self.calls.append(t_post)
+    page = {"uptime_ms": 5, "mode": 0, "inhibit_live": False, "reset_reason": "SW",
+            "drv": {"state": "running", "bus_error": 0, "tec": 0}, "gi_hook": 1}
+    reads, spy = [], Spy()
+    R.poll_once(LFp(page), reads, {"reboot_epoch": 100.0}, spy, "gi_hook")
+    checks.append(("poll: a page read is kept with the hook field, and no rejoin",
+                   len(reads) == 1 and reads[0][1:] == (5, 0, False, "SW", "running", 0, 0, 1) and spy.calls == []))
+    reads, spy = [], Spy()
+    try:
+        R.poll_once(LFp(None), reads, {}, spy, None)
+        raised = None
+    except Exception as e:      # noqa: BLE001  a read that raises before the restart is a FAIL here
+        raised = e
+    checks.append(("poll: no page before the restart POST: no rejoin, nothing kept, no raise",
+                   raised is None and reads == [] and spy.calls == []))
+    R.poll_once(LFp(None), reads, {"reboot_epoch": 100.0}, spy, None)
+    checks.append(("poll: no page after the restart POST: the rejoin asked, from the POST's time",
+                   reads == [] and spy.calls == [100.0]))
     fails = []
     for label, ok in checks:
         print("  %-4s %s" % ("ok" if ok else "FAIL", label))
@@ -86,5 +128,36 @@ def main():
     return 1 if fails else 0
 
 
+MUTANTS = [
+    ("no rejoin after the restart, as in run cb08", '        rejoin.unreadable(ev["reboot_epoch"])\n', "        pass\n"),
+    ("a rejoin before the restart too", '    elif ev.get("reboot_epoch"):\n', "    else:\n"),
+]
+
+
+def mutants():
+    src = open(SCRIPT, encoding="utf-8", newline="").read()
+    base = gi_paths.scratch("mutants-restart_error_frames")
+    killed = errors = 0
+    for n, (name, old, new) in enumerate(MUTANTS, 1):
+        if src.count(old) != 1:
+            print("ERROR    m%d %s: edit matched %d times" % (n, name, src.count(old)))
+            errors += 1
+            continue
+        d = os.path.join(base, "m%d" % n)
+        gi_paths.remove_tree(d)
+        os.makedirs(d)
+        path = os.path.join(d, "restart_error_frames.py")
+        open(path, "w", encoding="utf-8", newline="").write(src.replace(old, new))
+        r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__)], capture_output=True, text=True,
+                           env=dict(os.environ, RESTART_ERROR_FRAMES=path), timeout=120)
+        fl = [ln for ln in r.stdout.splitlines() if ln.strip().startswith("FAIL ")]
+        dead = bool(fl) and "Traceback" not in r.stderr
+        killed += dead
+        print("%s m%d %s  (exit %d, %d FAIL)" % ("KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fl)))
+    gi_paths.remove_tree(base)
+    print("\n%d of %d killed by a check, %d errors" % (killed, len(MUTANTS), errors))
+    return 0 if killed == len(MUTANTS) and not errors else 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(mutants() if "--mutants" in sys.argv else main())

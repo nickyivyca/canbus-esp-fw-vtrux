@@ -187,6 +187,21 @@ def window_loss(sent_epoch, seen, offset, lo_wire, hi_wire, exclude=(CMD_ID,)):
     return multiset_loss(s, w, exclude)
 
 
+def poll_once(LF, reads, ev, rejoin, hook_field):
+    """One read of the poll thread: the page's fields appended to reads, or, when the page cannot be
+    read after the restart POST (ev's reboot_epoch), the hotspot's rejoin (wican_reboot.Rejoin;
+    gen-inhibit reviewer, 2026-11-19: run cb08's B12 read no page after any restart)."""
+    p = LF.page()
+    t = time.time()
+    if p is not None:
+        drv = p.get("drv") or {}
+        reads.append((t, p.get("uptime_ms"), p.get("mode"), p.get("inhibit_live"),
+                      p.get("reset_reason"), drv.get("state"), drv.get("bus_error"),
+                      drv.get("tec"), p.get(hook_field) if hook_field else None))
+    elif ev.get("reboot_epoch"):
+        rejoin.unreadable(ev["reboot_epoch"])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--condition", required=True, choices=("off", "live"))
@@ -231,7 +246,17 @@ def main():
     msgs = [can.Message(arbitration_id=i, data=d, is_extended_id=x) for _t, i, d, x in frames]
     offs = [t for t, _i, _d, _x in frames]
     rc = 0
+    # The hotspot's rejoin after each restart, wican_reboot's (the board step's; gen-inhibit reviewer,
+    # 2026-11-19): run cb08's B12 cycles read no page after any restart, as nothing asked the phone back.
+    import wican_reboot as WR  # noqa: E402  beside this file
+    try:
+        select, rejoin_how = WR.hotspot_select()
+    except Exception as e:      # gi_wifi.Refused for a set but unusable block, or a core that will not load
+        print("FAIL: the hotspot's rejoin: GI_OTA_SETTINGS: %s: nothing sent" % e)
+        return 1
     for cyc in range(a.cycles):
+        rejoins = []
+        rejoin = WR.Rejoin(select, rejoins)
         p0 = LF.page() or {}
         if p0.get("mode") != 0:
             print("FAIL: the device must start each cycle in mode 0 (read %r)" % p0.get("mode"))
@@ -273,13 +298,7 @@ def main():
 
         def poll():
             while not stop.is_set():
-                p = LF.page()
-                t = time.time()
-                if p is not None:
-                    drv = p.get("drv") or {}
-                    reads.append((t, p.get("uptime_ms"), p.get("mode"), p.get("inhibit_live"),
-                                  p.get("reset_reason"), drv.get("state"), drv.get("bus_error"),
-                                  drv.get("tec"), p.get(a.hook_field) if a.hook_field else None))
+                poll_once(LF, reads, ev, rejoin, a.hook_field)
                 stop.wait(0.2)
 
         def at(due, what):
@@ -353,6 +372,7 @@ def main():
         boot_wire = (boot + off) if (boot is not None and off is not None) else None
         before = [r for r in reads if "reboot_epoch" in ev and r[0] < ev["reboot_epoch"]]
         rec.update({
+            "rejoin": rejoin_how, "rejoins": rejoins,
             "events": ev, "clock_offset_s": off, "clock_pairs": len(pairs),
             "boot_epoch": boot, "boot_rel_post_s": (round(boot - ev["reboot_epoch"], 4)
                                                     if boot is not None and "reboot_epoch" in ev else None),
@@ -410,6 +430,8 @@ def main():
             p = LF.page()
             if p is not None and p.get("mode") == 0:
                 break
+            if p is None:
+                rejoin.unreadable(ev.get("reboot_epoch") or time.time())
             time.sleep(1.0)
         time.sleep(3.0)
     return rc

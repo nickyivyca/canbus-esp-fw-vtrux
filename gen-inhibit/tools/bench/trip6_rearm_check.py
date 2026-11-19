@@ -415,6 +415,9 @@ def main():
     time.sleep(1.0)
     rec["after"] = read(LF, t0)
     rec["witness_error_frames"] = len(wit.errors) if wit else None
+    # the bus states the witness PCAN raised and read on past (kvaser_bus.pcan_bus; run cb08's witness
+    # thread died of "error passive" before the first burst; F6, 2026-11-19), on the perf clock
+    rec["pcan_states"] = [[round(p, 6), s] for p, s in (getattr(pc, "vtrux_states", None) or [])]
     fit = judge_arms(rec["arms"], judged, wit, t0)
     rec["witness_clock"] = fit
     if fit["void"]:

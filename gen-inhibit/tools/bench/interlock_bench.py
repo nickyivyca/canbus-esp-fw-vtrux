@@ -470,23 +470,20 @@ def poster(LF, modes, t0p, posts):
         posts.append(rec)
 
 
-def reboot(LF, timeout=60.0):
-    before = LF.page() or {}
-    t = time.time()
-    try:
-        LF.dev_post("/system_reboot", timeout=6)
-    except Exception:
-        pass
-    time.sleep(3.0)
-    while time.time() - t < timeout:
-        p = LF.page()
-        if p is not None and p.get("uptime_ms") is not None and \
-                (before.get("uptime_ms") is None or p["uptime_ms"] < before["uptime_ms"]):
-            return {"ok": p.get("mode") == 0, "s": round(time.time() - t, 1),
-                    "uptime_ms": p.get("uptime_ms"), "reset_reason": p.get("reset_reason"),
-                    "mode": p.get("mode")}
-        time.sleep(1.0)
-    return {"ok": False, "s": round(time.time() - t, 1)}
+def reboot(LF=None, timeout=60.0):
+    """The WiCAN rebooted and the reboot confirmed, through wican_reboot.reboot_in_check: the page
+    read first (no page: refused, nothing sent), a new boot by uptime or boot time, and the hotspot
+    rejoined through gi_wifi.select while the page cannot be read (gen-inhibit reviewer, 2026-11-19:
+    run cb08's reboots here never asked the phone back, and one with no page before was accepted on
+    any page after). ok only on a confirmed new boot in mode 0; anything else voids the case (run_case)
+    or the arm (baseline_b22.sh). LF is unused, kept for the callers' form."""
+    import wican_reboot as WR  # noqa: E402  beside this file
+    r = WR.reboot_in_check(wait=timeout)
+    r["confirmed"] = r["ok"]
+    r["ok"] = bool(r["ok"]) and r.get("mode") == 0
+    if r["confirmed"] and not r["ok"]:
+        r["why"] = "a new boot, but in mode %r" % (r.get("mode"),)
+    return r
 
 
 def x2_rule6(frames):
@@ -609,7 +606,8 @@ def run_case(can, LF, info, parsed, power, stamp):
            "decoder": J.gi_diag.run_identity(schemas=J.schemas())}
     rec["reboot"] = reboot(LF)
     if not rec["reboot"].get("ok"):
-        rec["verdict"] = "VOID: the WiCAN did not come back in mode 0 after the reboot"
+        rec["verdict"] = "VOID: the WiCAN's reboot before the case was not confirmed in mode 0 (%s)" % (
+            rec["reboot"].get("why"),)
         return rec
     rec["page_before"] = {k: (LF.page() or {}).get(k) for k in PAGE_FIELDS}
     from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
