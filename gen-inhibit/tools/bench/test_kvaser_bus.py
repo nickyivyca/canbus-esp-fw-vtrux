@@ -1682,6 +1682,57 @@ def guard_real():
     print("      guard (real): %s" % (out["refused"].get("kvaser_bus") or "")[:160])
 
 
+# kvaser_bus loaded by file, in a process with no folder holding gi_paths on sys.path, as the chain
+# runner loads it through suite_gen_inhibit.kvaser_link_down (run gen-inhibit-bench_20261119T031110_ffdf
+# stopped at its start identify on "No module named 'gi_paths'"). A stand-in vtrux_bench.bench_lock
+# records the log the guard asks for, so nothing real is read.
+CHILD_BYFILE = r"""
+import importlib.util, json, os, sys, types
+src = sys.argv[1]
+on_path = [p for p in sys.path if os.path.isfile(os.path.join(p or os.getcwd(), "gi_paths.py"))]
+asked = []
+vb = types.ModuleType("vtrux_bench")
+bl = types.ModuleType("vtrux_bench.bench_lock")
+def read_state(path):
+    asked.append(path)
+    return {"holder": {"who": "planted"}}
+bl.read_state = read_state
+vb.bench_lock = bl
+sys.modules["vtrux_bench"] = vb
+sys.modules["vtrux_bench.bench_lock"] = bl
+spec = importlib.util.spec_from_file_location("_suite_kvaser_bus", os.path.join(src, "kvaser_bus.py"))
+K = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(K)
+out = {"on_path": on_path, "gi_paths_before": "gi_paths" in sys.modules}
+try:
+    out["holder"] = K._lock_holder()
+except Exception as e:
+    out["holder"] = None
+    out["error"] = "%s: %s" % (type(e).__name__, e)
+out["asked"] = asked
+print("CHILD " + json.dumps(out))
+"""
+
+
+def by_file():
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    cwd = os.path.dirname(TOOLS)                       # gen-inhibit/: no gi_paths.py there
+    r = subprocess.run([sys.executable, "-B", "-c", CHILD_BYFILE, SRC], env=env, cwd=cwd,
+                       capture_output=True, text=True, timeout=120)
+    line = [x for x in r.stdout.splitlines() if x.startswith("CHILD ")]
+    if r.returncode != 0 or not line:
+        check("by file: the child ran", False, (r.returncode, r.stdout[-300:], r.stderr[-600:]))
+        return
+    out = json.loads(line[0][6:])
+    check("by file: the child had no folder holding gi_paths on sys.path and no gi_paths imported",
+          out["on_path"] == [] and out["gi_paths_before"] is False, out)
+    want = os.path.join(os.path.normpath(os.environ["REVERSE_IT_DIR"]), "firmware", "bench-log.jsonl")
+    check("by file: _lock_holder reads the holder from the bench log, as the runner's kvaser_link_down needs",
+          out["holder"] == {"who": "planted"}, out.get("error") or out)
+    check("by file: the log asked for is REVERSE_IT_DIR's firmware/bench-log.jsonl",
+          out["asked"] == [want], (out["asked"], want))
+
+
 # ---------------------------------------------------------------- the scan
 
 def called(tree, name):
@@ -2096,6 +2147,12 @@ MUTANTS = [
      "                if d is not None and d.is_alive():\n                    d.stop()        # its reads end before the bus's handle is freed\n",
      ""),
     ("echo: the drain not attached to its bus", "    bus.echo_drain = d\n    d.start()\n", "    d.start()\n"),
+    # gi_paths for the guard in a process without this folder on sys.path (run ffdf, 2026-11-19)
+    ("by file: gi_paths only by a plain import (the run ffdf defect)",
+     "        try:\n            import gi_paths as mod\n        except ImportError:\n",
+     "        import gi_paths as mod\n        if False:\n"),
+    ("by file: gi_paths looked for beside the tools folder, not beside kvaser_bus",
+     'os.path.join(HERE, "gi_paths.py")', 'os.path.join(os.path.dirname(HERE), "gi_paths.py")'),
 ]
 
 
@@ -2115,6 +2172,8 @@ def can_fail():
             os.makedirs(os.path.join(d, "bench"))
             for f in ("can_tools_pin.py", "can_tools_pin.json"):
                 shutil.copy2(os.path.join(TOOLS, f), os.path.join(d, f))
+            # gi_paths sits beside kvaser_bus, as in the tree (by_file loads it from there)
+            shutil.copy2(os.path.join(HERE, "gi_paths.py"), os.path.join(d, "bench", "gi_paths.py"))
             with open(os.path.join(d, "bench", "kvaser_bus.py"), "w", encoding="utf-8", newline="") as fh:
                 fh.write(src if old is None else src.replace(old, new))
             env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
@@ -2158,6 +2217,7 @@ def main(argv):
     real_mask()
     pin()
     guard_real()
+    by_file()
     if "--no-scan" not in argv:
         scan()
         scan_can_fail()
