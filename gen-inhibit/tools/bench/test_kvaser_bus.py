@@ -489,6 +489,7 @@ class InnoFakes(Fakes):
         return s.get("mode") == "socketcan" and s.get("netdev") == role and s.get("link") == "down"
 
 
+INNOS = ("canmain", "canchg")
 LIBUSB = ("mode", "canmain", "libusb")
 RESTORE = ("mode", "canmain", "socketcan", "--wait", "10")
 
@@ -597,15 +598,36 @@ def innomaker():
     case("innomaker: refusals", refusals)
 
     def found_states():
-        f = InnoFakes(start_up=("canmain",))
+        # the gen-inhibit reviewer's ruling of 2026-11-19: an Innomaker found up is interference, refused before
+        # bench_layer touches it, recorded as a finding, its link left up
+        runs = gi_paths.scratch("kvaser-bus-inno-foundup")
+        gi_paths.remove_tree(runs)
+        os.makedirs(runs)
+        try:
+            for role in INNOS:
+                f = InnoFakes(start_up=(role,), runs_dir=runs)
+                e = raises(f, lambda kb: kb.innomaker_bus(role))
+                evs = [x for x in read_evs(runs) if x.get("role") == role]
+                check("innomaker: %s found up -> InnomakerError naming it, no canctl call (not taken down, not "
+                      "handed over), nothing opened, its link still up" % role,
+                      type(e).__name__ == "InnomakerError" and "found up" in str(e) and role in str(e)
+                      and f.canctls() == [] and "Bus" not in f.kinds() and f.state[role]["link"] == "up", (e, f.log))
+                check("innomaker: %s found up -> recorded in kvaser_opens.jsonl as a finding (refused, found up), "
+                      "and no open recorded" % role,
+                      [(x["event"], x.get("finding"), x.get("what")) for x in evs]
+                      == [("refused", "found up", "innomaker_bus")], evs)
+        finally:
+            gi_paths.remove_tree(runs)
+        f = InnoFakes(start_up=("canchg",))
         with f as kb:
             b = kb.innomaker_bus("canmain")
-            first = list(f.canctls())
             b.shutdown()
-        check("innomaker: canmain found up -> bench_layer takes it down before the hand-over, and puts it back up "
-              "at its old settings at the close", first == [("down", "canmain"), LIBUSB]
-              and f.canctls()[2:] == [RESTORE, ("up", "canmain", "500000", "restart-ms", "0")]
-              and f.state["canmain"]["link"] == "up", f.log)
+        check("innomaker: canchg up does not refuse canmain's open (each role's own link)",
+              f.canctls() == [LIBUSB, RESTORE] and f.down("canmain") and f.state["canchg"]["link"] == "up", f.log)
+        f = InnoFakes(holder=None, start_up=("canmain",))
+        e = raises(f, lambda kb: kb.innomaker_bus("canmain"))
+        check("innomaker: the lock free and canmain up -> BenchNotHeld (the guard before the link is read)",
+              type(e).__name__ == "BenchNotHeld" and f.canctls() == [], (e, f.log))
         f = InnoFakes(roles={"canmain": {"mode": "libusb", "driver": "none", "netdev": "none", "link": "none"}})
         with f as kb:
             b = kb.innomaker_bus("canmain")
@@ -755,17 +777,30 @@ def innomaker():
                   % ", ".join(kw), e is not None and "Bus" not in [x[0] for x in f.log]
                   and f.canctls() == [RESTORE] and f.down("canmain"), (e, f.log))
         for label, kw, exc in (("the lock free", {"holder": None}, "BenchNotHeld"),
-                               ("netdev canmain up (bench_layer refuses a move with the link up)",
+                               ("netdev canmain found up (refused before bench_layer, ruling 2026-11-19)",
                                 {"start_up": ("canmain",)}, "InnomakerError")):
-            f = InnoFakes(**kw)
-            entered = []
+            runs = gi_paths.scratch("kvaser-bus-held-enter")
+            gi_paths.remove_tree(runs)
+            os.makedirs(runs)
+            try:
+                f = InnoFakes(runs_dir=runs, **kw)
+                entered = []
 
-            def go(kb):
-                with kb.innomaker_held("canmain"):
-                    entered.append(1)
-            e = raises(f, go)
+                def go(kb):
+                    with kb.innomaker_held("canmain"):
+                        entered.append(1)
+                e = raises(f, go)
+                evs = read_evs(runs) if os.path.exists(os.path.join(runs, "kvaser_opens.jsonl")) else []
+            finally:
+                gi_paths.remove_tree(runs)
             check("held: %s -> %s at enter, no canctl, the block not run" % (label, exc),
                   type(e).__name__ == exc and f.canctls() == [] and not entered, (e, f.log))
+            if "start_up" in kw:
+                check("held: canmain found up -> the refusal names it, recorded as a finding (refused, found up, "
+                      "innomaker_held), no hold recorded, its link still up",
+                      "found up" in str(e) and [(x["event"], x.get("finding"), x.get("what")) for x in evs]
+                      == [("refused", "found up", "innomaker_held")] and f.state["canmain"]["link"] == "up",
+                      (e, evs, f.log))
         f = InnoFakes()
         e = raises(f, lambda kb: kb.innomaker_held("kvaser").__enter__())
         check("held: role kvaser -> InnomakerError at enter, no canctl",
@@ -1862,6 +1897,20 @@ MUTANTS = [
      '            "found": (getattr(b, "bench_layer", None) or {}).get("found"),\n', ""),
     ("socketcan: what was found not recorded", '            "found": lay.get("found"), "err_mask": "0x%X" % mask,',
      '            "err_mask": "0x%X" % mask,'),
+    # found up (the gen-inhibit reviewer's ruling of 2026-11-19)
+    ("innomaker: a role found up passes to bench_layer", '    if row is not None and row.link == "up":\n',
+     "    if False:\n"),
+    ("innomaker_bus: found up not checked", '    _innomaker_not_up(role, "innomaker_bus")\n', ""),
+    ("held: found up not checked at enter", '        _innomaker_not_up(self.role, "innomaker_held")\n', ""),
+    ("innomaker: the found-up finding not recorded",
+     '        record({"event": "refused", "backend": "gs_usb", "role": role, "what": what, "finding": "found up",\n'
+     '                "netdev": row.netdev, "link": row.link})\n', ""),
+    ("innomaker: the link read before the guard",
+     '    bl.guard("%s %s" % (what, role))\n    row = _call(InnomakerError, role, bench_roles().roles).get(role)\n',
+     '    row = _call(InnomakerError, role, bench_roles().roles).get(role)\n    bl.guard("%s %s" % (what, role))\n'),
+    ("innomaker: canmain's link read for every role",
+     "    row = _call(InnomakerError, role, bench_roles().roles).get(role)\n",
+     '    row = _call(InnomakerError, role, bench_roles().roles).get("canmain")\n'),
 ]
 
 

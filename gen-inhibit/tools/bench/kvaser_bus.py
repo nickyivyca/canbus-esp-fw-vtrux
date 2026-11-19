@@ -117,10 +117,15 @@ THE INNOMAKERS, BY ROLE (2026-11-18: the user's ruling, a tool asks for an adapt
 role, never by index, channel number or first found; the gen-inhibit reviewer's conditions 1-2).
 innomaker_bus(role) refuses a role that is not canmain or canchg (InnomakerError), then is
 bench_layer.open_bench(role, bitrate, mode="libusb", restore=True) (2026-11-19): a pick keyword refused,
-the guard, the role handed to libusb (canbench takes an up link down first) and read back from `canctl
-roles`, gs_usb opened on its USB bus and address; its shutdown() frees the pyusb handle and puts the role
-back as found (socketcan, its link as it was), read back. A failed open puts it back too. canbench's
-refusal is InnomakerError. The open and the close are recorded; a second shutdown() does nothing.
+the guard, the role handed to libusb and read back from `canctl roles`, gs_usb opened on its USB bus and
+address; its shutdown() frees the pyusb handle and puts the role back as found (socketcan, link down), read
+back. A failed open puts it back too. canbench's refusal is InnomakerError. The open and the close are
+recorded; a second shutdown() does nothing.
+A role FOUND WITH ITS LINK UP is refused before bench_layer touches it (InnomakerError), recorded in
+kvaser_opens.jsonl as a finding ("found up"), and its link left as it is (the gen-inhibit reviewer's ruling
+of 2026-11-19: in a run the runner brings canmain down and the lock keeps everyone else off, so an up
+Innomaker is interference; open_bench would take it down and put it back up, and the runner forbids canmain
+up). The same holds at innomaker_held's enter.
 innomaker_held(role) holds the role in libusb around a run, with the opens and closes inside it
 (condition 5, 2026-11-18): bench_layer.to_libusb at the start, open_bench(restore=False) per open,
 bench_layer.to_socketcan at the end; a hand-back at every close would sit inside a burst's or NONODE's
@@ -496,6 +501,23 @@ def _innomaker_role(role):
         raise InnomakerError("%r is not an Innomaker role (%s)" % (role, ", ".join(INNOMAKERS)))
 
 
+def _innomaker_not_up(role, what):
+    """The guard, then the role's link from `canctl roles` (bench_roles.roles): found up, the open is refused
+    BEFORE bench_layer touches it, recorded as a finding ("found up"), and its link left as it is (the gen-inhibit
+    reviewer's ruling of 2026-11-19: in a run the runner brings canmain down and the lock keeps everyone else
+    off, so an up Innomaker is interference; open_bench would take it down and put it back up, and the runner
+    forbids canmain up). InnomakerError."""
+    bl = layer()
+    bl.guard("%s %s" % (what, role))
+    row = _call(InnomakerError, role, bench_roles().roles).get(role)
+    if row is not None and row.link == "up":
+        record({"event": "refused", "backend": "gs_usb", "role": role, "what": what, "finding": "found up",
+                "netdev": row.netdev, "link": row.link})
+        raise InnomakerError("%s: netdev %s found up, which is interference (in a run the runner brings it "
+                             "down); recorded as a finding, its link not touched, %s refused"
+                             % (role, row.netdev, what))
+
+
 def _innomaker_open(role, bitrate, kw, restore):
     bl = layer()
     b = _call(InnomakerError, "open_bench %s" % role, bl.open_bench, role, bitrate, mode="libusb",
@@ -531,8 +553,10 @@ def innomaker_bus(role, bitrate=500000, **kw):
     """The Innomaker with canctl role `role` (canmain or canchg), through bench_layer.open_bench(role,
     mode="libusb", restore=True): handed to libusb, opened by open_role, and its shutdown() puts the role back
     as found (socketcan, its link as it was), read back. NORMAL mode (gs_usb has no listen-only). A pick
-    keyword (index, channel, bus, address, ...) is refused by the layer (InnomakerError)."""
+    keyword (index, channel, bus, address, ...) is refused by the layer (InnomakerError). Found with its link up,
+    it is refused before the layer touches it, and recorded (_innomaker_not_up)."""
     _innomaker_role(role)
+    _innomaker_not_up(role, "innomaker_bus")
     return _innomaker_open(role, bitrate, kw, True)
 
 
@@ -549,6 +573,7 @@ class innomaker_held:
 
     def __enter__(self):
         _innomaker_role(self.role)
+        _innomaker_not_up(self.role, "innomaker_held")
         bl = layer()
         _call(InnomakerError, "to_libusb %s" % self.role, bl.to_libusb, self.role)
         record({"event": "hold", "backend": "gs_usb", "role": self.role, "mode": "libusb"})
