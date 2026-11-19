@@ -564,7 +564,16 @@ def nonode(F):
 @judge("B15", "B")
 def b15(F):
     t = text(F.one(r"B15_wican_segment_probe\.txt"))
-    adapters = re.findall(r"^--- (\S+) .*?: (\d+) frames, ids (\{.*\})$", t, re.M)
+    row = r"^--- (\S+) .*?: (\d+) frames, ids (\{.*\})$"
+    adapters = re.findall(row, t, re.M)
+    # an adapter that did not open, or a row that does not read, is no census of it: ERROR,
+    # never a PASS on the adapters that did (gen-inhibit reviewer, 2026-11-18: de6e passed
+    # B15 on the PCAN alone, the Kvaser and the Innomaker "open failed")
+    unread = [ln for ln in re.findall(r"^--- .*$", t, re.M) if not re.match(row, ln)]
+    if unread:
+        return [result("B15", "ERROR", {}, "; ".join(
+            ("%s open failed" % m.group(1)) if m else ("row not read: %s" % ln[:80])
+            for ln in unread for m in [re.match(r"^--- (\S+) open failed", ln)]))]
     figs, bad, repeats = {}, [], set()
     for name, n, ids in adapters:
         ids = ast.literal_eval(ids)

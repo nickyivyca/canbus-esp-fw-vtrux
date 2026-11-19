@@ -195,6 +195,10 @@ EDITS = [
     ("B15host", "bench", r"B15_diag_decode_check_host_e3d9437\.txt", r"all emitted diag frames decode against the DBC", "2 diag frames do not decode", "FAIL"),
     ("B15", "bench", r"B15_wican_segment_probe\.txt", r"^restored: \{'mode': 0", "restored: {'mode': 3", "FAIL"),
     ("B15", "bench", r"B15_wican_segment_probe\.txt", r"(--- pcan .*?ids )\{'0x7F9': 20930\}", r"\g<1>{'0x123': 20930}", "FAIL"),
+    # an adapter that did not open is ERROR (gen-inhibit reviewer, 2026-11-18; de6e's row form)
+    ("B15", "bench", r"B15_wican_segment_probe\.txt", r"^--- kvaser ACKING .*$",
+     "--- kvaser open failed: KvaserLinkError('planted'): None frames, ids None", "ERROR"),
+    ("B15", "bench", r"B15_wican_segment_probe\.txt", r"^(--- gs_usb ACKING .*?): 14791 frames", r"\g<1>: None frames", "ERROR"),
     ("B16", "bench", r"B16_page_only_baseline\.txt", r"outages 0 -> no outage", "outages 1 -> 1 outage", "FAIL"),
     ("B17a", "bench", r"B17_spec11_page_e3d9437_man\.txt", r"^  page  25f5", "  page  35f5", "FAIL"),
     ("B17b", "bench", r"B17_spec11_page_e3d9437_man2\.txt", r"^AS SPECIFIED", "NOT AS SPECIFIED", "FAIL"),

@@ -633,8 +633,11 @@ def make_hooks(settings, ssid, images=None):
         """The core's on_start / on_end for the WiCAN (port plan, board images step 4; user
         2026-10-20): wican_reboot.py reboots it, reads the page until a new boot shows,
         disarms whatever comes up armed, and passes only on a SW reset, mode 0, nothing
-        latched or disabled, and a known image (start: any of this suite's WiCAN images;
-        end: the one the core believes the board is on). The X2 has no such step."""
+        latched or disabled, and the image (start: any image the page names, one of this
+        suite's or not; an unknown one is recorded as found_unknown with its hash and as
+        differing from the first, so the core's flasher loads the first image over it
+        (gen-inhibit reviewer, 2026-11-18); end: the one the core believes the board is
+        on). The X2 has no such step."""
         def hook(board, image, ctx, logdir):
             if board != "wican":
                 return dict(ok=True, detail="no %s step for the %s" % (step, board))
@@ -661,8 +664,8 @@ def make_hooks(settings, ssid, images=None):
             except (OSError, ValueError):
                 return dict(ok=False, detail="wican_reboot.py left no record (rc %s)" % rc)
             before = rec.get("before") or {}
-            found = {k: rec.get(k) for k in ("found_image", "found_sha", "differs_from_first",
-                                             "came_up_armed", "disarmed")}
+            found = {k: rec.get(k) for k in ("found_image", "found_sha", "found_unknown",
+                                             "differs_from_first", "came_up_armed", "disarmed")}
             found.update(before_mode=before.get("mode"),
                          before_latched=(before.get("reasons") or {}).get("abort_latched"),
                          record=os.path.basename(rec_path))
@@ -679,6 +682,34 @@ def make_hooks(settings, ssid, images=None):
 
 
 # ---------------------------------------------------------------- the suite
+
+# The pinned installs gi_tools' bench tools load (gen-inhibit reviewer, 2026-11-18, gap 1): each
+# pin tool's own `check`, run from the gi_tools folder, so it looks in that worktree's scratch/.
+# Run gen-inhibit-bench_20261118T141143_de6e pointed at a fresh gi_tools worktree with neither
+# installed, and nearly every check raised CanrePinError or CanToolsPinError.
+PIN_CHECKS = (("canre", ("bench", "canre_pin.py")), ("can-tools", ("can_tools_pin.py",)))
+
+
+def pins_installed(settings):
+    """ValueError unless every pin tool in PIN_CHECKS passes `check` in settings.gi_tools;
+    the refusal names each that failed, with its last line, and the install command."""
+    tools = need(settings, "gi_tools")
+    bad = []
+    for name, rel in PIN_CHECKS:
+        argv = _py(settings) + [os.path.join(tools, *rel), "check"]
+        try:
+            p = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120,
+                               env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+            rc, said = p.returncode, (p.stderr.strip() or p.stdout.strip())
+        except (OSError, subprocess.TimeoutExpired) as e:
+            rc, said = None, "could not run: %s" % e
+        if rc != 0:
+            bad.append("%s (rc %s): %s" % (name, rc, said.splitlines()[-1] if said else "no output"))
+    if bad:
+        raise ValueError("settings.gi_tools %s lacks its pinned installs; run each pin tool's install "
+                         "there (%s): %s" % (tools, ", ".join("/".join(r) + " install" for _, r in PIN_CHECKS),
+                                             "; ".join(bad)))
+
 
 def interposer_code_at(settings):
     """The read-only charge-interposer checkout interposer_code names must be clean at
@@ -723,6 +754,7 @@ def suite(settings):
     except GW.Refused as e:
         raise ValueError("settings.ota: %s" % e)
     interposer_code_at(settings)
+    pins_installed(settings)                # before the bench is taken (reviewer, 2026-11-18)
     H = HARNESS
 
     desc = {}
