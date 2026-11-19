@@ -35,6 +35,14 @@
     "CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH": {
       "value": true,
       "spec": "charge-interposer spec 9, 'Settings the X2 board leaves to this project': core dumps to flash (CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH), into the coredump partition (shared/boards x2, a required choice)"
+    },
+    "CONFIG_ESP_COREDUMP_CHECK_BOOT": {
+      "value": "unset",
+      "spec": "charge-interposer spec 9, 'Settings the X2 board leaves to this project': nothing reads, checks or reports a stored dump at boot, CONFIG_ESP_COREDUMP_CHECK_BOOT not set (user, 2026-11-18)"
+    },
+    "CONFIG_ESP_COREDUMP_FLASH_NO_OVERWRITE": {
+      "value": "unset",
+      "spec": "charge-interposer spec 9, 'Settings the X2 board leaves to this project': CONFIG_ESP_COREDUMP_FLASH_NO_OVERWRITE not set, so a new crash replaces the last dump (user, 2026-11-18)"
     }
   },
   "build_switches": {
