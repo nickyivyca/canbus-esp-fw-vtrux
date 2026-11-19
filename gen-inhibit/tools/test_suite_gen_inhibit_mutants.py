@@ -92,8 +92,8 @@ MUTANTS = [
     ("hooks: GI_OTA_SETTINGS dropped from the hooks' environment (wican_reboot.py's rejoin), as before 2026-11-18",
      "    base_env.update(ota_tools_env(settings, ssid))\n", "    ota_tools_env(settings, ssid)\n"),
     ("tools: GI_OTA_SETTINGS' braces not doubled for the core's formatting",
-     'env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v',
-     'env0.update({k: v for k, v'),
+     'env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in ota_tools_env(settings, ssid)',
+     'env0.update({k: v for k, v in ota_tools_env(settings, ssid)'),
     # the capture checks NOT-RUN without a capture interface on Linux (run cb08; reviewer, 2026-11-19)
     ("capture: the checks run to exit 2 without an interface, as in run cb08",
      '        if cid in CAPTURE_CHECKS and cap_skip:\n            kw["skip"] = cap_skip\n', ""),
