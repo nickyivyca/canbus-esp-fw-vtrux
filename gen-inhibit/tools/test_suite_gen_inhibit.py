@@ -2062,11 +2062,18 @@ def test_kvaser_link_down(settings):
             check("kvaser_link_down: a link still UP raises IdentifyError naming it",
                   e is not None and "still reads UP" in str(e) and not files, (e, files))
         else:
-            rec = json.load(open(os.path.join(d, files[0]))) if len(files) == 1 else None
+            rec = None
+            if len(files) == 1:
+                try:
+                    with open(os.path.join(d, files[0]), encoding="ascii") as f:
+                        rec = json.load(f)
+                except ValueError:       # empty or not JSON: no read-back written
+                    rec = None
             check("kvaser_link_down: the link down, its read-back in kvaser_link_after_identify_<stamp>.json",
                   e is None and got == {"up": False, "state": "STOPPED"} and len(files) == 1
-                  and files[0].startswith("kvaser_link_after_identify_") and rec["link"]["up"] is False,
-                  (got, e, files))
+                  and files[0].startswith("kvaser_link_after_identify_") and isinstance(rec, dict)
+                  and isinstance(rec.get("link"), dict) and rec["link"].get("up") is False,
+                  (got, e, files, rec))
 
 
 def main():

@@ -1,4 +1,4 @@
-"""The one way the bench harness opens the Kvaser and the Innomaker (gs_usb).
+"""The one way the bench harness opens the Kvaser and the Innomakers (gs_usb).
 
 Gen-inhibit tester, 2026-11-11, the gen-inhibit reviewer's opener item of that day. On Linux
 no Kvaser channel opens through python-can as it is: linuxcan's CANlib refuses python-can's
@@ -16,18 +16,20 @@ canbench imported from anywhere else (AGENTS.md "can-tools").
                        CANlib listed only its two "Kvaser Virtual CAN" channels, so channel 0
                        opened a virtual bus that sends and hears nothing on the wire, and a
                        witness on it would have read an empty bus.
-  gs_usb_bus(**kw)     linux_fixes.apply(), then can.Bus(interface="gs_usb", **kw)
-  close_gs_usb(bus)    bus.shutdown(), then canbench's release_gs_usb(bus). python-can's
-                       GsUsbBus.shutdown() leaves the pyusb handle open, so a second open in
-                       the same process, or canctl handing the Innomaker back to socketcan
-                       from it, fails without a word (reviewer, 2026-11-11). Call it, not
-                       bus.shutdown(), for every gs_usb bus.
-  bus(**kw)            for a tool that opens an interface named at run time: kvaser and
-                       gs_usb through the two above, anything else straight to can.Bus
+  innomaker_bus(role, bitrate, **kw)   (2026-11-18) an Innomaker by its canctl role, canmain
+                       or canchg, never by index (the user's ruling of 2026-11-18): see "THE
+                       INNOMAKERS, BY ROLE" below. Its shutdown() closes the bus, frees the
+                       pyusb handle (canbench's release_gs_usb: python-can's GsUsbBus.shutdown()
+                       leaves it open, reviewer, 2026-11-11) and hands the role back to
+                       socketcan, down. The old gs_usb_bus(**kw) and close_gs_usb(bus), which
+                       took gs_usb's index (the first device found), are gone.
+  bus(**kw)            for a tool that opens an interface named at run time: kvaser through
+                       kvaser_bus(), gs_usb refused (TypeError: an Innomaker is asked for by
+                       its role, innomaker_bus), anything else straight to can.Bus
   fixes()              the fixes' result, {"kvaser": bool, "gs_usb": bool}, applied once per
                        process (canbench's own apply() is idempotent too)
   require_bench()      THE BENCH GUARD (reviewer's ask, 2026-11-12). kvaser_bus() and
-                       gs_usb_bus() call it before anything else, and open nothing unless it
+                       innomaker_bus() call it before anything else, and open nothing unless it
                        passes: the bench log (the lock, AGENTS.md "The shared bench") replays,
                        its holder is a gen-inhibit role (tester, or implementor on a loan), and
                        the holder's pid is this process or one of its ancestors. A runner takes
@@ -88,6 +90,21 @@ backend everywhere else (Windows). On Linux, after the guard:
     classes on SocketCAN, and every error frame on any other bus; the witnesses that count
     error frames (x2_jam_cases, restart_error_frames, e4_rig_calibration) count through them
     and record the frames they left out.
+THE INNOMAKERS, BY ROLE (2026-11-18: the user's ruling, a tool asks for an adapter by its canctl
+role, never by index, channel number or first found; the gen-inhibit reviewer's conditions 1-2).
+innomaker_bus(role) refuses channel=, index=, bus= and address= (TypeError) and a role that is not
+canmain or canchg (InnomakerError), then, after the guard:
+  - the role's netdev must exist and be down (the runner's canmain probe `link`); its sysfs
+    device link gives the USB device (/sys/class/net/<role>/device -> .../<usb>/<usb>:1.0).
+    No serial is read.
+  - `canctl mode <role> libusb` hands it to libusb; the bus opens as gs_usb on that USB device's
+    bus and address (/sys/bus/usb/devices/<usb>/busnum, devnum), after the fixes.
+  - a failed hand-over or open hands the role back (`canctl mode <role> socketcan --wait`, read
+    back: the netdev exists and is down) and re-raises; if the hand-back fails too, one
+    InnomakerError names both.
+  - the close hands it back the same way, read back, recorded (InnomakerError if not); a second
+    shutdown() does nothing.
+
 Every open, on either backend, is recorded: one line on stderr, and, when GI_RUNS_DIR is set
 (the chain runner points it at the check's folder), a JSON line in kvaser_opens.jsonl there:
 the backend ("socketcan" or "canlib"), the channel asked for and opened, the bitrate, and on
@@ -442,13 +459,6 @@ def detect():
     return None
 
 
-def gs_usb_bus(**kw):
-    require_bench()
-    fixes()
-    import can
-    return can.Bus(interface="gs_usb", **kw)
-
-
 # ------------------------------------------------ the Innomakers, by canctl role (2026-11-18)
 #
 # The user's ruling of 2026-11-18, for the whole bench: a tool asks for an adapter by its canctl
@@ -517,6 +527,15 @@ def innomaker_restore(role):
     return ev["readback"]
 
 
+def _restore_after_failure(role, what):
+    """After a failed hand-over or open: hand the role back. If that fails too, one
+    InnomakerError names both."""
+    try:
+        innomaker_restore(role)
+    except InnomakerError as r:
+        raise InnomakerError("%s; and the hand-back failed: %s" % (what, r))
+
+
 def innomaker_bus(role, bitrate=500000, **kw):
     """The Innomaker with canctl role `role` (canmain or canchg), opened through libusb on its own
     USB device, in NORMAL mode (gs_usb has no listen-only). Its shutdown() closes the bus, frees
@@ -529,16 +548,17 @@ def innomaker_bus(role, bitrate=500000, **kw):
     usb = innomaker_usb(role)
     rc, last = _canctl("mode", role, "libusb")
     if rc != 0:
-        innomaker_restore(role)
-        raise InnomakerError("canctl mode %s libusb failed (rc %s): %s" % (role, rc, last))
+        what = "canctl mode %s libusb failed (rc %s): %s" % (role, rc, last)
+        _restore_after_failure(role, what)
+        raise InnomakerError(what)
     try:
         busnum = int(_read(os.path.join(SYSFS_USB, usb, "busnum")))
         devnum = int(_read(os.path.join(SYSFS_USB, usb, "devnum")))
         fixes()
         import can
         b = can.Bus(interface="gs_usb", channel=role, bus=busnum, address=devnum, bitrate=bitrate, **kw)
-    except BaseException:
-        innomaker_restore(role)
+    except BaseException as e:
+        _restore_after_failure(role, "the gs_usb open of %s failed: %s: %s" % (role, type(e).__name__, e))
         raise
     b.vtrux_backend, b.vtrux_role = "gs_usb", role
     record({"event": "open", "backend": "gs_usb", "role": role, "usb": usb, "bus": busnum, "address": devnum,
@@ -562,14 +582,6 @@ def _innomaker_close(b, shut, role):
         innomaker_restore(role)
 
 
-def close_gs_usb(b):
-    try:
-        b.shutdown()
-    finally:
-        _pin_tool().use()
-        importlib.import_module("canbench.live.receiver").release_gs_usb(b)
-
-
 def pcan_witness_bus(**kw):
     """The PCAN as a timing witness (2026-11-13, the gen-inhibit reviewer's ruling (C)): the
     bench guard first, then the pinned canbench's CanbenchPcanBus, which hands up PCAN-Basic's
@@ -588,6 +600,7 @@ def bus(**kw):
     if iface == "kvaser":
         return kvaser_bus(**kw)
     if iface == "gs_usb":
-        return gs_usb_bus(**kw)
+        raise TypeError("an Innomaker is asked for by its canctl role: innomaker_bus(role), not "
+                        "bus(interface='gs_usb')")
     import can
     return can.Bus(interface=iface, **kw)
