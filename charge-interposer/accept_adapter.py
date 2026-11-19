@@ -1046,9 +1046,15 @@ def _vport_windows(a, b, spec, adapter):
 # spread of serial runs of the same product (tolerance.serial: run folders,
 # as [baseline] names them, under the runs folder both sides are in) widened
 # by a margin (tolerance.margin {figure: {"abs", "rel"}}: the band is
-# [min - m, max + m] with m = abs + rel x the larger of |min| and |max|),
-# and, with tolerance.fps = "a", each segment's frame rate against the range
-# of side a's sims (a slotted run, whose isolation events give the rates):
+# [min - abs - rel x |min|, max + abs + rel x |max|], each end widened by
+# rel of itself), and, with tolerance.fps = "a", each segment's frame rate
+# against the range of side a's sims (a slotted run, whose isolation events
+# give the rates), widened by FPS_MARGIN unless the list gives a margin for
+# fps: 1 % of each end, so a rate more than 1 % under the range's low end, or
+# over its high end, is a difference (the user, 2026-11-19, in the
+# charge-interposer reviewer's session: 4 wall-clock slots on madhouse with
+# a 1 % frame-rate margin; basis: the slot trial's entry in VERIFICATION.md
+# 9.1, where margin 0 failed 2 and 4 slots by 0.1-0.5 fps in four sims):
 #   <proc>.stalls          STALL lines in <sim>.<proc>.log (proc charger,
 #                          vehicle, interposer): the sim's own loop gaps over
 #                          40 ms of wall clock
@@ -1072,6 +1078,7 @@ SIM_STALL = re.compile(r"\bSTALL \d+ ms wall\b")
 PERIODIC_MIN = 100
 GAP_OVER_MS = 40
 TIMING_FIGURES = ("stalls", "gaps_over_40ms", "p99_gap_ms")
+FPS_MARGIN = {"rel": 0.01}
 
 
 def _sims(side):
@@ -1121,12 +1128,14 @@ def sim_timing(folder, sim):
 
 def _band(values, margin):
     lo, hi = min(values), max(values)
-    m = float(margin.get("abs") or 0) + float(margin.get("rel") or 0) * max(abs(lo), abs(hi))
-    return lo - m, hi + m
+    a, r = float(margin.get("abs") or 0), float(margin.get("rel") or 0)
+    return lo - a - r * abs(lo), hi + a + r * abs(hi)
 
 
 def _fmt(v):
-    return "%d" % v if float(v).is_integer() else "%.1f" % v
+    """An integer as one; anything else to 2 places, trailing zeros dropped
+    (a 1 % fps band's ends, such as 52.52, are not rounded onto the figure)."""
+    return "%d" % v if float(v).is_integer() else ("%.2f" % v).rstrip("0")
 
 
 def _fps(side):
@@ -1188,7 +1197,7 @@ def _sim_timing(a, b, spec, adapter):
                 vals = [f[seg] for f in fa.values() if seg in f]
                 if not vals:
                     raise ValueError("sim-timing: side a has no rate for segment %s" % seg)
-                lo, hi = _band(vals, margin.get("fps") or {})
+                lo, hi = _band(vals, margin.get("fps", FPS_MARGIN))
                 if not lo <= fb[sim][seg] <= hi:
                     out.append({"kind": "figure", "name": "%s fps.%s" % (sim, seg),
                                 "line": "figure %s fps.%s: b %s outside [%s, %s] (a's range)"
