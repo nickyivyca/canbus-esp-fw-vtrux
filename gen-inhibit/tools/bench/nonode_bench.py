@@ -50,12 +50,22 @@ item) show that nothing ACKs. A breach, or a VOID fit, is the arm's "close" item
 arm is VOID; it never fails it.
 ECHOES (the gen-inhibit reviewer's ruling (C), 2026-11-19). canmain's gs_usb takes no frame once 257
 of its echoes are unread (the short bench check of 2026-11-19), and the slice is thousands of frames,
-so each open of the replayer reads its echoes while the Player sends (open_replayer:
-kvaser_bus.echo_drain), and the drain is stopped before the bus's shutdown: for the slice, in
-slice_close, after the Player's last VCM frame, and the close then called CLOSE_AFTER_S after that
-frame's send (not after the drain's stop). Each drain's counts are recorded in the arm
-(echoes_slice, echoes_back): sent, echoes, other frames, error frames, echoes == sent. A frame
-nothing ACKs gives no echo, so fewer echoes than frames shows sends with no node there to ACK.
+so each open of the replayer reads its echoes while the Player sends. From can-tools 7a27cc9 the
+reader is canbench's: kv_open opens with inno.open(drain=True) (bench_layer.open_bench's drain, 1 ms
+reads), and kvaser_bus.drain_stop stops it before the bus's shutdown and records its counts. canbench's
+stop reads nothing after it, so each stop waits for the last frames' echoes: for the slice, slice_close
+stops it CLOSE_AFTER_S - DRAIN_LEAD_S after the Player's last VCM frame, and the close is then called
+CLOSE_AFTER_S after that frame's send (not after the drain's stop); for the back phase, back_stop stops
+it ECHO_SETTLE_S after the Player has stopped. Each drain's counts are recorded in the arm (echoes_slice,
+echoes_back): sent, echoes, other frames, error frames, stop_ms, echoes == sent. A frame nothing ACKs
+gives no echo, so fewer echoes than frames shows sends with no node there to ACK.
+LEFTOVER FRAMES (the gen-inhibit reviewer's Q1 (i), 2026-11-19): canmain_burst_check's replays at 63e90da0
+each drained one frame more than they sent, once as an echo; here a leftover echo would make up for one
+unACKed frame and hide it from acked_<phase>, the unsafe side. So each phase starts its Player through
+player_start, which first takes the drain's counts as before_send (kvaser_bus.drain_before_send, settled
+BEFORE_SEND_SETTLE_S from the open, with the leftover's kind); the echoes judged are those after it, and the
+snapshot and the drain's whole counts are recorded in echoes_<phase>. A drain stopped with no snapshot is a
+failed drain (acked_<phase> VOID).
 THE STIMULUS'S PRECONDITION (the gen-inhibit reviewer's rulings of 2026-11-19), each a VOID item
 with its reason, changing no PASS/FAIL bound:
   stimulus     the WiCAN's driver did not show running within DRIVER_WAIT_S (5 s) of the arm
@@ -133,6 +143,8 @@ BIT_US = 2.0                    # 500 kbit/s
 LATCH_MAX_S = 0.7               # 12.4 row (corrected 2026-10-20, user)
 COPIES_MIN = 10                 # reviewer, 2026-10-20
 CLOSE_AFTER_S = 0.005
+DRAIN_LEAD_S = 0.003            # the slice's echo drain stopped this long before its close (canbench: one 1 ms read)
+ECHO_SETTLE_S = 0.02            # the back phase's last echoes, before its drain is stopped (no close timed there)
 DRIVER_WAIT_S = 5.0             # the wait after the arm for the WiCAN's driver to show running
 SILENCE_EDGE_S = 0.020          # the replayer's last frames may still be on the wire this long after the close
 REPLAYER_ROLE = "canmain"       # the replayer by its canctl role (condition 5, 2026-11-18)
@@ -414,33 +426,50 @@ class Player(threading.Thread):
         return self.last_vcm
 
 
-def open_replayer(kv_open, what, KB=None):
-    """The replayer's bus and its echo drain (module docstring, ECHOES): (bus, drain)."""
+def replayer_open(inno):
+    """The replayer: canmain on the held role (condition 5, 2026-11-18), opened with canbench's echo drain
+    (module docstring, ECHOES)."""
+    return inno.open(bitrate=500000, drain=True)
+
+
+def _kb(KB):
     if KB is None:
         import kvaser_bus as KB  # noqa: N811  where it opens, as every tool here
-    kv = kv_open()
-    return kv, KB.echo_drain(kv, REPLAYER_ROLE, what)
+    return KB
 
 
-def slice_close(pl, kv, dr):
-    """Stops the slice right after its next VCM frame, stops the echo drain (its counts against the frames
-    the Player sent), then calls the bus's shutdown CLOSE_AFTER_S after that frame's send. Returns (last,
-    echoes, t_close_call, t_close)."""
+def player_start(kv, stim, kf, what, KB=None):
+    """Takes the drain's counts just before the first frame (kvaser_bus.drain_before_send; module docstring,
+    LEFTOVER FRAMES), then starts a Player on `kv`. Returns the Player."""
+    _kb(KB).drain_before_send(kv, what)
+    pl = Player(kv, stim, kf)
+    pl.start()
+    return pl
+
+
+def slice_close(pl, kv, KB=None):
+    """Stops the slice right after its next VCM frame, stops canbench's echo drain CLOSE_AFTER_S - DRAIN_LEAD_S
+    after that frame's send (kvaser_bus.drain_stop: its counts against the frames the Player sent), then calls
+    the bus's shutdown CLOSE_AFTER_S after it. Returns (last, echoes, t_close_call, t_close)."""
+    KB = _kb(KB)
     last = pl.stop_after_vcm()
-    echoes = dr.stop(sent=pl.sent)
     t_last = last[0] if last else time.perf_counter()
+    time.sleep(max(0.0, t_last + CLOSE_AFTER_S - DRAIN_LEAD_S - time.perf_counter()))
+    echoes = KB.drain_stop(kv, pl.sent, "nonode slice")
     time.sleep(max(0.0, t_last + CLOSE_AFTER_S - time.perf_counter()))
     t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call
     kv.shutdown()
     return last, echoes, t_close_call, time.perf_counter()
 
 
-def back_stop(pl, dr):
-    """Stops the back phase's Player and then its echo drain (the bus is shut later, after the disarm).
-    Returns the drain's counts."""
+def back_stop(pl, kv, KB=None):
+    """Stops the back phase's Player, then, ECHO_SETTLE_S later, canbench's echo drain (kvaser_bus.drain_stop;
+    the bus is shut later, after the disarm). Returns the drain's counts."""
+    KB = _kb(KB)
     pl.stop_flag.set()
     pl.join(3)
-    return dr.stop(sent=pl.sent)
+    time.sleep(ECHO_SETTLE_S)
+    return KB.drain_stop(kv, pl.sent, "nonode back")
 
 
 class Witness(threading.Thread):
@@ -572,7 +601,7 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
     # end, stop the slice while the WiCAN still ACKs, then disarm.
     LF.dev_post("/gen_inhibit_set?mode=0")
     time.sleep(0.5)
-    kv, dr = open_replayer(kv_open, "nonode slice")
+    kv = kv_open()
     poll.start()
     LF.dev_post("/gen_inhibit_set?mode=3")
     t_arm = time.perf_counter()
@@ -580,21 +609,19 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
         time.sleep(0.02)
     arm["driver_running_after_arm_s"] = round(time.perf_counter() - t_arm, 3)
     arm["driver_running"] = bool(poll.reads and poll.reads[-1].get("state") == "running")   # (i), judged
-    pl = Player(kv, stim, kf)
-    pl.start()
+    pl = player_start(kv, stim, kf, "nonode slice")
     while time.perf_counter() - t_arm < 15 and not (poll.reads and poll.reads[-1].get("live")):
         time.sleep(0.05)
     arm["live_after_arm_s"] = (round(time.perf_counter() - t_arm, 3)
                                if poll.reads and poll.reads[-1].get("live") else None)
     time.sleep(a.live_s)
     w0 = pc_wit.mark()
-    last, arm["echoes_slice"], t_close_call, t_close = slice_close(pl, kv, dr)
+    last, arm["echoes_slice"], t_close_call, t_close = slice_close(pl, kv)
     arm["vcm_payloads"] = sorted(pl.vcm_payloads)
     time.sleep(a.silence_s)
     t_reopen = time.perf_counter()
-    kv, dr = open_replayer(kv_open, "nonode back")
-    pl2 = Player(kv, stim, kf)
-    pl2.start()
+    kv = kv_open()
+    pl2 = player_start(kv, stim, kf, "nonode back")
     time.sleep(a.back_s)
     t_keyoff = time.perf_counter()
     pl2.key = 0
@@ -602,7 +629,7 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
     t_keyon = time.perf_counter()
     pl2.key = 1
     time.sleep(a.keyon_s)
-    arm["echoes_back"] = back_stop(pl2, dr)
+    arm["echoes_back"] = back_stop(pl2, kv)
     time.sleep(0.2)
     LF.dev_post("/gen_inhibit_set?mode=0")
     time.sleep(0.3)
@@ -748,7 +775,7 @@ def main():
         wit.start()
 
         def kv_open():
-            return inno.open(bitrate=500000)       # canmain on the held role (condition 5)
+            return replayer_open(inno)
         main_done = 0
         for n in range(1, a.max_arms + 1):
             arm = run_arm(n, kv_open, wit, LF, stim, kf, a)
