@@ -17,7 +17,9 @@ applies the pinned canbench's linux_fixes before can.Bus is called, loaded
 the same way, and refuses before the open without the setting or the
 install (ExplicitOpen, with a fake can.Bus and a stand-in linux_fixes;
 reviewer, 2026-11-12). Every other interface, and kvaser or gs_usb off
-Linux, needs no setting, and importing the file needs none either.
+Linux, needs no setting, and importing the file needs none either. Every
+child runs off a bench host (CANBENCH_CANCTL names no file), as on the truck;
+the bench host's open by role is test_vehicle_runner_roles.py's.
 
 The auto path runs in a child process against test_can_tools_pin.py's
 stand-in clone and planted worktree, in this run's own folder,
@@ -65,6 +67,10 @@ def child_env(clone, reverse_it=None, pythonpath=None):
     env = dict(os.environ)
     for k in ("CAN_TOOLS_DIR", "REVERSE_IT_DIR", "PYTHONPATH"):
         env.pop(k, None)
+    # Off a bench host, as on the truck: no canctl, so auto and an explicit
+    # --interface open as they always have (test_vehicle_runner_roles.py has
+    # the bench host), whether or not this machine has canctl.
+    env["CANBENCH_CANCTL"] = os.path.join(HERE, "no-canctl-here")
     if clone is not None:
         env["CAN_TOOLS_DIR"] = clone
     if reverse_it is not None:
