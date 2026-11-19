@@ -388,6 +388,10 @@ MUTANTS = [
     ("canmain_burst_check.py", "the last frame of any payload",
      "if fid == REPLAY_ID and not err and data == last_payload\n", "if fid == REPLAY_ID and not err\n"),
     ("canmain_burst_check.py", "exit 0 on a FAIL", '    return 0 if rec["verdict"] == "PASS" else 1', "    return 0"),
+    ("canmain_burst_check.py", "the close timed from the next period slot",
+     "        time.sleep(max(0.0, last_send + a.close_after_ms / 1000.0 - time.perf_counter()))\n",
+     "        time.sleep(max(0.0, t0 + n * period - time.perf_counter()) + 0.005)\n"
+     "        time.sleep(a.close_after_ms / 1000.0)\n"),
 ]
 
 

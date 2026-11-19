@@ -114,13 +114,17 @@ def replay_and_close(inno, pc, a, can):
     n, t0 = 0, time.perf_counter()
     last_send = None
     try:
-        while time.perf_counter() - t0 < a.replay_s:
+        while True:
             b.send(can.Message(arbitration_id=REPLAY_ID, is_extended_id=False, data=n.to_bytes(4, "big")),
                    timeout=0.05)
             last_send = time.perf_counter()
             n += 1
+            if last_send - t0 >= a.replay_s:
+                break
             time.sleep(max(0.0, t0 + n * period - time.perf_counter()))
-        time.sleep(a.close_after_ms / 1000.0)
+        # the close --close-after-ms after the LAST send, not after the next period slot (the full run of
+        # 2026-11-19 closed 8.1 ms after it: the slot's wait plus the close's, under load)
+        time.sleep(max(0.0, last_send + a.close_after_ms / 1000.0 - time.perf_counter()))
     finally:
         t_close = time.perf_counter()
         b.shutdown()
