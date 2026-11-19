@@ -2273,6 +2273,11 @@ check looks only in `build/`). Run file
 (Kvaser, PCAN listen-only, Innomaker), all agreeing. *Corrected 2026-10-09:
 this said "Kvaser silent"; the Leaf Light v2 has no silent mode and was ACKing
 (section 7, "Who ACKs").*
+**Correction (tester, 2026-11-18): the Innomaker read was not independent.**
+It was the bench's only Innomaker then, on the X2's CAN2 (today's `canchg`),
+and saw CAN1 only through the X2's bridge, not as an adapter on CAN1. The
+values rest on the Kvaser and PCAN reads, which decoded every one. Results
+unchanged (reviewer ruling, 2026-11-18).
 
 | Check (spec 10; schema doc rev table row 6) | Expected | Observed | Result |
 |---|---|---|---|
@@ -5627,6 +5632,11 @@ unelevated Wi-Fi capture (`ota_pcap.sh`).
     14 of 38) and `0068/compare_index.txt` (3 of 38).
 - **Result: the runner is accepted** (reviewer, 2026-10-20).
   - Every verdict matched the baseline except B6 and B20.
+    - **Correction (tester, 2026-11-18): B15's `gs_usb` row, here and in the
+      baseline, was the CAN2 Innomaker** (today's `canchg`), reached through
+      the X2's bridge, not an adapter on CAN1, so it does not count as
+      independent. B15's pass rests on its Kvaser and PCAN rows. The verdict
+      stands (reviewer ruling, 2026-11-18).
   - B5, B7, B8 and B22 are taken from 0068; in 0bfe they were NOT-RUN after
     the harness bug below.
   - B27 is the declared skip (needs the user at the bench).
@@ -6597,6 +6607,11 @@ as the baseline, with 0x7F3 B0-B3 the expected difference. Harness:
     - B15 FAIL, "mode 0 not restored" (its mode-3 POST timed out at 16:39).
   - Re-run 3: B3 PASS (20 arms, stale 0); B11raw PASS (3 PASS, 0 on ACK, 3
     not applicable); B15 PASS (3 adapters on the segment).
+    - **Correction (tester, 2026-11-18): two adapters on CAN1, not three.**
+      The count included the `gs_usb` row, which was the CAN2 Innomaker
+      (today's `canchg`) reached through the X2's bridge, not an adapter on
+      CAN1 and not independent. The pass rests on the Kvaser and PCAN rows.
+      The verdict stands (reviewer ruling, 2026-11-18).
   - B3arms and B11rawarms read PASS in re-run 2 though every arm failed. Arms
     cases have no judge: they are rated on the script's exit code, which was
     0. Fixed in `1f6250d`.
@@ -6947,6 +6962,10 @@ bus with no other node, emulated". Harness: `gen-inhibit/tester/wican-move`
   - NONODE: `latch_max_s` 0.453 / 0.668 (0.49).
   - B15: `frames_pcan` 20934 / 21114 (20930); `frames_gs_usb` 14789 / 14788
     (14791).
+    - **Correction (tester, 2026-11-18): `frames_gs_usb` is the CAN2
+      Innomaker** (today's `canchg`), reached through the X2's bridge, not
+      an adapter on CAN1, so it does not count as independent. B15's pass
+      rests on its Kvaser and PCAN rows. The verdict stands (reviewer ruling, 2026-11-18).
   - B22: `response_us_max_a` 1041 / 1018 (846); `_b` 747 / - (814), 1245
     in `880c`.
   - B23: contend aborted 68 / 65 (57); contend no effect 9 / 12 (21);
@@ -7101,6 +7120,10 @@ Harness: `17ec04c`'s (no harness change since the merge).
   - NONODE: `latch_max_s` 0.452 / 0.455 (0.49).
   - B15: `frames_pcan` 20934 / 21906 (20930); `frames_gs_usb` 14789 / 15420
     (14791); `non_ack_repeat_id` 0x7F8 / 0x7F1 (0x7F9).
+    - **Correction (tester, 2026-11-18): `frames_gs_usb` is the CAN2
+      Innomaker** (today's `canchg`), reached through the X2's bridge, not
+      an adapter on CAN1, so it does not count as independent. B15's pass
+      rests on its Kvaser and PCAN rows. The verdict stands (reviewer ruling, 2026-11-18).
   - B22: `load_pct_lower_a` 92.3 / 92.5 (92.5); `_b` 92.4 / 92.5 (92.5);
     `response_us_max_a` 1272 / 1080 (846); `_b` 883 / 934 (814).
   - B23: contend aborted 62 / 72 (57); contend no effect 12 / 6 (21);
@@ -7322,6 +7345,10 @@ emulated".
   - NONODE: `latch_max_s` 0.462 / - (0.49).
   - B15: `frames_pcan` 20946 / 22074 (20930); `frames_gs_usb` 14789 / 15676
     (14791); `non_ack_repeat_id` 0x7F8 / 0x7F3 (0x7F9).
+    - **Correction (tester, 2026-11-18): `frames_gs_usb` is the CAN2
+      Innomaker** (today's `canchg`), reached through the X2's bridge, not
+      an adapter on CAN1, so it does not count as independent. B15's pass
+      rests on its Kvaser and PCAN rows. The verdict stands (reviewer ruling, 2026-11-18).
   - B16: `polls` 359 / 357 (360).
   - B22: `response_us_max_a` 1279 / - (846); `_b` 981 / - (814).
   - B23: contend aborted 68 / 71 (57); contend no effect 9 / 7 (21);
@@ -7583,6 +7610,10 @@ error frames at a restart".
   - NONODE: `latch_max_s` 0.466 (0.49).
   - B15: `frames_pcan` 22138 (20930); `frames_gs_usb` 15665 (14791);
     `non_ack_repeat_id` 0x7F1 (0x7F9).
+    - **Correction (tester, 2026-11-18): `frames_gs_usb` is the CAN2
+      Innomaker** (today's `canchg`), reached through the X2's bridge, not
+      an adapter on CAN1, so it does not count as independent. B15's pass
+      rests on its Kvaser and PCAN rows. The verdict stands (reviewer ruling, 2026-11-18).
   - B22: `response_us_max_a` 1010 / 1052 (846); `_b` 1118 / 1001 (814).
   - B23: contend aborted 66 / 60 (57); contend no effect 9 / 14 (21);
     contend lost-then-aborted 3 / 4 (0); retry aborted 71 / 73 (69); retry
@@ -7690,6 +7721,10 @@ checks, as the entry above.
   - NONODE: `latch_max_s` 0.438 / 0.445 (0.49).
   - B15: `frames_pcan` 20994 / 22230 (20930); `frames_gs_usb` 14781 /
     16554 (14791); `non_ack_repeat_id` 0x7F8 / 0x7F3 (0x7F9).
+    - **Correction (tester, 2026-11-18): `frames_gs_usb` is the CAN2
+      Innomaker** (today's `canchg`), reached through the X2's bridge, not
+      an adapter on CAN1, so it does not count as independent. B15's pass
+      rests on its Kvaser and PCAN rows. The verdict stands (reviewer ruling, 2026-11-18).
   - B25: `gate_open_s` 203.478 / 203.478 (203.479); `resumed_s` 203.481 /
     203.481 (203.482).
 - **Run files:**
@@ -8026,6 +8061,10 @@ frames at a restart" and "error-frame rate trip".
   - NONODE: `latch_max_s` 0.437 / 0.451 (0.49).
   - B15: `frames_pcan` 22102 / 22114 (20930); `frames_gs_usb` 15679 /
     15672 (14791); `non_ack_repeat_id` 0x7F3 / 0x7F3 (0x7F9).
+    - **Correction (tester, 2026-11-18): `frames_gs_usb` is the CAN2
+      Innomaker** (today's `canchg`), reached through the X2's bridge, not
+      an adapter on CAN1, so it does not count as independent. B15's pass
+      rests on its Kvaser and PCAN rows. The verdict stands (reviewer ruling, 2026-11-18).
   - B20: `as_specified` 27 / 28 (28).
   - B22: `response_us_max_a` 996 / 1193 (846); `_b` 1191 / 1025 (814).
   - B23: contend aborted 70 / 68 (57); contend no effect 8 / 10 (21);

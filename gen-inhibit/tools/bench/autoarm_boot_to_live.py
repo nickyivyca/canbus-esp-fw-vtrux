@@ -261,7 +261,8 @@ def main():
     # 7 of 25 dace947 runs the PCAN went bus-off inside it and never sent again, which
     # left the rest of the run on a silent bus (UNRESOLVED by provenance). With auto-reset
     # it recovers; the frames it failed to send are recorded and left out of provenance.
-    tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000, auto_reset=True)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    tx = pcan_bus(bitrate=500000, auto_reset=True)
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     kv = kvaser_bus(channel=0, bitrate=500000)
     got = []

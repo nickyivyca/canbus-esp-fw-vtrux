@@ -72,6 +72,8 @@ import time
 
 import can
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import witness_clock as WC  # noqa: E402  the Kvaser's own stamps on SocketCAN (2026-11-18)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS = gi_paths.runs()
@@ -151,7 +153,8 @@ def open_buses(need_tx):
     # harmless and is the 2026-09-22 artefact: whichever bus is open while
     # another is still opening accumulates a backlog and delivers it as a
     # burst. Two sessions read that as the Kvaser duplicating frames.
-    pcan = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    pcan = pcan_bus(bitrate=BITRATE)
     opened.append(("pcan", pcan))
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     kvaser = kvaser_bus(channel=0, bitrate=BITRATE)
@@ -192,6 +195,11 @@ class Witness(threading.Thread):
     Keeps the driver's timestamp and never time.time(): host receive times on a
     USB adapter show transfer batching (spec 12, `truck_sync_diagnosis.py`),
     which would be mistaken here for the very thing under test.
+
+    On the Kvaser through SocketCAN (2026-11-18) the driver's stamp is canbench's raw
+    hardware stamp (witness_clock.raw_stamp), kept in self.raw beside the kernel's receive
+    time (self.rx); while the arm runs, frames carry the raw stamp, or the receive time
+    where there is none. settle_clock() puts them on one clock once the witness stops.
     """
 
     def __init__(self, name, bus):
@@ -199,16 +207,57 @@ class Witness(threading.Thread):
         self.name_ = name
         self.bus = bus
         self.frames = []
+        self.raw, self.rx = [], []
         self.stop = threading.Event()
 
     def run(self):
         append = self.frames.append
+        raw_append, rx_append = self.raw.append, self.rx.append
         recv = self.bus.recv
         while not self.stop.is_set():
             m = recv(timeout=0.2)
             if m is not None:
-                append((m.timestamp, m.arbitration_id, bytes(m.data),
+                raw, rx = WC.raw_stamp(m), WC.receipt(m)
+                raw_append(raw)
+                rx_append(rx)
+                append((raw if raw is not None else rx, m.arbitration_id, bytes(m.data),
                         bool(m.is_error_frame), bool(m.is_extended_id)))
+
+
+CANLIB_NOTE = WC.HW + " (CANlib stamps as read)"
+
+
+def settle_clock(w):
+    """Puts the stopped witness w's frames on one clock and returns its note (gen-inhibit
+    reviewer, 2026-11-18). On the Kvaser through SocketCAN, witness_clock.kvaser_times: the
+    data frames on the Leaf's own stamps mapped onto the epoch clock by device_fit when the
+    open's stamp check reads hardware (a note WC.judgeable takes), else every frame on its
+    receive time (a note it does not); error frames on receive time either way. Order is
+    kept. On any other bus the frames stay as read (CANLIB_NOTE)."""
+    if not WC.socketcan(w.bus):
+        return CANLIB_NOTE
+    data = [k for k, f in enumerate(w.frames) if not f[3]]
+    errs = [k for k, f in enumerate(w.frames) if f[3]]
+    mfr, mer, note = WC.kvaser_times(w.bus, [(w.raw[k], w.rx[k], k) for k in data],
+                                     [(w.raw[k], w.rx[k]) for k in errs])
+    new = list(w.frames)
+    for t, k in mfr:
+        new[k] = (t,) + new[k][1:]
+    for t, k in zip(mer, errs):
+        new[k] = (t,) + new[k][1:]
+    w.frames = new
+    return note
+
+
+def bus_errors(w):
+    """(the error frames witness w kept that count as bus errors, how many it left out).
+    On the Kvaser through SocketCAN, controller-state and RESTARTED frames are not bus errors
+    (kvaser_bus.bus_error_class; gen-inhibit reviewer, 2026-11-18); on any other bus every
+    error frame is one."""
+    from kvaser_bus import bus_error_class  # noqa: E402
+    errs = [f for f in w.frames if f[3]]
+    errf = [f for f in errs if bus_error_class(w.bus, f[1])]
+    return errf, len(errs) - len(errf)
 
 
 def frame_bits(dlc, extended):
@@ -444,7 +493,8 @@ def phase_topology(out):
 
     buses = {}
     # PCAN FIRST, as everywhere else in this file.
-    buses["pcan"] = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    buses["pcan"] = pcan_bus(bitrate=BITRATE)
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     buses["kvaser"] = kvaser_bus(channel=0, bitrate=BITRATE)
     buses["ixxat"] = can.Bus(interface="ixxat", channel=0,
@@ -792,7 +842,7 @@ def phase_replay(seconds, speeds, out, foreign_fps, heard_foreign):
                  arm["send_error_us"]["p99"], arm["send_error_us"]["max"]))
 
         for w in ws:
-            errf = [f for f in w.frames if f[3]]
+            errf, not_bus = bus_errors(w)
             # Split by ID, not by guesswork: the stimulus tops out at 0x6A0 and
             # every FOREIGN_IDS entry is above 0x7F0.
             # Both benched boards' diag IDs are 11-bit, so an extended frame is
@@ -802,6 +852,7 @@ def phase_replay(seconds, speeds, out, foreign_fps, heard_foreign):
             fgn = [f for f in w.frames
                    if not f[3] and f[1] in FOREIGN_IDS and not f[4]]
             wr = {"frames": len(got), "error_frames": len(errf),
+                  "not_bus_error_frames": not_bus,
                   "foreign_frames": len(fgn)}
             # The witness reference. The interposer's burst is externally paced
             # at 1 Hz and does not care how loaded the segment is, so the share

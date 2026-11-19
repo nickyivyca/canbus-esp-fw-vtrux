@@ -418,8 +418,8 @@ def main():
         elif a.dry_run:
             print("DRY RUN: live for 5 s, no jam")
         else:
-            jm = can.Bus(interface="pcan", channel="PCAN_USBBUS1",
-                         bitrate=WRONG, auto_reset=True)
+            from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+            jm = pcan_bus(bitrate=WRONG, auto_reset=True)
             jam = Jammer(jm, (JAM_AIR_US / 1e6) / a.jam_offered)
             ph["jam_start"] = round(time.perf_counter(), 5)
             jam.start()

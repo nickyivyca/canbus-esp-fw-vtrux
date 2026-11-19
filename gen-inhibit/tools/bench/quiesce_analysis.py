@@ -66,6 +66,8 @@ def analyse(run):
     arm = list(d["arms"])[0]
     a = d["arms"][arm]
     r = P.rejudge(run, arm, keep_frames=True)
+    if r.get("arm_void"):     # the arm's witness clock refused in its run (2026-11-18): nothing judged
+        return {"run": os.path.basename(run), "initial_mode": d.get("mode"), "void": r["arm_void"]}
     rep = r["replayed_wire_times"]
     wire = P.read_witness(os.path.join(os.path.dirname(run), a["witness_raw"]))
     dev_cmd = sorted(r["device_times"])

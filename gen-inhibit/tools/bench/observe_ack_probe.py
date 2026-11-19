@@ -111,7 +111,8 @@ def one_arm(LF, can, mode, a):
     drv = p.get("drv") or {}
     rec.update({"mode_read": p.get("mode"), "bus_on": p.get("bus_on"),
                 "drv_state": drv.get("state"), "rec_before": drv.get("rec")})
-    bus = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    bus = pcan_bus(bitrate=500000)
     try:
         st0 = bus.status()
         bus.send(can.Message(arbitration_id=int(a.id, 16), is_extended_id=False,

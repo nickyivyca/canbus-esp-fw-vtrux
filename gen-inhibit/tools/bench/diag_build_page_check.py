@@ -144,10 +144,25 @@ def post(path):
 def open_buses(want_ixxat):
     """PCAN FIRST. See rule 1 in the docstring before touching this order."""
     found = {}
-    for cfg in can.detect_available_configs(["pcan", "kvaser", "ixxat"]):
+    for cfg in can.detect_available_configs(["ixxat"]):
         if "Virtual" in str(cfg.get("device_name", "")):
             continue
         found.setdefault(cfg["interface"], cfg)
+    # the PCAN by its canctl role pcanfd (the user's ruling of 2026-11-18: never by detection's first
+    # found): kvaser_bus.pcan_role resolves it through canbench's bench_roles, and bus(interface="pcan")
+    # opens it by role (open_role)
+    from kvaser_bus import pcan_role, RoleError  # noqa: E402
+    try:
+        r = pcan_role()
+        found["pcan"] = {"interface": "pcan", "role": r["role"], "device_id": r["device_id"]}
+    except RoleError as e:
+        print("  PCAN: %s" % e)
+    # the Kvaser through kvaser_bus.detect: on Linux netdev kvaser on kvaser_usb, which CANlib's
+    # detection does not find (ruling (a), 2026-11-18); elsewhere CANlib's, as before
+    from kvaser_bus import detect as kvaser_detect  # noqa: E402
+    kv = kvaser_detect()
+    if kv is not None:
+        found["kvaser"] = kv
 
     order = ["pcan", "kvaser"] + (["ixxat"] if want_ixxat else [])
 
@@ -179,10 +194,11 @@ def open_buses(want_ixxat):
     from kvaser_bus import bus as open_bus  # noqa: E402
     buses = {}
     for name in order:
-        buses[name] = open_bus(interface=name,
-                               channel=found[name]["channel"],
-                               bitrate=500000,
-                               **({"auto_reset": True} if name == "pcan" else {}))
+        if name == "pcan":
+            kw = {"auto_reset": True}          # by role: kvaser_bus.bus -> pcan_bus
+        else:
+            kw = {"channel": found[name]["channel"]}
+        buses[name] = open_bus(interface=name, bitrate=500000, **kw)
         if name == "pcan":
             # A previous run that ended bus-off otherwise leaves the channel
             # unusable. Tolerate failure: a fresh channel has nothing to reset.
@@ -190,7 +206,8 @@ def open_buses(want_ixxat):
                 buses[name].reset()
             except Exception:
                 pass
-        print("  opened %s (channel %r)" % (name, found[name]["channel"]))
+        print("  opened %s (%s)" % (name, "role %s, device id %s" % (found[name]["role"], found[name]["device_id"])
+                                    if name == "pcan" else "channel %r" % (found[name]["channel"],)))
     return buses
 
 

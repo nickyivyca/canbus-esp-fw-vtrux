@@ -70,12 +70,36 @@ MUTANTS = [
     ("x2_jam_cases.py", "nothing heard reads as receipt time",
      "note = WC.RECEIPT if lags else WC.NONE", "note = WC.RECEIPT"),
     ("x2_jammer.py", "times() does not refuse receipt time",
-     "        ts, note = self.recorded()\n        WC.require(note)\n",
-     "        ts, note = self.recorded()\n"),
+     "            return ts, host_note(host_bound)\n        WC.require(note)\n",
+     "            return ts, host_note(host_bound)\n"),
     ("x2_jammer.py", "run_guarded does not void",
      "        WC.void(rec, e.note)\n        print(rec[\"verdict\"])\n", "        pass\n"),
     ("x2_jammer.py", "the witness takes any offset as hardware time",
      "if abs(off) < WC.MAX_LAG_S:", "if abs(off) < 1e12:"),
+    # SocketCAN stamps never hardware (2026-11-18)
+    ("witness_clock.py", "socketcan() never true", '    return getattr(bus, "vtrux_backend", None) == "socketcan"',
+     "    return False"),
+    ("witness_clock.py", "the SocketCAN note judgeable", 'SOCKETCAN = "socketcan host stamps', 'SOCKETCAN = "kvaser_hw host stamps'),
+    ("interlock_bench.py", "SocketCAN stamps taken as hardware (kvaser_times skipped)",
+     '        if sc is not None:\n            return sc\n', '        if False:\n            return sc\n'),
+    ("x2_jam_cases.py", "SocketCAN stamps taken as hardware (kvaser_times skipped)",
+     '        if sc is not None:\n            return sc\n', '        if False:\n            return sc\n'),
+    ("x2_jammer.py", "SocketCAN stamps taken as hardware",
+     '        if WC.socketcan(getattr(self, "bus", None)):', '        if False:'),
+    # ruling (B), 2026-11-18: host time per sub on the SocketCAN Kvaser
+    ("x2_jammer.py", "host time accepted whatever the bound",
+     "            if host_bound is None or host_bound < HOST_FACTOR * HOST_STAMP_ERROR_S:\n",
+     "            if host_bound is None:\n"),
+    ("x2_jammer.py", "the factor 1, not 10", "HOST_FACTOR = 10\n", "HOST_FACTOR = 1\n"),
+    ("x2_jammer.py", "the half-interval not a bound", '    if getattr(a, "sub", None) in ("pulses", "can2-check"):\n',
+     '    if getattr(a, "sub", None) in ():\n'),
+    ("x2_jammer.py", "the closing edge 0.5 s", "CLOSING_EDGE_S = 0.05 ", "CLOSING_EDGE_S = 0.5 "),
+    ("x2_jammer.py", "pulses' call passes no bound",
+     "ts, clock = wit.times(timing=True, host_bound=host_bound_s(a))   # the PULSES",
+     "ts, clock = wit.times(timing=True)   # the PULSES"),
+    ("x2_jammer.py", "the SocketCAN path keeps the hardware lag check",
+     "            return ts, host_note(host_bound)\n",
+     "            require_timing_lag(self.lag()) if timing else None\n            return ts, host_note(host_bound)\n"),
     # A2 (a), 2026-11-11: the PCAN's own stamps
     ("witness_clock.py", "stamps on the epoch clock are not VOID",
      "    if abs(epoch_lag) < EPOCH_LAG_S:\n", "    if False:\n"),
@@ -114,6 +138,17 @@ MUTANTS = [
      '        judged.append((poll_arm("A3 recent", a.arm_s), "recent", last))\n',
      '        judged.append((poll_arm("A3 recent", a.arm_s), "recent", last))\n'
      '        rec["arms"][-1]["verdict"] = judge_recent(rec["arms"][-1]["reads"], 1.0, 0)\n'),
+    # condition 5 (2026-11-18): each flood's burst measured on the mapped stamps
+    ("trip6_rearm_check.py", "B10 measures no burst",
+     '        arm["burst_measure"] = m\n', '        pass\n'),
+    ("trip6_rearm_check.py", "B10 measures bursts on receipt time",
+     '    floods = [arm for arm in arms if arm.get("_burst")]\n',
+     '    floods = [arm for arm in arms if arm.get("_burst")]\n    wire = [d[0] for d in wit.error_detail if d[1] != 0]\n'),
+    ("trip6_rearm_check.py", "B10's burst window runs to the next flood",
+     '        m = BM.burst_measure(ms, c, BM.in_window(wire, BM.burst_window(st, cl, k)))\n',
+     '        m = BM.burst_measure(ms, c, BM.in_window(wire, (s, st[k + 1] if k + 1 < len(st) else 1e9)))\n'),
+    ("trip6_rearm_check.py", "B10 prints no burst timing VOID line", '        print(burst_line)\n', '        pass\n'),
+    ("trip6_rearm_check.py", "B10 records no burst timing VOID", '        rec["burst_timing_void"] = burst_line\n', '        pass\n'),
 ]
 
 
@@ -245,7 +280,19 @@ def ib_run(IB, spy, frames):
     info = {"case": name, "judge": IB.CASES[0][2]}
     parsed = {"frames": [], "modes": [], "end": 1000}
     before = spy.calls
-    rec = IB.run_case(can, FakeLF, info, parsed, "stub", _time.strftime("%Y%m%dT%H%M%S"))
+    # run_case opens the PCAN through kvaser_bus.pcan_bus (by its canctl role, 2026-11-18), which
+    # imports the real can and needs the bench lock: a fake kvaser_bus stands in, on the fake can
+    kb = types.ModuleType("kvaser_bus")
+    kb.pcan_bus = lambda **k: FakeBus()
+    saved = sys.modules.get("kvaser_bus")
+    sys.modules["kvaser_bus"] = kb
+    try:
+        rec = IB.run_case(can, FakeLF, info, parsed, "stub", _time.strftime("%Y%m%dT%H%M%S"))
+    finally:
+        if saved is None:
+            sys.modules.pop("kvaser_bus", None)
+        else:
+            sys.modules["kvaser_bus"] = saved
     return rec, spy.calls - before
 
 
@@ -344,10 +391,12 @@ def t6_witness(epoch=False):
     return w
 
 
-def t6_run(T6, w, a4_receipt_late=0.3, a1_receipt_late=0.02):
+def t6_run(T6, w, a4_receipt_late=0.3, a1_receipt_late=0.02, close_shift=0.0):
     """judge_arms on three judged arms (t0 = 0): A1 expired at 115 s after the 100 s flood, whose
     last error frame was received a1_receipt_late after its stamp; A3 recent at 132 s after the
-    130 s flood; A4 expired at 145 s, its last error received a4_receipt_late after its stamp."""
+    130 s flood; A4 expired at 145 s, its last error received a4_receipt_late after its stamp.
+    The two flood arms carry their 5 ms bursts (condition 5): started 1 ms before their first
+    error frame, closed at its 5 ms, shifted by close_shift. Returns (fit, a1, a3, a4, f0, f2)."""
     T = T6.TRIP6
     last0 = (100.004 + LAT + a1_receipt_late, 2, "00", stamp(100.004))
     last2 = (130.004 + LAT, 2, "00", stamp(130.004))
@@ -362,9 +411,13 @@ def t6_run(T6, w, a4_receipt_late=0.3, a1_receipt_late=0.02):
              [{"t": 132.2, "live": False, "abort": T}])
     a4 = arm("A4 expired", 145.0, {"t": 144.9, "err_n": 0, "err_age_ms": 14896, "err_burst": False},
              [{"t": 146.0, "live": True, "abort": ""}])
-    fit = T6.judge_arms([a1, a3, a4], [(a1, "expired", last0), (a3, "recent", last2), (a4, "expired", last2_late)],
-                        w, 0.0)
-    return fit, a1, a3, a4
+    f0 = arm("A0 flood", 96.0, None, [])
+    f2 = arm("A2 flood", 126.0, None, [])
+    f0["_burst"] = (100.0 - 0.001, 5.0, 100.0 + 0.005 + close_shift)
+    f2["_burst"] = (130.0 - 0.001, 5.0, 130.0 + 0.005 + close_shift)
+    fit = T6.judge_arms([f0, a1, f2, a3, a4], [(a1, "expired", last0), (a3, "recent", last2),
+                                              (a4, "expired", last2_late)], w, 0.0)
+    return fit, a1, a3, a4, f0, f2
 
 
 def main_body(path, name="main"):
@@ -506,6 +559,59 @@ def checks(work):
         lambda: (lambda r: (r[2] == WC.RECEIPT and r[0][0][0] > EPOCH, r[2]))(ib_rec(0, True)))
     add("interlock witness: a lag of -2.5 s -> receipt",
         lambda: (lambda r: (r[2] == WC.RECEIPT, r[2]))(ib_rec(-2.5, False)))
+
+    # a Kvaser opened through SocketCAN (kvaser_bus on Linux) whose open's stamp check failed:
+    # its stamps are receipt times, whatever their lag (gen-inhibit reviewer, 2026-11-18; the
+    # stamp check passing is test_kvaser_stamps.py's)
+    SOCK = types.SimpleNamespace(vtrux_backend="socketcan", stamp_stats=lambda: {
+        "state": "host_only", "reason": "test: zero stamps", "after_check": {}})
+    CANLIB = types.SimpleNamespace(vtrux_backend="canlib")
+    add("not judgeable: the SocketCAN note", lambda: (not WC.judgeable(WC.SOCKETCAN), WC.SOCKETCAN))
+    add("interlock witness on SocketCAN, a 1 ms lag -> the SocketCAN note, receipt times, not judgeable",
+        lambda: (lambda r: (r[2].startswith(WC.SOCKETCAN) and not WC.judgeable(r[2])
+                            and r[0][0][0] == HW0 + 0.001, r[2]))(
+            bare(IB.REAL_WITNESS, frames=ib_frames(0.001, False), errs=[], bus=SOCK).recorded()))
+    add("interlock witness on CANlib, a 1 ms lag -> hardware stamps as before",
+        lambda: (lambda r: (WC.judgeable(r[2]) and r[0][0][0] == HW0, r[2]))(
+            bare(IB.REAL_WITNESS, frames=ib_frames(0.001, False), errs=[], bus=CANLIB).recorded()))
+    add("x2_jam_cases witness on SocketCAN, a 1 ms lag -> clocked() raises ReceiptClock with the SocketCAN note",
+        lambda: (lambda e: (e is not None and e.note.startswith(WC.SOCKETCAN), e))(
+            raises(WC.ReceiptClock, bare(XC.Witness, frames=[], errs=xc_errs(3, False), bus=SOCK).clocked)))
+    add("x2_jammer witness on SocketCAN with no sub bound -> times() raises ReceiptClock with the SocketCAN note",
+        lambda: (lambda e: (e is not None and e.note.startswith(WC.SOCKETCAN), e))(
+            raises(WC.ReceiptClock, (lambda w: (setattr(w, "bus", SOCK), w)[1])(
+                xj_closed(XJ, xc_errs(2, False))).times)))
+    # ruling (B), 2026-11-18: host time accepted per sub, when its smallest bound is >= 10 x ~1 ms
+    def xj_sock():
+        return (lambda w: (setattr(w, "bus", SOCK), w)[1])(xj_closed(XJ, xc_errs(2, False)))
+    add("x2_jammer witness on SocketCAN, a sub bound of 50 ms -> host receipt times, the note saying so",
+        lambda: (lambda r: (r[0] == [x[1] for x in xc_errs(2, False)] and r[1] == XJ.host_note(0.05)
+                            and r[1].startswith(WC.SOCKETCAN) and "ruling (B)" in r[1], r))(
+            xj_sock().times(host_bound=0.05)))
+    add("x2_jammer witness on SocketCAN, a bound of exactly 10 x the host stamp's error -> accepted",
+        lambda: (xj_sock().times(host_bound=0.010)[1] == XJ.host_note(0.010), None))
+    add("x2_jammer witness on SocketCAN, a bound of 9 ms (under 10 x 1 ms) -> ReceiptClock naming it",
+        lambda: (lambda e: (e is not None and "under 10 x" in e.note and "session" in e.note, e and e.note))(
+            raises(WC.ReceiptClock, lambda: xj_sock().times(host_bound=0.009))))
+    def xj_sock_leaf():
+        # error frames as kvaser_usb gives them: their stamps on the Leaf's own clock (~1.8e9 s off)
+        errs = [(hw - 1.795e9, rx) for hw, rx in xc_errs(2, False)]
+        return (lambda w: (setattr(w, "bus", SOCK), w)[1])(xj_closed(XJ, errs))
+
+    def safe(fn):
+        try:
+            return fn()
+        except Exception as e:      # noqa: BLE001  a FAIL, not a crash
+            return e
+    add("x2_jammer witness on SocketCAN, timing=True: the hardware lag check does not apply (Leaf-clock stamps)",
+        lambda: (lambda r: (isinstance(r, tuple) and r[1] == XJ.host_note(0.05), r))(
+            safe(lambda: xj_sock_leaf().times(timing=True, host_bound=0.05))))
+    NS = types.SimpleNamespace
+    add("host_bound_s: the closing edge (50 ms) for every sub; pulses and can2-check also half their interval",
+        lambda: (lambda b: (b == [0.05, 0.005, 0.015, 0.05, 0.05, 0.05], b))(
+            [XJ.host_bound_s(NS(sub="pulses", interval_ms=1000)), XJ.host_bound_s(NS(sub="pulses", interval_ms=10)),
+             XJ.host_bound_s(NS(sub="can2-check", interval_ms=30)), XJ.host_bound_s(NS(sub="timeout", interval_ms=10)),
+             XJ.host_bound_s(NS(sub="noduration", interval_ms=10)), XJ.host_bound_s(NS(sub="boot-silence", interval_ms=10))]))
 
     # interlock_bench: run_case
     def ib_receipt():
@@ -668,6 +774,22 @@ def checks(work):
         lambda: (lambda r: (r[3]["verdict"] == "as specified", r[3]["verdict"]))(
             t6_run(T6, t6_witness(), a4_receipt_late=0.03)))
 
+    # condition 5 (2026-11-18): each flood's burst measured on the mapped stamps
+    add("B10 judge_arms: each flood's 5 ms burst measured within the bounds (5 error frames, span 4 ms)",
+        lambda: (all((f.get("burst_measure") or {}).get("breaches") == [] and f["burst_measure"]["n"] == 5
+                     and abs(f["burst_measure"]["span_ms"] - 4.0) < 0.01 for f in B.t6[4:]),
+                 [f.get("burst_measure") for f in B.t6[4:]]))
+    add("B10 judge_arms: a burst closed 10 ms before its first error frame -> the breach recorded on both floods",
+        lambda: (lambda r: (all(any("after the close" in b for b in (f.get("burst_measure") or {}).get("breaches", []))
+                                for f in r[4:]), [f.get("burst_measure") for f in r[4:]]))(
+            t6_run(T6, t6_witness(), close_shift=-0.016)))
+    add("B10 judge_arms: the 115 s error frame is not the 100 s burst's (its window ends at the close + 0.5 s)",
+        lambda: ((B.t6[4].get("burst_measure") or {}).get("n") == 5, B.t6[4].get("burst_measure")))
+    add("scan: B10 main prints the burst timing VOID line and records it",
+        lambda: (lambda b: (any("print(burst_line)" in x for x in b) and any('rec["burst_timing_void"] = burst_line' in x
+                                                                               for x in b), len(b)))(
+            main_body(T6.__file__)))
+
     def t6_cooked():
         B.t6c = t6_run(T6, t6_witness(epoch=True))
         return True
@@ -675,8 +797,10 @@ def checks(work):
     add("B10 judge_arms on COOKED stamps: the fit VOID, every arm VOID, prediction still judged",
         lambda: (B.t6c[0]["void"] and all(x["verdict"].startswith("VOID: PCAN clock")
                                           and x["history_verdict"] == x["verdict"]
-                                          and x["prediction_verdict"] == "as specified" for x in B.t6c[1:]),
-                 [(x["verdict"][:30], x["prediction_verdict"]) for x in B.t6c[1:]]))
+                                          and x["prediction_verdict"] == "as specified" for x in B.t6c[1:4]),
+                 [(x["verdict"][:30], x["prediction_verdict"]) for x in B.t6c[1:4]]))
+    add("B10 judge_arms on COOKED stamps: no burst measured", lambda: (
+        all("burst_measure" not in f for f in B.t6c[4:]), [f.get("burst_measure") for f in B.t6c[4:]]))
     # B10 main: nothing judged live; the fit and its VOID line printed
     add("scan: B10 judges arms only in judge_arms, after the run",
         lambda: (lambda o: (o == [], o))(judge_calls_outside(
@@ -693,6 +817,12 @@ def checks(work):
         lambda: (len(recorded_calls(XC.__file__)) == 1, recorded_calls(XC.__file__)))
     add("scan: x2_jammer calls recorded() only inside times()",
         lambda: (recorded_calls(XJ.__file__) == [], recorded_calls(XJ.__file__)))
+
+    def times_calls():
+        src = open(XJ.__file__, encoding="utf-8").read()
+        return [ln for ln in src.splitlines() if "wit.times(" in ln and not ln.lstrip().startswith("#")]
+    add("scan: every single-check sub's wit.times() passes its host bound (ruling (B), 2026-11-18)",
+        lambda: (lambda c: (len(c) == 5 and all("host_bound=host_bound_s(a)" in ln for ln in c), c))(times_calls()))
     return out
 
 

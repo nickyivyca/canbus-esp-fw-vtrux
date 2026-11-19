@@ -23,7 +23,7 @@ gi_paths.use_canre()
 import can
 
 BITRATE = 500000
-PCAN = dict(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+PCAN = dict(interface="pcan", bitrate=BITRATE)   # kvaser_bus.bus -> pcan_bus: by its canctl role (2026-11-18)
 KVASER = dict(interface="kvaser", channel=0, bitrate=BITRATE)
 
 FAILURES = []
@@ -37,14 +37,24 @@ def report(phase, ok, detail):
 
 
 def phase1_enumerate():
+    """The PCAN by its canctl role (kvaser_bus.pcan_role, through canbench's bench_roles) and
+    the Kvaser by kvaser_bus.detect() (the user's ruling of 2026-11-18: an adapter by its role,
+    never by detection's first found)."""
     print("\n=== Phase 1: enumerate ===")
+    import kvaser_bus as KB  # noqa: E402
     found = {}
-    for cfg in can.detect_available_configs(["pcan", "kvaser"]):
-        name = cfg.get("device_name", "")
-        if "Virtual" in name:
-            continue
-        found[cfg["interface"]] = cfg
-        print("  %-8s ch=%-14s %s" % (cfg["interface"], cfg["channel"], name))
+    try:
+        r = KB.pcan_role()
+        found["pcan"] = r
+        print("  pcan     role %s, device id %s" % (r["role"], r["device_id"]))
+    except KB.RoleError as e:
+        print("  pcan     %s" % e)
+    kv = KB.detect()
+    if kv:
+        found["kvaser"] = kv
+        print("  kvaser   ch=%s" % kv.get("channel"))
+    else:
+        print("  kvaser   none (kvaser_bus.detect)")
     report("enumerate", "pcan" in found and "kvaser" in found,
            "pcan=%s kvaser=%s" % ("pcan" in found, "kvaser" in found))
     return found
@@ -169,7 +179,6 @@ def main():
     kv_cfg = dict(KVASER)
     kv_cfg["channel"] = found["kvaser"]["channel"]
     pc_cfg = dict(PCAN)
-    pc_cfg["channel"] = found["pcan"]["channel"]
 
     pcan = kvaser = None
     try:

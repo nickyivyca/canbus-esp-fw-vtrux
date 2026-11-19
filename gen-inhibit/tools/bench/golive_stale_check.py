@@ -111,6 +111,10 @@ def judge_file(path):
     d = json.load(open(path, encoding="utf-8"))
     if "arms" in d:                                   # e4
         a = d["arms"].get("idle") or next(iter(d["arms"].values()))
+        import witness_clock as WC  # noqa: E402
+        cv = WC.arm_clock_void(a)                # the arm's own VOID for its witness clock (2026-11-18)
+        if cv:
+            return {"run": os.path.basename(path), "verdict": "VOID: arm void: %s" % "; ".join(cv)}
         prov = a.get("provenance") or {}
         if isinstance(prov, str) or not prov:
             return {"run": os.path.basename(path), "verdict": "UNRESOLVED: no provenance (%s)" % prov}

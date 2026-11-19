@@ -35,6 +35,10 @@ MUTANTS = [
     ('the request time is the first segment, not the last', 'last = max(req, key=lambda p: (p["seq"] + p["len"], p["t"]))', 'last = min(req, key=lambda p: (p["seq"], p["t"]))'),
     ('any device packet is the ACK', 'p["src"] == DEVICE_IP and p["ack"] >= end and p["t"] >= t_req', 'p["src"] == DEVICE_IP and p["t"] >= t_req'),
     ('a finished page read is still in progress', 'if sent and (not done or max(done) > t):', 'if sent:'),
+    # the arm's witness clock (2026-11-18)
+    ("an arm voided on its witness clock is judged", '    if r.get("arm_void"):     # the arm', '    if False:     # the arm'),
+    ("a void arm's posts are dropped", '                 for e in (a.get("post_schedule") or []) if e.get("mode") == 1]\n',
+     '                 for e in [] if e.get("mode") == 1]\n'),
 ]
 
 

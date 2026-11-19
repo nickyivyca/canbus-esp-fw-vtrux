@@ -285,6 +285,98 @@ def tests():
     d0, d1 = kf.msg.decode(orig, decode_choices=False), kf.msg.decode(off, decode_choices=False)
     check("key: the other signals decode the same", all(d0[k] == d1[k] for k in d0 if k != "IgnitionKeyState"), (d0, d1))
 
+    close_tests(m)
+
+
+def close_msgs(m, last_at=10.0, late_at=None, epoch=False, n=60, dev=True, lat=0.0):
+    """Witness messages for close_measure: n device frames 2 ms apart, ending 1 ms before the last VCM frame at
+    last_at (payload "aa"), the PCAN's device clock 5000 s behind perf (RAW), its receipt lat after
+    the wire (device_fit maps onto receipt, so a mapped time carries the median latency); with epoch, stamps on the host's epoch clock (COOKED); late_at: a replayer frame (0x123)
+    on the wire then."""
+    EPOCH = 1.79e9
+    out = []
+    def msg(wire, fid, data, err=False):
+        p = wire + lat
+        ts = (EPOCH + p) if epoch else (wire - 5000.0)
+        return (p, ts * 1e6, fid, 8, data, err, EPOCH + p)
+    for k in range(n):
+        out.append(msg(last_at - (n - k) * 0.002 - 0.001, 0x7F1 if dev else 0x123, "11" * 8))
+    out.append(msg(last_at, m.VCM_ID, "aa"))
+    if late_at is not None:
+        out.append(msg(late_at, 0x123, "00" * 8))
+    out.sort()
+    return out
+
+
+def close_tests(m):
+    """Condition 5 (2026-11-18): the arm's close on the PCAN's own stamps."""
+    cm = m.close_measure(close_msgs(m), 10.005, 13.0, "aa")
+    check("close: the shutdown called 5 ms after the last VCM frame -> within the bounds, no breach",
+          not cm.get("void") and cm["breaches"] == [] and abs(cm["gap_ms"] - 5.0) < 0.01 and cm["probe"] == "not sent",
+          cm)
+    for gap_ms, ok in ((7.9, True), (8.2, False), (2.1, True), (1.8, False), (30.0, False)):
+        cm = m.close_measure(close_msgs(m), 10.0 + gap_ms / 1000.0, 13.0, "aa")
+        check("close: the shutdown %g ms after the last VCM frame -> %s" % (gap_ms, "no breach" if ok else "a breach"),
+              (cm["breaches"] == []) == ok, cm["breaches"])
+    cm = m.close_measure(close_msgs(m, lat=0.001), 10.005, 13.0, "aa")
+    check("close: a 1 ms delivery latency maps the last frame 1 ms later (gap 4 ms, no breach)",
+          abs(cm["gap_ms"] - 4.0) < 0.01 and cm["breaches"] == [], cm)
+    cm = m.close_measure(close_msgs(m, late_at=10.030), 10.005, 13.0, "aa")
+    check("close: a replayer frame 25 ms after the close -> a breach", any("canmain frames" in b for b in cm["breaches"]),
+          cm["breaches"])
+    cm = m.close_measure(close_msgs(m, late_at=10.020), 10.005, 13.0, "aa")
+    check("close: a replayer frame 15 ms after the close (inside the silence edge) -> no breach", cm["breaches"] == [],
+          cm["breaches"])
+    msgs = close_msgs(m)
+    msgs.append((10.030, (10.030 - 5000.0) * 1e6, 0x7F1, 8, "22" * 8, False, 1.79e9 + 10.030))
+    cm = m.close_measure(msgs, 10.005, 13.0, "aa")
+    check("close: a device frame (0x7F1) 25 ms after the close is not the replayer's -> no breach",
+          cm["breaches"] == [] and cm["late"] == 0, cm["breaches"])
+    msgs = [x if x[2] != m.VCM_ID else (x[0] + 0.006,) + x[1:] for x in close_msgs(m, n=600)]
+    cm = m.close_measure(msgs, 10.005, 13.0, "aa")
+    check("close: the last VCM frame received 6 ms late is placed by its stamp (gap 5 ms), not its receipt",
+          cm["breaches"] == [] and abs(cm["gap_ms"] - 5.0) < 0.01, cm)
+    cm = m.close_measure(close_msgs(m, late_at=13.5), 10.005, 13.0, "aa")
+    check("close: a replayer frame after the reopen -> no breach", cm["breaches"] == [], cm["breaches"])
+    msgs = close_msgs(m)
+    msgs.append((13.5, (13.5 - 5000.0) * 1e6, m.VCM_ID, 8, "aa", False, 1.79e9 + 13.5))
+    cm = m.close_measure(msgs, 10.005, 13.0, "aa")
+    check("close: a frame with the last payload after the reopen is not the last frame", cm["breaches"] == []
+          and abs(cm["gap_ms"] - 5.0) < 0.01, cm["breaches"])
+    msgs = close_msgs(m)
+    msgs.append((10.010, (10.010 - 5000.0) * 1e6, m.VCM_ID, 8, "aa", False, 1.79e9 + 10.010))
+    cm = m.close_measure(msgs, 10.005, 13.0, "aa")
+    check("close: the last payload on the wire 5 ms after the shutdown call -> a breach (closed before it)",
+          any("not 5 +/- 3 ms" in b for b in cm["breaches"]), cm["breaches"])
+    msgs = close_msgs(m)
+    msgs.append((10.010, (10.010 - 5000.0) * 1e6, m.VCM_ID, 8, "bb", False, 1.79e9 + 10.010))
+    cm = m.close_measure(msgs, 10.005, 13.0, "aa")
+    check("close: a 0x051 of another payload after the call is not the last frame", cm["breaches"] == [], cm["breaches"])
+    cm = m.close_measure(close_msgs(m), 10.005, 13.0, "bb")
+    check("close: no VCM frame with the last payload -> a breach (no last frame)",
+          any("no last canmain frame" in b for b in cm["breaches"]), cm["breaches"])
+    cm = m.close_measure(close_msgs(m, epoch=True), 10.005, 13.0, "aa")
+    check("close: COOKED stamps (the epoch clock) -> the fit VOID, nothing measured",
+          bool(cm.get("void")) and "epoch" in cm["void"] and "breaches" not in cm, cm.get("void"))
+    cm = m.close_measure([x[:6] for x in close_msgs(m)], 10.005, 13.0, "aa")
+    check("close: messages without the epoch -> the fit VOID (no point)", bool(cm.get("void")), cm.get("void"))
+    a = base_arm()
+    a["close_measure"] = m.close_measure(close_msgs(m), 10.005, 13.0, "aa")
+    v = m.judge_arm(a)
+    check("close item: within the bounds -> PASS, and the arm still a main arm that passed",
+          v.get("close", "").startswith("PASS") and m.arm_verdict(v) == ("main", True), (v.get("close"), m.arm_verdict(v)))
+    a["close_measure"] = m.close_measure(close_msgs(m), 10.030, 13.0, "aa")
+    v = m.judge_arm(a)
+    check("close item: closed 30 ms after -> VOID naming the breach, the arm VOID (not NOT AS SPECIFIED)",
+          v.get("close", "").startswith("VOID: burst timing VOID: close:") and m.arm_verdict(v) == ("VOID", False)
+          and not any(x.startswith("NOT") for x in v.values()), (v.get("close"), m.arm_verdict(v)))
+    a["close_measure"] = m.close_measure(close_msgs(m, epoch=True), 10.005, 13.0, "aa")
+    v = m.judge_arm(a)
+    check("close item: a VOID fit -> VOID: PCAN clock, the arm VOID",
+          v.get("close", "").startswith("VOID: VOID: PCAN clock") and m.arm_verdict(v) == ("VOID", False), v.get("close"))
+    v = m.judge_arm(base_arm())
+    check("close item: an older record with no close measure has no close item", "close" not in v, v.get("close"))
+
 
 MUTANTS = [
     ("another node's frame is ignored", "    v[\"void\"] = (\"VOID: a frame from another node in the silence: %s\" % \", \".join(others) if others else",
@@ -351,6 +443,19 @@ MUTANTS = [
     ("rejudge exits 0 whatever the verdict", "    return 0 if out[\"verdict\"] == \"PASS\" else 1", "    return 0"),
     ("rejudge lists no trips", "\"trip\": (x.get(\"recorded\") or {}).get(\"trip\")", "\"trip\": None"),
     ("the reboot start gate is not applied", "    if rec[\"reboot_start\"][\"rc\"] != 0:", "    if False:"),
+    # condition 5 (2026-11-18): the close measured on the PCAN's own stamps
+    ("the close item ignores a breach", "                      \"VOID: %s\" % BM.breach_line([cm]) if cm[\"breaches\"] else",
+     "                      \"VOID: %s\" % BM.breach_line([cm]) if False else"),
+    ("the close item ignores a VOID fit", "        v[\"close\"] = (\"VOID: %s\" % WC.pcan_void_verdict(cm[\"void\"]) if cm.get(\"void\") else",
+     "        v[\"close\"] = (\"VOID: %s\" % WC.pcan_void_verdict(cm[\"void\"]) if False else"),
+    ("a VOID fit is measured anyway", "    if fit[\"void\"]:\n        return {\"void\": fit[\"void\"], \"fit\": fit}\n", ""),
+    ("the last frame taken past the silence edge", "\n                and t < t_close_call + BM.SILENCE_EDGE_S),", "),"),
+    ("the last frame of any payload", "m[2] == VCM_ID and m[4] == last_vcm_payload\n", "m[2] == VCM_ID\n"),
+    ("late frames from the close, not the silence edge", "t_close_call + BM.SILENCE_EDGE_S <= t < t_reopen", "t_close_call <= t < t_reopen"),
+    ("late frames past the reopen", "t_close_call + BM.SILENCE_EDGE_S <= t < t_reopen", "t_close_call + BM.SILENCE_EDGE_S <= t"),
+    ("device frames count as late", "if m[2] not in DEVICE_IDS and t_close_call", "if t_close_call"),
+    ("receipt time, not the mapped stamp", "    data = [(WC.mapped(fit, m[1] / 1e6), m) for m in msgs if not m[5]]",
+     "    data = [(m[0], m) for m in msgs if not m[5]]"),
 ]
 
 

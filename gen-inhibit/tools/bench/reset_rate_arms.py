@@ -155,8 +155,8 @@ def main():
         wit = Wit(kv)
         wit.start()
         if a.replayer == "pcan":
-            pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1",
-                         bitrate=BITRATE)
+            from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+            pc = pcan_bus(bitrate=BITRATE)
             tx = pc
         else:
             tx = kv

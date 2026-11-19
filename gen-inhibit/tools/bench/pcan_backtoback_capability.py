@@ -89,7 +89,8 @@ def main():
     print("one %d-byte standard frame at %d kbit is %.1f us of air time "
           "including IFS\n" % (DLC, BITRATE // 1000, air_us(DLC)))
 
-    tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE,
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    tx = pcan_bus(bitrate=BITRATE,
                  auto_reset=True)
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     kv = kvaser_bus(channel=0, bitrate=BITRATE)

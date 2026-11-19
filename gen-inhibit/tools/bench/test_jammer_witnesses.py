@@ -199,9 +199,10 @@ def write(path, text):
         f.write(text + "\n")
 
 
-def pcan_sysfs(name, adapter="PCAN-USB FD", ts_mode="3", bitrate="500000", usb="1-3.2.2"):
+def pcan_sysfs(name, adapter="PCAN-USB FD", ts_mode="3", bitrate="500000", usb="1-3.2.2", devid="0"):
     d = os.path.join(scratch(), "pcan", name)
-    for k, v in (("adapter_name", adapter), ("dev", "506:32"), ("ts_mode", ts_mode), ("nom_bitrate", bitrate)):
+    for k, v in (("adapter_name", adapter), ("dev", "506:32"), ("ts_mode", ts_mode), ("nom_bitrate", bitrate),
+                 ("devid", devid)):
         if v is not None:
             write(os.path.join(d, k), v)
     usbd = os.path.join(scratch(), "usb", usb)
@@ -217,8 +218,11 @@ class Msg:
 
 
 class FakePcanBus:
-    def __init__(self, msgs=(), channel_info="PCAN_USBBUS1", raise_after=False):
+    """As kvaser_bus.pcan_witness_bus opens it: by role pcanfd (2026-11-18), device id 0."""
+
+    def __init__(self, msgs=(), channel_info="PCAN_USBBUS1", raise_after=False, role="pcanfd", device_id=0):
         self.msgs, self.channel_info, self.raise_after, self.shut = list(msgs), channel_info, raise_after, False
+        self.vtrux_role, self.vtrux_device_id, self.vtrux_chardev = role, device_id, "pcanusbfd32"
 
     def recv(self, timeout=None):
         if self.msgs:
@@ -237,16 +241,42 @@ class VirtualBus(FakePcanBus):
 
 
 def pcan_cases():
-    for label, kw, bus_cls, chan, want in (
-            ("the bench's PCAN-USB FD, ts_mode 3", {}, FakePcanBus, "PCAN_USBBUS1", None),
-            ("not a PCAN-USB adapter", {"adapter": "PCAN-PCI"}, FakePcanBus, "PCAN_USBBUS1", "PCAN-USB"),
-            ("no adapter_name", {"adapter": None}, FakePcanBus, "PCAN_USBBUS1", "PCAN-USB"),
-            ("a virtual bus class", {}, VirtualBus, "PCAN_USBBUS1", "not a PCAN bus"),
-            ("another channel", {}, FakePcanBus, "PCAN_USBBUS2", "not PCAN_USBBUS1"),
-            ("ts_mode 2 (host time)", {"ts_mode": "2"}, FakePcanBus, "PCAN_USBBUS1", "ts_mode"),
-            ("nom_bitrate 250000", {"bitrate": "250000"}, FakePcanBus, "PCAN_USBBUS1", "nom_bitrate")):
+    # by role (2026-11-18): the opener is asked by bitrate alone, and the sysfs entry is the role's
+    # char device's, /sys/class/pcan/<chardev>
+    asked = []
+    root = os.path.dirname(pcan_sysfs("pcanusbfd40"))
+    saved, BW.PCAN_SYSFS_ROOT = BW.PCAN_SYSFS_ROOT, root
+    try:
+        bus = FakePcanBus()
+        bus.vtrux_chardev = "pcanusbfd40"
+        w = refused = None
+        try:
+            w = BW.PcanWitness(opener=lambda **kw_: asked.append(kw_) or bus)
+        except BW.WitnessRefused as e:
+            refused = str(e)
+        check("pcan", "by role: the opener asked by bitrate alone (no channel), the sysfs entry the role's char "
+              "device's", w is not None and asked == [{"bitrate": 500000}] and w.sysfs == os.path.join(root, "pcanusbfd40")
+              and w.identity_open["devid"] == "0" and w.describe()["role"] == "pcanfd"
+              and w.describe()["device_id"] == 0, (asked, refused, w and w.sysfs))
+        bus.shutdown()
+    finally:
+        BW.PCAN_SYSFS_ROOT = saved
+    for label, kw, bus_cls, chan, bkw, want in (
+            ("the bench's PCAN-USB FD, ts_mode 3", {}, FakePcanBus, "PCAN_USBBUS1", {}, None),
+            ("its device id on another USB channel number (by role, not channel)", {}, FakePcanBus, "PCAN_USBBUS2",
+             {}, None),
+            ("not a PCAN-USB adapter", {"adapter": "PCAN-PCI"}, FakePcanBus, "PCAN_USBBUS1", {}, "PCAN-USB"),
+            ("no adapter_name", {"adapter": None}, FakePcanBus, "PCAN_USBBUS1", {}, "PCAN-USB"),
+            ("a virtual bus class", {}, VirtualBus, "PCAN_USBBUS1", {}, "not a PCAN bus"),
+            ("a bus not opened by role pcanfd", {}, FakePcanBus, "PCAN_USBBUS1", {"role": None}, "canctl role pcanfd"),
+            ("a channel that is not a PCAN-USB one", {}, FakePcanBus, "PCAN_PCIBUS1", {}, "not a PCAN-USB channel"),
+            ("the bus's device id not the sysfs entry's", {"devid": "7"}, FakePcanBus, "PCAN_USBBUS1", {},
+             "devid is '7'"),
+            ("no devid in sysfs", {"devid": None}, FakePcanBus, "PCAN_USBBUS1", {}, "devid is None"),
+            ("ts_mode 2 (host time)", {"ts_mode": "2"}, FakePcanBus, "PCAN_USBBUS1", {}, "ts_mode"),
+            ("nom_bitrate 250000", {"bitrate": "250000"}, FakePcanBus, "PCAN_USBBUS1", {}, "nom_bitrate")):
         sysfs = pcan_sysfs("p_%s" % abs(hash(label)), **kw)
-        bus = bus_cls(channel_info=chan)
+        bus = bus_cls(channel_info=chan, **bkw)
         got = None
         try:
             w = BW.PcanWitness(opener=lambda **kw_: bus, sysfs=sysfs)

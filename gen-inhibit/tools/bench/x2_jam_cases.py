@@ -474,11 +474,13 @@ class Witness(threading.Thread):
 
     def __init__(self):
         super().__init__(daemon=True)
-        from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
+        from kvaser_bus import kvaser_bus, bus_error  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
         self.bus = kvaser_bus(channel=0, bitrate=BITRATE)
+        self.bus_error = lambda m: bus_error(self.bus, m)
         self.stop_flag = threading.Event()
         self.frames = []     # (hw, rx, arb, hex)
-        self.errs = []       # (hw, rx)
+        self.errs = []       # (hw, rx): bus errors only (kvaser_bus.bus_error)
+        self.not_bus_errors = 0
         self.status = []     # (t, tec, rec, overrun, flags, err_frames, overruns)
         self.status_error = None
         self.lock = threading.Lock()
@@ -507,12 +509,15 @@ class Witness(threading.Thread):
                 self._sample_status()
             m = self.bus.recv(timeout=0.05)
             while m is not None:
-                rx = time.time()
+                rx = WC.receipt(m)
                 with self.lock:
                     if m.is_error_frame:
-                        self.errs.append((m.timestamp, rx))
+                        if self.bus_error(m):
+                            self.errs.append((WC.raw_stamp(m), rx))
+                        else:       # controller state or RESTARTED (kvaser_usb): kept out, counted
+                            self.not_bus_errors += 1
                     elif m.arbitration_id in KEEP_IDS:
-                        self.frames.append((m.timestamp, rx, m.arbitration_id,
+                        self.frames.append((WC.raw_stamp(m), rx, m.arbitration_id,
                                             bytes(m.data).hex()))
                 m = self.bus.recv(timeout=0.0)
 
@@ -527,6 +532,9 @@ class Witness(threading.Thread):
         nothing heard. For the record and the witness file only; judging uses clocked()."""
         with self.lock:
             fr, er = list(self.frames), list(self.errs)
+        sc = WC.kvaser_times(getattr(self, "bus", None), fr, er)   # SocketCAN (2026-11-18)
+        if sc is not None:
+            return sc
         lags = [rx - hw for hw, rx, _, _ in fr] + [rx - hw for hw, rx in er]
         if lags and abs(statistics.median(lags)) < WC.MAX_LAG_S:
             note = WC.hw_note(statistics.median(lags))
@@ -786,7 +794,8 @@ def replay_start(seconds=90.0, auto_reset=False):
     # off). busoff-rearm needs the replay back after the jam, so the gate could
     # go live; the other cases keep the default they ran with. On Linux the driver
     # does not act on it, so PcanStatus re-opens the channel itself (recover, 2026-11-16).
-    pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE,
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    pc = pcan_bus(bitrate=BITRATE,
                  auto_reset=auto_reset)
     stats = {}
     stim = LF.build_stimulus()
@@ -1619,6 +1628,7 @@ def main():
             frames, errs, clock = wit.recorded()     # on either clock, labelled: kept, not judged
             rec["witness_clock"] = clock
             rec["witness_err_total"] = len(errs)
+            rec["witness_not_bus_error_frames"] = wit.not_bus_errors
             rec["witness_frames_kept"] = len(frames)
             os.makedirs(RUNS, exist_ok=True)
             rec["witness_file"] = os.path.basename(save_witness(

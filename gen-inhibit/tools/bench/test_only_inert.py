@@ -202,7 +202,8 @@ def replay_thread(seconds, stop):
     E.CAPTURE = gi_paths.runs("scottsvalley_armable_300s.log")
     E.WINDOW_START = 0.0
     frames = E.load_window(seconds)
-    tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000, auto_reset=True)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    tx = pcan_bus(bitrate=500000, auto_reset=True)
     msgs = [can.Message(arbitration_id=i, data=d, is_extended_id=x) for _t, i, d, x in frames]
     base = time.perf_counter() + 0.2
 
@@ -294,7 +295,8 @@ def probe_txabort(probes):
     out = {"http_status": {}}
     if (lf().page() or {}).get("mode") != 0:
         return {"error": "the device must be in mode 0 for this probe"}
-    tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)    # PCAN first, always
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    tx = pcan_bus(bitrate=500000)    # PCAN first, always
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     kv = kvaser_bus(channel=0, bitrate=500000)
     seen, stop = [], threading.Event()

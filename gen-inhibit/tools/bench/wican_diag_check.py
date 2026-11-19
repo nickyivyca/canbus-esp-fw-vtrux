@@ -132,10 +132,8 @@ def post(p):
     r = urllib.request.Request("http://192.168.80.1"+p, data=b"", method="POST")
     urllib.request.urlopen(r, timeout=8).read()
 
-found = {}
-for cfg in can.detect_available_configs(["pcan", "kvaser"]):
-    if "Virtual" not in cfg.get("device_name",""):
-        found.setdefault(cfg["interface"], cfg)
+# The PCAN by its canctl role and the Kvaser through kvaser_bus (the user's ruling of 2026-11-18:
+# never by detection's first found; CANlib's detection finds no SocketCAN Kvaser on Linux).
 # OPEN ORDER IS LOAD-BEARING: PCAN FIRST, THEN KVASER.
 # Resolved by the interposer session 2026-09-22. `can.Bus()` on the PCAN
 # takes seconds to return, and a bus already open while another is still
@@ -148,9 +146,10 @@ for cfg in can.detect_available_configs(["pcan", "kvaser"]):
 # is withdrawn, and this was its whole cause.
 # Swapping these two lines looks harmless and is not. The settle() below is
 # the belt to this braces.
-pcan = can.Bus(interface="pcan", channel=found["pcan"]["channel"], bitrate=500000)
+from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+pcan = pcan_bus(bitrate=500000)
 from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
-kvaser = kvaser_bus(channel=found["kvaser"]["channel"], bitrate=500000)
+kvaser = kvaser_bus(channel=0, bitrate=500000)
 print("settling dongles (%.1fs) ... dropped %d backlog frames"
       % (SETTLE_S, settle(pcan, kvaser)))
 

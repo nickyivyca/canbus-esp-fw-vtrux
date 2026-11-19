@@ -16,10 +16,15 @@ Now:
            no clean sample -> None
   record   main() writes pre_burst_window, witness_errors_before_first_burst and
            driver_running_before_slice
-  open     (2026-10-29, step 1a's acceptance) a burst starts when the Kvaser's channel opens,
-           not when the open returns: the fake Kvaser puts an error frame on the witness as it
+  open     (2026-10-29, step 1a's acceptance) a burst starts when the source's channel opens,
+           not when the open returns: the fake source puts an error frame on the witness as it
            opens, which must be the first burst's and not before it; each burst records the
            open's time, open_s
+  canmain  (condition 5, 2026-11-18) the source is canmain at 250 kbit, opened on the role held
+           once for the run (kvaser_bus.innomaker_held, entered before the PCAN opens and left
+           after it is shut), with the Kvaser brought down and read back first; each burst's
+           measures (burst_measures) recorded; a source that keeps erring 30 ms after its close
+           makes the run VOID with the "burst timing VOID" line, not a FAIL
 
 main() runs against fakes put in sys.modules: can (PCAN, Kvaser), lowid_flood_skip_bench
 (the device: a log of POSTs and page reads) and skip_method_bench (the Player). About 10 s.
@@ -93,9 +98,9 @@ class Log:
         return next((i for i, e in enumerate(self.ev) if pred(e)), None)
 
 
-def fakes(log, running_after, stamps="device"):
+def fakes(log, running_after, stamps="device", late=False):
     """running_after: page reads after the mode 3 POST before the driver reports running
-    (None: never)."""
+    (None: never). late: the burst source's close leaves an error frame 30 ms after it."""
     can = types.ModuleType("can")
 
     class CanError(Exception):
@@ -121,7 +126,7 @@ def fakes(log, running_after, stamps="device"):
         def __init__(self, interface=None, channel=None, bitrate=None):
             self.interface = interface
             log.add("bus open", interface)
-            if interface == "kvaser":
+            if interface == "gs_usb":
                 # bus-on at the wrong rate: the witness sees an error frame while the open
                 # is still returning (step 1a's acceptance, 2026-10-29)
                 e = Message()
@@ -150,6 +155,11 @@ def fakes(log, running_after, stamps="device"):
 
         def shutdown(self):
             log.add("bus shutdown", self.interface)
+            if self.interface == "gs_usb" and late:
+                e = Message()
+                e.is_error_frame = True
+                e.timestamp += 0.030
+                wire.append(e)
 
     can.Bus, can.Message, can.CanError = Bus, Message, CanError
 
@@ -201,17 +211,42 @@ def fakes(log, running_after, stamps="device"):
         return {"kvaser": False, "gs_usb": False}
 
     KB.fixes = fixes
-    KB.kvaser_bus = lambda **kw: Bus(interface="kvaser", **kw)
+
+    def link_down():
+        log.add("kvaser down")
+        return {"up": False, "bitrate": 500000, "state": "STOPPED", "restart_ms": 100, "listen_only": False}
+    KB.link_down = link_down
+    fake_gs = Bus
+
+    class Held:
+        def __init__(self, role):
+            self.role = role
+
+        def __enter__(self):
+            log.add("held enter", self.role)
+            return self
+
+        def open(self, bitrate=500000, **kw):
+            log.add("held open", self.role, bitrate)
+            return fake_gs(interface="gs_usb", bitrate=bitrate, **kw)
+
+        def __exit__(self, *exc):
+            log.add("held exit", self.role)
+            return False
+    KB.innomaker_held = Held
+    KB.kvaser_bus = lambda **kw: fake_gs(interface="kvaser", **kw)     # the old source: must not be opened
+    fake_pcan = Bus      # not called Bus here: test_kvaser_bus's scan reads Bus(...) as an open
+    KB.pcan_bus = lambda **kw: fake_pcan(interface="pcan", **kw)     # the PCAN by its canctl role (2026-11-18)
     return {"can": can, "lowid_flood_skip_bench": LF, "skip_method_bench": S, "kvaser_bus": KB}
 
 
 OUT = {}       # the tool's stdout from the last run_main
 
 
-def run_main(W, running_after, stamps="device"):
+def run_main(W, running_after, stamps="device", late=False):
     log = Log()
     saved = {k: sys.modules.get(k) for k in ("can", "lowid_flood_skip_bench", "skip_method_bench", "kvaser_bus")}
-    sys.modules.update(fakes(log, running_after, stamps))
+    sys.modules.update(fakes(log, running_after, stamps, late))
     runs = os.path.join(SCRATCH, "runs")
     gi_paths.remove_tree(runs)
     os.makedirs(runs)
@@ -264,14 +299,33 @@ def order_cases(W):
     check("main: witness_errors_before_first_burst recorded", rec.get("witness_errors_before_first_burst") == 0,
           rec.get("witness_errors_before_first_burst"))
     b = rec.get("bursts") or [{}]
-    check("main: the error frame of the Kvaser's bus-on is the burst's, not before it (2026-10-29)",
+    check("main: the error frame of the source's bus-on is the burst's, not before it (2026-10-29)",
           b[0].get("witness_error_frames") == 1 and rec.get("witness_error_frames") == 1, (b, rec.get("witness_error_frames")))
     check("main: each burst records how long the open took", isinstance(b[0].get("open_s"), float)
           and 0.015 <= b[0]["open_s"] < 1.0, b)
-    check("main: the Kvaser opens through kvaser_bus, its fixes applied before the open and outside open_s",
-          log.index(lambda e: e == ("kvaser fixes",)) is not None
-          and log.index(lambda e: e == ("kvaser fixes",)) < log.index(lambda e: e == ("bus open", "kvaser"))
+    check("main: the source opens through kvaser_bus, its fixes applied before the open and outside open_s",
+          None not in (log.index(lambda e: e == ("kvaser fixes",)), log.index(lambda e: e == ("bus open", "gs_usb")))
+          and log.index(lambda e: e == ("kvaser fixes",)) < log.index(lambda e: e == ("bus open", "gs_usb"))
           and isinstance(b[0].get("open_s"), float) and b[0]["open_s"] < 0.4, (b, log.ev[:12]))
+    # condition 5 (2026-11-18): canmain, held once; the Kvaser down first
+    down = log.index(lambda e: e == ("kvaser down",))
+    enter = log.index(lambda e: e == ("held enter", "canmain"))
+    pcan = log.index(lambda e: e == ("bus open", "pcan"))
+    hopen = log.index(lambda e: e == ("held open", "canmain", 250000))
+    pshut = log.index(lambda e: e == ("bus shutdown", "pcan"))
+    hexit = log.index(lambda e: e == ("held exit", "canmain"))
+    check("main: the Kvaser brought down (read back, recorded) before canmain is held",
+          down is not None and enter is not None and down < enter
+          and (rec.get("kvaser_link_start") or {}).get("up") is False, (log.ev[:6], rec.get("kvaser_link_start")))
+    check("main: canmain held before the PCAN opens, each burst opened on it at 250 kbit, held left after the "
+          "PCAN is shut", None not in (enter, pcan, hopen, pshut, hexit) and enter < pcan < hopen < pshut < hexit
+          and [e for e in log.ev if e[0] == "bus open" and e[1] == "kvaser"] == [], log.ev)
+    check("main: the source recorded as canmain at 250 kbit", "canmain" in rec.get("source", "")
+          and "250000" in rec.get("source", ""), rec.get("source"))
+    bm = rec.get("burst_measures") or [{}]
+    check("main: each burst's measures recorded, within the bounds, no burst-timing VOID",
+          len(bm) == 1 and bm[0].get("n") == 1 and bm[0].get("breaches") == [] and isinstance(b[0].get("close_s"), float)
+          and "burst_timing_void" not in rec and "burst timing VOID" not in OUT.get("text", ""), (bm, b))
     check("main: live_before true with the slice playing on a running driver", rec.get("live_before") is True,
           rec.get("live_before"))
     # A2 (a), 2026-11-11: the error frames are judged on the PCAN's own stamps, mapped
@@ -309,6 +363,19 @@ def order_cases(W):
           "\nwitness clock VOID: " in "\n" + text, text[-400:])
     check("main, stamps on the epoch clock: the figures are labelled receipt, not judged",
           "not judged" in rec.get("witness_clock_figures", ""), rec.get("witness_clock_figures"))
+    check("main, stamps on the epoch clock: no burst measured on them", "burst_measures" not in rec, rec.get("burst_measures"))
+
+    # condition 5: an error frame 30 ms after the close -> VOID with the line the suite reads, not FAIL
+    rc, log, rec = run_main(W, running_after=2, late=True)
+    text = OUT.get("text", "")
+    bm = rec.get("burst_measures") or [{}]
+    check("main, the source errs 30 ms after its close: the breach recorded",
+          any("after the close" in x for x in bm[0].get("breaches", [])), bm)
+    check("main, the source errs 30 ms after its close: VOID verdict and the burst timing VOID line",
+          str(rec.get("verdict", "")).startswith("VOID: burst timing VOID: ")
+          and "\nburst timing VOID: " in "\n" + text, (rec.get("verdict"), text[-300:]))
+    check("main, the source errs 30 ms after its close: canmain still left (held exit)",
+          log.index(lambda e: e == ("held exit", "canmain")) is not None, log.ev[-5:])
 
 
 def main():

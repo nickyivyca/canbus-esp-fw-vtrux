@@ -588,14 +588,8 @@ def main():
         print("FAIL: stimulus has no 0x051")
         return 1
 
-    found = {}
-    for cfg in can.detect_available_configs(["pcan", "kvaser"]):
-        if "Virtual" in cfg.get("device_name", ""):
-            continue
-        found.setdefault(cfg["interface"], cfg)
-    if "pcan" not in found or "kvaser" not in found:
-        print("FAIL: need both dongles; found %s" % sorted(found))
-        return 1
+    # The PCAN by its canctl role and the Kvaser through kvaser_bus (the user's ruling of 2026-11-18:
+    # never by detection's first found; CANlib's detection finds no SocketCAN Kvaser on Linux).
 
     # OPEN ORDER IS LOAD-BEARING: PCAN FIRST, THEN KVASER.
     # Resolved by the interposer session 2026-09-22. `can.Bus()` on the PCAN
@@ -609,9 +603,10 @@ def main():
     # is withdrawn, and this was its whole cause.
     # Swapping these two lines looks harmless and is not. The settle() below is
     # the belt to this braces.
-    pcan = can.Bus(interface="pcan", channel=found["pcan"]["channel"], bitrate=BITRATE)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    pcan = pcan_bus(bitrate=BITRATE)
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
-    kvaser = kvaser_bus(channel=found["kvaser"]["channel"], bitrate=BITRATE)
+    kvaser = kvaser_bus(channel=0, bitrate=BITRATE)
     print("settling dongles (%.1fs) ... dropped %d backlog frames"
           % (SETTLE_S, settle(pcan, kvaser)))
 

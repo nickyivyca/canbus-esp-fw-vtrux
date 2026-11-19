@@ -117,7 +117,8 @@ def main():
           "neither adapter can influence.\n")
 
     # PCAN first, then Kvaser -- the documented open order on this bench.
-    pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE,
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    pc = pcan_bus(bitrate=BITRATE,
                  auto_reset=True)
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     kv = kvaser_bus(channel=0, bitrate=BITRATE)

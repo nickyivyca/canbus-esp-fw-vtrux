@@ -2,8 +2,10 @@
 
     py -3.14 gen-inhibit/tools/bench/test_b11_rawpost_judge.py   (from the repo root)
 """
+import json
 import os
 import sys
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import b11_rawpost_judge as J                                      # noqa: E402
@@ -14,6 +16,49 @@ LAP = "192.168.80.2"
 
 def pkt(t, src, sport, dport, seq=1, ack=1, ln=0, fin=False):
     return {"t": t, "src": src, "sport": sport, "dport": dport, "seq": seq, "ack": ack, "len": ln, "fin": fin}
+
+
+def void_case():
+    """judge_run on an e4 record whose arm provenance_classifier reports voided on its witness
+    clock: the capture and the replay are never read."""
+    import gi_paths
+    work = gi_paths.scratch("b11-rawpost-void")
+    gi_paths.remove_tree(work)
+    os.makedirs(work)
+    saved = {k: sys.modules.get(k) for k in ("provenance_classifier", "e4_device_calibration")}
+    read = []
+    try:
+        run = os.path.join(work, "B11raw_e4_x_arm1.json")
+        sched = [{"at_s": 20.0, "mode": 1, "http": 200}, {"at_s": 30.0, "mode": 3, "http": 200},
+                 {"at_s": 40.0, "mode": 1, "http": 200}]
+        with open(run, "w", encoding="utf-8") as f:
+            json.dump({"arms": {"idle": {"post_schedule": sched, "base_epoch": 1.0}}, "capture": "c.log",
+                       "window_start": 0, "seconds": 1, "mode": "inhibit"}, f)
+        P = types.ModuleType("provenance_classifier")
+        P.rejudge = lambda *a, **k: {"arm_void": ["witness clock 'SocketCAN: x': not judged on host time"]}
+        E = types.ModuleType("e4_device_calibration")
+        E.load_window = lambda s: read.append("replay") or []
+        sys.modules["provenance_classifier"], sys.modules["e4_device_calibration"] = P, E
+        saved_rc = J.read_capture
+        J.read_capture = lambda p: read.append("capture") or []
+        try:
+            res = J.judge_run(run, os.path.join(work, "c.pcapng"))
+        except Exception as e:      # noqa: BLE001  judged anyway: a FAIL, not a crash
+            print("       void case raised %s: %s" % (type(e).__name__, e))
+            return False
+        finally:
+            J.read_capture = saved_rc
+        v = [p.get("verdict") for p in res["posts"]]
+        return (len(v) == 2 and all(x.startswith("VOID: arm void: witness clock") for x in v) and not read
+                and [p["at_s"] for p in res["posts"]] == [20.0, 40.0]
+                and not any("send_to_first_byte_ms" in p for p in res["posts"]))
+    finally:
+        for k, m in saved.items():
+            if m is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = m
+        gi_paths.remove_tree(work)
 
 
 def main():
@@ -64,6 +109,8 @@ def main():
         ("in progress: a page read still unanswered at the arrival is listed, a finished one is not",
          J.in_progress(cap, 5000, 10.000) == [5001]),
         ("in progress: nothing before the page read's request", J.in_progress(cap, 5000, 9.980) == []),
+        ("an arm voided on its witness clock (2026-11-18): each OBSERVE POST reads VOID with the reason, "
+         "no figures, nothing read from the capture", void_case()),
     ]
     fails = []
     for label, ok in checks:

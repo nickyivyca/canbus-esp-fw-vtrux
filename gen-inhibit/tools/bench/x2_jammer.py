@@ -66,8 +66,8 @@ witness_clock's 2 s sanity limit.
                      witness for a list of checks, `--check "<sub and its args>"` repeated
                      (boot-silence, pulses, timeout, noduration; never can2-isolation, whose 0x7A0
                      sender the PCAN is; id needs no witness). One console; PCAN opens
-                     (bench_witness.PcanWitness, refused unless the named PCAN-USB on
-                     PCAN_USBBUS1 with ts_mode 3), every check driven, then each judged at the end
+                     (bench_witness.PcanWitness, refused unless the PCAN-USB of canctl role
+                     pcanfd, by its device id, with ts_mode 3), every check driven, then each judged at the end
                      on its OPEN's anchor (witness_anchor: offset = min(receipt - device), slope,
                      spread under 0.25 s, the per-command bracket); each check only on the frames
                      of its open mapped into its own span.
@@ -93,8 +93,11 @@ witness_clock's 2 s sanity limit.
 WITNESSES since the Kvaser moved to kvaser_usb (2026-11-13, ruling (C)): the session's checks on
 the PCAN; can2-isolation on the Kvaser through SocketCAN (bench_witness.SocketcanWitness: `kvaser`
 only, software stamps used only for the gaps in its groups, counts only, berr off: kvaser_usb_flex
-refuses it); id on none; the single-check subs as before on the Kvaser through CANlib (kvaser_bus),
-which no longer opens while the Kvaser is on kvaser_usb. Every record says which.
+refuses it); id on none; the single-check subs on the Kvaser through kvaser_bus, which on Linux is
+SocketCAN (2026-11-18): its error frames carry only the host's receipt time, accepted per sub when
+the sub's smallest bound is at least 10 x the host stamp's error, about 1 ms (the gen-inhibit
+reviewer's ruling (B), 2026-11-18; host_bound_s, HOST_STAMP_ERROR_S), and refused (VOID, run it in
+session) otherwise. Every record says which.
 
 EVERY JUDGED SILENCE ENDS WITH A FRAME THE SAME WITNESS MUST COUNT (gen-inhibit reviewer,
 2026-11-13, after CAN replay's degraded-USB advisory): boot silence, pulses' and the timeout's
@@ -626,6 +629,35 @@ class LagVoid(RuntimeError):
         self.lag = lag
 
 
+# HOST TIME ON THE SOCKETCAN KVASER, PER SUB (the gen-inhibit reviewer's ruling (B), 2026-11-18,
+# on the B6 principle). kvaser_usb gives error frames no hardware stamp, so the single-check subs'
+# witness has only the host's receipt time. That is accepted for a sub whose smallest judged
+# bound is at least HOST_FACTOR times the host stamp's error, HOST_STAMP_ERROR_S: the tester's
+# 2026-11-18 measurement (hardware minus host within +/-85 us, plus USB batching), about 1 ms.
+# A tighter sub is refused (VOID) and runs in `session`, on the PCAN's device time. No bound
+# changes. Each sub's smallest bound is host_bound_s's.
+HOST_STAMP_ERROR_S = 0.001
+HOST_FACTOR = 10
+CLOSING_EDGE_S = 0.05        # every judged window ends this far before the closing pulse's send
+
+
+def host_bound_s(a):
+    """The smallest bound (s) a single-check sub's judge applies to witness times: the closing
+    pulse's window edge (CLOSING_EDGE_S; boot-silence, pulses, timeout, noduration and their
+    0.3 s margins are all wider), and for pulses and can2-check also the half-interval that
+    groups error frames into pulses."""
+    b = CLOSING_EDGE_S
+    if getattr(a, "sub", None) in ("pulses", "can2-check"):
+        b = min(b, a.interval_ms / 2000.0)
+    return b
+
+
+def host_note(bound_s):
+    return ("%s accepted: the sub's smallest bound %.3f s is at least %d x the host stamp's error %.3f s "
+            "(gen-inhibit reviewer's ruling (B), 2026-11-18)" % (WC.SOCKETCAN, bound_s, HOST_FACTOR,
+                                                                 HOST_STAMP_ERROR_S))
+
+
 def require_timing_lag(lag):
     """Raises LagVoid unless lag (s; None when nothing was heard) is under TIMING_LAG_S
     either way."""
@@ -699,6 +731,8 @@ class Witness(threading.Thread):
             e = list(self.err)
         if not e:
             return [], WC.NONE
+        if WC.socketcan(getattr(self, "bus", None)):               # never hardware (2026-11-18)
+            return [r for _, r in e], WC.SOCKETCAN
         off = statistics.median(r - h for h, r in e)
         if abs(off) < WC.MAX_LAG_S:
             return [h for h, _ in e], WC.hw_note(off, 3)
@@ -710,16 +744,26 @@ class Witness(threading.Thread):
             e = list(self.err)
         return statistics.median(r - h for h, r in e) if e else None
 
-    def times(self, timing=False):
+    def times(self, timing=False, host_bound=None):
         """recorded(), for a judgement: raises WC.ReceiptClock on receipt time, so the
         run is VOID and never judged on it (A2 (b), 2026-11-11). Raises WitnessDown when
         down() says the record is cut short (2026-11-13). timing=True (the subs whose
         judges have margins: pulses, timeout and their after-DONE count) also raises
-        LagVoid unless the median lag is under TIMING_LAG_S (2026-11-13)."""
+        LagVoid unless the median lag is under TIMING_LAG_S (2026-11-13). On the SocketCAN
+        Kvaser (host receipt time only, 2026-11-18): accepted, with host_note, when host_bound
+        (the sub's smallest bound, host_bound_s) is at least HOST_FACTOR x HOST_STAMP_ERROR_S;
+        otherwise ReceiptClock naming the bound (ruling (B)). The lag check reads hardware
+        stamps, so it does not apply there."""
         why = self.down()
         if why:
             raise WitnessDown(why)
         ts, note = self.recorded()
+        if note == WC.SOCKETCAN:
+            if host_bound is None or host_bound < HOST_FACTOR * HOST_STAMP_ERROR_S:
+                raise WC.ReceiptClock("%s: the sub's smallest bound %s s is under %d x the host stamp's error "
+                                      "%.3f s: run it in session, on the PCAN's device time (ruling (B), "
+                                      "2026-11-18)" % (WC.SOCKETCAN, host_bound, HOST_FACTOR, HOST_STAMP_ERROR_S))
+            return ts, host_note(host_bound)
         WC.require(note)
         if timing:
             require_timing_lag(self.lag())
@@ -892,7 +936,7 @@ def judge_boot_silence_run(a, inp, ts, clock):
 
 def sub_boot_silence(a, rec, con, wit):
     inp = drive_boot_silence(a, con)
-    ts, clock = wit.times()
+    ts, clock = wit.times(host_bound=host_bound_s(a))
     rec.update(judge_boot_silence_run(a, inp, ts, clock))
 
 
@@ -962,7 +1006,7 @@ def judge_pulses_run(a, inp, ts, clock):
 def sub_pulses(a, rec, con, wit):
     rec["wican_mode"] = a.wican_mode
     inp = drive_pulses(a, con)
-    ts, clock = wit.times(timing=True)   # the PULSES judge's margins (TIMING_LAG_S)
+    ts, clock = wit.times(timing=True, host_bound=host_bound_s(a))   # the PULSES judge's margins (TIMING_LAG_S)
     rec.update(judge_pulses_run(a, inp, ts, clock))
 
 
@@ -1102,7 +1146,7 @@ def sub_timeout(a, rec, con, wit):
     if "no_ack" in inp:
         rec.update(judge_timeout_run(a, inp, [], None))
         return
-    ts, clock = wit.times(timing=True)   # judge_stop's 0.3 s margin (TIMING_LAG_S)
+    ts, clock = wit.times(timing=True, host_bound=host_bound_s(a))   # judge_stop's 0.3 s margin (TIMING_LAG_S)
     rec.update(judge_timeout_run(a, inp, ts, clock))
 
 
@@ -1135,20 +1179,21 @@ def judge_noduration_run(a, inp, ts, clock):
 
 def sub_noduration(a, rec, con, wit):
     inp = drive_noduration(a, con)
-    ts, clock = wit.times()
+    ts, clock = wit.times(host_bound=host_bound_s(a))
     rec.update(judge_noduration_run(a, inp, ts, clock))
 
 
 def sub_can2_check(a, rec, con, wit):
-    # the pinned can-tools' Linux fixes (2026-11-11); close_gs_usb also frees the pyusb handle
-    from kvaser_bus import gs_usb_bus, close_gs_usb
+    # canchg, the X2's CAN2 Innomaker, by its canctl role (the user's ruling of 2026-11-18: never by
+    # index); its shutdown frees the pyusb handle and hands canchg back to socketcan, down
+    from kvaser_bus import innomaker_bus
     try:
         import libusb_package
         import usb.backend.libusb1 as lb
         lb.get_backend(find_library=libusb_package.find_library)
     except Exception:
         pass
-    inno = gs_usb_bus(channel="can0", index=0, bitrate=BITRATE)
+    inno = innomaker_bus("canchg", bitrate=BITRATE)
     # Every Innomaker frame is logged with host and adapter time, so a frame
     # left in its buffer from before the run can be told from a live one: the
     # 01:28 run logged one 0x051 with nothing else to place it (2026-10-08).
@@ -1183,8 +1228,8 @@ def sub_can2_check(a, rec, con, wit):
     finally:
         stop.set()
         th.join(timeout=2.0)
-        close_gs_usb(inno)
-    ts, clock = wit.times()
+        inno.shutdown()
+    ts, clock = wit.times(host_bound=host_bound_s(a))
     groups = clusters([t for t in ts if t >= t0 - 0.3], a.interval_ms / 2000.0)
     kv_pages = wit.frames - f0
     test = [x for x in log if x[0] == "test"]
@@ -1264,12 +1309,17 @@ def can2_counts(wit_frames, n_pulses):
 def sub_can2_isolation(a, rec, con, wit):
     """CAN2 isolation on madhouse (judge_can2_isolation), witnessed by the Kvaser on SocketCAN
     (2026-11-13, ruling (C); `wit` is unused: no CANlib witness is opened for this sub). The
-    Kvaser up through canctl (normal, no berr), its witness opened (bench_witness's named-netdev
-    refusal), canchg up through canctl and listened to, while the PCAN sends PCAN_FRAMES 0x7A0 on
+    Kvaser up (normal, no berr), its witness opened (bench_witness's named-netdev
+    refusal), canchg up and opened by role and listened to, while the PCAN sends PCAN_FRAMES 0x7A0 on
     CAN1 (the Kvaser ACKs them) and then while the jammer sends n pulses; canchg and the Kvaser
     down; then can2_ack_probe's no-ACK probe on canchg. The PCAN sends before the pulses, never
     during them, so it is not transmitting under the jammer; and it is never this process's
-    witness, so the sub refuses while another process holds it (a session's witness)."""
+    witness, so the sub refuses while another process holds it (a session's witness).
+    From 2026-11-19 (the gen-inhibit reviewer: a raw socketcan open of a role's netdev goes through
+    canbench's bench_layer) the links go up and down through bench_layer, read back
+    (can2_ack_probe.link_up_step / take_down), and canchg opens by role
+    (can2_ack_probe.up_open: open_bench("canchg", mode="socketcan", restore=False)). rec["canctl"]
+    keeps the steps, as before."""
     import can
     import can2_ack_probe as AP
     import bench_witness as BW
@@ -1286,13 +1336,13 @@ def sub_can2_isolation(a, rec, con, wit):
         rec["verdict"], rec["why"] = "NOT-RUN", ("the PCAN is open in pid %s (a session's witness?): it is "
                                                  "this check's 0x7A0 sender, never at once" % holders)
         return
-    rec["canctl"] = [AP.canctl("up", BW.KVASER_IFACE, str(BITRATE))]
+    rec["canctl"] = [AP.link_up_step(BW.KVASER_IFACE)]
     log, phase, stop, canchg_failed = [], ["drain"], threading.Event(), []
     inno = kw = th = None
     t0, done, sent = None, None, 0
     try:
         if rec["canctl"][0]["rc"] != 0:
-            rec["verdict"], rec["why"] = "INCONCLUSIVE", "canctl up kvaser failed"
+            rec["verdict"], rec["why"] = "INCONCLUSIVE", "link_up kvaser failed"
             return
         rec["kvaser_link_up"] = AP.link(BW.KVASER_IFACE)
         try:
@@ -1303,11 +1353,11 @@ def sub_can2_isolation(a, rec, con, wit):
         rec["witness_describe"] = kw.describe()
         kw.phase = "drain"
         kw.start()
-        rec["canctl"].append(AP.canctl("up", "canchg", str(BITRATE)))
-        if rec["canctl"][-1]["rc"] != 0:
-            rec["verdict"], rec["why"] = "INCONCLUSIVE", "canctl up canchg failed"
+        step, inno = AP.up_open("canchg")
+        rec["canctl"].append(step)
+        if inno is None:
+            rec["verdict"], rec["why"] = "INCONCLUSIVE", "open_bench canchg failed"
             return
-        inno = can.Bus(interface="socketcan", channel="canchg")
 
         def rd():
             try:
@@ -1323,7 +1373,8 @@ def sub_can2_isolation(a, rec, con, wit):
         time.sleep(2.0)
         phase[0] = "test"
         kw.phase = "pcan"
-        pcan = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+        from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+        pcan = pcan_bus(bitrate=BITRATE)
         try:
             for k in range(PCAN_FRAMES):
                 pcan.send(can.Message(arbitration_id=0x7A0, is_extended_id=False,
@@ -1352,12 +1403,12 @@ def sub_can2_isolation(a, rec, con, wit):
             if th is not None:
                 th.join(timeout=1.0)
             inno.shutdown()
-            rec["canctl"].append(AP.canctl("down", "canchg"))
+            rec["canctl"].append(AP.take_down("canchg"))
         if kw is not None:
             rec["witness_down_at_end"] = kw.down()
             kw.close()
         if len(rec.get("canctl", [])) and rec["canctl"][0]["rc"] == 0:
-            rec["canctl"].append(AP.canctl("down", BW.KVASER_IFACE))
+            rec["canctl"].append(AP.take_down(BW.KVASER_IFACE))
             rec["kvaser_link_at_end"] = AP.link(BW.KVASER_IFACE)
     if rec.get("witness_down_at_end"):
         raise WitnessDown(rec["witness_down_at_end"])
@@ -1391,7 +1442,7 @@ SUBS = {"id": sub_id, "boot-silence": sub_boot_silence, "pulses": sub_pulses,
 
 # ------------------------------------------------------------- the PCAN session (ruling (C))
 
-WITNESS_PCAN = ("pcan: PCAN-USB FD on PCAN_USBBUS1, normal mode, device stamps placed by its open's "
+WITNESS_PCAN = ("pcan: PCAN-USB FD by canctl role pcanfd (its device id), normal mode, device stamps placed by its open's "
                 "anchor (witness_anchor)")
 # A train's open (the gen-inhibit reviewer, 2026-11-13): LEAD_S before its expected stop, at most
 # LEAD_MAX_S, and never more than LEAD_PULSES_MAX pulses inside it (the PCAN reported warning at

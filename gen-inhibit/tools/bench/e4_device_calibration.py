@@ -70,8 +70,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from e4_rig_calibration import (          # noqa: E402
-    BITRATE, CAPTURE, FOREIGN_IDS, Witness, pct,
+    BITRATE, CAPTURE, FOREIGN_IDS, Witness, bus_errors, pct, settle_clock,
 )
+import witness_clock as WC                # noqa: E402
 import raw_http_probe as RHP              # noqa: E402
 import subprocess                         # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
@@ -802,7 +803,8 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
     print("\n== arm %s ==" % name)
 
     # PCAN FIRST, then the Kvaser -- the 2026-09-22 open-order rule.
-    tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    tx = pcan_bus(bitrate=BITRATE)
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     kv = kvaser_bus(channel=0, bitrate=BITRATE)
     time.sleep(2.0)
@@ -1048,6 +1050,16 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
     #
     void_reasons = []
 
+    # THE WITNESS'S CLOCK (gen-inhibit reviewer, 2026-11-18). On the Kvaser through SocketCAN
+    # the frames go onto the Leaf's own stamps, mapped by device_fit, only when the open's
+    # stamp check reads hardware; otherwise they are on the kernel's receive time and the arm
+    # is VOID: the trail timing, B3's millisecond figures and B24's keys are not judged on
+    # host time. Settled before the raw log is written, so the log carries the same clock.
+    witness_clock = settle_clock(w)
+    print("  witness clock: %s" % witness_clock)
+    if not WC.judgeable(witness_clock):
+        void_reasons.append(WC.clock_void_reason(witness_clock))
+
     raw_path = None
     if out.get("_raw_dir"):
         raw_path = os.path.join(out["_raw_dir"],
@@ -1083,7 +1095,7 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
           % (util * 100.0, BITRATE, worst_idle * 1e6))
 
     got = [f for f in w.frames if not f[3] and not (f[1] in FOREIGN_IDS and not f[4])]
-    errf = [f for f in w.frames if f[3]]
+    errf, not_bus = bus_errors(w)      # bus errors only; kvaser_usb CRTL/RESTARTED kept out (2026-11-18)
     cmd = [f for f in got if f[1] == CMD_ID and not f[4]]
 
     # OURS AGAINST THE VCM'S, TOLD APART BY TRAIL TIMING. The VCM's 0x051 runs
@@ -1146,6 +1158,7 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         "witness_frames": len(got),
         "witness_fps": round(len(got) / elapsed, 1),
         "error_frames": len(errf),
+        "not_bus_error_frames": not_bus,
         "cmd_on_wire": len(cmd),
         "vcm_cmd": len(vcm),
         "ours_trailing": len(ours),
@@ -1184,6 +1197,7 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         # The SAME list object that is appended to below, so reasons discovered
         # during the analysis land in the JSON without being re-attached.
         "void_reasons": void_reasons,
+        "witness_clock": witness_clock,
         # CARRIED LOAD ON THE WIRE, not the adapter's offered rate -- the lesson of
         # the abort bench, where those two were not the same number. A lower bound:
         # stuff bits cannot be recovered from a logged frame. The longest idle gap

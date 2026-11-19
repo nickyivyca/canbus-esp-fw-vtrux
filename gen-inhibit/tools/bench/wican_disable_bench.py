@@ -67,10 +67,9 @@ def shift_frame(pos):
 
 
 def open_pcan():
-    for cfg in can.detect_available_configs(["pcan"]):
-        if "Virtual" not in cfg.get("device_name", ""):
-            return can.Bus(interface="pcan", channel=cfg["channel"], bitrate=BITRATE)
-    raise RuntimeError("no PCAN")
+    # the PCAN by its canctl role (the user's ruling of 2026-11-18: never by detection's first found)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    return pcan_bus(bitrate=BITRATE)
 
 
 # Spec 7.1 (2026-09-20): from DIAG_FW_VERSION 3 the device will not transmit

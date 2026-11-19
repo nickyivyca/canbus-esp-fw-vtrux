@@ -231,6 +231,32 @@ class IdentifyError(Exception):
     """identify could not look; not the same as "on none of the images"."""
 
 
+def kvaser_link_down(settings, logdir):
+    """After the charge-interposer's X2 identify (gen-inhibit reviewer, 2026-11-18, condition 1):
+    its bench_powerup_round's mode_link brings the Kvaser's link UP and leaves it up, and an UP
+    kvaser_usb link ACKs with no socket open. Every check starts with the link DOWN (a check that
+    uses the Kvaser brings it up itself through kvaser_bus), so it is brought down here and
+    read back, through the harness's kvaser_bus.link_down, and the read-back is written to
+    kvaser_link_after_identify_<stamp>.json in logdir. Raises IdentifyError when it is not
+    down, so the core stops the bench. On a CANlib Kvaser (off Linux) a closed channel does
+    not ACK: nothing to do, None. Tests replace this function."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_suite_kvaser_bus", os.path.join(harness_dir(settings),
+                                                                                   "kvaser_bus.py"))
+    kb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kb)
+    if kb.backend() != "socketcan":
+        return None
+    try:
+        got = kb.link_down()
+    except kb.KvaserLinkError as e:
+        raise IdentifyError("after the X2's identify the Kvaser's link is not shown down: %s" % e)
+    path = os.path.join(logdir, "kvaser_link_after_identify_%s.json" % time.strftime("%Y%m%dT%H%M%S"))
+    with open(path, "w", encoding="ascii") as f:
+        json.dump({"after": "bench_identify", "link": got}, f, sort_keys=True)
+    return got
+
+
 B27_SKIP ="needs the user at the bench, USB plugged in (deferred by the user 2026-10-17, paired with the WiCAN config reset)"
 
 
@@ -604,7 +630,12 @@ def make_hooks(settings, ssid, images=None):
         # 2: the charge-interposer tester's identify (resets the board): its own image, slcan.
         import bench_identify as BI
         bi_settings = dict(settings, serial_port=x2_port(settings, logdir, "bench_identify"))
-        got = BI.identify(image, ctx, logdir, bi_settings)
+        try:
+            got = BI.identify(image, ctx, logdir, bi_settings)
+        finally:
+            # its mode_link leaves the Kvaser UP and ACKing: down again, read back, whatever it
+            # found (gen-inhibit reviewer, 2026-11-18); a failed down stops the bench
+            kvaser_link_down(settings, logdir)
         if got and got.startswith("slcan:"):
             # any SLCAN build gives the same answers: the pinned app must be on the flash too
             return got if x2_slcan_pinned(logdir, stamp) else got + ":unpinned"

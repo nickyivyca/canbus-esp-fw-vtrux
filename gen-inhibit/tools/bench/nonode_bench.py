@@ -3,12 +3,15 @@
 other node silent, then back, then a key-on. Gen-inhibit tester, 2026-10-20; design
 approved by the reviewer the same day.
 
-THE RIG (bench-holder.md). On the WiCAN's segment (CAN1): the WiCAN, the Kvaser, the
-PCAN and the X2's CAN1. The Innomaker is on the X2's CAN2 and is never opened.
-  Kvaser  NORMAL, the replayer: it loops the interlock slice
-          (lowid_flood_skip_bench.build_stimulus, key on). It ACKs whenever it is
-          open (it has no silent mode), so it is the node that goes silent, by
-          closing.
+THE BENCH (bench-holder.md). On the WiCAN's segment (CAN1): the WiCAN, the Kvaser, canmain
+(CAN1's Innomaker), the PCAN and the X2's CAN1. canchg, the Innomaker on the X2's CAN2, is
+never opened.
+  canmain NORMAL, the replayer (gs_usb over libusb, by its canctl role; until 2026-11-18 the
+          Kvaser was): it loops the interlock slice (lowid_flood_skip_bench.build_stimulus,
+          key on). It ACKs whenever it is open (gs_usb has no listen-only), so it is the node
+          that goes silent, by closing.
+  Kvaser  DOWN, read back at the start (kvaser_bus.link_down): on SocketCAN an up kvaser
+          link ACKs with no socket open, so it could not go silent by closing.
   PCAN    PASSIVE (listen-only), the witness for the whole run. It never ACKs.
   X2      held in ROM download mode, TX not driven, from before the first arm
           (x2_hold.py; checked with `x2_hold.py pins` at the start and the end).
@@ -35,6 +38,16 @@ EACH ARM:
 At least --arms (3) main arms. An arm whose answer to the last command did not
 complete before the close (its copies retry) is the answer-stuck case: judged
 for that and reported as such, and another arm is run for the main case.
+
+CONDITION 5 (the gen-inhibit reviewer, 2026-11-18). canmain is handed to libusb once for the
+run (kvaser_bus.innomaker_held), and each arm opens and closes it in-process, so the close is
+gs_usb's stop, not a driver hand-back. Each arm's close is measured on the PCAN's own stamps,
+mapped by witness_clock.device_fit over the arm's messages, by burst_measures.close_measure (as
+the committed check canmain_burst_check.py): the shutdown called CLOSE_AFTER_S (5 ms) +/- 3 ms
+after the last VCM frame on the wire, and no replayer frame (an ID no device sends) from the
+close + SILENCE_EDGE_S on. No probe is sent here: the device's own unACKed copies (the void
+item) show that nothing ACKs. A breach, or a VOID fit, is the arm's "close" item VOID, so the
+arm is VOID; it never fails it.
 
 JUDGED per arm (judge_arm, pure, tested by test_nonode_bench.py):
   void      the witness saw the device's frame repeat unacknowledged: at least 10
@@ -97,13 +110,16 @@ RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 X2_HOLD = os.path.join(HERE, "x2_hold.py")
 DBC = gi_paths.vehicle_dbc("epri-pt-bus.dbc")
 VCM_ID, KEY_ID = 0x051, 0x592
+import witness_clock as WC  # noqa: E402  the PCAN's stamps, mapped (condition 5, 2026-11-18)
+import burst_measures as BM  # noqa: E402  the close on those stamps (condition 5, 2026-11-18)
 DEVICE_IDS = {0x051, 0x7F0, 0x7F1, 0x7F2, 0x7F3, 0x7F8, 0x7F9}   # vtrux-wican-diag.dbc and the inhibit
 DIAG_IDS = DEVICE_IDS - {0x051}
 BIT_US = 2.0                    # 500 kbit/s
 LATCH_MAX_S = 0.7               # 12.4 row (corrected 2026-10-20, user)
 COPIES_MIN = 10                 # reviewer, 2026-10-20
 CLOSE_AFTER_S = 0.005
-SILENCE_EDGE_S = 0.020          # the Kvaser's last frames may still be on the wire this long after the close
+SILENCE_EDGE_S = 0.020          # the replayer's last frames may still be on the wire this long after the close
+REPLAYER_ROLE = "canmain"       # the replayer by its canctl role (condition 5, 2026-11-18)
 DUP_MAX_US = 300.0              # live_jam_arm.DUP_MAX_S: a VCM frame the witness saw twice
 
 
@@ -221,7 +237,33 @@ def judge_arm(arm):
     keys = arm.get("key_decoded", {})
     if keys.get("off_phase") != [0] or keys.get("on_phase") != [1]:
         v["keyon"] = "VOID: the key frames sent decode as %s" % keys
+    if "close_measure" in arm:          # condition 5 (2026-11-18); older records have none
+        cm = arm["close_measure"]
+        v["close"] = ("VOID: %s" % WC.pcan_void_verdict(cm["void"]) if cm.get("void") else
+                      "VOID: %s" % BM.breach_line([cm]) if cm["breaches"] else
+                      "PASS: closed %.3f ms after the last VCM frame (%g +/- %g ms), no replayer frame after"
+                      % (cm["gap_ms"], BM.CLOSE_AFTER_S * 1000, BM.CLOSE_TOL_S * 1000))
     return v
+
+
+def close_measure(msgs, t_close_call, t_reopen, last_vcm_payload):
+    """Condition 5: the arm's close on the PCAN's own stamps. msgs: the Witness's (perf, hw_us, id,
+    dlc, hex, is_error, epoch) since the arm's mark. The fit is device_fit over them; VOID -> {"void"}.
+    The last canmain frame is the last 0x051 with the payload the Player last sent, mapped before the
+    shutdown call + SILENCE_EDGE_S (one mapped after the call is a breach, not a missing frame); the late frames are the replayer's (IDs no device sends) from the call +
+    SILENCE_EDGE_S to the reopen. No probe (None)."""
+    pts = [(m[0], m[6], m[1] / 1e6) for m in msgs if len(m) > 6]
+    fit = WC.device_fit(pts)
+    if fit["void"]:
+        return {"void": fit["void"], "fit": fit}
+    data = [(WC.mapped(fit, m[1] / 1e6), m) for m in msgs if not m[5]]
+    last = max((t for t, m in data if m[2] == VCM_ID and m[4] == last_vcm_payload
+                and t < t_close_call + BM.SILENCE_EDGE_S),
+               default=None)
+    late = [t for t, m in data if m[2] not in DEVICE_IDS and t_close_call + BM.SILENCE_EDGE_S <= t < t_reopen]
+    cm = BM.close_measure(last, t_close_call, late, None)
+    cm["fit"] = fit
+    return cm
 
 
 def arm_verdict(v):
@@ -349,7 +391,7 @@ class Witness(threading.Thread):
     def __init__(self, bus):
         super().__init__(daemon=True)
         self.bus = bus
-        self.msgs = []      # (perf, hw_us, id, dlc, hex, is_error)
+        self.msgs = []      # (perf, hw_us, id, dlc, hex, is_error, epoch): epoch for device_fit (condition 5)
         self.stop = threading.Event()
         self.lock = threading.Lock()
 
@@ -359,7 +401,7 @@ class Witness(threading.Thread):
             while m is not None:
                 with self.lock:
                     self.msgs.append((time.perf_counter(), m.timestamp * 1e6, m.arbitration_id, m.dlc,
-                                      bytes(m.data).hex(), bool(m.is_error_frame)))
+                                      bytes(m.data).hex(), bool(m.is_error_frame), time.time()))
                 m = self.bus.recv(timeout=0.0)
 
     def mark(self):
@@ -476,6 +518,7 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
     w0 = pc_wit.mark()
     last = pl.stop_after_vcm()
     time.sleep(CLOSE_AFTER_S)
+    t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call
     kv.shutdown()
     t_close = time.perf_counter()
     arm["vcm_payloads"] = sorted(pl.vcm_payloads)
@@ -502,6 +545,8 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
     msgs = pc_wit.since(w0)
 
     off, spread = clock_offset([m for m in msgs if not m[5]])
+    arm["t_close_call"] = t_close_call
+    arm["close_measure"] = close_measure(msgs, t_close_call, t_reopen, last[1] if last else None)
     arm.update(t_start=t_start, t_arm=t_arm, t_last_vcm=last[0] if last else None, t_close=t_close, t_reopen=t_reopen,
                t_keyoff=t_keyoff, t_keyon=t_keyon, last_vcm_payload=last[1] if last else None,
                clock={"host": "time.perf_counter (s)", "witness": "PCAN message timestamps (us)",
@@ -609,9 +654,12 @@ def main():
     kf = KeyFrames()
     stim = LF.build_stimulus()
     rec = {"when": stamp, "args": vars(a), "termination": a.termination,
-           "nodes": {"WiCAN": "on CAN1 (the device)", "Kvaser": "CAN1, NORMAL, the replayer; closed in the silence",
+           "nodes": {"WiCAN": "on CAN1 (the device)",
+                     "canmain": "CAN1's Innomaker, NORMAL, the replayer (gs_usb over libusb, by its canctl role); "
+                                "closed in the silence",
+                     "Kvaser": "CAN1, link down (read back in kvaser_link_start)",
                      "PCAN": "CAN1, PASSIVE (listen-only), the witness", "X2": "CAN1, held in ROM (see x2_pins)",
-                     "Innomaker": "on the X2's CAN2, not CAN1 (bench-holder.md); never opened"},
+                     "canchg": "on the X2's CAN2, not CAN1 (bench-holder.md); never opened"},
            "reboot_start": reboot("start", a, stamp), "x2_pins_start": x2_pins(RUNS),
            "page_start": read_page(LF, 0), "arms": []}
     refused = start_refusal(rec)
@@ -622,14 +670,18 @@ def main():
             json.dump(rec, fh, indent=1, default=str)
         return 2
     pc = None
+    import kvaser_bus as KB  # noqa: E402  the adapters by their canctl roles
+    # the Kvaser down, read back: an up kvaser link ACKs with no socket open (condition 5)
+    rec["kvaser_link_start"] = KB.link_down()
+    held = KB.innomaker_held(REPLAYER_ROLE)
+    inno = held.__enter__()
     try:
-        pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000, state=can.BusState.PASSIVE)
+        pc = KB.pcan_bus(bitrate=500000, state=can.BusState.PASSIVE)    # the PCAN by its canctl role (2026-11-18)
         wit = Witness(pc)
         wit.start()
 
         def kv_open():
-            from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
-            return kvaser_bus(channel=0, bitrate=500000)
+            return inno.open(bitrate=500000)       # canmain on the held role (condition 5)
         main_done = 0
         for n in range(1, a.max_arms + 1):
             arm = run_arm(n, kv_open, wit, LF, stim, kf, a)
@@ -656,6 +708,7 @@ def main():
             except Exception:
                 pass
             pc.shutdown()
+        held.__exit__(*sys.exc_info())      # canmain back to socketcan, down, read back
     rec["x2_pins_end"] = x2_pins(RUNS)
     rec["reboot_end"] = reboot("release", a, stamp)
     if rec["reboot_end"]["rc"] != 0:

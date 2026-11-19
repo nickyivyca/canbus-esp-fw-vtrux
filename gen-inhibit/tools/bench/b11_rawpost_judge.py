@@ -21,6 +21,10 @@ Reviewer's readings (2026-10-17):
     in progress at the device when the POST arrived (the server runs one at a time),
     and the back-POSTs with the same timings.
 
+An arm its e4 run voided on its witness clock (the Kvaser's stamps not hardware time,
+2026-11-18; witness_clock.arm_clock_void through provenance_classifier) is not judged: each
+OBSERVE POST's row reads "VOID: arm void: <reason>", with no figures.
+
 Clocks: capture epoch -> replay time by base_epoch (exact: epoch_sent = base_epoch +
 t_sent in the records), replay time -> witness time by the replay's own frames near
 the POST (median of wire time minus scheduled time over +/-200 frames).
@@ -132,6 +136,12 @@ def judge_run(run, pcap):
     arm = list(d["arms"])[0]
     a = d["arms"][arm]
     r = P.rejudge(run, arm, keep_frames=True)
+    if r.get("arm_void"):     # the arm's witness clock refused in its run (2026-11-18): nothing judged
+        why = "VOID: arm void: %s" % "; ".join(r["arm_void"])
+        posts = [{"at_s": e.get("at_s"), "mode": e.get("mode"), "http": e.get("http"), "verdict": why}
+                 for e in (a.get("post_schedule") or []) if e.get("mode") == 1]
+        return {"run": os.path.basename(run), "capture": os.path.basename(pcap), "device": d.get("device"),
+                "initial_mode": d.get("mode"), "packets": None, "posts": posts, "void": r["arm_void"]}
     rep = r["replayed_wire_times"]
     E.CAPTURE = gi_paths.runs(d["capture"])
     E.WINDOW_START = d["window_start"]
@@ -176,7 +186,7 @@ def main():
     worst = 0
     for run, pcap in zip(args[0::2], args[1::2]):
         res = judge_run(run, pcap)
-        print("== %s (%s, initial %s; %d capture packets)" % (res["run"], res["device"], res["initial_mode"],
+        print("== %s (%s, initial %s; %s capture packets)" % (res["run"], res["device"], res["initial_mode"],
                                                                res["packets"]))
         for p in res["posts"]:
             print("  " + json.dumps(p))

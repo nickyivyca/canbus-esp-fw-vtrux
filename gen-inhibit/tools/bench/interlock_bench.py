@@ -390,12 +390,12 @@ class Witness(threading.Thread):
         while not self.stop_flag.is_set():
             m = self.bus.recv(timeout=0.05)
             while m is not None:
-                rx = time.time()
+                rx = WC.receipt(m)
                 with self.lock:
                     if m.is_error_frame:
-                        self.errs.append((m.timestamp, rx))
+                        self.errs.append((WC.raw_stamp(m), rx))
                     else:
-                        self.frames.append((m.timestamp, rx, m.arbitration_id, bytes(m.data).hex()))
+                        self.frames.append((WC.raw_stamp(m), rx, m.arbitration_id, bytes(m.data).hex()))
                 m = self.bus.recv(timeout=0.0)
 
     def close(self):
@@ -409,6 +409,9 @@ class Witness(threading.Thread):
         and the witness file. A judgement first asks WC.judgeable(note)."""
         with self.lock:
             fr, er = list(self.frames), list(self.errs)
+        sc = WC.kvaser_times(getattr(self, "bus", None), fr, er)   # SocketCAN (2026-11-18)
+        if sc is not None:
+            return sc
         lags = [rx - hw for hw, rx, _, _ in fr]
         if lags and abs(statistics.median(lags)) < WC.MAX_LAG_S:
             note = WC.hw_note(statistics.median(lags))
@@ -609,7 +612,8 @@ def run_case(can, LF, info, parsed, power, stamp):
         rec["verdict"] = "VOID: the WiCAN did not come back in mode 0 after the reboot"
         return rec
     rec["page_before"] = {k: (LF.page() or {}).get(k) for k in PAGE_FIELDS}
-    pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    pc = pcan_bus(bitrate=BITRATE)
     wit = Witness(can)
     wit.start()
     time.sleep(1.0)

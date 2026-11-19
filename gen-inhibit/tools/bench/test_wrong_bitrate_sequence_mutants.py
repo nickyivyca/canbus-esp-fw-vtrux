@@ -39,11 +39,11 @@ MUTANTS = [
     ("the window is not recorded", '    rec["pre_burst_window"] = (', '    rec["pre_burst_window_unused"] = ('),
     ("the driver flag is always true", 'rec["driver_running_before_slice"] = running',
      'rec["driver_running_before_slice"] = True'),
-    # the burst starts at the Kvaser's open (2026-10-29)
+    # the burst starts at the source's open (2026-10-29)
     ("the burst starts after the open, as before",
-     '    t = time.perf_counter()\n    kv = kvaser_bus(channel=0, bitrate=250000)\n'
+     '    t = time.perf_counter()\n    src = inno.open(bitrate=SOURCE_BITRATE)\n'
      '    opened = time.perf_counter() - t\n',
-     '    kv = kvaser_bus(channel=0, bitrate=250000)\n    t = time.perf_counter()\n'
+     '    src = inno.open(bitrate=SOURCE_BITRATE)\n    t = time.perf_counter()\n'
      '    opened = 0.0\n'),
     # the Kvaser through kvaser_bus (2026-11-11)
     ("the fixes are loaded inside the open's time",
@@ -55,6 +55,15 @@ MUTANTS = [
     ("a VOID fit leaves no VOID verdict", '        rec["verdict"] = WC.pcan_void_verdict(fit["void"])\n',
      '        pass\n'),
     ("the fit is not recorded", '    rec["witness_clock"] = fit\n', '    pass\n'),
+    # condition 5 (2026-11-18): canmain held once, the Kvaser down, the burst measures
+    ("the Kvaser not brought down", '    rec["kvaser_link_start"] = KB.link_down()\n', '    rec["kvaser_link_start"] = {}\n'),
+    ("canmain never left", '        held.__exit__(*sys.exc_info())', '        pass  #'),
+    ("the source at 500 kbit", 'SOURCE_BITRATE = 250000\n', 'SOURCE_BITRATE = 500000\n'),
+    ("the source is the Kvaser again", '    src = inno.open(bitrate=SOURCE_BITRATE)\n',
+     '    from kvaser_bus import kvaser_bus  # noqa: E402\n    src = kvaser_bus(channel=0, bitrate=SOURCE_BITRATE)\n'),
+    ("a burst breach not made VOID", '            rec["verdict"] = "VOID: %s" % burst_line\n', '            pass\n'),
+    ("the burst timing VOID line not printed", '        print(burst_line)\n', '        pass\n'),
+    ("the burst measures not recorded", '        rec["burst_measures"] = [', '        rec["burst_measures_unused"] = ['),
 ]
 
 
