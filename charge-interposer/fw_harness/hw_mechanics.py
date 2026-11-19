@@ -20,7 +20,8 @@ Two kinds of entry:
   port drivers, the port interface, the build configuration, and since port
   step 2a the pins: `board_ports.h` asks the board component for them, and
   the board component's version is in `idf_component.yml` and
-  `dependencies.lock`);
+  `dependencies.lock`; since tracker I, `boot_partitions.c`, the partition
+  table read in ESP-IDF's core startup stage);
 * **named settings** inside files that are mostly not. Hashing all of
   `main.cpp` would flag every edit to the bridge loop's logging, so the
   bitrate, the loop timings and the per-iteration drain bounds are
@@ -94,6 +95,12 @@ WHOLE_FILES = {
     "main/CMakeLists.txt": "same: each variant's sources and switches",
     "sdkconfig": "flashing and boot; the build configuration (partition "
                  "table, console, the board's values)",
+    # Tracker I (the charge-interposer reviewer, 2026-11-18): every variant
+    # reads the partition table in ESP-IDF's core startup stage (spec 9,
+    # core dumps); firmware/README.md's procedure, item 1.
+    "main/boot_partitions.c": "flashing and boot: the partition table read "
+                              "in ESP-IDF's core startup stage, before the "
+                              "second core runs",
 }
 
 # (file, label, regex) -> the spec 10 item. The regex must capture the value.
