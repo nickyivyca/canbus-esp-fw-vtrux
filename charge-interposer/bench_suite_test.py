@@ -792,7 +792,10 @@ def test_suites():
     # 304: st.bench-boot-reset-fixture and cf.bench-boot-reset-fixture
     #      (boot-reset-0x15's bench can-fail, fixture cf2; tracker I, the
     #      reviewer, 2026-11-18)
-    assert len(seen) == 304, "checks across the suites: %d" % len(seen)
+    # 306: st.bench-coredump-readback and cf.bench-coredump-readback (spec 9's
+    #      core dump read off over USB; the reviewer's follow-on to tracker I
+    #      step 2, 2026-11-18)
+    assert len(seen) == 306, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
