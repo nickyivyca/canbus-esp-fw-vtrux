@@ -130,6 +130,18 @@ innomaker_held(role) holds the role in libusb around a run, with the opens and c
 (condition 5, 2026-11-18): bench_layer.to_libusb at the start, open_bench(restore=False) per open,
 bench_layer.to_socketcan at the end; a hand-back at every close would sit inside a burst's or NONODE's
 5 ms close's timing.
+A SENDER ON A libusb ROLE READS ITS ECHOES (the gen-inhibit reviewer's ruling (C) of 2026-11-19). gs_usb
+returns every frame the device completed as an echo on its IN endpoint (python-can: is_rx False), and the
+host is that endpoint's only buffer: with 257 echoes unread the device took no more frames, and send 258
+blocked for pyusb's 1 s default write timeout and raised (canmain at 500 kbit, 2 ms apart, every frame
+ACKed by the PCAN; short bench check of 2026-11-19, gen-inhibit runs/benchcheck_9950f96_20261119T015215/).
+echo_drain(bus, role, what) starts a thread that reads the bus (DRAIN_RECV_S, 1 ms, gs_usb's least) and
+counts what it reads: echoes, other frames, error frames. drain.stop(sent) asks it to stop, it reads what is
+queued to the first empty read (at most DRAIN_SWEEP_MAX_S), and joins it, before the bus's shutdown, and records an "echoes" event (sent, echoes, rx, errors, whether echoes == sent).
+innomaker_held's exit stops a drain still running before it shuts a bus. canmain_burst_check's replay and
+NONODE's Player use it. Kept thin, for canbench's own (the can-tools request, 2026-11-19) to replace.
+Known limit: a frame nothing ACKs never completes, so it gives no echo and holds one of the device's TX
+slots; once they are all held, each send blocks the same 1 s before it raises.
 
 THE PCAN, BY ROLE (the same ruling, 2026-11-18). PCAN-Basic numbers PCAN-USB channels
 PCAN_USBBUS1, 2, ... in the order it finds them, so channel PCAN_USBBUS1 is the first found.
@@ -159,6 +171,7 @@ import importlib.util
 import json
 import os
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -591,6 +604,9 @@ class innomaker_held:
         failed = []
         for b in self.buses:
             try:
+                d = getattr(b, "echo_drain", None)
+                if d is not None and d.is_alive():
+                    d.stop()        # its reads end before the bus's handle is freed
                 b.shutdown()
             except Exception as e:      # noqa: BLE001  named below; the hand-back still runs
                 failed.append("%s: %s" % (type(e).__name__, e))
@@ -608,6 +624,67 @@ class innomaker_held:
         if failed:
             raise InnomakerError("%s handed back, but a close failed: %s" % (self.role, "; ".join(failed)))
         return False
+
+
+DRAIN_RECV_S = 0.001     # python-can's gs_usb waits at least 1 ms per empty read
+DRAIN_JOIN_S = 1.0
+DRAIN_SWEEP_MAX_S = 0.05  # after the stop is asked, reading what is queued ends at the first empty read, or this
+
+
+class _EchoDrain(threading.Thread):
+    """Reads a libusb gs_usb bus while its owner sends, so the device's echoes never fill (module docstring,
+    "A SENDER ON A libusb ROLE READS ITS ECHOES")."""
+
+    def __init__(self, bus, role, what):
+        super().__init__(daemon=True)
+        self.bus, self.role, self.what = bus, role, what
+        self.echoes = self.rx = self.errors = 0
+        self.error = None
+        self._halt = threading.Event()      # not _stop: threading.Thread has its own
+
+    def run(self):
+        t_halt = None
+        while True:
+            if t_halt is None and self._halt.is_set():
+                t_halt = time.perf_counter()
+            try:
+                m = self.bus.recv(timeout=DRAIN_RECV_S)
+            except Exception as e:      # noqa: BLE001  recorded at stop; the owner's send shows the effect
+                self.error = "%s: %s" % (type(e).__name__, e)
+                return
+            if t_halt is not None and (m is None or time.perf_counter() - t_halt > DRAIN_SWEEP_MAX_S):
+                return      # asked to stop: what was queued is read first, to the first empty read
+            if m is None:
+                continue
+            if m.is_error_frame:
+                self.errors += 1
+            elif getattr(m, "is_rx", True) is False:
+                self.echoes += 1
+            else:
+                self.rx += 1
+
+    def stop(self, sent=None):
+        """Stops and joins the thread (before the bus's shutdown); records and returns the counts."""
+        self._halt.set()
+        self.join(DRAIN_JOIN_S)
+        ev = {"event": "echoes", "backend": "gs_usb", "role": self.role, "what": self.what, "sent": sent,
+              "echoes": self.echoes, "rx": self.rx, "errors": self.errors,
+              "echoes_equal_sent": (None if sent is None else self.echoes == sent)}
+        if self.is_alive():
+            ev["error"] = "the drain did not stop within %g s" % DRAIN_JOIN_S
+        elif self.error:
+            ev["error"] = self.error
+        record(ev)
+        return ev
+
+
+def echo_drain(bus, role, what):
+    """Starts reading `bus` (a libusb gs_usb role's) so its echoes never fill; drain.stop(sent) before the bus's
+    shutdown. Kept thin, for canbench's own to replace."""
+    d = _EchoDrain(bus, role, what)
+    bus.echo_drain = d
+    d.start()
+    return d
 
 
 # ------------------------------------------------ the PCAN, by canctl role (2026-11-18/19)

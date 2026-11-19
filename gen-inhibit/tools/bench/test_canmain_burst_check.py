@@ -134,8 +134,20 @@ def judging(C):
 
 # ------------------------------------------------------------------ the check, on fakes
 
+ECHO_CAP = 64      # the fake gs_usb stalls with this many echoes unread (canmain: 256; the replay here is short)
+
+
+def real_echo_drain(log):
+    """The REAL kvaser_bus.echo_drain (by file, from beside this test), its record into the log."""
+    spec = importlib.util.spec_from_file_location("kvaser_bus_echo_cbc", os.path.join(HERE, "kvaser_bus.py"))
+    kb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kb)
+    kb.record = lambda ev: log.append(("echoes", ev))
+    return kb.echo_drain
+
+
 def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late=0.0, wican_mode=0,
-          x2_held=True, kvaser_up=False):
+          x2_held=True, kvaser_up=False, drop_echoes=False):
     DEV0 = 5000.0
     EPOCH = time.time() - time.perf_counter()
 
@@ -148,9 +160,10 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
         pass
 
     class Message:
-        def __init__(self, arbitration_id=0, is_extended_id=False, data=b"", is_error_frame=False, timestamp=0.0):
+        def __init__(self, arbitration_id=0, is_extended_id=False, data=b"", is_error_frame=False, timestamp=0.0,
+                     is_rx=True):
             self.arbitration_id, self.data = arbitration_id, bytes(data)
-            self.is_error_frame, self.timestamp = is_error_frame, timestamp
+            self.is_error_frame, self.timestamp, self.is_rx = is_error_frame, timestamp, is_rx
     can.Message, can.CanError = Message, CanError
     wire = {"q": [], "open": None, "ghost": False, "lock": threading.Lock()}
 
@@ -164,6 +177,8 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
             wire["open"] = self
             log.append(("gs open", bitrate))
             self.t_close, self.th = None, None
+            self.echoes, self.sent, self.shut = [], 0, False     # its echoes, queued until read (2026-11-19)
+            self.elock = threading.Lock()     # its own: the drain does not contend with the PCAN's reads
             if bitrate == 250000:       # at the wrong rate: error frames on the wire from bus-on to the stop
                 self.th = threading.Thread(target=self.err, daemon=True)
                 self.th.start()
@@ -175,11 +190,33 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
 
         def send(self, msg, timeout=None):
             if self.bitrate == 500000:
+                with self.elock:
+                    if len(self.echoes) >= ECHO_CAP:     # as canmain's gs_usb with its echoes unread
+                        log.append(("gs stall", self.sent))
+                        raise CanError("The message could not be sent")
                 put(time.perf_counter(), msg.arbitration_id, data=msg.data)
+                if not (drop_echoes and self.sent % 10 == 9):
+                    with self.elock:
+                        self.echoes.append(Message(msg.arbitration_id, data=msg.data, is_rx=False))
+                self.sent += 1
+
+        def recv(self, timeout=None):
+            end = time.perf_counter() + max(timeout or 0.0, 0.001)
+            while True:
+                if self.shut:
+                    raise CanError("recv after shutdown")
+                with self.elock:
+                    if self.echoes:
+                        return self.echoes.pop(0)
+                if time.perf_counter() >= end:
+                    return None
+                time.sleep(0.0002)
 
         def shutdown(self):
             t_c = time.perf_counter()
-            log.append(("gs shutdown", self.bitrate))
+            d = getattr(self, "echo_drain", None)
+            log.append(("gs shutdown", self.bitrate, bool(d is not None and d.is_alive())))
+            self.shut = True
             wire["open"] = None
             if self.th is not None:
                 self.t_close = t_c
@@ -215,6 +252,7 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
 
     KB = types.ModuleType("kvaser_bus")
     KB.fixes = lambda: {"kvaser": False, "gs_usb": True}
+    KB.echo_drain = real_echo_drain(log)
 
     def link_down():
         log.append(("kvaser down",))
@@ -308,6 +346,20 @@ def checks(C):
           < order.index("held exit") < order.index("pcan shutdown"), order)
     check("control: prints the fit line, the close line, a line per burst and the verdict",
           "pcan clock: n " in out and "\nclose: " in out and out.count("\nburst ") == 3 and "verdict: PASS" in out, out[-500:])
+    rp = rec.get("replay") or {}
+    ed = rp.get("echo_drain") or {}
+    check("control: the replay is longer than the fake's echo cap and canmain never stalled (its echoes read)",
+          (rp.get("frames") or 0) > ECHO_CAP and not any(e[0] == "gs stall" for e in log), (rp.get("frames"), log[-5:]))
+    check("control: the echo drain's counts recorded with the replay (echoes == frames sent) and judged",
+          ed.get("event") == "echoes" and ed.get("sent") == rp.get("frames") == ed.get("echoes")
+          and ed.get("echoes_equal_sent") is True and (rec.get("echoes") or {}).get("breaches") == []
+          and "\nechoes: %s for %s frames sent" % (rp.get("frames"), rp.get("frames")) in out, (ed, rec.get("echoes")))
+    shuts = [e for e in log if e[0] == "gs shutdown"]
+    check("control: the drain stopped before the replay's close (not running at canmain's shutdown), once",
+          shuts and shuts[0][1:] == (500000, False) and sum(1 for e in log if e[0] == "echoes") == 1, (shuts, log[-8:]))
+    rc, rec, log, out = run(C, [], drop_echoes=True)
+    check("one frame in ten giving no echo: FAIL by its verdict naming the echo count, exit 1",
+          rc == 1 and "echoes for" in str(rec.get("verdict")) and "verdict: FAIL" in out, (rc, rec.get("verdict")))
 
     for label, argv, kw, want in (
             ("--hold-extra-ms 20 (can-fail)", ["--hold-extra-ms", "20"], {}, "over"),
@@ -336,6 +388,23 @@ def checks(C):
               rc == 2 and str(rec.get("verdict", "")).startswith("REFUSED") and want in rec["verdict"]
               and not any(e[0] in ("pcan open", "held enter", "gs open") for e in log), (rc, rec.get("verdict"), log))
 
+
+MUTANTS_ECHO = [
+    # the echo drain (the gen-inhibit reviewer's ruling (C), 2026-11-19)
+    ("canmain_burst_check.py", "the replay's drain not started (stopped at once)",
+     '    drain = KB.echo_drain(b, ROLE, "canmain_burst_check replay")\n',
+     '    drain = KB.echo_drain(b, ROLE, "canmain_burst_check replay")\n    drain.stop()\n'),
+    ("canmain_burst_check.py", "the replay's drain not stopped before the close",
+     "        echo = drain.stop(sent=n)\n        time.sleep(max(0.0, target - time.perf_counter()))\n    finally:\n"
+     "        if echo is None:\n            echo = drain.stop(sent=n)\n        t_close = time.perf_counter()\n"
+     "        b.shutdown()\n",
+     "        time.sleep(max(0.0, target - time.perf_counter()))\n    finally:\n        t_close = time.perf_counter()\n"
+     "        b.shutdown()\n        echo = drain.stop(sent=n)\n"),
+    ("canmain_burst_check.py", "the echo count not checked",
+     '    elif echo.get("echoes") != echo.get("sent"):\n', "    elif False:\n"),
+    ("canmain_burst_check.py", "the echo measure left out of the verdict",
+     '([out["echoes"]] if "echoes" in out else [])', "[]"),
+]
 
 MUTANTS = [
     (None, None, None, None),
@@ -389,10 +458,11 @@ MUTANTS = [
      "if fid == REPLAY_ID and not err and data == last_payload\n", "if fid == REPLAY_ID and not err\n"),
     ("canmain_burst_check.py", "exit 0 on a FAIL", '    return 0 if rec["verdict"] == "PASS" else 1', "    return 0"),
     ("canmain_burst_check.py", "the close timed from the next period slot",
-     "        time.sleep(max(0.0, last_send + a.close_after_ms / 1000.0 - time.perf_counter()))\n",
-     "        time.sleep(max(0.0, t0 + n * period - time.perf_counter()) + 0.005)\n"
-     "        time.sleep(a.close_after_ms / 1000.0)\n"),
+     "        target = last_send + a.close_after_ms / 1000.0\n",
+     "        target = max(time.perf_counter(), t0 + n * period) + 0.005 + a.close_after_ms / 1000.0\n"),
 ]
+
+MUTANTS += MUTANTS_ECHO
 
 
 def mutants():

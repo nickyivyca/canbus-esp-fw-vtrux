@@ -459,6 +459,76 @@ MUTANTS = [
 ]
 
 
+def echo_tests(m):
+    """The replayer's echo drain (the gen-inhibit reviewer's ruling (C), 2026-11-19): open_replayer, slice_close
+    and back_stop with the REAL Player and the REAL kvaser_bus.echo_drain, on _fake_gs_usb's StallingGs (it takes
+    no frame with 256 echoes unread, as canmain's gs_usb did on the bench)."""
+    import time
+    import _fake_gs_usb as FG
+    spec = importlib.util.spec_from_file_location("kvaser_bus_echo_nn", os.path.join(HERE, "kvaser_bus.py"))
+    kb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kb)
+    evs = []
+    kb.record = evs.append
+    stim = [(k * 0.0003, m.VCM_ID if k % 20 == 19 else 0x100 + k % 7, bytes([k % 256]) * 8) for k in range(200)]
+
+    g = FG.StallingGs(cap=256)
+    kv, dr = m.open_replayer(lambda: g, "test slice", KB=kb)
+    pl = m.Player(kv, stim, None)
+    pl.start()
+    time.sleep(0.4)
+    last, echoes, t_call, t_close = m.slice_close(pl, kv, dr)
+    check("echo: the slice sent more than the fake's cap with no stall and no failed send",
+          pl.sent > 256 and pl.fail == 0 and g.stalls == 0, (pl.sent, pl.fail, g.stalls))
+    check("echo: the slice's drain counted one echo per frame sent, recorded as an echoes event for canmain",
+          echoes.get("sent") == pl.sent == echoes.get("echoes") and echoes.get("echoes_equal_sent") is True
+          and echoes.get("role") == "canmain" and echoes.get("what") == "test slice" and evs[-1] == echoes, echoes)
+    check("echo: the drain stopped before the slice's close (not running at the shutdown)",
+          g.drain_alive_at_shutdown is False and not dr.is_alive(), g.drain_alive_at_shutdown)
+    check("echo: the close called CLOSE_AFTER_S after the last VCM frame's send (and promptly)",
+          last is not None and m.CLOSE_AFTER_S - 1e-4 <= t_call - last[0] < m.CLOSE_AFTER_S + 0.05
+          and t_close >= t_call, (last, t_call))
+
+    g2 = FG.StallingGs(cap=256)
+    kv2, dr2 = m.open_replayer(lambda: g2, "test back", KB=kb)
+    pl2 = m.Player(kv2, stim, None)
+    pl2.start()
+    time.sleep(0.3)
+    e2 = m.back_stop(pl2, dr2)
+    alive = dr2.is_alive()
+    kv2.shutdown()
+    check("echo: back_stop stops the Player, then its drain (stopped before the bus's shutdown), counts recorded",
+          not pl2.is_alive() and not alive and g2.drain_alive_at_shutdown is False and pl2.fail == 0
+          and e2.get("sent") == pl2.sent == e2.get("echoes") and pl2.sent > 256, (e2, pl2.fail, alive))
+
+    g3 = FG.StallingGs(cap=256, acked=lambda n: False)
+    kv3, dr3 = m.open_replayer(lambda: g3, "test no node", KB=kb)
+    pl3 = m.Player(kv3, stim, None)
+    pl3.start()
+    time.sleep(0.1)
+    e3 = m.back_stop(pl3, dr3)
+    check("echo: with nothing ACKing, no echoes: recorded as fewer echoes than frames sent (not judged)",
+          e3.get("echoes") == 0 and e3.get("sent") == pl3.sent > 0 and e3.get("echoes_equal_sent") is False, e3)
+
+
+MUTANTS += [
+    # the replayer's echo drain (the gen-inhibit reviewer's ruling (C), 2026-11-19)
+    ("the replayer opened without its drain (stopped at once)",
+     "    return kv, KB.echo_drain(kv, REPLAYER_ROLE, what)\n",
+     "    d = KB.echo_drain(kv, REPLAYER_ROLE, what)\n    d.stop()\n    return kv, d\n"),
+    ("the slice's drain not stopped before its close",
+     "    echoes = dr.stop(sent=pl.sent)\n    t_last = last[0] if last else time.perf_counter()\n"
+     "    time.sleep(max(0.0, t_last + CLOSE_AFTER_S - time.perf_counter()))\n"
+     "    t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call\n    kv.shutdown()\n",
+     "    t_last = last[0] if last else time.perf_counter()\n"
+     "    time.sleep(max(0.0, t_last + CLOSE_AFTER_S - time.perf_counter()))\n"
+     "    t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call\n    kv.shutdown()\n"
+     "    echoes = dr.stop(sent=pl.sent)\n"),
+    ("the back phase's drain not stopped", "    pl.join(3)\n    return dr.stop(sent=pl.sent)\n",
+     "    pl.join(3)\n    return {}\n"),
+]
+
+
 def mutants():
     src = open(SCRIPT, encoding="utf-8", newline="").read()
     base = gi_paths.scratch("mutants-nonode_bench")
@@ -493,5 +563,9 @@ if __name__ == "__main__":
         tests()
     except Exception as e:
         check("ran without raising", False, repr(e))
+    try:
+        echo_tests(load())
+    except Exception as e:      # noqa: BLE001
+        check("echo tests ran without raising", False, repr(e))
     print("\n%d ok, %d FAIL" % (oks, len(fails)))
     sys.exit(1 if fails else 0)

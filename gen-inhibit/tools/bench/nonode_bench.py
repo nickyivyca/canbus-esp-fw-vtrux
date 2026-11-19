@@ -48,6 +48,15 @@ after the last VCM frame on the wire, and no replayer frame (an ID no device sen
 close + SILENCE_EDGE_S on. No probe is sent here: the device's own unACKed copies (the void
 item) show that nothing ACKs. A breach, or a VOID fit, is the arm's "close" item VOID, so the
 arm is VOID; it never fails it.
+ECHOES (the gen-inhibit reviewer's ruling (C), 2026-11-19). canmain's gs_usb takes no frame once 257
+of its echoes are unread (the short bench check of 2026-11-19), and the slice is thousands of frames,
+so each open of the replayer reads its echoes while the Player sends (open_replayer:
+kvaser_bus.echo_drain), and the drain is stopped before the bus's shutdown: for the slice, in
+slice_close, after the Player's last VCM frame, and the close then called CLOSE_AFTER_S after that
+frame's send (not after the drain's stop). Each drain's counts are recorded in the arm
+(echoes_slice, echoes_back): sent, echoes, other frames, error frames, echoes == sent. A frame
+nothing ACKs gives no echo, so fewer echoes than frames shows sends with no node there to ACK.
+Recorded, not judged.
 
 JUDGED per arm (judge_arm, pure, tested by test_nonode_bench.py):
   void      the witness saw the device's frame repeat unacknowledged: at least 10
@@ -385,6 +394,35 @@ class Player(threading.Thread):
         return self.last_vcm
 
 
+def open_replayer(kv_open, what, KB=None):
+    """The replayer's bus and its echo drain (module docstring, ECHOES): (bus, drain)."""
+    if KB is None:
+        import kvaser_bus as KB  # noqa: N811  where it opens, as every tool here
+    kv = kv_open()
+    return kv, KB.echo_drain(kv, REPLAYER_ROLE, what)
+
+
+def slice_close(pl, kv, dr):
+    """Stops the slice right after its next VCM frame, stops the echo drain (its counts against the frames
+    the Player sent), then calls the bus's shutdown CLOSE_AFTER_S after that frame's send. Returns (last,
+    echoes, t_close_call, t_close)."""
+    last = pl.stop_after_vcm()
+    echoes = dr.stop(sent=pl.sent)
+    t_last = last[0] if last else time.perf_counter()
+    time.sleep(max(0.0, t_last + CLOSE_AFTER_S - time.perf_counter()))
+    t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call
+    kv.shutdown()
+    return last, echoes, t_close_call, time.perf_counter()
+
+
+def back_stop(pl, dr):
+    """Stops the back phase's Player and then its echo drain (the bus is shut later, after the disarm).
+    Returns the drain's counts."""
+    pl.stop_flag.set()
+    pl.join(3)
+    return dr.stop(sent=pl.sent)
+
+
 class Witness(threading.Thread):
     """The PCAN, passive. Every message with its own timestamp (us) and the host's."""
 
@@ -501,7 +539,7 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
     # end, stop the slice while the WiCAN still ACKs, then disarm.
     LF.dev_post("/gen_inhibit_set?mode=0")
     time.sleep(0.5)
-    kv = kv_open()
+    kv, dr = open_replayer(kv_open, "nonode slice")
     poll.start()
     LF.dev_post("/gen_inhibit_set?mode=3")
     t_arm = time.perf_counter()
@@ -516,15 +554,11 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
                                if poll.reads and poll.reads[-1].get("live") else None)
     time.sleep(a.live_s)
     w0 = pc_wit.mark()
-    last = pl.stop_after_vcm()
-    time.sleep(CLOSE_AFTER_S)
-    t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call
-    kv.shutdown()
-    t_close = time.perf_counter()
+    last, arm["echoes_slice"], t_close_call, t_close = slice_close(pl, kv, dr)
     arm["vcm_payloads"] = sorted(pl.vcm_payloads)
     time.sleep(a.silence_s)
     t_reopen = time.perf_counter()
-    kv = kv_open()
+    kv, dr = open_replayer(kv_open, "nonode back")
     pl2 = Player(kv, stim, kf)
     pl2.start()
     time.sleep(a.back_s)
@@ -534,8 +568,7 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
     t_keyon = time.perf_counter()
     pl2.key = 1
     time.sleep(a.keyon_s)
-    pl2.stop_flag.set()
-    pl2.join(3)
+    arm["echoes_back"] = back_stop(pl2, dr)
     time.sleep(0.2)
     LF.dev_post("/gen_inhibit_set?mode=0")
     time.sleep(0.3)

@@ -73,6 +73,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import types
 import importlib.util
 
@@ -193,7 +194,16 @@ class Fakes:
                     self.channel_info = kv_info
                 log.append(("Bus", kw))
 
+            def recv(self, timeout=None):       # for an echo drain (2026-11-19): nothing queued
+                if getattr(self, "shut", False):
+                    raise OSError("recv after shutdown")
+                time.sleep(max(timeout or 0.0, 0.001))
+                return None
+
             def shutdown(self):
+                d = getattr(self, "echo_drain", None)
+                self.drain_alive_at_shutdown = bool(d is not None and d.is_alive())
+                self.shut = True
                 log.append(("shutdown", self))
                 if fakes.shutdown_raises:
                     raise OSError("shutdown failed")
@@ -842,6 +852,114 @@ def innomaker():
         check("held: an open that raises -> its error raised, canmain handed back once at exit, down",
               isinstance(e, OSError) and f.canctls() == [LIBUSB, RESTORE] and f.down("canmain"), (e, f.log))
     case("innomaker: held", held)
+
+
+def echo():
+    """echo_drain (the gen-inhibit reviewer's ruling (C), 2026-11-19): a sender on a libusb gs_usb role reads its
+    echoes, or the device takes no more frames (on the bench: none after 257 unread). Against _fake_gs_usb's
+    StallingGs, which stalls the same way at its cap."""
+    import _fake_gs_usb as FG
+
+    def load():
+        spec = importlib.util.spec_from_file_location("kvaser_bus_echo", os.path.join(SRC, "kvaser_bus.py"))
+        kb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(kb)
+        evs = []
+        kb.record = evs.append
+        return kb, evs
+
+    def send(g, n, gap=0.0001):
+        for i in range(n):
+            try:
+                g.send(FG.Msg(0x6A8, i.to_bytes(4, "big")))
+            except FG.StallError:
+                return i
+            time.sleep(gap)
+        return n
+
+    def stall_without():
+        g = FG.StallingGs(cap=256)
+        got = send(g, 300, gap=0.0)
+        check("echo: the fake, with nothing reading it, takes 256 frames and stalls on the 257th (as canmain did "
+              "at its cap)", got == 256 and g.stalls == 1, (got, g.stalls))
+    case("echo: the fake stalls", stall_without)
+
+    def drained():
+        kb, evs = load()
+        g = FG.StallingGs(cap=256)
+        d = kb.echo_drain(g, "canmain", "test")
+        got = send(g, 700)
+        g.put(FG.Msg(0x123, b"\x01"))                       # another node's frame
+        g.put(FG.Msg(0x20000004, b"", is_error_frame=True))  # an error frame
+        ev = d.stop(sent=got)
+        alive = d.is_alive()
+        g.shutdown()
+        check("echo: with the drain, 700 frames sent and no stall", got == 700 and g.stalls == 0, (got, g.stalls))
+        check("echo: stop() joins the drain (not running after it), so the bus's shutdown finds it stopped",
+              not alive and g.drain_alive_at_shutdown is False, (alive, g.drain_alive_at_shutdown))
+        check("echo: every echo counted, the other node's frame and the error frame apart, echoes == sent",
+              (ev.get("sent"), ev.get("echoes"), ev.get("rx"), ev.get("errors"), ev.get("echoes_equal_sent"))
+              == (700, 700, 1, 1, True) and "error" not in ev, ev)
+        check("echo: the counts recorded once, as an echoes event naming the role and what",
+              evs == [ev] and ev.get("event") == "echoes" and ev.get("role") == "canmain" and ev.get("what") == "test"
+              and ev.get("backend") == "gs_usb", evs)
+        check("echo: the drain is attached to the bus (bus.echo_drain), for innomaker_held's exit",
+              getattr(g, "echo_drain", None) is d)
+    case("echo: drained", drained)
+
+    def unacked():
+        kb, evs = load()
+        g = FG.StallingGs(cap=256, acked=lambda n: n % 10 != 0)
+        d = kb.echo_drain(g, "canmain", "test")
+        got = send(g, 300)
+        ev = d.stop(sent=got)
+        check("echo: frames nobody ACKed give no echo: fewer echoes than frames, recorded as not equal",
+              (ev.get("sent"), ev.get("echoes"), ev.get("echoes_equal_sent")) == (300, 270, False), ev)
+    case("echo: unACKed", unacked)
+
+    def queued_at_stop():
+        kb, evs = load()
+        g = FG.StallingGs(cap=256)
+        d = kb.echo_drain(g, "canmain", "test")
+        time.sleep(0.01)
+        with g.lock:                    # 50 echoes land at once, just as the stop is asked
+            g.q.extend(FG.Msg(0x6A8, b"", is_rx=False) for _ in range(50))
+        ev = d.stop(sent=50)
+        check("echo: echoes queued when the stop is asked are read before it returns",
+              ev.get("echoes") == 50 and ev.get("echoes_equal_sent") is True, ev)
+    case("echo: queued at stop", queued_at_stop)
+
+    def recv_raises():
+        kb, evs = load()
+        g = FG.StallingGs(cap=256)
+        d = kb.echo_drain(g, "canmain", "test")
+        g.closed = True
+        time.sleep(0.01)
+        ev = d.stop(sent=0)
+        check("echo: a read that raises ends the drain and is recorded at its stop",
+              "recv after shutdown" in str(ev.get("error")) and not d.is_alive(), ev)
+    case("echo: recv raises", recv_raises)
+
+    def held_exit():
+        runs = gi_paths.scratch("kvaser-bus-echo-held")
+        gi_paths.remove_tree(runs)
+        os.makedirs(runs)
+        try:
+            f = InnoFakes(runs_dir=runs)
+            with f as kb:
+                with kb.innomaker_held("canmain") as inno:
+                    b = inno.open(bitrate=500000)
+                    d = kb.echo_drain(b, "canmain", "test held")
+                    time.sleep(0.005)
+                    alive_in = d.is_alive()
+            evs = read_evs(runs)
+        finally:
+            gi_paths.remove_tree(runs)
+        kinds = [x["event"] for x in evs]
+        check("echo: innomaker_held's exit stops a drain still running BEFORE it shuts the bus, and records it",
+              alive_in and getattr(b, "drain_alive_at_shutdown", None) is False and not d.is_alive()
+              and "echoes" in kinds and kinds.index("echoes") < len(kinds) - 1 and kinds[-1] == "close", (kinds, f.log))
+    case("echo: held exit", held_exit)
 
 
 def pcan():
@@ -1830,7 +1948,7 @@ MUTANTS = [
     ("held: a second shutdown closes again", "        if getattr(b, \"_vtrux_closed\", False):\n            return None\n        b._vtrux_closed = True\n        ev = ",
      "        ev = "),
     ("held: the close not recorded", "            raise\n        record(ev)\n        return None\n", "            raise\n        return None\n"),
-    ("held: exit leaves a bus open", "        for b in self.buses:\n            try:\n                b.shutdown()\n", "        for b in []:\n            try:\n                b.shutdown()\n"),
+    ("held: exit leaves a bus open", "        for b in self.buses:\n            try:\n                d = getattr(", "        for b in []:\n            try:\n                d = getattr("),
     ("held: exit hands back before the closes", "        failed = []\n        for b in self.buses:", "        failed = []\n        innomaker_restore(self.role)\n        for b in self.buses:"),
     ("held: a failed close at exit swallowed", "        if failed:\n            raise InnomakerError(", "        if False:\n            raise InnomakerError("),
     # on canbench's bench_layer (the gen-inhibit reviewer's ruling, 2026-11-19)
@@ -1911,6 +2029,25 @@ MUTANTS = [
     ("innomaker: canmain's link read for every role",
      "    row = _call(InnomakerError, role, bench_roles().roles).get(role)\n",
      '    row = _call(InnomakerError, role, bench_roles().roles).get("canmain")\n'),
+    # the echo drain (the gen-inhibit reviewer's ruling (C), 2026-11-19)
+    ("echo: the drain never started", "    bus.echo_drain = d\n    d.start()\n", "    bus.echo_drain = d\n"),
+    ("echo: the drain reads nothing", "                m = self.bus.recv(timeout=DRAIN_RECV_S)\n",
+     "                m = None\n                time.sleep(DRAIN_RECV_S)\n"),
+    ("echo: echoes counted as other frames", '            elif getattr(m, "is_rx", True) is False:\n',
+     "            elif False:\n"),
+    ("echo: stop does not join", "        self._halt.set()\n        self.join(DRAIN_JOIN_S)\n",
+     "        self._halt.set()\n"),
+    ("echo: the queue not read after the stop is asked",
+     "            if t_halt is not None and (m is None or time.perf_counter() - t_halt > DRAIN_SWEEP_MAX_S):\n",
+     "            if t_halt is not None:\n"),
+    ("echo: echoes == sent not compared",
+     '"echoes_equal_sent": (None if sent is None else self.echoes == sent)}', '"echoes_equal_sent": True}'),
+    ("echo: the counts not recorded", "        record(ev)\n        return ev\n", "        return ev\n"),
+    ("echo: a read that raises not recorded", '        elif self.error:\n            ev["error"] = self.error\n', ""),
+    ("echo: held's exit does not stop a running drain (not stopped before shutdown)",
+     "                if d is not None and d.is_alive():\n                    d.stop()        # its reads end before the bus's handle is freed\n",
+     ""),
+    ("echo: the drain not attached to its bus", "    bus.echo_drain = d\n    d.start()\n", "    d.start()\n"),
 ]
 
 
@@ -1966,6 +2103,7 @@ def main(argv):
         return can_fail()
     unit()
     innomaker()
+    echo()
     pcan()
     socketcan()
     case("bus errors", bus_errors)
