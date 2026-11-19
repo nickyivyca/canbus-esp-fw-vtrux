@@ -47,7 +47,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `requirements.txt` | Python dependencies of the sims and the harness | Tester |
 | `protocol.py` | The `0x18EFC000` page map and DBC-backed encode/decode for the BMS and charger frames | Tester |
 | `pack.py` | 116-cell LFP pack model, fitted to three real captures | Tester |
-| `bus.py` | Transport factory (virtual `udp_multicast`, or a real dongle opened by the bench role `--channel` names, through `adapter_roles.py`, from 2026-11-18), `EchoSuppressor` and the segment-isolation guard | Tester |
+| `bus.py` | Transport factory (virtual `udp_multicast`, or a real dongle opened by the bench role `--channel` names, through `adapter_roles.py`, from 2026-11-18), `EchoSuppressor` and the segment-isolation guard; on canchg (gs_usb, libusb) `drop_echoes` retires every queued echo in one read, and `drain=True` hands a send-only caller's bus to the layer's drain (from 2026-11-19: gs_usb stops taking sends after 257 unread echoes) | Tester |
 | `paths.py` | Resolves the data outside this repo from `REVERSE_IT_DIR`, refusing when it is unset; gives `code_dir()` (refuses an `INTERPOSER_CODE` naming another tree), the pinned canre, and `import_canbench()` (the pinned canbench, through `CAN_TOOLS_DIR` and `can_tools_pin.py`; nothing on `sys.path`) | Tester |
 | `paths_test.py` | Offline test for `paths.py`, with a `--can-fail` mode | Tester |
 | `pins.json` | The harness pin file: canre at the pinned public-repo commit (port step 0, reviewer 2026-10-26) and can-tools at the pinned commit (user, 2026-10-30: each project owns its can-tools pin) | Tester |
@@ -61,11 +61,11 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `serial_open.py`, `serial_open_test.py` | Opening the X2's USB serial port with DTR and RTS low without resetting it, in each system's order (`open_quiet`), and its test, with `--can-fail` (port step 3's adapter characterisation, 2026-11-11) | Tester |
 | `scratch_dir.py`, `scratch_dir_test.py` | The harness's throwaway run folders, `scratch/cih/<tool>/<pid>-<random>/`, each with an owner file, pruned when finished and removed, read-only files and long paths included (AGENTS.md, "Removing scratch"); on Windows only, a length guard refusing, before anything is made, a run folder whose path plus its fixtures' git depth passes 240 (git for Windows' limit; none on Linux, reviewer 2026-11-12); the run folder put first in `GIT_CEILING_DIRECTORIES` for what runs under it, so git in a fixture whose own repo is missing gets "not a git repository" rather than an enclosing one; its `sweep` reports old folders (the old `charge-interposer-harness/` name included) before any `--apply`, which never takes a live run's folder and runs alongside other work, on Linux only in `build.slice` (reviewer, 2026-11-12); and its test (reviewer, 2026-11-05) | Tester |
 | `scratch_dir_check.py` | Runs each harness entry point that makes run folders with a read-only git tree planted in them, and with the read-only handler taken out, and checks nothing is left or the leftover is reported, judged after the process exits; `--self-check` proves it on removal in a `finally`, at exit, and none | Tester |
-| `vehicle_sim.py` | VCU, A123 BMS and the VCM's evap flag (0x649), as a model or a capture replay | Tester |
+| `vehicle_sim.py` | VCU, A123 BMS and the VCM's evap flag (0x649), as a model or a capture replay; `--mode replay` on canchg opens with the layer's drain (2026-11-19) | Tester |
 | `charger_sim.py` | Bel Fuse charger/inverter, with fault injection | Tester |
-| `interposer_sim.py` | The board as a process: I/O only; the logic is `machine.py` | Tester |
+| `interposer_sim.py` | The board as a process: I/O only; the logic is `machine.py`. On a gs_usb charger bus it reads the charger port after at most 128 frames sent to it (`drain_ports`, 2026-11-19) | Tester |
 | `replay.py` | Replays real captures, offline into the core or onto a live segment | Tester |
-| `sims_test.py` | Offline test for the simulators' pure parts | Tester |
+| `sims_test.py` | Offline test for the simulators' pure parts (including `drain_ports`' read spacing and `drain_for`), with can-fail tests | Tester |
 | `stop_all.sh` | Stops a bench run's simulator processes; Linux only | Tester |
 | `run_scenario.py` | Runs the live three-way bench through named scenarios and checks the outcome | Tester |
 | `board_reset_test.py` | Harness test: `run_scenario.py`'s `SerialTap` board reset and the start order (reviewer, 2026-10-14) | Tester |
@@ -89,7 +89,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `diag_cadence.py` | Spec 8.2 on the wire: the status-frame cadence and the immediate `0x7F4`, its witness the PCAN by role `pcanfd` (from 2026-11-18) | Tester |
 | `diag_cadence_test.py` | Test for `diag_cadence.py`; no hardware | Tester |
 | `bench_suite.py`, `bench_suite_test.py`, `bench_identify.py` | The chain runner's three suites, their test and its identify hook (reviewer, 2026-10-19) | Tester |
-| `accept_adapter.py`, `accept_adapter_test.py` | The project's adapter for the acceptance runner (shared/bench ACCEPT-SPEC A15), and its test (reviewer, 2026-11-01) | Tester |
+| `accept_adapter.py`, `accept_adapter_test.py` | The project's adapter for the acceptance runner (shared/bench ACCEPT-SPEC A15), and its test (reviewer, 2026-11-01); its sim-timing frame-rate comparison carries a 1% margin (user, 2026-11-19) | Tester |
 | `accept_smoke.toml` | The adapter's smoke list: a test fixture, not an acceptance list; its records are never evidence (reviewer, 2026-11-02) | Tester |
 | `accept_build_smoke.toml` | The adapter's build smoke list: one `idf-build` build of a variant through the runner; a test fixture, not an acceptance list; its records are never evidence (reviewer, 2026-11-04) | Tester |
 | `accept_local_smoke.toml` | The adapter's local-lane smoke list: the emulated suite's `l-emulated` group and the whole harness suite through the runner, run `--dev` before a real run; a test fixture, not an acceptance list; its records are never evidence (reviewer, 2026-11-05) | Tester |
