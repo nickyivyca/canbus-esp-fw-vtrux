@@ -66,14 +66,12 @@ def main():
     schemas = gi_diag.SchemaSet.from_git()
     IDENT = gi_diag.run_identity(schemas=schemas)
     DEC = gi_diag.Decoder(schemas, IDENT)
-    found = {}
-    for cfg in can.detect_available_configs(["pcan", "kvaser"]):
-        if "Virtual" not in cfg.get("device_name", ""):
-            found.setdefault(cfg["interface"], cfg)
-    pcan = can.Bus(interface="pcan", channel=found["pcan"]["channel"],
-                   bitrate=BITRATE)
+    # The PCAN by its canctl role and the Kvaser through kvaser_bus (the user's ruling of 2026-11-18:
+    # never by detection's first found; CANlib's detection finds no SocketCAN Kvaser on Linux).
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    pcan = pcan_bus(bitrate=BITRATE)
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
-    kvaser = kvaser_bus(channel=found["kvaser"]["channel"],
+    kvaser = kvaser_bus(channel=0,
                      bitrate=BITRATE)
 
     # Interposer session, 2026-09-22: both dongles flush a backlog in the

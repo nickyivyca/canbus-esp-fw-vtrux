@@ -117,8 +117,8 @@ def regime(label, tx_bitrate, seconds=SECONDS):
     before = device_counters()
 
     # PCAN FIRST, then Kvaser -- the documented open order on this bench.
-    tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1",
-                 bitrate=tx_bitrate, auto_reset=True)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    tx = pcan_bus(bitrate=tx_bitrate, auto_reset=True)
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     kv = kvaser_bus(channel=0, bitrate=NOMINAL)
     # Settle and drain: a freshly opened handle delivers a backlog for about a

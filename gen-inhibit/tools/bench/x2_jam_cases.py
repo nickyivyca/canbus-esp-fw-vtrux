@@ -794,7 +794,8 @@ def replay_start(seconds=90.0, auto_reset=False):
     # off). busoff-rearm needs the replay back after the jam, so the gate could
     # go live; the other cases keep the default they ran with. On Linux the driver
     # does not act on it, so PcanStatus re-opens the channel itself (recover, 2026-11-16).
-    pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE,
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    pc = pcan_bus(bitrate=BITRATE,
                  auto_reset=auto_reset)
     stats = {}
     stim = LF.build_stimulus()

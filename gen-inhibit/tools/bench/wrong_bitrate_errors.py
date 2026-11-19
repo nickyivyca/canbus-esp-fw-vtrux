@@ -220,7 +220,8 @@ def main():
     starts, opens = [], []
     try:
         stim = LF.build_stimulus()
-        pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
+        from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+        pc = pcan_bus(bitrate=500000)
         wit = PcanWitness(pc)
         wit.start()
         # THE SLICE PLAYS ONLY WHILE THE WICAN IS ARMED (trip6_rearm_check.py, 2026-10-10; here

@@ -148,15 +148,13 @@ def stream(bus, seconds, key=None, inverter=True, shift=None, ctr=0, hz=100):
 
 
 def open_pcan():
-    for cfg in can.detect_available_configs(["pcan"]):
-        if "Virtual" not in cfg.get("device_name", ""):
-            bus = can.Bus(interface="pcan", channel=cfg["channel"],
-                          bitrate=BITRATE)
-            time.sleep(SETTLE_S)
-            while bus.recv(timeout=0.0) is not None:
-                pass
-            return bus
-    raise RuntimeError("no PCAN")
+    # the PCAN by its canctl role (the user's ruling of 2026-11-18: never by detection's first found)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    bus = pcan_bus(bitrate=BITRATE)
+    time.sleep(SETTLE_S)
+    while bus.recv(timeout=0.0) is not None:
+        pass
+    return bus
 
 
 def show(tag, st):

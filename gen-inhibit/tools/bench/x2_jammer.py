@@ -66,8 +66,8 @@ witness_clock's 2 s sanity limit.
                      witness for a list of checks, `--check "<sub and its args>"` repeated
                      (boot-silence, pulses, timeout, noduration; never can2-isolation, whose 0x7A0
                      sender the PCAN is; id needs no witness). One console; PCAN opens
-                     (bench_witness.PcanWitness, refused unless the named PCAN-USB on
-                     PCAN_USBBUS1 with ts_mode 3), every check driven, then each judged at the end
+                     (bench_witness.PcanWitness, refused unless the PCAN-USB of canctl role
+                     pcanfd, by its device id, with ts_mode 3), every check driven, then each judged at the end
                      on its OPEN's anchor (witness_anchor: offset = min(receipt - device), slope,
                      spread under 0.25 s, the per-command bracket); each check only on the frames
                      of its open mapped into its own span.
@@ -1326,7 +1326,8 @@ def sub_can2_isolation(a, rec, con, wit):
         time.sleep(2.0)
         phase[0] = "test"
         kw.phase = "pcan"
-        pcan = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+        from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+        pcan = pcan_bus(bitrate=BITRATE)
         try:
             for k in range(PCAN_FRAMES):
                 pcan.send(can.Message(arbitration_id=0x7A0, is_extended_id=False,
@@ -1394,7 +1395,7 @@ SUBS = {"id": sub_id, "boot-silence": sub_boot_silence, "pulses": sub_pulses,
 
 # ------------------------------------------------------------- the PCAN session (ruling (C))
 
-WITNESS_PCAN = ("pcan: PCAN-USB FD on PCAN_USBBUS1, normal mode, device stamps placed by its open's "
+WITNESS_PCAN = ("pcan: PCAN-USB FD by canctl role pcanfd (its device id), normal mode, device stamps placed by its open's "
                 "anchor (witness_anchor)")
 # A train's open (the gen-inhibit reviewer, 2026-11-13): LEAD_S before its expected stop, at most
 # LEAD_MAX_S, and never more than LEAD_PULSES_MAX pulses inside it (the PCAN reported warning at

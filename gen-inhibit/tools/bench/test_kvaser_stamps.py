@@ -319,8 +319,14 @@ def e4():
     i_log = src.find("    raw_path = None\n")
     check("e4_device_calibration: the clock settled before the raw log, a refused clock voids the arm, "
           "the note in the arm record",
-          0 < i_settle < i_log and "        void_reasons.append(\"witness clock %r: not judged on host time\" % "
-          "witness_clock)\n" in src and '        "witness_clock": witness_clock,\n' in src, (i_settle, i_log))
+          0 < i_settle < i_log and "        void_reasons.append(WC.clock_void_reason(witness_clock))\n" in src
+          and '        "witness_clock": witness_clock,\n' in src, (i_settle, i_log))
+    import witness_clock as WCm  # noqa: E402
+    r = WCm.clock_void_reason("SocketCAN: x")
+    check("witness_clock: the clock's void reason is what arm_clock_void picks out, and nothing else is",
+          WCm.arm_clock_void({"void": True, "void_reasons": ["attribution x", r]}) == [r]
+          and WCm.arm_clock_void({"void": False, "void_reasons": [r]}) == []
+          and WCm.arm_clock_void({"void": True, "void_reasons": ["attribution x"]}) == [], r)
 
 
 # ---------------------------------------------------------------- desk judges
@@ -347,6 +353,16 @@ def desk():
             json.dump(rec, f)
         check("golive_stale_check: the same arm not void is judged", not G.judge_file(path)["verdict"].startswith("VOID"),
               G.judge_file(path)["verdict"])
+        # void for another reason only (attribution): judged as before (the accepted baseline's B3
+        # arms; the reviewer asked, 2026-11-18)
+        rec["arms"]["idle"]["void"] = True
+        rec["arms"]["idle"]["void_reasons"] = ["attribution disagrees with the device: tx_ok=3, witness attributes 2"]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+        check("golive_stale_check: an arm void only on attribution is judged as before",
+              not G.judge_file(path)["verdict"].startswith("VOID"), G.judge_file(path)["verdict"])
+        rec["arms"]["idle"]["void_reasons"] = ["attribution disagrees with the device: tx_ok=3, witness attributes 2",
+                                               "witness clock 'x': not judged on host time"]
         rec["arms"]["idle"]["void"] = True
         with open(path, "w", encoding="utf-8") as f:
             json.dump(rec, f)
@@ -360,8 +376,8 @@ def desk():
         P.gi_paths.verify = lambda p: None
         try:
             res = P.rejudge(path, "idle", keep_frames=True)
-            check("provenance_classifier.rejudge: the arm's VOID carried as arm_void",
-                  res.get("arm_void") == rec["arms"]["idle"]["void_reasons"], res.get("arm_void"))
+            check("provenance_classifier.rejudge: the arm's witness-clock VOID carried as arm_void, its other "
+                  "reasons not", res.get("arm_void") == ["witness clock 'x': not judged on host time"], res.get("arm_void"))
             B24 = mod("b24_frame_content_judge")
             B24.P.read_witness = lambda p: []
             r = B24.judge_run(path)
@@ -370,12 +386,18 @@ def desk():
             MEA = mod("mode_entry_analysis")
             r = MEA.analyse(path)
             check("mode_entry_analysis: a VOID arm gives {run, void}, no figures",
-                  r.get("void") == rec["arms"]["idle"]["void_reasons"] and "first_answer_after_post_ms" not in r, r)
+                  r.get("void") == ["witness clock 'x': not judged on host time"] and "first_answer_after_post_ms" not in r, r)
             rec["arms"]["idle"]["void"] = False
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(rec, f)
             check("provenance_classifier.rejudge: an arm not void carries arm_void []",
                   P.rejudge(path, "idle")["arm_void"] == [])
+            rec["arms"]["idle"]["void"] = True
+            rec["arms"]["idle"]["void_reasons"] = ["attribution disagrees with the device: tx_ok=3, witness attributes 2"]
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(rec, f)
+            check("provenance_classifier.rejudge: an arm void only on attribution carries arm_void [] (judged as "
+                  "before)", P.rejudge(path, "idle")["arm_void"] == [])
         finally:
             if saved[0] is None:
                 sys.modules.pop("e4_device_calibration", None)
@@ -422,12 +444,17 @@ MUTANTS = [
     ("e4_rig_calibration.py", "    for t, k in zip(mer, errs):\n        new[k] = (t,) + new[k][1:]\n", ""),
     ("e4_rig_calibration.py", "    if not WC.socketcan(w.bus):\n        return CANLIB_NOTE\n", ""),
     ("e4_rig_calibration.py", "                raw_append(raw)\n", ""),
-    ("e4_device_calibration.py", "        void_reasons.append(\"witness clock %r: not judged on host time\" % witness_clock)\n",
+    ("e4_device_calibration.py", "        void_reasons.append(WC.clock_void_reason(witness_clock))\n",
      "        pass\n"),
-    ("provenance_classifier.py", "    res[\"arm_void\"] = list(a.get(\"void_reasons\") or []) if a.get(\"void\") else []\n",
+    ("provenance_classifier.py", "    res[\"arm_void\"] = WC.arm_clock_void(a)\n",
      "    res[\"arm_void\"] = []\n"),
-    ("golive_stale_check.py", "        if a.get(\"void\"):                         # the arm's own VOID (2026-11-18)\n",
-     "        if False:\n"),
+    ("provenance_classifier.py", "    res[\"arm_void\"] = WC.arm_clock_void(a)\n",
+     "    res[\"arm_void\"] = list(a.get(\"void_reasons\") or []) if a.get(\"void\") else []\n"),
+    ("golive_stale_check.py", "        if cv:\n", "        if False:\n"),
+    ("golive_stale_check.py", "        cv = WC.arm_clock_void(a)", "        cv = a.get(\"void_reasons\") if a.get(\"void\") else []"),
+    ("witness_clock.py", "    if not arm.get(\"void\"):\n        return []\n", ""),
+    ("witness_clock.py", "    return [r for r in (arm.get(\"void_reasons\") or []) if str(r).startswith(CLOCK_VOID_PREFIX)]\n",
+     "    return list(arm.get(\"void_reasons\") or [])\n"),
     ("b24_frame_content_judge.py", "        res[\"verdict\"] = \"VOID\"\n", "        pass\n"),
     ("mode_entry_analysis.py", "    if r.get(\"arm_void\"):                          # the arm's own VOID (2026-11-18)\n",
      "    if False:\n"),

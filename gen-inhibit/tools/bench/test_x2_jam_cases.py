@@ -11,6 +11,7 @@ Run: py -3.14 gen-inhibit/tools/bench/test_x2_jam_cases.py
 import json
 import os
 import sys
+import types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -475,6 +476,7 @@ def pcan_cases():
     out.append(("PcanStatus: re-opens with pcan_reopen unless told otherwise", st.reopen is C.pcan_reopen, st.reopen))
     # replay_start hands auto_reset on as recover
     saved = (C.can.Bus, C.LF.build_stimulus, C.LF.play)
+    saved_kb = sys.modules.get("kvaser_bus")
     made = []
     try:
         class FakeBusCtor(FakePcan):
@@ -484,16 +486,29 @@ def pcan_cases():
 
             def shutdown(self):
                 pass
-        C.can.Bus = lambda **kw: made.append(FakeBusCtor(**kw)) or made[-1]
+        def not_by_can_bus(**kw):
+            raise AssertionError("the PCAN opened by can.Bus %r, not kvaser_bus.pcan_bus" % (kw,))
+        C.can.Bus = not_by_can_bus
+        # the PCAN by its canctl role (2026-11-18): replay_start opens it through kvaser_bus.pcan_bus
+        kb = types.ModuleType("kvaser_bus")
+        kb.pcan_bus = lambda **kw: made.append(FakeBusCtor(**kw)) or made[-1]
+        saved_kb = sys.modules.get("kvaser_bus")
+        sys.modules["kvaser_bus"] = kb
         C.LF.build_stimulus = lambda: []
         C.LF.play = lambda tx, stim, seconds, stats=None: None
         for ar in (True, False):
             pc, th, stats, st, tx = C.replay_start(seconds=0.1, auto_reset=ar)
             C.replay_stop(pc, th, st, tx)
-            out.append(("replay_start(auto_reset=%s): PcanStatus recover=%s, auto_reset passed" % (ar, ar),
-                        st.recover is ar and made[-1].kw.get("auto_reset") is ar, (st.recover, made[-1].kw)))
+            out.append(("replay_start(auto_reset=%s): PcanStatus recover=%s, auto_reset passed, by role "
+                        "(pcan_bus, no channel)" % (ar, ar),
+                        st.recover is ar and made[-1].kw.get("auto_reset") is ar and "channel" not in made[-1].kw,
+                        (st.recover, made[-1].kw)))
     finally:
         C.can.Bus, C.LF.build_stimulus, C.LF.play = saved
+        if saved_kb is None:
+            sys.modules.pop("kvaser_bus", None)
+        else:
+            sys.modules["kvaser_bus"] = saved_kb
     return out
 
 

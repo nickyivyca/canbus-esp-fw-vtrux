@@ -803,7 +803,8 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
     print("\n== arm %s ==" % name)
 
     # PCAN FIRST, then the Kvaser -- the 2026-09-22 open-order rule.
-    tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    tx = pcan_bus(bitrate=BITRATE)
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     kv = kvaser_bus(channel=0, bitrate=BITRATE)
     time.sleep(2.0)
@@ -1057,7 +1058,7 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
     witness_clock = settle_clock(w)
     print("  witness clock: %s" % witness_clock)
     if not WC.judgeable(witness_clock):
-        void_reasons.append("witness clock %r: not judged on host time" % witness_clock)
+        void_reasons.append(WC.clock_void_reason(witness_clock))
 
     raw_path = None
     if out.get("_raw_dir"):

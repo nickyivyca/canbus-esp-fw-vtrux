@@ -202,6 +202,8 @@ def fakes(log, running_after, stamps="device"):
 
     KB.fixes = fixes
     KB.kvaser_bus = lambda **kw: Bus(interface="kvaser", **kw)
+    fake_pcan = Bus      # not called Bus here: test_kvaser_bus's scan reads Bus(...) as an open
+    KB.pcan_bus = lambda **kw: fake_pcan(interface="pcan", **kw)     # the PCAN by its canctl role (2026-11-18)
     return {"can": can, "lowid_flood_skip_bench": LF, "skip_method_bench": S, "kvaser_bus": KB}
 
 

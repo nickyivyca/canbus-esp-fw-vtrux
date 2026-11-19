@@ -623,7 +623,8 @@ def main():
         return 2
     pc = None
     try:
-        pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000, state=can.BusState.PASSIVE)
+        from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+        pc = pcan_bus(bitrate=500000, state=can.BusState.PASSIVE)
         wit = Witness(pc)
         wit.start()
 

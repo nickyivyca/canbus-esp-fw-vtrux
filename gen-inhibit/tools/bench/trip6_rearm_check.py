@@ -346,7 +346,8 @@ def main():
     # judged number comes from the PCAN's stamps after the run (judge_arms, A2 (a)).
     judged = []
     try:
-        pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)
+        from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+        pc = pcan_bus(bitrate=500000)
         wit = Witness(pc)
         wit.start()
         post(0)

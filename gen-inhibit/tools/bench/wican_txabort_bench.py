@@ -707,7 +707,8 @@ def main():
     # PCAN FIRST, then the Kvaser, then the IXXAT -- the 2026-09-22 open-order
     # rule. Swapping two adjacent lines here looks harmless and is not.
     print("opening PCAN ...")
-    tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    tx = pcan_bus(bitrate=BITRATE)
     print("opening Kvaser ...")
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     kv = kvaser_bus(channel=0, bitrate=BITRATE)

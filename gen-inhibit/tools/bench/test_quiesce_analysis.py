@@ -2,9 +2,11 @@
 
     py -3.14 gen-inhibit/tools/bench/test_quiesce_analysis.py
 """
+import json
 import os
 import sys
 import time
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -26,6 +28,36 @@ def _raises_cls(fn, cls):
         return False
     return False
 import e4_device_calibration as E                                  # noqa: E402
+
+
+def void_case():
+    import gi_paths
+    work = gi_paths.scratch("quiesce-void")
+    gi_paths.remove_tree(work)
+    os.makedirs(work)
+    saved = sys.modules.get("provenance_classifier")
+    read = []
+    try:
+        run = os.path.join(work, "B11raw_e4_x_arm1.json")
+        with open(run, "w", encoding="utf-8") as f:
+            json.dump({"arms": {"idle": {"witness_raw": "w.log.gz", "post_schedule": []}}, "mode": "inhibit"}, f)
+        P = types.ModuleType("provenance_classifier")
+        reason = ["witness clock 'SocketCAN: x': not judged on host time"]
+        P.rejudge = lambda *a, **k: {"arm_void": reason}
+        P.read_witness = lambda p: read.append(p) or []
+        sys.modules["provenance_classifier"] = P
+        try:
+            r = Q.analyse(run)
+        except Exception as e:      # noqa: BLE001  judged anyway: a FAIL, not a crash
+            print("       void case raised %s: %s" % (type(e).__name__, e))
+            return False
+        return (r == {"run": "B11raw_e4_x_arm1.json", "initial_mode": "inhibit", "void": reason} and not read)
+    finally:
+        if saved is None:
+            sys.modules.pop("provenance_classifier", None)
+        else:
+            sys.modules["provenance_classifier"] = saved
+        gi_paths.remove_tree(work)
 
 
 def main():
@@ -54,6 +86,8 @@ def main():
          Q.observe_verdict(span_tail).startswith("silent 20.0 ms")),
         ("span counts split 0x051 and other device frames",
          span_tail["device_0x051"] == 2 and span_tail["device_other"] == 1),
+        ("an arm voided on its witness clock (2026-11-18): {run, initial_mode, void}, nothing judged, the witness "
+         "never read", void_case()),
     ]
     fails = []
     for label, ok in checks:

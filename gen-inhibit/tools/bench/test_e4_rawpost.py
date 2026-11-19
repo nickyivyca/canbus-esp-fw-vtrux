@@ -115,6 +115,15 @@ def run_arm_wiring(arm_after, raw_timeout):
         did["kvaser_opens"].append(kw)
         return FakeKvaser()
     fake_kb.kvaser_bus = kvaser_bus
+    # the PCAN by its canctl role (2026-11-18): run_arm opens it through kvaser_bus.pcan_bus
+    did["pcan_opens"] = []
+
+    fake_pcan = Bus      # not called Bus here: test_kvaser_bus's scan reads Bus(...) as an open
+
+    def pcan_bus(**kw):
+        did["pcan_opens"].append(kw)
+        return fake_pcan()
+    fake_kb.pcan_bus = pcan_bus
     saved_kb = sys.modules.get("kvaser_bus")
     sys.modules["kvaser_bus"] = fake_kb
 
@@ -161,6 +170,8 @@ def check_run_arm_wiring():
         check(tag + ": runs to the witness", d["reached_witness"])
         check(tag + ": the Kvaser opened once, through the fake kvaser_bus (no real adapter)",
               len(d["kvaser_opens"]) == 1, d["kvaser_opens"])
+        check(tag + ": the PCAN opened once, through the fake kvaser_bus.pcan_bus by role (no channel)",
+              len(d["pcan_opens"]) == 1 and "channel" not in d["pcan_opens"][0], d["pcan_opens"])
         check(tag + ": %s POST before the replay" % ("one" if posts_now else "no"),
               len(posts) == (1 if posts_now else 0), posts)
         check(tag + ": %s deferred poster" % ("one" if deferred else "no"),

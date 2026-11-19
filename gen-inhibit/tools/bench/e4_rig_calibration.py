@@ -153,7 +153,8 @@ def open_buses(need_tx):
     # harmless and is the 2026-09-22 artefact: whichever bus is open while
     # another is still opening accumulates a backlog and delivers it as a
     # burst. Two sessions read that as the Kvaser duplicating frames.
-    pcan = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    pcan = pcan_bus(bitrate=BITRATE)
     opened.append(("pcan", pcan))
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     kvaser = kvaser_bus(channel=0, bitrate=BITRATE)
@@ -492,7 +493,8 @@ def phase_topology(out):
 
     buses = {}
     # PCAN FIRST, as everywhere else in this file.
-    buses["pcan"] = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    buses["pcan"] = pcan_bus(bitrate=BITRATE)
     from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
     buses["kvaser"] = kvaser_bus(channel=0, bitrate=BITRATE)
     buses["ixxat"] = can.Bus(interface="ixxat", channel=0,

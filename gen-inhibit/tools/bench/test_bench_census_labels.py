@@ -32,6 +32,8 @@ def main():
     # lock: a fake kvaser_bus stands in, on the same FakeBus.
     fake_kb = types.ModuleType("kvaser_bus")
     fake_kb.kvaser_bus = lambda **kw: FakeBus(interface="kvaser", **kw)
+    # the PCAN by its canctl role (2026-11-18): kvaser_bus.pcan_bus, faked the same way
+    fake_kb.pcan_bus = lambda **kw: FakeBus(interface="pcan", via="pcan_bus", **kw)
     saved_kb = sys.modules.get("kvaser_bus")
     sys.modules["kvaser_bus"] = fake_kb
     fails = []
@@ -44,8 +46,9 @@ def main():
             fails.append("kvaser")
         _, label = BC.open_adapter("pcan")
         kw = FakeBus.calls[-1]
-        ok = kw.get("state") == BC.can.BusState.PASSIVE and "listen-only" in label
-        print("  %-4s pcan: listen-only                      %r" % ("ok" if ok else "FAIL", label))
+        ok = (kw.get("state") == BC.can.BusState.PASSIVE and "listen-only" in label
+              and kw.get("via") == "pcan_bus" and "channel" not in kw)
+        print("  %-4s pcan: listen-only, by role (pcan_bus, no channel)  %r %r" % ("ok" if ok else "FAIL", kw, label))
         if not ok:
             fails.append("pcan")
     finally:

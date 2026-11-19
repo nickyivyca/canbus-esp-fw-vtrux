@@ -28,13 +28,17 @@ stuff errors, 0x288 on kvaser_usb, the PCAN's error messages as canbench transla
 controller-state and counter-only frames are kept apart, and canbench stamps some of those with
 the last data frame's time, so they never anchor anything.
 
-  PcanWitness(opener=None, sysfs=PCAN_SYSFS)
-                    refusals before the thread starts (WitnessRefused): the sysfs device is not a
-                    PCAN-USB adapter; the bus opened is not the named channel PCAN_USBBUS1 of a
-                    PCAN bus class (no virtual bus); ts_mode after the open is not 3 (raw device
-                    time; RAW libpcanbasic sets it at each open); nom_bitrate not 500000.
-                    identity_open / identity_close (adapter, dev, USB device path, ts_mode):
-                    same_device() compares them, for the anchor's replug refusal.
+  PcanWitness(opener=None, sysfs=None)
+                    the PCAN by its canctl role pcanfd (2026-11-18, the user's ruling: never by
+                    channel; kvaser_bus.pcan_witness_bus resolves the role's device id through
+                    `canctl roles`), its sysfs entry /sys/class/pcan/<the role's char device>.
+                    Refusals before the thread starts (WitnessRefused): the sysfs device is not a
+                    PCAN-USB adapter; the bus is not of a PCAN bus class (no virtual bus), was not
+                    opened by role pcanfd, is not on a PCAN-USB channel, or its device id is not
+                    the sysfs entry's devid; ts_mode after the open is not 3 (raw device time; RAW
+                    libpcanbasic sets it at each open); nom_bitrate not 500000.
+                    identity_open / identity_close (adapter, dev, devid, USB device path,
+                    ts_mode): same_device() compares them, for the anchor's replug refusal.
   SocketcanWitness(iface="kvaser", sysfs_net=..., sock=None)
                     netdev_why() first: only `kvaser`, a CAN netdev (type 280) with a device
                     whose driver is kvaser_usb (a vcan has no device), operstate UP (brought up
@@ -78,8 +82,9 @@ def state_down(aid, data):
     d = bytes(data or b"")
     return not (len(d) > 1 and d[1] == CAN_ERR_CRTL_ACTIVE)
 
-PCAN_CHANNEL = "PCAN_USBBUS1"
-PCAN_SYSFS = "/sys/class/pcan/pcanusbfd32"
+PCAN_ROLE = "pcanfd"
+PCAN_SYSFS_ROOT = "/sys/class/pcan"
+PCAN_USB_CHANNEL_PREFIX = "PCAN_USB"
 PCAN_TS_MODE = "3"
 
 KVASER_IFACE = "kvaser"
@@ -117,10 +122,11 @@ def _read(path):
         return None
 
 
-def pcan_identity(sysfs=PCAN_SYSFS):
+def pcan_identity(sysfs):
     dev = os.path.join(sysfs, "device")
     return {"adapter_name": _read(os.path.join(sysfs, "adapter_name")),
             "dev": _read(os.path.join(sysfs, "dev")),
+            "devid": _read(os.path.join(sysfs, "devid")),
             "ts_mode": _read(os.path.join(sysfs, "ts_mode")),
             "nom_bitrate": _read(os.path.join(sysfs, "nom_bitrate")),
             "usb_path": os.path.realpath(dev) if os.path.exists(dev) else None}
@@ -135,8 +141,13 @@ def pcan_why(ident, bus):
     cls = type(bus).__name__
     if "Pcan" not in cls:
         return "the bus opened is a %s, not a PCAN bus" % cls
-    if getattr(bus, "channel_info", None) != PCAN_CHANNEL:
-        return "the bus opened is channel %r, not %s" % (getattr(bus, "channel_info", None), PCAN_CHANNEL)
+    if getattr(bus, "vtrux_role", None) != PCAN_ROLE:
+        return "the bus was not opened by its canctl role %s (%r)" % (PCAN_ROLE, getattr(bus, "vtrux_role", None))
+    if not str(getattr(bus, "channel_info", "")).startswith(PCAN_USB_CHANNEL_PREFIX):
+        return "the bus opened is channel %r, not a PCAN-USB channel" % (getattr(bus, "channel_info", None),)
+    if str(getattr(bus, "vtrux_device_id", None)) != ident.get("devid"):
+        return "the bus opened device id %r, the sysfs entry's devid is %r" % (
+            getattr(bus, "vtrux_device_id", None), ident.get("devid"))
     if ident.get("ts_mode") != PCAN_TS_MODE:
         return "ts_mode %r after the open, not %s (raw device time)" % (ident.get("ts_mode"), PCAN_TS_MODE)
     if ident.get("nom_bitrate") != str(BITRATE):
@@ -149,14 +160,14 @@ class PcanWitness(threading.Thread):
 
     name_ = "pcan"
 
-    def __init__(self, opener=None, sysfs=PCAN_SYSFS):
+    def __init__(self, opener=None, sysfs=None):
         super().__init__(daemon=True)
-        self.sysfs = sysfs
         if opener is None:
-            from kvaser_bus import pcan_witness_bus as opener   # noqa: E402  the guard, the pin
-        self.bus = opener(channel=PCAN_CHANNEL, bitrate=BITRATE)
+            from kvaser_bus import pcan_witness_bus as opener   # noqa: E402  the guard, the role, the pin
+        self.bus = opener(bitrate=BITRATE)
+        self.sysfs = sysfs or os.path.join(PCAN_SYSFS_ROOT, str(getattr(self.bus, "vtrux_chardev", None)))
         self.opens = 1
-        self.identity_open = pcan_identity(sysfs)
+        self.identity_open = pcan_identity(self.sysfs)
         why = pcan_why(self.identity_open, self.bus)
         if why:
             try:
@@ -228,7 +239,8 @@ class PcanWitness(threading.Thread):
 
     def describe(self):
         return {"name": "pcan", "adapter": self.identity_open.get("adapter_name"),
-                "channel": PCAN_CHANNEL, "mode": "normal (ACKing)",
+                "role": PCAN_ROLE, "device_id": getattr(self.bus, "vtrux_device_id", None),
+                "channel": getattr(self.bus, "channel_info", None), "mode": "normal (ACKing)",
                 "stamps": "device time (ts_mode %s), placed by the session anchor" % self.identity_open.get("ts_mode"),
                 "identity_open": self.identity_open, "identity_close": self.identity_close}
 

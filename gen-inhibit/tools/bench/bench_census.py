@@ -62,8 +62,8 @@ def open_adapter(name):
         return kvaser_bus(channel=0, bitrate=BITRATE,
                           driver_mode=True), "ACKING (normal; this Leaf Light v2 has no silent mode)"
     if name == "pcan":
-        return can.Bus(interface="pcan", channel="PCAN_USBBUS1",
-                       bitrate=BITRATE,
+        from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+        return pcan_bus(bitrate=BITRATE,
                        state=can.BusState.PASSIVE), \
             "listen-only (state=BusState.PASSIVE)"
     if name == "gs_usb":

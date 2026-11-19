@@ -255,7 +255,8 @@ def main():
                "capture": os.path.basename(E.CAPTURE), "seconds": a.seconds, "arm_at": a.arm_at,
                "post_at": a.post_at, "build_before": LF.build_id(),
                "page_before": {k: p0.get(k) for k in ("mode", "drv", "uptime_ms", "reset_reason") + extra_keys}}
-        tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000, auto_reset=True)
+        from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+        tx = pcan_bus(bitrate=500000, auto_reset=True)
         from kvaser_bus import kvaser_bus, bus_error  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
         kv = kvaser_bus(channel=0, bitrate=500000)
         got, errs, fails, sent_epoch, reads = [], [], [], [], []

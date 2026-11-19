@@ -612,7 +612,8 @@ def run_case(can, LF, info, parsed, power, stamp):
         rec["verdict"] = "VOID: the WiCAN did not come back in mode 0 after the reboot"
         return rec
     rec["page_before"] = {k: (LF.page() or {}).get(k) for k in PAGE_FIELDS}
-    pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=BITRATE)
+    from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+    pc = pcan_bus(bitrate=BITRATE)
     wit = Witness(can)
     wit.start()
     time.sleep(1.0)

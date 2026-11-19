@@ -246,9 +246,11 @@ def rejudge(run_path, arm="idle", keep_frames=False):
                      "timing (scheduled capture offsets fitted to the witness) reported only")
     res["run"] = os.path.basename(run_path)
     res["arm"] = arm
-    # an arm its own run made VOID (its void_reasons; the witness clock among them from
-    # 2026-11-18) carries that here, so a desk judge reads it as VOID, never as a result
-    res["arm_void"] = list(a.get("void_reasons") or []) if a.get("void") else []
+    # an arm its own run made VOID for its witness clock (2026-11-18) carries that reason here,
+    # so a desk judge reads it as VOID, never as a result (witness_clock.arm_clock_void; other
+    # void reasons are judged as before)
+    import witness_clock as WC  # noqa: E402
+    res["arm_void"] = WC.arm_clock_void(a)
     res["current_classifier"] = {k: a.get(k) for k in ("late_at_wire", "double_answers",
                                                        "misattributed_vcm",
                                                        "missing_command_in_front",

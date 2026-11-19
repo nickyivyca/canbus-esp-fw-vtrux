@@ -9,6 +9,10 @@ scan gen-inhibit's tools for an open that goes round it (gen-inhibit reviewer, 2
             its role) and sends anything else straight to can.Bus with its arguments;
             pcan_witness_bus() (2026-11-13) opens the pinned canbench's CanbenchPcanBus with
             the caller's arguments and its bus-off reset off, after the guard and the pin
+  pcan      (2026-11-18, the same ruling) against a fake `canctl roles`: pcan_bus() and
+            pcan_witness_bus() refuse channel/device_id/interface, then after the guard open by
+            pcanfd's device id; no PCAN, two, another kind, no row, no number, no char device, a
+            failed or empty canctl roles each refuse with RoleError before an open
   innomaker (2026-11-18, the user's ruling: an adapter by its canctl role, never by index or
             first found; the gen-inhibit reviewer's conditions 1-2) against a made-up sysfs
             (net/<role> with flags and a device link, usb/<usb> with busnum and devnum) and a
@@ -21,7 +25,7 @@ scan gen-inhibit's tools for an open that goes round it (gen-inhibit reviewer, 2
             hand-back raises InnomakerError (naming both failures after a failed open)
   guard     (reviewer, 2026-11-12) require_bench() runs first: with the lock free, unreadable,
             held by another role, or held under a pid that is neither this process nor an
-            ancestor, kvaser_bus(), innomaker_bus(), pcan_witness_bus() and bus(interface="kvaser") raise BenchNotHeld
+            ancestor, kvaser_bus(), innomaker_bus(), pcan_bus(), pcan_witness_bus() and bus(interface="kvaser") raise BenchNotHeld
             before the pin, the fixes or an open; held by a gen-inhibit role under this process's
             pid (a runner) or an ancestor's (a hand take's session; the implementor on a loan),
             they open. _ancestors() walks /proc. In a child, the REAL guard: the real kvaser_bus,
@@ -34,12 +38,15 @@ scan gen-inhibit's tools for an open that goes round it (gen-inhibit reviewer, 2
             fixes are installed in python-can's Kvaser backend and in gs_usb, where those are
             importable
   scan      every .py file under gen-inhibit/ but firmware/ (the upstream WiCAN tree), parsed:
-            no call of Bus, ThreadSafeBus, KvaserBus or GsUsbBus that opens the Kvaser or the
-            Innomaker directly (interface "kvaser" or "gs_usb"), names its interface at run time
+            no call of Bus, ThreadSafeBus, KvaserBus, GsUsbBus or PcanBus that opens the Kvaser,
+            an Innomaker or the PCAN directly (interface "kvaser", "gs_usb" or "pcan"; the PCAN from
+            2026-11-18), names its interface at run time
             (not a string literal), passes **kwargs, passes no interface= (python-can then takes
             it from its config) or passes the interface by position. ALLOWED lists the files
             that may, with the number of such calls and why; a different number fails. A call
-            of the removed by-index openers gs_usb_bus() or close_gs_usb() fails (2026-11-18).
+            of the removed by-index openers gs_usb_bus() or close_gs_usb() fails, and so does a
+            PCAN channel named as a string (PCAN_USBBUS<n>, the n-th PCAN found) outside
+            PCAN_LITERAL_EXEMPT (three tests, each with why; 2026-11-18).
             The scan is shown able to fail on a snippet of each form, and on real files
             reverted.
             A file that replaces a module's `can` attribute (a test faking a tool's python-can)
@@ -58,6 +65,7 @@ Gen-inhibit tester, 2026-11-12.
 """
 import ast
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -77,8 +85,9 @@ FAILS = []
 # Files that may open a bus in a form the scan flags: (calls flagged, why). Paths are relative
 # to gen-inhibit/, with forward slashes.
 ALLOWED = {
-    "tools/bench/kvaser_bus.py": (3, "the opener itself (the SocketCAN open goes through canbench's SocketcanHwBus "
-                                     "from 2026-11-18, which the scan does not flag)"),
+    "tools/bench/kvaser_bus.py": (4, "the opener itself: the CANlib Kvaser, the Innomaker by role, the PCAN by role "
+                                     "and bus()'s run-time interface (the SocketCAN open goes through canbench's "
+                                     "SocketcanHwBus from 2026-11-18, which the scan does not flag)"),
     "tools/bench/test_x2_jam_cases.py": (5, "Bus(api) is the test's own stand-in class for pcan_reopen, not "
                                             "python-can's (on gen-inhibit/main from 4e81b9c2, 2026-11-16)"),
     "tools/vehicle_runner.py": (3, "the implementor's file (gen-inhibit README), not the bench harness. Its "
@@ -96,8 +105,16 @@ ALLOWED = {
 FAKE_CAN_EXEMPT = {
     "tools/test_gi_vbus.py": "gi_vbus opens udp_multicast only, never the Kvaser or the Innomaker",
 }
-BUS_NAMES = {"Bus", "ThreadSafeBus", "KvaserBus", "GsUsbBus"}
-OPENERS = ("kvaser", "gs_usb")
+BUS_NAMES = {"Bus", "ThreadSafeBus", "KvaserBus", "GsUsbBus", "PcanBus"}
+OPENERS = ("kvaser", "gs_usb", "pcan")
+PCAN_CHANNEL_RX = re.compile(r"PCAN_USBBUS\d+\Z")
+# Files that may hold a PCAN channel name as a string (the literal rule, 2026-11-18), and why. Any
+# other file, test_only_inert.py (a bench tool) among them, may not.
+PCAN_LITERAL_EXEMPT = {
+    "tools/bench/test_kvaser_bus.py": "its refusal cases ask the openers by channel and must be refused",
+    "tools/bench/test_jammer_witnesses.py": "its fake PCAN buses' channel_info, as PCAN-Basic names the channel found",
+    "tools/bench/test_diag_build_open.py": "its fake detection lists the PCAN, to show the script no longer asks it",
+}
 # The by-index Innomaker openers, removed 2026-11-18 (the user's ruling: by role, innomaker_bus)
 REMOVED = {"gs_usb_bus", "close_gs_usb"}
 
@@ -110,16 +127,34 @@ def check(name, ok, detail=""):
 
 # ---------------------------------------------------------------- unit, against fakes
 
+# What a fake `canctl roles` prints (the fields of canctl's 2026-11-18 roles command; made-up
+# USB places, no serials, as the real one prints none)
+ROLES_OUT = (
+    "role=canmain kind=gs_usb mode=socketcan attached=1 usb=1-3.2 busnum=3 devnum=7 driver=gs_usb "
+    "netdev=canmain link=down tty=- chardev=- devid=-\n"
+    "role=canchg kind=gs_usb mode=libusb attached=1 usb=1-4 busnum=1 devnum=12 driver=none "
+    "netdev=none link=none tty=- chardev=- devid=-\n"
+    "role=canx2 kind=slcan mode=tty attached=1 usb=1-5 busnum=1 devnum=13 driver=cdc_acm "
+    "netdev=none link=none tty=/dev/ttyACM1 chardev=- devid=-\n"
+    "role=kvaser kind=kvaser mode=socketcan attached=1 usb=1-6 busnum=1 devnum=14 driver=kvaser_usb "
+    "netdev=kvaser link=down tty=- chardev=- devid=-\n"
+    "role=pcanfd kind=pcan mode=- attached=1 usb=1-7 busnum=1 devnum=15 driver=pcan "
+    "netdev=none link=none tty=- chardev=pcanusbfd32 devid=0\n")
+
+
 class Fakes:
     """A fake can, a fake pin tool and a fake pinned canbench, all logging to one list."""
 
     LEAF = "Kvaser Leaf Light v2, S/N 1 (#1)"
 
     def __init__(self, use_raises=False, apply_raises=False, shutdown_raises=False, holder="ours",
-                 kv_info=LEAF):
+                 kv_info=LEAF, roles=None, roles_rc=0):
         """holder: the bench log's holder _lock_holder gives: "ours" (tester (gen-inhibit) with
         this process's pid), None (free), "raise" (unreadable), or a dict. kv_info: the opened
-        bus's channel_info ("absent": no such attribute)."""
+        bus's channel_info ("absent": no such attribute). roles / roles_rc: what the fake
+        `canctl roles` prints and exits with (ROLES_OUT by default: one PCAN, device id 0)."""
+        self.roles_out = ROLES_OUT if roles is None else roles
+        self.roles_rc = roles_rc
         self.holder = {"who": "tester (gen-inhibit)", "pid": os.getpid(), "run": None} if holder == "ours" \
             else holder
         self.log = []
@@ -198,7 +233,15 @@ class Fakes:
                 raise kb.BenchNotHeld("the bench log could not be read: planted")
             return fakes.holder
         kb._lock_holder = lock_holder
+        kb._run = self.run_roles
         return kb
+
+    def run_roles(self, argv):
+        if argv == ["/usr/local/sbin/canctl", "roles"]:
+            self.log.append(("roles",))
+            return self.roles_rc, self.roles_out
+        self.log.append(("run?",) + tuple(argv))
+        return 127, "not faked"
 
     def __exit__(self, *exc):
         for k, v in self.saved.items():
@@ -620,6 +663,80 @@ def innomaker():
     case("innomaker: flags", flags)
 
 
+def pcan():
+    """The PCAN by its canctl role pcanfd (the user's ruling, 2026-11-18)."""
+    def opens():
+        runs = gi_paths.scratch("kvaser-bus-pcan-runs")
+        gi_paths.remove_tree(runs)
+        os.makedirs(runs)
+        saved = os.environ.get("GI_RUNS_DIR")
+        os.environ["GI_RUNS_DIR"] = runs
+        try:
+            f = Fakes()
+            with f as kb:
+                b = kb.pcan_bus(bitrate=250000, auto_reset=True)
+            check("pcan: the lock checked first, then canctl roles, then the open", f.kinds() == ["lock", "roles", "Bus"],
+                  f.log)
+            check("pcan: python-can's pcan by pcanfd's device id, never by channel, with the caller's other arguments",
+                  f.log[-1][1] == {"interface": "pcan", "device_id": 0, "bitrate": 250000, "auto_reset": True}, f.log[-1])
+            check("pcan: the bus says its backend, role, device id and char device",
+                  (b.vtrux_backend, b.vtrux_role, b.vtrux_device_id, b.vtrux_chardev)
+                  == ("pcan", "pcanfd", 0, "pcanusbfd32"))
+            with open(os.path.join(runs, "kvaser_opens.jsonl"), encoding="ascii") as fh:
+                evs = [json.loads(x) for x in fh]
+            check("pcan: the open recorded with the role, device id, char device, channel and bitrate",
+                  len(evs) == 1 and evs[0]["event"] == "open" and evs[0]["backend"] == "pcan"
+                  and evs[0]["role"] == "pcanfd" and evs[0]["device_id"] == 0 and evs[0]["chardev"] == "pcanusbfd32"
+                  and evs[0]["bitrate"] == 250000 and evs[0]["reader"] == "python-can PcanBus", evs)
+        finally:
+            if saved is None:
+                os.environ.pop("GI_RUNS_DIR", None)
+            else:
+                os.environ["GI_RUNS_DIR"] = saved
+            gi_paths.remove_tree(runs)
+        f = Fakes(roles=ROLES_OUT.replace("devid=0", "devid=0x2a"))
+        with f as kb:
+            kb.pcan_bus()
+        check("pcan: the device id as canctl gives it (0x2a -> 42), 500k by default",
+              f.log[-1][1] == {"interface": "pcan", "device_id": 42, "bitrate": 500000}, f.log[-1])
+    case("pcan: opens", opens)
+
+    def refusals():
+        for opener in ("pcan_bus", "pcan_witness_bus"):
+            for kw in ({"channel": "PCAN_USBBUS1"}, {"device_id": 0}, {"interface": "pcan"}):
+                f = Fakes()
+                raised = None
+                with f as kb:
+                    try:
+                        getattr(kb, opener)(bitrate=500000, **kw)
+                    except TypeError as e:
+                        raised = e
+                check("%s: asked by %s -> TypeError, before the lock, canctl or an open" % (opener, list(kw)[0]),
+                      raised is not None and list(kw)[0] in str(raised) and f.log == [], (raised, f.log))
+        for label, out, rc, want in (
+                ("no PCAN attached", ROLES_OUT.replace("kind=pcan mode=- attached=1", "kind=pcan mode=- attached=0"),
+                 0, "0 PCAN devices attached"),
+                ("two PCANs attached (the one present is not one)",
+                 ROLES_OUT.replace("kind=pcan mode=- attached=1", "kind=pcan mode=- attached=2"), 0, "2 PCAN devices"),
+                ("pcanfd not kind pcan", ROLES_OUT.replace("kind=pcan", "kind=gs_usb"), 0, "not pcan"),
+                ("no pcanfd row", "\n".join(x for x in ROLES_OUT.splitlines() if "pcanfd" not in x), 0, "no role pcanfd"),
+                ("a device id that is no number", ROLES_OUT.replace("devid=0", "devid=-"), 0, "not a number"),
+                ("no char device", ROLES_OUT.replace("chardev=pcanusbfd32", "chardev=none"), 0, "no PCAN char device"),
+                ("canctl roles fails", "canctl: unknown command roles\n", 1, "canctl roles failed (rc 1)"),
+                ("canctl roles names no role", "\n", 0, "named no role")):
+            for opener in ("pcan_bus", "pcan_witness_bus"):
+                f = Fakes(roles=out, roles_rc=rc)
+                raised = None
+                with f as kb:
+                    try:
+                        getattr(kb, opener)(bitrate=500000)
+                    except kb.RoleError as e:
+                        raised = e
+                check("%s: %s -> RoleError naming it, nothing opened" % (opener, label),
+                      raised is not None and want in str(raised) and f.kinds() == ["lock", "roles"], (raised, f.log))
+    case("pcan: refusals", refusals)
+
+
 def socketcan():
     """The Kvaser on Linux through SocketCAN (gen-inhibit reviewer, 2026-11-18, ruling (a))."""
     def opens():
@@ -956,11 +1073,17 @@ def unit():
             check("bus(interface=%r): through its opener, the lock checked and the fixes applied first" % iface,
                   f.kinds() == ["lock", "use", "apply", "Bus"] and f.log[-1][1] == dict(kw, interface=iface), f.log)
         f = Fakes()
-        cfg = {"interface": "pcan", "channel": "PCAN_USBBUS1", "bitrate": 500000, "auto_reset": True}
+        with f as kb:
+            kb.bus(interface="pcan", bitrate=500000, auto_reset=True)
+        check("bus(interface='pcan'): through pcan_bus, by pcanfd's device id, the lock checked first",
+              f.kinds() == ["lock", "roles", "Bus"]
+              and f.log[-1][1] == {"interface": "pcan", "device_id": 0, "bitrate": 500000, "auto_reset": True}, f.log)
+        f = Fakes()
+        cfg = {"interface": "ixxat", "channel": 0, "bitrate": 500000}
         with f as kb:
             kb.bus(**cfg)
-        check("bus(interface='pcan'): straight to can.Bus with every argument",
-              f.log and f.log[-1] == ("Bus", cfg) and cfg["interface"] == "pcan", f.log)
+        check("bus(interface='ixxat'): straight to can.Bus with every argument",
+              f.log and f.log[-1] == ("Bus", cfg) and cfg["interface"] == "ixxat", f.log)
         f = Fakes()
         raised = None
         with f as kb:
@@ -976,17 +1099,17 @@ def unit():
         # 2026-11-13, the reviewer's ruling (C): the PCAN as the session's timing witness
         f = Fakes()
         with f as kb:
-            b = kb.pcan_witness_bus(channel="PCAN_USBBUS1", bitrate=500000)
-        check("pcan_witness_bus: the lock checked first, then the pin loaded, then the pinned CanbenchPcanBus",
-              f.kinds() == ["lock", "use", "Pcan"], f.log)
-        check("pcan_witness_bus: the caller's arguments, and the bus-off reset off",
-              f.log[-1][1] == {"channel": "PCAN_USBBUS1", "bitrate": 500000, "canbench_busoff_reset": False}
-              and b.kw is f.log[-1][1], f.log[-1])
+            b = kb.pcan_witness_bus(bitrate=500000)
+        check("pcan_witness_bus: the lock checked first, then canctl roles, the pin loaded, then the pinned "
+              "CanbenchPcanBus", f.kinds() == ["lock", "roles", "use", "Pcan"], f.log)
+        check("pcan_witness_bus: pcanfd's device id, the bitrate, and the bus-off reset off",
+              f.log[-1][1] == {"device_id": 0, "bitrate": 500000, "canbench_busoff_reset": False}
+              and b.kw is f.log[-1][1] and b.vtrux_device_id == 0, f.log[-1])
         f = Fakes(use_raises=True)
         raised = None
         with f as kb:
             try:
-                kb.pcan_witness_bus(channel="PCAN_USBBUS1", bitrate=500000)
+                kb.pcan_witness_bus(bitrate=500000)
             except Exception as e:      # noqa: BLE001
                 raised = e
         check("pcan_witness_bus: the pin refuses -> raises, and nothing is opened",
@@ -1004,7 +1127,8 @@ def unit():
              {"who": "tester (gen-inhibit)", "pid": 2 ** 22 + 7, "run": None})):
         for opener, kw in (("kvaser_bus", {"channel": 0, "bitrate": 500000}),
                            ("innomaker_bus", {"role": "canmain", "bitrate": 500000}),
-                           ("pcan_witness_bus", {"channel": "PCAN_USBBUS1", "bitrate": 500000})):
+                           ("pcan_bus", {"bitrate": 500000}),
+                           ("pcan_witness_bus", {"bitrate": 500000})):
             def go(label=label, holder=holder, opener=opener, kw=kw):
                 f = Fakes(holder=holder)
                 raised = None
@@ -1134,6 +1258,8 @@ tool = types.ModuleType("a_tool")
 tool.can = types.SimpleNamespace(Bus=lambda **kw: None)
 for name, call in (("kvaser_bus", lambda: K.kvaser_bus(channel=0, bitrate=500000)),
                    ("innomaker_bus", lambda: K.innomaker_bus("canmain", bitrate=500000)),
+                   ("pcan_bus", lambda: K.pcan_bus(bitrate=500000)),
+                   ("bus pcan", lambda: K.bus(interface="pcan", bitrate=500000)),
                    ("bus kvaser", lambda: K.bus(interface="kvaser", channel=0, bitrate=500000))):
     try:
         call()
@@ -1223,8 +1349,17 @@ def fakes_can_without_kvaser_bus(tree):
     return [] if literal else sorted(lines)
 
 
-def scan_text(text, path="<snippet>"):
-    return flagged(ast.parse(text, path))
+def pcan_channels(tree):
+    """[(line, why)] for each string that is a PCAN channel name (PCAN_USBBUS<n>, the n-th PCAN
+    found): the PCAN is asked for by its role (2026-11-18). Not applied to PCAN_LITERAL_EXEMPT."""
+    return [(n.lineno, "names PCAN channel %s (the n-th PCAN found, not the role pcanfd)" % n.value)
+            for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and PCAN_CHANNEL_RX.match(n.value)]
+
+
+def scan_text(text, path="<snippet>", test=False):
+    tree = ast.parse(text, path)
+    return flagged(tree) + ([] if test else pcan_channels(tree))
 
 
 def files():
@@ -1245,14 +1380,16 @@ def scan():
             text = fh.read()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
-            hits = scan_text(text, path)
+            hits = scan_text(text, path, test=rel in PCAN_LITERAL_EXEMPT)
             fake_can = fakes_can_without_kvaser_bus(ast.parse(text, path))
         if fake_can and rel not in FAKE_CAN_EXEMPT:
             bad.append("%s replaces a module's can (lines %s) and fakes no kvaser_bus" % (rel, fake_can))
         if rel in FAKE_CAN_EXEMPT and not fake_can:
             bad.append("%s is in FAKE_CAN_EXEMPT but no longer needs it" % rel)
+        if rel in PCAN_LITERAL_EXEMPT and not pcan_channels(ast.parse(text, path)):
+            bad.append("%s is in PCAN_LITERAL_EXEMPT but holds no PCAN channel name" % rel)
         n_files += 1
-        openers += text.count("kvaser_bus(") + text.count("innomaker_bus(")
+        openers += text.count("kvaser_bus(") + text.count("innomaker_bus(") + text.count("pcan_bus(")
         if hits:
             counts[rel] = hits
             if rel not in ALLOWED:
@@ -1264,7 +1401,7 @@ def scan():
         got = len(counts.get(rel, []))
         check("scan: ALLOWED %s has its %d (%s)" % (rel, want, why[:60]), got == want,
               (got, counts.get(rel)))
-    print("      %d files, %d calls of kvaser_bus/innomaker_bus" % (n_files, openers))
+    print("      %d files, %d calls of kvaser_bus/innomaker_bus/pcan_bus" % (n_files, openers))
 
 
 SNIPPETS = [
@@ -1281,9 +1418,12 @@ SNIPPETS = [
     ("gs_usb_bus(index=0), the removed opener", 'b = gs_usb_bus(channel="can0", index=0)\n'),
     ("close_gs_usb(b), the removed close", 'close_gs_usb(b)\n'),
     ("kvaser_bus.gs_usb_bus(...)", 'b = kvaser_bus.gs_usb_bus(channel="can0")\n'),
+    ("can.Bus(interface='pcan')", 'b = can.Bus(interface="pcan", bitrate=500000)\n'),
+    ("PCAN_CHANNEL = 'PCAN_USBBUS1', a channel by name", 'PCAN_CHANNEL = "PCAN_USBBUS1"\n'),
 ]
 CLEAN = [
-    ("can.Bus(interface='pcan')", 'b = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)\n'),
+    ("pcan_bus(bitrate=500000)", 'b = pcan_bus(bitrate=500000)\n'),
+    ("a docstring that mentions PCAN_USBBUS1 in prose", '"""It opened PCAN_USBBUS1 before 2026-11-18."""\n'),
     ("kvaser_bus(...)", 'b = kvaser_bus(channel=0, bitrate=500000)\n'),
     ("innomaker_bus('canmain') then shutdown", 'b = innomaker_bus("canmain", bitrate=500000)\nb.shutdown()\n'),
 ]
@@ -1304,6 +1444,12 @@ REVERTED = [
     ("bench_link_check.py", "bus = kvaser_bus_open(**cfg)", "bus = can.Bus(**cfg)", "flag"),
     ("diag_build_page_check.py", "buses[name] = open_bus(interface=name,", "buses[name] = can.Bus(interface=name,",
      "flag"),
+    ("interlock_bench.py", "pc = pcan_bus(", 'pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", ', "flag"),
+    ("bench_witness.py", "self.bus = opener(bitrate=BITRATE)", 'self.bus = opener(channel="PCAN_USBBUS1", bitrate=BITRATE)',
+     "flag"),
+    ("test_only_inert.py", "tx = pcan_bus(bitrate=500000)    # PCAN first",
+     'tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)    # PCAN first', "flag"),
+    ("wican_trip_bench.py", "pcan = pcan_bus(", 'pcan = can.Bus(interface="pcan", channel=found["pcan"]["channel"], ', "flag"),
 ]
 
 
@@ -1311,6 +1457,11 @@ def scan_can_fail():
     for label, text in SNIPPETS:
         hits = scan_text(text)
         check("scan can fail: flags %s" % label, len(hits) == 1, hits)
+    hits = scan_text('from can.interfaces.pcan import PcanBus\nb = PcanBus("PCAN_USBBUS2")\n')
+    check("scan can fail: PcanBus('PCAN_USBBUS2') flagged as a direct construction and a channel by name",
+          len(hits) == 2, hits)
+    hits = scan_text('PCAN_CHANNEL = "PCAN_USBBUS1"\n', test=True)
+    check("scan: a file in PCAN_LITERAL_EXEMPT may hold a PCAN channel name (its fakes)", hits == [], hits)
     for label, text in CLEAN:
         hits = scan_text(text)
         check("scan: passes %s" % label, not hits, hits)
@@ -1393,10 +1544,33 @@ MUTANTS = [
      "    return can.Bus(interface=iface)\n"),
     # the PCAN witness (2026-11-13, ruling (C))
     ("pcan_witness_bus opens without the guard",
-     '    require_bench()\n    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n',
-     '    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n'),
-    ("pcan_witness_bus resets on bus-off", "CanbenchPcanBus(canbench_busoff_reset=False, **kw)",
-     "CanbenchPcanBus(**kw)"),
+     '    _pcan_refuse(kw)\n    require_bench()\n    r = pcan_role()\n    _pin_tool().use()\n',
+     '    _pcan_refuse(kw)\n    r = pcan_role()\n    _pin_tool().use()\n'),
+    ("pcan_witness_bus resets on bus-off", "CanbenchPcanBus(canbench_busoff_reset=False, device_id=",
+     "CanbenchPcanBus(device_id="),
+    # the PCAN by canctl role (the user's ruling, 2026-11-18)
+    ("pcan: opens by channel PCAN_USBBUS1", 'b = can.Bus(interface="pcan", device_id=r["device_id"], ',
+     'b = can.Bus(interface="pcan", channel="PCAN_USBBUS1", '),
+    ("pcan: channel asked passes", 'PCAN_REFUSED_KW = ("channel", "device_id", "interface")',
+     'PCAN_REFUSED_KW = ("device_id", "interface")'),
+    ("pcan: device_id asked passes", 'PCAN_REFUSED_KW = ("channel", "device_id", "interface")',
+     'PCAN_REFUSED_KW = ("channel", "interface")'),
+    ("pcan: opens without the guard", '    _pcan_refuse(kw)\n    require_bench()\n    r = pcan_role()\n    import can\n',
+     '    _pcan_refuse(kw)\n    r = pcan_role()\n    import can\n'),
+    ("pcan: two attached pass", '    if r.get("attached") != "1":\n', '    if r.get("attached") == "0":\n'),
+    ("pcan: none attached passes", '    if r.get("attached") != "1":\n', '    if int(r.get("attached")) > 1:\n'),
+    ("pcan: any kind passes", '    if r.get("kind") != "pcan":\n', "    if False:\n"),
+    ("pcan: no row reads as a crash", "    if r is None:\n        raise RoleError(", "    if False:\n        raise RoleError("),
+    ("pcan: a failed canctl roles not named", '    if rc != 0:\n        raise RoleError("canctl roles failed',
+     '    if False:\n        raise RoleError("canctl roles failed'),
+    ("pcan: no char device passes", '    if not chardev or chardev in ("-", "none") or "/" in chardev:\n',
+     "    if not chardev:\n"),
+    ("pcan: the device id read as decimal only", 'devid = int(r.get("devid"), 0)', 'devid = int(r.get("devid"))'),
+    ("pcan witness: the device id not passed", "CanbenchPcanBus(canbench_busoff_reset=False, device_id=r[\"device_id\"], ",
+     "CanbenchPcanBus(canbench_busoff_reset=False, "),
+    ("pcan: the open not recorded", '    record({"event": "open", "backend": "pcan", ', '    ({"event": "open", "backend": "pcan", '),
+    ("pcan: the char device not on the bus", '    b.vtrux_chardev = r["chardev"]\n', ""),
+    ("bus() opens pcan straight", '    if iface == "pcan":\n        return pcan_bus(**kw)\n', ""),
     # the Kvaser on Linux through SocketCAN (gen-inhibit reviewer, 2026-11-18, ruling (a))
     ("Linux keeps CANlib", '    return "socketcan" if (platform or PLATFORM).startswith("linux") else "canlib"',
      '    return "canlib"'),
@@ -1545,6 +1719,7 @@ def main(argv):
         return can_fail()
     unit()
     innomaker()
+    pcan()
     socketcan()
     bus_errors()
     real_mask()

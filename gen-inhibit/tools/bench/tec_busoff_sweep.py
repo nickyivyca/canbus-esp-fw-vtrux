@@ -861,7 +861,8 @@ def main():
             return 1
 
         # ------------------------------------------------------- the ladder
-        tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=WRONG,
+        from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+        tx = pcan_bus(bitrate=WRONG,
                      auto_reset=True)
 
         for occ in ladder:

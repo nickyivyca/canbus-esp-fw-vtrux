@@ -255,7 +255,19 @@ def ib_run(IB, spy, frames):
     info = {"case": name, "judge": IB.CASES[0][2]}
     parsed = {"frames": [], "modes": [], "end": 1000}
     before = spy.calls
-    rec = IB.run_case(can, FakeLF, info, parsed, "stub", _time.strftime("%Y%m%dT%H%M%S"))
+    # run_case opens the PCAN through kvaser_bus.pcan_bus (by its canctl role, 2026-11-18), which
+    # imports the real can and needs the bench lock: a fake kvaser_bus stands in, on the fake can
+    kb = types.ModuleType("kvaser_bus")
+    kb.pcan_bus = lambda **k: FakeBus()
+    saved = sys.modules.get("kvaser_bus")
+    sys.modules["kvaser_bus"] = kb
+    try:
+        rec = IB.run_case(can, FakeLF, info, parsed, "stub", _time.strftime("%Y%m%dT%H%M%S"))
+    finally:
+        if saved is None:
+            sys.modules.pop("kvaser_bus", None)
+        else:
+            sys.modules["kvaser_bus"] = saved
     return rec, spy.calls - before
 
 

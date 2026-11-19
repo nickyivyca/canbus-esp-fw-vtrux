@@ -151,6 +151,27 @@ def require(note):
         raise ReceiptClock(note)
 
 
+# An e4 arm's void reason for its witness clock (2026-11-18), and the desk judges' reading of it.
+# The desk judges (golive_stale_check, mode_entry_analysis through provenance_classifier, b24,
+# suite_judges' B2) carry THIS reason as VOID. An arm void for another reason (attribution, the
+# send loop, the witness write) is judged as the desk judges always judged it: the accepted
+# e3d9437 baseline has B3 arms void on attribution that B3 judged, and whether that should
+# change is the gen-inhibit reviewer's to rule (asked 2026-11-18).
+CLOCK_VOID_PREFIX = "witness clock "
+
+
+def clock_void_reason(note):
+    return "%s%r: not judged on host time" % (CLOCK_VOID_PREFIX, note)
+
+
+def arm_clock_void(arm):
+    """[the arm's witness-clock void reason] when its run voided it for that; [] otherwise."""
+    arm = arm or {}
+    if not arm.get("void"):
+        return []
+    return [r for r in (arm.get("void_reasons") or []) if str(r).startswith(CLOCK_VOID_PREFIX)]
+
+
 def void_verdict(note):
     return "VOID: witness clock %r, not judged (%s)" % (note, WHY)
 

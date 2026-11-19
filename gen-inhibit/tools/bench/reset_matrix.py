@@ -466,8 +466,8 @@ def main():
             plan = witness_plan(a.case, a.kvaser_acks)
             rec["witness_plan"] = plan
             if plan["witness"] == "pcan":
-                kv = can.Bus(interface="pcan", channel="PCAN_USBBUS1",
-                             bitrate=BITRATE, state=can.BusState.PASSIVE)
+                from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+                kv = pcan_bus(bitrate=BITRATE, state=can.BusState.PASSIVE)
             else:
                 from kvaser_bus import kvaser_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
                 kv = kvaser_bus(channel=0, bitrate=BITRATE,
@@ -475,8 +475,8 @@ def main():
             wit = Witness(kv)
             wit.start()
             if plan["replay"] == "pcan":
-                pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1",
-                             bitrate=BITRATE)
+                from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
+                pc = pcan_bus(bitrate=BITRATE)
                 stim = LF.build_stimulus()
                 rec["replay_stats"] = {}
                 total = a.arms * (a.hold + a.settle + 40) + 30

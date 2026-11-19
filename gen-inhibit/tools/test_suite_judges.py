@@ -117,7 +117,17 @@ EDITS = [
     ("B4", "bench", r"B4_skip_method_stdout\.txt", [(r"^(l2 +)PASS", r"\g<1>VOID"), (r"^(w3 +)PASS", r"\g<1>FAIL")],
      None, "FAIL"),
     ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"^(  \[idle\] provenance \(live\))",
-     "  ---- ARM VOID: the figures above do not support a verdict ----\n\\g<1>", "VOID"),
+     "  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - witness clock 'SocketCAN (test)': not judged on host time\n\\g<1>", "VOID"),
+    # an arm void for another reason (attribution) is judged as before: the accepted baseline
+    # has such arms judged (the reviewer is asked whether that should change, 2026-11-18)
+    ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"^(  \[idle\] provenance \(live\))",
+     "  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - attribution disagrees with the device: tx_ok=670, witness attributes 669\n\\g<1>", "PASS"),
+    ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"^(  \[idle\] provenance \(live\))",
+     "  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - attribution disagrees with the device: tx_ok=670, witness attributes 669\n"
+     "       - witness clock 'SocketCAN (test)': not judged on host time\n\\g<1>", "VOID"),
     ("B3", "bench", r"B3_golive_stale_check\.txt", r"(T213139_arm2\.json +observe +dev0x051 1499 +stale 0 +)as specified",
      r"\g<1>VOID: arm void: witness clock (test)", "VOID"),
     ("B3", "bench", r"B3_golive_stale_check\.txt",
@@ -161,6 +171,39 @@ EDITS = [
      [(r"^arm 1: AS SPECIFIED", "arm 1: VOID"), (r"^verdict AS SPECIFIED", "verdict INCONCLUSIVE")], None, "FAIL"),
     ("B8", "bench", r"B8_busoff\.txt", r"^arm 1 train=True: PASS", "arm 1 train=True: FAIL", "FAIL"),
     ("B8", "bench", r"B8_busoff\.txt", r"^arm 3 train=False: INCONCLUSIVE", "arm 3 train=False: FAIL", "FAIL"),
+    # an arm its e4 run voided on its witness clock (2026-11-18): B11 and B11raw VOID, unless another
+    # arm or POST fails
+    ("B11", "bench", r"B11_quiesce_analysis\.txt", r'^\{"run": "(B11_e4_quiesce_inhibit_e3d9437_20261016T215437_arm1\.json)".*$',
+     r'{"run": "\g<1>", "initial_mode": "inhibit", "void": ["witness clock (test): not judged on host time"]}', "VOID"),
+    ("B11", "bench", r"B11_quiesce_analysis\.txt",
+     [(r'^\{"run": "(B11_e4_quiesce_inhibit_e3d9437_20261016T215437_arm1\.json)".*$',
+       r'{"run": "\g<1>", "initial_mode": "inhibit", "void": ["witness clock (test): not judged on host time"]}'),
+      (r'^(\{"run": "B11_e4_quiesce_passive_e3d9437_20261016T215437_arm2\.json"[^\n]*?"provenance": )"as specified"', r'\g<1>"late"')], None, "FAIL"),
+    ("B11raw", "bench", r"B11raw_rawpost_judge\.txt", r'^  \{"at_s": 10\.0, "mode": 1, "http": 200, "local_port": 61619, .*$',
+     '  {"at_s": 10.0, "mode": 1, "http": 200, "verdict": "VOID: arm void: witness clock (test): not judged on host time"}', "VOID"),
+    ("B11raw", "bench", r"B11raw_rawpost_judge\.txt",
+     [(r'^  \{"at_s": 10\.0, "mode": 1, "http": 200, "local_port": 61619, .*$',
+       '  {"at_s": 10.0, "mode": 1, "http": 200, "verdict": "VOID: arm void: witness clock (test): not judged on host time"}'),
+      (r'("local_port": 61947, .*"verdict": )"PASS"', r'\g<1>"FAIL"')], None, "FAIL"),
+    ("B11raw", "bench", r"B11raw_quiesce_analysis\.txt",
+     r'^\{"run": "(B11raw_e4_quiesce_inhibit_e3d9437_20261017T010417_arm1\.json)".*$',
+     r'{"run": "\g<1>", "initial_mode": "inhibit", "void": ["witness clock (test): not judged on host time"]}', "VOID"),
+    # a run VOID on its witness clock (x2_jam_cases run_guarded, 2026-11-18) makes the check VOID,
+    # never FAIL; an arm's FAIL before it still reads FAIL
+    ("B5", "bench", r"B5_livetrain_p2000_run2\.txt", r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test", "VOID"),
+    ("B5", "bench", r"B5_livetrain_p2000_run2\.txt", [(r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test"),
+                                                     (r"^(arm 0 .*?\| B: )PASS", r"\g<1>FAIL")], None, "FAIL"),
+    ("B5", "bench", r"B5_livetrain_p5000\.txt", [(r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test"), (r"^arm \d.*\n", "")],
+     None, "VOID all"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^verdict PASS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test", "VOID"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt", [(r"^verdict PASS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test"),
+                                                    (r"^(arm 1 \(replay [\d.]+/s\): )PASS", r"\g<1>FAIL")], None, "FAIL"),
+    ("B7", "bench", r"B7_busoff_rearm\.txt", r"^verdict AS SPECIFIED *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test", "VOID"),
+    ("B7", "bench", r"B7_busoff_rearm\.txt", [(r"^verdict AS SPECIFIED *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test"),
+                                             (r"^arm 1: AS SPECIFIED", "arm 1: NOT AS SPECIFIED")], None, "FAIL"),
+    ("B8", "bench", r"B8_busoff\.txt", r"^verdict PASS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test", "VOID"),
+    ("B8", "bench", r"B8_busoff\.txt", [(r"^verdict PASS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test"),
+                                       (r"^arm 1 train=True: PASS", "arm 1 train=True: FAIL")], None, "FAIL"),
     ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(A3 recent .*?)  as specified", r"\g<1>  NOT as specified", "FAIL"),
     ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(A4 expired .*\n +history )as specified", r"\g<1>NOT", "FAIL"),
     # A2 (a), 2026-11-11: the PCAN's clock outside the harness bounds -> the tool's VOID line;
