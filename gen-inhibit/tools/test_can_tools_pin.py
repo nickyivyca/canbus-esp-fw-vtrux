@@ -178,7 +178,7 @@ class PinTool(unittest.TestCase):
     # pin()
     def test_the_committed_pin_is_a_full_commit(self):
         p = ctp.pin()
-        self.assertEqual(p["commit"], "5220d37478541e40182c379efd6ba0edb993ee97")
+        self.assertEqual(p["commit"], "ec7cefe9bfb26bcb47b7ee1533cf1c8c0353f426")
         self.assertEqual(p["repo"], "https://github.com/nickyivyca/can-tools")
 
     def test_an_incomplete_or_short_pin_is_refused(self):
@@ -400,6 +400,9 @@ class RealPin(unittest.TestCase):
         self.assertIn("live/socketcan_hw.py", files)
         # the reason for the 5220d37 pin: open a bench adapter by its canctl role
         self.assertIn("bench_roles.py", files)
+        # the reason for the ec7cefe pin: the bench-role layer and the adapter-open scan
+        self.assertIn("bench_layer.py", files)
+        self.assertIn("bench_scan.py", files)
 
 
 if __name__ == "__main__":
