@@ -1821,6 +1821,127 @@ def test_from_hold():
               and "  x2: not read: handed to run r1" in text, text)
 
 
+# ---- the bench guard (both ESP reviewers, 2026-11-19) -------------------
+
+def not_held(fn, *a, **k):
+    """fn's NotHeld message; Fail if it returns, or raises anything else
+    (a plain Refused included: every refusal of the guard is a NotHeld)."""
+    try:
+        got = fn(*a, **k)
+    except B.NotHeld as e:
+        return str(e)
+    except Exception as e:
+        raise Fail("%s raised %s, not NotHeld: %s" % (fn.__name__, type(e).__name__, e))
+    raise Fail("%s was not refused (returned %r)" % (fn.__name__, got))
+
+
+def take_line(who, pid):
+    return json.dumps({"ts": "2026-10-21T03:01:00-07:00", "who": who,
+                       "event": "take", "pid": pid})
+
+
+@only("linux")
+def test_require_holder():
+    """The bench guard's check, require_holder(path, roles, pid=None): the
+    holder when the lock is held by one of the caller's roles under this
+    process's pid or an ancestor's; NotHeld, appending nothing, when the
+    lock is free, another role's, held under a pid that is no ancestor, or
+    when the log is missing, does not replay, or is another host's or
+    environment's; and for roles that are not a non-empty list of role
+    names."""
+    check(issubclass(B.NotHeld, B.Refused), "NotHeld is a Refused")
+    p = fresh("holder")
+    e = not_held(B.require_holder, p, [CI])
+    check("free" in e, e)
+    w(p, "take", CI, pid=ME)
+    n = len(lines(p))
+    h = B.require_holder(p, [CI])
+    check((h["who"], h["pid"], h["run"]) == (CI, ME, None), h)
+    check(B.require_holder(p, (GI, CI))["who"] == CI, "a role later in the list")
+    e = not_held(B.require_holder, p, [GI, GIM])
+    check("held by %s" % CI in e, e)
+    with Live() as child:
+        # this process is the child's parent: an ancestor
+        check(B.require_holder(p, [CI], pid=child)["pid"] == ME, "held by the parent")
+        w(p, "release", CI, boards={b: "not read: test" for b in B.BOARDS})
+        w(p, "take", GIM, pid=child)
+        e = not_held(B.require_holder, p, [GI, GIM])
+        check("pid %d" % child in e and "not pid %d or an ancestor" % ME in e, e)
+        check(B.require_holder(p, [GI, GIM], pid=child)["pid"] == child,
+              "held by the process itself")
+        e = not_held(B.require_holder, p, [GI])
+        check("held by %s" % GIM in e, "the implementor's loan, not in the list: %s" % e)
+        w(p, "release", GIM, boards={b: "not read: test" for b in B.BOARDS})
+        # this process's parent is the child's grandparent
+        w(p, "take", GI, pid=os.getppid())
+        check(B.require_holder(p, [GI], pid=child)["pid"] == os.getppid(),
+              "held by a grandparent")
+        check(B.require_holder(p, [GI])["pid"] == os.getppid(), "held by the parent")
+    check(len(lines(p)) == n + 4, "require_holder appended")
+    for roles, word in ((CI, "not the string"), ([], "non-empty"), (["nobody"], "non-empty"),
+                        ([CI, 3], "non-empty"), (None, "not None")):
+        e = not_held(B.require_holder, p, roles)
+        check(word in e, "%r: %s" % (roles, e))
+    e = not_held(B.require_holder, os.path.join(os.path.dirname(p), "none.jsonl"), [CI])
+    check("cannot be read" in e and "no bench log" in e, e)
+    good = hand_log("holder_hand", [init_line(), take_line(CI, ME)])
+    check(B.require_holder(good, [CI])["pid"] == ME, "the hand-written log (control)")
+    for name, lns, word in (
+            ("host", [init_line(host=OTHER_HOST), take_line(CI, ME)], OTHER_HOST),
+            ("env", [init_line(env=OTHER_ENV), take_line(CI, ME)], OTHER_ENV),
+            ("replay", [init_line(), take_line(CI, ME), "{not json"], "not JSON"),
+            ("empty", [], "no init")):
+        q = hand_log("holder_" + name, lns) if lns else folder("holder_" + name)
+        if not lns:
+            open(q, "w").close()
+        e = not_held(B.require_holder, q, [CI])
+        check("cannot be read" in e and word in e, "%s: %s" % (name, e))
+
+
+@only("linux")
+def test_ancestors():
+    """LinuxEnv.ancestors(pid): pid, then each parent from <PROC>/<pid>/stat,
+    the comm field split after its last ')'; NotHeld when pid's own stat
+    cannot be read or parsed; an ancestor gone midway ends the list."""
+    a = B.LinuxEnv.ancestors(ME)
+    check(a[:2] == [ME, os.getppid()] and len(a) >= 2, a)
+    root = os.path.dirname(folder("proc"))
+    tree = {10: "10 (a b) c) S 7 10 10 0", 7: "7 (sh) S 1 7 7 0", 1: "1 (init) S 0 1 1 0",
+            20: "20 (x) S 21 20 20 0", 30: "30 (garbled", 40: "40 (y) S 41 0",
+            41: "41 (z) S 40 0"}
+    for pid, text in tree.items():
+        os.makedirs(os.path.join(root, str(pid)))
+        with open(os.path.join(root, str(pid), "stat"), "w", encoding="ascii") as f:
+            f.write(text + "\n")
+    with patched(PROC=root):
+        check(B.LinuxEnv.ancestors(10) == [10, 7, 1], B.LinuxEnv.ancestors(10))
+        check(B.LinuxEnv.ancestors(20) == [20], "an ancestor gone ends the list")
+        check(B.LinuxEnv.ancestors(40) == [40, 41], "a loop ends")
+        for pid in (99, 30):
+            e = not_held(B.LinuxEnv.ancestors, pid)
+            check("pid %d" % pid in e, e)
+
+
+@only("linux")
+def test_guard():
+    """guard(path, roles): a no-argument callable doing require_holder for the
+    calling process at every call (the log read each time); roles checked
+    when it is made."""
+    p = fresh("guard")
+    g = B.guard(p, [CI, "implementor (charge-interposer)"])
+    check(g.roles == (CI, "implementor (charge-interposer)") and g.path == p, g.roles)
+    e = not_held(g)
+    check("free" in e, e)
+    w(p, "take", CI, pid=ME)
+    check(g() is None, "held: the guard passes")
+    w(p, "release", CI, boards={b: "not read: test" for b in B.BOARDS})
+    check("free" in not_held(g), "released: the guard refuses again")
+    w(p, "take", GI, pid=ME)
+    check("held by %s" % GI in not_held(g), "another project's role")
+    e = not_held(B.guard, p, CI)
+    check("not the string" in e, e)
+
+
 TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_runner_api, test_held_by_run, test_queue, test_clear, test_take_alive,
          test_lock_timeout, test_pid_wrong_env, test_pid_unsure,
@@ -1834,7 +1955,8 @@ TESTS = [test_take_release, test_boards, test_pause_resume, test_run_once,
          test_retire_replay, test_init_predecessor, test_hand_roles,
          test_folder_readonly, test_folder_left,
          test_request_pid, test_wait_step, test_wait_fifo, test_wait_stale,
-         test_wait_exit3, test_wait_cli, test_wait_signal, test_wait_own, test_from_hold]
+         test_wait_exit3, test_wait_cli, test_wait_signal, test_wait_own, test_from_hold,
+         test_require_holder, test_ancestors, test_guard]
 
 
 # ---- mutants ------------------------------------------------------------
@@ -2603,6 +2725,63 @@ MUTANTS = {
          _edit("             \"note\": note},\n            {\"event\": \"take\", \"who\": who, "
                "\"pid\": pid, \"run\": run,\n             \"note\": note}])",
                "             \"note\": note}])")),
+    ],
+    "test_require_holder": [
+        ("a free lock passes",
+         _edit("    if h is None:\n        raise NotHeld(\"the bench lock is free",
+               "    if False:\n        raise NotHeld(\"the bench lock is free")),
+        ("any role passes",
+         _edit("    if h[\"who\"] not in roles:", "    if False:")),
+        ("any pid passes",
+         _edit("    if h[\"pid\"] not in anc:", "    if False:")),
+        ("this process only, no ancestors",
+         _edit("    anc = bench_impl(state).ancestors(me)", "    anc = [me]")),
+        ("the parent only",
+         _edit("    anc = bench_impl(state).ancestors(me)",
+               "    anc = bench_impl(state).ancestors(me)[:2]")),
+        ("a read failure is not a NotHeld",
+         _edit("    except Exception as e:      # any failure to read it is \"not held\"",
+               "    except NotHeld as e:")),
+        ("another host's log passes",
+         _edit("        state = read_state(path)\n    except Exception as e:      # any",
+               "        with locked(path) as f:\n            f.seek(0)\n"
+               "            state = replay(split_lines(f.read()))\n"
+               "    except Exception as e:      # any")),
+        ("a string taken as roles",
+         _edit("    if isinstance(roles, str):\n        raise NotHeld(\"roles is a list",
+               "    if False:\n        raise NotHeld(\"roles is a list")),
+        ("empty roles taken",
+         _edit("    if not roles or bad:", "    if bad:")),
+        ("a role name not checked",
+         _edit("    if not roles or bad:", "    if not roles:")),
+    ],
+    "test_ancestors": [
+        ("comm split at its first ')'",
+         _edit("ppid = int(stat.rsplit(\")\", 1)[1].split()[1])",
+               "ppid = int(stat.split(\")\", 1)[1].split()[1])")),
+        ("its own stat unread passes",
+         _edit("                if not out:\n                    raise NotHeld(\"the parent",
+               "                if False:\n                    raise NotHeld(\"the parent")),
+        ("stops at the parent",
+         _edit("            out.append(pid)\n            pid = ppid",
+               "            out.append(pid)\n            pid = ppid if not out[1:] else 0")),
+        ("/proc fixed, PROC ignored",
+         _edit("                with open(os.path.join(PROC, str(pid), \"stat\")",
+               "                with open(os.path.join(\"/proc\", str(pid), \"stat\")")),
+    ],
+    "test_guard": [
+        ("the guard checks nothing",
+         _edit("        require_holder(path, roles)\n    bench_guard.path",
+               "        pass\n    bench_guard.path")),
+        ("roles not checked when made",
+         _edit("    roles = _roles(roles)\n\n    def bench_guard",
+               "    roles = tuple(roles)\n\n    def bench_guard")),
+        ("the log read once, when made",
+         _edit("    roles = _roles(roles)\n\n    def bench_guard():\n"
+               "        require_holder(path, roles)\n",
+               "    roles = _roles(roles)\n    try:\n        require_holder(path, roles)\n"
+               "        err = None\n    except NotHeld as e:\n        err = e\n\n"
+               "    def bench_guard():\n        if err is not None:\n            raise err\n")),
     ],
 }
 
