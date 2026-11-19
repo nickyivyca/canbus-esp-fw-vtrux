@@ -9,6 +9,16 @@ canbench comes from gen-inhibit's can-tools pin (tools/can_tools_pin.json, the i
 loaded by file from scratch/can-tools/<commit>/ by can_tools_pin.use(), which refuses a
 canbench imported from anywhere else (AGENTS.md "can-tools").
 
+ON canbench's BENCH LAYER (can-tools ec7cefe; the gen-inhibit reviewer's ruling of 2026-11-19 under
+methodology 98d0b749: code both projects need is shared). Setting a bench adapter up by its canctl role,
+opening it and putting it back is canbench.bench_layer's: open_bench, link_up / link_down, to_libusb /
+to_socketcan, refuse_picks, bus_error / bus_error_class. This module plugs its bench guard into the layer
+(layer(): set_guard(require_bench)) and keeps only gen-inhibit's own parts: the guard itself (until shared/bench's
+bench_lock guard is pinned), kvaser_opens.jsonl, the CAN_RAW_ERR_FILTER read-back, the link down at the
+Kvaser's close, the stamp check's record (the witness-clock gating is witness_clock's), and the role names its
+openers take. canbench's refusals (bench_roles.RoleError, bench_layer.BenchLayerError) are re-raised as
+KvaserLinkError, InnomakerError or RoleError, naming the step.
+
   kvaser_bus(**kw)     linux_fixes.apply(), then can.Bus(interface="kvaser", **kw); a channel
                        whose channel_info names a virtual channel (or gives none) is shut and
                        VirtualChannel raised. On madhouse, 2026-11-13 01:06, after the Leaf
@@ -17,20 +27,18 @@ canbench imported from anywhere else (AGENTS.md "can-tools").
                        opened a virtual bus that sends and hears nothing on the wire, and a
                        witness on it would have read an empty bus.
   innomaker_bus(role, bitrate, **kw)   (2026-11-18) an Innomaker by its canctl role, canmain
-                       or canchg, never by index (the user's ruling of 2026-11-18): see "THE
-                       INNOMAKERS, BY ROLE" below. Its shutdown() closes the bus, frees the
-                       pyusb handle (canbench's release_gs_usb: python-can's GsUsbBus.shutdown()
-                       leaves it open, reviewer, 2026-11-11) and hands the role back to
-                       socketcan, down. The old gs_usb_bus(**kw) and close_gs_usb(bus), which
-                       took gs_usb's index (the first device found), are gone.
+                       or canchg, never by index (the user's ruling of 2026-11-18), through
+                       bench_layer.open_bench (2026-11-19): see "THE INNOMAKERS, BY ROLE" below.
+                       The old gs_usb_bus(**kw) and close_gs_usb(bus), which took gs_usb's index
+                       (the first device found), are gone.
   innomaker_held(role) (2026-11-18, the gen-inhibit reviewer's condition 5) `with innomaker_held(role)
                        as inno:` hands the role to libusb once, for a run that opens and closes it
                        more than once (B9's and B10's bursts, NONODE's replayer, canmain_burst_check);
-                       inno.open(bitrate) opens it, each close is open_role's shutdown only, and the
-                       block's exit hands it back to socketcan, down, read back. See its docstring.
+                       in bench_layer's calls (to_libusb, open_bench(restore=False), to_socketcan).
+                       See its docstring.
   pcan_bus(bitrate, **kw)   (2026-11-18) the PCAN by its canctl role pcanfd, never by channel
-                       (PCAN_USBBUS1 is the first PCAN channel found): the guard, then canbench's
-                       bench_roles.open_role("pcanfd"), python-can's pcan by the role's device id.
+                       (PCAN_USBBUS1 is the first PCAN channel found): bench_layer.open_bench("pcanfd"),
+                       python-can's pcan by the role's device id.
                        See "THE PCAN, BY ROLE" below.
   bus(**kw)            for a tool that opens an interface named at run time: kvaser through
                        kvaser_bus(), pcan through pcan_bus(), gs_usb refused (TypeError: an
@@ -38,9 +46,10 @@ canbench imported from anywhere else (AGENTS.md "can-tools").
                        straight to can.Bus
   fixes()              the fixes' result, {"kvaser": bool, "gs_usb": bool}, applied once per
                        process (canbench's own apply() is idempotent too)
-  require_bench()      THE BENCH GUARD (reviewer's ask, 2026-11-12). kvaser_bus(),
-                       innomaker_bus(), pcan_bus() and pcan_witness_bus() call it before
-                       anything else (bar refusing a keyword), and open nothing unless it
+  layer()              the pinned canbench.bench_layer with require_bench set as its guard (2026-11-19).
+  require_bench()      THE BENCH GUARD (reviewer's ask, 2026-11-12). kvaser_bus() calls it first,
+                       and bench_layer runs it before every canctl call and open (innomaker_bus,
+                       innomaker_held, pcan_bus, pcan_witness_bus, link_down); nothing opens unless it
                        passes: the bench log (the lock, AGENTS.md "The shared bench") replays,
                        its holder is a gen-inhibit role (tester, or implementor on a loan), and
                        the holder's pid is this process or one of its ancestors. A runner takes
@@ -68,31 +77,28 @@ CANlib the suite needed the Kvaser on leaf, so a run could pass on neither drive
 (gen-inhibit-bench_20261118T143756_7d89: VirtualChannel; ..._150414_86a9: "no netdev kvaser").
 So on Linux kvaser_bus() opens python-can's socketcan on netdev `kvaser`, and CANlib stays the
 backend everywhere else (Windows). On Linux, after the guard:
-  - the Kvaser is resolved by its canctl role through canbench's bench_roles (can-tools 5220d37,
-    the gen-inhibit reviewer's ruling of 2026-11-18): resolve("kvaser") must say socketcan mode,
-    netdev kvaser (on kvaser_usb). canbench's refusal (not attached, two Kvasers, no netdev) is
-    RoleError; linuxcan's leaf is KvaserLinkError (`sudo -n /usr/local/sbin/canctl mode kvaser
-    socketcan --wait` moves it). Nothing opened either way.
+  - kvaser_role() first: canbench's table must not say linuxcan (KvaserLinkError naming `sudo -n
+    /usr/local/sbin/canctl mode kvaser socketcan --wait`; read from the table, so CANlib is never
+    enumerated and the Kvaser is not moved off leaf here), and resolve("kvaser") must say socketcan,
+    netdev kvaser (RoleError: not attached, two Kvasers, no netdev).
+  - the bus is bench_layer.open_bench("kvaser", bitrate, mode="socketcan", hw_timestamps=True,
+    restart_ms=RESTART_MS, restore=False) (2026-11-19): the link brought up at the bitrate and read
+    back (UP, that bitrate, no listen-only, restart-ms), then open_role's SocketcanHwBus. canbench's
+    refusal is KvaserLinkError, and the link is taken down again.
   - driver_mode=False (CANlib's silent mode) is refused: kvaser_usb has no listen-only, and this
     Leaf Light v2 has no silent mode either (bench_census, 2026-10-09). Any keyword but channel,
     bitrate, driver_mode, receive_own_messages and can_filters is refused (TypeError): a CANlib
     option must not be dropped without a word.
-  - the link is brought up at the asked bitrate through canctl (`up kvaser <bitrate> restart-ms
-    RESTART_MS`; canctl names listen-only off at every up), then read back with `ip -details
-    -json link show kvaser`: UP, that bitrate, no listen-only. Not: KvaserLinkError.
-  - the bus is canbench's bench_roles.open_role("kvaser", modes=("socketcan",),
-    hw_timestamps=True), which is the pinned canbench's SocketcanHwBus on the role's netdev (the
-    gen-inhibit reviewer's ruling of 2026-11-18: the Kvaser keeps its witness roles, the hw-time
-    judges included, on its own SO_TIMESTAMPING raw stamps, read by canbench). open_role runs
-    after this module's canctl up and refuses a down link; canbench never brings a link up or
-    down. The kernel's error
+  - SocketcanHwBus is the pinned canbench's (the gen-inhibit reviewer's ruling of 2026-11-18: the
+    Kvaser keeps its witness roles, the hw-time judges included, on its own SO_TIMESTAMPING raw stamps,
+    read by canbench). The kernel's error
     frames reach the caller with CAN_ERR_FLAG (is_error_frame True, the class bits in
     arbitration_id, the details in data). The socket's CAN_RAW_ERR_FILTER is read back after
     the open: not the full mask 0x1FFFFFFF, and the bus is shut and KvaserLinkError raised. An
     open that raises takes the link down again.
   - an UP kvaser link ACKs with no socket open (kvaser_link's measurement, 2026-11-13), where
     the Kvaser on CANlib ACKed only while a handle was on bus. So the bus's shutdown() takes the
-    link down (canctl down kvaser, read back) once the last bus this process opened is shut.
+    link down (bench_layer.link_down, read back) once the last bus this process opened is shut.
   - timestamps: msg.timestamp is the host's receive time (ts[0]); msg.hw_timestamp is the
     Leaf's raw hardware stamp (ts[2]) or None. canbench checks each open's stamps on its first
     CHECK_FRAMES data frames (bus.stamp_check: pending, hardware or host_only, with the
@@ -102,36 +108,30 @@ backend everywhere else (Windows). On Linux, after the guard:
     a "stamps" event. witness_clock.kvaser_times maps the hardware stamps onto the epoch
     clock through device_fit, and only when the check reads "hardware".
   - error frames: the kernel sends controller-state (CRTL, BUSOFF) and RESTARTED frames as well
-    as bus errors. bus_error(b, msg) / bus_error_class(b, can_id) count only the bus-error
+    as bus errors. bus_error(b, msg) / bus_error_class(b, can_id) (bench_layer's, from 2026-11-19; the
+    backend read from the bus's bench_role) count only the bus-error
     classes on SocketCAN, and every error frame on any other bus; the witnesses that count
     error frames (x2_jam_cases, restart_error_frames, e4_rig_calibration) count through them
     and record the frames they left out.
 THE INNOMAKERS, BY ROLE (2026-11-18: the user's ruling, a tool asks for an adapter by its canctl
 role, never by index, channel number or first found; the gen-inhibit reviewer's conditions 1-2).
-innomaker_bus(role) refuses channel=, index=, bus= and address= (TypeError) and a role that is not
-canmain or canchg (InnomakerError), then, after the guard:
-  - canbench's bench_roles.resolve(role) must say socketcan mode, its netdev there, its link
-    down (the runner's canmain probe `link`); canbench's refusal is named in InnomakerError.
-    No serial is read.
-  - `canctl mode <role> libusb` hands it to libusb (canbench never changes a mode); then
-    bench_roles.open_role(role, modes=("libusb",), bitrate=...) opens gs_usb on the role's USB bus
-    and address, with the fixes applied; its shutdown() frees the pyusb handle (5220d37), so the
-    close here does not release it again.
-  - a failed hand-over or open hands the role back (`canctl mode <role> socketcan --wait`, read
-    back: the netdev exists and is down) and re-raises; if the hand-back fails too, one
-    InnomakerError names both.
-  - the close hands it back the same way, read back, recorded (InnomakerError if not); a second
-    shutdown() does nothing.
-  - innomaker_held(role) does the same hand-over and hand-back once around a run, with the opens
-    and closes inside it (condition 5, 2026-11-18): `canctl mode <role> socketcan --wait` at every
-    close would sit inside a burst's or NONODE's 5 ms close's timing.
+innomaker_bus(role) refuses a role that is not canmain or canchg (InnomakerError), then is
+bench_layer.open_bench(role, bitrate, mode="libusb", restore=True) (2026-11-19): a pick keyword refused,
+the guard, the role handed to libusb (canbench takes an up link down first) and read back from `canctl
+roles`, gs_usb opened on its USB bus and address; its shutdown() frees the pyusb handle and puts the role
+back as found (socketcan, its link as it was), read back. A failed open puts it back too. canbench's
+refusal is InnomakerError. The open and the close are recorded; a second shutdown() does nothing.
+innomaker_held(role) holds the role in libusb around a run, with the opens and closes inside it
+(condition 5, 2026-11-18): bench_layer.to_libusb at the start, open_bench(restore=False) per open,
+bench_layer.to_socketcan at the end; a hand-back at every close would sit inside a burst's or NONODE's
+5 ms close's timing.
 
 THE PCAN, BY ROLE (the same ruling, 2026-11-18). PCAN-Basic numbers PCAN-USB channels
 PCAN_USBBUS1, 2, ... in the order it finds them, so channel PCAN_USBBUS1 is the first found.
-pcan_bus() and pcan_witness_bus() refuse channel=, device_id= and interface= (TypeError), then,
-after the guard, go through canbench's bench_roles (can-tools 5220d37), which reads `canctl
-roles` (read-only, no root, no serials: canctl's table, the bench's only list of adapters):
-pcan_bus by open_role("pcanfd", modes=("pcan",)), python-can's pcan by the role's device id;
+pcan_bus() is bench_layer.open_bench("pcanfd", bitrate, mode="pcan") (2026-11-19: a pick keyword
+refused, the guard, then open_role: python-can's pcan by the role's device id, from `canctl roles`,
+read-only, no serials). pcan_witness_bus() refuses a pick keyword (bench_layer.refuse_picks) and runs the
+layer's guard, then goes by
 the witness by resolve()'s device id (pcan_role, which also wants a char device,
 /sys/class/pcan/<chardev>, for the witness's identity) into CanbenchPcanBus. canbench refuses
 (RoleError, re-raised here) a PCAN not attached or more than one attached: the PCAN reports no
@@ -143,9 +143,9 @@ Every open, on either backend, is recorded: one line on stderr, and, when GI_RUN
 the backend ("socketcan" or "canlib"), the channel asked for and opened, the bitrate, and on
 socketcan the driver, the link read back and the error mask; the close's link-down too.
 
-Every harness file opens these adapters through this module; test_kvaser_bus.py scans for a
-can.Bus that opens any of them directly (interface kvaser, gs_usb or pcan), or with an interface
-named at run time, and for a PCAN channel named as a literal (PCAN_USBBUS<n>) outside the tests. The tools import
+Every harness file opens these adapters through this module; test_kvaser_bus.py runs canbench's
+bench_scan (from 2026-11-19, in place of its own scan) over gen-inhibit's tree and fails on any hit not
+in its allow list, each with its reason. The tools import
 it where they open the bus, not at their top, so a tool's copy in a mutant runner's scratch
 folder imports without it.
 """
@@ -153,7 +153,6 @@ import importlib
 import importlib.util
 import json
 import os
-import subprocess
 import sys
 import time
 
@@ -161,14 +160,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PIN_TOOL = os.path.join(os.path.dirname(HERE), "can_tools_pin.py")
 ROLES = ("tester (gen-inhibit)", "implementor (gen-inhibit)")
 _fixes = None
-# The Kvaser on Linux (ruling (a), 2026-11-18). Module globals read at each call, so
-# test_kvaser_bus.py points them at a made-up sysfs, a fake canctl and a fake `ip`.
 PLATFORM = sys.platform
-KVASER_ROLE = "kvaser"    # its canctl role (bench_roles)
+KVASER_ROLE = "kvaser"    # its canctl role
 NETDEV = "kvaser"
-CANCTL = ["sudo", "-n", "/usr/local/sbin/canctl"]
-IP_SHOW = ["ip", "-details", "-json", "link", "show", NETDEV]
-CMD_TIMEOUT_S = 60
 RESTART_MS = 100
 ERR_MASK = 0x1FFFFFFF
 SOL_CAN_RAW, CAN_RAW_ERR_FILTER = 101, 2         # linux/can/raw.h (SOL_CAN_BASE + CAN_RAW)
@@ -180,6 +174,8 @@ CHECK_FRAMES = 20
 HOST_GAP_S = 2.0
 OPENS_FILE = "kvaser_opens.jsonl"
 _open = []                                        # this process's open socketcan Kvaser buses
+_layer = None                                     # the pinned canbench.bench_layer, once loaded (layer())
+_roles = None                                     # the pinned canbench.bench_roles, once loaded
 
 
 class BenchNotHeld(RuntimeError):
@@ -191,7 +187,16 @@ class VirtualChannel(RuntimeError):
 
 
 class KvaserLinkError(RuntimeError):
-    """The Kvaser is not on kvaser_usb, or its link could not be set or read back."""
+    """The Kvaser could not be set up, opened, or its link set or read back (bench_layer's refusal named)."""
+
+
+class RoleError(RuntimeError):
+    """canbench's refusal of a role (bench_roles.RoleError or bench_layer.BenchLayerError), re-raised here with
+    its message, so a tool can catch it without importing the pinned canbench itself."""
+
+
+class InnomakerError(RuntimeError):
+    """An Innomaker role could not be handed over, opened or handed back (bench_layer's refusal named)."""
 
 
 def _lock_holder():
@@ -228,7 +233,8 @@ def _ancestors(pid=None):
 
 
 def require_bench():
-    """The holder, when this process may open a real adapter; raises BenchNotHeld otherwise."""
+    """The holder, when this process may open a real adapter; raises BenchNotHeld otherwise. Plugged into
+    canbench's bench_layer as its guard (layer()), so it runs before every canctl call and open there."""
     h = _lock_holder()
     if h is None:
         raise BenchNotHeld("the bench lock is free: a real adapter opens only under the lock")
@@ -279,114 +285,69 @@ def record(event):
     return event
 
 
-class RoleError(RuntimeError):
-    """canbench.bench_roles' RoleError, re-raised here with its message (so a tool can catch it
-    without importing the pinned canbench itself): a role canbench would not resolve or open."""
-
-
 def bench_roles():
-    """canbench.bench_roles from the pinned canbench (can-tools 5220d37; can_tools_pin.use()):
-    every bench adapter's role-to-device mapping (the user's ruling of 2026-11-18)."""
-    _pin_tool().use()
-    return importlib.import_module("canbench.bench_roles")
+    """canbench.bench_roles from the pinned canbench (can_tools_pin.use()): read-only role resolution."""
+    global _roles
+    if _roles is None:
+        _pin_tool().use()
+        _roles = importlib.import_module("canbench.bench_roles")
+    return _roles
+
+
+def layer():
+    """canbench.bench_layer from the pinned canbench (can-tools ec7cefe; the gen-inhibit reviewer's ruling of
+    2026-11-19: the generic set-up, open and put-back of a bench adapter is canbench's), with require_bench
+    plugged in as its guard. Every canctl call and open below goes through it."""
+    global _layer
+    if _layer is None:
+        _pin_tool().use()
+        _layer = importlib.import_module("canbench.bench_layer")
+    _layer.set_guard(require_bench)
+    return _layer
+
+
+def _call(err, what, fn, *a, **k):
+    """fn(*a, **k), with canbench's refusals (bench_roles.RoleError, bench_layer.BenchLayerError) re-raised as
+    this module's err naming what; BenchNotHeld (the guard's) passes through."""
+    br, bl = bench_roles(), layer()
+    try:
+        return fn(*a, **k)
+    except (br.RoleError, bl.BenchLayerError) as e:
+        raise err("%s: %s" % (what, e)) from e
 
 
 def _resolve(role):
-    br = bench_roles()
-    try:
-        return br.resolve(role)
-    except br.RoleError as e:
-        raise RoleError(str(e)) from e
-
-
-def _open_role(role, **kw):
-    br = bench_roles()
-    try:
-        return br.open_role(role, **kw)
-    except br.RoleError as e:
-        raise RoleError(str(e)) from e
+    return _call(RoleError, role, bench_roles().resolve, role)
 
 
 def kvaser_role():
-    """bench_roles.resolve("kvaser"), in socketcan mode (netdev kvaser on kvaser_usb). RoleError
-    when canbench will not resolve it; KvaserLinkError when it is on linuxcan's leaf, read from
-    canbench's table first (bench_roles.roles), so resolve never enumerates CANlib channels here."""
+    """bench_roles.resolve("kvaser") in socketcan mode (netdev kvaser on kvaser_usb), read-only: for detect() and
+    before every open. RoleError when canbench will not resolve it; KvaserLinkError on linuxcan's leaf, read from
+    canbench's table first (bench_roles.roles), so nothing here enumerates CANlib channels or moves the Kvaser off
+    leaf (it oopsed there, canctl's header 2026-11-13: that move is canctl's, by hand)."""
     br = bench_roles()
-    try:
-        row = br.roles().get(KVASER_ROLE)
-    except br.RoleError as e:
-        raise RoleError(str(e)) from e
+    row = _call(RoleError, KVASER_ROLE, br.roles).get(KVASER_ROLE)
     if row is not None and row.mode == "linuxcan":
         raise KvaserLinkError("the Kvaser is on linuxcan's leaf (driver %s): on Linux it opens through SocketCAN "
                               "only; `sudo -n /usr/local/sbin/canctl mode kvaser socketcan --wait` moves it"
                               % (row.driver,))
     res = _resolve(KVASER_ROLE)
     if res.mode != "socketcan" or res.netdev != NETDEV:
-        raise KvaserLinkError("the Kvaser is in mode %s (netdev %s, driver %s): on Linux it opens through "
-                              "SocketCAN only; `sudo -n /usr/local/sbin/canctl mode kvaser socketcan --wait` "
-                              "moves it" % (res.mode, res.netdev, res.role.driver))
+        raise KvaserLinkError("the Kvaser is in mode %s (netdev %s, driver %s), not socketcan with netdev %s"
+                              % (res.mode, res.netdev, res.role.driver, NETDEV))
     return res
 
 
-def _run(argv):
-    """-> (rc or None if it could not run, its output)."""
-    try:
-        p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           stdin=subprocess.DEVNULL, timeout=CMD_TIMEOUT_S)
-        return p.returncode, p.stdout.decode("utf-8", "replace")
-    except subprocess.TimeoutExpired:
-        return None, "timed out after %d s" % CMD_TIMEOUT_S
-    except OSError as e:
-        return None, "could not run: %s" % e
-
-
-def _canctl(*args):
-    rc, out = _run(list(CANCTL) + list(args))
-    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
-    return rc, (lines[-1] if lines else "no output")
-
-
-def link(argv=None):
-    """netdev kvaser read back from `ip -details -json link show kvaser`: {up, bitrate, state,
-    restart_ms, listen_only}. KvaserLinkError if it cannot be read."""
-    rc, out = _run(list(argv or IP_SHOW))
-    try:
-        if rc != 0:
-            raise ValueError("rc %s: %s" % (rc, out.strip()[-200:]))
-        d = json.loads(out)[0]
-        info = (d.get("linkinfo") or {}).get("info_data") or {}
-        return {"up": "UP" in (d.get("flags") or []), "bitrate": (info.get("bittiming") or {}).get("bitrate"),
-                "state": info.get("state"), "restart_ms": info.get("restart_ms"),
-                "listen_only": "LISTEN-ONLY" in (info.get("ctrlmode") or [])}
-    except (ValueError, IndexError, KeyError, AttributeError, TypeError) as e:
-        raise KvaserLinkError("netdev %s could not be read back (%s)" % (NETDEV, e))
-
-
-def link_up(bitrate):
-    """canctl up kvaser <bitrate> restart-ms RESTART_MS, read back: UP, that bitrate, not
-    listen-only. Returns the read-back; KvaserLinkError otherwise."""
-    args = ("up", NETDEV, str(bitrate), "restart-ms", str(RESTART_MS))
-    rc, last = _canctl(*args)
-    if rc != 0:
-        _canctl("down", NETDEV)         # canctl may have failed after its own `ip link set up`
-        raise KvaserLinkError("canctl %s failed (rc %s): %s" % (" ".join(args), rc, last))
-    got = link()
-    if not got["up"] or got["bitrate"] != bitrate or got["listen_only"]:
-        _canctl("down", NETDEV)         # not left ACKing in a state nobody asked for
-        raise KvaserLinkError("after canctl %s netdev %s reads %r, not up at %d without listen-only"
-                              % (" ".join(args), NETDEV, got, bitrate))
-    return got
+def link():
+    """netdev kvaser read back (bench_layer.link_info): {up, bitrate, listen_only, restart_ms, state}."""
+    bl = layer()
+    return _call(KvaserLinkError, "netdev %s" % NETDEV, bl.link_info, NETDEV)
 
 
 def link_down():
-    """canctl down kvaser, read back not UP. Returns the read-back; KvaserLinkError otherwise."""
-    rc, last = _canctl("down", NETDEV)
-    if rc != 0:
-        raise KvaserLinkError("canctl down %s failed (rc %s): %s" % (NETDEV, rc, last))
-    got = link()
-    if got["up"]:
-        raise KvaserLinkError("after canctl down %s netdev %s still reads UP" % (NETDEV, NETDEV))
-    return got
+    """bench_layer.link_down("kvaser"): canctl down, read back not UP. KvaserLinkError otherwise."""
+    bl = layer()
+    return _call(KvaserLinkError, "link down %s" % KVASER_ROLE, bl.link_down, KVASER_ROLE)
 
 
 def stamp_stats(b):
@@ -407,30 +368,16 @@ def err_mask(b):
         return None
 
 
-# The kernel's error classes (linux/can/error.h), as python-can leaves them in an error
-# frame's arbitration_id. A bus error is one of BUS_ERROR_CLASSES. CRTL (controller state),
-# BUSOFF and RESTARTED report the controller, not an error on the wire, and CNT rides on
-# real bus errors too (every one on the 2026-11-18 measurement carried it), so it decides
-# nothing. Gen-inhibit reviewer, 2026-11-18: on kvaser_usb, B6, B12 and B22 count bus errors only.
-CAN_ERR_TX_TIMEOUT, CAN_ERR_LOSTARB, CAN_ERR_CRTL, CAN_ERR_PROT = 0x1, 0x2, 0x4, 0x8
-CAN_ERR_TRX, CAN_ERR_ACK, CAN_ERR_BUSOFF, CAN_ERR_BUSERROR = 0x10, 0x20, 0x40, 0x80
-CAN_ERR_RESTARTED, CAN_ERR_CNT = 0x100, 0x200
-BUS_ERROR_CLASSES = (CAN_ERR_TX_TIMEOUT | CAN_ERR_LOSTARB | CAN_ERR_PROT | CAN_ERR_TRX
-                     | CAN_ERR_ACK | CAN_ERR_BUSERROR)
-
-
 def bus_error_class(b, can_id):
-    """For an error frame read from bus b with arbitration_id can_id: does it count as a bus
-    error? On SocketCAN (b.vtrux_backend "socketcan"), only if it carries a bus-error class.
-    On any other bus (CANlib, the PCAN), every error frame is a bus error, as before."""
-    if getattr(b, "vtrux_backend", None) != "socketcan":
-        return True
-    return bool(can_id & BUS_ERROR_CLASSES)
+    """bench_layer.bus_error_class (the gen-inhibit reviewer, 2026-11-18): on SocketCAN only a bus-error class
+    counts (not CRTL, BUSOFF, RESTARTED, nor CNT alone); on any other backend every error frame does. The
+    backend is read from the bus's bench_role."""
+    return layer().bus_error_class(b, can_id)
 
 
 def bus_error(b, msg):
-    """Whether msg, read from bus b, is an error frame that counts as a bus error."""
-    return bool(msg.is_error_frame) and bus_error_class(b, msg.arbitration_id)
+    """bench_layer.bus_error: whether msg, read from bus b, is an error frame that counts as a bus error."""
+    return layer().bus_error(b, msg)
 
 
 def _socketcan_bus(channel=None, bitrate=500000, driver_mode=True, **kw):
@@ -441,15 +388,20 @@ def _socketcan_bus(channel=None, bitrate=500000, driver_mode=True, **kw):
     if driver_mode is not True:
         raise KvaserLinkError("driver_mode=%r (CANlib's silent mode): kvaser_usb has no listen-only, "
                               "and this Leaf Light v2 has no silent mode" % (driver_mode,))
-    res = kvaser_role()
-    got = link_up(bitrate)
+    kvaser_role()                   # RoleError / KvaserLinkError (leaf) before anything is changed
+    bl = layer()
     try:
-        # canbench's open by role, after this module's canctl up (open_role refuses a down link):
-        # SocketcanHwBus on the role's netdev, with its per-open stamp check
-        b = _open_role(KVASER_ROLE, modes=("socketcan",), hw_timestamps=True, check_frames=CHECK_FRAMES,
-                       host_gap_s=HOST_GAP_S, **kw)
+        # canbench's open_bench: the link up at bitrate (restart-ms RESTART_MS, read back), then open_role's
+        # SocketcanHwBus with its per-open stamp check. restore=False: the close below takes the link down,
+        # whatever it was found at.
+        b = _call(KvaserLinkError, "open_bench %s" % KVASER_ROLE, bl.open_bench, KVASER_ROLE, bitrate,
+                  mode="socketcan", hw_timestamps=True, restore=False, restart_ms=RESTART_MS,
+                  check_frames=CHECK_FRAMES, host_gap_s=HOST_GAP_S, **kw)
     except BaseException:
-        _canctl("down", NETDEV)         # nothing open: not left ACKing
+        try:
+            link_down()             # nothing open: not left ACKing, also when the link was found up
+        except Exception:           # noqa: BLE001  the open's error is the one raised
+            pass
         raise
     mask = err_mask(b)
     if mask != ERR_MASK:
@@ -461,9 +413,12 @@ def _socketcan_bus(channel=None, bitrate=500000, driver_mode=True, **kw):
     shut = b.shutdown
     b.shutdown = lambda: _close(b, shut)
     b.vtrux_backend = "socketcan"
+    res = getattr(b, "bench_role", None)
+    lay = getattr(b, "bench_layer", None) or {}
     record({"event": "open", "backend": "socketcan", "role": KVASER_ROLE, "channel_asked": channel,
-            "channel": NETDEV, "bitrate": bitrate, "driver": res.role.driver, "link": got, "err_mask": "0x%X" % mask,
-            "reader": "canbench.bench_roles.open_role -> SocketcanHwBus", "check_frames": CHECK_FRAMES,
+            "channel": NETDEV, "bitrate": bitrate, "driver": res.role.driver if res else None, "link": link(),
+            "found": lay.get("found"), "err_mask": "0x%X" % mask,
+            "reader": "canbench.bench_layer.open_bench -> SocketcanHwBus", "check_frames": CHECK_FRAMES,
             "host_gap_s": HOST_GAP_S})
     return b
 
@@ -525,180 +480,87 @@ def detect():
     return None
 
 
-# ------------------------------------------------ the Innomakers, by canctl role (2026-11-18)
+# ------------------------------------------------ the Innomakers, by canctl role (2026-11-18/19)
 #
-# The user's ruling of 2026-11-18, for the whole bench: a tool asks for an adapter by its canctl
-# role, never by index, channel number or first found. python-can's gs_usb by index takes
-# GsUsb.scan()[0], the first gs_usb device libusb lists, which may be either Innomaker. So an
-# Innomaker opens here by its role, through canbench's bench_roles (can-tools 5220d37; the
-# gen-inhibit reviewer's ruling of 2026-11-18): resolve() says where the role is (its mode, netdev,
-# link, USB bus and address, from `canctl roles`), open_role() opens it. No serial is read.
-# canbench never changes a mode or a link, so this module does (the reviewer's conditions of
-# 2026-11-18): the role is handed to libusb (`canctl mode <role> libusb`) before open_role(modes=
-# ("libusb",)), and back to socketcan, down, in the close, read back through resolve() as the
-# chain runner's canmain probe `link` reads it (the netdev exists, its link down), so a start or a
-# resume never meets canmain without its netdev. open_role's bus frees its pyusb handle in its own
-# shutdown() (5220d37), so the close here does not release it again.
+# A tool asks for an adapter by its canctl role, never by index, channel number or first found (the user's
+# ruling of 2026-11-18). From 2026-11-19 (the gen-inhibit reviewer's ruling: the generic part is canbench's)
+# the hand-over to libusb, the open and the hand-back are canbench's bench_layer: open_bench(role, mode=
+# "libusb"), and to_libusb / to_socketcan for a run that holds the role. This module keeps the bench guard
+# (plugged into the layer), the records and the role names it opens.
 
 INNOMAKERS = ("canmain", "canchg")
 
 
-class InnomakerError(RuntimeError):
-    """An Innomaker role could not be found, handed over, opened or handed back down."""
-
-
-def innomaker_down(role):
-    """The chain runner's probe `link` for the role, through bench_roles.resolve: socketcan mode,
-    its netdev there, its link down. Returns the line; InnomakerError otherwise (canbench's
-    refusal named)."""
-    try:
-        res = _resolve(role)
-    except RoleError as e:
-        raise InnomakerError("%s: %s" % (role, e))
-    if res.mode != "socketcan" or res.netdev != role:
-        raise InnomakerError("%s is in mode %s (netdev %s), not socketcan with netdev %s" % (role, res.mode,
-                                                                                            res.netdev, role))
-    if res.role.link != "down":
-        raise InnomakerError("netdev %s is %s, not down" % (role, res.role.link))
-    return "%s exists and its link is down" % role
-
-
-def innomaker_restore(role):
-    """`canctl mode <role> socketcan --wait`, then innomaker_down read back. Returns the line;
-    InnomakerError otherwise. Each step recorded."""
-    rc, last = _canctl("mode", role, "socketcan", "--wait")
-    ev = {"event": "close", "backend": "gs_usb", "role": role, "canctl": "mode %s socketcan --wait" % role,
-          "canctl_rc": rc}
-    try:
-        if rc != 0:
-            raise InnomakerError("canctl mode %s socketcan --wait failed (rc %s): %s" % (role, rc, last))
-        ev["readback"] = innomaker_down(role)
-    except InnomakerError as e:
-        ev["error"] = str(e)
-        record(ev)
-        raise
-    record(ev)
-    return ev["readback"]
-
-
-def _restore_after_failure(role, what):
-    """After a failed hand-over or open: hand the role back. If that fails too, one
-    InnomakerError names both."""
-    try:
-        innomaker_restore(role)
-    except InnomakerError as r:
-        raise InnomakerError("%s; and the hand-back failed: %s" % (what, r))
-
-
-INNOMAKER_REFUSED_KW = ("channel", "index", "bus", "address")
-
-
-def _innomaker_refuse(kw):
-    picked = sorted(set(kw) & set(INNOMAKER_REFUSED_KW))
-    if picked:
-        raise TypeError("an Innomaker is opened by its role, not by %s" % ", ".join(picked))
-
-
-def _innomaker_handover(role):
-    """The guard, the role's name, its link down (innomaker_down), then `canctl mode <role>
-    libusb`; a failed hand-over hands it back (_restore_after_failure) and raises."""
-    require_bench()
+def _innomaker_role(role):
     if role not in INNOMAKERS:
         raise InnomakerError("%r is not an Innomaker role (%s)" % (role, ", ".join(INNOMAKERS)))
-    innomaker_down(role)
-    rc, last = _canctl("mode", role, "libusb")
-    if rc != 0:
-        what = "canctl mode %s libusb failed (rc %s): %s" % (role, rc, last)
-        _restore_after_failure(role, what)
-        raise InnomakerError(what)
 
 
-def _innomaker_open(role, bitrate, kw, held):
-    """open_role(role, modes=("libusb",)) on a role already handed to libusb, recorded."""
-    b = _open_role(role, modes=("libusb",), bitrate=bitrate, **kw)
+def _innomaker_open(role, bitrate, kw, restore):
+    bl = layer()
+    b = _call(InnomakerError, "open_bench %s" % role, bl.open_bench, role, bitrate, mode="libusb",
+              restore=restore, **kw)
     res = getattr(b, "bench_role", None)
     b.vtrux_backend, b.vtrux_role = "gs_usb", role
     record({"event": "open", "backend": "gs_usb", "role": role, "usb": res.role.usb if res else None,
             "bus": res.busnum if res else None, "address": res.devnum if res else None, "bitrate": bitrate,
-            "reader": "canbench.bench_roles.open_role", "held": held})
-    return b
-
-
-def innomaker_bus(role, bitrate=500000, **kw):
-    """The Innomaker with canctl role `role` (canmain or canchg), opened through libusb by
-    canbench's open_role, in NORMAL mode (gs_usb has no listen-only). Its shutdown() closes the
-    bus (open_role's shutdown frees the pyusb handle) and hands the role back to socketcan, down,
-    read back (InnomakerError if not). Asking by index, channel, bus or address is refused."""
-    _innomaker_refuse(kw)
-    _innomaker_handover(role)
-    try:
-        b = _innomaker_open(role, bitrate, kw, False)
-    except BaseException as e:
-        _restore_after_failure(role, "the gs_usb open of %s failed: %s: %s" % (role, type(e).__name__, e))
-        raise
+            "found": (getattr(b, "bench_layer", None) or {}).get("found"),
+            "reader": "canbench.bench_layer.open_bench", "held": not restore})
     shut = b.shutdown
-    b.shutdown = lambda: _innomaker_close(b, shut, role)
-    return b
 
-
-def _innomaker_close(b, shut, role):
-    if getattr(b, "_vtrux_closed", False):
-        return None
-    b._vtrux_closed = True
-    try:
-        shut()              # open_role's shutdown: the bus, then canbench's release_gs_usb
-    finally:
-        innomaker_restore(role)
-
-
-class innomaker_held:
-    """`with innomaker_held(role) as inno:` hands the role to libusb ONCE, for a run that opens
-    and closes the Innomaker more than once (condition 5, 2026-11-18: B9's and B10's bursts,
-    NONODE's replayer). innomaker_bus() hands the role back at every close, and `canctl mode
-    <role> socketcan --wait` takes far longer than a burst or NONODE's 5 ms close, so it would
-    sit inside the times those tools take and judge.
-      enter         the guard, the role's name, its link down, `canctl mode <role> libusb`, as
-                    innomaker_bus (a failed hand-over hands it back and raises)
-      inno.open(bitrate, **kw)   open_role(role, modes=("libusb",)) on the held role, recorded
-                    ("held": true); its shutdown() is open_role's only (gs_usb stop, then the
-                    pyusb handle freed), recorded, and a second one does nothing. index=,
-                    channel=, bus= and address= are refused (TypeError); an open outside the
-                    with-block raises InnomakerError.
-      exit          every bus still open is shut, then the role is handed back to socketcan,
-                    down, read back (innomaker_restore). A failed hand-back raises
-                    InnomakerError, also when the block itself raised (chained to it)."""
-
-    def __init__(self, role):
-        self.role, self.buses, self.held = role, [], False
-
-    def __enter__(self):
-        _innomaker_handover(self.role)
-        self.held = True
-        return self
-
-    def open(self, bitrate=500000, **kw):
-        _innomaker_refuse(kw)
-        if not self.held:
-            raise InnomakerError("%s is not held: open it inside `with innomaker_held(%r)`" % (self.role, self.role))
-        b = _innomaker_open(self.role, bitrate, kw, True)
-        shut = b.shutdown
-        b.shutdown = lambda: self._close(b, shut)
-        self.buses.append(b)
-        return b
-
-    def _close(self, b, shut):
+    def close():
         if getattr(b, "_vtrux_closed", False):
             return None
         b._vtrux_closed = True
-        ev = {"event": "close", "backend": "gs_usb", "role": self.role, "held": True}
+        ev = {"event": "close", "backend": "gs_usb", "role": role, "held": not restore}
         try:
-            shut()          # open_role's shutdown: gs_usb stop, then canbench's release_gs_usb
+            # open_bench's shutdown: the bus, the pyusb handle freed (open_role), and with restore the role
+            # put back as found (bench_layer, read back from canctl roles)
+            _call(InnomakerError, "close %s" % role, shut)
         except BaseException as e:
             ev["error"] = "%s: %s" % (type(e).__name__, e)
             record(ev)
             raise
         record(ev)
         return None
+    b.shutdown = close
+    return b
+
+
+def innomaker_bus(role, bitrate=500000, **kw):
+    """The Innomaker with canctl role `role` (canmain or canchg), through bench_layer.open_bench(role,
+    mode="libusb", restore=True): handed to libusb, opened by open_role, and its shutdown() puts the role back
+    as found (socketcan, its link as it was), read back. NORMAL mode (gs_usb has no listen-only). A pick
+    keyword (index, channel, bus, address, ...) is refused by the layer (InnomakerError)."""
+    _innomaker_role(role)
+    return _innomaker_open(role, bitrate, kw, True)
+
+
+class innomaker_held:
+    """`with innomaker_held(role) as inno:` for a run that opens and closes the Innomaker more than once
+    (condition 5, 2026-11-18: B9's and B10's bursts, NONODE's replayer, canmain_burst_check), in bench_layer's
+    calls (the gen-inhibit reviewer, 2026-11-19): enter bench_layer.to_libusb(role); inno.open(bitrate) is
+    open_bench(role, mode="libusb", restore=False), whose close is the bus's only; exit shuts any bus left
+    open, then bench_layer.to_socketcan(role), read back. Each step recorded; a failed hand-back raises
+    InnomakerError, also when the block raised. Kept thin, for canbench's own run hold to replace."""
+
+    def __init__(self, role):
+        self.role, self.buses, self.held = role, [], False
+
+    def __enter__(self):
+        _innomaker_role(self.role)
+        bl = layer()
+        _call(InnomakerError, "to_libusb %s" % self.role, bl.to_libusb, self.role)
+        record({"event": "hold", "backend": "gs_usb", "role": self.role, "mode": "libusb"})
+        self.held = True
+        return self
+
+    def open(self, bitrate=500000, **kw):
+        if not self.held:
+            raise InnomakerError("%s is not held: open it inside `with innomaker_held(%r)`" % (self.role, self.role))
+        b = _innomaker_open(self.role, bitrate, kw, False)
+        self.buses.append(b)
+        return b
 
     def __exit__(self, exc_type, exc, tb):
         failed = []
@@ -708,23 +570,29 @@ class innomaker_held:
             except Exception as e:      # noqa: BLE001  named below; the hand-back still runs
                 failed.append("%s: %s" % (type(e).__name__, e))
         self.held = False
-        innomaker_restore(self.role)
+        bl = layer()
+        ev = {"event": "close", "backend": "gs_usb", "role": self.role, "to": "socketcan"}
+        try:
+            res = _call(InnomakerError, "to_socketcan %s" % self.role, bl.to_socketcan, self.role)
+            ev["readback"] = "mode %s, netdev %s, link %s" % (res.mode, res.netdev, res.role.link)
+        except InnomakerError as e:
+            ev["error"] = str(e)
+            record(ev)
+            raise
+        record(ev)
         if failed:
             raise InnomakerError("%s handed back, but a close failed: %s" % (self.role, "; ".join(failed)))
         return False
 
 
-# ------------------------------------------------ the PCAN, by canctl role (2026-11-18)
+# ------------------------------------------------ the PCAN, by canctl role (2026-11-18/19)
 #
-# The same ruling: python-can's channel PCAN_USBBUS1 is the first PCAN-USB channel PCAN-Basic
-# numbers, whichever device that is. So the PCAN opens by its canctl role, pcanfd, through
-# canbench's bench_roles: resolve() gives its PCAN device id (from `canctl roles`, refusing when
-# more than one PCAN is attached: the PCAN reports no serial, so the role means the one present),
-# and open_role() opens python-can's pcan by that device id. The witness opens the pinned
-# canbench's CanbenchPcanBus on resolve()'s device id.
+# python-can's channel PCAN_USBBUS1 is the first PCAN-USB channel PCAN-Basic numbers, whichever device that
+# is. So the PCAN opens by its canctl role, pcanfd: pcan_bus through bench_layer.open_bench (python-can's pcan
+# by the role's device id), the witness through bench_roles.resolve's device id into the pinned canbench's
+# CanbenchPcanBus (no bench_layer form of it: the gen-inhibit reviewer's ruling (C) of 2026-11-13).
 
 PCAN_ROLE = "pcanfd"
-PCAN_REFUSED_KW = ("channel", "device_id", "interface")
 
 
 def pcan_role(role=PCAN_ROLE):
@@ -739,12 +607,6 @@ def pcan_role(role=PCAN_ROLE):
     return {"role": role, "device_id": res.kwargs["device_id"], "chardev": chardev}
 
 
-def _pcan_refuse(kw):
-    picked = sorted(set(kw) & set(PCAN_REFUSED_KW))
-    if picked:
-        raise TypeError("the PCAN is opened by its canctl role (%s), not by %s" % (PCAN_ROLE, ", ".join(picked)))
-
-
 def _pcan_record(b, r, bitrate, reader):
     b.vtrux_backend, b.vtrux_role, b.vtrux_device_id = "pcan", r["role"], r["device_id"]
     b.vtrux_chardev = r["chardev"]
@@ -755,30 +617,28 @@ def _pcan_record(b, r, bitrate, reader):
 
 
 def pcan_bus(bitrate=500000, **kw):
-    """The PCAN by its canctl role pcanfd: the bench guard, then canbench's open_role (modes pcan:
-    python-can's pcan by the role's device id) with bitrate and the caller's other arguments.
-    Asking by channel, device_id or interface is refused (TypeError). The open is recorded."""
-    _pcan_refuse(kw)
-    require_bench()
-    b = _open_role(PCAN_ROLE, modes=("pcan",), bitrate=bitrate, **kw)
+    """The PCAN by its canctl role pcanfd: bench_layer.open_bench("pcanfd", bitrate) (the guard, then
+    open_role: python-can's pcan by the role's device id) with the caller's other arguments. A pick keyword
+    (channel, device_id, interface, ...) is refused by the layer (RoleError). The open is recorded."""
+    bl = layer()
+    b = _call(RoleError, "open_bench %s" % PCAN_ROLE, bl.open_bench, PCAN_ROLE, bitrate, mode="pcan", **kw)
     res = getattr(b, "bench_role", None)
     r = {"role": PCAN_ROLE, "device_id": res.kwargs.get("device_id") if res else None,
          "chardev": res.role.chardev if res else None}
-    return _pcan_record(b, r, bitrate, "canbench.bench_roles.open_role")
+    return _pcan_record(b, r, bitrate, "canbench.bench_layer.open_bench")
 
 
 def pcan_witness_bus(bitrate=500000, **kw):
-    """The PCAN as a timing witness (2026-11-13, the gen-inhibit reviewer's ruling (C)): the
-    bench guard first, the role resolved (pcan_role; asking by channel, device_id or interface
-    refused), then the pinned canbench's CanbenchPcanBus on that device id, which hands up
-    PCAN-Basic's status messages and bus states as controller-state error frames instead of data
-    frames or an exception (python-can 4.6.1 raises on a bus-passive Read).
-    canbench_busoff_reset=False: a witness never resets its own controller, so its device clock
-    runs on through the session (a reset would also restart it)."""
-    _pcan_refuse(kw)
-    require_bench()
+    """The PCAN as a timing witness (2026-11-13, the gen-inhibit reviewer's ruling (C)): a pick keyword refused
+    (bench_layer.refuse_picks), the bench guard, the role resolved (pcan_role), then the pinned canbench's
+    CanbenchPcanBus on that device id, which hands up PCAN-Basic's status messages and bus states as
+    controller-state error frames instead of data frames or an exception (python-can 4.6.1 raises on a
+    bus-passive Read). canbench_busoff_reset=False: a witness never resets its own controller, so its device
+    clock runs on through the session (a reset would also restart it)."""
+    bl = layer()
+    _call(RoleError, "pcan_witness_bus", bl.refuse_picks, kw, "pcan_witness_bus")
+    bl.guard("pcan_witness_bus")
     r = pcan_role()
-    _pin_tool().use()
     mod = importlib.import_module("canbench.live.pcan_bus")
     b = mod.CanbenchPcanBus(canbench_busoff_reset=False, device_id=r["device_id"], bitrate=bitrate, **kw)
     return _pcan_record(b, r, bitrate, "canbench.live.pcan_bus.CanbenchPcanBus")

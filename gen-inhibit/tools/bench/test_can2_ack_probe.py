@@ -77,6 +77,7 @@ def main():
         got = AP.check(expect, verdict)
         check("check", "expect %s, probe %s" % (expect, verdict), got == want, got)
     probe_cases()
+    layer_cases()
     print("\n=== %s ===" % ("PASS" if not bad else "FAIL: " + "; ".join(bad)))
     return 1 if bad else 0
 
@@ -114,10 +115,15 @@ def run_probe(links, rx=(), up_rc=0, send_raises=False):
     fake = types.ModuleType("can")
     fake.Bus, fake.Message = FakeBus, Msg
     FakeBus.made, FakeBus.rx_next, FakeBus.send_raises = [], list(rx), send_raises
-    saved = (sys.modules.get("can"), AP.canctl, AP.link)
+    saved = (sys.modules.get("can"), AP.up_open, AP.take_down, AP.link)
     sys.modules["can"] = fake
-    AP.canctl = lambda *a: calls.append(" ".join(a)) or {"argv": "canctl " + " ".join(a),
-                                                        "rc": up_rc if a[0] == "up" else 0, "out": ""}
+
+    def up_open(role):
+        calls.append("up %s %d" % (role, AP.BITRATE))
+        return {"argv": "open_bench", "rc": up_rc, "out": ""}, (FakeBus(interface="socketcan", channel=role)
+                                                               if up_rc == 0 else None)
+    AP.up_open = up_open
+    AP.take_down = lambda role: calls.append("down %s" % role) or {"argv": "link_down", "rc": 0, "out": ""}
     AP.link = lambda role: seq.pop(0) if seq else None
     try:
         rec = AP.probe("canchg", observe_s=0.05)
@@ -128,7 +134,7 @@ def run_probe(links, rx=(), up_rc=0, send_raises=False):
             sys.modules.pop("can", None)
         else:
             sys.modules["can"] = saved[0]
-        AP.canctl, AP.link = saved[1], saved[2]
+        AP.up_open, AP.take_down, AP.link = saved[1], saved[2], saved[3]
     return rec, calls, (FakeBus.made[0] if FakeBus.made else None)
 
 
@@ -152,8 +158,6 @@ def probe_cases():
     check("probe", "a data frame heard is counted, not an error -> UNCLEAR",
           rec.get("frames_seen") == 1 and rec.get("judge", {}).get("verdict") == "UNCLEAR",
           (rec.get("frames_seen"), rec.get("judge")))
-    check("probe", "the up is normal mode: no listen-only, no berr", "listen-only" not in calls[0]
-          and "berr" not in calls[0], calls[:1])
     rec, calls, bus = run_probe([down, L(tx=0), L(tx=1), down])
     check("probe", "ACKed: confirmed -> ACKED", rec.get("judge", {}).get("verdict") == "ACKED",
           rec.get("judge"))
@@ -162,8 +166,55 @@ def probe_cases():
           calls == ["up canchg 500000", "down canchg"] and bus.closed and "raised" in rec, (calls, rec))
     rec, calls, bus = run_probe([down, down], up_rc=2)
     check("probe", "a failed up is refused and the link is brought down",
-          rec.get("refused") == "canctl up failed" and calls == ["up canchg 500000", "down canchg"]
+          rec.get("refused") == "open_bench failed" and calls == ["up canchg 500000", "down canchg"]
           and bus is None, (rec.get("refused"), calls))
+
+
+
+class FakeLayer:
+    """bench_layer's open_bench / link_down, recorded; raise_open / raise_down plant a failure."""
+
+    def __init__(self, raise_open=None, raise_down=None):
+        self.calls, self.raise_open, self.raise_down = [], raise_open, raise_down
+
+    def open_bench(self, role, bitrate=None, **kw):
+        self.calls.append(("open_bench", role, bitrate, kw))
+        if self.raise_open:
+            raise self.raise_open
+        return "bus"
+
+    def link_down(self, role):
+        self.calls.append(("link_down", role))
+        if self.raise_down:
+            raise self.raise_down
+        return {"up": False}
+
+
+def layer_cases():
+    """2026-11-19 (the gen-inhibit reviewer): the up and the open are bench_layer.open_bench, the down its
+    link_down."""
+    saved = AP.layer
+    try:
+        fl = FakeLayer()
+        AP.layer = lambda: fl
+        step, bus = AP.up_open("canchg")
+        check("layer", "up_open: open_bench(canchg, 500000, mode socketcan, restore False), the bus handed back",
+              fl.calls == [("open_bench", "canchg", 500000, {"mode": "socketcan", "restore": False})]
+              and bus == "bus" and step["rc"] == 0, (fl.calls, step))
+        step = AP.take_down("canchg")
+        check("layer", "take_down: link_down(canchg), read back recorded", fl.calls[-1] == ("link_down", "canchg")
+              and step["rc"] == 0 and '"up": false' in step["out"], (fl.calls, step))
+        fl = FakeLayer(raise_open=RuntimeError("canctl up canchg failed (rc 2, refused)"),
+                       raise_down=RuntimeError("still UP"))
+        AP.layer = lambda: fl
+        step, bus = AP.up_open("canchg")
+        check("layer", "up_open refused -> no bus, rc 1 and the reason recorded",
+              bus is None and step["rc"] == 1 and "refused" in step["out"], step)
+        step = AP.take_down("canchg")
+        check("layer", "take_down failing -> rc 1 and the reason recorded", step["rc"] == 1 and "still UP" in step["out"],
+              step)
+    finally:
+        AP.layer = saved
 
 
 if __name__ == "__main__":

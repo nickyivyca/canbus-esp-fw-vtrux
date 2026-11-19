@@ -69,6 +69,8 @@ class FakeBus:
         self.msgs = list(msgs)
         if backend:
             self.vtrux_backend = backend
+            # bench_layer's classifier (2026-11-19) reads the backend from bench_role, as open_role sets it
+            self.bench_role = types.SimpleNamespace(interface=backend)
         self.shut = False
 
     def recv(self, timeout=None):

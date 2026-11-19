@@ -2,6 +2,15 @@
 """Test kvaser_bus.py, the one way the bench harness opens the Kvaser and the Innomakers, and
 scan gen-inhibit's tools for an open that goes round it (gen-inhibit reviewer, 2026-11-11).
 
+FROM 2026-11-19 (the gen-inhibit reviewer's ruling: the generic parts are canbench's, can-tools ec7cefe)
+kvaser_bus opens through canbench.bench_layer, and the unit, pcan, innomaker and socketcan cases run the
+REAL pinned bench_layer and bench_roles (loaded by file from the pin folder) against a fake canctl, a fake
+`ip` and a fake `canctl roles`: what bench_layer does (the link up and down, the mode hand-over and put-back,
+the pick refusals) is canbench's own and tested there; these cases check that kvaser_bus asks it for the
+right role, mode, bitrate, restore, restart-ms and stamp check, plugs in the guard, maps canbench's refusals
+to its own errors, keeps the Kvaser's link down at its close, reads back the error mask and records every
+open and close. The scan is canbench's bench_scan, with gen-inhibit's allow list (SCAN_ALLOWED).
+
   unit      against a fake can and a fake pinned canbench: kvaser_bus() loads the pin
             (can_tools_pin.use()) and applies canbench.live.linux_fixes before the open, and
             opens nothing when the pin or the fixes refuse; the fixes apply once a process;
@@ -37,18 +46,12 @@ scan gen-inhibit's tools for an open that goes round it (gen-inhibit reviewer, 2
             (scratch/can-tools/<commit>/, can_tools_pin.py install), and on Linux the real
             fixes are installed in python-can's Kvaser backend and in gs_usb, where those are
             importable
-  scan      every .py file under gen-inhibit/ but firmware/ (the upstream WiCAN tree), parsed:
-            no call of Bus, ThreadSafeBus, KvaserBus, GsUsbBus or PcanBus that opens the Kvaser,
-            an Innomaker or the PCAN directly (interface "kvaser", "gs_usb" or "pcan"; the PCAN from
-            2026-11-18), names its interface at run time
-            (not a string literal), passes **kwargs, passes no interface= (python-can then takes
-            it from its config) or passes the interface by position. ALLOWED lists the files
-            that may, with the number of such calls and why; a different number fails. A call
-            of the removed by-index openers gs_usb_bus() or close_gs_usb() fails, and so does a
-            PCAN channel named as a string (PCAN_USBBUS<n>, the n-th PCAN found) outside
-            PCAN_LITERAL_EXEMPT (three tests, each with why; 2026-11-18).
-            The scan is shown able to fail on a snippet of each form, and on real files
-            reverted.
+  scan      (2026-11-19) canbench's bench_scan, from the pin, over every .py file under gen-inhibit/
+            but firmware/ (the upstream WiCAN tree): every hit (bus-open, adapter-class, usb-scan,
+            pcan-channel, role-pick) must be in SCAN_ALLOWED, keyed by file, kind and why, with
+            its count and reason; a hit outside it, or an entry whose count no longer matches,
+            fails. bench_scan's self_check must pass (each kind caught on its snippet), and the
+            scan is shown able to fail on real files with one of their role opens reverted.
             A file that replaces a module's `can` attribute (a test faking a tool's python-can)
             must also fake kvaser_bus, which imports the real can (FAKE_CAN_EXEMPT: test_gi_vbus,
             virtual only). test_e4_rawpost.py did not, and opened the bench's real Kvaser during
@@ -82,22 +85,6 @@ import gi_paths      # noqa: E402
 
 FAILS = []
 
-# Files that may open a bus in a form the scan flags: (calls flagged, why). Paths are relative
-# to gen-inhibit/, with forward slashes.
-ALLOWED = {
-    "tools/bench/kvaser_bus.py": (2, "the opener itself: the CANlib Kvaser (off Linux) and bus()'s run-time "
-                                     "interface; the Kvaser on SocketCAN, the Innomakers and the PCAN open through "
-                                     "canbench's bench_roles.open_role (5220d37), which the scan does not flag"),
-    "tools/bench/test_x2_jam_cases.py": (5, "Bus(api) is the test's own stand-in class for pcan_reopen, not "
-                                            "python-can's (on gen-inhibit/main from 4e81b9c2, 2026-11-16)"),
-    "tools/vehicle_runner.py": (3, "the implementor's file (gen-inhibit README), not the bench harness. Its "
-                                   "--interface auto imports canbench.live.receiver, which applies the "
-                                   "fixes on import; an explicit --interface kvaser does not (told the "
-                                   "reviewer, 2026-11-12)"),
-    "tools/test_gi_vbus.py": (1, "gi_vbus's udp_multicast bus, virtual only"),
-}
-# tools/bench/test_wrong_bitrate_sequence.py was here (1) until 2026-11-18: its fake kvaser_bus opened
-# the fake Kvaser as Bus(interface="kvaser"); the burst source is now canmain on the fake held role.
 # A file that replaces a module's `can` attribute (a test faking a tool's python-can) must also
 # fake kvaser_bus: it imports the real can, so the tool's Kvaser would open the real adapter.
 # That happened once, in test_e4_rawpost.py, during this topic's dev run (2026-11-12). The
@@ -106,20 +93,6 @@ ALLOWED = {
 FAKE_CAN_EXEMPT = {
     "tools/test_gi_vbus.py": "gi_vbus opens udp_multicast only, never the Kvaser or the Innomaker",
 }
-BUS_NAMES = {"Bus", "ThreadSafeBus", "KvaserBus", "GsUsbBus", "PcanBus"}
-OPENERS = ("kvaser", "gs_usb", "pcan")
-PCAN_CHANNEL_RX = re.compile(r"PCAN_USBBUS\d+\Z")
-# Files that may hold a PCAN channel name as a string (the literal rule, 2026-11-18), and why. Any
-# other file, test_only_inert.py (a bench tool) among them, may not.
-PCAN_LITERAL_EXEMPT = {
-    "tools/bench/test_kvaser_bus.py": "its refusal cases ask the openers by channel and must be refused",
-    "tools/bench/test_jammer_witnesses.py": "its fake PCAN buses' channel_info, as PCAN-Basic names the channel found",
-    "tools/bench/test_diag_build_open.py": "its fake detection lists the PCAN, to show the script no longer asks it",
-    "tools/test_vehicle_runner_roles.py": "the implementor's test (1bb455f6, on gen-inhibit/main 28cdc2d6): a --role run "
-                                          "asked for channel PCAN_USBBUS1 must be refused",
-}
-# The by-index Innomaker openers, removed 2026-11-18 (the user's ruling: by role, innomaker_bus)
-REMOVED = {"gs_usb_bus", "close_gs_usb"}
 
 
 def check(name, ok, detail=""):
@@ -156,12 +129,34 @@ def roles_text(state):
                    for name in state)
 
 
-def real_bench_roles_path():
-    """The pinned canbench's bench_roles.py (can_tools_pin.py install puts it there)."""
+def real_canbench_path(name="bench_roles"):
+    """The pinned canbench's <name>.py (can_tools_pin.py install puts it there)."""
     spec = importlib.util.spec_from_file_location("_tkb_pin", os.path.join(os.path.dirname(SRC), "can_tools_pin.py"))
     pin = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pin)
-    return os.path.join(pin.folder(), "canbench", "bench_roles.py")
+    return os.path.join(pin.folder(), "canbench", name + ".py")
+
+
+def real_bench_roles_path():
+    return real_canbench_path("bench_roles")
+
+
+def load_real(name, mods):
+    """The pinned canbench.<name>, loaded by file with mods (sys.modules entries) in place while it runs."""
+    spec = importlib.util.spec_from_file_location("canbench." + name, real_canbench_path(name))
+    m = importlib.util.module_from_spec(spec)
+    mods = dict(mods, **{"canbench." + name: m})
+    before = {k: sys.modules.get(k) for k in mods}
+    sys.modules.update(mods)        # its dataclasses and `from canbench import ...` look there
+    try:
+        spec.loader.exec_module(m)
+    finally:
+        for k, v in before.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    return m
 
 
 class Fakes:
@@ -225,17 +220,7 @@ class Fakes:
                 self.kw = kw
                 log.append(("Pcan", kw))
         pb.CanbenchPcanBus = CanbenchPcanBus
-        spec = importlib.util.spec_from_file_location("canbench.bench_roles", real_bench_roles_path())
-        br = importlib.util.module_from_spec(spec)
-        before = sys.modules.get("canbench.bench_roles")
-        sys.modules["canbench.bench_roles"] = br      # its dataclasses look their module up there
-        try:
-            spec.loader.exec_module(br)
-        finally:
-            if before is None:
-                sys.modules.pop("canbench.bench_roles", None)
-            else:
-                sys.modules["canbench.bench_roles"] = before
+        br = load_real("bench_roles", {})
 
         def canctl_roles_text(canctl=None):
             log.append(("roles",))
@@ -243,12 +228,37 @@ class Fakes:
                 raise br.RoleError("canctl roles exited %d: planted" % fakes.roles_rc)
             return roles_text(fakes.state) if fakes.roles_raw is None else fakes.roles_raw
         br.canctl_roles_text = canctl_roles_text
+        br.CANCTL = "/usr/local/sbin/canctl"
         self.br = br
+        # The REAL canbench.bench_layer (can-tools ec7cefe; the gen-inhibit reviewer, 2026-11-19), its
+        # subprocess the fake canctl and `ip` (self.run), its sleep and clock fake.
+        pkg = types.ModuleType("canbench")
+        pkg.__path__ = []
+        errs = load_real("errors", {"canbench": pkg})
+        pkg.bench_roles, pkg.errors = br, errs
+        bl = load_real("bench_layer", {"canbench": pkg, "canbench.bench_roles": br, "canbench.errors": errs})
+
+        def sub_run(argv, **kw):
+            rc, out = fakes.run([str(a) for a in argv])
+            return types.SimpleNamespace(returncode=127 if rc is None else rc, stdout=out, stderr="")
+        bl.subprocess = types.SimpleNamespace(run=sub_run, TimeoutExpired=subprocess.TimeoutExpired,
+                                              DEVNULL=subprocess.DEVNULL)
+        bl.CANCTL = "/usr/local/sbin/canctl"
+        clock = [0.0]
+
+        def fake_sleep(s):
+            clock[0] += s
+
+        bl.sleep, bl.monotonic = fake_sleep, lambda: clock[0]
+        self.bl = bl
+        pkg.bench_layer = bl
         live = types.ModuleType("canbench.live")
         live.linux_fixes, live.receiver, live.pcan_bus = lf, rc, pb
-        self.pinned = {"canbench": types.ModuleType("canbench"), "canbench.live": live,
+        pkg.live = live
+        self.pinned = {"canbench": pkg, "canbench.live": live,
                        "canbench.live.linux_fixes": lf, "canbench.live.receiver": rc,
-                       "canbench.live.pcan_bus": pb, "canbench.bench_roles": br}
+                       "canbench.live.pcan_bus": pb, "canbench.bench_roles": br, "canbench.errors": errs,
+                       "canbench.bench_layer": bl}
         self.saved = {}
 
     def pin_tool(self):
@@ -292,6 +302,18 @@ class Fakes:
         return kb
 
     def run(self, argv):
+        if argv[:5] == ["ip", "-details", "-json", "link", "show"] and len(argv) == 6:
+            # a role's netdev, as the fake roles say (SockFakes plays the Kvaser's own)
+            dev = argv[5]
+            s = next((v for v in self.state.values() if v.get("netdev") == dev), None)
+            self.log.append(("ip", dev))
+            if s is None:
+                return 1, "Device \"%s\" does not exist." % dev
+            up = s.get("link") == "up"
+            return 0, json.dumps([{"ifname": dev, "flags": ["NOARP"] + (["UP", "LOWER_UP"] if up else []),
+                                   "linkinfo": {"info_kind": "can", "info_data": {
+                                       "state": "ERROR-ACTIVE" if up else "STOPPED", "restart_ms": 0,
+                                       "bittiming": {"bitrate": 500000}}}}])
         self.log.append(("run?",) + tuple(argv))
         return 127, "not faked"
 
@@ -326,7 +348,7 @@ class SockFakes(Fakes):
 
     def __init__(self, kvaser=None, canctl_rc=0, read_bitrate=None, read_lo=False, stuck_up=False,
                  err_filter=0x1FFFFFFF, runs_dir=None, canctl_applies=False, hw_raises=None,
-                 stamps=None, role_link_lags=False, **kw):
+                 stamps=None, role_link_lags=False, found_up=None, **kw):
         # canctl_applies: canctl changes the link even when it exits non-zero (it failed after
         # its own `ip link set up`)
         roles = dict(kw.pop("roles", None) or {})
@@ -338,6 +360,9 @@ class SockFakes(Fakes):
         self.read_lo, self.stuck_up, self.runs_dir = read_lo, stuck_up, runs_dir
         self.role_link_lags = role_link_lags     # canctl roles still says link down after the up
         self.linkst = {"up": False, "bitrate": None}
+        if found_up:                # the link found up at that bitrate (restart-ms as kvaser_bus asks)
+            self.linkst = {"up": True, "bitrate": found_up}
+            self.state["kvaser"]["link"] = "up"
         log, fakes = self.log, self
         self.stamps = stamps if stamps is not None else {"state": "hardware", "reason": "fake",
                                                           "after_check": {"frames": 0}}
@@ -446,6 +471,9 @@ class InnoFakes(Fakes):
                     self.state[role].update(mode="libusb", driver="gs_usb" if self.libusb_bound else "none",
                                             netdev="none", link="none")
                 return self.libusb_rc, "canctl said libusb\n"
+            if args[0] in ("up", "down"):           # bench_layer takes an up link down first, and puts it back
+                self.state[role]["link"] = "up" if args[0] == "up" else "down"
+                return 0, "canctl said %s\n" % args[0]
             if args[0] == "mode" and args[2] == "socketcan":
                 if self.restore_rc == 0 or self.restore_applies:
                     self.netdev(role, up=self.restore_up)
@@ -462,12 +490,27 @@ class InnoFakes(Fakes):
 
 
 LIBUSB = ("mode", "canmain", "libusb")
-RESTORE = ("mode", "canmain", "socketcan", "--wait")
+RESTORE = ("mode", "canmain", "socketcan", "--wait", "10")
+
+
+def read_evs(runs):
+    with open(os.path.join(runs, "kvaser_opens.jsonl"), encoding="ascii") as fh:
+        return [json.loads(x) for x in fh]
+
+
+def raises(f, fn, *exc):
+    """fn(kb) inside f; the exception it raised (of exc), or None."""
+    with f as kb:
+        try:
+            fn(kb)
+        except exc or (Exception,) as e:      # noqa: BLE001
+            return e
+    return None
 
 
 def innomaker():
-    """The Innomakers by canctl role (the user's ruling and the gen-inhibit reviewer's
-    conditions, 2026-11-18)."""
+    """The Innomakers by canctl role (the user's ruling, 2026-11-18), through canbench's bench_layer (the
+    gen-inhibit reviewer, 2026-11-19): the real bench_layer and bench_roles against a fake canctl."""
     def opens():
         runs = gi_paths.scratch("kvaser-bus-inno-runs")
         gi_paths.remove_tree(runs)
@@ -476,9 +519,9 @@ def innomaker():
             f = InnoFakes(runs_dir=runs)
             with f as kb:
                 b = kb.innomaker_bus("canmain", bitrate=250000)
-                check("innomaker: the lock checked first, then bench_roles' read of canmain (down), canctl mode "
-                      "canmain libusb, then bench_roles.open_role (its read, the fixes, the open)",
-                      f.kinds() == ["lock", "use", "roles", "canctl", "use", "roles", "apply", "Bus"]
+                k = f.kinds()
+                check("innomaker: the lock checked before any canctl; canctl mode canmain libusb; then the fixes and "
+                      "the open", "lock" in k and k.index("lock") < k.index("canctl") < k.index("apply") < k.index("Bus")
                       and f.canctls() == [LIBUSB], f.log)
                 check("innomaker: gs_usb on canmain's own USB device, by its bus and address, never by index",
                       f.log[-1][1] == {"interface": "gs_usb", "channel": "gs_usb:canmain", "bus": 3, "address": 7,
@@ -490,24 +533,22 @@ def innomaker():
                 del f.log[:]
                 b.shutdown()
                 rel = [e for e in f.log if e[0] == "release"]
-                check("innomaker: shutdown shuts the bus, frees its pyusb handle ONCE (open_role's shutdown, "
-                      "5220d37), then canctl mode canmain socketcan --wait, read back through bench_roles",
-                      [k for k in f.kinds() if k != "use"] == ["shutdown", "release", "canctl", "roles"]
+                k = f.kinds()
+                check("innomaker: shutdown shuts the bus, frees its pyusb handle ONCE, then canctl mode canmain "
+                      "socketcan --wait (bench_layer's put-back), read back", k[:2] == ["shutdown", "release"]
                       and len(rel) == 1 and rel[0][1] is b and f.canctls() == [RESTORE], f.log)
                 check("innomaker: after the close canmain's netdev exists and is down", f.down("canmain"))
                 del f.log[:]
                 b.shutdown()
                 check("innomaker: a second shutdown does nothing", f.log == [], f.log)
-            with open(os.path.join(runs, "kvaser_opens.jsonl"), encoding="ascii") as fh:
-                evs = [json.loads(x) for x in fh]
-            check("innomaker: the open (role, USB device, bus, address, bitrate) and the close (canctl, its "
-                  "rc, the read-back) recorded in GI_RUNS_DIR's kvaser_opens.jsonl",
+            evs = read_evs(runs)
+            check("innomaker: the open (role, USB device, bus, address, bitrate, what was found, the reader) and the "
+                  "close recorded in GI_RUNS_DIR's kvaser_opens.jsonl",
                   len(evs) == 2 and evs[0]["event"] == "open" and evs[0]["backend"] == "gs_usb"
                   and evs[0]["role"] == "canmain" and evs[0]["usb"] == "1-3.2" and evs[0]["bus"] == 3
-                  and evs[0]["address"] == 7 and evs[0]["bitrate"] == 250000
-                  and evs[1]["event"] == "close" and evs[1]["role"] == "canmain" and evs[1]["canctl_rc"] == 0
-                  and evs[1]["canctl"] == "mode canmain socketcan --wait"
-                  and evs[1]["readback"] == "canmain exists and its link is down" and "error" not in evs[1], evs)
+                  and evs[0]["address"] == 7 and evs[0]["bitrate"] == 250000 and evs[0]["held"] is False
+                  and evs[0]["found"]["mode"] == "socketcan" and evs[0]["reader"] == "canbench.bench_layer.open_bench"
+                  and evs[1]["event"] == "close" and evs[1]["role"] == "canmain" and "error" not in evs[1], evs)
         finally:
             gi_paths.remove_tree(runs)
     case("innomaker: opens", opens)
@@ -522,187 +563,128 @@ def innomaker():
                   and f.canctls() == [("mode", "canchg", "libusb")] and f.down("canmain"), f.log)
             b.shutdown()
             check("innomaker: canchg handed back to socketcan, down",
-                  f.canctls()[-1] == ("mode", "canchg", "socketcan", "--wait") and f.down("canchg"), f.log)
+                  f.canctls()[-1] == ("mode", "canchg", "socketcan", "--wait", "10") and f.down("canchg"), f.log)
     case("innomaker: by role", by_role)
 
     def refusals():
-        for kw in ({"index": 0}, {"channel": "can0"}, {"bus": 3}, {"address": 7}, {"index": 0, "bus": 3}):
+        for kw in ({"index": 0}, {"channel": "can0"}, {"bus": 3}, {"address": 7}, {"serial": "X"}):
             f = InnoFakes()
-            raised = None
-            with f as kb:
-                try:
-                    kb.innomaker_bus("canmain", **kw)
-                except TypeError as e:
-                    raised = e
-            check("innomaker: asked by %s -> TypeError, before the lock, canctl or an open" % ", ".join(sorted(kw)),
-                  raised is not None and all(k in str(raised) for k in kw) and f.log == [], (raised, f.log))
+            e = raises(f, lambda kb: kb.innomaker_bus("canmain", **kw))
+            check("innomaker: asked by %s -> InnomakerError naming it (bench_layer.refuse_picks), no canctl, no open"
+                  % ", ".join(kw), type(e).__name__ == "InnomakerError" and all(k in str(e) for k in kw)
+                  and f.canctls() == [] and "Bus" not in f.kinds(), (e, f.log))
         for role in ("kvaser", "can0", "pcanfd", 0, None):
             f = InnoFakes()
-            raised = None
-            with f as kb:
-                try:
-                    kb.innomaker_bus(role)
-                except kb.InnomakerError as e:
-                    raised = e
+            e = raises(f, lambda kb: kb.innomaker_bus(role))
             check("innomaker: role %r is not an Innomaker's -> InnomakerError, no canctl, no open" % (role,),
-                  raised is not None and "not an Innomaker role" in str(raised) and f.kinds() == ["lock"],
-                  (raised, f.log))
+                  type(e).__name__ == "InnomakerError" and "not an Innomaker role" in str(e) and f.canctls() == []
+                  and "Bus" not in f.kinds(), (e, f.log))
         for label, kw, want in (("no netdev canmain (canbench: socketcan mode with no netdev)",
                                  {"missing": ("canmain",)}, "no netdev"),
-                                ("netdev canmain up", {"start_up": ("canmain",)}, "is up"),
                                 ("canmain not attached (canbench)", {"roles": {"canmain": {"attached": 0}}},
                                  "not attached"),
-                                ("canmain already in libusb mode", {"roles": {"canmain": {
-                                    "mode": "libusb", "driver": "none", "netdev": "none", "link": "none"}}},
-                                 "mode libusb"),
                                 ("no role canmain in canctl's table (canbench)", {"roles": {"canmain": None}},
                                  "not a canctl role")):
             f = InnoFakes(**kw)
-            raised = None
-            with f as kb:
-                try:
-                    kb.innomaker_bus("canmain")
-                except kb.InnomakerError as e:
-                    raised = e
+            e = raises(f, lambda kb: kb.innomaker_bus("canmain"))
             check("innomaker: %s -> InnomakerError naming it, no canctl, no open" % label,
-                  raised is not None and want in str(raised) and f.kinds() == ["lock", "use", "roles"], (raised, f.log))
+                  type(e).__name__ == "InnomakerError" and want in str(e) and f.canctls() == []
+                  and "Bus" not in f.kinds(), (e, f.log))
         f = InnoFakes(holder=None)
-        raised = None
-        with f as kb:
-            try:
-                kb.innomaker_bus("canmain")
-            except kb.BenchNotHeld as e:
-                raised = e
-        check("innomaker: the lock free -> BenchNotHeld, before canctl or an open", raised is not None
-              and f.kinds() == ["lock"], (raised, f.log))
+        e = raises(f, lambda kb: kb.innomaker_bus("canmain"))
+        check("innomaker: the lock free -> BenchNotHeld (the guard plugged into bench_layer), before canctl or an "
+              "open", type(e).__name__ == "BenchNotHeld" and f.canctls() == [] and "Bus" not in f.kinds(), (e, f.log))
     case("innomaker: refusals", refusals)
+
+    def found_states():
+        f = InnoFakes(start_up=("canmain",))
+        with f as kb:
+            b = kb.innomaker_bus("canmain")
+            first = list(f.canctls())
+            b.shutdown()
+        check("innomaker: canmain found up -> bench_layer takes it down before the hand-over, and puts it back up "
+              "at its old settings at the close", first == [("down", "canmain"), LIBUSB]
+              and f.canctls()[2:] == [RESTORE, ("up", "canmain", "500000", "restart-ms", "0")]
+              and f.state["canmain"]["link"] == "up", f.log)
+        f = InnoFakes(roles={"canmain": {"mode": "libusb", "driver": "none", "netdev": "none", "link": "none"}})
+        with f as kb:
+            b = kb.innomaker_bus("canmain")
+            b.shutdown()
+        check("innomaker: canmain found in libusb mode -> opened as it is, left in libusb (nothing to put back)",
+              f.canctls() == [] and "Bus" in f.kinds() and f.state["canmain"]["mode"] == "libusb", f.log)
+    case("innomaker: found states", found_states)
 
     def failures():
         f = InnoFakes(libusb_rc=1)
-        raised = None
-        with f as kb:
-            try:
-                kb.innomaker_bus("canmain")
-            except kb.InnomakerError as e:
-                raised = e
-            down = f.down("canmain")
-        check("innomaker: canctl mode libusb fails -> InnomakerError naming it, no open, handed back "
-              "(socketcan --wait), down", raised is not None and "libusb failed (rc 1)" in str(raised)
-              and "Bus" not in f.kinds() and f.canctls() == [LIBUSB, RESTORE] and down,
-              (raised, f.log))
-        f = InnoFakes(libusb_rc=1, restore_rc=2)
-        raised = None
-        with f as kb:
-            try:
-                kb.innomaker_bus("canmain")
-            except kb.InnomakerError as e:
-                raised = e
-        check("innomaker: libusb fails and the hand-back fails too -> one InnomakerError naming both",
-              raised is not None and "libusb failed (rc 1)" in str(raised) and "hand-back failed" in str(raised)
-              and "socketcan --wait failed (rc 2)" in str(raised), (raised, f.log))
+        e = raises(f, lambda kb: kb.innomaker_bus("canmain"))
+        check("innomaker: canctl mode libusb fails -> InnomakerError naming it, no open, canmain still down",
+              type(e).__name__ == "InnomakerError" and "libusb failed (rc 1" in str(e) and "Bus" not in f.kinds()
+              and f.canctls() == [LIBUSB] and f.down("canmain"), (e, f.log))
         f = InnoFakes(use_raises=True)
-        raised = None
-        with f as kb:
-            try:
-                kb.innomaker_bus("canmain")
-            except Exception as e:      # noqa: BLE001
-                raised = e
+        e = raises(f, lambda kb: kb.innomaker_bus("canmain"))
         check("innomaker: the pin refuses -> its error raised before canctl is run or anything opens",
-              isinstance(raised, RuntimeError) and f.canctls() == [] and "Bus" not in f.kinds(), (raised, f.log))
+              isinstance(e, RuntimeError) and f.canctls() == [] and "Bus" not in f.kinds(), (e, f.log))
         f = InnoFakes(libusb_bound=True)
-        raised = None
-        with f as kb:
-            try:
-                kb.innomaker_bus("canmain")
-            except kb.RoleError as e:
-                raised = e
-            down = f.down("canmain")
-        check("innomaker: canbench refuses the libusb role (still bound to gs_usb) -> RoleError naming it, "
-              "nothing opened, canmain handed back, down", raised is not None and "still bound" in str(raised)
-              and "Bus" not in f.kinds() and f.canctls() == [LIBUSB, RESTORE] and down, (raised, f.log))
+        e = raises(f, lambda kb: kb.innomaker_bus("canmain"))
+        check("innomaker: canmain still bound after canctl mode libusb -> InnomakerError naming it (bench_layer: not "
+              "settled), nothing opened", type(e).__name__ == "InnomakerError" and "not settled in libusb" in str(e)
+              and "Bus" not in f.kinds(), (e, f.log))
         for label, kw in (("the gs_usb open raises", {"bus_raises": OSError("planted open failure")}),
                           ("the fixes raise", {"apply_raises": True})):
             f = InnoFakes(**kw)
-            raised = None
-            with f as kb:
-                try:
-                    kb.innomaker_bus("canmain")
-                except Exception as e:      # noqa: BLE001
-                    raised = e
-                down = f.down("canmain")
+            e = raises(f, lambda kb: kb.innomaker_bus("canmain"))
             check("innomaker: %s -> its own error raised, canmain handed back (socketcan --wait), down" % label,
-                  raised is not None and not isinstance(raised, kb.InnomakerError)
-                  and f.canctls() == [LIBUSB, RESTORE] and down, (raised, f.log))
+                  e is not None and type(e).__name__ != "InnomakerError" and f.canctls() == [LIBUSB, RESTORE]
+                  and f.down("canmain"), (e, f.log))
         f = InnoFakes(bus_raises=OSError("planted open failure"), restore_gone=True)
-        raised = None
-        with f as kb:
-            try:
-                kb.innomaker_bus("canmain")
-            except kb.InnomakerError as e:
-                raised = e
+        e = raises(f, lambda kb: kb.innomaker_bus("canmain"))
         check("innomaker: the open raises and canmain does not come back -> one InnomakerError naming both",
-              raised is not None and "planted open failure" in str(raised) and "has no netdev" in str(raised),
-              (raised, f.log))
+              type(e).__name__ == "InnomakerError" and "planted open failure" in str(e) and "not put back" in str(e),
+              (e, f.log))
     case("innomaker: failures", failures)
 
     def close_failures():
         runs = gi_paths.scratch("kvaser-bus-inno-runs")
         for label, kw, want in (
                 ("canctl socketcan --wait fails (though canmain came back)",
-                 {"restore_rc": 3, "restore_applies": True}, "socketcan --wait failed (rc 3)"),
-                ("canmain comes back up", {"restore_up": True}, "canmain is up"),
-                ("canmain does not come back", {"restore_gone": True}, "has no netdev")):
+                 {"restore_rc": 3, "restore_applies": True}, "socketcan --wait 10 failed (rc 3"),
+                ("canmain comes back up", {"restore_up": True}, "not settled in socketcan"),
+                ("canmain does not come back", {"restore_gone": True}, "not settled in socketcan")):
             gi_paths.remove_tree(runs)
             os.makedirs(runs)
             try:
                 f = InnoFakes(runs_dir=runs, **kw)
-                raised = None
                 with f as kb:
                     b = kb.innomaker_bus("canmain")
                     try:
                         b.shutdown()
-                    except kb.InnomakerError as e:
-                        raised = e
-                with open(os.path.join(runs, "kvaser_opens.jsonl"), encoding="ascii") as fh:
-                    evs = [json.loads(x) for x in fh]
+                        e = None
+                    except kb.InnomakerError as x:
+                        e = x
+                evs = read_evs(runs)
                 check("innomaker: at the close %s -> InnomakerError, and the close recorded with the error" % label,
-                      raised is not None and want in str(raised) and evs[-1]["event"] == "close"
-                      and want in evs[-1].get("error", ""), (raised, evs))
+                      e is not None and want in str(e) and evs[-1]["event"] == "close"
+                      and want in evs[-1].get("error", ""), (e, evs))
             finally:
                 gi_paths.remove_tree(runs)
         f = InnoFakes(shutdown_raises=True)
-        raised = None
         with f as kb:
             b = kb.innomaker_bus("canmain")
             del f.log[:]
             try:
                 b.shutdown()
-            except OSError as e:
-                raised = e
+                e = None
+            except OSError as x:
+                e = x
             down = f.down("canmain")
-        rel = [e for e in f.log if e[0] == "release"]
+        rel = [x for x in f.log if x[0] == "release"]
         check("innomaker: a shutdown that raises still frees the handle (once) and hands canmain back, and the "
-              "error is not swallowed", isinstance(raised, OSError) and len(rel) == 1 and rel[0][1] is b
-              and f.canctls() == [RESTORE] and down, (raised, f.log))
+              "error is not swallowed", isinstance(e, OSError) and len(rel) == 1 and rel[0][1] is b
+              and f.canctls() == [RESTORE] and down, (e, f.log))
     case("innomaker: close failures", close_failures)
 
-    def flags():
-        f = InnoFakes()
-        with f as kb:
-            for role, up in (("canmain", True), ("canchg", False)):
-                f.netdev(role, up=up)
-            got = []
-            for role in ("canmain", "canchg"):
-                try:
-                    got.append(kb.innomaker_down(role))
-                except kb.InnomakerError as e:
-                    got.append("raised: %s" % e)
-        check("innomaker_down: bench_roles' link up is up, link down is down",
-              got == ["raised: netdev canmain is up, not down", "canchg exists and its link is down"], got)
-    case("innomaker: link read back", flags)
-
     def held():
-        """innomaker_held (condition 5, 2026-11-18): one hand-over for a run of opens and closes."""
+        """innomaker_held (condition 5, 2026-11-18) in bench_layer's calls (2026-11-19)."""
         runs = gi_paths.scratch("kvaser-bus-held-runs")
         gi_paths.remove_tree(runs)
         os.makedirs(runs)
@@ -710,13 +692,15 @@ def innomaker():
             f = InnoFakes(runs_dir=runs)
             with f as kb:
                 with kb.innomaker_held("canmain") as inno:
-                    check("held: entering checks the lock, reads canmain down, then canctl mode canmain libusb; "
-                          "nothing opened", f.kinds() == ["lock", "use", "roles", "canctl"]
-                          and f.canctls() == [LIBUSB] and "Bus" not in f.kinds(), f.log)
+                    k = f.kinds()
+                    check("held: entering checks the lock, then canctl mode canmain libusb (bench_layer.to_libusb), "
+                          "read back; nothing opened", "lock" in k and k.index("lock") < k.index("canctl")
+                          and f.canctls() == [LIBUSB] and "Bus" not in k
+                          and f.state["canmain"]["mode"] == "libusb", f.log)
                     del f.log[:]
                     b1 = inno.open(bitrate=250000)
-                    check("held: open is bench_roles.open_role on the held role, by its bus and address, at the "
-                          "asked bitrate, with no canctl", f.canctls() == [] and f.log[-1][1] == {
+                    check("held: open is open_bench on the held role, by its bus and address, at the asked "
+                          "bitrate, with no canctl", f.canctls() == [] and f.log[-1][1] == {
                               "interface": "gs_usb", "channel": "gs_usb:canmain", "bus": 3, "address": 7,
                               "bitrate": 250000}, f.log)
                     check("held: the bus says its backend and role",
@@ -724,8 +708,8 @@ def innomaker():
                     del f.log[:]
                     b1.shutdown()
                     rel = [e for e in f.log if e[0] == "release"]
-                    check("held: a close is open_role's shutdown only (the bus, the handle freed once), no "
-                          "hand-back", [k for k in f.kinds() if k != "use"] == ["shutdown", "release"]
+                    check("held: a close is the bus's only (the bus, the handle freed once), no hand-back",
+                          [k for k in f.kinds() if k not in ("use", "roles", "lock")] == ["shutdown", "release"]
                           and len(rel) == 1 and f.canctls() == [], f.log)
                     check("held: canmain stays on libusb after a close", f.state["canmain"]["mode"] == "libusb")
                     del f.log[:]
@@ -735,124 +719,93 @@ def innomaker():
                     check("held: it opens again, at another bitrate, still no canctl",
                           f.canctls() == [] and f.log[-1][1].get("bitrate") == 500000, f.log)
                     del f.log[:]
-                # exit with b2 still open
+                k = f.kinds()
                 rel = [e for e in f.log if e[0] == "release"]
-                check("held: exit shuts the bus left open (once), THEN hands canmain back (socketcan --wait), "
-                      "read back", [k for k in f.kinds() if k != "use"] == ["shutdown", "release", "canctl", "roles"]
-                      and len(rel) == 1 and rel[0][1] is b2 and f.canctls() == [RESTORE] and f.down("canmain"),
-                      f.log)
-                raised = None
+                check("held: exit shuts the bus left open (once), THEN hands canmain back (bench_layer.to_socketcan), "
+                      "read back", k[:2] == ["shutdown", "release"] and len(rel) == 1 and rel[0][1] is b2
+                      and f.canctls() == [RESTORE] and f.down("canmain"), f.log)
+                e = None
                 try:
                     inno.open()
-                except kb.InnomakerError as e:
-                    raised = e
+                except kb.InnomakerError as x:
+                    e = x
                 check("held: an open after the block -> InnomakerError, nothing opened",
-                      raised is not None and "not held" in str(raised), raised)
-            with open(os.path.join(runs, "kvaser_opens.jsonl"), encoding="ascii") as fh:
-                evs = [json.loads(x) for x in fh]
-            check("held: two opens and two closes recorded as held, then the hand-back with its read-back",
-                  [(e["event"], e.get("held"), e.get("bitrate")) for e in evs]
-                  == [("open", True, 250000), ("close", True, None), ("open", True, 500000), ("close", True, None),
-                      ("close", None, None)]
-                  and evs[-1]["canctl"] == "mode canmain socketcan --wait"
-                  and evs[-1]["readback"] == "canmain exists and its link is down", evs)
+                      e is not None and "not held" in str(e), e)
+            evs = read_evs(runs)
+            check("held: the hold, two opens and two closes recorded as held, then the hand-back with its read-back",
+                  [(x["event"], x.get("held"), x.get("bitrate")) for x in evs]
+                  == [("hold", None, None), ("open", True, 250000), ("close", True, None), ("open", True, 500000),
+                      ("close", True, None), ("close", None, None)]
+                  and evs[-1]["to"] == "socketcan" and evs[-1]["readback"] == "mode socketcan, netdev canmain, link down",
+                  evs)
         finally:
             gi_paths.remove_tree(runs)
 
         for kw in ({"index": 0}, {"channel": "can0"}, {"bus": 3}, {"address": 7}):
             f = InnoFakes()
-            raised = None
             with f as kb:
                 with kb.innomaker_held("canmain") as inno:
                     del f.log[:]
                     try:
                         inno.open(**kw)
-                    except TypeError as e:
-                        raised = e
-            check("held: open asked by %s -> TypeError, nothing opened, canmain still handed back"
-                  % ", ".join(kw), raised is not None and "Bus" not in [e[0] for e in f.log]
-                  and f.canctls() == [RESTORE] and f.down("canmain"), (raised, f.log))
-
+                        e = None
+                    except kb.InnomakerError as x:
+                        e = x
+            check("held: open asked by %s -> InnomakerError, nothing opened, canmain still handed back"
+                  % ", ".join(kw), e is not None and "Bus" not in [x[0] for x in f.log]
+                  and f.canctls() == [RESTORE] and f.down("canmain"), (e, f.log))
         for label, kw, exc in (("the lock free", {"holder": None}, "BenchNotHeld"),
-                               ("netdev canmain up", {"start_up": ("canmain",)}, "InnomakerError")):
+                               ("netdev canmain up (bench_layer refuses a move with the link up)",
+                                {"start_up": ("canmain",)}, "InnomakerError")):
             f = InnoFakes(**kw)
-            raised = None
-            with f as kb:
-                try:
-                    with kb.innomaker_held("canmain"):
-                        raised = "entered"
-                except (kb.BenchNotHeld, kb.InnomakerError) as e:
-                    raised = e
-            check("held: %s -> %s at enter, no canctl, the block not run" % (label, exc),
-                  type(raised).__name__ == exc and f.canctls() == [], (raised, f.log))
-        f = InnoFakes()
-        raised = None
-        with f as kb:
-            try:
-                with kb.innomaker_held("kvaser"):
-                    raised = "entered"
-            except kb.InnomakerError as e:
-                raised = e
-        check("held: role kvaser -> InnomakerError at enter, no canctl",
-              raised is not None and raised != "entered" and "not an Innomaker role" in str(raised)
-              and f.canctls() == [], (raised, f.log))
-        f = InnoFakes(libusb_rc=1)
-        raised = None
-        with f as kb:
-            try:
-                with kb.innomaker_held("canmain"):
-                    raised = "entered"
-            except kb.InnomakerError as e:
-                raised = e
-        check("held: canctl mode libusb fails -> InnomakerError, handed back, down, the block not run",
-              raised is not None and raised != "entered" and "libusb failed (rc 1)" in str(raised)
-              and f.canctls() == [LIBUSB, RESTORE] and f.down("canmain"), (raised, f.log))
+            entered = []
 
+            def go(kb):
+                with kb.innomaker_held("canmain"):
+                    entered.append(1)
+            e = raises(f, go)
+            check("held: %s -> %s at enter, no canctl, the block not run" % (label, exc),
+                  type(e).__name__ == exc and f.canctls() == [] and not entered, (e, f.log))
         f = InnoFakes()
-        raised = None
-        with f as kb:
-            try:
-                with kb.innomaker_held("canmain") as inno:
-                    inno.open()
-                    raise ValueError("planted block failure")
-            except ValueError as e:
-                raised = e
+        e = raises(f, lambda kb: kb.innomaker_held("kvaser").__enter__())
+        check("held: role kvaser -> InnomakerError at enter, no canctl",
+              type(e).__name__ == "InnomakerError" and "not an Innomaker role" in str(e) and f.canctls() == [], (e, f.log))
+        f = InnoFakes(libusb_rc=1)
+        e = raises(f, lambda kb: kb.innomaker_held("canmain").__enter__())
+        check("held: canctl mode libusb fails -> InnomakerError, canmain still down, the block not run",
+              type(e).__name__ == "InnomakerError" and "libusb failed (rc 1" in str(e)
+              and f.canctls() == [LIBUSB] and f.down("canmain"), (e, f.log))
+
+        def block_raises(kb):
+            with kb.innomaker_held("canmain") as inno:
+                inno.open()
+                raise ValueError("planted block failure")
+        f = InnoFakes()
+        e = raises(f, block_raises)
         check("held: the block raises -> its error raised, the bus shut, canmain handed back, down",
-              isinstance(raised, ValueError) and "release" in f.kinds() and f.canctls() == [LIBUSB, RESTORE]
-              and f.down("canmain"), (raised, f.log))
+              isinstance(e, ValueError) and "release" in f.kinds() and f.canctls() == [LIBUSB, RESTORE]
+              and f.down("canmain"), (e, f.log))
+
+        def open_close(kb):
+            with kb.innomaker_held("canmain") as inno:
+                inno.open().shutdown()
         f = InnoFakes(restore_up=True)
-        raised = None
-        with f as kb:
-            try:
-                with kb.innomaker_held("canmain") as inno:
-                    inno.open().shutdown()
-            except kb.InnomakerError as e:
-                raised = e
-        check("held: the hand-back at exit reads canmain up -> InnomakerError", raised is not None
-              and "canmain is up" in str(raised), (raised, f.log))
+        e = raises(f, open_close)
+        check("held: the hand-back at exit not settled (canmain comes back up) -> InnomakerError",
+              type(e).__name__ == "InnomakerError" and "not settled in socketcan" in str(e), (e, f.log))
+
+        def open_only(kb):
+            with kb.innomaker_held("canmain") as inno:
+                inno.open()
         f = InnoFakes(shutdown_raises=True)
-        raised = None
-        with f as kb:
-            try:
-                with kb.innomaker_held("canmain") as inno:
-                    inno.open()
-            except kb.InnomakerError as e:
-                raised = e
-            down = f.down("canmain")
+        e = raises(f, open_only)
         check("held: a close that raises at exit -> canmain still handed back, then InnomakerError naming it",
-              raised is not None and "close failed" in str(raised) and f.canctls() == [LIBUSB, RESTORE] and down,
-              (raised, f.log))
+              type(e).__name__ == "InnomakerError" and "close failed" in str(e) and f.canctls() == [LIBUSB, RESTORE]
+              and f.down("canmain"), (e, f.log))
         f = InnoFakes(bus_raises=OSError("planted open failure"))
-        raised = None
-        with f as kb:
-            try:
-                with kb.innomaker_held("canmain") as inno:
-                    inno.open()
-            except OSError as e:
-                raised = e
-            down = f.down("canmain")
+        e = raises(f, open_only)
         check("held: an open that raises -> its error raised, canmain handed back once at exit, down",
-              isinstance(raised, OSError) and f.canctls() == [LIBUSB, RESTORE] and down, (raised, f.log))
+              isinstance(e, OSError) and f.canctls() == [LIBUSB, RESTORE] and f.down("canmain"), (e, f.log))
     case("innomaker: held", held)
 
 
@@ -868,8 +821,10 @@ def pcan():
             f = Fakes()
             with f as kb:
                 b = kb.pcan_bus(bitrate=250000, auto_reset=True)
-            check("pcan: the lock checked first, then bench_roles.open_role (canctl roles, the fixes, the open)",
-                  f.kinds() == ["lock", "use", "roles", "apply", "Bus"], f.log)
+            k = f.kinds()
+            check("pcan: the lock checked before the open (bench_layer.open_bench's guard), then the fixes and the "
+                  "open, no canctl", "lock" in k and k.index("lock") < k.index("apply") < k.index("Bus")
+                  and f.canctls() == [], f.log)
             check("pcan: python-can's pcan by pcanfd's device id, never by channel, with the caller's other arguments",
                   f.log[-1][1] == {"interface": "pcan", "device_id": 0, "bitrate": 250000, "auto_reset": True}, f.log[-1])
             check("pcan: the bus says its backend, role, device id and char device",
@@ -880,7 +835,7 @@ def pcan():
             check("pcan: the open recorded with the role, device id, char device, channel and bitrate",
                   len(evs) == 1 and evs[0]["event"] == "open" and evs[0]["backend"] == "pcan"
                   and evs[0]["role"] == "pcanfd" and evs[0]["device_id"] == 0 and evs[0]["chardev"] == "pcanusbfd32"
-                  and evs[0]["bitrate"] == 250000 and evs[0]["reader"] == "canbench.bench_roles.open_role", evs)
+                  and evs[0]["bitrate"] == 250000 and evs[0]["reader"] == "canbench.bench_layer.open_bench", evs)
         finally:
             if saved is None:
                 os.environ.pop("GI_RUNS_DIR", None)
@@ -896,16 +851,12 @@ def pcan():
 
     def refusals():
         for opener in ("pcan_bus", "pcan_witness_bus"):
-            for kw in ({"channel": "PCAN_USBBUS1"}, {"device_id": 0}, {"interface": "pcan"}):
+            for kw in ({"channel": "PCAN_USBBUS1"}, {"device_id": 0}, {"interface": "pcan"}, {"serial": "X"}):
                 f = Fakes()
-                raised = None
-                with f as kb:
-                    try:
-                        getattr(kb, opener)(bitrate=500000, **kw)
-                    except TypeError as e:
-                        raised = e
-                check("%s: asked by %s -> TypeError, before the lock, canctl or an open" % (opener, list(kw)[0]),
-                      raised is not None and list(kw)[0] in str(raised) and f.log == [], (raised, f.log))
+                e = raises(f, lambda kb: getattr(kb, opener)(bitrate=500000, **kw))
+                check("%s: asked by %s -> RoleError naming it (bench_layer.refuse_picks), before the lock or an open"
+                      % (opener, list(kw)[0]), type(e).__name__ == "RoleError" and list(kw)[0] in str(e)
+                      and "lock" not in f.kinds() and "Bus" not in f.kinds() and "Pcan" not in f.kinds(), (e, f.log))
         # canbench's refusals (bench_roles.resolve / open_role), re-raised as kvaser_bus.RoleError
         for label, kw, want, openers in (
                 ("no PCAN attached", {"roles": {"pcanfd": {"attached": 0}}}, "not attached", "both"),
@@ -931,7 +882,7 @@ def pcan():
                     except kb.RoleError as e:
                         raised = e
                 check("%s: %s -> RoleError naming it, nothing opened" % (opener, label),
-                      raised is not None and want in str(raised) and f.kinds() == ["lock", "use", "roles"],
+                      raised is not None and want in str(raised) and not {"Bus", "Pcan", "canctl"} & set(f.kinds()),
                       (raised, f.log))
         f = Fakes(roles={"pcanfd": {"chardev": "none"}})
         with f as kb:
@@ -952,12 +903,12 @@ def socketcan():
             with f as kb:
                 b = kb.kvaser_bus(channel=0, bitrate=500000, driver_mode=True)
                 opened = [e for e in f.log if e[0] == "HwBus"]
-                check("socketcan: the lock checked first; bench_roles' read of the kvaser role (socketcan); canctl "
-                      "up kvaser at the asked bitrate with restart-ms, read back; then bench_roles.open_role (its "
-                      "read, the fixes, the reader)",
-                      [k for k in f.kinds()] == ["lock", "use", "roles", "use", "roles", "canctl", "ip", "use", "roles",
-                                                 "apply", "HwBus", "getsockopt"]
-                      and f.canctls() == [("up", "kvaser", "500000", "restart-ms", "100")], f.log)
+                k = f.kinds()
+                check("socketcan: the lock checked first; canctl up kvaser at the asked bitrate with restart-ms "
+                      "(bench_layer.open_bench), read back; then the reader, then the error mask read",
+                      k[0] == "lock" and f.canctls() == [("up", "kvaser", "500000", "restart-ms", "100")]
+                      and "ip" in k[k.index("canctl"):k.index("HwBus")] and k.index("HwBus") < k.index("getsockopt")
+                      and "apply" in k[:k.index("HwBus")], f.log)
                 check("socketcan: open_role's SocketcanHwBus (hw_timestamps) on netdev kvaser, its stamp check "
                       "on 20 data frames, 2 s from host time",
                       opened and opened[0][1:] == ("kvaser", {"check_frames": 20, "host_gap_s": 2.0}), opened)
@@ -966,8 +917,9 @@ def socketcan():
                 check("socketcan: the bus says its backend", getattr(b, "vtrux_backend", None) == "socketcan")
                 del f.log[:]
                 b.shutdown()
-                check("socketcan: shutdown shuts the bus, then canctl down kvaser, read back",
-                      f.kinds() == ["shutdown", "canctl", "ip"] and f.canctls() == [("down", "kvaser")]
+                k = f.kinds()
+                check("socketcan: shutdown shuts the bus, then canctl down kvaser (bench_layer.link_down), read back",
+                      k[0] == "shutdown" and f.canctls() == [("down", "kvaser")] and k.index("canctl") < k.index("ip")
                       and f.linkst["up"] is False, f.log)
             with open(os.path.join(runs, "kvaser_opens.jsonl"), encoding="ascii") as fh:
                 evs = [json.loads(x) for x in fh]
@@ -975,7 +927,8 @@ def socketcan():
                   "kvaser_opens.jsonl, naming the backend, the channel asked and opened, the bitrate, the "
                   "driver, the link, the mask and the reader",
                   len(evs) == 3 and evs[0]["event"] == "open"
-                  and evs[0]["reader"] == "canbench.bench_roles.open_role -> SocketcanHwBus" and evs[0]["role"] == "kvaser"
+                  and evs[0]["reader"] == "canbench.bench_layer.open_bench -> SocketcanHwBus" and evs[0]["role"] == "kvaser"
+                  and evs[0]["found"]["mode"] == "socketcan" and evs[0]["found"]["link"]["up"] is False
                   and evs[1]["event"] == "stamps" and evs[1]["stamp_stats"]["state"] == "hardware" and evs[0]["backend"] == "socketcan"
                   and evs[0]["channel_asked"] == 0 and evs[0]["channel"] == "kvaser" and evs[0]["bitrate"] == 500000
                   and evs[0]["driver"] == "kvaser_usb" and evs[0]["link"]["up"] is True
@@ -1035,12 +988,15 @@ def socketcan():
             ("the link read back listen-only", lambda: SockFakes(read_lo=True), std, "KvaserLinkError"),
             ("the reader's open raising after the link came up",
              lambda: SockFakes(hw_raises=OSError("bind failed")), std, "OSError"),
+            ("the link found up at the bitrate (bench_layer leaves it) and the reader's open raising",
+             lambda: SockFakes(found_up=500000, hw_raises=OSError("bind failed")), std, "OSError"),
             ("open_role finding the link down after canctl up (canbench refuses a down link)",
-             lambda: SockFakes(role_link_lags=True), std, "RoleError")):
+             lambda: SockFakes(role_link_lags=True), std, "KvaserLinkError")):
         # the reader's own open raising is past the open call: what matters is the link down
         case("socketcan refuses: " + label, refuses(label, fk, kw, exc, opened_none=(exc != "OSError")))
     for label, fk in (("the Kvaser on linuxcan's leaf", lambda: SockFakes(kvaser={"mode": "linuxcan", "driver": "leaf", "netdev": "none", "link": "none"})),
                       ("two Kvasers attached", lambda: SockFakes(kvaser={"attached": 2})),
+                      ("the kvaser role on another netdev (can9)", lambda: SockFakes(kvaser={"netdev": "can9"})),
                       ("driver_mode=False", SockFakes)):
         def nocanctl(label=label, fk=fk):
             f = fk()
@@ -1124,6 +1080,17 @@ def socketcan():
                 raised = e
         check("socketcan: the lock free -> BenchNotHeld before canctl, sysfs or an open",
               raised is not None and f.kinds() == ["lock"], (raised, f.log))
+        f = SockFakes()
+        raised = None
+        with f as kb:
+            kb._lock_holder = lambda: (f.log.append(("lock",)), f.holder)[1] if len(
+                [e for e in f.log if e[0] == "lock"]) == 0 else None
+            try:
+                kb.kvaser_bus(channel=0, bitrate=500000)
+            except kb.BenchNotHeld as e:
+                raised = e
+        check("socketcan: the guard plugged into bench_layer: the lock lost after kvaser_bus's own check -> "
+              "BenchNotHeld from the layer before canctl", raised is not None and f.canctls() == [], (raised, f.log))
     case("socketcan: guard", guard)
 
     def backend():
@@ -1187,8 +1154,10 @@ def bus_errors():
     spec.loader.exec_module(kb)
     TX_TIMEOUT, LOSTARB, CRTL, PROT, TRX, ACK, BUSOFF, BUSERROR, RESTARTED, CNT = (
         0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200)
-    sock, canlib, pcan = (types.SimpleNamespace(vtrux_backend="socketcan"),
-                          types.SimpleNamespace(vtrux_backend="canlib"), types.SimpleNamespace())
+    # bench_layer's classifier (2026-11-19) reads the backend from the bus's bench_role (open_role sets it)
+    sock = types.SimpleNamespace(vtrux_backend="socketcan", bench_role=types.SimpleNamespace(interface="socketcan"))
+    canlib = types.SimpleNamespace(vtrux_backend="canlib")
+    pcan = types.SimpleNamespace(bench_role=types.SimpleNamespace(interface="pcan"))
 
     def err(cid, data=bytes(8)):
         return can.Message(arbitration_id=cid, is_error_frame=True, is_extended_id=False, data=data)
@@ -1203,8 +1172,8 @@ def bus_errors():
     for name, cid in (("CRTL", CRTL), ("CRTL | CNT", CRTL | CNT), ("RESTARTED", RESTARTED),
                       ("BUSOFF", BUSOFF), ("BUSOFF | CRTL | CNT", BUSOFF | CRTL | CNT), ("CNT", CNT),
                       ("no class", 0)):
-        check("bus errors: %s alone does not count on SocketCAN" % name, kb.bus_error(sock, err(cid)) is False,
-              hex(cid))
+        check("bus errors: %s alone does not count on SocketCAN" % name, kb.bus_error(sock, err(cid)) is False
+              and kb.bus_error_class(sock, cid) is False, hex(cid))
     check("bus errors: a data frame is never one, whatever its id",
           kb.bus_error(sock, can.Message(arbitration_id=0x288, data=bytes(8))) is False)
     for name, b in (("CANlib", canlib), ("a bus with no backend tag (the PCAN)", pcan)):
@@ -1293,8 +1262,9 @@ def unit():
         f = Fakes()
         with f as kb:
             kb.bus(interface="pcan", bitrate=500000, auto_reset=True)
+        k = f.kinds()
         check("bus(interface='pcan'): through pcan_bus, by pcanfd's device id, the lock checked first",
-              f.kinds() == ["lock", "use", "roles", "apply", "Bus"]
+              "lock" in k and k.index("lock") < k.index("Bus")
               and f.log[-1][1] == {"interface": "pcan", "device_id": 0, "bitrate": 500000, "auto_reset": True}, f.log)
         f = Fakes()
         cfg = {"interface": "ixxat", "channel": 0, "bitrate": 500000}
@@ -1318,8 +1288,10 @@ def unit():
         f = Fakes()
         with f as kb:
             b = kb.pcan_witness_bus(bitrate=500000)
-        check("pcan_witness_bus: the lock checked first, then bench_roles.resolve (canctl roles), the pin loaded, "
-              "then the pinned CanbenchPcanBus", f.kinds() == ["lock", "use", "roles", "use", "Pcan"], f.log)
+        k = f.kinds()
+        check("pcan_witness_bus: the lock checked (bench_layer.guard), then bench_roles.resolve (canctl roles), then "
+              "the pinned CanbenchPcanBus", "lock" in k and k.index("lock") < k.index("roles") < k.index("Pcan")
+              and set(k[:k.index("lock")]) <= {"use"}, f.log)
         check("pcan_witness_bus: pcanfd's device id, the bitrate, and the bus-off reset off",
               f.log[-1][1] == {"device_id": 0, "bitrate": 500000, "canbench_busoff_reset": False}
               and b.kw is f.log[-1][1] and b.vtrux_device_id == 0, f.log[-1])
@@ -1355,8 +1327,10 @@ def unit():
                         getattr(kb, opener)(**kw)
                     except kb.BenchNotHeld as e:
                         raised = e
-                check("guard: %s, %s refuses (BenchNotHeld) before the pin, the fixes or an open" % (label, opener),
-                      raised is not None and f.kinds() == ["lock"], (raised, f.log))
+                k = f.kinds()
+                check("guard: %s, %s refuses (BenchNotHeld) before canctl, the fixes or an open (nothing but the pin "
+                      "loaded before it)" % (label, opener),
+                      raised is not None and "lock" in k and set(k) - {"use"} == {"lock"}, (raised, f.log))
             case("guard %s %s" % (label, opener), go)
 
     def guard_bus():
@@ -1509,39 +1483,6 @@ def guard_real():
 
 # ---------------------------------------------------------------- the scan
 
-def flagged(tree):
-    """[(line, why)] for each call that opens a bus in a form only kvaser_bus.py may use."""
-    out = []
-    for n in ast.walk(tree):
-        if not isinstance(n, ast.Call):
-            continue
-        f = n.func
-        name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else None
-        if name in REMOVED:
-            out.append((n.lineno, "calls %s, the removed by-index opener (an Innomaker by its role: "
-                                  "innomaker_bus)" % name))
-            continue
-        if name not in BUS_NAMES:
-            continue
-        iface = [k for k in n.keywords if k.arg == "interface"]
-        why = None
-        if name in ("KvaserBus", "GsUsbBus"):
-            why = "constructs %s directly" % name
-        elif any(k.arg is None for k in n.keywords):
-            why = "passes **kwargs"
-        elif len(n.args) >= 2:
-            why = "passes the interface by position"
-        elif not iface:
-            why = "passes no interface= (python-can takes it from its config)"
-        elif not (isinstance(iface[0].value, ast.Constant) and isinstance(iface[0].value.value, str)):
-            why = "names its interface at run time"
-        elif iface[0].value.value in OPENERS:
-            why = "opens interface %r directly" % iface[0].value.value
-        if why:
-            out.append((n.lineno, why))
-    return out
-
-
 def called(tree, name):
     return sum(1 for n in ast.walk(tree) if isinstance(n, ast.Call)
                and ((isinstance(n.func, ast.Name) and n.func.id == name)
@@ -1567,17 +1508,102 @@ def fakes_can_without_kvaser_bus(tree):
     return [] if literal else sorted(lines)
 
 
-def pcan_channels(tree):
-    """[(line, why)] for each string that is a PCAN channel name (PCAN_USBBUS<n>, the n-th PCAN
-    found): the PCAN is asked for by its role (2026-11-18). Not applied to PCAN_LITERAL_EXEMPT."""
-    return [(n.lineno, "names PCAN channel %s (the n-th PCAN found, not the role pcanfd)" % n.value)
-            for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
-            and PCAN_CHANNEL_RX.match(n.value)]
+def bench_scan():
+    """The pinned canbench.bench_scan (can-tools ec7cefe; the gen-inhibit reviewer's ruling of 2026-11-19: the
+    adapter-open scan both projects share, run from this test on gen-inhibit's tree)."""
+    return load_real("bench_scan", {})
 
 
-def scan_text(text, path="<snippet>", test=False):
-    tree = ast.parse(text, path)
-    return flagged(tree) + ([] if test else pcan_channels(tree))
+# Every bench_scan hit gen-inhibit allows: (path relative to gen-inhibit/, kind, the hit's why) -> (count, reason).
+# Anything else bench_scan finds FAILS the scan, and an entry whose count no longer matches FAILS too. The
+# reasons are for the gen-inhibit reviewer to rule on (merge request, 2026-11-19).
+SCAN_ALLOWED = {
+    # kvaser_bus: the layer's own opener
+    ("tools/bench/kvaser_bus.py", "bus-open", "passes **kwargs (the interface may hide there)"): (2,
+        "kvaser_bus is the opener: the CANlib Kvaser off Linux (can.Bus(interface='kvaser', **kw); Linux opens by "
+        "bench_layer.open_bench) and bus()'s other interfaces (can.Bus(interface=iface, **kw), for the IXXAT "
+        "callers below)"),
+    ("tools/bench/kvaser_bus.py", "adapter-class", "names detect_available_configs"): (1,
+        "detect(), off Linux only: CANlib's own channel list (on Linux the Kvaser is resolved by role)"),
+    ("tools/bench/kvaser_bus.py", "adapter-class", "names CanbenchPcanBus"): (1,
+        "pcan_witness_bus: the PCAN timing witness is canbench's CanbenchPcanBus on the role's device id (ruling (C), "
+        "2026-11-13); bench_layer has no form of it"),
+    # the implementor's runner
+    ("tools/vehicle_runner.py", "bus-open", "opens interface 'socketcan' directly, outside the bench-role layer"): (1,
+        "the implementor's vehicle_runner, its truck path (a car's adapter, not the bench); refused on a bench host "
+        "(1bb455f6, 07075d05)"),
+    ("tools/vehicle_runner.py", "adapter-class", "imports detect_all_can_interfaces"): (1,
+        "vehicle_runner's truck path, --interface auto; refused on a bench host"),
+    ("tools/vehicle_runner.py", "adapter-class", "names detect_all_can_interfaces"): (1,
+        "vehicle_runner's truck path, --interface auto; refused on a bench host"),
+    ("tools/vehicle_runner.py", "bus-open", "passes **kwargs (the interface may hide there)"): (3,
+        "vehicle_runner's truck path, an explicit --interface; refused on a bench host"),
+    # adapters with no canctl role: for the reviewer's ruling
+    ("tools/bench/e4_rig_calibration.py", "bus-open", "opens interface 'ixxat' directly, outside the bench-role layer"): (2,
+        "the IXXAT, a third adapter with no canctl role; it left the bench on 2026-10-04, and these topology "
+        "phases refuse when it is absent"),
+    ("tools/bench/e4_rig_calibration.py", "adapter-class", "names detect_available_configs"): (1,
+        "the topology phase's check that the IXXAT is present (refuses without it; the PCAN and the Kvaser open by role)"),
+    ("tools/bench/wican_txabort_bench.py", "bus-open", "opens interface 'ixxat' directly, outside the bench-role layer"): (1,
+        "the IXXAT as an optional second witness (--no-ixxat skips it; a failed open is recorded and the run goes on)"),
+    ("tools/bench/diag_build_page_check.py", "adapter-class", "names detect_available_configs"): (1,
+        "detection of the IXXAT only (detect_available_configs(['ixxat'])), an optional third adapter; the PCAN and the "
+        "Kvaser go by role"),
+    ("tools/bench/e4_device_calibration.py", "bus-open", "opens interface 'slcan' directly, outside the bench-role layer"): (1,
+        "the separate-adapter filler, an slcan device named on the command line (--flood-slcan), only when asked; no "
+        "canctl role"),
+    # tests: their own fakes and refusal cases
+    ("tools/test_gi_vbus.py", "bus-open", "passes **kwargs (the interface may hide there)"): (1,
+        "gi_vbus's udp_multicast bus, virtual only"),
+    ("tools/test_vehicle_runner_roles.py", "pcan-channel",
+     "names PCAN channel PCAN_USBBUS1 (the n-th PCAN found, not the role pcanfd)"): (1,
+        "the implementor's test: a --role run asked for channel PCAN_USBBUS1 must be refused"),
+    ("tools/bench/test_diag_build_open.py", "pcan-channel",
+     "names PCAN channel PCAN_USBBUS1 (the n-th PCAN found, not the role pcanfd)"): (1,
+        "its fake detection lists the PCAN, to show the script no longer asks it"),
+    ("tools/bench/test_diag_build_open.py", "adapter-class", "names detect_available_configs"): (2,
+        "its fake of can.detect_available_configs"),
+    ("tools/bench/test_jammer_witnesses.py", "pcan-channel",
+     "names PCAN channel PCAN_USBBUS1 (the n-th PCAN found, not the role pcanfd)"): (10,
+        "its fake PCAN buses' channel_info, as PCAN-Basic names the channel found"),
+    ("tools/bench/test_jammer_witnesses.py", "pcan-channel",
+     "names PCAN channel PCAN_USBBUS2 (the n-th PCAN found, not the role pcanfd)"): (1,
+        "its fake PCAN buses' channel_info (a second channel, refused)"),
+    ("tools/bench/test_kvaser_bus.py", "adapter-class", "names CanbenchPcanBus"): (2,
+        "its fake pinned canbench.live.pcan_bus.CanbenchPcanBus"),
+    ("tools/bench/test_kvaser_bus.py", "adapter-class", "names SocketcanHwBus"): (2,
+        "its fake pinned canbench.live.socketcan_hw.SocketcanHwBus"),
+    ("tools/bench/test_kvaser_bus.py", "pcan-channel",
+     "names PCAN channel PCAN_USBBUS1 (the n-th PCAN found, not the role pcanfd)"): (1,
+        "its refusal cases ask the openers by channel and must be refused"),
+    ("tools/bench/test_serial_noreset.py", "bus-open", "opens interface 'slcan' directly, outside the bench-role layer"): (1,
+        "its fake can.Bus for the slcan serial-reset check: nothing is opened"),
+    ("tools/bench/test_x2_jam_cases.py", "bus-open", "passes no interface= (python-can then reads its config)"): (5,
+        "Bus(api) is the test's own stand-in class for pcan_reopen, not python-can's"),
+}
+
+
+def scan_hits(BS):
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        return BS.scan_paths(BS.py_files(GI, skip_dirs=("__pycache__", ".git", "firmware")), GI)
+
+
+def judge_hits(hits, allowed=None):
+    """(bad hits, stale or miscounted allow entries) for the hits against the allow list."""
+    allowed = SCAN_ALLOWED if allowed is None else allowed
+    counts = {}
+    bad = []
+    for h in hits:
+        key = (h.path, h.kind, h.why)
+        if key in allowed:
+            counts[key] = counts.get(key, 0) + 1
+        else:
+            bad.append(str(h))
+    stale = ["%s [%s] %s: allowed %d, found %d" % (k[0], k[1], k[2], n, counts.get(k, 0))
+             for k, (n, _why) in sorted(allowed.items()) if counts.get(k, 0) != n]
+    return bad, stale
 
 
 def files():
@@ -1590,61 +1616,35 @@ def files():
 
 
 def scan():
+    BS = bench_scan()
+    check("scan: canbench's bench_scan self_check passes (each kind caught, clean snippets clean)",
+          BS.self_check() == [], BS.self_check())
+    hits = scan_hits(BS)
+    bad, stale = judge_hits(hits)
+    check("scan: every bench_scan hit on gen-inhibit's tree is in SCAN_ALLOWED", not bad, bad)
+    check("scan: every SCAN_ALLOWED entry matches its count (none stale)", not stale, stale)
     n_files = openers = 0
-    bad, counts = [], {}
+    fake_bad = []
     import warnings
     for path, rel in files():
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
-            hits = scan_text(text, path, test=rel in PCAN_LITERAL_EXEMPT)
             fake_can = fakes_can_without_kvaser_bus(ast.parse(text, path))
         if fake_can and rel not in FAKE_CAN_EXEMPT:
-            bad.append("%s replaces a module's can (lines %s) and fakes no kvaser_bus" % (rel, fake_can))
+            fake_bad.append("%s replaces a module's can (lines %s) and fakes no kvaser_bus" % (rel, fake_can))
         if rel in FAKE_CAN_EXEMPT and not fake_can:
-            bad.append("%s is in FAKE_CAN_EXEMPT but no longer needs it" % rel)
-        if rel in PCAN_LITERAL_EXEMPT and not pcan_channels(ast.parse(text, path)):
-            bad.append("%s is in PCAN_LITERAL_EXEMPT but holds no PCAN channel name" % rel)
+            fake_bad.append("%s is in FAKE_CAN_EXEMPT but no longer needs it" % rel)
         n_files += 1
         openers += text.count("kvaser_bus(") + text.count("innomaker_bus(") + text.count("pcan_bus(")
-        if hits:
-            counts[rel] = hits
-            if rel not in ALLOWED:
-                bad.extend("%s:%d %s" % (rel, ln, why) for ln, why in hits)
     check("scan: read the harness (over 100 files, over 30 opens through kvaser_bus)",
           n_files > 100 and openers > 30, (n_files, openers))
-    check("scan: no open goes round kvaser_bus outside ALLOWED", not bad, bad)
-    for rel, (want, why) in sorted(ALLOWED.items()):
-        got = len(counts.get(rel, []))
-        check("scan: ALLOWED %s has its %d (%s)" % (rel, want, why[:60]), got == want,
-              (got, counts.get(rel)))
-    print("      %d files, %d calls of kvaser_bus/innomaker_bus/pcan_bus" % (n_files, openers))
+    check("scan: no test fakes a tool's can without faking kvaser_bus", not fake_bad, fake_bad)
+    print("      %d files, %d calls of kvaser_bus/innomaker_bus/pcan_bus, %d bench_scan hits, all allowed: %s"
+          % (n_files, openers, len(hits), not bad))
 
 
-SNIPPETS = [
-    ("can.Bus(interface='kvaser')", 'import can\nb = can.Bus(interface="kvaser", channel=0, bitrate=500000)\n'),
-    ("can.interface.Bus(interface='gs_usb')", 'b = can.interface.Bus(interface="gs_usb", channel="can0")\n'),
-    ("Bus(interface='kvaser'), imported bare", 'from can import Bus\nb = Bus(interface="kvaser", channel=0)\n'),
-    ("can.ThreadSafeBus(interface='kvaser')", 'b = can.ThreadSafeBus(interface="kvaser", channel=0)\n'),
-    ("can.Bus(**cfg)", 'b = can.Bus(**cfg)\n'),
-    ("can.Bus(interface=name)", 'b = can.Bus(interface=name, channel=0)\n'),
-    ("can.Bus() with no interface", 'b = can.Bus(channel=0, bitrate=500000)\n'),
-    ("can.Bus(0, 'kvaser'), by position", 'b = can.Bus(0, "kvaser")\n'),
-    ("KvaserBus(0)", 'from can.interfaces.kvaser import KvaserBus\nb = KvaserBus(0)\n'),
-    ("can.interfaces.gs_usb.GsUsbBus(...)", 'b = can.interfaces.gs_usb.GsUsbBus(channel="can0", index=0)\n'),
-    ("gs_usb_bus(index=0), the removed opener", 'b = gs_usb_bus(channel="can0", index=0)\n'),
-    ("close_gs_usb(b), the removed close", 'close_gs_usb(b)\n'),
-    ("kvaser_bus.gs_usb_bus(...)", 'b = kvaser_bus.gs_usb_bus(channel="can0")\n'),
-    ("can.Bus(interface='pcan')", 'b = can.Bus(interface="pcan", bitrate=500000)\n'),
-    ("PCAN_CHANNEL = 'PCAN_USBBUS1', a channel by name", 'PCAN_CHANNEL = "PCAN_USBBUS1"\n'),
-]
-CLEAN = [
-    ("pcan_bus(bitrate=500000)", 'b = pcan_bus(bitrate=500000)\n'),
-    ("a docstring that mentions PCAN_USBBUS1 in prose", '"""It opened PCAN_USBBUS1 before 2026-11-18."""\n'),
-    ("kvaser_bus(...)", 'b = kvaser_bus(channel=0, bitrate=500000)\n'),
-    ("innomaker_bus('canmain') then shutdown", 'b = innomaker_bus("canmain", bitrate=500000)\nb.shutdown()\n'),
-]
 FAKE_CAN_SNIPPETS = [
     ("a tool's can replaced, no kvaser_bus fake", "E4.can, E4.gi = fake_can, gi\n", True),
     ("setattr(tool, 'can', ...), no kvaser_bus fake", 'setattr(E4, "can", fake_can)\n', True),
@@ -1652,37 +1652,30 @@ FAKE_CAN_SNIPPETS = [
     ("a tool's can replaced, kvaser_bus faked", 'E4.can = fake_can\nsys.modules["kvaser_bus"] = kb\n', False),
     ("self.can, an instance's own", "self.can = None\n", False),
 ]
-# Real files with one of this topic's sites reverted: (file, old, new, what the scan must find)
+# Real files with one of this topic's sites reverted: (file, old, new). bench_scan must find a hit in each that the
+# allow list does not cover.
 REVERTED = [
-    ("interlock_bench.py", "kvaser_bus(", 'can.Bus(interface="kvaser", ', "flag"),
-    ("x2_jammer.py", 'inno = innomaker_bus("canchg", ', 'inno = can.Bus(interface="gs_usb", index=0, ', "flag"),
-    ("bench_census.py", 'return innomaker_bus("canmain", ', 'return can.Bus(interface="gs_usb", channel="can0", index=0, ',
-     "flag"),
-    ("bench_census.py", 'return innomaker_bus("canmain", ', 'return gs_usb_bus(channel="can0", index=0, ', "flag"),
-    ("bench_link_check.py", "bus = kvaser_bus_open(**cfg)", "bus = can.Bus(**cfg)", "flag"),
-    ("diag_build_page_check.py", "buses[name] = open_bus(interface=name,", "buses[name] = can.Bus(interface=name,",
-     "flag"),
-    ("interlock_bench.py", "pc = pcan_bus(", 'pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", ', "flag"),
-    ("bench_witness.py", "self.bus = opener(bitrate=BITRATE)", 'self.bus = opener(channel="PCAN_USBBUS1", bitrate=BITRATE)',
-     "flag"),
+    ("interlock_bench.py", "kvaser_bus(", 'can.Bus(interface="kvaser", '),
+    ("x2_jammer.py", 'inno = innomaker_bus("canchg", ', 'inno = can.Bus(interface="gs_usb", index=0, '),
+    ("x2_jammer.py", '        step, inno = AP.up_open("canchg")\n',
+     '        step, inno = None, can.Bus(interface="socketcan", channel="canchg")\n'),
+    ("can2_ack_probe.py", "        bus = layer().open_bench(role, BITRATE, mode=\"socketcan\", restore=False)\n",
+     "        bus = can.Bus(interface=\"socketcan\", channel=role)\n"),
+    ("bench_census.py", 'return innomaker_bus("canmain", ', 'return can.Bus(interface="gs_usb", channel="can0", index=0, '),
+    ("bench_link_check.py", "bus = kvaser_bus_open(**cfg)", "bus = can.Bus(**cfg)"),
+    ("diag_build_page_check.py", "buses[name] = open_bus(interface=name,", "buses[name] = can.Bus(interface=name,"),
+    ("interlock_bench.py", "pc = pcan_bus(", 'pc = can.Bus(interface="pcan", channel="PCAN_USBBUS1", '),
+    ("bench_witness.py", "self.bus = opener(bitrate=BITRATE)", 'self.bus = opener(channel="PCAN_USBBUS1", bitrate=BITRATE)'),
     ("test_only_inert.py", "tx = pcan_bus(bitrate=500000)    # PCAN first",
-     'tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)    # PCAN first', "flag"),
-    ("wican_trip_bench.py", "pcan = pcan_bus(", 'pcan = can.Bus(interface="pcan", channel=found["pcan"]["channel"], ', "flag"),
+     'tx = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=500000)    # PCAN first'),
+    ("wican_trip_bench.py", "pcan = pcan_bus(", 'pcan = can.Bus(interface="pcan", channel=found["pcan"]["channel"], '),
+    ("kvaser_bus.py", '    b = _call(RoleError, "open_bench %s" % PCAN_ROLE, bl.open_bench, PCAN_ROLE, bitrate, mode="pcan", **kw)\n',
+     '    import can\n    b = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=bitrate, **kw)\n'),
 ]
 
 
 def scan_can_fail():
-    for label, text in SNIPPETS:
-        hits = scan_text(text)
-        check("scan can fail: flags %s" % label, len(hits) == 1, hits)
-    hits = scan_text('from can.interfaces.pcan import PcanBus\nb = PcanBus("PCAN_USBBUS2")\n')
-    check("scan can fail: PcanBus('PCAN_USBBUS2') flagged as a direct construction and a channel by name",
-          len(hits) == 2, hits)
-    hits = scan_text('PCAN_CHANNEL = "PCAN_USBBUS1"\n', test=True)
-    check("scan: a file in PCAN_LITERAL_EXEMPT may hold a PCAN channel name (its fakes)", hits == [], hits)
-    for label, text in CLEAN:
-        hits = scan_text(text)
-        check("scan: passes %s" % label, not hits, hits)
+    BS = bench_scan()
     for label, text, want in FAKE_CAN_SNIPPETS:
         got = fakes_can_without_kvaser_bus(ast.parse(text))
         check("scan %s: %s" % ("can fail" if want else "passes", label), bool(got) == want, got)
@@ -1692,14 +1685,27 @@ def scan_can_fail():
     check("scan can fail: test_e4_rawpost.py without its fake kvaser_bus",
           text.count(old) == 1 and bool(fakes_can_without_kvaser_bus(ast.parse(cut))),
           fakes_can_without_kvaser_bus(ast.parse(cut)))
-    for name, old, new, want in REVERTED:
+    for name, old, new in REVERTED:
         text = open(os.path.join(HERE, name), encoding="utf-8").read()
         n = text.count(old)
         if n < 1:
-            check("scan can fail: %s reverted (%s)" % (name, old), False, "edit matched %d times" % n)
+            check("scan can fail: %s reverted (%s)" % (name, old.strip()), False, "edit matched %d times" % n)
             continue
-        hits = scan_text(text.replace(old, new, 1), name)
-        check("scan can fail: %s with %r put back as %r" % (name, old, new), bool(hits) and want == "flag", hits)
+        rel = "tools/bench/" + name
+        hits = BS.scan_source(text.replace(old, new, 1), rel)
+        base = BS.scan_source(text, rel)
+        bad, _ = judge_hits(hits)
+        check("scan can fail: %s with %r put back as %r -> a hit outside SCAN_ALLOWED" % (name, old.strip()[:50],
+                                                                                      new.strip()[:50]),
+              bool(bad) or len(hits) > len(base), (bad, len(hits), len(base)))
+    fake = [BS.Hit("tools/bench/new_tool.py", 3, "bus-open", "opens interface 'kvaser' directly, outside the bench-role layer")]
+    bad, stale = judge_hits(fake, {})
+    check("scan can fail: a hit in a file not allowed -> FAIL", bad == [str(fake[0])], bad)
+    bad, stale = judge_hits([], {("tools/x.py", "bus-open", "y"): (1, "z")})
+    check("scan can fail: an allow entry with no hit left -> stale", len(stale) == 1, stale)
+    k = ("tools/bench/kvaser_bus.py", "adapter-class", "names CanbenchPcanBus")
+    bad, stale = judge_hits([BS.Hit(k[0], 1, k[1], k[2])] * 2, {k: (1, "r")})
+    check("scan can fail: one hit more than allowed -> miscounted", len(stale) == 1, stale)
 
 
 # ---------------------------------------------------------------- mutants of kvaser_bus.py
@@ -1707,26 +1713,6 @@ def scan_can_fail():
 MUTANTS = [
     (None, None, None),
     # bus errors only on kvaser_usb (reviewer, 2026-11-18)
-    ("bus errors: controller state counts", "| CAN_ERR_ACK | CAN_ERR_BUSERROR)",
-     "| CAN_ERR_ACK | CAN_ERR_BUSERROR | CAN_ERR_CRTL)"),
-    ("bus errors: RESTARTED counts", "| CAN_ERR_ACK | CAN_ERR_BUSERROR)",
-     "| CAN_ERR_ACK | CAN_ERR_BUSERROR | CAN_ERR_RESTARTED)"),
-    ("bus errors: BUSOFF counts", "| CAN_ERR_ACK | CAN_ERR_BUSERROR)",
-     "| CAN_ERR_ACK | CAN_ERR_BUSERROR | CAN_ERR_BUSOFF)"),
-    ("bus errors: PROT and BUSERROR are not bus errors",
-     "BUS_ERROR_CLASSES = (CAN_ERR_TX_TIMEOUT | CAN_ERR_LOSTARB | CAN_ERR_PROT | CAN_ERR_TRX\n"
-     "                     | CAN_ERR_ACK | CAN_ERR_BUSERROR)",
-     "BUS_ERROR_CLASSES = (CAN_ERR_TX_TIMEOUT | CAN_ERR_LOSTARB | CAN_ERR_TRX\n"
-     "                     | CAN_ERR_ACK)"),
-    ("bus errors: ACK is not one", "| CAN_ERR_ACK | CAN_ERR_BUSERROR)", "| CAN_ERR_BUSERROR)"),
-    ("bus errors: CNT excludes a frame", "    return bool(can_id & BUS_ERROR_CLASSES)\n",
-     "    return bool(can_id & BUS_ERROR_CLASSES) and not can_id & CAN_ERR_CNT\n"),
-    ("bus errors: every SocketCAN error frame counts", "    return bool(can_id & BUS_ERROR_CLASSES)\n",
-     "    return True\n"),
-    ("bus errors: filtered on every bus but CANlib", '    if getattr(b, "vtrux_backend", None) != "socketcan":\n',
-     '    if getattr(b, "vtrux_backend", None) == "canlib":\n'),
-    ("bus errors: a data frame can count", "    return bool(msg.is_error_frame) and bus_error_class(",
-     "    return bus_error_class("),
     ("kvaser_bus applies no fixes", "        return _socketcan_bus(**kw)\n    fixes()\n",
      "        return _socketcan_bus(**kw)\n"),
     # the bench guard (reviewer, 2026-11-12)
@@ -1759,16 +1745,9 @@ MUTANTS = [
     ("bus() drops the caller's arguments", "    return can.Bus(interface=iface, **kw)\n",
      "    return can.Bus(interface=iface)\n"),
     # the PCAN witness (2026-11-13, ruling (C))
-    ("pcan_witness_bus opens without the guard",
-     '    _pcan_refuse(kw)\n    require_bench()\n    r = pcan_role()\n    _pin_tool().use()\n',
-     '    _pcan_refuse(kw)\n    r = pcan_role()\n    _pin_tool().use()\n'),
     ("pcan_witness_bus resets on bus-off", "CanbenchPcanBus(canbench_busoff_reset=False, device_id=",
      "CanbenchPcanBus(device_id="),
     # the PCAN by canctl role (the user's ruling, 2026-11-18)
-    ("pcan: channel asked passes", 'PCAN_REFUSED_KW = ("channel", "device_id", "interface")',
-     'PCAN_REFUSED_KW = ("device_id", "interface")'),
-    ("pcan: device_id asked passes", 'PCAN_REFUSED_KW = ("channel", "device_id", "interface")',
-     'PCAN_REFUSED_KW = ("channel", "interface")'),
     ("pcan witness: the device id not passed", "CanbenchPcanBus(canbench_busoff_reset=False, device_id=r[\"device_id\"], ",
      "CanbenchPcanBus(canbench_busoff_reset=False, "),
     ("pcan: the open not recorded", '    record({"event": "open", "backend": "pcan", ', '    ({"event": "open", "backend": "pcan", '),
@@ -1782,122 +1761,107 @@ MUTANTS = [
     ("socketcan: silent mode dropped without a word", "    if driver_mode is not True:\n", "    if False:\n"),
     ("socketcan: CANlib keywords dropped without a word", "    if other:\n        raise TypeError(",
      "    kw = {k: v for k, v in kw.items() if k in SOCKETCAN_KW}\n    if False:\n        raise TypeError("),
-    ("socketcan: the link not brought up", "    got = link_up(bitrate)\n", "    got = link()\n"),
-    ("socketcan: canctl's refusal ignored", '    if rc != 0:\n        _canctl("down", NETDEV)         # canctl may have failed',
-     '    if False:\n        _canctl("down", NETDEV)         # canctl may have failed'),
-    ("socketcan: the bitrate not read back", ' or got["bitrate"] != bitrate or got["listen_only"]:', ' or got["listen_only"]:'),
-    ("socketcan: listen-only not read back", ' or got["bitrate"] != bitrate or got["listen_only"]:', ' or got["bitrate"] != bitrate:'),
-    ("socketcan: a failed canctl up left up", '        _canctl("down", NETDEV)         # canctl may have failed',
-     '        pass         # canctl may have failed'),
-    ("socketcan: a bad read-back left up", '        _canctl("down", NETDEV)         # not left ACKing', '        pass         # not left ACKing'),
-    ("socketcan: no restart-ms", 'args = ("up", NETDEV, str(bitrate), "restart-ms", str(RESTART_MS))',
-     'args = ("up", NETDEV, str(bitrate))'),
     # canbench's reader (can-tools 5952c0c; gen-inhibit reviewer, 2026-11-18)
     ("socketcan: no stamp check (check_frames 0)", "CHECK_FRAMES = 20\n", "CHECK_FRAMES = 0\n"),
     ("socketcan: host stamps pass the check (gap 0)", "HOST_GAP_S = 2.0\n", "HOST_GAP_S = 0.0\n"),
-    ("socketcan: a failed reader open left the link up",
-     "        _canctl(\"down\", NETDEV)         # nothing open: not left ACKing\n", "        pass\n"),
     ("socketcan: the stamp check not recorded at the close",
      '        record({"event": "stamps", "backend": "socketcan", "channel": NETDEV, "stamp_stats": stamps})\n', ""),
     ("socketcan: the error mask not checked", "    if mask != ERR_MASK:\n", "    if False:\n"),
     ("socketcan: the mask's bus left open", "        _open.append(b)\n        _close(b, b.shutdown)\n", ""),
     ("socketcan: the link left up at the close", "        if not _open:\n            ev = ", "        if False:\n            ev = "),
     ("socketcan: the link down at the first close", "        if not _open:\n            ev = ", "        if True:\n            ev = "),
-    ("socketcan: the link down not read back", '    got = link()\n    if got["up"]:\n', '    got = link()\n    if False:\n'),
     ("socketcan: the close not hooked", "    b.shutdown = lambda: _close(b, shut)\n", ""),
     ("socketcan: the backend not recorded", '    record({"event": "open", "backend": "socketcan", ', '    record({"event": "open", '),
     ("canlib: the open not recorded", '    record({"event": "open", "backend": "canlib", "channel_asked": kw.get("channel"),\n',
      '    ({"event": "open", "backend": "canlib", "channel_asked": kw.get("channel"),\n'),
     ("records not written to GI_RUNS_DIR", "    if d:\n        with open(", "    if False:\n        with open("),
-    ("pcan_witness_bus: the class not taken from the pin",
-     '    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n',
-     '    mod = importlib.import_module("canbench.live.pcan_bus")\n'),
     # the Innomakers by canctl role (the user's ruling and the reviewer's conditions, 2026-11-18)
-    ("innomaker: index asked passes", '("channel", "index", "bus", "address")', '("channel", "bus", "address")'),
-    ("innomaker: channel asked passes", '("channel", "index", "bus", "address")', '("index", "bus", "address")'),
-    ("innomaker: bus and address asked pass", '("channel", "index", "bus", "address")', '("channel", "index")'),
     ("innomaker: any role passes", "    if role not in INNOMAKERS:\n", "    if False:\n"),
-    ("innomaker: not handed to libusb", '    rc, last = _canctl("mode", role, "libusb")\n', '    rc, last = 0, ""\n'),
-    ("innomaker: a failed libusb mode ignored", "    if rc != 0:\n        what = ", "    if False:\n        what = "),
-    ("innomaker: a failed libusb mode not handed back", "        _restore_after_failure(role, what)\n", ""),
-    ("innomaker: a failed open not handed back",
-     '        _restore_after_failure(role, "the gs_usb open of %s failed: %s: %s" % (role, type(e).__name__, e))\n',
-     ""),
-    ("innomaker: a failed hand-back after a failure swallowed",
-     '        raise InnomakerError("%s; and the hand-back failed: %s" % (what, r))\n', "        pass\n"),
-    ("innomaker: the close not hooked", "    b.shutdown = lambda: _innomaker_close(b, shut, role)\n", ""),
-    ("innomaker: the close hands nothing back", "    finally:\n        innomaker_restore(role)\n", "    finally:\n        pass\n"),
-    ("innomaker: a second shutdown hands back again", '    if getattr(b, "_vtrux_closed", False):\n        return None\n', ""),
-    ("innomaker: the hand-back without --wait", '_canctl("mode", role, "socketcan", "--wait")',
-     '_canctl("mode", role, "socketcan")'),
-    ("innomaker: a failed hand-back ignored", "        if rc != 0:\n            raise InnomakerError(\"canctl mode %s socketcan",
-     "        if False:\n            raise InnomakerError(\"canctl mode %s socketcan"),
-    ("innomaker: the hand-back not read back", '        ev["readback"] = innomaker_down(role)\n',
-     '        ev["readback"] = "not read"\n'),
-    ("innomaker: a failed hand-back not recorded", '        ev["error"] = str(e)\n        record(ev)\n        raise\n',
-     "        raise\n"),
     ("innomaker: the open not recorded", '    record({"event": "open", "backend": "gs_usb", ', '    ({"event": "open", "backend": "gs_usb", '),
     ("the pin tool is not the project's", 'PIN_TOOL = os.path.join(os.path.dirname(HERE), "can_tools_pin.py")\n',
      'PIN_TOOL = os.path.join(os.path.dirname(HERE), "can_tools_pin_missing.py")\n'),
     # canbench's bench_roles (can-tools 5220d37; the gen-inhibit reviewer, 2026-11-18)
     ("the fixes are not taken from the pin", '    _pin_tool().use()\n    return importlib.import_module("canbench.live.linux_fixes")',
      '    return importlib.import_module("canbench.live.linux_fixes")'),
-    ("bench_roles not taken from the pin", '    _pin_tool().use()\n    return importlib.import_module("canbench.bench_roles")',
-     '    return importlib.import_module("canbench.bench_roles")'),
-    ("resolve's RoleError not re-raised as kvaser_bus's",
-     "        return br.resolve(role)\n    except br.RoleError as e:\n        raise RoleError(str(e)) from e\n",
-     "        return br.resolve(role)\n    except br.RoleError as e:\n        raise\n"),
-    ("open_role's RoleError not re-raised as kvaser_bus's",
-     "        return br.open_role(role, **kw)\n    except br.RoleError as e:\n        raise RoleError(str(e)) from e\n",
-     "        return br.open_role(role, **kw)\n    except br.RoleError as e:\n        raise\n"),
-    ("pcan: opens by channel PCAN_USBBUS1", '    b = _open_role(PCAN_ROLE, modes=("pcan",), bitrate=bitrate, **kw)\n',
-     '    import can\n    b = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=bitrate, **kw)\n'),
-    ("pcan: opens without the guard", '    _pcan_refuse(kw)\n    require_bench()\n    b = _open_role(',
-     '    _pcan_refuse(kw)\n    b = _open_role('),
     ("pcan: a role in another mode passes", '    if res.mode != "pcan":\n', "    if False:\n"),
     ("pcan: no char device passes", '    if not chardev or "/" in chardev:\n', "    if False:\n"),
     ("socketcan: linuxcan's leaf passes", '    if row is not None and row.mode == "linuxcan":\n', "    if False:\n"),
     ("socketcan: another netdev passes", '    if res.mode != "socketcan" or res.netdev != NETDEV:\n', "    if False:\n"),
-    ("socketcan: open_role without hw_timestamps", 'modes=("socketcan",), hw_timestamps=True, check_frames',
-     'modes=("socketcan",), check_frames'),
-    ("socketcan: the role read after canctl up", "    res = kvaser_role()\n    got = link_up(bitrate)\n",
-     "    got = link_up(bitrate)\n    res = kvaser_role()\n"),
     ("detect: a refused Kvaser role found on Linux",
      "        except (RoleError, KvaserLinkError):\n            return None\n",
      "        except (RoleError, KvaserLinkError):\n            pass\n"),
-    ("innomaker: opens by index", '    b = _open_role(role, modes=("libusb",), bitrate=bitrate, **kw)\n',
-     '    import can\n    b = can.Bus(interface="gs_usb", channel=role, index=0, bitrate=bitrate, **kw)\n'),
-    ("innomaker: opens without the guard",
-     '    require_bench()\n    if role not in INNOMAKERS:', '    if role not in INNOMAKERS:'),
     # innomaker_held (condition 5, 2026-11-18)
-    ("held: open does not refuse index and the rest", "    def open(self, bitrate=500000, **kw):\n        _innomaker_refuse(kw)\n",
-     "    def open(self, bitrate=500000, **kw):\n"),
-    ("held: enter hands nothing over", "    def __enter__(self):\n        _innomaker_handover(self.role)\n",
-     "    def __enter__(self):\n"),
     ("held: an open outside the block passes", "        if not self.held:\n            raise InnomakerError(", "        if False:\n            raise InnomakerError("),
-    ("held: exit does not mark it released", "        self.held = False\n        innomaker_restore(self.role)\n",
-     "        innomaker_restore(self.role)\n"),
-    ("held: the close hands canmain back", "            shut()          # open_role's shutdown: gs_usb stop",
-     "            shut(); innomaker_restore(self.role)  # open_role's shutdown: gs_usb stop"),
-    ("held: the close not hooked", "        b.shutdown = lambda: self._close(b, shut)\n", ""),
     ("held: a second shutdown closes again", "        if getattr(b, \"_vtrux_closed\", False):\n            return None\n        b._vtrux_closed = True\n        ev = ",
      "        ev = "),
     ("held: the close not recorded", "            raise\n        record(ev)\n        return None\n", "            raise\n        return None\n"),
     ("held: exit leaves a bus open", "        for b in self.buses:\n            try:\n                b.shutdown()\n", "        for b in []:\n            try:\n                b.shutdown()\n"),
-    ("held: exit hands nothing back", "        self.held = False\n        innomaker_restore(self.role)\n", "        self.held = False\n"),
     ("held: exit hands back before the closes", "        failed = []\n        for b in self.buses:", "        failed = []\n        innomaker_restore(self.role)\n        for b in self.buses:"),
     ("held: a failed close at exit swallowed", "        if failed:\n            raise InnomakerError(", "        if False:\n            raise InnomakerError("),
-    ("held: open records held false", '    record({"event": "open", "backend": "gs_usb", ', '    held = False\n    record({"event": "open", "backend": "gs_usb", '),
-    ("innomaker: an up netdev passes", '    if res.role.link != "down":\n', "    if False:\n"),
-    ("innomaker: another mode passes", '    if res.mode != "socketcan" or res.netdev != role:\n', "    if False:\n"),
-    ("innomaker: canbench's refusal not an InnomakerError",
-     '    except RoleError as e:\n        raise InnomakerError("%s: %s" % (role, e))\n', "    except RoleError as e:\n        raise\n"),
-    ("innomaker: the close releases the handle again",
-     "        shut()              # open_role's shutdown: the bus, then canbench's release_gs_usb\n",
-     '        shut()\n        _pin_tool().use()\n        importlib.import_module("canbench.live.receiver").release_gs_usb(b)\n'),
-    ("innomaker: the close hands back only after a clean shutdown",
-     "    try:\n        shut()              # open_role's shutdown: the bus, then canbench's release_gs_usb\n    finally:\n"
-     "        innomaker_restore(role)\n", "    shut()\n    innomaker_restore(role)\n"),
+    # on canbench's bench_layer (the gen-inhibit reviewer's ruling, 2026-11-19)
+    ("bus_error: not bench_layer's (every error frame counts)", "    return layer().bus_error(b, msg)\n",
+     "    return bool(msg.is_error_frame)\n"),
+    ("bus_error_class: every class counts", "    return layer().bus_error_class(b, can_id)\n", "    return True\n"),
+    ("the layer's guard not plugged in", "    _layer.set_guard(require_bench)\n", "    _layer.set_guard(lambda: None)\n"),
+    ("bench_layer not taken from the pin",
+     '        _pin_tool().use()\n        _layer = importlib.import_module("canbench.bench_layer")\n',
+     '        _layer = importlib.import_module("canbench.bench_layer")\n'),
+    ("bench_roles not taken from the pin",
+     '        _pin_tool().use()\n        _roles = importlib.import_module("canbench.bench_roles")\n',
+     '        _roles = importlib.import_module("canbench.bench_roles")\n'),
+    ("canbench's refusal not re-raised as kvaser_bus's", '        raise err("%s: %s" % (what, e)) from e\n', "        raise\n"),
+    ("pcan_witness_bus: picks not refused",
+     '    _call(RoleError, "pcan_witness_bus", bl.refuse_picks, kw, "pcan_witness_bus")\n', ""),
+    ("pcan_witness_bus: no guard", '    bl.guard("pcan_witness_bus")\n', ""),
+    ("pcan: opens by channel PCAN_USBBUS1",
+     '    b = _call(RoleError, "open_bench %s" % PCAN_ROLE, bl.open_bench, PCAN_ROLE, bitrate, mode="pcan", **kw)\n',
+     '    import can\n    b = can.Bus(interface="pcan", channel="PCAN_USBBUS1", bitrate=bitrate, **kw)\n'),
+    ("socketcan: no restart-ms", 'hw_timestamps=True, restore=False, restart_ms=RESTART_MS,',
+     'hw_timestamps=True, restore=False,'),
+    ("socketcan: open_bench without hw_timestamps", 'mode="socketcan", hw_timestamps=True, restore=False,',
+     'mode="socketcan", restore=False,'),
+    ("socketcan: open_bench restores at the close", 'mode="socketcan", hw_timestamps=True, restore=False,',
+     'mode="socketcan", hw_timestamps=True, restore=True,'),
+    ("socketcan: the stamp check's frames not asked", "check_frames=CHECK_FRAMES, host_gap_s=HOST_GAP_S, **kw)",
+     "host_gap_s=HOST_GAP_S, **kw)"),
+    ("socketcan: a failed open leaves the link as found",
+     "        try:\n            link_down()             # nothing open: not left ACKing, also when the link was found up\n",
+     "        try:\n            pass\n"),
+    ("socketcan: the leaf not asked before the open",
+     "    kvaser_role()                   # RoleError / KvaserLinkError (leaf) before anything is changed\n", ""),
+    ("socketcan: the close leaves the link up", '                ev["link"] = link_down()\n', '                ev["link"] = link()\n'),
+    ("innomaker: handed over in socketcan mode",
+     '    b = _call(InnomakerError, "open_bench %s" % role, bl.open_bench, role, bitrate, mode="libusb",\n',
+     '    b = _call(InnomakerError, "open_bench %s" % role, bl.open_bench, role, bitrate, mode="socketcan",\n'),
+    ("innomaker_bus: nothing put back at the close", "    return _innomaker_open(role, bitrate, kw, True)\n",
+     "    return _innomaker_open(role, bitrate, kw, False)\n"),
+    ("held: opens recorded as not held", "        b = _innomaker_open(self.role, bitrate, kw, False)\n",
+     "        b = _innomaker_open(self.role, bitrate, kw, True)\n"),
+    ("held: enter not handed to libusb",
+     '        _call(InnomakerError, "to_libusb %s" % self.role, bl.to_libusb, self.role)\n', ""),
+    ("held: exit not handed back",
+     '            res = _call(InnomakerError, "to_socketcan %s" % self.role, bl.to_socketcan, self.role)\n',
+     "            res = _resolve(self.role)\n"),
+    ("held: exit hands back before the closes", "        failed = []\n        for b in self.buses:",
+     "        failed = []\n        layer().to_socketcan(self.role)\n        for b in self.buses:"),
+    ("held: exit does not mark it released", "        self.held = False\n        bl = layer()\n", "        bl = layer()\n"),
+    ("held: the hand-back's read-back not recorded",
+     '            ev["readback"] = "mode %s, netdev %s, link %s" % (res.mode, res.netdev, res.role.link)\n', ""),
+    ("held: the hold not recorded",
+     '        record({"event": "hold", "backend": "gs_usb", "role": self.role, "mode": "libusb"})\n', ""),
+    ("innomaker: the close not recorded", "        record(ev)\n        return None\n    b.shutdown = close\n",
+     "        return None\n    b.shutdown = close\n"),
+    ("innomaker: a second shutdown closes again",
+     '        if getattr(b, "_vtrux_closed", False):\n            return None\n        b._vtrux_closed = True\n'
+     '        ev = {"event": "close", "backend": "gs_usb", "role": role, "held": not restore}\n',
+     '        ev = {"event": "close", "backend": "gs_usb", "role": role, "held": not restore}\n'),
+    ("innomaker: a failed close not recorded",
+     '            ev["error"] = "%s: %s" % (type(e).__name__, e)\n            record(ev)\n            raise\n',
+     "            raise\n"),
+    ("innomaker: what was found not recorded",
+     '            "found": (getattr(b, "bench_layer", None) or {}).get("found"),\n', ""),
+    ("socketcan: what was found not recorded", '            "found": lay.get("found"), "err_mask": "0x%X" % mask,',
+     '            "err_mask": "0x%X" % mask,'),
 ]
 
 
@@ -1955,7 +1919,7 @@ def main(argv):
     innomaker()
     pcan()
     socketcan()
-    bus_errors()
+    case("bus errors", bus_errors)
     real_mask()
     pin()
     guard_real()

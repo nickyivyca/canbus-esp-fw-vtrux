@@ -1309,12 +1309,17 @@ def can2_counts(wit_frames, n_pulses):
 def sub_can2_isolation(a, rec, con, wit):
     """CAN2 isolation on madhouse (judge_can2_isolation), witnessed by the Kvaser on SocketCAN
     (2026-11-13, ruling (C); `wit` is unused: no CANlib witness is opened for this sub). The
-    Kvaser up through canctl (normal, no berr), its witness opened (bench_witness's named-netdev
-    refusal), canchg up through canctl and listened to, while the PCAN sends PCAN_FRAMES 0x7A0 on
+    Kvaser up (normal, no berr), its witness opened (bench_witness's named-netdev
+    refusal), canchg up and opened by role and listened to, while the PCAN sends PCAN_FRAMES 0x7A0 on
     CAN1 (the Kvaser ACKs them) and then while the jammer sends n pulses; canchg and the Kvaser
     down; then can2_ack_probe's no-ACK probe on canchg. The PCAN sends before the pulses, never
     during them, so it is not transmitting under the jammer; and it is never this process's
-    witness, so the sub refuses while another process holds it (a session's witness)."""
+    witness, so the sub refuses while another process holds it (a session's witness).
+    From 2026-11-19 (the gen-inhibit reviewer: a raw socketcan open of a role's netdev goes through
+    canbench's bench_layer) the links go up and down through bench_layer, read back
+    (can2_ack_probe.link_up_step / take_down), and canchg opens by role
+    (can2_ack_probe.up_open: open_bench("canchg", mode="socketcan", restore=False)). rec["canctl"]
+    keeps the steps, as before."""
     import can
     import can2_ack_probe as AP
     import bench_witness as BW
@@ -1331,13 +1336,13 @@ def sub_can2_isolation(a, rec, con, wit):
         rec["verdict"], rec["why"] = "NOT-RUN", ("the PCAN is open in pid %s (a session's witness?): it is "
                                                  "this check's 0x7A0 sender, never at once" % holders)
         return
-    rec["canctl"] = [AP.canctl("up", BW.KVASER_IFACE, str(BITRATE))]
+    rec["canctl"] = [AP.link_up_step(BW.KVASER_IFACE)]
     log, phase, stop, canchg_failed = [], ["drain"], threading.Event(), []
     inno = kw = th = None
     t0, done, sent = None, None, 0
     try:
         if rec["canctl"][0]["rc"] != 0:
-            rec["verdict"], rec["why"] = "INCONCLUSIVE", "canctl up kvaser failed"
+            rec["verdict"], rec["why"] = "INCONCLUSIVE", "link_up kvaser failed"
             return
         rec["kvaser_link_up"] = AP.link(BW.KVASER_IFACE)
         try:
@@ -1348,11 +1353,11 @@ def sub_can2_isolation(a, rec, con, wit):
         rec["witness_describe"] = kw.describe()
         kw.phase = "drain"
         kw.start()
-        rec["canctl"].append(AP.canctl("up", "canchg", str(BITRATE)))
-        if rec["canctl"][-1]["rc"] != 0:
-            rec["verdict"], rec["why"] = "INCONCLUSIVE", "canctl up canchg failed"
+        step, inno = AP.up_open("canchg")
+        rec["canctl"].append(step)
+        if inno is None:
+            rec["verdict"], rec["why"] = "INCONCLUSIVE", "open_bench canchg failed"
             return
-        inno = can.Bus(interface="socketcan", channel="canchg")
 
         def rd():
             try:
@@ -1398,12 +1403,12 @@ def sub_can2_isolation(a, rec, con, wit):
             if th is not None:
                 th.join(timeout=1.0)
             inno.shutdown()
-            rec["canctl"].append(AP.canctl("down", "canchg"))
+            rec["canctl"].append(AP.take_down("canchg"))
         if kw is not None:
             rec["witness_down_at_end"] = kw.down()
             kw.close()
         if len(rec.get("canctl", [])) and rec["canctl"][0]["rc"] == 0:
-            rec["canctl"].append(AP.canctl("down", BW.KVASER_IFACE))
+            rec["canctl"].append(AP.take_down(BW.KVASER_IFACE))
             rec["kvaser_link_at_end"] = AP.link(BW.KVASER_IFACE)
     if rec.get("witness_down_at_end"):
         raise WitnessDown(rec["witness_down_at_end"])

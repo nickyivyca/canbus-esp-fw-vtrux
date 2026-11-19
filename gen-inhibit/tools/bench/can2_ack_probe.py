@@ -13,13 +13,16 @@ What it does, bounded (each step recorded, runs/can2_ack_probe_<stamp>.json, nev
 overwritten):
   1. the bench lock must be held by a gen-inhibit role with this process or an ancestor as
      its pid (kvaser_bus.require_bench), and the role's link must be down (nobody else on it);
-  2. `canctl up <role> 500000`, normal mode, not listen-only. No berr: canchg's gs_usb does not
-     offer BERR-REPORTING (its ctrlmode_supported is LOOPBACK, LISTEN-ONLY, CC-LEN8-DLC, read
-     2026-11-13), so the probe judges on the counters below, and on whatever error frames the
-     driver passes up;
-  3. one frame, 0x7A1 (the bench sends only 0x7A0-0x7AF), through python-can's socketcan;
-  4. OBSERVE_S of watching, then the link's counters again, then `canctl down <role>`, which
-     also drops the frame if it is still being retried.
+  2. canbench's bench_layer.open_bench(<role>, 500000, mode="socketcan", restore=False) (from
+     2026-11-19, the gen-inhibit reviewer: a raw socketcan open of a role's netdev goes through
+     bench_layer; kvaser_bus.layer() plugs in the bench guard): the link up at 500000, normal
+     mode, listen-only off and read back, then python-can's socketcan on the role's netdev by
+     role. No berr: canchg's gs_usb does not offer BERR-REPORTING (its ctrlmode_supported is
+     LOOPBACK, LISTEN-ONLY, CC-LEN8-DLC, read 2026-11-13), so the probe judges on the counters
+     below, and on whatever error frames the driver passes up;
+  3. one frame, 0x7A1 (the bench sends only 0x7A0-0x7AF);
+  4. OBSERVE_S of watching, then the link's counters again, then bench_layer.link_down(<role>),
+     read back, which also drops the frame if it is still being retried.
 
 THE JUDGE (judge_probe): NO_ACK when the link shows the retries: an ACK-error frame, a
 controller TX warning/passive frame, the error-warning or error-passive counter rising, or the
@@ -42,7 +45,6 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CANCTL = ["sudo", "-n", "/usr/local/sbin/canctl"]
 BITRATE = 500000
 PROBE_ID = 0x7A1
 OBSERVE_S = 1.0
@@ -113,10 +115,47 @@ def check(expect, verdict):
     return "PASS" if verdict == expect.upper() else "FAIL"
 
 
-def canctl(*args):
-    p = subprocess.run(CANCTL + list(args), capture_output=True, text=True, timeout=30)
-    return {"argv": "canctl " + " ".join(args), "rc": p.returncode,
-            "out": (p.stdout + p.stderr).strip()[-400:]}
+def layer():
+    """canbench's bench_layer from gen-inhibit's pin, with the bench guard plugged in (kvaser_bus.layer())."""
+    sys.path.insert(0, HERE)
+    import kvaser_bus
+    return kvaser_bus.layer()
+
+
+def up_open(role):
+    """Step 2: bench_layer.open_bench(role, BITRATE, mode="socketcan", restore=False). -> (step record, the
+    bus or None when it was refused or failed)."""
+    step = {"argv": "open_bench %s %d mode=socketcan" % (role, BITRATE)}
+    try:
+        bus = layer().open_bench(role, BITRATE, mode="socketcan", restore=False)
+    except Exception as e:      # noqa: BLE001  recorded; probe() refuses and brings the link down
+        step.update(rc=1, out=("%s: %s" % (type(e).__name__, e))[-400:])
+        return step, None
+    step.update(rc=0, out="")
+    return step, bus
+
+
+def link_up_step(role):
+    """bench_layer.link_up(role, BITRATE), read back (UP, that bitrate, no listen-only); for a link a caller
+    witnesses on its own (x2_jammer's Kvaser witness). -> the step record."""
+    step = {"argv": "link_up %s %d" % (role, BITRATE)}
+    try:
+        got = layer().link_up(role, BITRATE)
+        step.update(rc=0, out=json.dumps(got, sort_keys=True)[-400:])
+    except Exception as e:      # noqa: BLE001  recorded; the caller refuses
+        step.update(rc=1, out=("%s: %s" % (type(e).__name__, e))[-400:])
+    return step
+
+
+def take_down(role):
+    """Step 4's end: bench_layer.link_down(role), read back. -> the step record."""
+    step = {"argv": "link_down %s" % role}
+    try:
+        got = layer().link_down(role)
+        step.update(rc=0, out=json.dumps(got, sort_keys=True)[-400:])
+    except Exception as e:      # noqa: BLE001  recorded
+        step.update(rc=1, out=("%s: %s" % (type(e).__name__, e))[-400:])
+    return step
 
 
 def link(role):
@@ -135,13 +174,12 @@ def probe(role="canchg", observe_s=OBSERVE_S):
         rec["refused"] = "%s is not down at the start (%s): someone may be using it" % (
             role, rec["link_at_start"])
         return rec
-    up = canctl("up", role, str(BITRATE))
+    up, bus = up_open(role)
     rec["steps"].append(up)
     try:
-        if up["rc"] != 0:
-            rec["refused"] = "canctl up failed"
+        if bus is None:
+            rec["refused"] = "open_bench failed"
             return rec
-        bus = can.Bus(interface="socketcan", channel=role)
         errs = []
         try:
             time.sleep(0.3)
@@ -167,7 +205,7 @@ def probe(role="canchg", observe_s=OBSERVE_S):
         finally:
             bus.shutdown()
     finally:
-        rec["steps"].append(canctl("down", role))
+        rec["steps"].append(take_down(role))
         rec["link_at_end"] = link(role)
     rec["judge"] = judge_probe(rec["before"], rec["after"], errs)
     return rec
