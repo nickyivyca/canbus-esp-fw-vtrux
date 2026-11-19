@@ -459,6 +459,153 @@ MUTANTS = [
 ]
 
 
+def echo_tests(m):
+    """The replayer's echo drain (the gen-inhibit reviewer's ruling (C), 2026-11-19): open_replayer, slice_close
+    and back_stop with the REAL Player and the REAL kvaser_bus.echo_drain, on _fake_gs_usb's StallingGs (it takes
+    no frame with 256 echoes unread, as canmain's gs_usb did on the bench)."""
+    import time
+    import _fake_gs_usb as FG
+    spec = importlib.util.spec_from_file_location("kvaser_bus_echo_nn", os.path.join(HERE, "kvaser_bus.py"))
+    kb = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(kb)
+    evs = []
+    kb.record = evs.append
+    stim = [(k * 0.0003, m.VCM_ID if k % 20 == 19 else 0x100 + k % 7, bytes([k % 256]) * 8) for k in range(200)]
+
+    g = FG.StallingGs(cap=256)
+    kv, dr = m.open_replayer(lambda: g, "test slice", KB=kb)
+    pl = m.Player(kv, stim, None)
+    pl.start()
+    time.sleep(0.4)
+    last, echoes, t_call, t_close = m.slice_close(pl, kv, dr)
+    check("echo: the slice sent more than the fake's cap with no stall and no failed send",
+          pl.sent > 256 and pl.fail == 0 and g.stalls == 0, (pl.sent, pl.fail, g.stalls))
+    check("echo: the slice's drain counted one echo per frame sent, recorded as an echoes event for canmain",
+          echoes.get("sent") == pl.sent == echoes.get("echoes") and echoes.get("echoes_equal_sent") is True
+          and echoes.get("role") == "canmain" and echoes.get("what") == "test slice" and evs[-1] == echoes, echoes)
+    check("echo: the drain stopped before the slice's close (not running at the shutdown)",
+          g.drain_alive_at_shutdown is False and not dr.is_alive(), g.drain_alive_at_shutdown)
+    check("echo: the close called CLOSE_AFTER_S after the last VCM frame's send (and promptly)",
+          last is not None and m.CLOSE_AFTER_S - 1e-4 <= t_call - last[0] < m.CLOSE_AFTER_S + 0.05
+          and t_close >= t_call, (last, t_call))
+
+    g2 = FG.StallingGs(cap=256)
+    kv2, dr2 = m.open_replayer(lambda: g2, "test back", KB=kb)
+    pl2 = m.Player(kv2, stim, None)
+    pl2.start()
+    time.sleep(0.3)
+    e2 = m.back_stop(pl2, dr2)
+    alive = dr2.is_alive()
+    kv2.shutdown()
+    check("echo: back_stop stops the Player, then its drain (stopped before the bus's shutdown), counts recorded",
+          not pl2.is_alive() and not alive and g2.drain_alive_at_shutdown is False and pl2.fail == 0
+          and e2.get("sent") == pl2.sent == e2.get("echoes") and pl2.sent > 256, (e2, pl2.fail, alive))
+
+    g3 = FG.StallingGs(cap=256, acked=lambda n: False)
+    kv3, dr3 = m.open_replayer(lambda: g3, "test no node", KB=kb)
+    pl3 = m.Player(kv3, stim, None)
+    pl3.start()
+    time.sleep(0.1)
+    e3 = m.back_stop(pl3, dr3)
+    check("echo: with nothing ACKing, no echoes: recorded as fewer echoes than frames sent (not judged)",
+          e3.get("echoes") == 0 and e3.get("sent") == pl3.sent > 0 and e3.get("echoes_equal_sent") is False, e3)
+
+
+def precondition_tests(m):
+    """The stimulus's precondition, VOID items with their reasons (the gen-inhibit reviewer's rulings of 2026-11-19):
+    (i) the WiCAN's driver never showed running within the wait, (ii) fewer echoes than frames in either phase."""
+    ok_e = lambda n: {"sent": n, "echoes": n, "rx": 0, "errors": 0, "echoes_equal_sent": True}
+    a = base_arm()
+    a.update(driver_running=True, echoes_slice=ok_e(900), echoes_back=ok_e(400))
+    v = m.judge_arm(a)
+    check("precondition: driver running and every frame echoed in both phases: no VOID item, a main arm that passed",
+          m.arm_verdict(v) == ("main", True) and not any(k in v for k in ("stimulus", "acked_slice", "acked_back")), v)
+    a = base_arm()
+    a.update(driver_running=False, echoes_slice=ok_e(900), echoes_back=ok_e(400))
+    v = m.judge_arm(a)
+    check("precondition (i): the driver never showed running -> the arm VOID, its stimulus item naming why",
+          m.arm_verdict(v)[0] == "VOID" and v.get("stimulus", "").startswith("VOID") and "running" in v["stimulus"]
+          and "5 s" in v["stimulus"], v.get("stimulus"))
+    for phase in ("slice", "back"):
+        a = base_arm()
+        a.update(driver_running=True, echoes_slice=ok_e(900), echoes_back=ok_e(400))
+        a["echoes_" + phase] = dict(ok_e(900), echoes=850, echoes_equal_sent=False)
+        v = m.judge_arm(a)
+        check("precondition (ii): 850 echoes for 900 frames in the %s -> the arm VOID, naming the counts" % phase,
+              m.arm_verdict(v)[0] == "VOID" and v.get("acked_" + phase, "").startswith("VOID: 850 echoes for 900")
+              and ("acked_back" if phase == "slice" else "acked_slice") not in v, v)
+    a = base_arm()
+    a.update(driver_running=True, echoes_slice=dict(ok_e(900), echoes=0, error="CanError: recv after shutdown"),
+             echoes_back=ok_e(400))
+    v = m.judge_arm(a)
+    check("precondition (ii): a failed drain -> VOID naming the failure",
+          v.get("acked_slice", "").startswith("VOID") and "drain failed" in v["acked_slice"], v.get("acked_slice"))
+    v = m.judge_arm(base_arm())
+    check("precondition: an older record (neither field) gets neither item",
+          not any(k in v for k in ("stimulus", "acked_slice", "acked_back")), v)
+
+
+def witness_tests(m):
+    """The PCAN witness reads on past a bus state python-can's pcan raises from recv (2026-11-19: error passive
+    killed canmain_burst_check's witness on the bench)."""
+    import time
+    import types as T
+
+    class FakePcan:
+        def __init__(self):
+            self.script = ["f", "f", "raise", "f", "f", "f"]
+
+        def recv(self, timeout=None):
+            if not self.script:
+                time.sleep(timeout or 0.0)
+                return None
+            k = self.script.pop(0)
+            if k == "raise":
+                raise RuntimeError("Bus error: The CAN controller is error passive")
+            return T.SimpleNamespace(timestamp=time.perf_counter(), arbitration_id=0x123, dlc=1, data=b"\x01",
+                                     is_error_frame=False)
+    w = m.Witness(FakePcan())
+    w.start()
+    time.sleep(0.3)
+    w.stop.set()
+    w.join(2)
+    check("witness: a bus state raised from recv is recorded and the witness reads on (5 frames, 1 state)",
+          len(w.msgs) == 5 and len(w.states) == 1 and "error passive" in w.states[0][1] and not w.is_alive(),
+          (len(w.msgs), w.states))
+
+
+MUTANTS += [
+    ("(i) the driver's precondition not judged", "    if arm.get(\"driver_running\") is False:\n",
+     "    if False:\n"),
+    ("(ii) the echo counts not judged",
+     "        if e.get(\"error\") or e.get(\"echoes\") is None or e.get(\"sent\") is None or e[\"echoes\"] < e[\"sent\"]:\n",
+     "        if e.get(\"error\"):\n"),
+    ("(ii) the back phase's echoes not judged", '    for phase in ("slice", "back"):\n', '    for phase in ("slice",):\n'),
+    ("the witness stops at a bus state raised from recv",
+     "                    self.states.append((time.perf_counter(), \"%s: %s\" % (type(e).__name__, e)))\n"
+     "                time.sleep(0.001)\n",
+     "                    self.states.append((time.perf_counter(), \"%s: %s\" % (type(e).__name__, e)))\n"
+     "                return\n"),
+    ("the witness's bus states not kept",
+     "                    self.states.append((time.perf_counter(), \"%s: %s\" % (type(e).__name__, e)))\n",
+     "                    pass\n"),
+    # the replayer's echo drain (the gen-inhibit reviewer's ruling (C), 2026-11-19)
+    ("the replayer opened without its drain (stopped at once)",
+     "    return kv, KB.echo_drain(kv, REPLAYER_ROLE, what)\n",
+     "    d = KB.echo_drain(kv, REPLAYER_ROLE, what)\n    d.stop()\n    return kv, d\n"),
+    ("the slice's drain not stopped before its close",
+     "    echoes = dr.stop(sent=pl.sent)\n    t_last = last[0] if last else time.perf_counter()\n"
+     "    time.sleep(max(0.0, t_last + CLOSE_AFTER_S - time.perf_counter()))\n"
+     "    t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call\n    kv.shutdown()\n",
+     "    t_last = last[0] if last else time.perf_counter()\n"
+     "    time.sleep(max(0.0, t_last + CLOSE_AFTER_S - time.perf_counter()))\n"
+     "    t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call\n    kv.shutdown()\n"
+     "    echoes = dr.stop(sent=pl.sent)\n"),
+    ("the back phase's drain not stopped", "    pl.join(3)\n    return dr.stop(sent=pl.sent)\n",
+     "    pl.join(3)\n    return {}\n"),
+]
+
+
 def mutants():
     src = open(SCRIPT, encoding="utf-8", newline="").read()
     base = gi_paths.scratch("mutants-nonode_bench")
@@ -493,5 +640,17 @@ if __name__ == "__main__":
         tests()
     except Exception as e:
         check("ran without raising", False, repr(e))
+    try:
+        echo_tests(load())
+    except Exception as e:      # noqa: BLE001
+        check("echo tests ran without raising", False, repr(e))
+    try:
+        precondition_tests(load())
+    except Exception as e:      # noqa: BLE001
+        check("precondition tests ran without raising", False, repr(e))
+    try:
+        witness_tests(load())
+    except Exception as e:      # noqa: BLE001
+        check("witness tests ran without raising", False, repr(e))
     print("\n%d ok, %d FAIL" % (oks, len(fails)))
     sys.exit(1 if fails else 0)

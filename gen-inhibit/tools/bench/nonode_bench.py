@@ -48,6 +48,21 @@ after the last VCM frame on the wire, and no replayer frame (an ID no device sen
 close + SILENCE_EDGE_S on. No probe is sent here: the device's own unACKed copies (the void
 item) show that nothing ACKs. A breach, or a VOID fit, is the arm's "close" item VOID, so the
 arm is VOID; it never fails it.
+ECHOES (the gen-inhibit reviewer's ruling (C), 2026-11-19). canmain's gs_usb takes no frame once 257
+of its echoes are unread (the short bench check of 2026-11-19), and the slice is thousands of frames,
+so each open of the replayer reads its echoes while the Player sends (open_replayer:
+kvaser_bus.echo_drain), and the drain is stopped before the bus's shutdown: for the slice, in
+slice_close, after the Player's last VCM frame, and the close then called CLOSE_AFTER_S after that
+frame's send (not after the drain's stop). Each drain's counts are recorded in the arm
+(echoes_slice, echoes_back): sent, echoes, other frames, error frames, echoes == sent. A frame
+nothing ACKs gives no echo, so fewer echoes than frames shows sends with no node there to ACK.
+THE STIMULUS'S PRECONDITION (the gen-inhibit reviewer's rulings of 2026-11-19), each a VOID item
+with its reason, changing no PASS/FAIL bound:
+  stimulus     the WiCAN's driver did not show running within DRIVER_WAIT_S (5 s) of the arm
+               (arm driver_running False), so the slice started with no node shown to ACK it.
+  acked_slice, acked_back   fewer echoes than frames sent in that phase (or its drain failed):
+               frames went out with no node ACKing them.
+Older records carry neither field and get neither item.
 
 JUDGED per arm (judge_arm, pure, tested by test_nonode_bench.py):
   void      the witness saw the device's frame repeat unacknowledged: at least 10
@@ -118,6 +133,7 @@ BIT_US = 2.0                    # 500 kbit/s
 LATCH_MAX_S = 0.7               # 12.4 row (corrected 2026-10-20, user)
 COPIES_MIN = 10                 # reviewer, 2026-10-20
 CLOSE_AFTER_S = 0.005
+DRIVER_WAIT_S = 5.0             # the wait after the arm for the WiCAN's driver to show running
 SILENCE_EDGE_S = 0.020          # the replayer's last frames may still be on the wire this long after the close
 REPLAYER_ROLE = "canmain"       # the replayer by its canctl role (condition 5, 2026-11-18)
 DUP_MAX_US = 300.0              # live_jam_arm.DUP_MAX_S: a VCM frame the witness saw twice
@@ -237,6 +253,19 @@ def judge_arm(arm):
     keys = arm.get("key_decoded", {})
     if keys.get("off_phase") != [0] or keys.get("on_phase") != [1]:
         v["keyon"] = "VOID: the key frames sent decode as %s" % keys
+    # the stimulus's precondition (the gen-inhibit reviewer's rulings of 2026-11-19): the slice plays only while a
+    # node ACKs it; older records have neither field
+    if arm.get("driver_running") is False:
+        v["stimulus"] = ("VOID: the WiCAN's driver did not show running within %g s of the arm, so the slice "
+                         "started with no node shown to ACK it" % DRIVER_WAIT_S)
+    for phase in ("slice", "back"):
+        e = arm.get("echoes_" + phase)
+        if e is None:
+            continue
+        if e.get("error") or e.get("echoes") is None or e.get("sent") is None or e["echoes"] < e["sent"]:
+            v["acked_" + phase] = ("VOID: %s echoes for %s frames sent in the %s%s: frames went out with no node "
+                                   "ACKing them" % (e.get("echoes"), e.get("sent"), phase,
+                                                    " (the echo drain failed: %s)" % e["error"] if e.get("error") else ""))
     if "close_measure" in arm:          # condition 5 (2026-11-18); older records have none
         cm = arm["close_measure"]
         v["close"] = ("VOID: %s" % WC.pcan_void_verdict(cm["void"]) if cm.get("void") else
@@ -385,6 +414,35 @@ class Player(threading.Thread):
         return self.last_vcm
 
 
+def open_replayer(kv_open, what, KB=None):
+    """The replayer's bus and its echo drain (module docstring, ECHOES): (bus, drain)."""
+    if KB is None:
+        import kvaser_bus as KB  # noqa: N811  where it opens, as every tool here
+    kv = kv_open()
+    return kv, KB.echo_drain(kv, REPLAYER_ROLE, what)
+
+
+def slice_close(pl, kv, dr):
+    """Stops the slice right after its next VCM frame, stops the echo drain (its counts against the frames
+    the Player sent), then calls the bus's shutdown CLOSE_AFTER_S after that frame's send. Returns (last,
+    echoes, t_close_call, t_close)."""
+    last = pl.stop_after_vcm()
+    echoes = dr.stop(sent=pl.sent)
+    t_last = last[0] if last else time.perf_counter()
+    time.sleep(max(0.0, t_last + CLOSE_AFTER_S - time.perf_counter()))
+    t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call
+    kv.shutdown()
+    return last, echoes, t_close_call, time.perf_counter()
+
+
+def back_stop(pl, dr):
+    """Stops the back phase's Player and then its echo drain (the bus is shut later, after the disarm).
+    Returns the drain's counts."""
+    pl.stop_flag.set()
+    pl.join(3)
+    return dr.stop(sent=pl.sent)
+
+
 class Witness(threading.Thread):
     """The PCAN, passive. Every message with its own timestamp (us) and the host's."""
 
@@ -392,17 +450,25 @@ class Witness(threading.Thread):
         super().__init__(daemon=True)
         self.bus = bus
         self.msgs = []      # (perf, hw_us, id, dlc, hex, is_error, epoch): epoch for device_fit (condition 5)
+        self.states = []    # (perf, text): bus states python-can's pcan raised from recv (2026-11-19)
         self.stop = threading.Event()
         self.lock = threading.Lock()
 
     def run(self):
         while not self.stop.is_set():
-            m = self.bus.recv(timeout=0.05)
-            while m is not None:
+            try:
+                m = self.bus.recv(timeout=0.05)
+                while m is not None:
+                    with self.lock:
+                        self.msgs.append((time.perf_counter(), m.timestamp * 1e6, m.arbitration_id, m.dlc,
+                                          bytes(m.data).hex(), bool(m.is_error_frame), time.time()))
+                    m = self.bus.recv(timeout=0.0)
+            except Exception as e:      # noqa: BLE001  a bus state (error passive), not an end: recorded, read on
+                # python-can's pcan raises the PCAN's error-passive state from recv; canmain_burst_check's witness
+                # died of it on the bench (2026-11-19), and this PCAN, passive, counts receive errors in the silence
                 with self.lock:
-                    self.msgs.append((time.perf_counter(), m.timestamp * 1e6, m.arbitration_id, m.dlc,
-                                      bytes(m.data).hex(), bool(m.is_error_frame), time.time()))
-                m = self.bus.recv(timeout=0.0)
+                    self.states.append((time.perf_counter(), "%s: %s" % (type(e).__name__, e)))
+                time.sleep(0.001)
 
     def mark(self):
         with self.lock:
@@ -501,13 +567,14 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
     # end, stop the slice while the WiCAN still ACKs, then disarm.
     LF.dev_post("/gen_inhibit_set?mode=0")
     time.sleep(0.5)
-    kv = kv_open()
+    kv, dr = open_replayer(kv_open, "nonode slice")
     poll.start()
     LF.dev_post("/gen_inhibit_set?mode=3")
     t_arm = time.perf_counter()
-    while time.perf_counter() - t_arm < 5 and not (poll.reads and poll.reads[-1].get("state") == "running"):
+    while time.perf_counter() - t_arm < DRIVER_WAIT_S and not (poll.reads and poll.reads[-1].get("state") == "running"):
         time.sleep(0.02)
     arm["driver_running_after_arm_s"] = round(time.perf_counter() - t_arm, 3)
+    arm["driver_running"] = bool(poll.reads and poll.reads[-1].get("state") == "running")   # (i), judged
     pl = Player(kv, stim, kf)
     pl.start()
     while time.perf_counter() - t_arm < 15 and not (poll.reads and poll.reads[-1].get("live")):
@@ -516,15 +583,11 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
                                if poll.reads and poll.reads[-1].get("live") else None)
     time.sleep(a.live_s)
     w0 = pc_wit.mark()
-    last = pl.stop_after_vcm()
-    time.sleep(CLOSE_AFTER_S)
-    t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call
-    kv.shutdown()
-    t_close = time.perf_counter()
+    last, arm["echoes_slice"], t_close_call, t_close = slice_close(pl, kv, dr)
     arm["vcm_payloads"] = sorted(pl.vcm_payloads)
     time.sleep(a.silence_s)
     t_reopen = time.perf_counter()
-    kv = kv_open()
+    kv, dr = open_replayer(kv_open, "nonode back")
     pl2 = Player(kv, stim, kf)
     pl2.start()
     time.sleep(a.back_s)
@@ -534,8 +597,7 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
     t_keyon = time.perf_counter()
     pl2.key = 1
     time.sleep(a.keyon_s)
-    pl2.stop_flag.set()
-    pl2.join(3)
+    arm["echoes_back"] = back_stop(pl2, dr)
     time.sleep(0.2)
     LF.dev_post("/gen_inhibit_set?mode=0")
     time.sleep(0.3)
@@ -697,6 +759,7 @@ def main():
             time.sleep(2.0)
         wit.stop.set()
         wit.join(3)
+        rec["witness_states"] = [(round(t, 6), s) for t, s in wit.states]    # host perf s
     finally:
         try:
             LF.dev_post("/gen_inhibit_set?mode=0")

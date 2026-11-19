@@ -15,7 +15,9 @@ THE BENCH, READ BACK AND RECORDED before anything is sent (REFUSED, exit 2, if n
   Kvaser  link down (kvaser_bus.link_down, read back): an up kvaser link ACKs with no socket.
 So only canmain and the PCAN can ACK on CAN1.
   PCAN    500 kbit, NORMAL (it ACKs canmain's frames), the witness: every message with its own
-          stamp, mapped onto perf_counter by witness_clock.device_fit.
+          stamp, mapped onto perf_counter by witness_clock.device_fit. A bus state python-can's pcan
+          raises from recv (error passive, once the probe goes unACKed) is recorded in
+          witness_states and the witness reads on (2026-11-19: the first bench run lost it there).
 
 (b) THE 5 ms CLOSE, at 500 kbit (first, so its frames give the fit its points):
   canmain sends REPLAY_ID every --replay-period-ms for --replay-s, each frame with its own count,
@@ -25,6 +27,10 @@ So only canmain and the PCAN can ACK on CAN1.
   close_measure: the last REPLAY_ID frame (mapped before the close + 20 ms) is 5 ms +/- 3 ms before
   the close; no REPLAY_ID frame from the close + 20 ms to the re-open; the probe not ACKed (an
   error frame on the witness after it, before the re-open).
+  ECHOES (the gen-inhibit reviewer's ruling (C), 2026-11-19): canmain's echoes are read while it
+  sends (kvaser_bus.echo_drain; unread, gs_usb took no frame after 257, the short bench check of
+  2026-11-19), the drain stopped DRAIN_LEAD_S before the close, and echo_measure checks one echo
+  per frame sent (the PCAN ACKs each); another count, or a drain error, is a breach.
 (a) BURST LENGTH, at 250 kbit: for each --bursts-ms (1, 5, 20: every length B9's and B10's
   schedules use), --repeats times, --gap-s apart, wrong_bitrate_errors.burst (open canmain, one
   send of its SOURCE_ID, hold, close). burst_measure on its window: at least one error frame; the
@@ -62,6 +68,7 @@ PROBE_ID = 0x6A9
 REPLAY_BITRATE = 500000
 PROBE_S = 0.2
 ACK_S = 0.1
+DRAIN_LEAD_S = 0.003      # the echo drain stopped this long before the close (its stop: a 1 ms read or two)
 
 
 class Witness(threading.Thread):
@@ -70,11 +77,19 @@ class Witness(threading.Thread):
     def __init__(self, bus):
         super().__init__(daemon=True)
         self.bus, self.msgs = bus, []
+        self.states = []        # (perf, text): bus states python-can's pcan raised from recv
         self.stop = threading.Event()
 
     def run(self):
         while not self.stop.is_set():
-            m = self.bus.recv(timeout=0.05)
+            try:
+                m = self.bus.recv(timeout=0.05)
+            except Exception as e:      # noqa: BLE001  a bus state (error passive after the probe), not an end
+                # python-can's pcan raises the PCAN's own error-passive state from recv; the first bench run of
+                # 2026-11-19 lost its witness there, after the probe, and saw none of (a)'s bursts
+                self.states.append((time.perf_counter(), "%s: %s" % (type(e).__name__, e)))
+                time.sleep(0.001)
+                continue
             if m is None:
                 continue
             self.msgs.append((time.perf_counter(), time.time(), m.timestamp, m.arbitration_id,
@@ -107,9 +122,13 @@ def bench_state(LF, NN, KB):
     return st, "; ".join(why) or None
 
 
-def replay_and_close(inno, pc, a, can):
-    """(b): returns the host times {last_send, close, probe, ack_open, ack_close} and the count."""
+def replay_and_close(inno, pc, a, can, KB):
+    """(b): returns the host times {last_send, close, probe, ack_open, ack_close}, the count, the last payload
+    and the echo drain's record (kvaser_bus.echo_drain: canmain's echoes read while it sends, stopped before
+    its close)."""
     b = inno.open(bitrate=REPLAY_BITRATE)
+    drain = KB.echo_drain(b, ROLE, "canmain_burst_check replay")
+    echo = None
     period = a.replay_period_ms / 1000.0
     n, t0 = 0, time.perf_counter()
     last_send = None
@@ -123,9 +142,15 @@ def replay_and_close(inno, pc, a, can):
                 break
             time.sleep(max(0.0, t0 + n * period - time.perf_counter()))
         # the close --close-after-ms after the LAST send, not after the next period slot (the full run of
-        # 2026-11-19 closed 8.1 ms after it: the slot's wait plus the close's, under load)
-        time.sleep(max(0.0, last_send + a.close_after_ms / 1000.0 - time.perf_counter()))
+        # 2026-11-19 closed 8.1 ms after it: the slot's wait plus the close's, under load); the drain stopped
+        # DRAIN_LEAD_S before it, so its join is not inside the close
+        target = last_send + a.close_after_ms / 1000.0
+        time.sleep(max(0.0, target - DRAIN_LEAD_S - time.perf_counter()))
+        echo = drain.stop(sent=n)
+        time.sleep(max(0.0, target - time.perf_counter()))
     finally:
+        if echo is None:
+            echo = drain.stop(sent=n)
         t_close = time.perf_counter()
         b.shutdown()
     while time.perf_counter() < t_close + BM.SILENCE_EDGE_S + 0.005:
@@ -141,16 +166,29 @@ def replay_and_close(inno, pc, a, can):
     time.sleep(ACK_S)
     b2.shutdown()
     return {"last_send": last_send, "close": t_close, "probe": t_probe, "ack_open": t_ack,
-            "ack_close": time.perf_counter()}, n, "%08x" % (n - 1)
+            "ack_close": time.perf_counter()}, n, "%08x" % (n - 1), echo
 
 
-def judge(msgs, times, last_payload, starts):
+def echo_measure(echo):
+    """The replay's echoes against its frames: every frame the PCAN ACKed completes, so each gives one echo.
+    {"sent", "echoes", "breaches"}; fewer or more echoes than frames (or a drain error) is a breach."""
+    m = {"sent": echo.get("sent"), "echoes": echo.get("echoes"), "breaches": []}
+    if echo.get("error"):
+        m["breaches"].append("replay: the echo drain failed: %s" % echo["error"])
+    elif echo.get("echoes") != echo.get("sent"):
+        m["breaches"].append("replay: %s echoes for %s frames sent" % (echo.get("echoes"), echo.get("sent")))
+    return m
+
+
+def judge(msgs, times, last_payload, starts, echo=None):
     """The fit, the close measure and the burst measures, and the verdict."""
     fit = WC.device_fit([(p, e, ts) for p, e, ts, *_ in msgs])
     out = {"fit": fit}
     if fit["void"]:
         out["verdict"] = WC.pcan_void_verdict(fit["void"])
         return out
+    if echo is not None:
+        out["echoes"] = echo_measure(echo)
     mapped = [(WC.mapped(fit, ts), fid, err, data) for _p, _e, ts, fid, err, data in msgs]
     t_close = times["close"]
     last = max((t for t, fid, err, data in mapped if fid == REPLAY_ID and not err and data == last_payload
@@ -170,7 +208,7 @@ def judge(msgs, times, last_payload, starts):
         for key in ("first_s", "last_s"):
             m[key] = None if m[key] is None else round(m[key] - s, 6)
         out["bursts"].append(m)
-    line = BM.breach_line([out["close"]] + out["bursts"])
+    line = BM.breach_line([out["close"]] + out["bursts"] + ([out["echoes"]] if "echoes" in out else []))
     out["verdict"] = "FAIL: %s" % line[len(BM.BURST_VOID_PREFIX):] if line else "PASS"
     return out
 
@@ -215,7 +253,7 @@ def main(argv=None):
         wit = Witness(pc)
         wit.start()
         with KB.innomaker_held(ROLE) as inno:
-            times, n, last_payload = replay_and_close(inno, pc, a, can)
+            times, n, last_payload, echo = replay_and_close(inno, pc, a, can, KB)
             time.sleep(0.5)
             for ms in asked:
                 for _ in range(a.repeats):
@@ -233,10 +271,12 @@ def main(argv=None):
             except Exception:       # noqa: BLE001
                 pass
             pc.shutdown()
-    rec["replay"] = {"frames": n, "last_payload": last_payload,
+    rec["replay"] = {"frames": n, "last_payload": last_payload, "echo_drain": echo,
                      "times_s": {k: (None if v is None else round(v - times["close"], 6)) for k, v in times.items()}}
-    rec.update(judge(wit.msgs, times, last_payload, starts))
+    rec.update(judge(wit.msgs, times, last_payload, starts, echo))
     rec["witness_messages"] = len(wit.msgs)
+    t_c = times["close"]
+    rec["witness_states"] = [(round(t - t_c, 6), s) for t, s in wit.states]   # host s from the replay's close
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(rec, fh, indent=1)
     print(WC.fit_line(rec["fit"]))
@@ -244,6 +284,8 @@ def main(argv=None):
         c = rec["close"]
         print("close: %s ms after the last frame, %d late frames, probe %s (%d error frames)"
               % (c["gap_ms"], c["late"], c["probe"], c["probe_error_frames"]))
+        e = rec.get("echoes") or {}
+        print("echoes: %s for %s frames sent" % (e.get("echoes"), e.get("sent")))
         for m in rec["bursts"]:
             print("burst %g ms (held %g): %d error frames, span %s ms, last %s ms after the close"
                   % (m["asked_ms"], m["held_ms"], m["n"], m["span_ms"], m["last_after_close_ms"]))
