@@ -1170,7 +1170,22 @@ was read as a logger on the truck dropping frames).
   meant when the earlier record was taken (`VERIFICATION.md` 12.1). The
   scheduler runs immediately after anything is queued, so with an empty
   transmit buffer the handover is as prompt as the old direct call.
-- **Status:** validated.
+- **Void arms:** user ruling, 2026-11-19, option C of the gen-inhibit
+  reviewer's question Q-VOID.
+  - The background: the bench tools had grown their own rule. Only a failed
+    clock fit made a check read VOID; arms void for any other reason were
+    judged as normal arms, except in B22, where any VOID was INCONCLUSIVE.
+  - What exposed it: the XPS baseline on `e3d9437`. Its B3 had 5 RESPOND arms
+    void on attribution (the device's `tx_ok` about 1498 against the
+    witness's about 2000). Carried as void, B3 reads VOID; dropped, it FAILs.
+  - The ruling: the listed reasons, all an incomplete stimulus or reading,
+    make the check VOID.
+  - Attribution waits on the tester's check of whether the 20 s re-arm resets
+    `tx_ok`. If it does, the attribution check is changed to count both sides
+    over the same window, the baseline B3 is judged again, and attribution
+    joins the list. If it does not, it goes back to the user.
+- **Status:** validated, except attribution: basis pending (the re-arm
+  `tx_ok` check).
 
 ### 12.2 Fidelity the simple bench does not have
 - **Batched timestamps** (measured 2026-09-26). The truck logs are

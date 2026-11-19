@@ -1685,6 +1685,21 @@ scheduler's own queue. A probe that waits behind a telemetry frame shows that
 wait in its figure. One RESPOND baseline is re-measured on the bench after the
 switchover, to show comparability rather than assume it.
 
+**A void arm is never judged as a normal arm.** An arm is void when the
+bench could not give it a fair reading, for one of these reasons:
+
+- the witness clock fit fails its bounds;
+- there is no witness log, or the witness left it short of the arm's window;
+- the replay was refused;
+- the stimulus fell short of what the arm asked for;
+- the device went silent, so its own figures could not be read.
+
+A check made of arms reads VOID when any arm it asked for is void. It never
+reads PASS while an arm it asked for is void or unjudged. A FAIL in an arm
+that was read fairly stands, whatever the other arms read. A mismatch between
+the device's count and the witness's count over an arm (attribution) is not
+on the list yet (`VALIDATION.md` 12.1, basis pending).
+
 Every arm must report the rolling-counter check (`ctr_bad`), which must be
 zero. Under load the device is allowed to be **late but never lossy**: the
 driver's receive queue (5.1 item 1) absorbs preemption, and a missed counter
