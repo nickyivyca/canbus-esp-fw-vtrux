@@ -11,19 +11,27 @@
 # bridge reaches a port through can_port by its index. THE CHARGER PORT is
 # the interposer's MCP2515 driver, port_mcp2515.cpp, registered with can_port
 # by charger_port.cpp.
+#
+# EVERY VARIANT reads the partition table in ESP-IDF's core startup stage,
+# boot_partitions.c (spec 9, the X2 settings, core dumps; user, 2026-11-18).
+# Nothing references it, so the -u below keeps it in the link.
 set(vehicle vehicle_port.cpp port_view.cpp)
 set(ports ${vehicle} port_mcp2515.cpp charger_port.cpp)
+set(boot boot_partitions.c)
 if(INTP_VARIANT STREQUAL "bridge" OR INTP_VARIANT STREQUAL "witness"
    OR INTP_VARIANT STREQUAL "truck")
-    set(srcs main.cpp machine.cpp ${ports})
+    set(srcs main.cpp machine.cpp ${ports} ${boot})
 elseif(INTP_VARIANT STREQUAL "selftest")
-    set(srcs selftest_main.cpp ${ports})
+    set(srcs selftest_main.cpp ${ports} ${boot})
 elseif(INTP_VARIANT STREQUAL "diag")
-    set(srcs diag_main.cpp ${ports})
+    set(srcs diag_main.cpp ${ports} ${boot})
 endif()
 
 idf_component_register(SRCS ${srcs}
                        INCLUDE_DIRS ".")
+
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    "-u intp_boot_partitions_include")
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra)
 
