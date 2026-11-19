@@ -8238,6 +8238,82 @@ by hand under a hand take of the bench lock, in bench.slice.
   per-arm table, the drivers and the pre-step outputs; the record
   `x2_jam_busoff-rearm_20261117T000852.json` and its witness file).
 
+**Bench incident: the bench guard's can-fail ran real `canctl` with no lock held
+-- tester, 2026-11-19, found in the short bench check. Harness defect, fixed in
+`3f656785`.** No spec section's result rests on it. It is recorded here because it
+changed the bench under other holders. Reported to the gen-inhibit reviewer, who
+takes it to the user and to the charge-interposer reviewer (2026-11-19), and to
+the charge-interposer tester (2026-11-19).
+- **Cause.** `test_kvaser_bus.py --can-fail` runs the real bench guard in a child
+  interpreter, with the real `kvaser_bus` and the real pinned canbench
+  `bench_layer`. The child tripwired python-can's `Bus` entry points and CANlib,
+  but not the bench's root operations. Under the mutants that break the guard,
+  `kvaser_bus` reached `bench_layer.open_bench` and the real `sudo -n canctl`. It
+  stopped only at the next tripwire: the Kvaser's open, or canmain's gs_usb open.
+  Every can-fail run from this worktree since `kvaser_bus` took its own `canctl`
+  calls (the Kvaser on SocketCAN, 2026-11-18) did this. `sudo -n` runs `canctl`
+  without asking.
+- **The calls.** All are from journalctl (`_COMM=sudo`, working directory in the
+  tester's worktree). Each burst is one can-fail run. In each one, `canctl up` was
+  `up kvaser 500000 restart-ms 100`.
+
+  | Time | Calls | Left | Lock |
+  |---|---|---|---|
+  | 2026-11-18 17:13:18-43 | `up kvaser` 18, `down kvaser` 14 | Kvaser down | free |
+  | 18:35:27-52 | the same | Kvaser down | free |
+  | 19:01:21-47 | `up kvaser` 17, `down kvaser` 13, `mode canmain libusb` 1 (no hand-back) | Kvaser down; canmain in libusb | **the charge-interposer tester's hand take, 18:50:56-19:18:03** |
+  | 19:15:01-09 | `up kvaser` 4 | **Kvaser UP** | **the same hold** |
+  | 22:19:04-24, 22:37:36-57 | `up kvaser` 4 each | Kvaser up (already up: can-tools' 22:04:19) | free |
+  | 2026-11-19 01:38:50 | `up kvaser` 1 | Kvaser up (already up: the charge-interposer tester's 01:18:41) | free |
+  | 02:04:04-11 | `up kvaser` 1; `mode canmain libusb`, then `socketcan --wait 10` | **Kvaser UP**; canmain back in socketcan | free |
+  | 02:08, 02:13, 02:17 | `mode canmain libusb`, then `socketcan --wait 10`, each within 4 s | canmain back in socketcan | free |
+- **What was left, and for how long.**
+  - The Kvaser link, up at 500 kbit and so ACKing on CAN1, from 2026-11-18 19:15:09
+    until can-tools' `canctl down kvaser` at 22:00:58 (2 h 46 min). That covers the
+    charge-interposer tester's hand takes of 19:44:14-20:17:42,
+    20:30:28-20:49:43 and 21:13:29-21:22:34, and the start of can-tools' hold at
+    22:00:45. Their release notes say the Kvaser was untouched, which is true of
+    them. An up kvaser link ACKs with no socket open (kvaser_link's measurement,
+    2026-11-13), so the X2's spec 2.3 power-up rounds on CAN1 that those holds
+    record had an ACKing node they do not name; whether that matters to them is
+    the charge-interposer tester's call.
+  - canmain in libusb mode (unbound from gs_usb) from 2026-11-18 19:01:22 until
+    can-tools' `canctl mode canmain socketcan` at 22:01:19 (3 h). The same holds.
+  - The Kvaser link up again from 2026-11-19 02:04:04 until this tester's
+    `canmain_burst_check` took it down at 02:34 (the lock free until its take at
+    02:31:42). That record names it.
+- **Gen-inhibit records taken while one of these calls had the bench in a state
+  the record does not name: none.** Between 2026-11-18 17:13 and 2026-11-19 02:17,
+  the only gen-inhibit record is the short bench check
+  `runs/benchcheck_9950f96_20261119T015215/` (01:52-01:55).
+  - Its `canctl_roles_start.txt` names the Kvaser link up and canmain in libusb.
+    `canmain_burst_check` took the Kvaser down, read back, before anything was
+    sent.
+  - The Kvaser had been up since the charge-interposer tester's 01:18:41; this
+    tester's 01:38:50 call changed nothing. canmain was in libusb since can-tools'
+    00:24:37. *Correction, tester 2026-11-19: this tester first reported the
+    01:52 found-up Kvaser as caused by its 01:38:50 call; the journal shows it was
+    already up.*
+  - Just after the window, `runs/benchcheck_069714e_20261119T023416/` (02:31-02:37)
+    found the Kvaser up from the 02:04:04 call. Its `canctl_roles_start.txt` names
+    it, and the check took it down first.
+  - No gen-inhibit hold fell inside the window: the bench log shows no
+    gen-inhibit take between 2026-11-18 15:05 and 2026-11-19 01:51.
+- **The fix** (`3f656785`, accepted by the gen-inhibit reviewer 2026-11-19).
+  - Before `kvaser_bus` is imported, the child now also tripwires `subprocess`
+    (`run`, `Popen`, `call`, `check_call`, `check_output`) for `sudo`, `canctl` and
+    `ip`, and `socket.socket` for `AF_CAN`.
+  - A self-test in the child must show each one tripping and a harmless command
+    still running, and the check that no tripwire was reached now covers them.
+  - Checked on a copy of `kvaser_bus` with the guard removed: every open trips at
+    its first `canctl`, and the journal shows no `canctl` call.
+  - `--can-fail` at `9e7650fc` (the fix, with can-tools pin `0f9c85f` merged),
+    2026-11-19 02:53:11-03:00:18: 99 of 99 mutants killed, control passing. Over
+    that window the journal shows 0 `canctl` calls from the tester's worktree.
+- **Run files:** `runs/incident_canctl_20261119/` (`README.md`: every `sudo canctl`
+  call over the window from the journal, the bench log's holds, and the can-fail
+  run at the fix with its canctl count).
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical

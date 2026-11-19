@@ -511,6 +511,40 @@ def echo_tests(m):
           e3.get("echoes") == 0 and e3.get("sent") == pl3.sent > 0 and e3.get("echoes_equal_sent") is False, e3)
 
 
+def precondition_tests(m):
+    """The stimulus's precondition, VOID items with their reasons (the gen-inhibit reviewer's rulings of 2026-11-19):
+    (i) the WiCAN's driver never showed running within the wait, (ii) fewer echoes than frames in either phase."""
+    ok_e = lambda n: {"sent": n, "echoes": n, "rx": 0, "errors": 0, "echoes_equal_sent": True}
+    a = base_arm()
+    a.update(driver_running=True, echoes_slice=ok_e(900), echoes_back=ok_e(400))
+    v = m.judge_arm(a)
+    check("precondition: driver running and every frame echoed in both phases: no VOID item, a main arm that passed",
+          m.arm_verdict(v) == ("main", True) and not any(k in v for k in ("stimulus", "acked_slice", "acked_back")), v)
+    a = base_arm()
+    a.update(driver_running=False, echoes_slice=ok_e(900), echoes_back=ok_e(400))
+    v = m.judge_arm(a)
+    check("precondition (i): the driver never showed running -> the arm VOID, its stimulus item naming why",
+          m.arm_verdict(v)[0] == "VOID" and v.get("stimulus", "").startswith("VOID") and "running" in v["stimulus"]
+          and "5 s" in v["stimulus"], v.get("stimulus"))
+    for phase in ("slice", "back"):
+        a = base_arm()
+        a.update(driver_running=True, echoes_slice=ok_e(900), echoes_back=ok_e(400))
+        a["echoes_" + phase] = dict(ok_e(900), echoes=850, echoes_equal_sent=False)
+        v = m.judge_arm(a)
+        check("precondition (ii): 850 echoes for 900 frames in the %s -> the arm VOID, naming the counts" % phase,
+              m.arm_verdict(v)[0] == "VOID" and v.get("acked_" + phase, "").startswith("VOID: 850 echoes for 900")
+              and ("acked_back" if phase == "slice" else "acked_slice") not in v, v)
+    a = base_arm()
+    a.update(driver_running=True, echoes_slice=dict(ok_e(900), echoes=0, error="CanError: recv after shutdown"),
+             echoes_back=ok_e(400))
+    v = m.judge_arm(a)
+    check("precondition (ii): a failed drain -> VOID naming the failure",
+          v.get("acked_slice", "").startswith("VOID") and "drain failed" in v["acked_slice"], v.get("acked_slice"))
+    v = m.judge_arm(base_arm())
+    check("precondition: an older record (neither field) gets neither item",
+          not any(k in v for k in ("stimulus", "acked_slice", "acked_back")), v)
+
+
 def witness_tests(m):
     """The PCAN witness reads on past a bus state python-can's pcan raises from recv (2026-11-19: error passive
     killed canmain_burst_check's witness on the bench)."""
@@ -541,6 +575,12 @@ def witness_tests(m):
 
 
 MUTANTS += [
+    ("(i) the driver's precondition not judged", "    if arm.get(\"driver_running\") is False:\n",
+     "    if False:\n"),
+    ("(ii) the echo counts not judged",
+     "        if e.get(\"error\") or e.get(\"echoes\") is None or e.get(\"sent\") is None or e[\"echoes\"] < e[\"sent\"]:\n",
+     "        if e.get(\"error\"):\n"),
+    ("(ii) the back phase's echoes not judged", '    for phase in ("slice", "back"):\n', '    for phase in ("slice",):\n'),
     ("the witness stops at a bus state raised from recv",
      "                    self.states.append((time.perf_counter(), \"%s: %s\" % (type(e).__name__, e)))\n"
      "                time.sleep(0.001)\n",
@@ -604,6 +644,10 @@ if __name__ == "__main__":
         echo_tests(load())
     except Exception as e:      # noqa: BLE001
         check("echo tests ran without raising", False, repr(e))
+    try:
+        precondition_tests(load())
+    except Exception as e:      # noqa: BLE001
+        check("precondition tests ran without raising", False, repr(e))
     try:
         witness_tests(load())
     except Exception as e:      # noqa: BLE001

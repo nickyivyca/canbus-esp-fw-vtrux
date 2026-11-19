@@ -56,7 +56,13 @@ slice_close, after the Player's last VCM frame, and the close then called CLOSE_
 frame's send (not after the drain's stop). Each drain's counts are recorded in the arm
 (echoes_slice, echoes_back): sent, echoes, other frames, error frames, echoes == sent. A frame
 nothing ACKs gives no echo, so fewer echoes than frames shows sends with no node there to ACK.
-Recorded, not judged.
+THE STIMULUS'S PRECONDITION (the gen-inhibit reviewer's rulings of 2026-11-19), each a VOID item
+with its reason, changing no PASS/FAIL bound:
+  stimulus     the WiCAN's driver did not show running within DRIVER_WAIT_S (5 s) of the arm
+               (arm driver_running False), so the slice started with no node shown to ACK it.
+  acked_slice, acked_back   fewer echoes than frames sent in that phase (or its drain failed):
+               frames went out with no node ACKing them.
+Older records carry neither field and get neither item.
 
 JUDGED per arm (judge_arm, pure, tested by test_nonode_bench.py):
   void      the witness saw the device's frame repeat unacknowledged: at least 10
@@ -127,6 +133,7 @@ BIT_US = 2.0                    # 500 kbit/s
 LATCH_MAX_S = 0.7               # 12.4 row (corrected 2026-10-20, user)
 COPIES_MIN = 10                 # reviewer, 2026-10-20
 CLOSE_AFTER_S = 0.005
+DRIVER_WAIT_S = 5.0             # the wait after the arm for the WiCAN's driver to show running
 SILENCE_EDGE_S = 0.020          # the replayer's last frames may still be on the wire this long after the close
 REPLAYER_ROLE = "canmain"       # the replayer by its canctl role (condition 5, 2026-11-18)
 DUP_MAX_US = 300.0              # live_jam_arm.DUP_MAX_S: a VCM frame the witness saw twice
@@ -246,6 +253,19 @@ def judge_arm(arm):
     keys = arm.get("key_decoded", {})
     if keys.get("off_phase") != [0] or keys.get("on_phase") != [1]:
         v["keyon"] = "VOID: the key frames sent decode as %s" % keys
+    # the stimulus's precondition (the gen-inhibit reviewer's rulings of 2026-11-19): the slice plays only while a
+    # node ACKs it; older records have neither field
+    if arm.get("driver_running") is False:
+        v["stimulus"] = ("VOID: the WiCAN's driver did not show running within %g s of the arm, so the slice "
+                         "started with no node shown to ACK it" % DRIVER_WAIT_S)
+    for phase in ("slice", "back"):
+        e = arm.get("echoes_" + phase)
+        if e is None:
+            continue
+        if e.get("error") or e.get("echoes") is None or e.get("sent") is None or e["echoes"] < e["sent"]:
+            v["acked_" + phase] = ("VOID: %s echoes for %s frames sent in the %s%s: frames went out with no node "
+                                   "ACKing them" % (e.get("echoes"), e.get("sent"), phase,
+                                                    " (the echo drain failed: %s)" % e["error"] if e.get("error") else ""))
     if "close_measure" in arm:          # condition 5 (2026-11-18); older records have none
         cm = arm["close_measure"]
         v["close"] = ("VOID: %s" % WC.pcan_void_verdict(cm["void"]) if cm.get("void") else
@@ -551,9 +571,10 @@ def run_arm(n, kv_open, pc_wit, LF, stim, kf, a):
     poll.start()
     LF.dev_post("/gen_inhibit_set?mode=3")
     t_arm = time.perf_counter()
-    while time.perf_counter() - t_arm < 5 and not (poll.reads and poll.reads[-1].get("state") == "running"):
+    while time.perf_counter() - t_arm < DRIVER_WAIT_S and not (poll.reads and poll.reads[-1].get("state") == "running"):
         time.sleep(0.02)
     arm["driver_running_after_arm_s"] = round(time.perf_counter() - t_arm, 3)
+    arm["driver_running"] = bool(poll.reads and poll.reads[-1].get("state") == "running")   # (i), judged
     pl = Player(kv, stim, kf)
     pl.start()
     while time.perf_counter() - t_arm < 15 and not (poll.reads and poll.reads[-1].get("live")):
