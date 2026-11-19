@@ -100,6 +100,21 @@ EDITS = [
     ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", r"'fail': 0", "'fail': 1", "FAIL"),
     ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", [(r"'commands': 20", "'commands': 0"), (r"^.*-> \w+ +\| counted .*\n", "")],
      None, "FAIL all"),
+    # A command whose send raised is ERROR, and an arm not run is NOT-RUN, never PASS (run cb08's ws
+    # arm, gen-inhibit reviewer 2026-11-19).
+    ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", r"^(  armed ws  O    reply )no reply       -> PASS  \| counted PASS .*$",
+     r"\g<1>ERROR ModuleNo -> ERROR ModuleNotFoundError: x | counted ERROR ", "ERROR"),
+    ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", [(r"^  (off|armed) +ws .*\n", ""), (r"'commands': 20", "'commands': 10"),
+                                                      (r"^(== armed: .*\n)", r"  off   ws  NOT-RUN websockets missing\n\g<1>"),
+                                                      (r"^(summary .*'fail': 0,)", r"\g<1> 'error': 0, 'not_run': ['off/ws: websockets missing', 'armed/ws: websockets missing'],"),
+                                                      (r"^(summary )", r"  armed ws  NOT-RUN websockets missing\n\g<1>")],
+     None, "NOT-RUN all"),
+    # the NOT-RUN lines and the summary must agree: a lost line is ERROR, not PASS
+    ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", [(r"^  (off|armed) +ws .*\n", ""), (r"'commands': 20", "'commands': 10"),
+                                                      (r"^(summary .*'fail': 0,)", r"\g<1> 'error': 0, 'not_run': ['off/ws: websockets missing', 'armed/ws: websockets missing'],")],
+     None, "ERROR all"),
+    # the summary's error count alone (no ERROR line) is ERROR
+    ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", r"^(summary .*'fail': 0,)", r"\g<1> 'error': 1,", "ERROR"),
     ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"device 0x051 670 \(device says 670\)",
      "device 0x051 670 (device says 671)", "FAIL"),
     ("B17a", "bench", "+B17_spec11_page_aaaaaaa_man.txt", None, "AS SPECIFIED\n", "ERROR"),

@@ -128,12 +128,27 @@ def b1(F):
     if not m:
         return [result("B1", "ERROR", detail="no summary line")]
     s = ast.literal_eval(m.group(1))
-    lines = re.findall(r"-> (\w+) +\| counted (\w+)", t)
+    lines = re.findall(r"-> (\w+)[^|\n]*\| counted (\w+)", t)    # a FAIL or ERROR line carries its reasons
     passed = sum(1 for a, b in lines if a == "PASS" and b == "PASS")
-    ok = s["commands"] > 0 and s["fail"] == 0 and passed == s["commands"] == len(lines)
-    return [result("B1", "PASS" if ok else "FAIL",
-                   {"commands": fig(s["commands"]), "passed": fig(passed), "fail": fig(s["fail"])},
-                   "%d of %d refused and counted" % (passed, s["commands"]))]
+    # A command whose send raised is ERROR, and an arm not run is a NOT-RUN line; B1 never
+    # reads PASS with either (gen-inhibit reviewer, 2026-11-19: run cb08 judged the ws arm's
+    # ModuleNotFoundError "-> PASS"). Summaries from before then carry neither key.
+    errors = sum(1 for a, b in lines if "ERROR" in (a, b))
+    not_run = re.findall(r"^  (\w+) +(\w+) +NOT-RUN (.+?) *$", t, re.M)
+    figs = {"commands": fig(s["commands"]), "passed": fig(passed), "fail": fig(s["fail"])}
+    detail = "%d of %d refused and counted" % (passed, s["commands"])
+    if not_run:
+        detail += "; NOT-RUN: " + ", ".join("%s/%s %s" % g for g in not_run)
+    if errors or s.get("error"):
+        return [result("B1", "ERROR", figs, "%d command(s) raised; %s" % (max(errors, s.get("error") or 0), detail))]
+    if len(not_run) != len(s.get("not_run") or []):
+        return [result("B1", "ERROR", figs, "NOT-RUN lines and the summary disagree; " + detail)]
+    ok = s["fail"] == 0 and passed == s["commands"] == len(lines)
+    if ok and s["commands"] > 0 and not not_run:
+        return [result("B1", "PASS", figs, detail)]
+    if ok and not_run:
+        return [result("B1", "NOT-RUN", figs, detail)]
+    return [result("B1", "FAIL", figs, detail)]
 
 
 PROV = re.compile(r"provenance \(live\): (.+?) -- replayed (\d+)/(\d+) found, device 0x051 (\d+) "

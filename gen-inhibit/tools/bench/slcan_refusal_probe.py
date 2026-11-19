@@ -28,6 +28,11 @@ A command FAILS if: any bus-state field on the page changes (mode, bus_on, drv,
 inhibit_live, self_off, disabled, arm_block, abort_reason); 0x6A6 appears on the
 wire; in OFF, any WiCAN frame appears; armed, the device stops answering (tx_ok
 does not rise).
+A command whose send raised (an import included) is ERROR: it was not sent, and neither
+judge runs. An arm that is not run, the tcp port when the protocol is not slcan over TCP
+or the websocket when the websockets library is missing, is one NOT-RUN line with its
+reason (gen-inhibit reviewer, 2026-11-19: run cb08 judged the ws arm's ModuleNotFoundError
+"-> PASS").
 
     GI_WICAN_SSID=... py -3.14 slcan_refusal_probe.py --power "..." [--channels tcp,ws]
 Writes runs/slcan_refusal_<stamp>.json.
@@ -131,26 +136,77 @@ class Witness(threading.Thread):
                 self.ids.append(m.arbitration_id)
 
 
+def ws_missing():
+    """True when the websocket client library is not installed: the ws arm is then NOT-RUN,
+    never sent and never judged (gen-inhibit reviewer, 2026-11-19, after run cb08)."""
+    import importlib.util
+    return importlib.util.find_spec("websockets") is None
+
+
+def not_run_reason(ch, cfg):
+    """Why an arm is not run, or None when it runs: the tcp port unless the device speaks slcan
+    over TCP; the websocket when the websockets library is missing."""
+    if ch == "tcp" and (cfg.get("protocol") != "slcan" or cfg.get("port_type") != "tcp"):
+        return "protocol/port_type is %s/%s" % (cfg.get("protocol"), cfg.get("port_type"))
+    if ch == "ws" and ws_missing():
+        return "websockets missing"
+    return None
+
+
 def channel_send(kind, host, port, text, timeout=0.6):
-    """Send one SLCAN command; return the reply (repr) or the error."""
+    """Send one SLCAN command: (True, the reply's repr or "no reply"), or (False, "ERROR
+    <type>: <text>") when anything raised, an import included. An arm that raised is ERROR,
+    never judged on the page (run cb08 judged ws's ModuleNotFoundError "-> PASS")."""
     try:
         if kind == "tcp":
             with socket.create_connection((host, port), timeout=3) as s:
                 s.sendall(text.encode())
                 s.settimeout(timeout)
                 try:
-                    return repr(s.recv(256))
+                    return True, repr(s.recv(256))
                 except socket.timeout:
-                    return "no reply"
+                    return True, "no reply"
         from websockets.sync.client import connect
         with connect("ws://%s/ws" % host, open_timeout=3) as ws:
             ws.send(text)
             try:
-                return repr(ws.recv(timeout=timeout))
+                return True, repr(ws.recv(timeout=timeout))
             except TimeoutError:
-                return "no reply"
+                return True, "no reply"
     except Exception as e:
-        return "ERROR %s: %s" % (type(e).__name__, e)
+        return False, "ERROR %s: %s" % (type(e).__name__, e)
+
+
+def command_result(cond, ch, name, sent, reply, pre, post, ids, error_frames):
+    """One command's record. A command whose send raised is ERROR, and neither judge runs."""
+    if not sent:
+        j = {"verdict": "ERROR", "why": [reply], "new_page_keys": [], "counted": "ERROR"}
+    else:
+        j = judge(cond, pre, post, set(ids))
+        j.update(judge_counted(pre, post))
+    return {"cond": cond, "channel": ch, "cmd": name, "reply": reply,
+            "witness_ids_between": [hex(x) for x in ids], "witness_error_frames": error_frames,
+            "pre": {k: v for k, v in (pre or {}).items() if k != "keys"},
+            "post": {k: v for k, v in (post or {}).items() if k != "keys"}, **j}
+
+
+def line(r):
+    """The stdout line the suite's B1 judge reads: one per command, or one per arm not run."""
+    if "not_run" in r:
+        return "  %-5s %-3s NOT-RUN %s" % (r["cond"], r["channel"], r["not_run"])
+    return "  %-5s %-3s %-4s reply %-14s -> %s %s | counted %s %s" % (
+        r["cond"], r["channel"], r["cmd"], r["reply"][:14], r["verdict"], "; ".join(r["why"]),
+        r["counted"], r.get("refused_delta", ""))
+
+
+def summary(results):
+    fails = [r for r in results if r.get("verdict") == "FAIL"]
+    return {"commands": sum(1 for r in results if "verdict" in r), "fail": len(fails),
+            "error": sum(1 for r in results if r.get("verdict") == "ERROR"),
+            "not_run": ["%s/%s: %s" % (r["cond"], r["channel"], r["not_run"]) for r in results if "not_run" in r],
+            "counted": sorted({r.get("counted") for r in results if "counted" in r}),
+            "any_new_page_key": sorted({k for r in results for k in r.get("new_page_keys", [])}),
+            "replies": sorted({r.get("reply") for r in results if "reply" in r})}
 
 
 def main():
@@ -190,28 +246,22 @@ def main():
             st0 = state(LF.page())
             print("== %s: %s" % (cond, {k: st0.get(k) for k in ("mode", "inhibit_live", "bus_on", "drv_state")}))
             for ch in a.channels.split(","):
-                if ch == "tcp" and (cfg.get("protocol") != "slcan" or cfg.get("port_type") != "tcp"):
-                    rec["results"].append({"cond": cond, "channel": ch,
-                                           "skipped": "protocol/port_type is %s/%s" % (cfg.get("protocol"), cfg.get("port_type"))})
+                why_not = not_run_reason(ch, cfg)
+                if why_not:
+                    r = {"cond": cond, "channel": ch, "not_run": why_not}
+                    rec["results"].append(r)
+                    print(line(r))
                     continue
                 for name, text in COMMANDS:
                     pre = state(LF.page())
                     i0, e0 = len(wit.ids), wit.errors
-                    reply = channel_send(ch, LF.HOST, int(cfg.get("port") or 3333), text)
+                    sent, reply = channel_send(ch, LF.HOST, int(cfg.get("port") or 3333), text)
                     time.sleep(0.6)
                     post = state(LF.page())
-                    ids = sorted(set(wit.ids[i0:]))
-                    j = judge(cond, pre, post, set(ids))
-                    j.update(judge_counted(pre, post))
-                    r = {"cond": cond, "channel": ch, "cmd": name, "reply": reply,
-                         "witness_ids_between": [hex(x) for x in ids],
-                         "witness_error_frames": wit.errors - e0,
-                         "pre": {k: v for k, v in (pre or {}).items() if k != "keys"},
-                         "post": {k: v for k, v in (post or {}).items() if k != "keys"}, **j}
+                    r = command_result(cond, ch, name, sent, reply, pre, post, sorted(set(wit.ids[i0:])),
+                                       wit.errors - e0)
                     rec["results"].append(r)
-                    print("  %-5s %-3s %-4s reply %-14s -> %s %s | counted %s %s" % (
-                        cond, ch, name, reply[:14], j["verdict"], "; ".join(j["why"]),
-                        j["counted"], j.get("refused_delta", "")))
+                    print(line(r))
     finally:
         try:
             LF.dev_post("/gen_inhibit_set?mode=0")
@@ -230,11 +280,7 @@ def main():
                 except Exception:
                     pass
         rec["after"] = state(LF.page())
-    fails = [r for r in rec["results"] if r.get("verdict") == "FAIL"]
-    rec["summary"] = {"commands": sum(1 for r in rec["results"] if "verdict" in r), "fail": len(fails),
-                      "counted": sorted({r.get("counted") for r in rec["results"] if "counted" in r}),
-                      "any_new_page_key": sorted({k for r in rec["results"] for k in r.get("new_page_keys", [])}),
-                      "replies": sorted({r.get("reply") for r in rec["results"] if "reply" in r})}
+    rec["summary"] = summary(rec["results"])
     path = os.path.join(RUNS, "slcan_refusal_%s.json" % stamp)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(rec, fh, indent=1)
