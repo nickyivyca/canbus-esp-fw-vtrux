@@ -253,6 +253,7 @@ SELF_TESTS = [
     "bench_switch_pending", "bench_vport", "bench_c12", "bench_flight_silence",
     "bench_usb_host", "bench_mcp_reset", "bench_hold12", "bench_topology",
     "bench_canbench_smoke", "keepalive_probe", "rx_proc", "klog_windows",
+    "bench_boot_reset",
 ]
 # Bench drivers whose --can-fail runs their self-test against each of their
 # MUTANTS (script_can_fail.py), run locally (test_script_coverage).
@@ -265,7 +266,16 @@ CAN_FAILS = [
     # 2026-11-13, the reviewer's Kvaser rulings (kvaser_link, rx_proc)
     "keepalive_probe", "rx_proc", "bench_switch_pending", "bench_switch_errors",
     "klog_windows",
+    # 2026-11-18, tracker I: chip resets 0x15 with no boot panic
+    "bench_boot_reset",
 ]
+
+# bench_boot_reset (tracker I): chip resets per image, and the line the
+# bridge and witness print at boot (spec 8.3's banner). 50 resets: the
+# pre-fix bridge panicked on 22 of 22 (8b8e), 29 of 30 (b467) and 10 of 10
+# (tracker I step 1) chip resets; about 5.4 s each.
+BOOT_RESETS = 50
+BANNER_LINE = "Vtrux charge interposer"
 
 # Local scripts (they want pyserial or the Windows side).
 EMULATED_LOCAL = [
@@ -1144,6 +1154,16 @@ def bench(settings):
                   "gs_usb", "--diag-witness", "{pcan_channel}",
                   "--outdir", "{outdir}"]
 
+    def boot_reset(image):
+        # spec 9, core dumps: chip resets 0x15 with no boot panic, on each
+        # image the suite loads from the product (tracker I, the
+        # charge-interposer reviewer, 2026-11-18); the truck prints no line
+        # of its own after its bootloader (spec 8.3), so it has no app line
+        return bpy("boot-reset-0x15", "bench_boot_reset.py",
+                   ["--port", "{serial_port}", "--resets", str(BOOT_RESETS)]
+                   + ([] if image == "truck" else ["--app-line", BANNER_LINE])
+                   + ["--out", "{outdir}/boot_reset_%s.txt" % image])
+
     # In image order: bridge, witness, truck, c12_bench, vport_bench. The
     # core restores nothing at the end; it loads the bridge only if the X2
     # is left on an image marked not idle-safe (X2_IDLE_UNSAFE).
@@ -1184,6 +1204,7 @@ def bench(settings):
         # charge-interposer reviewer, 2026-11-04)
         bpy("idf-log", "bench_flight_silence.py",
             ["--idf-log", "--port", "{serial_port}", "--out", "{outdir}/idf_log_bridge.txt"]),
+        boot_reset("bridge"),
         bpy("keepalive-probe", "keepalive_probe.py",
             ["--port", "{serial_port}", "--pcan-channel", "{pcan_channel}"],
             judge=recorded_judge),
@@ -1268,6 +1289,7 @@ def bench(settings):
         # two checks' command lines differ, as test_suites asks of any two)
         bpy("idf-log", "bench_flight_silence.py",
             ["--idf-log", "--port", "{serial_port}", "--out", "{outdir}/idf_log_witness.txt"]),
+        boot_reset("witness"),
         Check("innomaker-replug", ["-"], skip=(
             "plan Step 4 no-hands sheet item 1: the Innomaker replug remedy "
             "needs hands (DEFERRED)")),
@@ -1283,6 +1305,7 @@ def bench(settings):
             ["--port", "{serial_port}", "--pcan", "--out", "{outdir}"]),
         bpy("hold12-flight", "bench_hold12.py",
             ["--port", "{serial_port}", "--flight", "--out", "{outdir}"]),
+        boot_reset("truck"),
     ])
     b_c12 = Group("b-c12", needs_lock=True, image="c12_bench", checks=[
         bpy("c12-all", "bench_c12.py",

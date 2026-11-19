@@ -14,7 +14,9 @@ against the tree and each of its three kinds of entry on a copy:
     board_ports.h, idf_component.yml and dependencies.lock are among the
     whole files (the pins and the board's version since 2a), and since
     port step 2b vehicle_port, port_view, charger_port and bridge_port.h,
-    with 2a's port_twai and can_port.h no longer named;
+    with 2a's port_twai and can_port.h no longer named, and since tracker I
+    boot_partitions.c (the partition table read in ESP-IDF's core startup
+    stage);
   - on a copy of the mapped files the state is the same as on the tree
     (the control), and then: each whole file removed is a problem naming
     it; one byte changed in it changes its key and no other; each setting's
@@ -55,7 +57,11 @@ MUST_WATCH = ("main/board_ports.h", "main/idf_component.yml",
               "dependencies.lock", "main/vehicle_port.cpp", "main/vehicle_port.h",
               "main/port_view.cpp", "main/port_view.h", "main/charger_port.cpp",
               "main/charger_port.h", "main/port_mcp2515.cpp", "main/bridge_port.h",
-              "sdkconfig")
+              "sdkconfig",
+              # tracker I (the charge-interposer reviewer, 2026-11-18): the
+              # partition table read in ESP-IDF's core startup stage, spec 10
+              # item 1 (flashing and boot)
+              "main/boot_partitions.c")
 # the files port step 2b retired, which the map must no longer name (a
 # missing mapped file is a problem, so the tree test fails on them anyway;
 # this says why)
@@ -278,6 +284,11 @@ MUTANTS = [
      '    "main/bridge_port.h": "the port contract both drivers implement",\n',
      '    "main/bridge_port.h": "the port contract both drivers implement",\n'
      '    "main/can_port.h": "the retired name",\n'),
+    # tracker I
+    ("the core-stage partition table read not watched",
+     '    "main/boot_partitions.c": "flashing and boot: the partition table read "\n'
+     '                              "in ESP-IDF\'s core startup stage, before the "\n'
+     '                              "second core runs",\n', ""),
 ]
 
 
