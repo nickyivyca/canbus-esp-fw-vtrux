@@ -1142,15 +1142,16 @@ def sub_noduration(a, rec, con, wit):
 
 
 def sub_can2_check(a, rec, con, wit):
-    # the pinned can-tools' Linux fixes (2026-11-11); close_gs_usb also frees the pyusb handle
-    from kvaser_bus import gs_usb_bus, close_gs_usb
+    # canchg, the X2's CAN2 Innomaker, by its canctl role (the user's ruling of 2026-11-18: never by
+    # index); its shutdown frees the pyusb handle and hands canchg back to socketcan, down
+    from kvaser_bus import innomaker_bus
     try:
         import libusb_package
         import usb.backend.libusb1 as lb
         lb.get_backend(find_library=libusb_package.find_library)
     except Exception:
         pass
-    inno = gs_usb_bus(channel="can0", index=0, bitrate=BITRATE)
+    inno = innomaker_bus("canchg", bitrate=BITRATE)
     # Every Innomaker frame is logged with host and adapter time, so a frame
     # left in its buffer from before the run can be told from a live one: the
     # 01:28 run logged one 0x051 with nothing else to place it (2026-10-08).
@@ -1185,7 +1186,7 @@ def sub_can2_check(a, rec, con, wit):
     finally:
         stop.set()
         th.join(timeout=2.0)
-        close_gs_usb(inno)
+        inno.shutdown()
     ts, clock = wit.times()
     groups = clusters([t for t in ts if t >= t0 - 0.3], a.interval_ms / 2000.0)
     kv_pages = wit.frames - f0

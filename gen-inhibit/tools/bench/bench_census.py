@@ -73,9 +73,10 @@ def open_adapter(name):
             lb.get_backend(find_library=libusb_package.find_library)
         except Exception:
             pass
-        from kvaser_bus import gs_usb_bus  # noqa: E402  the pinned can-tools' Linux fixes (2026-11-11)
-        return gs_usb_bus(channel="can0", index=0,
-                          bitrate=BITRATE), "ACKING (normal mode, no listen-only)"
+        # canmain, CAN1's Innomaker, by its canctl role (the user's ruling of 2026-11-18: never by
+        # index; by index the first gs_usb device listed may be canchg, on the X2's CAN2)
+        from kvaser_bus import innomaker_bus  # noqa: E402
+        return innomaker_bus("canmain", bitrate=BITRATE), "ACKING (normal mode, no listen-only)"
     raise ValueError(name)
 
 
@@ -124,12 +125,8 @@ def census(name, seconds, schemas, ident=None):
             first_t = first_t if first_t is not None else m.timestamp
             last_t = m.timestamp
     finally:
-        if name == "gs_usb":
-            # python-can's shutdown() leaves the pyusb handle open (reviewer, 2026-11-11)
-            from kvaser_bus import close_gs_usb  # noqa: E402
-            close_gs_usb(bus)
-        else:
-            bus.shutdown()
+        # an Innomaker's shutdown frees its pyusb handle and hands canmain back to socketcan, down
+        bus.shutdown()
     out["frames"] = sum(ids.values())
     out["error_frames"] = errs
     out["seconds"] = seconds

@@ -63,6 +63,19 @@ from vtrux_bench.run.engine import Engine, fmt               # noqa: E402
 from vtrux_bench.run.model import CheckRun, SuiteError, validate   # noqa: E402
 import suite_gen_inhibit as SG                               # noqa: E402
 JOIN_HOTSPOT = SG.join_hotspot      # the real one: the hooks' tests stand in for it
+# the Kvaser's link down after the X2 identify (2026-11-18): stood in for everywhere, so no test
+# runs the real canctl; the real one is tested on a stand-in harness kvaser_bus
+KV_LINK_DOWN, KV_DOWNS, KV_DOWN_RAISE = SG.kvaser_link_down, [], []
+
+
+def _kv_down_stub(settings, logdir_):
+    KV_DOWNS.append(logdir_)
+    if KV_DOWN_RAISE:
+        raise SG.IdentifyError(KV_DOWN_RAISE[0])
+    return {"up": False}
+
+
+SG.kvaser_link_down = _kv_down_stub
 # the pins check (gap 1, 2026-11-18): stood in for everywhere, so the suite loads in a worktree
 # or mutant clone without the installs; the real one is tested on stand-in pin tools
 PINS_INSTALLED, PINS_CALLS, PINS_RAISE = SG.pins_installed, [], []
@@ -677,9 +690,23 @@ def test_identify(settings, bench):
         t.do[("x2_jammer.py", "id")] = lambda a, e: (
             "", 0, {"x2_jammer_id_T1.json": {"banner_ok": False, "reset_since_open": False}})
         return ident(xa, {}, logdir()), calls, t.named("x2_jammer.py")
+    del KV_DOWNS[:]
     got, calls, jam = with_tools(t5)
     check("identify X2: a running image goes to bench_identify, and no ID is sent",
           got == "756d6714" and calls == ["x2_app"] and jam == [], (got, calls, jam))
+    check("identify X2: after bench_identify the Kvaser's link is brought down, once", len(KV_DOWNS) == 1, KV_DOWNS)
+    del KV_DOWNS[:]
+    with_tools(t4)
+    check("identify X2: held, read by the pins alone (no bench_identify): the Kvaser's link not touched",
+          KV_DOWNS == [], KV_DOWNS)
+    KV_DOWN_RAISE[:] = ["planted: still UP"]
+    try:
+        e = with_tools(lambda t: (bi("756d6714"), t.do.__setitem__(("x2_hold.py", "pins"), pins("unknown", rc=1)),
+                                  raises(lambda: ident(xa, {}, logdir()), SG.IdentifyError))[2])
+    finally:
+        del KV_DOWN_RAISE[:]
+    check("identify X2: the link not shown down after bench_identify RAISES (the core stops the bench)",
+          e is not None and "still UP" in str(e), e)
 
     # x2_jammer id always writes reset_since_open (False when the uptime shows no reset), so the
     # fake records carry it too; without it suite mutant m12 crashed here instead of failing t7n.
@@ -764,9 +791,11 @@ def test_identify(settings, bench):
         bi(RuntimeError("boot capture failed"))
         t.do[("x2_hold.py", "pins")] = pins("unknown", rc=1)
         return raises(lambda: ident(xa, {}, logdir())), t.named("x2_jammer.py")
+    del KV_DOWNS[:]
     e, jam = with_tools(t12)
     check("identify X2: bench_identify's own failure passes up (the core stops), no ID sent",
           e is not None and jam == [], (e, jam))
+    check("identify X2: the Kvaser's link is brought down after bench_identify fails too", len(KV_DOWNS) == 1, KV_DOWNS)
 
     def t13(t):
         bi("756d6714")
@@ -1993,6 +2022,53 @@ def test_pins(settings):
             os.environ["PIN_TEST_FAIL"] = saved
 
 
+KV_FAKE = '''
+class KvaserLinkError(RuntimeError):
+    pass
+
+
+def backend():
+    return %(backend)r
+
+
+def link_down():
+    if %(fail)r:
+        raise KvaserLinkError("after canctl down kvaser netdev kvaser still reads UP")
+    return {"up": False, "state": "STOPPED"}
+'''
+
+
+def test_kvaser_link_down(settings):
+    """The real kvaser_link_down on a stand-in harness kvaser_bus (2026-11-18): the read-back
+    written beside the identify's files; a link still UP raises IdentifyError; on CANlib
+    nothing is done."""
+    tools = os.path.join(BASE, "kvdown_tools")
+    os.makedirs(os.path.join(tools, "bench"), exist_ok=True)
+    s = dict(settings, gi_tools=tools)
+    for backend, fail in (("socketcan", False), ("socketcan", True), ("canlib", False)):
+        with open(os.path.join(tools, "bench", "kvaser_bus.py"), "w", encoding="ascii") as f:
+            f.write(KV_FAKE % {"backend": backend, "fail": fail})
+        d = logdir()
+        got, e = None, None
+        try:
+            got = KV_LINK_DOWN(s, d)
+        except SG.IdentifyError as x:
+            e = x
+        files = sorted(os.listdir(d))
+        if backend == "canlib":
+            check("kvaser_link_down on CANlib: nothing done, nothing written", got is None and e is None and not files,
+                  (got, e, files))
+        elif fail:
+            check("kvaser_link_down: a link still UP raises IdentifyError naming it",
+                  e is not None and "still reads UP" in str(e) and not files, (e, files))
+        else:
+            rec = json.load(open(os.path.join(d, files[0]))) if len(files) == 1 else None
+            check("kvaser_link_down: the link down, its read-back in kvaser_link_after_identify_<stamp>.json",
+                  e is None and got == {"up": False, "state": "STOPPED"} and len(files) == 1
+                  and files[0].startswith("kvaser_link_after_identify_") and rec["link"]["up"] is False,
+                  (got, e, files))
+
+
 def main():
     try:
         settings, shas = fixture()
@@ -2014,6 +2090,7 @@ def main():
         test_bins()
         test_adapter()
         test_identify(settings, bench)
+        test_kvaser_link_down(settings)
         test_flashers(settings, bench)
         test_ota(settings, bench)
         test_board_hooks(settings, bench, emu)

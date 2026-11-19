@@ -449,6 +449,119 @@ def gs_usb_bus(**kw):
     return can.Bus(interface="gs_usb", **kw)
 
 
+# ------------------------------------------------ the Innomakers, by canctl role (2026-11-18)
+#
+# The user's ruling of 2026-11-18, for the whole bench: a tool asks for an adapter by its canctl
+# role, never by index, channel number or first found. python-can's gs_usb by index takes
+# GsUsb.scan()[0], the first gs_usb device libusb lists, which may be either Innomaker. So an
+# Innomaker opens here by its role, through its own netdev (named by the role, canctl's udev
+# rule): the netdev's sysfs link gives its USB device, and the bus opens on that device's bus
+# and address. No serial is read. The gen-inhibit reviewer's conditions of 2026-11-18: the role
+# is handed to libusb for the open (`canctl mode <role> libusb`) and back to socketcan, down, in
+# the close, read back as the chain runner's canmain probe `link` reads it (the netdev exists,
+# IFF_UP clear), so a start or a resume never meets canmain without its netdev.
+
+INNOMAKERS = ("canmain", "canchg")
+SYSFS_USB = "/sys/bus/usb/devices"
+IFF_UP = 0x1
+
+
+class InnomakerError(RuntimeError):
+    """An Innomaker role could not be found, handed over, opened or handed back down."""
+
+
+def _read(path):
+    with open(path, encoding="ascii", errors="replace") as f:
+        return f.read().strip()
+
+
+def innomaker_down(role, root=None):
+    """The chain runner's probe `link` for the role: its netdev exists and IFF_UP is clear.
+    Returns the line; InnomakerError otherwise."""
+    p = os.path.join(root or SYSFS_NET, role)
+    if not os.path.isdir(p):
+        raise InnomakerError("no netdev %s: its link cannot be shown down (on libusb, or unplugged)" % role)
+    if int(_read(os.path.join(p, "flags")), 16) & IFF_UP:
+        raise InnomakerError("netdev %s is up" % role)
+    return "%s exists and its link is down" % role
+
+
+def innomaker_usb(role, root=None):
+    """The role's USB device name (e.g. 1-3.2) from its netdev's sysfs link, while it is in
+    socketcan mode and down. InnomakerError otherwise."""
+    if role not in INNOMAKERS:
+        raise InnomakerError("%r is not an Innomaker role (%s)" % (role, ", ".join(INNOMAKERS)))
+    innomaker_down(role, root)
+    dev = os.path.realpath(os.path.join(root or SYSFS_NET, role, "device"))
+    usb = os.path.basename(os.path.dirname(dev))
+    if not usb or ":" in usb:
+        raise InnomakerError("netdev %s's device %s is not under a USB device" % (role, dev))
+    return usb
+
+
+def innomaker_restore(role):
+    """`canctl mode <role> socketcan --wait`, then innomaker_down read back. Returns the line;
+    InnomakerError otherwise. Each step recorded."""
+    rc, last = _canctl("mode", role, "socketcan", "--wait")
+    ev = {"event": "close", "backend": "gs_usb", "role": role, "canctl": "mode %s socketcan --wait" % role,
+          "canctl_rc": rc}
+    try:
+        if rc != 0:
+            raise InnomakerError("canctl mode %s socketcan --wait failed (rc %s): %s" % (role, rc, last))
+        ev["readback"] = innomaker_down(role)
+    except InnomakerError as e:
+        ev["error"] = str(e)
+        record(ev)
+        raise
+    record(ev)
+    return ev["readback"]
+
+
+def innomaker_bus(role, bitrate=500000, **kw):
+    """The Innomaker with canctl role `role` (canmain or canchg), opened through libusb on its own
+    USB device, in NORMAL mode (gs_usb has no listen-only). Its shutdown() closes the bus, frees
+    the pyusb handle (canbench's release_gs_usb) and hands the role back to socketcan, down, read
+    back (InnomakerError if not). Asking by index, channel, bus or address is refused."""
+    picked = sorted(set(kw) & {"channel", "index", "bus", "address"})
+    if picked:
+        raise TypeError("an Innomaker is opened by its role, not by %s" % ", ".join(picked))
+    require_bench()
+    usb = innomaker_usb(role)
+    rc, last = _canctl("mode", role, "libusb")
+    if rc != 0:
+        innomaker_restore(role)
+        raise InnomakerError("canctl mode %s libusb failed (rc %s): %s" % (role, rc, last))
+    try:
+        busnum = int(_read(os.path.join(SYSFS_USB, usb, "busnum")))
+        devnum = int(_read(os.path.join(SYSFS_USB, usb, "devnum")))
+        fixes()
+        import can
+        b = can.Bus(interface="gs_usb", channel=role, bus=busnum, address=devnum, bitrate=bitrate, **kw)
+    except BaseException:
+        innomaker_restore(role)
+        raise
+    b.vtrux_backend, b.vtrux_role = "gs_usb", role
+    record({"event": "open", "backend": "gs_usb", "role": role, "usb": usb, "bus": busnum, "address": devnum,
+            "bitrate": bitrate})
+    shut = b.shutdown
+    b.shutdown = lambda: _innomaker_close(b, shut, role)
+    return b
+
+
+def _innomaker_close(b, shut, role):
+    if getattr(b, "_vtrux_closed", False):
+        return None
+    b._vtrux_closed = True
+    try:
+        try:
+            shut()
+        finally:
+            _pin_tool().use()
+            importlib.import_module("canbench.live.receiver").release_gs_usb(b)
+    finally:
+        innomaker_restore(role)
+
+
 def close_gs_usb(b):
     try:
         b.shutdown()
