@@ -94,6 +94,16 @@ MUTANTS = [
     ("tools: GI_OTA_SETTINGS' braces not doubled for the core's formatting",
      'env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v',
      'env0.update({k: v for k, v'),
+    # the capture checks NOT-RUN without a capture interface on Linux (run cb08; reviewer, 2026-11-19)
+    ("capture: the checks run to exit 2 without an interface, as in run cb08",
+     '        if cid in CAPTURE_CHECKS and cap_skip:\n            kw["skip"] = cap_skip\n', ""),
+    ("capture: an interface set does not lift the skip",
+     '    if platform.startswith("linux") and not (environ.get("GI_CAPTURE_IFACE") or "").strip():',
+     '    if platform.startswith("linux"):'),
+    ("capture: Git Bash skipped too", '    if platform.startswith("linux") and not (environ.get("GI_CAPTURE_IFACE") or "").strip():',
+     '    if not (environ.get("GI_CAPTURE_IFACE") or "").strip():'),
+    ("capture: B21 not among the capture checks", 'CAPTURE_CHECKS = ("B11rawarms", "B11raw", "B21")',
+     'CAPTURE_CHECKS = ("B11rawarms", "B11raw")'),
     # the checks' tools get the esptool argv and the boards' IDs (run cb08; reviewer, 2026-11-19)
     ("tools: no GI_ESPTOOL_ARGV in a check's environment, as in run cb08",
      '    env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in esptool_env(settings).items()})\n',

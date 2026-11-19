@@ -1954,6 +1954,36 @@ def test_ota(settings, bench):
     check("tools: every check gets GI_ESPTOOL_ARGV, GI_X2_DEVICE and GI_WICAN_DEVICE, reading back "
           "as the settings' after the core's formatting", not short, short[:4])
 
+    # The capture checks are NOT-RUN "no capture interface" on Linux with GI_CAPTURE_IFACE unset, and run
+    # with it set or on Git Bash (run cb08 ran them to exit 2; gen-inhibit reviewer, 2026-11-19).
+    cs = SG.capture_skip
+    check("capture: Linux, GI_CAPTURE_IFACE unset or blank -> the reason",
+          (cs({}, "linux") or "").startswith("no capture interface") and cs({"GI_CAPTURE_IFACE": " "}, "linux")
+          and "GI_CAPTURE_IFACE" in cs({}, "linux"), cs({}, "linux"))
+    check("capture: Linux with GI_CAPTURE_IFACE set, or Git Bash, -> run",
+          cs({"GI_CAPTURE_IFACE": "test0"}, "linux") is None and cs({}, "win32") is None)
+    saved_if = os.environ.pop("GI_CAPTURE_IFACE", None)
+    try:
+        for val, want_skip in ((None, True), ("test0", False)):
+            if val is None:
+                os.environ.pop("GI_CAPTURE_IFACE", None)
+            else:
+                os.environ["GI_CAPTURE_IFACE"] = val
+            b = SG.bench(settings)
+            got = {c.id: c.skip for g in b.groups for c in g.checks}
+            skipped = sorted(k for k, v in got.items() if v and k != "B27")
+            if sys.platform.startswith("linux") and want_skip:
+                check("capture: GI_CAPTURE_IFACE unset -> exactly B11rawarms, B11raw and B21 skipped, with the reason",
+                      skipped == ["B11raw", "B11rawarms", "B21"]
+                      and all(got[k].startswith("no capture interface") for k in skipped), skipped)
+            else:
+                check("capture: GI_CAPTURE_IFACE set -> no check skipped but B27", skipped == [], skipped)
+    finally:
+        if saved_if is None:
+            os.environ.pop("GI_CAPTURE_IFACE", None)
+        else:
+            os.environ["GI_CAPTURE_IFACE"] = saved_if
+
     for name, bad in [("no settings.ota", dict(settings, ota=None)),
                       ("a block without its interface", dict(settings, ota=dict(OTA_BLOCK, iface=""))),
                       ("the SSID itself in the block", dict(settings, ota=dict(OTA_BLOCK, ssid="x"))),
@@ -2098,6 +2128,9 @@ def test_kvaser_link_down(settings):
 
 
 def main():
+    # a capture interface, so the suite built for the index checks runs every check it has
+    # (test_ota builds it without one too: capture_skip, 2026-11-19)
+    os.environ["GI_CAPTURE_IFACE"] = "test-iface"
     try:
         settings, shas = fixture()
         try:        # a suite that will not load on the fixture is a failed check, not a crash
