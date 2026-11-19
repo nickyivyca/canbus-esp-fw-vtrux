@@ -1397,6 +1397,23 @@ def test_x2_port_from_settings():
         assert not hard, (c.id, hard)
 
 
+def test_reset_check_verdict():
+    """reset-check FAILs when the reset is not proven (a harness defect, the
+    charge-interposer reviewer, 2026-11-19: reset_check.py exited 0 on
+    RESET PROVEN: NO, so script_judge read it PASS): it is judged by its
+    exit code, script_judge, and reset_check.py's NO output with rc 1 reads
+    FAIL, its YES output with rc 0 PASS."""
+    _s, su = _all()
+    rc = [c for g in su["bench"].groups for c in g.checks if c.id == "reset-check"]
+    assert len(rc) == 1 and not rc[0].skip, [c.id for c in rc]
+    assert rc[0].judge is B.script_judge, rc[0].judge
+    no = ("RESET PROVEN: NO (boot line yes; uptime 1 -> 0; serial never lost)\n"
+          "FAIL  the reset not proven (RESET PROVEN: NO)\n")
+    yes = "RESET PROVEN: YES (boot line yes; uptime 2 -> 0; serial never lost)\n"
+    assert _v(rc[0].judge(_run(no, 1, "reset-check"))) == [Verdict.FAIL]
+    assert _v(rc[0].judge(_run(yes, 0, "reset-check"))) == [Verdict.PASS]
+
+
 def test_esptool_env():
     """bench_mcp_reset's esptool is the core flasher's (tester, 2026-11-12;
     the reviewer, 2026-11-11): the settings' esptool.argv reaches every
@@ -2538,7 +2555,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
          test_m_lanes_host, test_idle_safe, test_adapters_by_role,
-         test_x2_port_from_settings, test_esptool_env,
+         test_x2_port_from_settings, test_reset_check_verdict, test_esptool_env,
          test_canchg_mode_hooks, test_canx2_slcan_hooks,
          test_x2_test_images_identify, test_slcan_spi_identity,
          test_x2_test_image_flash_first]
@@ -2968,6 +2985,14 @@ def _reset_check_com3(s):
     c.argv[c.argv.index("--port") + 1] = "COM3"
 
 
+def _reset_check_recorded(s):
+    _check(s, "reset-check").judge = B.recorded_judge
+
+
+def _reset_check_skipped(s):
+    _check(s, "reset-check").skip = "mutant"
+
+
 def _other_port_hard(s):
     c = _check(s, "charger-silent")
     c.argv[c.argv.index("--port") + 1] = "/dev/ttyACM0"
@@ -3257,6 +3282,11 @@ MUTANTS = {
          "another check's --port a tty of its own"),
         ("bench", _wrap_suite("bench", _port_positional),
          "a by-id link written into a check's argv")],
+    "test_reset_check_verdict": [
+        ("bench", _wrap_suite("bench", _reset_check_recorded),
+         "reset-check judged as a recording"),
+        ("bench", _wrap_suite("bench", _reset_check_skipped),
+         "reset-check skipped")],
     "test_idle_safe": [
         ("bench", _wrap_suite("bench", _vport_left_safe),
          "vport_bench left idle-safe"),

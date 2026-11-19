@@ -1187,7 +1187,8 @@ def bench(settings):
         # moved from reverse-it's runs/step4_nohands_20261014T1730/; the
         # serial log now goes to the check's own folder; the X2's port is
         # the settings' as for every other driver (it was COM3 in the
-        # script until 2026-11-18)
+        # script until 2026-11-18); it exits 1 on RESET PROVEN: NO since
+        # 2026-11-19 (0 either way before: the check could not fail)
         bpy("reset-check", "reset_check.py",
             ["--port", "{serial_port}",
              "--serial-log", "{outdir}/reset_check.serial.log"]),
