@@ -471,9 +471,11 @@ MUTANTS = [
 
 
 def echo_tests(m):
-    """The replayer's echo drain (the gen-inhibit reviewer's ruling (C), 2026-11-19): open_replayer, slice_close
-    and back_stop with the REAL Player and the REAL kvaser_bus.echo_drain, on _fake_gs_usb's StallingGs (it takes
-    no frame with 256 echoes unread, as canmain's gs_usb did on the bench)."""
+    """The replayer's echo drain, canbench's from can-tools 7a27cc9 (the gen-inhibit reviewer's rulings (C) and
+    (c), 2026-11-19): replayer_open asks for it, and slice_close and back_stop stop it through the REAL
+    kvaser_bus.drain_stop, with the REAL Player, on _fake_gs_usb's StallingGs (no frame with 256 echoes unread,
+    as canmain's gs_usb on the bench) running the pinned canbench's reader as open_bench(drain=True) does."""
+    import threading
     import time
     import _fake_gs_usb as FG
     spec = importlib.util.spec_from_file_location("kvaser_bus_echo_nn", os.path.join(HERE, "kvaser_bus.py"))
@@ -483,41 +485,82 @@ def echo_tests(m):
     kb.record = evs.append
     stim = [(k * 0.0003, m.VCM_ID if k % 20 == 19 else 0x100 + k % 7, bytes([k % 256]) * 8) for k in range(200)]
 
-    g = FG.StallingGs(cap=256)
-    kv, dr = m.open_replayer(lambda: g, "test slice", KB=kb)
-    pl = m.Player(kv, stim, None)
+    class Inno:
+        def __init__(self):
+            self.calls = []
+
+        def open(self, bitrate=500000, **kw):
+            self.calls.append((bitrate, kw))
+            return "bus"
+    inno = Inno()
+    got = m.replayer_open(inno)
+    check("echo: the replayer opens canmain at 500 kbit with canbench's drain (inno.open(drain=True))",
+          got == "bus" and inno.calls == [(500000, {"drain": True})], inno.calls)
+
+    g = FG.drained(FG.StallingGs(cap=256), kb=kb)
+    pl = m.Player(g, stim, None)
     pl.start()
     time.sleep(0.4)
-    last, echoes, t_call, t_close = m.slice_close(pl, kv, dr)
+    t_stop = []
+    real_stop = kb.drain_stop
+
+    def timed_stop(bus, sent, what):
+        t_stop.append(time.perf_counter())
+        return real_stop(bus, sent, what)
+    kb.drain_stop = timed_stop
+    last, echoes, t_call, t_close = m.slice_close(pl, g, KB=kb)
+    kb.drain_stop = real_stop
     check("echo: the slice sent more than the fake's cap with no stall and no failed send",
           pl.sent > 256 and pl.fail == 0 and g.stalls == 0, (pl.sent, pl.fail, g.stalls))
     check("echo: the slice's drain counted one echo per frame sent, recorded as an echoes event for canmain",
           echoes.get("sent") == pl.sent == echoes.get("echoes") and echoes.get("echoes_equal_sent") is True
-          and echoes.get("role") == "canmain" and echoes.get("what") == "test slice" and evs[-1] == echoes, echoes)
-    check("echo: the drain stopped before the slice's close (not running at the shutdown)",
-          g.drain_alive_at_shutdown is False and not dr.is_alive(), g.drain_alive_at_shutdown)
+          and echoes.get("role") == "canmain" and echoes.get("what") == "nonode slice" and evs[-1] == echoes, echoes)
+    check("echo: the slice's drain stop time recorded (canbench's stop_ms)",
+          isinstance(echoes.get("stop_ms"), (int, float)), echoes)
+    check("echo: the drain stopped CLOSE_AFTER_S - DRAIN_LEAD_S after the last VCM frame's send, before the close "
+          "(not running at the shutdown)",
+          last is not None and t_stop and m.CLOSE_AFTER_S - m.DRAIN_LEAD_S - 1e-4 <= t_stop[0] - last[0]
+          < m.CLOSE_AFTER_S and t_stop[0] < t_call and g.drain_alive_at_shutdown is False,
+          (last, t_stop, t_call, g.drain_alive_at_shutdown))
     check("echo: the close called CLOSE_AFTER_S after the last VCM frame's send (and promptly)",
           last is not None and m.CLOSE_AFTER_S - 1e-4 <= t_call - last[0] < m.CLOSE_AFTER_S + 0.05
           and t_close >= t_call, (last, t_call))
 
-    g2 = FG.StallingGs(cap=256)
-    kv2, dr2 = m.open_replayer(lambda: g2, "test back", KB=kb)
-    pl2 = m.Player(kv2, stim, None)
+    g2 = FG.drained(FG.StallingGs(cap=256), kb=kb)
+    pl2 = m.Player(g2, stim, None)
     pl2.start()
     time.sleep(0.3)
-    e2 = m.back_stop(pl2, dr2)
-    alive = dr2.is_alive()
-    kv2.shutdown()
-    check("echo: back_stop stops the Player, then its drain (stopped before the bus's shutdown), counts recorded",
-          not pl2.is_alive() and not alive and g2.drain_alive_at_shutdown is False and pl2.fail == 0
-          and e2.get("sent") == pl2.sent == e2.get("echoes") and pl2.sent > 256, (e2, pl2.fail, alive))
+    t0 = time.perf_counter()
+    e2 = m.back_stop(pl2, g2, KB=kb)
+    took = time.perf_counter() - t0
+    running = bool(g2.bench_drain.get("running"))
+    g2.shutdown()
+    check("echo: back_stop stops the Player, then (after ECHO_SETTLE_S) its drain, counts recorded",
+          not pl2.is_alive() and not running and pl2.fail == 0 and took >= m.ECHO_SETTLE_S
+          and e2.get("sent") == pl2.sent == e2.get("echoes") and pl2.sent > 256 and e2.get("what") == "nonode back",
+          (e2, pl2.fail, running, took))
 
-    g3 = FG.StallingGs(cap=256, acked=lambda n: False)
-    kv3, dr3 = m.open_replayer(lambda: g3, "test no node", KB=kb)
-    pl3 = m.Player(kv3, stim, None)
+    # canbench's stop reads nothing after it: an echo that comes back 2 ms after its frame is lost to a stop made
+    # at once, and counted by back_stop's settle
+    class LateEchoGs(FG.StallingGs):
+        def send(self, msg, timeout=None):
+            FG.StallingGs.send(self, msg, timeout)
+            with self.lock:
+                e = self.q.pop()
+            threading.Timer(0.002, lambda: self.put(e)).start()
+    g4 = FG.drained(LateEchoGs(cap=256), kb=kb)
+    pl4 = m.Player(g4, stim, None)
+    pl4.start()
+    time.sleep(0.1)
+    e4 = m.back_stop(pl4, g4, KB=kb)
+    check("echo: echoes 2 ms behind their frames are all counted by back_stop (its settle before the stop)",
+          e4.get("sent") == pl4.sent == e4.get("echoes") and pl4.sent > 0, e4)
+
+    g3 = FG.drained(FG.StallingGs(cap=256, acked=lambda n: False), kb=kb)
+    pl3 = m.Player(g3, stim, None)
     pl3.start()
     time.sleep(0.1)
-    e3 = m.back_stop(pl3, dr3)
+    e3 = m.back_stop(pl3, g3, KB=kb)
     check("echo: with nothing ACKing, no echoes: recorded as fewer echoes than frames sent (not judged)",
           e3.get("echoes") == 0 and e3.get("sent") == pl3.sent > 0 and e3.get("echoes_equal_sent") is False, e3)
 
@@ -600,20 +643,20 @@ MUTANTS += [
     ("the witness's bus states not kept",
      "                    self.states.append((time.perf_counter(), \"%s: %s\" % (type(e).__name__, e)))\n",
      "                    pass\n"),
-    # the replayer's echo drain (the gen-inhibit reviewer's ruling (C), 2026-11-19)
-    ("the replayer opened without its drain (stopped at once)",
-     "    return kv, KB.echo_drain(kv, REPLAYER_ROLE, what)\n",
-     "    d = KB.echo_drain(kv, REPLAYER_ROLE, what)\n    d.stop()\n    return kv, d\n"),
-    ("the slice's drain not stopped before its close",
-     "    echoes = dr.stop(sent=pl.sent)\n    t_last = last[0] if last else time.perf_counter()\n"
-     "    time.sleep(max(0.0, t_last + CLOSE_AFTER_S - time.perf_counter()))\n"
+    # the replayer's echo drain, canbench's from can-tools 7a27cc9 (the gen-inhibit reviewer, 2026-11-19)
+    ("the replayer opened without canbench's drain", "    return inno.open(bitrate=500000, drain=True)\n",
+     "    return inno.open(bitrate=500000)\n"),
+    ("the slice's drain not stopped before its close (left to the close)",
+     '    echoes = KB.drain_stop(kv, pl.sent, "nonode slice")\n    time.sleep(max(0.0, t_last + CLOSE_AFTER_S - time.perf_counter()))\n'
      "    t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call\n    kv.shutdown()\n",
-     "    t_last = last[0] if last else time.perf_counter()\n"
      "    time.sleep(max(0.0, t_last + CLOSE_AFTER_S - time.perf_counter()))\n"
      "    t_close_call = time.perf_counter()     # condition 5's measure: from the shutdown call\n    kv.shutdown()\n"
-     "    echoes = dr.stop(sent=pl.sent)\n"),
-    ("the back phase's drain not stopped", "    pl.join(3)\n    return dr.stop(sent=pl.sent)\n",
-     "    pl.join(3)\n    return {}\n"),
+     '    echoes = KB.drain_stop(kv, pl.sent, "nonode slice")\n'),
+    ("the slice's drain stopped at the last frame, no wait for its echoes",
+     "    time.sleep(max(0.0, t_last + CLOSE_AFTER_S - DRAIN_LEAD_S - time.perf_counter()))\n", ""),
+    ("the back phase's drain stopped with no settle", "    time.sleep(ECHO_SETTLE_S)\n", ""),
+    ("the back phase's drain not stopped", '    return KB.drain_stop(kv, pl.sent, "nonode back")\n',
+     "    return {}\n"),
 ]
 
 

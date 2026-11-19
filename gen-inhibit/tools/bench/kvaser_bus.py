@@ -26,7 +26,7 @@ KvaserLinkError, InnomakerError or RoleError, naming the step.
                        CANlib listed only its two "Kvaser Virtual CAN" channels, so channel 0
                        opened a virtual bus that sends and hears nothing on the wire, and a
                        witness on it would have read an empty bus.
-  innomaker_bus(role, bitrate, **kw)   (2026-11-18) an Innomaker by its canctl role, canmain
+  innomaker_bus(role, bitrate, drain=False, **kw)   (2026-11-18) an Innomaker by its canctl role, canmain
                        or canchg, never by index (the user's ruling of 2026-11-18), through
                        bench_layer.open_bench (2026-11-19): see "THE INNOMAKERS, BY ROLE" below.
                        The old gs_usb_bus(**kw) and close_gs_usb(bus), which took gs_usb's index
@@ -116,16 +116,18 @@ backend everywhere else (Windows). On Linux, after the guard:
 THE INNOMAKERS, BY ROLE (2026-11-18: the user's ruling, a tool asks for an adapter by its canctl
 role, never by index, channel number or first found; the gen-inhibit reviewer's conditions 1-2).
 innomaker_bus(role) refuses a role that is not canmain or canchg (InnomakerError), then is
-bench_layer.open_bench(role, bitrate, mode="libusb", restore=True) (2026-11-19): a pick keyword refused,
-the guard, the role handed to libusb and read back from `canctl roles`, gs_usb opened on its USB bus and
-address; its shutdown() frees the pyusb handle and puts the role back as found (socketcan, link down), read
-back. A failed open puts it back too. canbench's refusal is InnomakerError. The open and the close are
-recorded; a second shutdown() does nothing.
-A role FOUND WITH ITS LINK UP is refused before bench_layer touches it (InnomakerError), recorded in
+bench_layer.open_bench(role, bitrate, mode="libusb", restore=True, if_up="refuse") (2026-11-19): a pick
+keyword refused, the guard, the role handed to libusb and read back from `canctl roles`, gs_usb opened on its
+USB bus and address; its shutdown() frees the pyusb handle and puts the role back as found (socketcan, link
+down), read back. A failed open puts it back too. canbench's refusal is InnomakerError. The open and the
+close are recorded; a second shutdown() does nothing.
+A role FOUND WITH ITS LINK UP is refused before anything is touched (InnomakerError), recorded in
 kvaser_opens.jsonl as a finding ("found up"), and its link left as it is (the gen-inhibit reviewer's ruling
 of 2026-11-19: in a run the runner brings canmain down and the lock keeps everyone else off, so an up
-Innomaker is interference; open_bench would take it down and put it back up, and the runner forbids canmain
-up). The same holds at innomaker_held's enter.
+Innomaker is interference, and the runner forbids canmain up). From can-tools 0f9c85f the refusal is
+canbench's, open_bench(if_up="refuse") (the gen-inhibit reviewer, 2026-11-19); this module records it as the
+finding. innomaker_held's enter, whose to_libusb has no if_up, reads the role's link from `canctl roles`
+itself, after the guard, and refuses and records the same way.
 innomaker_held(role) holds the role in libusb around a run, with the opens and closes inside it
 (condition 5, 2026-11-18): bench_layer.to_libusb at the start, open_bench(restore=False) per open,
 bench_layer.to_socketcan at the end; a hand-back at every close would sit inside a burst's or NONODE's
@@ -135,12 +137,16 @@ returns every frame the device completed as an echo on its IN endpoint (python-c
 host is that endpoint's only buffer: with 257 echoes unread the device took no more frames, and send 258
 blocked for pyusb's 1 s default write timeout and raised (canmain at 500 kbit, 2 ms apart, every frame
 ACKed by the PCAN; short bench check of 2026-11-19, gen-inhibit runs/benchcheck_9950f96_20261119T015215/).
-echo_drain(bus, role, what) starts a thread that reads the bus (DRAIN_RECV_S, 1 ms, gs_usb's least) and
-counts what it reads: echoes, other frames, error frames. drain.stop(sent) asks it to stop, it reads what is
-queued to the first empty read (at most DRAIN_SWEEP_MAX_S), and joins it, before the bus's shutdown, and records an "echoes" event (sent, echoes, rx, errors, whether echoes == sent).
-innomaker_held's exit stops a drain still running before it shuts a bus. canmain_burst_check's replay and
-NONODE's Player use it. Kept thin, for canbench's own to replace once its drain stops within the 5 ms
-close (the gen-inhibit reviewer's ruling (c), 2026-11-19: can-tools 0f9c85f's drain reads 50 ms at a time).
+From can-tools 7a27cc9 the drain is canbench's (the gen-inhibit reviewer's ruling (c), 2026-11-19, at the
+pin whose drain reads 1 ms at a time): innomaker_bus(role, drain=True) and inno.open(bitrate, drain=True)
+open with bench_layer.open_bench(drain=True), whose thread reads the bus and counts echoes, other frames and
+error frames (bus.bench_drain); recv is refused while it runs, and the bus's shutdown stops it before the
+device closes. drain_stop(bus, sent, what) calls bus.stop_drain() (it waits out at most one 1 ms read) and
+records an "echoes" event: sent, echoes, rx, errors, stop_ms (how long the stop took), whether echoes == sent,
+and any error. canbench's stop reads nothing after it, so a sender stops the drain once its last frame's echo
+has had time to come back (canmain_burst_check and NONODE: DRAIN_LEAD_S before the 5 ms close). Each close
+records the drain's counts as the device closed it ("drain"). canmain_burst_check's replay and NONODE's
+Player open with it. The earlier thin drain here (echo_drain) is gone.
 
 THE PCAN, BY ROLE (the same ruling, 2026-11-18). PCAN-Basic numbers PCAN-USB channels
 PCAN_USBBUS1, 2, ... in the order it finds them, so channel PCAN_USBBUS1 is the first found.
@@ -171,7 +177,6 @@ import json
 import os
 import re
 import sys
-import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -537,11 +542,11 @@ def _innomaker_role(role):
 
 
 def _innomaker_not_up(role, what):
-    """The guard, then the role's link from `canctl roles` (bench_roles.roles): found up, the open is refused
-    BEFORE bench_layer touches it, recorded as a finding ("found up"), and its link left as it is (the gen-inhibit
-    reviewer's ruling of 2026-11-19: in a run the runner brings canmain down and the lock keeps everyone else
-    off, so an up Innomaker is interference; open_bench would take it down and put it back up, and the runner
-    forbids canmain up). InnomakerError."""
+    """innomaker_held's enter (bench_layer.to_libusb has no if_up): the guard, then the role's link from `canctl
+    roles` (bench_roles.roles): found up, the hold is refused BEFORE bench_layer touches it, recorded as a finding
+    ("found up"), and its link left as it is (the gen-inhibit reviewer's ruling of 2026-11-19: in a run the
+    runner brings canmain down and the lock keeps everyone else off, so an up Innomaker is interference;
+    to_libusb would take it down, and the runner forbids canmain up). InnomakerError."""
     bl = layer()
     bl.guard("%s %s" % (what, role))
     row = _call(InnomakerError, role, bench_roles().roles).get(role)
@@ -553,16 +558,30 @@ def _innomaker_not_up(role, what):
                              % (role, row.netdev, what))
 
 
-def _innomaker_open(role, bitrate, kw, restore):
+FOUND_UP_REFUSAL = "found up, refused (if_up='refuse')"     # canbench bench_layer's refusal text (0f9c85f)
+
+
+def _innomaker_open(role, bitrate, kw, restore, drain, what):
+    """open_bench(role, mode="libusb", if_up="refuse", drain=drain): canbench's found-up refusal recorded as the
+    finding (module docstring, "FOUND WITH ITS LINK UP")."""
     bl = layer()
-    b = _call(InnomakerError, "open_bench %s" % role, bl.open_bench, role, bitrate, mode="libusb",
-              restore=restore, **kw)
+    try:
+        b = _call(InnomakerError, "open_bench %s" % role, bl.open_bench, role, bitrate, mode="libusb",
+                  restore=restore, if_up="refuse", drain=drain, **kw)
+    except InnomakerError as e:
+        if FOUND_UP_REFUSAL in str(e.__cause__ or ""):
+            record({"event": "refused", "backend": "gs_usb", "role": role, "what": what, "finding": "found up",
+                    "by": "canbench open_bench if_up='refuse'", "refusal": str(e.__cause__)})
+            raise InnomakerError("%s: found up, which is interference (in a run the runner brings it down); "
+                                 "recorded as a finding, its link not touched, %s refused (%s)"
+                                 % (role, what, e.__cause__)) from e.__cause__
+        raise
     res = getattr(b, "bench_role", None)
     b.vtrux_backend, b.vtrux_role = "gs_usb", role
     record({"event": "open", "backend": "gs_usb", "role": role, "usb": res.role.usb if res else None,
             "bus": res.busnum if res else None, "address": res.devnum if res else None, "bitrate": bitrate,
             "found": (getattr(b, "bench_layer", None) or {}).get("found"),
-            "reader": "canbench.bench_layer.open_bench", "held": not restore})
+            "reader": "canbench.bench_layer.open_bench", "held": not restore, "drain": bool(drain)})
     shut = b.shutdown
 
     def close():
@@ -571,28 +590,30 @@ def _innomaker_open(role, bitrate, kw, restore):
         b._vtrux_closed = True
         ev = {"event": "close", "backend": "gs_usb", "role": role, "held": not restore}
         try:
-            # open_bench's shutdown: the bus, the pyusb handle freed (open_role), and with restore the role
-            # put back as found (bench_layer, read back from canctl roles)
+            # open_bench's shutdown: a drain stopped first, then the bus, the pyusb handle freed (open_role),
+            # and with restore the role put back as found (bench_layer, read back from canctl roles)
             _call(InnomakerError, "close %s" % role, shut)
         except BaseException as e:
             ev["error"] = "%s: %s" % (type(e).__name__, e)
+            _drain_counts(b, ev)
             record(ev)
             raise
+        _drain_counts(b, ev)
         record(ev)
         return None
     b.shutdown = close
     return b
 
 
-def innomaker_bus(role, bitrate=500000, **kw):
+def innomaker_bus(role, bitrate=500000, drain=False, **kw):
     """The Innomaker with canctl role `role` (canmain or canchg), through bench_layer.open_bench(role,
-    mode="libusb", restore=True): handed to libusb, opened by open_role, and its shutdown() puts the role back
-    as found (socketcan, its link as it was), read back. NORMAL mode (gs_usb has no listen-only). A pick
-    keyword (index, channel, bus, address, ...) is refused by the layer (InnomakerError). Found with its link up,
-    it is refused before the layer touches it, and recorded (_innomaker_not_up)."""
+    mode="libusb", restore=True, if_up="refuse", drain=drain): handed to libusb, opened by open_role, and its
+    shutdown() puts the role back as found (socketcan, its link as it was), read back. NORMAL mode (gs_usb has
+    no listen-only). A pick keyword (index, channel, bus, address, ...) is refused by the layer
+    (InnomakerError). Found with its link up, it is refused before anything is touched, and recorded.
+    drain=True: canbench's echo drain, for a caller that only sends (drain_stop)."""
     _innomaker_role(role)
-    _innomaker_not_up(role, "innomaker_bus")
-    return _innomaker_open(role, bitrate, kw, True)
+    return _innomaker_open(role, bitrate, kw, True, drain, "innomaker_bus")
 
 
 class innomaker_held:
@@ -615,10 +636,12 @@ class innomaker_held:
         self.held = True
         return self
 
-    def open(self, bitrate=500000, **kw):
+    def open(self, bitrate=500000, drain=False, **kw):
+        """open_bench(role, mode="libusb", restore=False, if_up="refuse", drain=drain) on the held role; drain=True
+        for a sender (drain_stop)."""
         if not self.held:
             raise InnomakerError("%s is not held: open it inside `with innomaker_held(%r)`" % (self.role, self.role))
-        b = _innomaker_open(self.role, bitrate, kw, False)
+        b = _innomaker_open(self.role, bitrate, kw, False, drain, "innomaker_held open")
         self.buses.append(b)
         return b
 
@@ -626,10 +649,7 @@ class innomaker_held:
         failed = []
         for b in self.buses:
             try:
-                d = getattr(b, "echo_drain", None)
-                if d is not None and d.is_alive():
-                    d.stop()        # its reads end before the bus's handle is freed
-                b.shutdown()
+                b.shutdown()        # open_bench's: a drain still running is stopped before the handle is freed
             except Exception as e:      # noqa: BLE001  named below; the hand-back still runs
                 failed.append("%s: %s" % (type(e).__name__, e))
         self.held = False
@@ -648,65 +668,38 @@ class innomaker_held:
         return False
 
 
-DRAIN_RECV_S = 0.001     # python-can's gs_usb waits at least 1 ms per empty read
-DRAIN_JOIN_S = 1.0
-DRAIN_SWEEP_MAX_S = 0.05  # after the stop is asked, reading what is queued ends at the first empty read, or this
-
-
-class _EchoDrain(threading.Thread):
-    """Reads a libusb gs_usb bus while its owner sends, so the device's echoes never fill (module docstring,
-    "A SENDER ON A libusb ROLE READS ITS ECHOES")."""
-
-    def __init__(self, bus, role, what):
-        super().__init__(daemon=True)
-        self.bus, self.role, self.what = bus, role, what
-        self.echoes = self.rx = self.errors = 0
-        self.error = None
-        self._halt = threading.Event()      # not _stop: threading.Thread has its own
-
-    def run(self):
-        t_halt = None
-        while True:
-            if t_halt is None and self._halt.is_set():
-                t_halt = time.perf_counter()
-            try:
-                m = self.bus.recv(timeout=DRAIN_RECV_S)
-            except Exception as e:      # noqa: BLE001  recorded at stop; the owner's send shows the effect
-                self.error = "%s: %s" % (type(e).__name__, e)
-                return
-            if t_halt is not None and (m is None or time.perf_counter() - t_halt > DRAIN_SWEEP_MAX_S):
-                return      # asked to stop: what was queued is read first, to the first empty read
-            if m is None:
-                continue
-            if m.is_error_frame:
-                self.errors += 1
-            elif getattr(m, "is_rx", True) is False:
-                self.echoes += 1
-            else:
-                self.rx += 1
-
-    def stop(self, sent=None):
-        """Stops and joins the thread (before the bus's shutdown); records and returns the counts."""
-        self._halt.set()
-        self.join(DRAIN_JOIN_S)
-        ev = {"event": "echoes", "backend": "gs_usb", "role": self.role, "what": self.what, "sent": sent,
-              "echoes": self.echoes, "rx": self.rx, "errors": self.errors,
-              "echoes_equal_sent": (None if sent is None else self.echoes == sent)}
-        if self.is_alive():
-            ev["error"] = "the drain did not stop within %g s" % DRAIN_JOIN_S
-        elif self.error:
-            ev["error"] = self.error
+def drain_stop(bus, sent, what):
+    """Stops canbench's echo drain on `bus` (opened with drain=True: bus.stop_drain(), which waits out at most one
+    1 ms read and puts recv back), records an "echoes" event and returns it: sent, echoes, rx (other frames),
+    errors (error frames), stop_ms (how long the stop took), echoes_equal_sent, and "error" when the drain's read
+    failed or the bus has no drain (module docstring, "A SENDER ON A libusb ROLE READS ITS ECHOES")."""
+    ev = {"event": "echoes", "backend": "gs_usb", "role": getattr(bus, "vtrux_role", None), "what": what,
+          "sent": sent}
+    stop = getattr(bus, "stop_drain", None)
+    if stop is None:
+        ev.update(echoes=None, echoes_equal_sent=None,
+                  error="no echo drain on this bus (not opened with drain=True)")
         record(ev)
         return ev
+    try:
+        st = stop()
+    except Exception as e:      # noqa: BLE001  canbench's "did not stop within 5 s"; recorded, judged by the caller
+        ev.update(echoes=None, echoes_equal_sent=None, error="%s: %s" % (type(e).__name__, e))
+        record(ev)
+        return ev
+    ev.update(echoes=st.get("echoes"), rx=st.get("rx"), errors=st.get("errors"), stop_ms=st.get("stop_ms"),
+              echoes_equal_sent=(None if sent is None else st.get("echoes") == sent))
+    if st.get("error"):
+        ev["error"] = st["error"]
+    record(ev)
+    return ev
 
 
-def echo_drain(bus, role, what):
-    """Starts reading `bus` (a libusb gs_usb role's) so its echoes never fill; drain.stop(sent) before the bus's
-    shutdown. Kept thin, for canbench's own to replace."""
-    d = _EchoDrain(bus, role, what)
-    bus.echo_drain = d
-    d.start()
-    return d
+def _drain_counts(bus, ev):
+    """A close's record of canbench's drain on that bus, as the device closed it."""
+    st = getattr(bus, "bench_drain", None)
+    if isinstance(st, dict):
+        ev["drain"] = {k: st.get(k) for k in ("echoes", "rx", "errors", "stop_ms", "error")}
 
 
 # ------------------------------------------------ the PCAN, by canctl role (2026-11-18/19)

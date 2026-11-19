@@ -137,17 +137,19 @@ def judging(C):
 ECHO_CAP = 64      # the fake gs_usb stalls with this many echoes unread (canmain: 256; the replay here is short)
 
 
-def real_echo_drain(log):
-    """The REAL kvaser_bus.echo_drain (by file, from beside this test), its record into the log."""
+def real_kb(log):
+    """The REAL kvaser_bus (by file, from beside this test): its drain_stop, its record into the log, and through
+    its layer() the pinned canbench, whose open_bench(drain=True) reader (_start_drain) the fake held open starts
+    on the fake gs_usb (can-tools 7a27cc9; the gen-inhibit reviewer, 2026-11-19)."""
     spec = importlib.util.spec_from_file_location("kvaser_bus_echo_cbc", os.path.join(HERE, "kvaser_bus.py"))
     kb = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(kb)
     kb.record = lambda ev: log.append(("echoes", ev))
-    return kb.echo_drain
+    return kb
 
 
 def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late=0.0, wican_mode=0,
-          x2_held=True, kvaser_up=False, drop_echoes=False):
+          x2_held=True, kvaser_up=False, drop_echoes=False, slow_recv=0.0):
     DEV0 = 5000.0
     EPOCH = time.time() - time.perf_counter()
 
@@ -201,7 +203,8 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
                 self.sent += 1
 
         def recv(self, timeout=None):
-            end = time.perf_counter() + max(timeout or 0.0, 0.001)
+            # slow_recv: an empty read lasts that long whatever the timeout (a drain whose stop is slow)
+            end = time.perf_counter() + max(timeout or 0.0, 0.001, slow_recv)
             while True:
                 if self.shut:
                     raise CanError("recv after shutdown")
@@ -214,8 +217,8 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
 
         def shutdown(self):
             t_c = time.perf_counter()
-            d = getattr(self, "echo_drain", None)
-            log.append(("gs shutdown", self.bitrate, bool(d is not None and d.is_alive())))
+            d = getattr(self, "bench_drain", None)     # canbench's drain (open_bench drain=True)
+            log.append(("gs shutdown", self.bitrate, bool(d is not None and d.get("running"))))
             self.shut = True
             wire["open"] = None
             if self.th is not None:
@@ -255,7 +258,8 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
 
     KB = types.ModuleType("kvaser_bus")
     KB.fixes = lambda: {"kvaser": False, "gs_usb": True}
-    KB.echo_drain = real_echo_drain(log)
+    kb = real_kb(log)
+    KB.drain_stop = kb.drain_stop
 
     def link_down():
         log.append(("kvaser down",))
@@ -275,8 +279,13 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
             log.append(("held enter", self.role))
             return self
 
-        def open(self, bitrate=500000, **kw):
-            return Gs(bitrate)
+        def open(self, bitrate=500000, drain=False, **kw):
+            g = Gs(bitrate)
+            if drain:       # as open_bench(drain=True): the pinned canbench's reader on the bus
+                g.vtrux_role = self.role
+                kb.layer()._start_drain(g, self.role)
+            log.append(("held open", bitrate, bool(drain)))
+            return g
 
         def __exit__(self, *exc):
             log.append(("held exit", self.role))
@@ -356,10 +365,19 @@ def checks(C):
     check("control: the echo drain's counts recorded with the replay (echoes == frames sent) and judged",
           ed.get("event") == "echoes" and ed.get("sent") == rp.get("frames") == ed.get("echoes")
           and ed.get("echoes_equal_sent") is True and (rec.get("echoes") or {}).get("breaches") == []
-          and "\nechoes: %s for %s frames sent" % (rp.get("frames"), rp.get("frames")) in out, (ed, rec.get("echoes")))
+          and "\nechoes: %s for %s frames sent, drain stopped in " % (rp.get("frames"), rp.get("frames")) in out,
+          (ed, rec.get("echoes")))
+    check("control: the drain's stop time recorded and judged (canbench's stop_ms, within the 3 ms lead)",
+          isinstance(ed.get("stop_ms"), (int, float)) and ed["stop_ms"] <= C.DRAIN_LEAD_S * 1000
+          and (rec.get("echoes") or {}).get("stop_ms") == ed["stop_ms"], ed)
+    opens = [e for e in log if e[0] == "held open"]
+    check("control: the replay's canmain opened with canbench's drain (drain=True); the ACK re-open and the bursts "
+          "without", opens and opens[0] == ("held open", 500000, True) and all(not e[2] for e in opens[1:]), opens)
     shuts = [e for e in log if e[0] == "gs shutdown"]
-    check("control: the drain stopped before the replay's close (not running at canmain's shutdown), once",
-          shuts and shuts[0][1:] == (500000, False) and sum(1 for e in log if e[0] == "echoes") == 1, (shuts, log[-8:]))
+    k = [e[0] for e in log]
+    check("control: the drain stopped (drain_stop, recorded once) before the replay's close, not by the close",
+          shuts and shuts[0][1:] == (500000, False) and sum(1 for e in log if e[0] == "echoes") == 1
+          and k.index("echoes") < k.index("gs shutdown"), (shuts, log[-8:]))
     ws = rec.get("witness_states") or []
     check("control: the PCAN's error-passive state raised from recv after the probe is recorded, and the witness "
           "read on (the bursts above were witnessed)", len(ws) == 1 and "error passive" in ws[0][1] and ws[0][0] > 0.020,
@@ -367,6 +385,10 @@ def checks(C):
     rc, rec, log, out = run(C, [], drop_echoes=True)
     check("one frame in ten giving no echo: FAIL by its verdict naming the echo count, exit 1",
           rc == 1 and "echoes for" in str(rec.get("verdict")) and "verdict: FAIL" in out, (rc, rec.get("verdict")))
+    rc, rec, log, out = run(C, [], slow_recv=0.02)
+    check("a drain whose stop takes ~18 ms (each empty read 20 ms): FAIL by its verdict naming the stop past its "
+          "lead, exit 1", rc == 1 and "echo drain's stop took" in str(rec.get("verdict")) and "verdict: FAIL" in out,
+          (rc, rec.get("verdict")))
 
     for label, argv, kw, want in (
             ("--hold-extra-ms 20 (can-fail)", ["--hold-extra-ms", "20"], {}, "over"),
@@ -398,15 +420,18 @@ def checks(C):
 
 MUTANTS_ECHO = [
     # the echo drain (the gen-inhibit reviewer's ruling (C), 2026-11-19)
-    ("canmain_burst_check.py", "the replay's drain not started (stopped at once)",
-     '    drain = KB.echo_drain(b, ROLE, "canmain_burst_check replay")\n',
-     '    drain = KB.echo_drain(b, ROLE, "canmain_burst_check replay")\n    drain.stop()\n'),
-    ("canmain_burst_check.py", "the replay's drain not stopped before the close",
-     "        echo = drain.stop(sent=n)\n        time.sleep(max(0.0, target - time.perf_counter()))\n    finally:\n"
-     "        if echo is None:\n            echo = drain.stop(sent=n)\n        t_close = time.perf_counter()\n"
-     "        b.shutdown()\n",
+    ("canmain_burst_check.py", "the replay's canmain opened without canbench's drain",
+     "    b = inno.open(bitrate=REPLAY_BITRATE, drain=True)\n", "    b = inno.open(bitrate=REPLAY_BITRATE)\n"),
+    ("canmain_burst_check.py", "the replay's drain not stopped before the close (left to the close)",
+     '        echo = KB.drain_stop(b, n, "canmain_burst_check replay")\n        time.sleep(max(0.0, target - time.perf_counter()))\n'
+     '    finally:\n        if echo is None:\n            echo = KB.drain_stop(b, n, "canmain_burst_check replay")\n'
+     "        t_close = time.perf_counter()\n        b.shutdown()\n",
      "        time.sleep(max(0.0, target - time.perf_counter()))\n    finally:\n        t_close = time.perf_counter()\n"
-     "        b.shutdown()\n        echo = drain.stop(sent=n)\n"),
+     '        b.shutdown()\n        echo = KB.drain_stop(b, n, "canmain_burst_check replay")\n'),
+    ("canmain_burst_check.py", "the drain's stop time not judged",
+     '    if echo.get("stop_ms") is not None and echo["stop_ms"] > DRAIN_LEAD_S * 1000:\n', "    if False:\n"),
+    ("canmain_burst_check.py", "the drain's stop time not kept in the measure",
+     '"stop_ms": echo.get("stop_ms"), "breaches": []}', '"breaches": []}'),
     ("canmain_burst_check.py", "the echo count not checked",
      '    elif echo.get("echoes") != echo.get("sent"):\n', "    elif False:\n"),
     ("canmain_burst_check.py", "the echo measure left out of the verdict",
