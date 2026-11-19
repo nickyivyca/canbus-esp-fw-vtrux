@@ -27,6 +27,15 @@ release(), or hands it to a session through release_and_take() (section
 6, --keep-lock). A runner started with --from-hold PID takes over a hand
 take of its own role under PID through hand_to_run() (section 6).
 --log defaults to $REVERSE_IT_DIR/firmware/bench-log.jsonl.
+
+The bench guard (both ESP reviewers, 2026-11-19): require_holder(path,
+roles) returns the holder when this process may use the bench now, and
+raises NotHeld (a Refused) otherwise: the log unreadable, not replaying or
+another host's or environment's, the lock free, held by a role not in the
+caller's list, or held under a pid that is neither this process nor one of
+its ancestors (the environment's ancestors(): /proc on native Linux; not
+implemented on Windows, where it refuses). guard(path, roles) is the same
+check as a no-argument callable, for canbench.bench_layer.set_guard.
 Exit 0 done, 2 refused, with the reason on stderr; wait also exits 3 when it
 gives up without taking.
 
@@ -171,10 +180,17 @@ LOG_NAME = os.path.join("firmware", "bench-log.jsonl")
 REPAIR_TMP = ".repair-tmp"      # the new log while a repair writes it
 LOCK_WAIT_S = 10.0
 UNKNOWN = "BOARD STATE UNKNOWN"
+PROC = "/proc"                  # LinuxEnv.ancestors reads <PROC>/<pid>/stat
 
 
 class Refused(Exception):
     """A command the rules do not allow, or a log that breaks them."""
+
+
+class NotHeld(Refused):
+    """require_holder: this process may not use the bench now (the log
+    cannot be read or is another host's, the lock is free or another role's,
+    or its holder's pid is not this process or an ancestor)."""
 
 
 # ---- the environment (section 4) ---------------------------------------
@@ -221,6 +237,13 @@ class WindowsEnv:
         import msvcrt
         f.seek(0)
         msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+
+    @staticmethod
+    def ancestors(pid):
+        """Not implemented on Windows: the bench host is native Linux
+        (require_holder refuses here)."""
+        raise NotHeld("a process's ancestors are read on native Linux only "
+                      "(/proc); this is the windows environment")
 
 
 class LinuxEnv:
@@ -280,6 +303,29 @@ class LinuxEnv:
     def unlock(cls, f):
         import fcntl
         cls._ofd(f, fcntl.F_UNLCK)
+
+    @staticmethod
+    def ancestors(pid):
+        """[pid, its parent, ..., up to the first process with no parent],
+        each from <PROC>/<pid>/stat's ppid. NotHeld if pid's own stat cannot
+        be read; an ancestor that exits while it is read ends the list
+        there. The comm field may hold spaces and parentheses, so the fields
+        are split after its last ')'."""
+        out = []
+        while pid > 0 and pid not in out:
+            try:
+                with open(os.path.join(PROC, str(pid), "stat"), encoding="ascii",
+                          errors="replace") as f:
+                    stat = f.read()
+                ppid = int(stat.rsplit(")", 1)[1].split()[1])
+            except (OSError, IndexError, ValueError) as e:
+                if not out:
+                    raise NotHeld("the parent of pid %d cannot be read from %s "
+                                  "(%s)" % (pid, PROC, e))
+                break
+            out.append(pid)
+            pid = ppid
+        return out
 
 
 def wait_lock(once, wait_s):
@@ -1285,6 +1331,74 @@ def held_by_run(state, who, run):
     h = state["holder"]
     return (h is not None and run is not None and h["who"] == who
             and h["run"] == run)
+
+
+# ---- the bench guard: may this process use the bench now? ---------------
+
+def _roles(roles):
+    """The caller's roles as a tuple of role names (ROLE_RE); NotHeld for a
+    bare string (its letters are not roles), an empty list or a name that is
+    not a role."""
+    if isinstance(roles, str):
+        raise NotHeld("roles is a list of role names, not the string %r" % roles)
+    try:
+        roles = tuple(roles)
+    except TypeError:
+        raise NotHeld("roles is a list of role names, not %r" % (roles,))
+    bad = [r for r in roles if not (isinstance(r, str) and ROLE_RE.match(r))]
+    if not roles or bad:
+        raise NotHeld("roles %r: a non-empty list of role names (%s)"
+                      % (roles, ROLE_RE.pattern))
+    return roles
+
+
+def require_holder(path, roles, pid=None):
+    """The holder ({who, run, pid, ts}) when the process pid (default this
+    one) may use the bench now; NotHeld otherwise, naming why. Asked for by
+    both ESP reviewers (2026-11-19) as the one check both projects plug into
+    canbench.bench_layer.set_guard (see guard()).
+
+    It may when the log at path replays on its bench host and environment
+    (read_state: section 4), the lock is held by one of the caller's roles
+    (a list: a project names its own tester and, for a loan, its
+    implementor), and the holder's pid is pid or one of its ancestors, read
+    in the bench environment (LinuxEnv: /proc). So a run's checks, the
+    runner's children, pass under the runner's take, and a session's tools
+    under its hand take with the session's long-lived pid. A log that
+    cannot be read, does not replay, or is another host's or environment's
+    refuses as a free lock does."""
+    roles = _roles(roles)
+    try:
+        state = read_state(path)
+    except Exception as e:      # any failure to read it is "not held"
+        raise NotHeld("the bench log %s cannot be read: %s: %s"
+                      % (path, type(e).__name__, e))
+    h = state["holder"]
+    if h is None:
+        raise NotHeld("the bench lock is free: the bench is used only under "
+                      "the lock")
+    if h["who"] not in roles:
+        raise NotHeld("the bench lock is held by %s, not %s"
+                      % (h["who"], " or ".join(roles)))
+    me = os.getpid() if pid is None else pid
+    anc = bench_impl(state).ancestors(me)
+    if h["pid"] not in anc:
+        raise NotHeld("the bench lock's holder %s has pid %d, which is not pid "
+                      "%d or an ancestor (%s)" % (h["who"], h["pid"], me,
+                                                  " <- ".join(map(str, anc))))
+    return dict(h)
+
+
+def guard(path, roles):
+    """A no-argument callable for canbench.bench_layer.set_guard: each call
+    is require_holder(path, roles) for the calling process. The roles are
+    checked now (NotHeld), the log at every call."""
+    roles = _roles(roles)
+
+    def bench_guard():
+        require_holder(path, roles)
+    bench_guard.path, bench_guard.roles = path, roles
+    return bench_guard
 
 
 # ---- status and the command line (section 5) ---------------------------
