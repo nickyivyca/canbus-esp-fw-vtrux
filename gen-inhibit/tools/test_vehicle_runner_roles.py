@@ -17,15 +17,15 @@ is present or absent:
   is refused before anything opens;
 - present: --interface auto, and any other --interface but udp_multicast,
   with or without --channel, are refused before canbench is loaded or
-  anything opens, printing the --role form; --role with an --interface or a
-  --channel is refused the same way; udp_multicast (the virtual segment) is
-  allowed; --role opens through canbench.bench_roles.open_role, after the
-  pinned canbench is loaded, with the run's bitrate and
-  receive_own_messages=False (and auto_reset for a PCAN role), and a
-  RoleError ends the run with its reason.
+  anything opens, printing the --role form and that --role needs the shared
+  bench guard; --role with an --interface or a --channel is refused the same
+  way; udp_multicast (the virtual segment) is allowed; and --role itself is
+  refused with a one-line reason, before canbench is loaded or anything
+  opens, until gen-inhibit pins the shared bench guard (shared/bench
+  bench_lock.guard; reviewer, 2026-11-19).
 
-canbench.bench_roles and can.Bus are stand-ins, so nothing opens a real
-adapter and no canctl runs.
+can.Bus and import_canbench are stand-ins, so nothing opens a real adapter
+and no canctl runs.
 """
 
 import os
@@ -49,33 +49,6 @@ def args(**kw):
     a = dict(interface="auto", bitrate=500000, channel=None, role=None)
     a.update(kw)
     return types.SimpleNamespace(**a)
-
-
-def fake_bench_roles(interface="socketcan", mode="socketcan", error=None,
-                     events=None):
-    """A stand-in canbench package with bench_roles: resolve() gives a role
-    of that interface and mode, open_role() records its call and returns a
-    marker bus; error, if given, is raised by resolve() as a RoleError."""
-    events = events if events is not None else []
-    pkg = types.ModuleType("canbench")
-    br = types.ModuleType("canbench.bench_roles")
-
-    class RoleError(RuntimeError):
-        pass
-
-    def resolve(role):
-        events.append(("resolve", role))
-        if error:
-            raise RoleError(error)
-        return types.SimpleNamespace(interface=interface, mode=mode)
-
-    def open_role(role, **kw):
-        events.append(("open_role", role, kw))
-        return "BUS:" + role
-
-    br.RoleError, br.resolve, br.open_role = RoleError, resolve, open_role
-    pkg.bench_roles = br
-    return {"canbench": pkg, "canbench.bench_roles": br}, events
 
 
 class Base(unittest.TestCase):
@@ -147,7 +120,7 @@ class OffBench(Base):
                                 ("udp_multicast", None, "can0")):
             with self.subTest(iface=iface, ch=ch):
                 a = args(interface=iface, channel=ch)
-                self.assertIs(vr.check_bench_open(a), False)
+                self.assertIsNone(vr.check_bench_open(a))
                 self.assertEqual(a.channel, want)
 
     def test_explicit_socketcan_opens_on_can0_by_default(self):
@@ -168,7 +141,7 @@ class OffBench(Base):
     def test_stand_ins_without_role_or_channel_attributes_still_open(self):
         # The root test's stand-in args carry neither.
         a = types.SimpleNamespace(interface="socketcan", bitrate=500000)
-        self.assertIs(vr.check_bench_open(a), False)
+        self.assertIsNone(vr.check_bench_open(a))
         self.assertEqual(a.channel, "can0")
 
 
@@ -183,7 +156,7 @@ class OnBench(Base):
         text = self.refused(args(), "bench host", self.canctl,
                             "SPEC section 8", "first adapter detected",
                             "--role <role>", "canctl roles",
-                            "udp_multicast")
+                            "needs the shared bench guard", "udp_multicast")
         self.assertNotIn("takes an adapter by its channel", text)
 
     def test_explicit_interfaces_are_refused_with_or_without_a_channel(self):
@@ -214,66 +187,33 @@ class OnBench(Base):
                     got = vr.check_bench_open(a)
                 except SystemExit as e:
                     self.fail("udp_multicast refused on a bench host: %s" % e)
-                self.assertIs(got, False)
+                self.assertIsNone(got)
                 self.assertEqual(a.channel, ch or "can0")
 
-    def test_role_goes_through_open_by_role_and_nothing_else(self):
-        def fake(*a):
-            self.events.append(("open_by_role",) + a)
-            raise Opened("open_by_role")
-        with mock.patch("vehicle_runner.open_by_role", side_effect=fake):
-            self.assertIsNone(self.open(args(role="kvaser")))
-        self.assertEqual(self.events, [("open_by_role", "kvaser", 500000)])
+    def test_role_is_refused_until_the_shared_guard_is_pinned(self):
+        for role in ("kvaser", "canmain", "canchg", "pcanfd", "canx2"):
+            with self.subTest(role=role):
+                self.events.clear()
+                before = {m for m in sys.modules if m.split(".")[0] == "canbench"}
+                text = self.refused(args(role=role),
+                                    "vehicle_runner: --role %s: needs the "
+                                    "shared bench guard" % role,
+                                    "bench_lock.guard")
+                self.assertNotIn("\n", text, "not a one-line reason")
+                after = {m for m in sys.modules if m.split(".")[0] == "canbench"}
+                self.assertEqual(after, before, "canbench loaded")
 
-    def test_check_says_open_by_role(self):
-        a = args(role="canchg")
-        self.assertIs(vr.check_bench_open(a), True)
-
-
-class OpenByRole(Base):
-    """open_by_role on the stand-in bench_roles."""
-
-    def setUp(self):
-        super().setUp()
-        self.bench(True)
-
-    def call(self, role, **fake):
-        mods, ev = fake_bench_roles(events=self.events, **fake)
-        with mock.patch.dict(sys.modules, mods):
-            return vr.open_by_role(role, 250000)
-
-    def test_opens_through_open_role_after_loading_the_pin(self):
-        bus, desc = self.call("kvaser", interface="socketcan", mode="socketcan")
-        self.assertEqual(bus, "BUS:kvaser")
-        self.assertIn("role kvaser", desc)
-        self.assertIn("socketcan", desc)
-        names = [e[0] for e in self.events]
-        self.assertEqual(names, ["import_canbench", "resolve", "open_role"])
-        self.assertEqual(self.events[2], ("open_role", "kvaser",
-                                          {"bitrate": 250000,
-                                           "receive_own_messages": False}))
-        self.assertIn("--role", self.events[0][1])
-
-    def test_a_pcan_role_gets_auto_reset(self):
-        self.call("pcanfd", interface="pcan", mode="pcan")
-        self.assertEqual(self.events[-1][2],
-                         {"bitrate": 250000, "receive_own_messages": False,
-                          "auto_reset": True})
-
-    def test_a_gs_usb_role_does_not(self):
-        self.call("canmain", interface="gs_usb", mode="libusb")
-        self.assertNotIn("auto_reset", self.events[-1][2])
-
-    def test_a_role_error_ends_the_run_with_its_reason(self):
+    def test_the_check_refuses_role_itself(self):
+        # Not only open_and_identify: the check alone refuses, so no later
+        # branch can open a role.
+        a = args(role="kvaser")
         try:
-            self.call("kvaser", error="netdev kvaser is down")
+            vr.check_bench_open(a)
         except SystemExit as e:
-            self.assertIn("--role kvaser: netdev kvaser is down", str(e))
-        except Exception as e:      # escaped as a traceback, not a one-line exit
-            self.fail("a RoleError was not turned into an exit: %r" % e)
+            self.assertIn("needs the shared bench guard", str(e))
         else:
-            self.fail("a RoleError did not end the run")
-        self.assertNotIn("open_role", [e[0] for e in self.events])
+            self.fail("check_bench_open let --role through on a bench host")
+        self.assertIsNone(a.channel)
 
 
 class CanctlPath(unittest.TestCase):

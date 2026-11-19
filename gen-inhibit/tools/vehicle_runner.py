@@ -109,22 +109,29 @@ def apply_linux_fixes(interface):
 # or the first one of its kind it finds. The reviewer ruled on 2026-11-18 that
 # this covers this runner whenever it runs on a bench host: --interface auto
 # opens the first adapter detected, and an explicit --interface with a
-# --channel takes one by index. So on a bench host it opens only by --role,
-# through canbench.bench_roles.open_role; on the truck (no canctl) nothing
-# changes. A bench host is one with canctl at canbench's path (the same test
-# as canbench.bench_roles.bench_available(), and the same CANBENCH_CANCTL
+# --channel takes one by index. So on a bench host it opens a bench adapter
+# only by --role; on the truck (no canctl) nothing changes. A bench host is
+# one with canctl at canbench's path (the same test as
+# canbench.bench_roles.bench_available(), and the same CANBENCH_CANCTL
 # setting), checked here without loading canbench so the truck still needs
-# none for a named interface. A canctl too old to answer `canctl roles` still
-# makes a bench host: --role then refuses with open_role's reason, rather
-# than falling back to the first adapter found.
+# none for a named interface.
+#
+# A --role open also needs the bench guard (reviewer, 2026-11-19): every open
+# checks that this process, or an ancestor, holds the bench lock as the
+# gen-inhibit tester or implementor. That guard is shared/bench's
+# (bench_lock.guard, agreed by both reviewers on 2026-11-19), not yet in the
+# shared tag gen-inhibit pins, so until it is, --role on a bench host is
+# refused before anything loads or opens. Once it is pinned, --role opens
+# through canbench.bench_layer.open_bench with that guard set.
 DEFAULT_CANCTL = "/usr/local/sbin/canctl"
 DEFAULT_CHANNEL = "can0"
 # Not an adapter: the bench's virtual segment on this host (gi_vbus).
 VIRTUAL_INTERFACES = ("udp_multicast",)
 ROLE_FORM = ("    python3.13 -B gen-inhibit/tools/vehicle_runner.py --role <role> "
              "[other options]\n"
-             "`canctl roles` lists the roles; bring a SocketCAN role's link up "
-             "first with `canctl up <role> <bitrate>`.")
+             "`canctl roles` lists the roles.")
+NO_GUARD = ("needs the shared bench guard (shared/bench bench_lock.guard), "
+            "which gen-inhibit's shared pin does not have yet")
 
 
 def canctl_path():
@@ -132,12 +139,12 @@ def canctl_path():
 
 
 def check_bench_open(a):
-    """Before anything opens: True if this run opens a bench adapter by its
-    role (a bench host and --role), False if it opens as it always has. On a
-    bench host, --interface auto, any other --interface but the virtual
-    segment, and --role with an --interface or a --channel are refused,
-    printing the --role form; off a bench host --role is refused. Fills in
-    the --channel default afterwards, so an explicit one is told apart."""
+    """Before anything opens. On a bench host, --interface auto, any other
+    --interface but the virtual segment, and --role with an --interface or a
+    --channel are refused, printing the --role form, and --role itself is
+    refused until the shared bench guard is pinned (NO_GUARD); off a bench
+    host --role is refused. Fills in the --channel default afterwards, so an
+    explicit one is told apart."""
     role = getattr(a, "role", None)
     channel = getattr(a, "channel", None)
     canctl = canctl_path()
@@ -155,6 +162,7 @@ def check_bench_open(a):
                 "vehicle_runner: --role %s opens the adapter canctl gives that "
                 "role; drop --interface and --channel. Use:\n%s"
                 % (role, ROLE_FORM))
+        raise SystemExit("vehicle_runner: --role %s: %s." % (role, NO_GUARD))
     elif a.interface not in VIRTUAL_INTERFACES:
         how = ("--interface auto would open the first adapter detected"
                if a.interface == "auto" else
@@ -162,31 +170,11 @@ def check_bench_open(a):
         raise SystemExit(
             "vehicle_runner: this is a bench host (canctl at %s), where a bench "
             "adapter is opened only by its canctl role (shared/bench SPEC "
-            "section 8); %s. Use:\n%s\n--interface udp_multicast (the virtual "
-            "segment) is still allowed." % (canctl, how, ROLE_FORM))
+            "section 8); %s. The form is:\n%s\nbut --role %s. --interface "
+            "udp_multicast (the virtual segment) is allowed."
+            % (canctl, how, ROLE_FORM, NO_GUARD))
     if channel is None:
         a.channel = DEFAULT_CHANNEL
-    return bench and role is not None
-
-
-def open_by_role(role, bitrate):
-    """A bench adapter opened by its canctl role through the pinned canbench's
-    bench_roles.open_role (it applies linux_fixes itself, and releases a
-    libusb gs_usb role on shutdown). Returns (bus, description). A role
-    canbench cannot resolve or open as asked ends the run with its reason."""
-    import_canbench("--role", " (a bench host opens adapters by role through it)")
-    from canbench import bench_roles
-    kw = dict(receive_own_messages=False)
-    try:
-        res = bench_roles.resolve(role)
-        if res.interface == "pcan":
-            kw["auto_reset"] = True      # canbench/live/pcan-busoff-recovery.md
-        bus = bench_roles.open_role(role, bitrate=bitrate, **kw)
-    except bench_roles.RoleError as e:
-        raise SystemExit("vehicle_runner: --role %s: %s" % (role, e))
-    desc = "role %s (%s, mode %s)" % (role, res.interface, res.mode)
-    print("using: %s" % desc)
-    return bus, desc
 
 
 sys.path.insert(0, str(_HERE))
@@ -507,9 +495,8 @@ class Runner:
 
     def open_and_identify(self):
         a = self.args
-        if check_bench_open(a):     # before anything opens
-            self.bus, self._iface_desc = open_by_role(a.role, a.bitrate)
-        elif a.interface == "udp_multicast":
+        check_bench_open(a)     # before anything opens
+        if a.interface == "udp_multicast":
             # Rehearsal transport: the same virtual segment the bench uses.
             # hop_limit=0 keeps it on this host; gi_vbus verifies that by
             # reading the option back and refuses to start if the TTL is not
@@ -1422,9 +1409,10 @@ def main():
                     help="default %s; not on a bench host, except with "
                          "udp_multicast" % DEFAULT_CHANNEL)
     ap.add_argument("--role", default=None,
-                    help="bench host only: open the bench adapter canctl "
-                         "gives this role (shared/bench SPEC section 8), "
-                         "e.g. kvaser; `canctl roles` lists them")
+                    help="bench host only: the bench adapter canctl gives "
+                         "this role (shared/bench SPEC section 8), e.g. "
+                         "kvaser; refused until gen-inhibit pins the shared "
+                         "bench guard")
     ap.add_argument("--port", type=int, default=43217,
                     help="udp_multicast transport only")
     ap.add_argument("--bitrate", type=int, default=500000)
