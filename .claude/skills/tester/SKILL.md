@@ -46,6 +46,10 @@ the branch and the range. If the reviewer sends back a conflict, merge
 **Harness changes** come with their own test (the harness tests the harness). A
 check that cannot fail is not a check.
 
+**Before writing a piece the other project may also need,** look for it on
+the other project's main branch and in `shared/`; if it is there or would be
+shared, tell your reviewer before you write it (AGENTS.md, "Shared code").
+
 **The bench** is shared with the other component's tester: one lock on the
 whole setup, the log `$REVERSE_IT_DIR/firmware/bench-log.jsonl`, written only
 by `bench_lock.py`. The rules for taking, loaning and handing it back are in
