@@ -31,7 +31,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `diag/interposer_diag_schema.md`, `diag/vtrux-interposer-diag.dbc` | The diag schema and its DBC, from schema 4: published interfaces, so spec (user, 2026-10-19). The reverse-it copies stay until every reader moves, then become pointers | Reviewer |
 | `machine.py` | The state machine: pure, integer arithmetic, time passed in. The reference implementation the board ports | Implementor |
 | `test_machine.py` | Unit tests for the core's decisions | Implementor |
-| `firmware/main/` | The board firmware, the IDF project's `main` component: `machine.py` ported to C++, the two CAN port drivers, `board_ports.h` (each port's pins from the board layer), the variants' mains, its `CMakeLists.txt` (each variant's sources and switches) and `idf_component.yml` (the dependencies) | Implementor |
+| `firmware/main/` | The board firmware, the IDF project's `main` component: `machine.py` ported to C++, the two CAN port drivers, `board_ports.h` (each port's pins from the board layer), the variants' mains, `boot_partitions.c` (every variant: the partition table read in ESP-IDF's core startup stage, spec 9's core dumps), its `CMakeLists.txt` (each variant's sources and switches) and `idf_component.yml` (the dependencies) | Implementor |
 | `firmware/CMakeLists.txt` | The ESP-IDF project and its variant option `INTP_VARIANT` (port step 2a) | Implementor |
 | `firmware/dependencies.lock` | The resolved components | Implementor |
 | `firmware/sdkconfig` | The committed configuration every variant builds from | Implementor |
@@ -40,6 +40,7 @@ records it here (the repo's `AGENTS.md`, "Who owns what"). Paths starting
 | `firmware/README.md` | The firmware's README | Implementor |
 | `vtrux_tools.py` | The launcher: starts the pinned shared/tools: `check-env` (R32), `release`, `build <variant>` (R31), `image`, `digest`. Its `check_idf_env()` wrapper stays only while the harness imports it (reviewer, 2026-11-08) | Implementor |
 | `test_vtrux_tools.py` | Its self-test, with `--can-fail`; not evidence | Implementor |
+| `coredump_config_check.py` | After a dev build of every variant: spec 9's core-dump settings in the committed `sdkconfig` and in each variant's generated configuration, and `boot_partitions.c`'s init function in each link map, with `--can-fail`. The implementor's check of its own build; not evidence (reviewer, 2026-11-18) | Implementor |
 | `host_unit/` | Unit tests of the core's internals, with its `README.md` (moved from `firmware/test/` at port step 2a) | Implementor |
 | `.gitattributes`, `.gitignore` | Line endings and ignores for the folder | Implementor |
 | `SIMULATOR.md` | The simulation bench write-up | Implementor |
