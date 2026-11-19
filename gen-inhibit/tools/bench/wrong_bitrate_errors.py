@@ -14,11 +14,13 @@ Adapters on the WiCAN segment (bench-holder.md): only two, so
                   mapped onto the host clock (since 2026-11-11, A2 (a): before, its
                   host receipt time; witness_clock.device_fit, and a fit outside
                   its bounds makes the run VOID, printed as "witness clock VOID");
-  Kvaser 250 kbit the error source. A frame sent at half the bus rate is garbage to
-                  the 500 kbit nodes and fails at the Kvaser too, which retransmits
-                  until its controller gives up; a BURST is one send, held for
-                  --burst-ms, then the Kvaser's transmit buffer is flushed (and the
-                  bus reset) so the retransmission stops.
+  canmain 250 kbit the error source (CAN1's Innomaker, gs_usb over libusb, by its canctl role;
+                  until 2026-11-18 the Kvaser: condition 5 below). A frame sent at half the
+                  bus rate is garbage to the 500 kbit nodes and fails at the source too,
+                  which retransmits; a BURST is one send, held for --burst-ms, then the
+                  channel is closed so the retransmission stops.
+  Kvaser          DOWN, read back at the start (kvaser_bus.link_down): on SocketCAN an up
+                  link ACKs with no socket open, so it would be one more node on the bus.
   X2              held off the bus in ROM download mode (x2_hold.py; approved) by
                   the operator before this runs -- --x2 records which.
 The status page is polled at --poll-hz throughout (state, TEC, REC, bus_error,
@@ -38,6 +40,15 @@ sample without an abort and the first burst; the B9 judge needs 0 there.
     py -3.14 wrong_bitrate_errors.py calibrate --x2 held --power "..." [--bursts-ms 1,5,20]
     py -3.14 wrong_bitrate_errors.py run --x2 held --power "..." --bursts "2:5,3:5"
 Writes runs/wrong_bitrate_<cmd>_<stamp>.json.
+
+CONDITION 5 (the gen-inhibit reviewer, 2026-11-18). The bursts come from canmain at 250 kbit,
+handed to libusb once for the run (kvaser_bus.innomaker_held: the per-open hand-back would sit
+inside the burst times), each burst a gs_usb open, one send, the hold, and a close. Every burst is
+measured on the PCAN's mapped stamps by burst_measures (the same functions as the committed check
+canmain_burst_check.py): at least one error frame, the last no later than the close + 5 ms, the
+span at most the asked length + 5 ms and, from 5 ms up, at least the asked length - 2 ms. A breach
+VOIDs the run: the record's verdict, and a "burst timing VOID: ..." line the suite's B9 judge
+reads. It is never a FAIL, and no judge is loosened.
 """
 import argparse
 import json
@@ -50,9 +61,12 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import witness_clock as WC  # noqa: E402  the PCAN's own stamps, mapped (A2 (a), 2026-11-11)
+import burst_measures as BM  # noqa: E402  burst length and close on those stamps (condition 5, 2026-11-18)
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 SOURCE_ID = 0x6A7
+SOURCE_ROLE = "canmain"      # the burst source by its canctl role (condition 5, 2026-11-18)
+SOURCE_BITRATE = 250000
 
 
 def parse_bursts(text):
@@ -159,9 +173,12 @@ class Poller(threading.Thread):
             self.stop.wait(max(0.0, self.period - (time.perf_counter() - t0)))
 
 
-def burst(ms):
-    """One burst: open the Kvaser at 250 kbit, send one frame, and CLOSE the channel
-    after ms, which takes its controller off the bus and ends the retransmission.
+def burst(ms, inno):
+    """One burst: open canmain at 250 kbit on the held role (inno, kvaser_bus.innomaker_held),
+    send one frame, and CLOSE the channel after ms, which takes its controller off the bus and
+    ends the retransmission. Returns (start, seconds the open took, close): the close is taken
+    as the shutdown is called (condition 5's measures, 2026-11-18). Until 2026-11-18 the source
+    was the Kvaser, whose history follows.
     The first version kept the channel open and called flush_tx_buffer(), which does
     not stop a frame the controller is already retransmitting: its first 1 ms burst
     became ~30,000 error frames and drove the PCAN bus-off (2026-10-10).
@@ -170,24 +187,34 @@ def burst(ms):
     controller going bus-on at 250 kbit on the 500 kbit segment, and the witness's error
     frames begin there, before the send. Until then t was taken after can.Bus() returned,
     and step 1a's acceptance run counted 36 and 43 witness error frames, all within 5 ms
-    before that t, as "before the first burst". Returns (start, seconds the open took)."""
+    before that t, as "before the first burst"."""
     import can
     # The pinned can-tools' Linux fixes (2026-11-11), applied before t, so loading them is not
     # counted in the open's time.
-    from kvaser_bus import kvaser_bus, fixes  # noqa: E402
+    from kvaser_bus import fixes  # noqa: E402
     fixes()
     t = time.perf_counter()
-    kv = kvaser_bus(channel=0, bitrate=250000)
+    src = inno.open(bitrate=SOURCE_BITRATE)
     opened = time.perf_counter() - t
     try:
-        kv.send(can.Message(arbitration_id=SOURCE_ID, is_extended_id=False, data=bytes(8)),
-                timeout=0.05)
+        src.send(can.Message(arbitration_id=SOURCE_ID, is_extended_id=False, data=bytes(8)),
+                 timeout=0.05)
         time.sleep(ms / 1000.0)
     except can.CanError:
         pass
     finally:
-        kv.shutdown()
-    return t, opened
+        t_close = time.perf_counter()
+        src.shutdown()
+    return t, opened, t_close
+
+
+def burst_measures(starts, errs):
+    """starts: [(start, asked ms, close)]; errs: the mapped error-frame times. One
+    burst_measures.burst_measure per burst, over its burst_window."""
+    st = [s for s, _ms, _c in starts]
+    cl = [c for _s, _ms, c in starts]
+    return [BM.burst_measure(ms, c, BM.in_window(errs, BM.burst_window(st, cl, k)))
+            for k, (_s, ms, c) in enumerate(starts)]
 
 
 def main():
@@ -215,9 +242,15 @@ def main():
         plan = parse_bursts(a.bursts)
     stamp = time.strftime("%Y%m%dT%H%M%S")
     rec = {"when": stamp, "cmd": a.cmd, "x2": a.x2, "power": a.power, "build": LF.build_id(),
-           "plan": plan, "source": "Kvaser at 250 kbit, id 0x%03X" % SOURCE_ID}
-    pc = kv = player = wit = poll = None
+           "plan": plan, "source": "%s (gs_usb over libusb, by its canctl role) at %d bit/s, id 0x%03X"
+                                   % (SOURCE_ROLE, SOURCE_BITRATE, SOURCE_ID)}
+    pc = player = wit = poll = None
     starts, opens = [], []
+    import kvaser_bus as KB  # noqa: E402  the adapters by their canctl roles
+    # the Kvaser down, read back: an up kvaser link ACKs with no socket open (condition 5)
+    rec["kvaser_link_start"] = KB.link_down()
+    held = KB.innomaker_held(SOURCE_ROLE)
+    inno = held.__enter__()
     try:
         stim = LF.build_stimulus()
         from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
@@ -252,8 +285,8 @@ def main():
         for at, ms in plan:
             while time.perf_counter() < base + at:
                 time.sleep(0.001)
-            t_b, opened = burst(ms)
-            starts.append((t_b, ms))
+            t_b, opened, t_c = burst(ms, inno)
+            starts.append((t_b, ms, t_c))
             opens.append(opened)
         time.sleep(a.tail_s)
     finally:
@@ -280,18 +313,29 @@ def main():
             except Exception:
                 pass
             pc.shutdown()
-    st = [s for s, _ in starts]
+        held.__exit__(*sys.exc_info())      # canmain back to socketcan, down, read back
+    st = [s for s, _ms, _c in starts]
     errs, fit, figures_clock = judged_errors(wit)
     rec["witness_clock"] = fit
     rec["witness_clock_figures"] = figures_clock
     if fit["void"]:
         rec["witness_clock_void"] = fit["void"]
         rec["verdict"] = WC.pcan_void_verdict(fit["void"])
+        burst_line = ""
+    else:
+        rec["burst_measures"] = [dict(m, first_s=None if m["first_s"] is None else round(m["first_s"] - s, 6),
+                                      last_s=None if m["last_s"] is None else round(m["last_s"] - s, 6))
+                                 for m, (s, _ms, _c) in zip(burst_measures(starts, errs), starts)]
+        burst_line = BM.breach_line(rec["burst_measures"])
+        if burst_line:
+            rec["burst_timing_void"] = burst_line
+            rec["verdict"] = "VOID: %s" % burst_line
     series = poll.series if poll else []
     t_ref = st[0] if st else 0.0
     # open_s: how long the Kvaser's open took, from the burst's start (2026-10-29)
-    rec["bursts"] = [{"t": round(s - t_ref, 4), "ms": ms, "open_s": round(o, 4), "witness_error_frames": n}
-                     for (s, ms), o, n in zip(starts, opens, per_burst(st, errs))]
+    rec["bursts"] = [{"t": round(s - t_ref, 4), "ms": ms, "open_s": round(o, 4), "close_s": round(c - s, 4),
+                      "witness_error_frames": n}
+                     for (s, ms, c), o, n in zip(starts, opens, per_burst(st, errs))]
     rec["witness_error_frames"] = len(errs)
     rec["pcan_status_end"] = pc_status
     rec["witness_window_max_10s"] = window_max(errs)
@@ -313,6 +357,9 @@ def main():
     if fit["void"]:
         # the suite's B9 judge reads this line first: VOID, never judged (A2 (a))
         print("witness clock VOID: %s" % fit["void"])
+    if burst_line:
+        # the suite's B9 judge reads this line too: VOID, never judged (condition 5)
+        print(burst_line)
     for b in rec["bursts"]:
         print("  burst at %.3f s, %g ms -> witness error frames %d" % (b["t"], b["ms"], b["witness_error_frames"]))
     print("summary", rec["summary"], "witness total", rec["witness_error_frames"],

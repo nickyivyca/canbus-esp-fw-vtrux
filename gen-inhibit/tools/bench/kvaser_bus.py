@@ -23,6 +23,11 @@ canbench imported from anywhere else (AGENTS.md "can-tools").
                        leaves it open, reviewer, 2026-11-11) and hands the role back to
                        socketcan, down. The old gs_usb_bus(**kw) and close_gs_usb(bus), which
                        took gs_usb's index (the first device found), are gone.
+  innomaker_held(role) (2026-11-18, the gen-inhibit reviewer's condition 5) `with innomaker_held(role)
+                       as inno:` hands the role to libusb once, for a run that opens and closes it
+                       more than once (B9's and B10's bursts, NONODE's replayer, canmain_burst_check);
+                       inno.open(bitrate) opens it, each close is open_role's shutdown only, and the
+                       block's exit hands it back to socketcan, down, read back. See its docstring.
   pcan_bus(bitrate, **kw)   (2026-11-18) the PCAN by its canctl role pcanfd, never by channel
                        (PCAN_USBBUS1 is the first PCAN channel found): the guard, then canbench's
                        bench_roles.open_role("pcanfd"), python-can's pcan by the role's device id.
@@ -117,6 +122,9 @@ canmain or canchg (InnomakerError), then, after the guard:
     InnomakerError names both.
   - the close hands it back the same way, read back, recorded (InnomakerError if not); a second
     shutdown() does nothing.
+  - innomaker_held(role) does the same hand-over and hand-back once around a run, with the opens
+    and closes inside it (condition 5, 2026-11-18): `canctl mode <role> socketcan --wait` at every
+    close would sit inside a burst's or NONODE's 5 ms close's timing.
 
 THE PCAN, BY ROLE (the same ruling, 2026-11-18). PCAN-Basic numbers PCAN-USB channels
 PCAN_USBBUS1, 2, ... in the order it finds them, so channel PCAN_USBBUS1 is the first found.
@@ -582,14 +590,18 @@ def _restore_after_failure(role, what):
         raise InnomakerError("%s; and the hand-back failed: %s" % (what, r))
 
 
-def innomaker_bus(role, bitrate=500000, **kw):
-    """The Innomaker with canctl role `role` (canmain or canchg), opened through libusb by
-    canbench's open_role, in NORMAL mode (gs_usb has no listen-only). Its shutdown() closes the
-    bus (open_role's shutdown frees the pyusb handle) and hands the role back to socketcan, down,
-    read back (InnomakerError if not). Asking by index, channel, bus or address is refused."""
-    picked = sorted(set(kw) & {"channel", "index", "bus", "address"})
+INNOMAKER_REFUSED_KW = ("channel", "index", "bus", "address")
+
+
+def _innomaker_refuse(kw):
+    picked = sorted(set(kw) & set(INNOMAKER_REFUSED_KW))
     if picked:
         raise TypeError("an Innomaker is opened by its role, not by %s" % ", ".join(picked))
+
+
+def _innomaker_handover(role):
+    """The guard, the role's name, its link down (innomaker_down), then `canctl mode <role>
+    libusb`; a failed hand-over hands it back (_restore_after_failure) and raises."""
     require_bench()
     if role not in INNOMAKERS:
         raise InnomakerError("%r is not an Innomaker role (%s)" % (role, ", ".join(INNOMAKERS)))
@@ -599,16 +611,31 @@ def innomaker_bus(role, bitrate=500000, **kw):
         what = "canctl mode %s libusb failed (rc %s): %s" % (role, rc, last)
         _restore_after_failure(role, what)
         raise InnomakerError(what)
-    try:
-        b = _open_role(role, modes=("libusb",), bitrate=bitrate, **kw)
-    except BaseException as e:
-        _restore_after_failure(role, "the gs_usb open of %s failed: %s: %s" % (role, type(e).__name__, e))
-        raise
+
+
+def _innomaker_open(role, bitrate, kw, held):
+    """open_role(role, modes=("libusb",)) on a role already handed to libusb, recorded."""
+    b = _open_role(role, modes=("libusb",), bitrate=bitrate, **kw)
     res = getattr(b, "bench_role", None)
     b.vtrux_backend, b.vtrux_role = "gs_usb", role
     record({"event": "open", "backend": "gs_usb", "role": role, "usb": res.role.usb if res else None,
             "bus": res.busnum if res else None, "address": res.devnum if res else None, "bitrate": bitrate,
-            "reader": "canbench.bench_roles.open_role"})
+            "reader": "canbench.bench_roles.open_role", "held": held})
+    return b
+
+
+def innomaker_bus(role, bitrate=500000, **kw):
+    """The Innomaker with canctl role `role` (canmain or canchg), opened through libusb by
+    canbench's open_role, in NORMAL mode (gs_usb has no listen-only). Its shutdown() closes the
+    bus (open_role's shutdown frees the pyusb handle) and hands the role back to socketcan, down,
+    read back (InnomakerError if not). Asking by index, channel, bus or address is refused."""
+    _innomaker_refuse(kw)
+    _innomaker_handover(role)
+    try:
+        b = _innomaker_open(role, bitrate, kw, False)
+    except BaseException as e:
+        _restore_after_failure(role, "the gs_usb open of %s failed: %s: %s" % (role, type(e).__name__, e))
+        raise
     shut = b.shutdown
     b.shutdown = lambda: _innomaker_close(b, shut, role)
     return b
@@ -622,6 +649,69 @@ def _innomaker_close(b, shut, role):
         shut()              # open_role's shutdown: the bus, then canbench's release_gs_usb
     finally:
         innomaker_restore(role)
+
+
+class innomaker_held:
+    """`with innomaker_held(role) as inno:` hands the role to libusb ONCE, for a run that opens
+    and closes the Innomaker more than once (condition 5, 2026-11-18: B9's and B10's bursts,
+    NONODE's replayer). innomaker_bus() hands the role back at every close, and `canctl mode
+    <role> socketcan --wait` takes far longer than a burst or NONODE's 5 ms close, so it would
+    sit inside the times those tools take and judge.
+      enter         the guard, the role's name, its link down, `canctl mode <role> libusb`, as
+                    innomaker_bus (a failed hand-over hands it back and raises)
+      inno.open(bitrate, **kw)   open_role(role, modes=("libusb",)) on the held role, recorded
+                    ("held": true); its shutdown() is open_role's only (gs_usb stop, then the
+                    pyusb handle freed), recorded, and a second one does nothing. index=,
+                    channel=, bus= and address= are refused (TypeError); an open outside the
+                    with-block raises InnomakerError.
+      exit          every bus still open is shut, then the role is handed back to socketcan,
+                    down, read back (innomaker_restore). A failed hand-back raises
+                    InnomakerError, also when the block itself raised (chained to it)."""
+
+    def __init__(self, role):
+        self.role, self.buses, self.held = role, [], False
+
+    def __enter__(self):
+        _innomaker_handover(self.role)
+        self.held = True
+        return self
+
+    def open(self, bitrate=500000, **kw):
+        _innomaker_refuse(kw)
+        if not self.held:
+            raise InnomakerError("%s is not held: open it inside `with innomaker_held(%r)`" % (self.role, self.role))
+        b = _innomaker_open(self.role, bitrate, kw, True)
+        shut = b.shutdown
+        b.shutdown = lambda: self._close(b, shut)
+        self.buses.append(b)
+        return b
+
+    def _close(self, b, shut):
+        if getattr(b, "_vtrux_closed", False):
+            return None
+        b._vtrux_closed = True
+        ev = {"event": "close", "backend": "gs_usb", "role": self.role, "held": True}
+        try:
+            shut()          # open_role's shutdown: gs_usb stop, then canbench's release_gs_usb
+        except BaseException as e:
+            ev["error"] = "%s: %s" % (type(e).__name__, e)
+            record(ev)
+            raise
+        record(ev)
+        return None
+
+    def __exit__(self, exc_type, exc, tb):
+        failed = []
+        for b in self.buses:
+            try:
+                b.shutdown()
+            except Exception as e:      # noqa: BLE001  named below; the hand-back still runs
+                failed.append("%s: %s" % (type(e).__name__, e))
+        self.held = False
+        innomaker_restore(self.role)
+        if failed:
+            raise InnomakerError("%s handed back, but a close failed: %s" % (self.role, "; ".join(failed)))
+        return False
 
 
 # ------------------------------------------------ the PCAN, by canctl role (2026-11-18)

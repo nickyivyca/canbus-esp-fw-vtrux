@@ -218,6 +218,17 @@ EDITS = [
     ("B10", "bench", r"B10_trip6_rearm_check\.txt",
      [(r"^(A4 expired .*?)  as specified", r"\g<1>  VOID: the gap from the PCAN's stamps"),
       (r"^(A3 recent .*?)  as specified", r"\g<1>  NOT as specified")], None, "FAIL"),
+    # condition 5 (2026-11-18): a burst outside its bounds -> the tool's burst timing VOID line -> VOID,
+    # never FAIL, even with an arm NOT as specified
+    ("B9", "bench", r"B9_wrong_bitrate_calibrate\.txt", r"^(summary )",
+     r"burst timing VOID: burst 5 ms: the last error frame 30.000 ms after the close, over 5 ms\n\g<1>", "VOID"),
+    ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(build )",
+     r"burst timing VOID: burst 5 ms: span 1.000 ms, under 3 ms\n\g<1>", "VOID"),
+    ("B10", "bench", r"B10_trip6_rearm_check\.txt",
+     [(r"^(build )", r"burst timing VOID: burst 5 ms: no witness error frame\n\g<1>"),
+      (r"^(A3 recent .*?)  as specified", r"\g<1>  NOT as specified")], None, "VOID"),
+    ("B9", "bench", r"B9_wrong_bitrate_calibrate\.txt", r"^(summary )",
+     r"burst timing VOID nothing\n\g<1>", "INCONCLUSIVE"),     # a look-alike line: the baseline's own verdict stands
     ("B11", "bench", r"B11_quiesce_analysis\.txt", r'(_arm4\.json".*?"agree": )true', r"\g<1>false", "FAIL"),
     ("B11", "bench", r"B11_quiesce_analysis\.txt", r'(_arm3\.json".*?"provenance": )"as specified"', r'\g<1>"double"', "FAIL"),
     ("B11raw", "bench", r"B11raw_rawpost_judge\.txt", r'("local_port": 61947, .*?"verdict": )"PASS"', r'\g<1>"strict FAIL"', "FAIL"),

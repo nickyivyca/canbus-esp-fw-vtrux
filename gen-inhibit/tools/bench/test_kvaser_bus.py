@@ -95,8 +95,9 @@ ALLOWED = {
                                    "fixes on import; an explicit --interface kvaser does not (told the "
                                    "reviewer, 2026-11-12)"),
     "tools/test_gi_vbus.py": (1, "gi_vbus's udp_multicast bus, virtual only"),
-    "tools/bench/test_wrong_bitrate_sequence.py": (1, "its fake kvaser_bus opens the test's fake can.Bus"),
 }
+# tools/bench/test_wrong_bitrate_sequence.py was here (1) until 2026-11-18: its fake kvaser_bus opened
+# the fake Kvaser as Bus(interface="kvaser"); the burst source is now canmain on the fake held role.
 # A file that replaces a module's `can` attribute (a test faking a tool's python-can) must also
 # fake kvaser_bus: it imports the real can, so the tool's Kvaser would open the real adapter.
 # That happened once, in test_e4_rawpost.py, during this topic's dev run (2026-11-12). The
@@ -697,6 +698,160 @@ def innomaker():
         check("innomaker_down: bench_roles' link up is up, link down is down",
               got == ["raised: netdev canmain is up, not down", "canchg exists and its link is down"], got)
     case("innomaker: link read back", flags)
+
+    def held():
+        """innomaker_held (condition 5, 2026-11-18): one hand-over for a run of opens and closes."""
+        runs = gi_paths.scratch("kvaser-bus-held-runs")
+        gi_paths.remove_tree(runs)
+        os.makedirs(runs)
+        try:
+            f = InnoFakes(runs_dir=runs)
+            with f as kb:
+                with kb.innomaker_held("canmain") as inno:
+                    check("held: entering checks the lock, reads canmain down, then canctl mode canmain libusb; "
+                          "nothing opened", f.kinds() == ["lock", "use", "roles", "canctl"]
+                          and f.canctls() == [LIBUSB] and "Bus" not in f.kinds(), f.log)
+                    del f.log[:]
+                    b1 = inno.open(bitrate=250000)
+                    check("held: open is bench_roles.open_role on the held role, by its bus and address, at the "
+                          "asked bitrate, with no canctl", f.canctls() == [] and f.log[-1][1] == {
+                              "interface": "gs_usb", "channel": "gs_usb:canmain", "bus": 3, "address": 7,
+                              "bitrate": 250000}, f.log)
+                    check("held: the bus says its backend and role",
+                          (getattr(b1, "vtrux_backend", None), getattr(b1, "vtrux_role", None)) == ("gs_usb", "canmain"))
+                    del f.log[:]
+                    b1.shutdown()
+                    rel = [e for e in f.log if e[0] == "release"]
+                    check("held: a close is open_role's shutdown only (the bus, the handle freed once), no "
+                          "hand-back", [k for k in f.kinds() if k != "use"] == ["shutdown", "release"]
+                          and len(rel) == 1 and f.canctls() == [], f.log)
+                    check("held: canmain stays on libusb after a close", f.state["canmain"]["mode"] == "libusb")
+                    del f.log[:]
+                    b1.shutdown()
+                    check("held: a second shutdown does nothing", f.log == [], f.log)
+                    b2 = inno.open(bitrate=500000)
+                    check("held: it opens again, at another bitrate, still no canctl",
+                          f.canctls() == [] and f.log[-1][1].get("bitrate") == 500000, f.log)
+                    del f.log[:]
+                # exit with b2 still open
+                rel = [e for e in f.log if e[0] == "release"]
+                check("held: exit shuts the bus left open (once), THEN hands canmain back (socketcan --wait), "
+                      "read back", [k for k in f.kinds() if k != "use"] == ["shutdown", "release", "canctl", "roles"]
+                      and len(rel) == 1 and rel[0][1] is b2 and f.canctls() == [RESTORE] and f.down("canmain"),
+                      f.log)
+                raised = None
+                try:
+                    inno.open()
+                except kb.InnomakerError as e:
+                    raised = e
+                check("held: an open after the block -> InnomakerError, nothing opened",
+                      raised is not None and "not held" in str(raised), raised)
+            with open(os.path.join(runs, "kvaser_opens.jsonl"), encoding="ascii") as fh:
+                evs = [json.loads(x) for x in fh]
+            check("held: two opens and two closes recorded as held, then the hand-back with its read-back",
+                  [(e["event"], e.get("held"), e.get("bitrate")) for e in evs]
+                  == [("open", True, 250000), ("close", True, None), ("open", True, 500000), ("close", True, None),
+                      ("close", None, None)]
+                  and evs[-1]["canctl"] == "mode canmain socketcan --wait"
+                  and evs[-1]["readback"] == "canmain exists and its link is down", evs)
+        finally:
+            gi_paths.remove_tree(runs)
+
+        for kw in ({"index": 0}, {"channel": "can0"}, {"bus": 3}, {"address": 7}):
+            f = InnoFakes()
+            raised = None
+            with f as kb:
+                with kb.innomaker_held("canmain") as inno:
+                    del f.log[:]
+                    try:
+                        inno.open(**kw)
+                    except TypeError as e:
+                        raised = e
+            check("held: open asked by %s -> TypeError, nothing opened, canmain still handed back"
+                  % ", ".join(kw), raised is not None and "Bus" not in [e[0] for e in f.log]
+                  and f.canctls() == [RESTORE] and f.down("canmain"), (raised, f.log))
+
+        for label, kw, exc in (("the lock free", {"holder": None}, "BenchNotHeld"),
+                               ("netdev canmain up", {"start_up": ("canmain",)}, "InnomakerError")):
+            f = InnoFakes(**kw)
+            raised = None
+            with f as kb:
+                try:
+                    with kb.innomaker_held("canmain"):
+                        raised = "entered"
+                except (kb.BenchNotHeld, kb.InnomakerError) as e:
+                    raised = e
+            check("held: %s -> %s at enter, no canctl, the block not run" % (label, exc),
+                  type(raised).__name__ == exc and f.canctls() == [], (raised, f.log))
+        f = InnoFakes()
+        raised = None
+        with f as kb:
+            try:
+                with kb.innomaker_held("kvaser"):
+                    raised = "entered"
+            except kb.InnomakerError as e:
+                raised = e
+        check("held: role kvaser -> InnomakerError at enter, no canctl",
+              raised is not None and raised != "entered" and "not an Innomaker role" in str(raised)
+              and f.canctls() == [], (raised, f.log))
+        f = InnoFakes(libusb_rc=1)
+        raised = None
+        with f as kb:
+            try:
+                with kb.innomaker_held("canmain"):
+                    raised = "entered"
+            except kb.InnomakerError as e:
+                raised = e
+        check("held: canctl mode libusb fails -> InnomakerError, handed back, down, the block not run",
+              raised is not None and raised != "entered" and "libusb failed (rc 1)" in str(raised)
+              and f.canctls() == [LIBUSB, RESTORE] and f.down("canmain"), (raised, f.log))
+
+        f = InnoFakes()
+        raised = None
+        with f as kb:
+            try:
+                with kb.innomaker_held("canmain") as inno:
+                    inno.open()
+                    raise ValueError("planted block failure")
+            except ValueError as e:
+                raised = e
+        check("held: the block raises -> its error raised, the bus shut, canmain handed back, down",
+              isinstance(raised, ValueError) and "release" in f.kinds() and f.canctls() == [LIBUSB, RESTORE]
+              and f.down("canmain"), (raised, f.log))
+        f = InnoFakes(restore_up=True)
+        raised = None
+        with f as kb:
+            try:
+                with kb.innomaker_held("canmain") as inno:
+                    inno.open().shutdown()
+            except kb.InnomakerError as e:
+                raised = e
+        check("held: the hand-back at exit reads canmain up -> InnomakerError", raised is not None
+              and "canmain is up" in str(raised), (raised, f.log))
+        f = InnoFakes(shutdown_raises=True)
+        raised = None
+        with f as kb:
+            try:
+                with kb.innomaker_held("canmain") as inno:
+                    inno.open()
+            except kb.InnomakerError as e:
+                raised = e
+            down = f.down("canmain")
+        check("held: a close that raises at exit -> canmain still handed back, then InnomakerError naming it",
+              raised is not None and "close failed" in str(raised) and f.canctls() == [LIBUSB, RESTORE] and down,
+              (raised, f.log))
+        f = InnoFakes(bus_raises=OSError("planted open failure"))
+        raised = None
+        with f as kb:
+            try:
+                with kb.innomaker_held("canmain") as inno:
+                    inno.open()
+            except OSError as e:
+                raised = e
+            down = f.down("canmain")
+        check("held: an open that raises -> its error raised, canmain handed back once at exit, down",
+              isinstance(raised, OSError) and f.canctls() == [LIBUSB, RESTORE] and down, (raised, f.log))
+    case("innomaker: held", held)
 
 
 def pcan():
@@ -1656,9 +1811,9 @@ MUTANTS = [
      '    _pin_tool().use()\n    mod = importlib.import_module("canbench.live.pcan_bus")\n',
      '    mod = importlib.import_module("canbench.live.pcan_bus")\n'),
     # the Innomakers by canctl role (the user's ruling and the reviewer's conditions, 2026-11-18)
-    ("innomaker: index asked passes", '{"channel", "index", "bus", "address"}', '{"channel", "bus", "address"}'),
-    ("innomaker: channel asked passes", '{"channel", "index", "bus", "address"}', '{"index", "bus", "address"}'),
-    ("innomaker: bus and address asked pass", '{"channel", "index", "bus", "address"}', '{"channel", "index"}'),
+    ("innomaker: index asked passes", '("channel", "index", "bus", "address")', '("channel", "bus", "address")'),
+    ("innomaker: channel asked passes", '("channel", "index", "bus", "address")', '("index", "bus", "address")'),
+    ("innomaker: bus and address asked pass", '("channel", "index", "bus", "address")', '("channel", "index")'),
     ("innomaker: any role passes", "    if role not in INNOMAKERS:\n", "    if False:\n"),
     ("innomaker: not handed to libusb", '    rc, last = _canctl("mode", role, "libusb")\n', '    rc, last = 0, ""\n'),
     ("innomaker: a failed libusb mode ignored", "    if rc != 0:\n        what = ", "    if False:\n        what = "),
@@ -1708,10 +1863,29 @@ MUTANTS = [
     ("detect: a refused Kvaser role found on Linux",
      "        except (RoleError, KvaserLinkError):\n            return None\n",
      "        except (RoleError, KvaserLinkError):\n            pass\n"),
-    ("innomaker: opens by index", '        b = _open_role(role, modes=("libusb",), bitrate=bitrate, **kw)\n',
-     '        import can\n        b = can.Bus(interface="gs_usb", channel=role, index=0, bitrate=bitrate, **kw)\n'),
+    ("innomaker: opens by index", '    b = _open_role(role, modes=("libusb",), bitrate=bitrate, **kw)\n',
+     '    import can\n    b = can.Bus(interface="gs_usb", channel=role, index=0, bitrate=bitrate, **kw)\n'),
     ("innomaker: opens without the guard",
-     '", ".join(picked))\n    require_bench()\n    if role not in INNOMAKERS:', '", ".join(picked))\n    if role not in INNOMAKERS:'),
+     '    require_bench()\n    if role not in INNOMAKERS:', '    if role not in INNOMAKERS:'),
+    # innomaker_held (condition 5, 2026-11-18)
+    ("held: open does not refuse index and the rest", "    def open(self, bitrate=500000, **kw):\n        _innomaker_refuse(kw)\n",
+     "    def open(self, bitrate=500000, **kw):\n"),
+    ("held: enter hands nothing over", "    def __enter__(self):\n        _innomaker_handover(self.role)\n",
+     "    def __enter__(self):\n"),
+    ("held: an open outside the block passes", "        if not self.held:\n            raise InnomakerError(", "        if False:\n            raise InnomakerError("),
+    ("held: exit does not mark it released", "        self.held = False\n        innomaker_restore(self.role)\n",
+     "        innomaker_restore(self.role)\n"),
+    ("held: the close hands canmain back", "            shut()          # open_role's shutdown: gs_usb stop",
+     "            shut(); innomaker_restore(self.role)  # open_role's shutdown: gs_usb stop"),
+    ("held: the close not hooked", "        b.shutdown = lambda: self._close(b, shut)\n", ""),
+    ("held: a second shutdown closes again", "        if getattr(b, \"_vtrux_closed\", False):\n            return None\n        b._vtrux_closed = True\n        ev = ",
+     "        ev = "),
+    ("held: the close not recorded", "            raise\n        record(ev)\n        return None\n", "            raise\n        return None\n"),
+    ("held: exit leaves a bus open", "        for b in self.buses:\n            try:\n                b.shutdown()\n", "        for b in []:\n            try:\n                b.shutdown()\n"),
+    ("held: exit hands nothing back", "        self.held = False\n        innomaker_restore(self.role)\n", "        self.held = False\n"),
+    ("held: exit hands back before the closes", "        failed = []\n        for b in self.buses:", "        failed = []\n        innomaker_restore(self.role)\n        for b in self.buses:"),
+    ("held: a failed close at exit swallowed", "        if failed:\n            raise InnomakerError(", "        if False:\n            raise InnomakerError("),
+    ("held: open records held false", '    record({"event": "open", "backend": "gs_usb", ', '    held = False\n    record({"event": "open", "backend": "gs_usb", '),
     ("innomaker: an up netdev passes", '    if res.role.link != "down":\n', "    if False:\n"),
     ("innomaker: another mode passes", '    if res.mode != "socketcan" or res.netdev != role:\n', "    if False:\n"),
     ("innomaker: canbench's refusal not an InnomakerError",

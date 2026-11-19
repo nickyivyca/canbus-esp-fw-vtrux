@@ -15,8 +15,18 @@ which found the first re-arm after a latch tripping on an expired burst.
 Adapters (bench-holder.md): the PCAN loops the interlock slice (key on throughout,
 so no key-off -> key-on edge can clear the history) and witnesses: it counts error
 frames and the device's 0x051 (the PCAN does not receive its own frames, and the
-slice holds no 0x051). The Kvaser at 250 kbit is the error source
-(wrong_bitrate_errors.burst). The X2 is held off the bus by the operator (--x2).
+slice holds no 0x051). canmain (CAN1's Innomaker, gs_usb over libusb, by its canctl role) at
+250 kbit is the error source (wrong_bitrate_errors.burst); until 2026-11-18 the Kvaser was. The
+X2 is held off the bus by the operator (--x2).
+
+CONDITION 5 (the gen-inhibit reviewer, 2026-11-18). The Kvaser is brought down and read back at
+the start (an up kvaser link ACKs with no socket open). canmain is handed to libusb once for the
+run (kvaser_bus.innomaker_held) and each flood's burst opens and closes it in-process. Each burst
+is measured on the PCAN's mapped stamps by burst_measures (as wrong_bitrate_errors.py and the
+committed check canmain_burst_check.py): its window from its start to its close + TAIL_S, at
+least one error frame, the last no later than the close + 5 ms, the span at most the asked length
++ 5 ms and, from 5 ms up, at least the asked length - 2 ms. A breach VOIDs the run: a "burst
+timing VOID: ..." line the suite's B10 judge reads. Never a FAIL; no judge is loosened.
 
 SEQUENCE, one process:
   A0 flood:   arm (mode 3), wait live, one burst -> trip 6 latches; mode 0.
@@ -44,6 +54,7 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import witness_clock as WC  # noqa: E402  the PCAN's own stamps, mapped (A2 (a), 2026-11-11)
+import burst_measures as BM  # noqa: E402  burst length and close on those stamps (condition 5, 2026-11-18)
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 TRIP6 = "error-frame rate exceeded"
@@ -184,6 +195,16 @@ def judge_arms(arms, judged, wit, t0):
     det = [(WC.mapped(fit, d[3]), d) for d in wit.error_detail]
     wire = [t for t, d in det if d[1] != 0]
     d051 = [WC.mapped(fit, s) for s in wit.dev051_ts]
+    # condition 5: every flood's burst measured on the mapped stamps
+    floods = [arm for arm in arms if arm.get("_burst")]
+    st = [arm["_burst"][0] for arm in floods]
+    cl = [arm["_burst"][2] for arm in floods]
+    for k, arm in enumerate(floods):
+        s, ms, c = arm["_burst"]
+        m = BM.burst_measure(ms, c, BM.in_window(wire, BM.burst_window(st, cl, k)))
+        for key in ("first_s", "last_s"):
+            m[key] = None if m[key] is None else round(m[key] - s, 6)
+        arm["burst_measure"] = m
     for arm in arms:
         ta, te = arm["_ta"], arm["_t_end"]
         arm["error_times_since_arm"] = [round(t - ta, 4) for t, _d in det if ta <= t <= te][:100]
@@ -319,10 +340,12 @@ def main():
     def flood(name):
         arm = poll_arm(name, 4.0)
         n_err = len(wit.errors)
-        tb, opened = W.burst(a.burst_ms)      # from the Kvaser's open since 2026-10-29 (recorded only)
+        tb, opened, tc = W.burst(a.burst_ms, inno)      # from the source's open since 2026-10-29 (recorded only)
         time.sleep(1.0)
+        arm["_burst"] = (tb, a.burst_ms, tc)
         arm["burst_at"] = round(tb - t0, 3)
         arm["burst_open_s"] = round(opened, 4)
+        arm["burst_close_s"] = round(tc - tb, 4)
         burst = wit.error_detail[n_err:]
         wire = wire_errors(burst)
         arm["burst_reports"] = len(burst)
@@ -345,9 +368,14 @@ def main():
     # The sequence paces on receipt time (wait_until the last error's receipt + gap); every
     # judged number comes from the PCAN's stamps after the run (judge_arms, A2 (a)).
     judged = []
+    import kvaser_bus as KB  # noqa: E402  the adapters by their canctl roles
+    # the Kvaser down, read back: an up kvaser link ACKs with no socket open (condition 5)
+    rec["kvaser_link_start"] = KB.link_down()
+    rec["source"] = "%s (gs_usb over libusb, by its canctl role) at %d bit/s" % (W.SOURCE_ROLE, W.SOURCE_BITRATE)
+    held = KB.innomaker_held(W.SOURCE_ROLE)
+    inno = held.__enter__()
     try:
-        from kvaser_bus import pcan_bus  # noqa: E402  the PCAN by its canctl role (2026-11-18)
-        pc = pcan_bus(bitrate=500000)
+        pc = KB.pcan_bus(bitrate=500000)      # the PCAN by its canctl role (2026-11-18)
         wit = Witness(pc)
         wit.start()
         post(0)
@@ -383,6 +411,7 @@ def main():
             except Exception:
                 pass
             pc.shutdown()
+        held.__exit__(*sys.exc_info())      # canmain back to socketcan, down, read back
     time.sleep(1.0)
     rec["after"] = read(LF, t0)
     rec["witness_error_frames"] = len(wit.errors) if wit else None
@@ -390,9 +419,13 @@ def main():
     rec["witness_clock"] = fit
     if fit["void"]:
         rec["witness_clock_void"] = fit["void"]
+    burst_line = BM.breach_line([arm["burst_measure"] for arm in rec["arms"] if "burst_measure" in arm])
+    if burst_line:
+        rec["burst_timing_void"] = burst_line
     for arm in rec["arms"]:
         arm.pop("_ta", None)
         arm.pop("_t_end", None)
+        arm.pop("_burst", None)
     path = os.path.join(RUNS, "trip6_rearm_check_%s.json" % stamp)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(rec, fh, indent=1)
@@ -400,6 +433,9 @@ def main():
     if fit["void"]:
         # the suite's B10 judge reads this line first: VOID, never judged (A2 (a))
         print("witness clock VOID: %s" % fit["void"])
+    if burst_line:
+        # the suite's B10 judge reads this line too: VOID, never judged (condition 5)
+        print(burst_line)
     for arm in rec["arms"]:
         aborts = sorted({r.get("abort") for r in arm["reads"] if r.get("abort")})
         lives = [r["t"] for r in arm["reads"] if r.get("live")]

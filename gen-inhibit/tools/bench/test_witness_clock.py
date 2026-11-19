@@ -138,6 +138,17 @@ MUTANTS = [
      '        judged.append((poll_arm("A3 recent", a.arm_s), "recent", last))\n',
      '        judged.append((poll_arm("A3 recent", a.arm_s), "recent", last))\n'
      '        rec["arms"][-1]["verdict"] = judge_recent(rec["arms"][-1]["reads"], 1.0, 0)\n'),
+    # condition 5 (2026-11-18): each flood's burst measured on the mapped stamps
+    ("trip6_rearm_check.py", "B10 measures no burst",
+     '        arm["burst_measure"] = m\n', '        pass\n'),
+    ("trip6_rearm_check.py", "B10 measures bursts on receipt time",
+     '    floods = [arm for arm in arms if arm.get("_burst")]\n',
+     '    floods = [arm for arm in arms if arm.get("_burst")]\n    wire = [d[0] for d in wit.error_detail if d[1] != 0]\n'),
+    ("trip6_rearm_check.py", "B10's burst window runs to the next flood",
+     '        m = BM.burst_measure(ms, c, BM.in_window(wire, BM.burst_window(st, cl, k)))\n',
+     '        m = BM.burst_measure(ms, c, BM.in_window(wire, (s, st[k + 1] if k + 1 < len(st) else 1e9)))\n'),
+    ("trip6_rearm_check.py", "B10 prints no burst timing VOID line", '        print(burst_line)\n', '        pass\n'),
+    ("trip6_rearm_check.py", "B10 records no burst timing VOID", '        rec["burst_timing_void"] = burst_line\n', '        pass\n'),
 ]
 
 
@@ -380,10 +391,12 @@ def t6_witness(epoch=False):
     return w
 
 
-def t6_run(T6, w, a4_receipt_late=0.3, a1_receipt_late=0.02):
+def t6_run(T6, w, a4_receipt_late=0.3, a1_receipt_late=0.02, close_shift=0.0):
     """judge_arms on three judged arms (t0 = 0): A1 expired at 115 s after the 100 s flood, whose
     last error frame was received a1_receipt_late after its stamp; A3 recent at 132 s after the
-    130 s flood; A4 expired at 145 s, its last error received a4_receipt_late after its stamp."""
+    130 s flood; A4 expired at 145 s, its last error received a4_receipt_late after its stamp.
+    The two flood arms carry their 5 ms bursts (condition 5): started 1 ms before their first
+    error frame, closed at its 5 ms, shifted by close_shift. Returns (fit, a1, a3, a4, f0, f2)."""
     T = T6.TRIP6
     last0 = (100.004 + LAT + a1_receipt_late, 2, "00", stamp(100.004))
     last2 = (130.004 + LAT, 2, "00", stamp(130.004))
@@ -398,9 +411,13 @@ def t6_run(T6, w, a4_receipt_late=0.3, a1_receipt_late=0.02):
              [{"t": 132.2, "live": False, "abort": T}])
     a4 = arm("A4 expired", 145.0, {"t": 144.9, "err_n": 0, "err_age_ms": 14896, "err_burst": False},
              [{"t": 146.0, "live": True, "abort": ""}])
-    fit = T6.judge_arms([a1, a3, a4], [(a1, "expired", last0), (a3, "recent", last2), (a4, "expired", last2_late)],
-                        w, 0.0)
-    return fit, a1, a3, a4
+    f0 = arm("A0 flood", 96.0, None, [])
+    f2 = arm("A2 flood", 126.0, None, [])
+    f0["_burst"] = (100.0 - 0.001, 5.0, 100.0 + 0.005 + close_shift)
+    f2["_burst"] = (130.0 - 0.001, 5.0, 130.0 + 0.005 + close_shift)
+    fit = T6.judge_arms([f0, a1, f2, a3, a4], [(a1, "expired", last0), (a3, "recent", last2),
+                                              (a4, "expired", last2_late)], w, 0.0)
+    return fit, a1, a3, a4, f0, f2
 
 
 def main_body(path, name="main"):
@@ -757,6 +774,22 @@ def checks(work):
         lambda: (lambda r: (r[3]["verdict"] == "as specified", r[3]["verdict"]))(
             t6_run(T6, t6_witness(), a4_receipt_late=0.03)))
 
+    # condition 5 (2026-11-18): each flood's burst measured on the mapped stamps
+    add("B10 judge_arms: each flood's 5 ms burst measured within the bounds (5 error frames, span 4 ms)",
+        lambda: (all((f.get("burst_measure") or {}).get("breaches") == [] and f["burst_measure"]["n"] == 5
+                     and abs(f["burst_measure"]["span_ms"] - 4.0) < 0.01 for f in B.t6[4:]),
+                 [f.get("burst_measure") for f in B.t6[4:]]))
+    add("B10 judge_arms: a burst closed 10 ms before its first error frame -> the breach recorded on both floods",
+        lambda: (lambda r: (all(any("after the close" in b for b in (f.get("burst_measure") or {}).get("breaches", []))
+                                for f in r[4:]), [f.get("burst_measure") for f in r[4:]]))(
+            t6_run(T6, t6_witness(), close_shift=-0.016)))
+    add("B10 judge_arms: the 115 s error frame is not the 100 s burst's (its window ends at the close + 0.5 s)",
+        lambda: ((B.t6[4].get("burst_measure") or {}).get("n") == 5, B.t6[4].get("burst_measure")))
+    add("scan: B10 main prints the burst timing VOID line and records it",
+        lambda: (lambda b: (any("print(burst_line)" in x for x in b) and any('rec["burst_timing_void"] = burst_line' in x
+                                                                               for x in b), len(b)))(
+            main_body(T6.__file__)))
+
     def t6_cooked():
         B.t6c = t6_run(T6, t6_witness(epoch=True))
         return True
@@ -764,8 +797,10 @@ def checks(work):
     add("B10 judge_arms on COOKED stamps: the fit VOID, every arm VOID, prediction still judged",
         lambda: (B.t6c[0]["void"] and all(x["verdict"].startswith("VOID: PCAN clock")
                                           and x["history_verdict"] == x["verdict"]
-                                          and x["prediction_verdict"] == "as specified" for x in B.t6c[1:]),
-                 [(x["verdict"][:30], x["prediction_verdict"]) for x in B.t6c[1:]]))
+                                          and x["prediction_verdict"] == "as specified" for x in B.t6c[1:4]),
+                 [(x["verdict"][:30], x["prediction_verdict"]) for x in B.t6c[1:4]]))
+    add("B10 judge_arms on COOKED stamps: no burst measured", lambda: (
+        all("burst_measure" not in f for f in B.t6c[4:]), [f.get("burst_measure") for f in B.t6c[4:]]))
     # B10 main: nothing judged live; the fit and its VOID line printed
     add("scan: B10 judges arms only in judge_arms, after the run",
         lambda: (lambda o: (o == [], o))(judge_calls_outside(

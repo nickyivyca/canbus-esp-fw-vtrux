@@ -373,6 +373,10 @@ B9_PRE_S = 0.5     # the newest clean, live page sample may be this far before t
 # B9 and B10 judge the PCAN's own stamps, mapped onto the host clock; a fit outside the
 # harness bounds prints this line, and the check is VOID, never judged (A2 (a), 2026-11-11).
 CLOCK_VOID_RE = re.compile(r"^witness clock VOID: (.*)$", re.M)
+# Condition 5 (the gen-inhibit reviewer, 2026-11-18): B9's and B10's bursts come from canmain, and
+# each is measured on the PCAN's mapped stamps (bench/burst_measures.py); a burst outside the bounds
+# prints this line, and the check is VOID, never FAIL, whatever its arms say.
+BURST_VOID_RE = re.compile(r"^burst timing VOID: (.*)$", re.M)
 
 
 @judge("B9", "B")
@@ -392,6 +396,9 @@ def b9(F):
     cv = CLOCK_VOID_RE.search(t)
     if cv:
         return [result("B9", "VOID", detail="the PCAN's clock: %s" % cv.group(1))]
+    bv = BURST_VOID_RE.search(t)
+    if bv:
+        return [result("B9", "VOID", detail="the bursts' timing: %s" % bv.group(1)[:300])]
     bursts = [int(n) for n in re.findall(r"^  burst at [\d.]+ s, \d+ ms -> witness error frames (\d+)$", t, re.M)]
     m = re.search(r"^summary (\{.*\}) witness total (\d+)", t, re.M)
     if not m or not bursts:
@@ -443,6 +450,9 @@ def b10(F):
     cv = CLOCK_VOID_RE.search(t)
     if cv:
         return [result("B10", "VOID", detail="the PCAN's clock: %s" % cv.group(1))]
+    bv = BURST_VOID_RE.search(t)
+    if bv:
+        return [result("B10", "VOID", detail="the bursts' timing: %s" % bv.group(1)[:300])]
     # The flood arms are the stimulus and carry no verdict; every other arm ends with its own.
     arms = re.findall(r"^(A\d+) (\w+) +armed .*? aborts \[[^]]*\] *(.*?) *$", t, re.M)
     judged = [(a, k, v) for a, k, v in arms if k != "flood"]

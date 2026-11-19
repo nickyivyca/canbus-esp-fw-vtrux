@@ -115,6 +115,13 @@ MUTANTS = [
     ("B9: no page samples is not an error", '    if not series:\n        return [result("B9", "ERROR"',
      '    if False:\n        return [result("B9", "ERROR"'),
     ("B10: any judged arm counts", 'spec = sum(1 for *_, v in judged if v == "as specified")', 'spec = len(judged)'),
+    # condition 5 (2026-11-18): the bursts' timing line
+    ("B9: the burst timing VOID line is not read",
+     '        return [result("B9", "VOID", detail="the bursts\' timing: %s" % bv.group(1)[:300])]\n', '        pass\n'),
+    ("B10: the burst timing VOID line is not read",
+     '        return [result("B10", "VOID", detail="the bursts\' timing: %s" % bv.group(1)[:300])]\n', '        pass\n'),
+    ("B9/B10: the burst timing line matched anywhere", 'BURST_VOID_RE = re.compile(r"^burst timing VOID: (.*)$", re.M)',
+     'BURST_VOID_RE = re.compile(r"burst timing VOID(.*)$", re.M)'),
     ("B11raw: strict FAIL passes", 'passing = [v for v in verdicts if v in ("PASS", "strict FAIL, PASS on ACK")]',
      'passing = [v for v in verdicts if v in ("PASS", "strict FAIL, PASS on ACK", "strict FAIL")]'),
     ("B12: any reset kind will do", 'want = "SW" if restart == "reboot" else "PANIC"', 'want = m.group(1)'),
