@@ -37,7 +37,7 @@ def report(phase, ok, detail):
 
 
 def phase1_enumerate():
-    """The PCAN by its canctl role (kvaser_bus.pcan_role: `canctl roles`, exactly one attached) and
+    """The PCAN by its canctl role (kvaser_bus.pcan_role, through canbench's bench_roles) and
     the Kvaser by kvaser_bus.detect() (the user's ruling of 2026-11-18: an adapter by its role,
     never by detection's first found)."""
     print("\n=== Phase 1: enumerate ===")

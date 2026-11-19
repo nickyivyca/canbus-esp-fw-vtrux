@@ -149,7 +149,8 @@ def open_buses(want_ixxat):
             continue
         found.setdefault(cfg["interface"], cfg)
     # the PCAN by its canctl role pcanfd (the user's ruling of 2026-11-18: never by detection's first
-    # found): kvaser_bus.pcan_role reads `canctl roles`, and bus(interface="pcan") opens by its device id
+    # found): kvaser_bus.pcan_role resolves it through canbench's bench_roles, and bus(interface="pcan")
+    # opens it by role (open_role)
     from kvaser_bus import pcan_role, RoleError  # noqa: E402
     try:
         r = pcan_role()
