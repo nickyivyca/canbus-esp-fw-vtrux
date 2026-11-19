@@ -164,7 +164,12 @@ class Drain(object):
         self.name = name
         self.bus = bus
         self.ids = collections.Counter()
+        # error frames counted as bus errors by can-tools' classifier
+        # (adapter_roles.bus_error; the reviewer's bench-layer item,
+        # 2026-11-19): on SocketCAN, not a controller-state change or the
+        # counters alone, which are not_bus; elsewhere every error frame
         self.errors = 0
+        self.not_bus = 0
         self.total = 0
         self.exc = None          # what ended the drain early (a kvaser TX stall)
         self._stop = threading.Event()
@@ -181,7 +186,10 @@ class Drain(object):
             if m is None:
                 continue
             if getattr(m, "is_error_frame", False):
-                self.errors += 1
+                if adapter_roles.bus_error(self.bus, m):
+                    self.errors += 1
+                else:
+                    self.not_bus += 1
                 continue
             self.total += 1
             self.ids[m.arbitration_id] += 1
@@ -197,6 +205,7 @@ class Drain(object):
     def reset(self):
         self.ids.clear()
         self.errors = 0
+        self.not_bus = 0
         self.total = 0
 
 
@@ -322,6 +331,52 @@ def self_test():
     check(stall_in({"kvaser": d, "pcan": Drain("pcan", None)}) is d.exc,
           "a drain ended by a stall is found")
     check(stall_in({"pcan": Drain("pcan", None)}) is None, "no stall, none found")
+
+    # error frames classified by can-tools' bus_error (the reviewer's
+    # bench-layer item, 2026-11-19): a controller-state frame (CRTL alone)
+    # is no bus error on SocketCAN, a protocol + bus-error one is; off
+    # SocketCAN every error frame counts
+    class Err(object):
+        is_error_frame, is_rx = True, True
+
+        def __init__(self, cls):
+            self.arbitration_id = 0x20000000 | cls
+
+    class Data(object):
+        is_error_frame, is_rx, arbitration_id = False, True, 0x512
+
+    def drained(bus):
+        frames = [Err(0x004), Err(0x008 | 0x080), Data()]
+
+        class B(object):
+            def recv(self, timeout=None):
+                if frames:
+                    return frames.pop(0)
+                time.sleep(timeout or 0)
+                return None
+        b = B()
+        if bus is not None:
+            b = bus(b)
+        d = Drain("x", b).start()
+        t_end = time.monotonic() + 5
+        while frames and time.monotonic() < t_end:
+            time.sleep(0.01)
+        time.sleep(0.1)
+        d.stop()
+        return d.errors, d.not_bus, d.total
+
+    def socketcan(b):
+        import types
+        b.bench_role = types.SimpleNamespace()
+        b.bench_role.interface = "socketcan"
+        return b
+    got = drained(socketcan)
+    check(got == (1, 1, 1), "SocketCAN: 1 bus error, 1 not, 1 data frame: %s" % (got,))
+    got = drained(lambda b: kvaser_link.WatchedBus(socketcan(b)))
+    check(got[:2] == (1, 1), "a WatchedBus classified on the SocketCAN bus underneath: %s"
+          % (got,))
+    got = drained(None)
+    check(got == (2, 0, 1), "not SocketCAN: both error frames counted: %s" % (got,))
     print("\nbench_topology self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -574,6 +629,12 @@ MUTANTS = [
      "            sent += 1\n"),
     ("a drain's stall not found", "        if isinstance(d.exc, kvaser_link.Stall):",
      "        if False:"),
+    ("drain: every error frame a bus error",
+     "                if adapter_roles.bus_error(self.bus, m):", "                if True:"),
+    ("drain: no error frame a bus error",
+     "                if adapter_roles.bus_error(self.bus, m):", "                if False:"),
+    ("drain: not-bus errors not counted", "                    self.not_bus += 1\n",
+     "                    pass\n"),
 ]
 
 

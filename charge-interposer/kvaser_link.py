@@ -14,9 +14,14 @@ leaf oopsed ...)"). Measured under a hand take the same day
   - an UP kvaser link ACKs with no socket open; a DOWN one does not. So the
     link state is set per check, never left to whoever had the bench:
     an ACK check brings it up, a no-ACK check takes it down, and each is
-    read back in sysfs (IFF_UP in /sys/class/net/kvaser/flags) before
-    anything is sent. A state that cannot be read, or reads wrong after
-    canctl, is LinkError: the check is VOID, never PASS or FAIL.
+    read back before anything is sent. A state that cannot be set or read,
+    or reads wrong after it is set, is LinkError: the check is VOID, never
+    PASS or FAIL. Since 2026-11-19 (the charge-interposer reviewer's
+    bench-layer item) the link is set and read back by can-tools' bench-
+    role layer: bench_layer.link_up (canctl up, read back with `ip -details
+    -json`: UP, 500000, not listen-only) and link_down (canctl down, read
+    back not UP), behind shared/bench's bench guard (adapter_roles.layer).
+    Before, set_link ran canctl itself and read IFF_UP in sysfs.
   - listen-only and berr are refused by kvaser_usb; no interposer check
     needs either (the inventory, 2026-11-13).
   - send() returns before the frame is on the wire, and python-can's
@@ -31,9 +36,10 @@ two-bus load, recovered only by a USB reset). EchoWatch keeps that
 bookkeeping: "sent" means its own echo arrived, and a stall raises Stall
 with the time. A check that meets one is VOID "kvaser TX stall", never
 PASS or FAIL, and before the next case the Kvaser is recovered (recover()):
-the socket is closed, then `canctl down kvaser` (canctl's usbreset refuses
-an up netdev), `canctl usbreset kvaser`, `canctl up kvaser 500000`, and IFF_UP
-read back. A failed recovery stops the bench: STOP, with the reason, is
+the socket is closed, then, through the bench-role layer, link_down
+(canctl's usbreset refuses an up netdev), `canctl usbreset kvaser`, and
+link_up at 500000, each read back. A failed recovery stops the bench: STOP,
+with the reason, is
 written to the file VTRUX_KVASER_STOP names (bench_suite.py sets it to the
 run's own STOP file, so every later case is NOT-RUN "STOP: ...").
 
@@ -61,16 +67,22 @@ canbench's detection would, or none). CANlib's interface "kvaser"
 the Kvaser is refused: the bench host is madhouse-debian from port step 3.
 
 THE ROLE (shared/bench SPEC section 8, 2026-11-18). The harness asks for the
-Kvaser by its canctl role, ROLE: canctl's up, down and usbreset take it, and
-its netdev, which IFF_UP is read from and the socket opens on, is the one
-canctl's role table names (netdev(): adapter_roles.kvaser_netdev, in
-socketcan mode on kvaser_usb), never a name of the harness's own. A role
-that does not resolve is LinkError, as an unreadable link is.
+Kvaser by its canctl role, ROLE: the layer's link_up, link_down and canctl
+usbreset take it, and its netdev, which open_bus reads IFF_UP from and opens
+the socket on, is the one canctl's role table names (netdev():
+adapter_roles.kvaser_netdev, in socketcan mode on kvaser_usb), never a name
+of the harness's own. A role that does not resolve is LinkError, as an
+unreadable link is.
 
-canctl, the role table (ROLES), the sysfs root, journalctl and the clocks are
-module globals read at each call, so kvaser_link_test.py points them at a
-fake canctl, a stand-in role table, a made-up sysfs and a planted kernel
-log.
+NEVER FROM A SELF-TEST. A driver's --self-test (and its --can-fail copies,
+run the same way) touches no hardware: set_link and recover refuse in a
+process whose command line has --self-test, before the layer is asked
+(self_test_refusal).
+
+The layer (LAYER), the role table (ROLES), the sysfs root, journalctl and
+the clocks are module globals read at each call, so kvaser_link_test.py
+points them at a stand-in layer, a stand-in role table, a made-up sysfs and
+a planted kernel log.
 
     python3.13 -B charge-interposer/kvaser_link.py state|up|down|recover
 """
@@ -86,10 +98,11 @@ import time
 
 ROLE = "kvaser"                     # canctl's role (shared/bench SPEC section 8)
 ROLES = None                        # the role table: adapter_roles, or a stand-in (tests)
+LAYER = None                        # the bench-role layer: adapter_roles.layer(), or a stand-in
 BITRATE = 500000
 STALL_S = 0.100                     # D5: no own echo this long after send returns
-CANCTL = ["sudo", "-n", "/usr/local/sbin/canctl"]
-CANCTL_TIMEOUT_S = 60
+# recover()'s steps, in order: canctl's usbreset refuses an up netdev
+RECOVER_STEPS = ("link_down", "usbreset", "link_up")
 SYSFS_NET = "/sys/class/net"
 IFF_UP = 0x1
 STOP_ENV = "VTRUX_KVASER_STOP"
@@ -114,7 +127,6 @@ KLOG_RE = re.compile(r"\b1-3\b|"
                        r"|disabled by hub|error -32\b",
                      re.I)
 KLOG_MAX = 12                       # lines on a VOID line; the count says how many more
-RC_MEANING = {2: "refused", 3: "did not take"}         # canctl's header
 monotonic = time.monotonic
 wall = time.time
 perf = time.perf_counter
@@ -182,45 +194,53 @@ def require(up, root=None):
     return got
 
 
-def _canctl(*args, argv0=None):
-    """-> (rc or None if it could not run, its last output line). Never from
-    a driver's --self-test (or its --can-fail copies, run the same way): a
-    self-test touches no hardware, and bench_vport's once ran a real
-    `canctl down kvaser` through NoNode() (2026-11-13, caught the same
-    hour; the bench lock was free and the link already down)."""
+def self_test_refusal(argv0=None):
+    """A refusal line when this process is a driver's --self-test (or its
+    --can-fail copies, run the same way), else None. A self-test touches no
+    hardware: bench_vport's once ran a real `canctl down kvaser` through
+    NoNode() (2026-11-13, caught the same hour; the bench lock was free and
+    the link already down)."""
     if "--self-test" in (argv0 if argv0 is not None else sys.argv):
-        return None, "refused: a --self-test never runs canctl"
-    argv = list(CANCTL) + list(args)
-    try:
-        p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           timeout=CANCTL_TIMEOUT_S)
-        out, rc = p.stdout.decode("utf-8", "replace"), p.returncode
-    except subprocess.TimeoutExpired:
-        out, rc = "timed out after %d s" % CANCTL_TIMEOUT_S, None
-    except OSError as e:
-        out, rc = "could not run: %s" % e, None
-    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
-    return rc, (lines[-1] if lines else "no output")
+        return "refused: a --self-test never touches the Kvaser's link"
+    return None
 
 
-def _rc_text(rc):
-    return "rc %s%s" % (rc, (", %s" % RC_MEANING[rc]) if rc in RC_MEANING else "")
+def _layer():
+    """The bench-role layer with the guard set (adapter_roles.layer), or
+    LAYER."""
+    if LAYER is not None:
+        return LAYER
+    import adapter_roles
+    return adapter_roles.layer()
+
+
+def _readback(got):
+    if not isinstance(got, dict):
+        return "read back"
+    return "read back %s%s" % ("UP" if got.get("up") else "not UP",
+                               (" at %s" % got["bitrate"]) if got.get("up") else "")
 
 
 def set_link(up, root=None, platform=None):
     """Bring the link up at BITRATE (an ACK check) or take it down (a no-ACK
-    check) through canctl, then read it back in sysfs. -> a line saying
-    so; LinkError if canctl fails or the read-back is not what was asked."""
+    check) through the bench-role layer (link_up / link_down: canctl, then
+    the read-back). -> a line saying so; LinkError if the layer refuses or
+    fails, or the read-back is not what was asked. root is not read (the
+    layer reads the link back itself); it stays for the callers."""
     if not linux(platform):
         raise LinkError("the Kvaser is opened on Linux only (role %s, canctl): the bench "
                         "host is madhouse-debian from port step 3" % ROLE)
-    args = ("up", ROLE, str(BITRATE)) if up else ("down", ROLE)
-    rc, last = _canctl(*args)
-    if rc != 0:
-        raise LinkError("canctl %s failed (%s): %s" % (" ".join(args), _rc_text(rc), last))
-    require(up, root)
-    return "%s link %s (canctl %s, IFF_UP read back)" % (ROLE, "up" if up else "down",
-                                                          " ".join(args))
+    why = self_test_refusal()
+    if why:
+        raise LinkError(why)
+    step = "link_up" if up else "link_down"
+    try:
+        L = _layer()
+        got = L.link_up(ROLE, BITRATE) if up else L.link_down(ROLE)
+    except Exception as e:                              # noqa: BLE001
+        raise LinkError("bench_layer.%s %s failed: %s: %s" % (step, ROLE, type(e).__name__, e))
+    return "%s link %s (bench_layer.%s, %s)" % (ROLE, "up" if up else "down", step,
+                                                _readback(got))
 
 
 def check_channel(channel):
@@ -378,6 +398,9 @@ class WatchedBus:
 
     def __init__(self, bus, stall_s=STALL_S, clock=None):
         self.bus = bus
+        # the python-can bus underneath, which adapter_roles.bus_error
+        # classifies error frames on (a WatchedBus is no SocketCAN class)
+        self.inner = bus
         self._rx = collections.deque()
         self.watch = EchoWatch(bus, stall_s, on_rx=lambda m, t: self._rx.append(m),
                                clock=clock)
@@ -471,23 +494,35 @@ def _stop(why, environ=None):
     return "STOP written to %s" % p
 
 
+def _recover_step(L, step):
+    if step == "link_down":
+        return L.link_down(ROLE)
+    if step == "usbreset":
+        return L.canctl("usbreset", ROLE)
+    if step == "link_up":
+        return L.link_up(ROLE, BITRATE)
+    raise LinkError("no recovery step %r" % step)
+
+
 def recover(root=None, environ=None, platform=None):
-    """After a stall, with the check's socket closed: canctl down, usbreset,
-    up at BITRATE, IFF_UP read back. -> (ok, line). Not ok: the bench is
-    stopped (the STOP file VTRUX_KVASER_STOP names), and the line says so."""
+    """After a stall, with the check's socket closed, through the bench-role
+    layer: link_down, canctl usbreset, link_up at BITRATE, each read back by
+    the layer (RECOVER_STEPS). -> (ok, line). Not ok: the bench is stopped
+    (the STOP file VTRUX_KVASER_STOP names), and the line says so. root is
+    not read; it stays for the callers."""
     if not linux(platform):
         return False, "kvaser recovery: Linux only"
-    steps = [("down", ROLE), ("usbreset", ROLE), ("up", ROLE, str(BITRATE))]
-    for args in steps:
-        rc, last = _canctl(*args)
-        if rc != 0:
-            why = "canctl %s failed (%s): %s" % (" ".join(args), _rc_text(rc), last)
+    why = self_test_refusal()
+    if why:
+        return False, "kvaser recovery FAILED, %s; %s" % (why, _stop(why, environ))
+    for step in RECOVER_STEPS:
+        try:
+            _recover_step(_layer(), step)
+        except Exception as e:                          # noqa: BLE001
+            why = "%s %s failed: %s: %s" % (step, ROLE, type(e).__name__, e)
             return False, "kvaser recovery FAILED, %s; %s" % (why, _stop(why, environ))
-    try:
-        require(True, root)
-    except LinkError as e:
-        return False, "kvaser recovery FAILED, %s; %s" % (e, _stop(str(e), environ))
-    return True, "kvaser recovered: canctl down, usbreset, up %d, IFF_UP read back" % BITRATE
+    return True, ("kvaser recovered: link_down, canctl usbreset, link_up %d, each read back "
+                  "(bench_layer)" % BITRATE)
 
 
 def stall_lines(stall, t0_epoch, close=None, journal=None, root=None, environ=None):

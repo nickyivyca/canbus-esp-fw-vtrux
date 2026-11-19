@@ -257,7 +257,7 @@ SELF_TESTS = [
     "bench_usb_host", "bench_mcp_reset", "bench_hold12", "bench_topology",
     "bench_canbench_smoke", "keepalive_probe", "rx_proc", "klog_windows",
     "bench_boot_reset", "bench_boot_reset_fixture", "bench_coredump_readback",
-    "reset_check",
+    "reset_check", "bench_layer_check",
 ]
 # Bench drivers whose --can-fail runs their self-test against each of their
 # MUTANTS (script_can_fail.py), run locally (test_script_coverage).
@@ -279,6 +279,9 @@ CAN_FAILS = [
     # 2026-11-18, the reviewer's follow-on to the adapter roles: reset_check
     # takes the X2's port from --port (it was COM3 in the code)
     "reset_check",
+    # 2026-11-19, the reviewer's bench-layer item: the hand-take bench check
+    # of the harness's use of can-tools' bench_layer
+    "bench_layer_check",
 ]
 
 # bench_boot_reset (tracker I): chip resets per image, and the line the

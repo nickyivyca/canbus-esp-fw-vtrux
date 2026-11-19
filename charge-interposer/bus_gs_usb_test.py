@@ -15,13 +15,14 @@ each half can fail:
     (PCAN_USBBUS1), canmain, another brand's role, and ixxat (no bench
     role), are refused by open_bus with ValueError before anything opens,
     and open_gs_usb and open_pcan refuse a wrong role themselves too;
-  - gs_usb is role canchg through adapter_roles.canchg (bitrate, modes
-    libusb), with no index, bus, address, serial or channel from the
+  - gs_usb is role canchg through adapter_roles.canchg (bitrate, the
+    layer's default mode, libusb), with no index, bus, address, serial or
+    channel from the
     harness, the bus it opened returned; its echoes are drained and dropped
     by default, kept when asked for, and a recv() that sees only echoes
     inside its timeout returns None, not an echo and not a hang;
-  - pcan is role pcanfd through adapter_roles.pcanfd (modes pcan, by the
-    device id canctl reads), with auto_reset and a reset() at startup;
+  - pcan is role pcanfd through adapter_roles.pcanfd (the layer's default
+    mode, pcan), with auto_reset and a reset() at startup;
   - the Kvaser (transport kvaser or socketcan; 2026-11-13, the
     charge-interposer reviewer's A, D and D6) is role kvaser: bus.open_kvaser
     brings its link up (kvaser_link.set_link) BEFORE it opens the role with
@@ -32,9 +33,10 @@ each half can fail:
     stand-ins in place.
 
 adapter_roles' own canchg and pcanfd run here, over a stand-in for
-canbench.bench_roles (FakeBR, passed as their mod): what reaches it is what
-adapter_roles would hand the pinned canbench. adapter_roles_test.py tests
-adapter_roles against the real pinned canbench and a fake canctl.
+can-tools' canbench.bench_layer (FakeBR, set as adapter_roles.LAYER while
+they run; since 2026-11-19): what reaches it is what adapter_roles would
+hand the pinned layer. adapter_roles_test.py tests adapter_roles against the
+real pinned canbench and a fake canctl.
 
 Run: python bus_gs_usb_test.py  (exit 0 = all checks passed)
      python bus_gs_usb_test.py --can-fail
@@ -122,33 +124,40 @@ class FakePcan(object):
 
 
 class FakeBR(object):
-    """Stands in for canbench.bench_roles: records each open_role call
-    (role, bitrate, modes, the keywords) and returns a FakeGsUsb for a
-    gs_usb role, a FakePcan for any other."""
-
-    class RoleError(RuntimeError):
-        pass
+    """Stands in for canbench.bench_layer (adapter_roles.LAYER, since
+    2026-11-19): records each open_bench call (role, bitrate, mode as asked,
+    None for the layer's default; restore; the keywords) and returns a
+    FakeGsUsb for a gs_usb role, a FakePcan for any other."""
 
     calls = []
+    CANCTL = None
 
     @staticmethod
-    def canctl_roles_text(canctl):
-        return "a role table"
+    def set_guard(fn):
+        return None
 
     @classmethod
-    def open_role(cls, role, bitrate=None, modes=None, hw_timestamps=False, text=None,
-                  **kw):
-        cls.calls.append((role, bitrate, tuple(modes or ()), dict(kw)))
+    def open_bench(cls, role, bitrate=None, mode=None, restore=True, **kw):
+        cls.calls.append((role, bitrate, mode, restore, dict(kw)))
         if role in ("canchg", "canmain"):
             return FakeGsUsb("gs_usb:%s" % role, bitrate, bus=1, address=40)
         return FakePcan(role=role, bitrate=bitrate, **kw)
 
 
+def _with_layer(fn):
+    def call(bitrate, **kw):
+        adapter_roles.LAYER = FakeBR
+        try:
+            return fn(bitrate, **kw)
+        finally:
+            adapter_roles.LAYER = None
+    return call
+
+
 # bus.open_gs_usb / open_pcan's _roles: adapter_roles' own canchg and
 # pcanfd, over FakeBR
-ROLES = types.SimpleNamespace(
-    canchg=lambda bitrate, **kw: adapter_roles.canchg(bitrate, mod=FakeBR, **kw),
-    pcanfd=lambda bitrate, **kw: adapter_roles.pcanfd(bitrate, mod=FakeBR, **kw))
+ROLES = types.SimpleNamespace(canchg=_with_layer(adapter_roles.canchg),
+                              pcanfd=_with_layer(adapter_roles.pcanfd))
 
 
 def args(transport, channel, bitrate=500000):
@@ -208,7 +217,7 @@ def _run(real):
 
     print("gs_usb: role canchg in libusb mode, its echoes filtered")
     b, err = _open("gs_usb", "canchg")
-    check(err is None and FakeBR.calls == [("canchg", 500000, ("libusb",), {})],
+    check(err is None and FakeBR.calls == [("canchg", 500000, None, True, {})],
           "opened by role canchg, libusb mode, no index, bus, address, serial or channel "
           "from the harness -> %s %s" % (err, FakeBR.calls))
     check(type(b) is FakeGsUsb and b.opened["channel"] == "gs_usb:canchg",
@@ -266,7 +275,7 @@ def _run(real):
 
     print("pcan: role pcanfd, auto_reset, reset() at startup")
     b, err = _open("pcan", "pcanfd")
-    check(err is None and FakeBR.calls == [("pcanfd", 500000, ("pcan",),
+    check(err is None and FakeBR.calls == [("pcanfd", 500000, None, True,
                                             {"receive_own_messages": False,
                                              "auto_reset": True})],
           "opened by role pcanfd, pcan mode, auto_reset, no channel or device id from the "

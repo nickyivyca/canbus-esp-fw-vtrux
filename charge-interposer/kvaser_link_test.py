@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Test of kvaser_link.py: the Kvaser's link state per check, its one
 opener, the TX stall rule, the recovery after a stall and the kernel's
-lines on a VOID. No hardware, no real canctl and no real kernel log: a fake
-canctl (a script this test writes) acts on a made-up /sys/class/net/kvaser,
-a fake bus and clock drive the stall rule, and the kernel log is planted.
+lines on a VOID. No hardware, no real canctl and no real kernel log: a
+stand-in for can-tools' bench-role layer acts on a made-up
+/sys/class/net/<the role's netdev>, a fake bus and clock drive the stall
+rule, and the kernel log is planted.
 
     python3.13 -B charge-interposer/kvaser_link_test.py [--can-fail]
 
@@ -15,15 +16,20 @@ Each case names what it checks:
                     sysfs holding only "kvaser" does not read); a role that
                     does not resolve, or resolves to nothing or a path, is
                     LinkError (shared/bench SPEC section 8, 2026-11-18)
-  2. set-up         an ACK check: `canctl up kvaser 500000` (exactly that),
-                    once, then IFF_UP read back
-  3. set-down       a no-ACK check: `canctl down kvaser`, IFF_UP read back
-                    clear
-  4. not-taken      canctl exiting 0 but leaving the link UP under a no-ACK
-                    check is caught (LinkError naming the read-back), as is
-                    one left DOWN under an ACK check; canctl exiting 3 is
-                    LinkError naming canctl, its rc and what it means; off
-                    Linux it is LinkError and no canctl runs
+  2. set-up         an ACK check: the layer's link_up(kvaser, 500000)
+                    (exactly that), once, its read-back on the line; with
+                    no stand-in, the layer is adapter_roles.layer()'s
+  2a. self-test     a process run with --self-test: set_link refuses both
+                    ways and recover fails, stopping the bench, with the
+                    layer never asked
+  3. set-down       a no-ACK check: the layer's link_down(kvaser)
+  4. not-taken      the layer's failure (a read-back not as asked, canctl's
+                    rc 3, the guard refusing) is LinkError naming the step
+                    and what the layer said; off Linux it is LinkError and
+                    the layer is not asked
+  (the layer itself, canctl and its read-back with `ip`, is can-tools'
+  bench_layer, tested there; since 2026-11-19 the reviewer's bench-layer
+  item)
   5. open-bus       python-can's socketcan on the role table's netdev for
                     role kvaser, echoes kept, after IFF_UP reads set;
                     refused, opening nothing, when the role does not
@@ -47,11 +53,11 @@ Each case names what it checks:
                     ID on another port; the
                     count of lines past KLOG_MAX said; an unreadable log
                     said, not taken as "none"
-  8. recover        canctl down, usbreset, up 500000, in that order, and
-                    IFF_UP read back: ok, no STOP; any step's failure, or
-                    IFF_UP clear after it: not ok and STOP written, with the
-                    reason, to the file VTRUX_KVASER_STOP names; with it
-                    unset, not ok and saying the bench was not told
+  8. recover        the layer's link_down, canctl usbreset, link_up 500000,
+                    in that order: ok, no STOP; any step's failure: not ok,
+                    no later step, and STOP written, with the reason, to the
+                    file VTRUX_KVASER_STOP names; with it unset, not ok and
+                    saying the bench was not told
   9. stall-lines    a stall's record: the VOID line ("kvaser TX stall", its
                     time, the planted kernel line) first, the check's socket
                     closed before the first canctl call, the recovery's line
@@ -74,7 +80,6 @@ rulings A, the stall rule, D and D5, and the kernel-log addendum).
 import ast
 import errno
 import importlib.util
-import json
 import os
 import subprocess
 import sys
@@ -89,32 +94,41 @@ MODULE = os.path.join(HERE, "kvaser_link.py")
 MIN_OPENERS = 8     # keepalive, usb_host, rx_order, topology, charger_silent,
                     # switch_loss, hold12, vport (bus.open_kvaser calls it as link.)
 
-FAKE_CANCTL = r'''
-import json, os, sys
-ctl, args = sys.argv[1], sys.argv[2:]
-with open(ctl, encoding="utf-8") as f:
-    c = json.load(f)
-with open(c["log"], "a", encoding="utf-8") as f:
-    f.write("canctl " + " ".join(args) + "\n")
-ok = (args in (["down", "kvaser"], ["usbreset", "kvaser"])
-      or (len(args) == 3 and args[:2] == ["up", "kvaser"] and args[2] in
-          ("125000", "250000", "500000", "1000000")))
-if not ok:
-    print("canctl: refused")
-    sys.exit(2)
-rc = c.get("rc", {}).get(args[0], 0)
-if c.get("act", {}).get(args[0], True) and rc == 0:
-    p = c["flags"]
-    flags = int(open(p).read().strip(), 16)
-    if args[0] == "up":
-        flags |= 1
-    elif args[0] in ("down", "usbreset"):
-        flags &= ~1
-    with open(p, "w") as f:
-        f.write("0x%x\n" % flags)
-print("kvaser: %s" % args[0])
-sys.exit(rc)
-'''
+class LayerError(RuntimeError):
+    """The stand-in layer's failure (bench_layer.BenchLayerError's place)."""
+
+
+class FakeLayer:
+    """A stand-in for canbench.bench_layer (adapter_roles.layer()) acting on
+    the made-up sysfs: link_up(role, bitrate) sets IFF_UP, link_down and
+    canctl("usbreset", role) clear it, each call written to the bench's
+    log as "link_up kvaser 500000", "link_down kvaser", "canctl usbreset
+    kvaser". fail={step: text}: that step raises LayerError(text) and
+    changes nothing (a canctl that exits non-zero, a read-back that is not
+    what was asked, the guard refusing)."""
+
+    def __init__(self, bench, fail=None):
+        self.b, self.fail = bench, dict(fail or {})
+
+    def _do(self, step, line, up):
+        with open(self.b.log, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        if step in self.fail:
+            raise LayerError(self.fail[step])
+        flags = int(open(self.b.flags).read().strip(), 16)
+        self.b.set_flags(flags | 1 if up else flags & ~1)
+        return {"up": up, "bitrate": 500000 if up else None}
+
+    def link_up(self, role, bitrate, restart_ms=None):
+        return self._do("link_up", "link_up %s %s" % (role, bitrate), True)
+
+    def link_down(self, role):
+        return self._do("link_down", "link_down %s" % role, False)
+
+    def canctl(self, *args):
+        assert args == ("usbreset", "kvaser"), args
+        self._do("usbreset", "canctl " + " ".join(args), False)
+        return "kvaser: usbreset"
 
 
 def load(path):
@@ -145,10 +159,10 @@ class FakeRoles:
 
 class Bench:
     """A made-up /sys/class/net with the role table's netdev for kvaser, a
-    stand-in role table and a fake canctl on it, patched into the module
+    stand-in role table and a stand-in layer on it, patched into the module
     M."""
 
-    def __init__(self, M, work, up=False, **ctl):
+    def __init__(self, M, work, up=False, fail=None):
         self.M, self.work = M, work
         self.net = os.path.join(work, "sys", "class", "net")
         os.makedirs(os.path.join(self.net, NETDEV))
@@ -157,21 +171,11 @@ class Bench:
         self.set_flags(0x40081 if up else 0x40080)
         self.log = os.path.join(work, "calls.txt")
         open(self.log, "w").close()
-        self.ctl = os.path.join(work, "canctl.json")
-        self.set(**ctl)
-        script = os.path.join(work, "fake_canctl.py")
-        with open(script, "w", encoding="utf-8", newline="\n") as f:
-            f.write(FAKE_CANCTL)
-        M.CANCTL = [sys.executable, "-B", script, self.ctl]
+        self.layer = M.LAYER = FakeLayer(self, fail)
 
     def set_flags(self, v):
         with open(self.flags, "w") as f:
             f.write("0x%x\n" % v)
-
-    def set(self, **ctl):
-        ctl.update(log=self.log, flags=self.flags)
-        with open(self.ctl, "w", encoding="utf-8") as f:
-            json.dump(ctl, f)
 
     def calls(self):
         with open(self.log, encoding="utf-8") as f:
@@ -218,40 +222,63 @@ def case_link_state(M, work):
 def case_set_up(M, work):
     b = Bench(M, work, up=False)
     line = M.set_link(True, b.net, "linux")
-    assert b.calls() == ["canctl up kvaser 500000"], b.calls()
-    assert M.link_state(b.net) == "up" and "read back" in line, line
+    assert b.calls() == ["link_up kvaser 500000"], b.calls()
+    assert M.link_state(b.net) == "up" and "bench_layer.link_up, read back UP at 500000" in line, \
+        line
+    # with no LAYER, the layer is adapter_roles.layer()'s (the guard set there)
+    M.LAYER = None
+    saved = sys.modules.get("adapter_roles")
+    sys.modules["adapter_roles"] = type("AR", (), {"layer": staticmethod(lambda: b.layer)})
+    try:
+        M.set_link(False, b.net, "linux")
+    finally:
+        if saved is None:
+            del sys.modules["adapter_roles"]
+        else:
+            sys.modules["adapter_roles"] = saved
+    assert b.calls()[-1] == "link_down kvaser", b.calls()
 
 
 def case_self_test_guard(M, work):
-    """A process run with --self-test never runs canctl: set_link raises,
-    and the fake canctl is never called."""
+    """A process run with --self-test never touches the link: set_link
+    raises, recover fails and stops the bench, and the layer is never
+    asked."""
     b = Bench(M, work, up=True)
+    stop = os.path.join(work, "STOP")
     saved = list(sys.argv)
     sys.argv[:] = ["bench_x.py", "--self-test"]
     try:
         e = _raises(M.LinkError, M.set_link, False, b.net, "linux")
+        e2 = _raises(M.LinkError, M.set_link, True, b.net, "linux")
+        ok, line = M.recover(b.net, {M.STOP_ENV: stop}, "linux")
     finally:
         sys.argv[:] = saved
-    assert "never runs canctl" in e and b.calls() == [], (e, b.calls())
+    assert "never touches" in e and "never touches" in e2 and b.calls() == [], (e, b.calls())
+    assert not ok and "never touches" in line and os.path.exists(stop), line
+    assert M.self_test_refusal(["x.py", "--self-test"]) and not M.self_test_refusal(["x.py"])
 
 
 def case_set_down(M, work):
     b = Bench(M, work, up=True)
-    M.set_link(False, b.net, "linux")
-    assert b.calls() == ["canctl down kvaser"], b.calls()
-    assert M.link_state(b.net) == "down"
+    line = M.set_link(False, b.net, "linux")
+    assert b.calls() == ["link_down kvaser"], b.calls()
+    assert M.link_state(b.net) == "down" and "read back not UP" in line, line
 
 
 def case_not_taken(M, work):
-    b = Bench(M, os.path.join(work, "a"), up=True, act={"down": False})
+    """The layer's failure (canctl's exit, a read-back not as asked, the
+    guard) is LinkError naming the step and what the layer said."""
+    b = Bench(M, os.path.join(work, "a"), up=True,
+              fail={"link_down": "canctl down kvaser exited 0 but kvnet7 still reads UP"})
     e = _raises(M.LinkError, M.set_link, False, b.net, "linux")
-    assert "reads up" in e and "needs it down" in e, e
-    b = Bench(M, os.path.join(work, "b"), up=False, act={"up": False})
+    assert "bench_layer.link_down kvaser failed" in e and "still reads UP" in e, e
+    b = Bench(M, os.path.join(work, "b"), up=False,
+              fail={"link_up": "canctl up kvaser 500000 failed (rc 3, did not take): x"})
     e = _raises(M.LinkError, M.set_link, True, b.net, "linux")
-    assert "reads down" in e and "needs it up" in e, e
-    b = Bench(M, os.path.join(work, "c"), up=False, rc={"up": 3})
+    assert "bench_layer.link_up kvaser failed" in e and "rc 3, did not take" in e, e
+    b = Bench(M, os.path.join(work, "c"), up=False, fail={"link_up": "the bench lock is free"})
     e = _raises(M.LinkError, M.set_link, True, b.net, "linux")
-    assert "canctl up kvaser 500000 failed (rc 3, did not take)" in e, e
+    assert "the bench lock is free" in e and M.link_state(b.net) == "down", e
     b = Bench(M, os.path.join(work, "d"), up=True)
     _raises(M.LinkError, M.set_link, False, b.net, "win32")
     assert b.calls() == [], b.calls()
@@ -493,6 +520,7 @@ def case_watched_bus(M, work):
     c = Clock()
     fb = FakeBus(c, lose={3})
     w = M.WatchedBus(fb, clock=c)
+    assert w.inner is fb, "the bus underneath not named as .inner (adapter_roles.bus_error)"
     fb.offer(Msg(0x410, b"\x09"), c())
     for i in range(3):
         w.send(Msg(0x18FF50E5, bytes([i]), ext=True))
@@ -597,20 +625,24 @@ def case_recover(M, work):
     stop = os.path.join(work, "a", "STOP")
     env = {M.STOP_ENV: stop}
     ok, line = M.recover(b.net, env, "linux")
-    assert ok and b.calls() == ["canctl down kvaser", "canctl usbreset kvaser",
-                                "canctl up kvaser 500000"], (ok, line, b.calls())
+    assert ok and b.calls() == ["link_down kvaser", "canctl usbreset kvaser",
+                                "link_up kvaser 500000"], (ok, line, b.calls())
     assert not os.path.exists(stop)
     assert M.link_state(b.net) == "up"
-    for n, ctl in enumerate(({"rc": {"usbreset": 3}}, {"rc": {"down": 2}},
-                             {"rc": {"up": 2}}, {"act": {"up": False}})):
+    for n, step in enumerate(("usbreset", "link_down", "link_up")):
         d = os.path.join(work, "f%d" % n)
-        b = Bench(M, d, up=True, **ctl)
+        b = Bench(M, d, up=True, fail={step: "made-up failure of %s" % step})
         stop = os.path.join(d, "STOP")
         ok, line = M.recover(b.net, {M.STOP_ENV: stop}, "linux")
-        assert not ok and "FAILED" in line and "STOP written" in line, (ctl, line)
+        assert not ok and "FAILED" in line and "STOP written" in line, (step, line)
+        assert "made-up failure of %s" % step in line, line
         text = open(stop, encoding="utf-8").read()
         assert text.startswith("kvaser recovery failed after a TX stall: "), text
-    b = Bench(M, os.path.join(work, "g"), up=True, rc={"usbreset": 3})
+        assert "made-up failure of %s" % step in text, text
+    b = Bench(M, os.path.join(work, "h"), up=True, fail={"link_down": "x"})
+    M.recover(b.net, {}, "linux")
+    assert b.calls() == ["link_down kvaser"], ("a step after a failed one", b.calls())
+    b = Bench(M, os.path.join(work, "g"), up=True, fail={"usbreset": "x"})
     ok, line = M.recover(b.net, {}, "linux")
     assert not ok and "not told to stop" in line, line
 
@@ -752,12 +784,19 @@ MUTANTS = [
     ("open_bus: opened on the role's name, not its netdev",
      "    return can_mod.Bus(interface=\"socketcan\", channel=dev,",
      "    return can_mod.Bus(interface=\"socketcan\", channel=ROLE,"),
-    ("set_link: the read-back dropped", "    require(up, root)\n    return \"%s link %s",
-     "    return \"%s link %s"),
-    ("set_link: canctl's exit code ignored",
-     "    if rc != 0:\n        raise LinkError(\"canctl %s failed", "    if False:\n        raise LinkError(\"canctl %s failed"),
-    ("set_link: down for up", "    args = (\"up\", ROLE, str(BITRATE)) if up else (\"down\", ROLE)",
-     "    args = (\"down\", ROLE)"),
+    ("set_link: the layer's failure ignored",
+     "        raise LinkError(\"bench_layer.%s %s failed: %s: %s\" % (step, ROLE, type(e).__name__, e))",
+     "        got = None"),
+    ("set_link: down for up",
+     "        got = L.link_up(ROLE, BITRATE) if up else L.link_down(ROLE)",
+     "        got = L.link_down(ROLE)"),
+    ("set_link: another bitrate",
+     "        got = L.link_up(ROLE, BITRATE) if up else L.link_down(ROLE)",
+     "        got = L.link_up(ROLE, 250000) if up else L.link_down(ROLE)"),
+    ("set_link: from a self-test", "    why = self_test_refusal()\n    if why:\n        raise LinkError(why)\n",
+     ""),
+    ("the layer not adapter_roles'", "    import adapter_roles\n    return adapter_roles.layer()",
+     "    raise LinkError(\"no layer\")"),
     ("set_link: run off Linux",
      "    if not linux(platform):\n        raise LinkError(\"the Kvaser is opened on Linux only (role %s, canctl)",
      "    if False:\n        raise LinkError(\"the Kvaser is opened on Linux only (role %s, canctl)"),
@@ -788,18 +827,26 @@ MUTANTS = [
     ("kernel lines: the window cut short", "    since, until = int(t0) - 1, int(t1) + 2",
      "    since, until = int(t0) + 30, int(t1) + 2"),
     ("recover: usbreset skipped",
-     "    steps = [(\"down\", ROLE), (\"usbreset\", ROLE), (\"up\", ROLE, str(BITRATE))]",
-     "    steps = [(\"down\", ROLE), (\"up\", ROLE, str(BITRATE))]"),
+     "RECOVER_STEPS = (\"link_down\", \"usbreset\", \"link_up\")",
+     "RECOVER_STEPS = (\"link_down\", \"link_up\")"),
     ("recover: usbreset before down (canctl refuses an up netdev)",
-     "    steps = [(\"down\", ROLE), (\"usbreset\", ROLE), (\"up\", ROLE, str(BITRATE))]",
-     "    steps = [(\"usbreset\", ROLE), (\"down\", ROLE), (\"up\", ROLE, str(BITRATE))]"),
-    ("recover: a failed step ignored", "        if rc != 0:\n            why = ",
-     "        if False:\n            why = "),
-    ("recover: no read-back", "    try:\n        require(True, root)\n    except LinkError as e:\n        return False",
-     "    try:\n        pass\n    except LinkError as e:\n        return False"),
+     "RECOVER_STEPS = (\"link_down\", \"usbreset\", \"link_up\")",
+     "RECOVER_STEPS = (\"usbreset\", \"link_down\", \"link_up\")"),
+    ("recover: the link not brought up again",
+     "RECOVER_STEPS = (\"link_down\", \"usbreset\", \"link_up\")",
+     "RECOVER_STEPS = (\"link_down\", \"usbreset\")"),
+    ("recover: up at another bitrate", "        return L.link_up(ROLE, BITRATE)",
+     "        return L.link_up(ROLE, 250000)"),
+    ("recover: a failed step ignored",
+     "            why = \"%s %s failed: %s: %s\" % (step, ROLE, type(e).__name__, e)\n",
+     "            continue\n"),
     ("recover: the bench never stopped",
-     "            return False, \"kvaser recovery FAILED, %s; %s\" % (why, _stop(why, environ))",
-     "            return False, \"kvaser recovery FAILED, %s\" % why"),
+     "            return False, \"kvaser recovery FAILED, %s; %s\" % (why, _stop(why, environ))\n"
+     "    return True,",
+     "            return False, \"kvaser recovery FAILED, %s\" % why\n    return True,"),
+    ("recover: from a self-test",
+     "    why = self_test_refusal()\n    if why:\n        return False,",
+     "    why = None\n    if why:\n        return False,"),
     # (no mutant for the lock itself: a race without it shows only now and
     # then, 5 strays in 20,000 sends when it was found, so a mutant of it
     # would pass or fail by chance; the ordering below is deterministic)
@@ -808,13 +855,14 @@ MUTANTS = [
      "            self.bus.send(msg, timeout=timeout)\n",
      "        try:\n            self.bus.send(msg, timeout=timeout)\n"
      "            with self._lock:\n                self.pending.append(entry)\n"),
-    ("canctl from a self-test", "    if \"--self-test\" in (argv0 if argv0 is not None else sys.argv):",
+    ("a self-test never refused", "    if \"--self-test\" in (argv0 if argv0 is not None else sys.argv):",
      "    if False:"),
     ("suspended ignored", "        if self.suspended:\n            return\n", ""),
     ("rebase does nothing", "                if e[0] is not None and e[0] < t:\n                    e[0] = t",
      "                pass"),
     ("on_echo never called", "        if hit is not None and self.on_echo is not None:",
      "        if False:"),
+    ("WatchedBus: the bus underneath not named", "        self.inner = bus\n", ""),
     ("WatchedBus: send not watched", "        self.watch.send(msg, timeout=0.05 if timeout is None else timeout)",
      "        self.bus.send(msg)"),
     ("WatchedBus: a buffered frame skips the bound", "        else:\n            self.watch.check()\n",

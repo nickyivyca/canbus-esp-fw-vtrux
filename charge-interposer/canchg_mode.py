@@ -12,43 +12,40 @@ segment):
 
   start  (on_start, before the start pass identifies or flashes anything,
          and again at a resume)
-         1. sudo -n /usr/local/sbin/canctl mode canchg libusb
-         2. the re-check: role canchg resolved from canctl's role table
-            (adapter_roles.resolve) in libusb mode, so not on the kernel's
-            gs_usb driver, with a USB bus and address
-         It fails only if one of the two fails, and says which. A failed
+         bench_layer.to_libusb("canchg"): `canctl mode canchg libusb`, then
+         read back from canctl's role table until canchg resolves in libusb
+         mode (off the kernel's gs_usb driver, with a USB bus and address)
+         A failure, the layer's refusal or the guard's, says so. A failed
          start hook stops the bench: no group that needs the lock runs.
   end    (on_end, after the last case and the end pass, on every run however
          it ended, unless the lock is no longer the run's)
-         1. sudo -n /usr/local/sbin/canctl mode canchg socketcan --wait N
-            (N = BIND_WAIT_S: canctl also waits until canchg's netdev exists)
-         2. the check: role canchg resolved again, in socketcan mode, on the
-            kernel's gs_usb driver, with a netdev, polled for up to
-            BIND_WAIT_S (udev names the netdev a moment after the bind)
-
-Which device canchg is, and its driver, netdev, bus and address, come from
-canctl's role table through the pinned canbench (shared/bench SPEC section
-8's adapter roles, 2026-11-18): the harness names the role and never a
-serial, an index or a netdev of its own. Before 2026-11-18 both checks found
-canchg in sysfs by the USB serial in VTRUX_CANCHG_DEVICE (the local
-settings' canchg_device), which is gone.
+         bench_layer.to_socketcan("canchg", wait_s=BIND_WAIT_S): `canctl
+         mode canchg socketcan --wait N`, then read back until canchg
+         resolves in socketcan mode on the kernel's gs_usb driver with a
+         netdev and its link down, for up to BIND_WAIT_S
          A failure is the runner's "RELEASE NOT CONFIRMED" line. canctl's
          mode is kept across replugs, so without this step a failed or
          killed run would leave canchg in libusb mode for the next holder.
-         A start step that failed still left the libusb mode saved (canctl
-         saves the mode even when it does not take), and the runner still
-         calls on_end, so this step puts it back.
+         A start step that failed may still have left the libusb mode saved
+         (canctl saves the mode even when it does not take), and the runner
+         still calls on_end, so this step puts it back.
 
-canctl's exit codes (its header; installed and checked on canchg by the CAN
-replay tooling session, 2026-11-12): 0 done, 2 refused (bad arguments or
-state; `--wait` with `mode ... libusb` is refused, so the start step does
-not pass it), 3 did not take (a bind left no interface on gs_usb, an unbind
-left one there, or `--wait` ran out). Any non-zero exit is a failure,
-naming canctl, its rc and what the rc means. Each step still reads the
-result back itself as well (the reviewer's batch: the re-check, and the
-bound check), from canctl's role table, which reads the driver and netdev
-off the system each time. Before 2026-11-12 the installed canctl exited 0
-even when a bind did not take, and the read-backs are what caught that.
+The run-long hold (the charge-interposer reviewer's bench-layer item,
+2026-11-19): the mode is handed over once at the start and back once at the
+end, with nothing put back in between. The checks' own opens
+(adapter_roles.canchg, bench_layer.open_bench) find canchg already in libusb
+mode, so they change nothing and put nothing back on shutdown.
+
+Since 2026-11-19 both steps are can-tools' bench-role layer
+(canbench.bench_layer, through adapter_roles.layer(), behind shared/bench's
+bench guard): it runs canctl, names its exit (2 refused, 3 did not take),
+and reads the result back from canctl's role table itself. Before, this
+module ran canctl and read back by role itself (from 2026-11-12, the
+reviewer's batch: the re-check and the bound check, which caught a canctl
+that exited 0 when a bind did not take). Which device canchg is comes from
+canctl's role table (shared/bench SPEC section 8's adapter roles,
+2026-11-18); before 2026-11-18 it was found in sysfs by the USB serial in
+VTRUX_CANCHG_DEVICE (the local settings' canchg_device), which is gone.
 
 A process that opened the Innomaker through pyusb holds it until it exits,
 and the bind fails until then (canctl exit 3). The end step runs in the
@@ -59,9 +56,11 @@ never opens the Innomaker (the canctl owner, relayed by the reviewer,
 Off Linux both steps do nothing and say so: the Windows bench has no canctl
 and no kernel driver to take canchg from.
 
-canctl, the role table (ROLES) and the clock are module globals, read at
-each call, so the tests (canchg_mode_test.py, bench_suite_test.py) point
-them at a fake canctl and a stand-in role table.
+The layer (LAYER) is a module global, read at each call, so the tests
+(canchg_mode_test.py, bench_suite_test.py) point it at a stand-in.
+
+Each step writes what it did and what was read back to
+canchg_<step>_<time>.txt in the run's log folder.
 
     hooks(on_start, on_end) -> (on_start, on_end)
         the bench suite's board hooks: on the X2, this module's step and
@@ -70,7 +69,6 @@ them at a fake canctl and a stand-in role table.
 """
 
 import os
-import subprocess
 import sys
 import time
 
@@ -78,118 +76,88 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-CANCTL = ["sudo", "-n", "/usr/local/sbin/canctl"]
 ROLE = "canchg"
-ROLES = None                # the role table: adapter_roles, or a stand-in (tests)
-GS_USB_DRIVER = "gs_usb"
+LAYER = None                # the bench-role layer: adapter_roles.layer(), or a stand-in
 X2_BOARD = "x2"
-CANCTL_TIMEOUT_S = 60
-BIND_WAIT_S = 10.0
-POLL_S = 0.5
-RC_MEANING = {2: "refused", 3: "did not take"}         # canctl's header
-sleep = time.sleep
-monotonic = time.monotonic
+BIND_WAIT_S = 10.0          # to_socketcan's wait for the bind and the netdev
 
 
 def linux(platform=None):
     return (platform or sys.platform).startswith("linux")
 
 
-def _resolve():
-    """canbench's Resolved for role canchg, from canctl's role table."""
-    roles = ROLES
-    if roles is None:
-        import adapter_roles as roles
-    return roles.resolve(ROLE)
+def _layer():
+    """The bench-role layer with the guard set (adapter_roles.layer), or
+    LAYER."""
+    if LAYER is not None:
+        return LAYER
+    import adapter_roles
+    return adapter_roles.layer()
 
 
-def _rc_text(rc):
-    return "rc %s%s" % (rc, (", %s" % RC_MEANING[rc]) if rc in RC_MEANING else "")
+def _found(res):
+    """What the layer read back, as the hook result's found."""
+    r = getattr(res, "role", None)
+    return {"mode": getattr(res, "mode", None), "driver": getattr(r, "driver", None),
+            "netdev": getattr(res, "netdev", None), "bus": getattr(res, "busnum", None),
+            "address": getattr(res, "devnum", None)}
 
 
-def _canctl(mode, logdir, step, extra=()):
-    """Run canctl mode canchg <mode> [extra]; its output to a log in logdir.
-    -> (rc or None if it could not run, the last line of its output)."""
-    argv = list(CANCTL) + ["mode", ROLE, mode] + list(extra)
-    log = os.path.join(logdir, "canchg_%s_%s.txt" % (step, time.strftime("%Y%m%dT%H%M%S")))
+def _log(logdir, step, text):
     try:
-        p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           timeout=CANCTL_TIMEOUT_S)
-        out = p.stdout.decode("utf-8", "replace")
-        rc = p.returncode
-    except subprocess.TimeoutExpired:
-        out, rc = "timed out after %d s" % CANCTL_TIMEOUT_S, None
-    except OSError as e:
-        out, rc = "could not run: %s" % e, None
-    try:
-        with open(log, "w", encoding="utf-8") as f:
-            f.write("$ %s\n%s\nrc %s\n" % (" ".join(argv), out, rc))
+        with open(os.path.join(logdir, "canchg_%s_%s.txt" % (step, time.strftime(
+                "%Y%m%dT%H%M%S"))), "w", encoding="utf-8") as f:
+            f.write(text + "\n")
     except OSError:
         pass
-    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
-    return rc, (lines[-1] if lines else "no output")
-
-
-def bound_state():
-    """-> (bound, netdev, why), from canctl's role table: whether role
-    canchg is in socketcan mode on the kernel's gs_usb driver, whether it
-    has a netdev, and a line saying what was found. Raises what the role
-    table raises when canchg does not resolve (not attached, two devices,
-    socketcan mode with no netdev yet)."""
-    # canbench resolves a gs_usb role in socketcan mode only with a netdev,
-    # and refuses one in libusb mode still on gs_usb, so the driver says it
-    res = _resolve()
-    r = res.role
-    bound = r.driver == GS_USB_DRIVER
-    netdev = bool(res.netdev)
-    why = "role %s: mode %s, driver %s, netdev %s" % (
-        ROLE, res.mode, r.driver or "none", res.netdev or "absent")
-    return bound, netdev, why
 
 
 def start(logdir, platform=None):
-    """canctl mode canchg libusb, then the re-check. -> hook result."""
+    """bench_layer.to_libusb(canchg): the hand-over and its read-back. ->
+    hook result."""
     if not linux(platform):
         return dict(ok=True, detail="canchg: no mode step off Linux")
-    rc, last = _canctl("libusb", logdir, "start")
-    if rc != 0:
-        return dict(ok=False, detail="canchg: canctl mode canchg libusb failed (%s): %s"
-                    % (_rc_text(rc), last), found={"canctl_rc": rc})
     try:
-        res = _resolve()
-        if res.mode != "libusb":
-            raise RuntimeError("role %s resolves in mode %s, not libusb" % (ROLE, res.mode))
+        res = _layer().to_libusb(ROLE)
     except Exception as e:                              # noqa: BLE001
-        return dict(ok=False, detail="canchg: the re-check after canctl mode canchg libusb "
-                    "failed: %s" % e, found={"canctl_rc": rc})
-    return dict(ok=True, detail="canchg: libusb mode (canctl rc 0; re-check by role: USB bus "
-                "%s address %s, not on gs_usb)" % (res.busnum, res.devnum),
-                found={"canctl_rc": rc, "bus": res.busnum, "address": res.devnum})
+        out = dict(ok=False, detail="canchg: bench_layer.to_libusb %s failed: %s: %s"
+                   % (ROLE, type(e).__name__, e), found={"error": str(e)})
+        _log(logdir, "start", out["detail"])
+        return out
+    f = _found(res)
+    if f["mode"] != "libusb":
+        out = dict(ok=False, detail="canchg: bench_layer.to_libusb %s returned mode %s, not "
+                   "libusb" % (ROLE, f["mode"]), found=f)
+    else:
+        out = dict(ok=True, detail="canchg: libusb mode (bench_layer.to_libusb, read back by "
+                   "role: USB bus %s address %s, not on gs_usb)" % (f["bus"], f["address"]),
+                   found=f)
+    _log(logdir, "start", out["detail"])
+    return out
 
 
 def end(logdir, platform=None):
-    """canctl mode canchg socketcan, then the check that canchg is bound
-    again (polled for up to BIND_WAIT_S). -> hook result."""
+    """bench_layer.to_socketcan(canchg, wait_s=BIND_WAIT_S): back on the
+    kernel's gs_usb with a netdev, read back. -> hook result."""
     if not linux(platform):
         return dict(ok=True, detail="canchg: no mode step off Linux")
-    rc, last = _canctl("socketcan", logdir, "end", ["--wait", "%d" % BIND_WAIT_S])
-    t_end = monotonic() + BIND_WAIT_S
-    while True:
-        try:
-            bound, netdev, why = bound_state()
-        except Exception as e:                          # noqa: BLE001
-            bound, netdev, why = False, False, "not checked: %s" % e
-        if (bound and netdev) or monotonic() >= t_end:
-            break
-        sleep(POLL_S)
-    found = {"canctl_rc": rc, "bound": bound, "netdev": netdev}
-    if rc != 0:
-        return dict(ok=False, detail="canchg: canctl mode canchg socketcan failed (%s): "
-                    "%s; %s" % (_rc_text(rc), last, why), found=found)
-    if not (bound and netdev):
-        return dict(ok=False, detail="canchg: not bound again after canctl mode canchg "
-                    "socketcan (rc 0): %s" % why, found=found)
-    return dict(ok=True, detail="canchg: back on gs_usb (%s)" % why, found=found)
+    try:
+        res = _layer().to_socketcan(ROLE, wait_s=BIND_WAIT_S)
+    except Exception as e:                              # noqa: BLE001
+        out = dict(ok=False, detail="canchg: not back on gs_usb: bench_layer.to_socketcan %s "
+                   "failed: %s: %s" % (ROLE, type(e).__name__, e), found={"error": str(e)})
+        _log(logdir, "end", out["detail"])
+        return out
+    f = _found(res)
+    if f["mode"] != "socketcan" or f["driver"] != "gs_usb" or not f["netdev"]:
+        out = dict(ok=False, detail="canchg: not back on gs_usb: bench_layer.to_socketcan %s "
+                   "returned mode %s, driver %s, netdev %s" % (ROLE, f["mode"], f["driver"],
+                                                                f["netdev"]), found=f)
+    else:
+        out = dict(ok=True, detail="canchg: back on gs_usb (bench_layer.to_socketcan, read back "
+                   "by role: netdev %s)" % f["netdev"], found=f)
+    _log(logdir, "end", out["detail"])
+    return out
 
 
 def _call(hook, board, img, ctx, logdir):
