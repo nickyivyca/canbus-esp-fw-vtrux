@@ -793,6 +793,15 @@ def report_peaks():
              PEAK["n"], PEAK["i"], PEAK["vmax"], PEAK["soc"])
 
 
+def drain_for(args):
+    """open_bus's drain for the vehicle bus (the charge-interposer reviewer,
+    2026-11-19): --mode replay only sends (replay.replay_to_bus reads nothing
+    back), so on a gs_usb bus (canchg, libusb), whose TX stops after 257
+    unread echoes, the layer's drain thread reads it. --mode model reads the
+    bus (run_model), and the other transports have no echoes to stall on."""
+    return args.mode == "replay" and args.transport == "gs_usb"
+
+
 def run_model(args, b, phys):
     pk = packmod.Pack(soc_pct=args.soc, imbalance_pct=args.imbalance,
                       outlier_cell=args.outlier_cell,
@@ -1148,7 +1157,8 @@ def main():
     import kvaser_link
     t_open = time.time()
     try:
-        b = busmod.open_bus(args, default_channel=busmod.VEHICLE_SEGMENT, logger=log)
+        b = busmod.open_bus(args, default_channel=busmod.VEHICLE_SEGMENT, logger=log,
+                            drain=drain_for(args))
     except kvaser_link.LinkError as e:
         log.info(kvaser_link.link_void(e, t_open, time.time()))
         sys.exit(3)

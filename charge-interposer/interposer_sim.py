@@ -28,6 +28,56 @@ import machine as M
 log = logging.getLogger("intp")
 
 DRAIN_LIMIT = 512       # frames retired per port per loop pass
+# On a gs_usb charger bus (canchg, libusb) chg is read again after at most
+# CHG_READ_EVERY frames sent to it while the vehicle port is drained, so its
+# unread TX echoes stay well under the 257 at which gs_usb stops taking sends
+# (the charge-interposer reviewer, 2026-11-19; gen-inhibit tester's finding
+# the same day). Other transports read chg once per pass, as before.
+CHG_READ_EVERY = 128
+
+
+def chg_read_every(args):
+    """drain_ports' chg_every for this run: CHG_READ_EVERY on a gs_usb
+    charger bus, None (chg read once per pass) on any other."""
+    return CHG_READ_EVERY if args.charger_transport == "gs_usb" else None
+
+
+def drain_ports(veh, chg, on_vehicle, on_charger, sent, chg_every=None,
+                limit=DRAIN_LIMIT):
+    """One loop pass's bounded drain of both ports -> (n_v, n_c, hit).
+
+    The vehicle port first, up to `limit` frames, each handed to on_vehicle;
+    then the charger port, up to `limit` frames, each handed to on_charger.
+    `sent` is a one-item list the caller's emit adds 1 to for each frame
+    sent to chg; a read of chg sets it to 0. With chg_every, chg is also
+    read whenever a vehicle frame leaves sent at chg_every or more, so no
+    more than chg_every frames (and the rest of that one frame's outputs)
+    go to chg between two reads. n_c counts every charger frame read in the
+    pass; hit is True when the vehicle port, or any one read of chg, met
+    `limit`."""
+    n_c, hit = [0], [False]
+
+    def read_chg():
+        sent[0] = 0
+        k = 0
+        msg = chg.recv(timeout=0.0)
+        while msg is not None and k < limit:
+            k += 1
+            on_charger(msg)
+            msg = chg.recv(timeout=0.0)
+        n_c[0] += k
+        hit[0] = hit[0] or k >= limit
+
+    n_v = 0
+    msg = veh.recv(timeout=0.0)
+    while msg is not None and n_v < limit:
+        n_v += 1
+        on_vehicle(msg)
+        if chg_every and sent[0] >= chg_every:
+            read_chg()
+        msg = veh.recv(timeout=0.0)
+    read_chg()
+    return n_v, n_c[0], hit[0] or n_v >= limit
 
 
 class PortMode(object):
@@ -181,6 +231,7 @@ def main():
         msg = can.Message(arbitration_id=arb, is_extended_id=ext, data=data)
         if side == M.TO_CHARGER:
             chg.send(msg)
+            chg_sent[0] += 1
             if echo_c:
                 echo_c.sent(msg)
         else:
@@ -206,6 +257,45 @@ def main():
                      M.STATE_NAMES[core.state])
 
     last_nv, last_nc = [0], [0]
+    chg_sent = [0]          # frames sent to chg since it was last read
+    chg_every = chg_read_every(args)
+    did_box = [False]
+
+    def on_vehicle(msg):
+        if echo_v and echo_v.is_echo(msg):
+            return
+        did_box[0] = True
+        if args.bypass:
+            # Counted HERE because the core is not driven in bypass:
+            # core.stats stays at zero and the final line would read
+            # "nothing crossed" while every frame crossed.
+            bypass_fwd[0] += 1
+            emit(M.TO_CHARGER, msg.arbitration_id, msg.is_extended_id,
+                 bytes(msg.data))
+        else:
+            rec_frame("V", msg, now_ms_box[0])
+            outs = core.on_vehicle_frame(msg.arbitration_id, msg.is_extended_id,
+                                         bytes(msg.data), now_ms_box[0])
+            apply_mode("vehicle frame 0x%X" % msg.arbitration_id)
+            for out in outs:
+                emit(*out)
+
+    def on_charger(msg):
+        if echo_c and echo_c.is_echo(msg):
+            return
+        did_box[0] = True
+        if args.bypass:
+            bypass_fwd[1] += 1
+            emit(M.TO_VEHICLE, msg.arbitration_id, msg.is_extended_id,
+                 bytes(msg.data))
+        else:
+            rec_frame("C", msg, now_ms_box[0])
+            outs = core.on_charger_frame(msg.arbitration_id, msg.is_extended_id,
+                                         bytes(msg.data), now_ms_box[0])
+            # switch FIRST, then forward that frame (2.3)
+            apply_mode("charger frame 0x%X" % msg.arbitration_id)
+            for out in outs:
+                emit(*out)
     frozen_s = 0.0
     # Bypass forwards frames straight through without driving the core,
     # so the core's own counters cannot describe it. [v->c, c->v].
@@ -261,54 +351,12 @@ def main():
             # port and the tick: under an accelerated --time-scale the inbound
             # rate can exceed what one Python loop retires, recv() then never
             # returns None, and the state machine stops being serviced at all.
-            n_v = 0
-            msg = veh.recv(timeout=0.0)
-            while msg is not None and n_v < DRAIN_LIMIT:
-                n_v += 1
-                if not (echo_v and echo_v.is_echo(msg)):
-                    did = True
-                    if args.bypass:
-                        # Counted HERE because the core is not driven in
-                        # bypass: core.stats stays at zero and the final
-                        # line would read "nothing crossed" while every
-                        # frame crossed.
-                        bypass_fwd[0] += 1
-                        emit(M.TO_CHARGER, msg.arbitration_id,
-                             msg.is_extended_id, bytes(msg.data))
-                    else:
-                        rec_frame("V", msg, now_ms)
-                        outs = core.on_vehicle_frame(
-                            msg.arbitration_id, msg.is_extended_id,
-                            bytes(msg.data), now_ms)
-                        apply_mode("vehicle frame 0x%X"
-                                   % msg.arbitration_id)
-                        for out in outs:
-                            emit(*out)
-                msg = veh.recv(timeout=0.0)
-
-            n_c = 0
-            msg = chg.recv(timeout=0.0)
-            while msg is not None and n_c < DRAIN_LIMIT:
-                n_c += 1
-                if not (echo_c and echo_c.is_echo(msg)):
-                    did = True
-                    if args.bypass:
-                        bypass_fwd[1] += 1
-                        emit(M.TO_VEHICLE, msg.arbitration_id,
-                             msg.is_extended_id, bytes(msg.data))
-                    else:
-                        rec_frame("C", msg, now_ms)
-                        outs = core.on_charger_frame(
-                            msg.arbitration_id, msg.is_extended_id,
-                            bytes(msg.data), now_ms)
-                        # switch FIRST, then forward that frame (2.3)
-                        apply_mode("charger frame 0x%X" % msg.arbitration_id)
-                        for out in outs:
-                            emit(*out)
-                msg = chg.recv(timeout=0.0)
-
+            did_box[0] = False
+            n_v, n_c, hit = drain_ports(veh, chg, on_vehicle, on_charger, chg_sent,
+                                        chg_every)
+            did = did or did_box[0]
             last_nv[0], last_nc[0] = n_v, n_c
-            if n_v >= DRAIN_LIMIT or n_c >= DRAIN_LIMIT:
+            if hit:
                 saturated[0] += 1
                 log.warning("DRAIN LIMIT hit at sim t=%.0fs: v=%d c=%d (limit %d)",
                             now_ms / 1000.0, n_v, n_c, DRAIN_LIMIT)

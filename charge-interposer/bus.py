@@ -19,7 +19,8 @@ Two transport families:
             refused, and ixxat, which has no bench role, is refused. pcan is
             pcanfd (adapter_roles.pcanfd). gs_usb is canchg in libusb mode
             (adapter_roles.canchg), its TX echoes drained and dropped
-            (open_gs_usb). kvaser and socketcan are the Kvaser on the
+            (open_gs_usb), or, for a caller that only sends (open_bus
+            drain=True), read by the layer's drain thread. kvaser and socketcan are the Kvaser on the
             kernel's kvaser_usb, role kvaser (open_kvaser, kvaser_link;
             2026-11-13): the link brought up and read back first, the bus
             returned keeping the TX stall rule (kvaser_link.WatchedBus).
@@ -42,6 +43,9 @@ import can
 # CAN_TOOLS_DIR), through adapter_roles, only when a real dongle is opened.
 
 VEHICLE_SEGMENT = "239.0.2.1"
+# drop_echoes: echoes read and dropped after a recv's deadline, at most, in
+# one call (see drop_echoes; the charge-interposer reviewer, 2026-11-19)
+ECHOES_PAST_DEADLINE = 256
 CHARGER_SEGMENT = "239.0.2.2"
 
 # The two segments differ by PORT as well as by group, and that is not
@@ -196,13 +200,19 @@ def add_bus_args(parser, *, default_channel=VEHICLE_SEGMENT, prefix="",
 
 
 def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
-             receive_own_messages=False, logger=None):
-    """Open a python-can Bus from parsed args (see add_bus_args)."""
+             receive_own_messages=False, drain=False, logger=None):
+    """Open a python-can Bus from parsed args (see add_bus_args). drain=True
+    is for a caller that only sends, and only on a gs_usb (canchg) bus: any
+    other transport is refused (open_gs_usb)."""
     d = prefix.replace("-", "_")
     transport = getattr(args, d + "transport")
     channel = getattr(args, d + "channel")
     port = getattr(args, d + "port")
     bitrate = getattr(args, d + "bitrate")
+
+    if drain and transport != "gs_usb":
+        raise ValueError("transport %s: drain is for a gs_usb (canchg) bus that is "
+                         "only sent on" % transport)
 
     if transport == "virtual":
         channel = channel or default_channel
@@ -230,7 +240,7 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
     if transport == "gs_usb":
         return open_gs_usb(channel, bitrate,
                            receive_own_messages=receive_own_messages,
-                           logger=logger)
+                           drain=drain, logger=logger)
 
     if transport in ("kvaser", "socketcan"):
         return open_kvaser(channel, bitrate,
@@ -307,37 +317,61 @@ def drop_echoes(bus, keep=False):
     drained, bringup 2026-10-06) and dropped; with it True they are passed
     through. Wraps the open bus's own _recv_internal on the instance (the
     bus is opened by adapter_roles, so its class is not the harness's to
-    subclass; until 2026-11-18 a GsUsbBus subclass did this). -> bus."""
+    subclass; until 2026-11-18 a GsUsbBus subclass did this). -> bus.
+
+    One call reads on past every echo that is queued, even after its
+    deadline, until a received frame (returned), an empty read (None) or
+    ECHOES_PAST_DEADLINE echoes after the deadline (None), so a recv(0)
+    retires every queued echo and reaches a frame behind them (the
+    charge-interposer reviewer, 2026-11-19). Until then a call returned None
+    at the first echo past its deadline: a recv(0) retired one echo, and a
+    sim's read loop, which stops at None, left the rest, and the frames
+    behind them, for later passes; gs_usb stops taking sends after 257
+    unread echoes (gen-inhibit tester, 2026-11-19)."""
     import time as _t
     inner = bus._recv_internal
 
     def _recv_internal(timeout):
         end = None if timeout is None else _t.monotonic() + timeout
+        late = 0
         while True:
             left = None if end is None else max(0.0, end - _t.monotonic())
             msg, filtered = inner(left)
             if msg is None or msg.is_rx or bus._keep_echoes:
                 return msg, filtered
             if end is not None and _t.monotonic() >= end:
-                return None, False
+                late += 1
+                if late > ECHOES_PAST_DEADLINE:
+                    return None, False
 
     bus._recv_internal = _recv_internal
     bus._keep_echoes = bool(keep)
     return bus
 
 
-def open_gs_usb(channel, bitrate, *, receive_own_messages=False,
+def open_gs_usb(channel, bitrate, *, receive_own_messages=False, drain=False,
                 logger=None, _roles=None):
     """The charger segment's Innomaker USB2CAN (gs_usb / candleLight), role
     canchg in libusb mode (adapter_roles.canchg: python-can gs_usb by the
     USB bus and address canctl reports, refused while the kernel's gs_usb
     holds it; never an index or a serial). `channel` must be "canchg"
-    (check_role). The bus's echoes go through drop_echoes. `_roles` exists
-    only for bus_gs_usb_test (a stand-in for adapter_roles)."""
+    (check_role). The bus's echoes go through drop_echoes; with drain=True,
+    for a caller that only sends, the layer's drain thread reads everything
+    instead (open_bench drain=True, can-tools 7a27cc94: recv is refused, so
+    no echo filter; the charge-interposer reviewer, 2026-11-19). `_roles`
+    exists only for bus_gs_usb_test (a stand-in for adapter_roles)."""
     roles = _roles
     if roles is None:
         import adapter_roles as roles
     check_role("gs_usb", channel)
+    if drain:
+        if receive_own_messages:
+            raise ValueError("gs_usb %s: drain=True reads nothing back, so "
+                             "receive_own_messages cannot be asked for" % channel)
+        if logger:
+            logger.info("Opening role %s (gs_usb, libusb) at %d bps, send only: "
+                        "the layer's drain reads it", channel, bitrate)
+        return roles.canchg(bitrate, drain=True)
     if logger:
         logger.info("Opening role %s (gs_usb, libusb) at %d bps (echoes %s)", channel,
                     bitrate, "kept" if receive_own_messages else "drained and dropped")

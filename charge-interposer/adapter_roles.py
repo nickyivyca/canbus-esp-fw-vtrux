@@ -10,7 +10,7 @@ a channel number or the first one of its kind it finds.
 
 Since 2026-11-19 (the charge-interposer reviewer's bench-layer item) this
 module is a thin caller of canbench.bench_layer, the bench-role layer both
-ESP projects share (can-tools ec7cefe9, pinned in pins.json and loaded by
+ESP projects share (can-tools 7a27cc94, pinned in pins.json and loaded by
 can_tools_pin.use; reverse-it tools/plans/bench-role-layer.md). The layer
 brings a role to the mode asked for, brings a SocketCAN link up, opens the
 role through canbench.bench_roles (which applies canbench.live.linux_fixes

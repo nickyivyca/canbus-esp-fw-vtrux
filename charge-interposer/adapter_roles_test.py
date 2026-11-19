@@ -67,7 +67,8 @@ must make a case fail.
 Charge-interposer tester, 2026-11-18 (the charge-interposer reviewer's
 adapter-roles assignment); 2026-11-19, the reviewer's bench-layer item:
 can-tools pinned at ec7cefe9, adapter_roles a thin caller of
-canbench.bench_layer, the scan canbench.bench_scan.
+canbench.bench_layer, the scan canbench.bench_scan; the pin moved to
+7a27cc94 the same day (the reviewer's echo item).
 """
 
 import ast
@@ -75,6 +76,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -242,8 +244,20 @@ class FakeCan:
 
 
 class Opened:
+    """A bus python-can's Bus returned. send() is there because can-tools
+    7a27cc94's open_role wraps a libusb gs_usb bus's send (its timeout)."""
+
     def __init__(self, kw):
-        self.kw, self.shut = kw, 0
+        self.kw, self.shut, self.sent, self.inbox = kw, 0, [], []
+
+    def send(self, msg, timeout=None):
+        self.sent.append(msg)
+
+    def recv(self, timeout=None):
+        if self.inbox:
+            return self.inbox.pop(0)
+        time.sleep(timeout or 0)
+        return None
 
     def shutdown(self):
         self.shut += 1
@@ -289,6 +303,25 @@ def case_layer(M, work):
                                  "channel": "gs_usb:canchg", "bus": 1, "address": 40}, fc.opened
         b.shutdown()
         assert b.shut == 1 and released == [b], ("libusb claim not released", released)
+        # drain=True through adapter_roles.canchg reaches the pinned layer's
+        # drain (can-tools 7a27cc94; vehicle_sim --mode replay on canchg, the
+        # charge-interposer reviewer, 2026-11-19): what arrives is read and
+        # counted by its thread, recv is refused, shutdown stops it
+        b = M.canchg(250000, drain=True)
+        echo = type("Echo", (), {"is_error_frame": False, "is_rx": False})()
+        b.inbox += [echo, echo]
+        t_end = time.monotonic() + 2
+        while b.bench_drain["echoes"] < 2 and time.monotonic() < t_end:
+            time.sleep(0.005)
+        assert b.bench_drain["echoes"] == 2 and not b.inbox, ("the drain did not read",
+                                                              b.bench_drain)
+        e = _raises(b.recv, 0.0)
+        assert isinstance(e, L.BenchLayerError) and "drain" in str(e), e
+        b.shutdown()
+        assert b.shut == 1 and not b.bench_drain["running"] and released[-1] is b, (
+            "the drain not stopped, or the device not closed and released", b.bench_drain)
+        e = _raises(M.pcanfd, 500000, drain=True)
+        assert isinstance(e, L.BenchLayerError) and "drain is for a gs_usb role" in str(e), e
         assert c.calls() and set(c.calls()) == {"roles"}, c.calls()
         # the guard refusing: nothing run, nothing opened
         n, k = len(fc.opened), len(c.calls())

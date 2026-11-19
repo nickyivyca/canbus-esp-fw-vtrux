@@ -20,7 +20,12 @@ each half can fail:
     channel from the
     harness, the bus it opened returned; its echoes are drained and dropped
     by default, kept when asked for, and a recv() that sees only echoes
-    inside its timeout returns None, not an echo and not a hang;
+    inside its timeout returns None, not an echo and not a hang; one
+    recv(0) retires every queued echo, and returns the frame behind them,
+    up to 256 echoes after its deadline (2026-11-19);
+  - drain=True (2026-11-19, for a caller that only sends) asks the layer
+    for its drain on canchg, with no echo filter; on any other transport,
+    or with receive_own_messages, it is refused before anything opens;
   - pcan is role pcanfd through adapter_roles.pcanfd (the layer's default
     mode, pcan), with auto_reset and a reset() at startup;
   - the Kvaser (transport kvaser or socketcan; 2026-11-13, the
@@ -273,6 +278,48 @@ def _run(real):
     if not t.is_alive():
         e.shutdown()
 
+    # one recv(0) retires every queued echo and reaches the frame behind
+    # them, up to ECHOES_PAST_DEADLINE echoes after its deadline (the
+    # charge-interposer reviewer, 2026-11-19; it returned None at the first)
+    check(busmod.ECHOES_PAST_DEADLINE == 256, "the cap is 256 echoes after the deadline -> %s"
+          % busmod.ECHOES_PAST_DEADLINE)
+    b, err = _open("gs_usb", "canchg")
+    b.script = [msg(i % 200, False) for i in range(200)]
+    m = b.recv(timeout=0.0)
+    check(m is None and b.script == [],
+          "recv(0) with 200 echoes queued: None, every echo retired -> %d left"
+          % len(b.script))
+    b.script = [msg(i % 200, False) for i in range(200)] + [msg(7, True), msg(8, False)]
+    m = b.recv(timeout=0.0)
+    check(m is not None and m.arbitration_id == 0x107 and len(b.script) == 1,
+          "recv(0) with a frame behind 200 echoes: that frame, in the same call -> %s"
+          % (m and hex(m.arbitration_id)))
+    b.script = [msg(i % 200, False) for i in range(300)]
+    m = b.recv(timeout=0.0)
+    check(m is None and len(b.script) == 300 - 257,
+          "recv(0) with 300 echoes queued: None after 257 (the cap), %d left" % len(b.script))
+    b.shutdown()
+
+    print("gs_usb drain=True: send only, the layer's drain reads it")
+    b, err = _open("gs_usb", "canchg", drain=True)
+    check(err is None and FakeBR.calls == [("canchg", 500000, None, True, {"drain": True})],
+          "drain=True asked of the layer for role canchg -> %s %s" % (err, FakeBR.calls))
+    check(err is None and not hasattr(b, "_keep_echoes"),
+          "... and no echo filter on it (recv is the drain's) -> %r" % (b,))
+    if b is not None:
+        b.shutdown()
+    b, err = _open("gs_usb", "canchg")
+    check(err is None and FakeBR.calls == [("canchg", 500000, None, True, {})]
+          and hasattr(b, "_keep_echoes"),
+          "drain not asked for: no drain, the echo filter -> %s %s" % (err, FakeBR.calls))
+    if b is not None:
+        b.shutdown()
+    for t, ch, kw in (("pcan", "pcanfd", {}), ("kvaser", "kvaser", {}), ("virtual", None, {}),
+                      ("gs_usb", "canchg", {"receive_own_messages": True})):
+        b, err = _open(t, ch, drain=True, **kw)
+        check(b is None and err and err.startswith("ValueError") and FakeBR.calls == [],
+              "drain=True on %s %s: refused before anything opens -> %s" % (t, kw, err))
+
     print("pcan: role pcanfd, auto_reset, reset() at startup")
     b, err = _open("pcan", "pcanfd")
     check(err is None and FakeBR.calls == [("pcanfd", 500000, None, True,
@@ -390,8 +437,23 @@ MUTANTS = [
      "    return drop_echoes(roles.canchg(bitrate), receive_own_messages)\n",
      "    return drop_echoes(roles.canchg(bitrate))\n"),
     ("the echo filter without its timeout",
-     "            if end is not None and _t.monotonic() >= end:\n                return None, False\n",
-     ""),
+     "            if end is not None and _t.monotonic() >= end:\n",
+     "            if False:\n"),
+    ("the echo filter without its cap",
+     "                if late > ECHOES_PAST_DEADLINE:\n                    return None, False\n",
+     "                pass\n"),
+    ("one echo per recv past the deadline (the old filter)",
+     "ECHOES_PAST_DEADLINE = 256\n", "ECHOES_PAST_DEADLINE = 0\n"),
+    ("a cap of 100 echoes", "ECHOES_PAST_DEADLINE = 256\n", "ECHOES_PAST_DEADLINE = 100\n"),
+    ("a cap of 1000 echoes", "ECHOES_PAST_DEADLINE = 256\n", "ECHOES_PAST_DEADLINE = 1000\n"),
+    ("drain not passed to open_gs_usb", "                           drain=drain, logger=logger)",
+     "                           logger=logger)"),
+    ("drain not asked of the layer", "        return roles.canchg(bitrate, drain=True)\n",
+     "        return drop_echoes(roles.canchg(bitrate), False)\n"),
+    ("drain on any transport", '    if drain and transport != "gs_usb":\n', "    if False:\n"),
+    ("drain with echoes asked for",
+     "        if receive_own_messages:\n            raise ValueError(\"gs_usb %s: drain",
+     "        if False:\n            raise ValueError(\"gs_usb %s: drain"),
     ("gs_usb by index",
      "    return drop_echoes(roles.canchg(bitrate), receive_own_messages)\n",
      "    return drop_echoes(roles.canchg(bitrate, index=0), receive_own_messages)\n"),
