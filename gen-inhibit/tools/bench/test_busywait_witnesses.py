@@ -54,15 +54,23 @@ witness reads the other end through a bus object with recv(timeout).
   load guard        (the reviewer's answer (b) to 1bcd2aa9, 2026-11-19) what the tables cannot hold, at run
                     time: each of the six witness loops reads through proc_witness's ThreadWitness.recv,
                     which counts every frame read (data frames, ids the witness keeps no record of, error
-                    frames) and the most in any LOAD_WINDOW_S (1 s); over LOAD_LIMIT (500) every judgement
-                    after it is VOID "witness load" (proc_witness.load_reason, through void_reason). Checked:
-                    the counter at the limit's edge (501 in 0.95 s VOID; 501 2 ms apart, 500 in any 1 s, not;
-                    500 in 0.5 s not); each tool's own witness counting all 600 frames of a fast bus (100 of
-                    them error frames) and VOID, 400 not; a scan that each run() reads only through
-                    self.recv; and each tool's VOID path on that load: void_line (the suite's B9 and B10
-                    judges), B4's run_arm and both judges, B1's command_result, x2_jam_cases' clocked() and
-                    run_guarded (the suite's jam judge), B20's run_case. The six regression cases above also
-                    print each witness's peak, and FAIL on a load VOID.
+                    frames) and the most in any LOAD_WINDOW_S (1 s); over LOAD_LIMIT (1200) every judgement
+                    after it is VOID "witness load" (proc_witness.load_reason, through void_reason). Checked,
+                    at whatever LOAD_LIMIT is: the counter at the limit's edge (1201 in 0.95 s VOID; 1201
+                    1/1200 s apart, 1200 in any 1 s, not; 1200 in 0.5 s not); each tool's own witness
+                    counting all 1300 frames of a fast bus (100 of them error frames) and VOID, 1100 not; a
+                    scan that each run() reads only through self.recv; and each tool's VOID path on that
+                    load: void_line (the suite's B9 and B10 judges), B4's run_arm and both judges, B1's
+                    command_result, x2_jam_cases' clocked() and run_guarded (the suite's jam judge), B20's
+                    run_case. The six regression cases above also print each witness's peak, and FAIL on a
+                    load VOID.
+  feed              (the reviewer's answer (1) to f29f2626, 2026-11-19: the limit's basis) one case per
+                    pacer, skip_method_bench.Player, interlock_bench.play and lowid_flood_skip_bench.play:
+                    each tool's witness under it, the pacer at its own rate (the slice, 454/s), with the
+                    wire fed at 2400 frames/s, reads every frame, and the load guard VOIDs it; LOAD_LIMIT
+                    must be half the lowest feed so shown (2400/s for all three, 2026-11-19: peaks 2415-2463
+                    in any 1 s). Its can-fail: each pacer turned into a continuous spin (a mutant each),
+                    and the limit set over half the feed.
 
 Then each tool's VOID path for a witness whose loop died (its bus raised): void_reason and void_line name
 a dead thread and a dead child; B4's run_arm marks the arm and both judges VOID it; B1's witness dies
@@ -372,6 +380,44 @@ def wire_cases(only):
               w.proc_info)
         ld = w.proc_info.get("load") or {}
         print("     %s: %s reads, the most in any %g s %s" % (cid, ld.get("reads"), PW.LOAD_WINDOW_S, ld.get("peak")))
+
+
+# ---------------------------------------------------------------------- the load limit's basis
+# (gen-inhibit reviewer's answer (1) to f29f2626, 2026-11-19): each tool's witness under its own pacer,
+# the pacer at its own rate (the slice, 454 frames/s), with the wire fed at FEED_RATE, must read every
+# frame; proc_witness.LOAD_LIMIT is half the lowest feed so shown. One case per pacer, each with every
+# tool's witness that runs under it.
+
+FEED_RATE = 2400.0
+PACERS = [("Player", "skip_method_bench.Player", pace_player), ("ilplay", "interlock_bench.play", pace_ilplay),
+          ("lfplay", "lowid_flood_skip_bench.play", pace_lfplay)]
+
+
+def feed_cases():
+    held = []
+    for pname, pwhat, pace in PACERS:
+        ok_all = True
+        for cid, what, make, ids, rate, p in THREAD_CASES:
+            if p is not pace:
+                continue
+            took, n, w = run(make, ids, FEED_RATE, pace)
+            got = w.count()
+            ok = took == n and got == n
+            ok_all = ok_all and ok
+            check("%s feed (%s): %s, a thread witness, read every frame with the wire fed at %d/s, its pacer at "
+                  "its own %d/s" % (pname, cid, what, FEED_RATE, rate), ok,
+                  "read %d, the socket took %d, of %d sent" % (got, took, n))
+            ld = w.proc_info.get("load") or {}
+            why = PW.void_reason(w, running=False)
+            check("%s feed (%s): its thread ended with no error, and the load guard VOIDs it (the most in any "
+                  "%g s, %s, over %d)" % (pname, cid, PW.LOAD_WINDOW_S, ld.get("peak"), PW.LOAD_LIMIT),
+                  not w.is_alive() and w.proc_info["error"] is None and (why or "").startswith("witness load: "),
+                  (w.proc_info, why))
+        if ok_all:
+            held.append(FEED_RATE)
+    check("load limit: LOAD_LIMIT (%d) is half the lowest feed every pacer's witnesses read every frame at (%s)"
+          % (PW.LOAD_LIMIT, "%d/s" % min(held) if len(held) == len(PACERS) else "not shown for every pacer"),
+          len(held) == len(PACERS) and PW.LOAD_LIMIT == min(held) / 2, held)
 
 
 # ---------------------------------------------------------------------- the rate guard
@@ -770,13 +816,15 @@ def load_cases():
     class Bare(PW.ThreadWitness):
         def run(self):
             pass
-    for name, n, step, over in (("501 reads in 0.95 s", 501, 0.0019, True),
-                                ("501 reads 2 ms apart (1.000 s first to last: 500 in any 1 s)", 501, 0.002, False),
-                                ("500 reads in 0.5 s", 500, 0.001, False)):
+    L = PW.LOAD_LIMIT
+    for name, n, span, over in (("%d reads in 0.95 s" % (L + 1), L + 1, 0.95, True),
+                                ("%d reads 1/%d s apart (1.000 s first to last: %d in any 1 s)" % (L + 1, L, L),
+                                 L + 1, 1.0, False),
+                                ("%d reads in 0.5 s" % L, L, 0.5, False)):
         b = Bare(daemon=True)
         b._twin_th = threading.Thread(target=lambda: None)     # started, as void_reason asks
         for k in range(n):
-            b._count_read(100.0 + k * step)
+            b._count_read(100.0 + k * span / L)
         why = PW.void_reason(b, running=False)
         check("load counter: %s -> peak %d, %s" % (name, b.proc_info["load"]["peak"], "VOID witness load" if over
                                                    else "no load VOID"),
@@ -785,18 +833,18 @@ def load_cases():
     # each of the six: every frame its loop reads counts, error frames and ids it keeps no record of too
     over = {}
     for cid, make, ids in LOAD_CASES:
-        w = loaded(make, ids, 500, 100)
+        w = loaded(make, ids, L, 100)
         ld = w.proc_info.get("load") or {}
         why = PW.void_reason(w)
-        check("%s load: its witness counted all 600 frames read (500 data, ids it keeps and not, 100 error "
-              "frames) and is VOID \"witness load\"" % cid,
-              ld.get("reads") == 600 and ld.get("peak", 0) > PW.LOAD_LIMIT and (why or "").startswith("witness load: "),
+        check("%s load: its witness counted all %d frames read (%d data, ids it keeps and not, 100 error "
+              "frames) and is VOID \"witness load\"" % (cid, L + 100, L),
+              ld.get("reads") == L + 100 and ld.get("peak", 0) > L and (why or "").startswith("witness load: "),
               (ld, why))
         over[cid] = w
-        c = loaded(make, ids, 350, 50)
+        c = loaded(make, ids, L - 150, 50)
         cld = c.proc_info.get("load") or {}
-        check("%s load: 400 frames read -> no load VOID (the control)" % cid,
-              cld.get("reads") == 400 and PW.void_reason(c) is None, (cld, PW.void_reason(c)))
+        check("%s load: %d frames read -> no load VOID (the control)" % (cid, L - 100),
+              cld.get("reads") == L - 100 and PW.void_reason(c) is None, (cld, PW.void_reason(c)))
         c.stop_ev.set()
         c.join(3.0)
     for cid, module, cls in LOAD_CLASSES:
@@ -893,7 +941,7 @@ def load_cases():
                 def start(self):    # run_case's sleeps are stubbed: its stop must not come before the reads
                     real.start(self)
                     t_end = time.time() + 5.0
-                    while time.time() < t_end and (self.proc_info.get("load") or {}).get("reads", 0) < 600:
+                    while time.time() < t_end and (self.proc_info.get("load") or {}).get("reads", 0) < L + 100:
                         time.sleep(0.02)
             IB.Witness = W
             can = types.SimpleNamespace(Bus=lambda **k: TWC.FakeBus())
@@ -905,7 +953,7 @@ def load_cases():
                 {"frames": [], "modes": [], "end": 1000}, "stub", time.strftime("%Y%m%dT%H%M%S")))
             return rec, spy.calls - before
 
-        rec, n = ib(ListBus(ANY_IDS, 500, 100))
+        rec, n = ib(ListBus(ANY_IDS, L, 100))
         check("load B20 run_case: VOID witness load, nothing judged",
               (rec.get("verdict") or "").startswith("VOID: witness load: ") and n == 0 and rec.get("judged") is None,
               (rec.get("verdict"), n, (rec.get("witness_proc") or {}).get("load")))
@@ -917,10 +965,11 @@ def main(argv):
     only = None
     if "--case" in argv:
         only = set(argv[argv.index("--case") + 1].split(","))
-    own = {"void", "rates", "load"}
+    own = {"void", "rates", "load", "feed"}
     for part, run_it, arg in ((void_cases, not only or "void" in only, ()),
                               (rate_cases, not only or "rates" in only, ()),
                               (load_cases, not only or "load" in only, ()),
+                              (feed_cases, not only or "feed" in only, ()),
                               (wire_cases, not only or bool(only - own), (only - own if only else None,))):
         if not run_it:
             continue
@@ -999,7 +1048,7 @@ MUTANTS = [
     # the run-time load guard (answer (b) to 1bcd2aa9, 2026-11-19)
     ("proc_witness", "load", "void_reason ignores the load",
      "        load = load_reason(w)\n        if load:\n            return load\n", ""),
-    ("proc_witness", "load", "the limit taken as 600", "    if not ld or ld[\"peak\"] <= ld[\"limit\"]:\n",
+    ("proc_witness", "load", "the limit taken as 100 over", "    if not ld or ld[\"peak\"] <= ld[\"limit\"]:\n",
      "    if not ld or ld[\"peak\"] <= ld[\"limit\"] + 100:\n"),
     ("proc_witness", "load", "a load at the limit is VOID", "    if not ld or ld[\"peak\"] <= ld[\"limit\"]:\n",
      "    if not ld or ld[\"peak\"] < ld[\"limit\"]:\n"),
@@ -1015,6 +1064,17 @@ MUTANTS = [
     ("x2_jam_cases", "load", "B5-B8's inner read not counted", "                m = self.recv(timeout=0.0)\n",
      "                m = self.bus.recv(timeout=0.0)\n"),
     ("suite_judges", "load", "suite jam judge misses a load VOID", "|witness load: )", ")"),
+    # the load limit's basis (answer (1) to f29f2626, 2026-11-19)
+    ("proc_witness", "feed", "the limit over half the feed shown", "LOAD_LIMIT = 1200\n", "LOAD_LIMIT = 1300\n"),
+    ("skip_method_bench", "feed", "the Player a continuous spin",
+     "                    if left > 0.002:\n                        time.sleep(left - 0.002)\n",
+     "                    if False:\n                        time.sleep(left - 0.002)\n"),
+    ("interlock_bench", "feed", "interlock_bench.play a continuous spin",
+     "            if left > 0.002:\n                time.sleep(left - 0.002)\n",
+     "            if False:\n                time.sleep(left - 0.002)\n"),
+    ("lowid_flood_skip_bench", "feed", "lowid_flood_skip_bench.play a continuous spin",
+     "                elif left > SPIN_THRESHOLD_S:\n                    time.sleep(left - SPIN_THRESHOLD_S)\n",
+     "                elif False:\n                    time.sleep(left - SPIN_THRESHOLD_S)\n"),
 ]
 
 

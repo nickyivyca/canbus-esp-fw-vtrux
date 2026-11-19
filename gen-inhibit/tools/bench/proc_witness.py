@@ -191,10 +191,12 @@ class ProcWitness(object):
 # counts every frame its loop reads (self.recv: board frames, error frames, every kind), and the most it
 # read in any LOAD_WINDOW_S; over LOAD_LIMIT its judgements are VOID "witness load". The six tools' tables
 # keep their rate under the limit (test_busywait_witnesses' rate guard); this guards what no table holds:
-# the boards' own frames, and the error frames of a burst or a jam. The basis: a thread under a continuous
-# spin read about 1000 frames/s (test_busywait_witnesses, B12's can-fail, 2026-11-19), and the limit is half.
+# the boards' own frames, and the error frames of a burst or a jam. The basis (the reviewer's answer (1) to
+# f29f2626, 2026-11-19): each tool's witness under its own pacer at its own rate read every frame with the
+# wire fed at 2400 frames/s, for each of the three pacers (test_busywait_witnesses, part feed), and the
+# limit is half the lowest feed so shown.
 LOAD_WINDOW_S = 1.0
-LOAD_LIMIT = 500
+LOAD_LIMIT = 1200
 
 
 def load_reason(w):
@@ -206,8 +208,8 @@ def load_reason(w):
     ld = (getattr(w, "proc_info", None) or {}).get("load")
     if not ld or ld["peak"] <= ld["limit"]:
         return None
-    return ("witness load: %d frames read in %g s (at %.1f s), over %d (half the ~1000/s a thread kept "
-            "under a continuous spin)" % (ld["peak"], ld["window_s"], ld["peak_at_s"], ld["limit"]))
+    return ("witness load: %d frames read in %g s (at %.1f s), over %d (half the 2400/s feed a thread "
+            "witness read in full under each pacer)" % (ld["peak"], ld["window_s"], ld["peak_at_s"], ld["limit"]))
 
 
 def void_reason(w, running=True):
