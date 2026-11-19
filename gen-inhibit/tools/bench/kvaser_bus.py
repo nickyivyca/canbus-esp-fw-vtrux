@@ -216,6 +216,29 @@ class InnomakerError(RuntimeError):
     """An Innomaker role could not be handed over, opened or handed back (bench_layer's refusal named)."""
 
 
+_gi_paths_mod = None                              # gi_paths, once loaded (_gi_paths())
+
+
+def _gi_paths():
+    """gi_paths, the module beside this file. A process that loaded this module by file need not
+    have this folder on sys.path: the chain runner does, through the suite's kvaser_link_down,
+    and from can-tools 0f9c85f every link_down there runs the guard, so a plain `import gi_paths`
+    raised and stopped run gen-inhibit-bench_20261119T031110_ffdf at its start identify. A
+    gi_paths already imported, or importable, is used as it is; otherwise it is loaded by file
+    from here."""
+    global _gi_paths_mod
+    if _gi_paths_mod is None:
+        try:
+            import gi_paths as mod
+        except ImportError:
+            spec = importlib.util.spec_from_file_location("_kvaser_bus_gi_paths",
+                                                          os.path.join(HERE, "gi_paths.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        _gi_paths_mod = mod
+    return _gi_paths_mod
+
+
 def _lock_holder():
     """The bench log's holder ({who, run, pid, ts}, or None when free), replayed by shared/bench's
     own vtrux_bench.bench_lock. Raises BenchNotHeld when it cannot say."""
@@ -225,8 +248,7 @@ def _lock_holder():
         raise BenchNotHeld("vtrux_bench is not importable (%s): a real adapter opens only in a bench "
                            "run, with the pinned core's shared/bench on PYTHONPATH" % e)
     try:
-        import gi_paths
-        return bench_lock.read_state(gi_paths.bench_log())["holder"]
+        return bench_lock.read_state(_gi_paths().bench_log())["holder"]
     except Exception as e:      # noqa: BLE001  any failure to read the lock is "not held"
         raise BenchNotHeld("the bench log could not be read: %s: %s" % (type(e).__name__, e))
 
