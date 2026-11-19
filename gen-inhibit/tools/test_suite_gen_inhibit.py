@@ -1980,6 +1980,12 @@ def test_pins(settings):
         os.environ["PIN_TEST_FAIL"] = ""
         e = raises(lambda: PINS_INSTALLED(s), ValueError)
         check("pins (real): a pin tool missing from gi_tools -> refused", e is not None and "can-tools" in str(e), e)
+        # the host's python itself will not start: no tool ran, so nothing is checked -> refused
+        hosts = dict(s.get("hosts") or {})
+        hosts["local"] = dict(hosts.get("local") or {}, python=[os.path.join(BASE, "no_such_python"), "-B"])
+        e = raises(lambda: PINS_INSTALLED(dict(s, hosts=hosts)), ValueError)
+        check("pins (real): a python that cannot run -> refused, both named as could not run",
+              e is not None and str(e).count("could not run") == 2, e)
     finally:
         if saved is None:
             os.environ.pop("PIN_TEST_FAIL", None)
