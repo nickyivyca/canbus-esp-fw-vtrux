@@ -25,7 +25,8 @@ The rates: the interlock slice the Player, play() and the slice cases replay, 54
 stimulus cache, lowid_flood_stimulus.json: 0x051, 0x054, 0x639, 0x471 every 10 ms, 0x440 and 0x411 every
 50 ms, 0x592 every 100 ms, 0x617 every 250 ms), here built with the same ids and periods; B12's, the e4
 window it replays, 70637 frames in 30 s (e4_device_calibration.load_window). B20's host scenarios run at
-97-114 frames/s, under the slice's rate.
+109-125 frames/s, and its capture replay rekey-long at 412 frames/s over 224 s (469 in its busiest 1 s),
+under the slice's rate (corrected 2026-11-19: this said 97-114, which left rekey-long out).
 
 The bus is a datagram socketpair: a feeder process (the wire) sends RATE frames per s for SECONDS s,
 non-blocking, so a frame the reader does not take in time is lost as a CAN raw socket loses it; the
@@ -41,6 +42,15 @@ witness reads the other end through a bus object with recv(timeout).
                     pacers turned into a continuous spin at 454 frames/s the thread still read every frame;
                     so it fails when a rate rises past what a thread keeps up with, not on a change of
                     pacer at the slice's rate.
+  rate guard        (the reviewer's ruling 1 to 860e32c9, 2026-11-19) each of the six tools' highest
+                    frame rate in any 1 s, from its own tables, is under 500/s, half the ~1000/s a thread
+                    kept under a continuous spin: the slice as lowid_flood_skip_bench.build_stimulus
+                    gives it, looped as the pacers loop it (463/s); B4 adds its arms' events
+                    (skip_method_bench.ARMS, FILLER_FRAMES); B20 every interlock_bench.CASES stimulus as
+                    interlock_bench.build writes it (into scratch/). A source scan holds each tool to
+                    sending the slice as it is, with no other event or flood. The witnesses also read
+                    what is not in these tables: the boards' own frames, and on B9, B10 and B5-B8 the
+                    error frames of a burst or jam.
 
 Then each tool's VOID path for a witness whose loop died (its bus raised): void_reason and void_line name
 a dead thread and a dead child; B4's run_arm marks the arm and both judges VOID it; B1's witness dies
@@ -350,6 +360,110 @@ def wire_cases(only):
               w.proc_info)
 
 
+# ---------------------------------------------------------------------- the rate guard
+# (gen-inhibit reviewer's answer to 860e32c9, ruling 1, 2026-11-19): the six regression cases above fail
+# on a rate a thread cannot keep up with, not on a change of pacer, so each of the six tools' highest
+# frame rate, from its own stimulus and pacer tables, must stay under half the thread's capacity.
+
+THREAD_CAPACITY = 1000.0     # frames/s a thread kept under a continuous spin (B12's can-fail, 2026-11-19: 4068 of 9420 in 4 s)
+RATE_LIMIT = THREAD_CAPACITY / 2
+RATE_WINDOW_S = 1.0
+
+
+def peak_rate(times, window=RATE_WINDOW_S):
+    """The most frames in any `window` s starting at a frame, per s."""
+    import bisect
+    ts = sorted(times)
+    return max((bisect.bisect_left(ts, t + window) - i for i, t in enumerate(ts)), default=0) / window
+
+
+def looped(stim):
+    """Two passes of stim's times, as skip_method_bench.Player and lowid_flood_skip_bench.play loop it
+    (each pass starts stim[-1][0] after the one before), so the wrap is inside the window."""
+    span = stim[-1][0]
+    return [t for t, _a, _d in stim] + [span + t for t, _a, _d in stim]
+
+
+def b4_event_peak(S):
+    """(frames/s, arm): the most frames B4's events add in any RATE_WINDOW_S, over S.ARMS' offsets. Each
+    event sends the marker, the VCM N+1 straight behind N, and on a filler arm S.FILLER_FRAMES x 0x050;
+    an upper bound, since the N+1 the Player then skips is not taken off."""
+    best = (0.0, None)
+    for name, (filler, offs, _cls, _trip) in S.ARMS.items():
+        per = 2 + (S.FILLER_FRAMES if filler else 0)
+        n = max(sum(1 for o in offs if a <= o < a + RATE_WINDOW_S) for a in offs)
+        best = max(best, (n * per / RATE_WINDOW_S, name))
+    return best
+
+
+def src_lines(mod, *wanted):
+    """{line: times it occurs} for each stripped source line in wanted, comments left out."""
+    lines = [ln.strip() for ln in open(mod.__file__, encoding="utf-8").read().splitlines()
+             if not ln.lstrip().startswith("#")]
+    return {w: lines.count(w) for w in wanted}
+
+
+def calls(mod, needle):
+    return [ln.strip() for ln in open(mod.__file__, encoding="utf-8").read().splitlines()
+            if needle in ln and not ln.lstrip().startswith("#")]
+
+
+def rate_cases():
+    import lowid_flood_skip_bench as LF
+    import skip_method_bench as S
+    import slcan_refusal_probe as B1
+    import wrong_bitrate_errors as B9
+    import trip6_rearm_check as B10
+    import x2_jam_cases as XJ
+    import interlock_bench as IB
+    stim = LF.build_stimulus()
+    sl = peak_rate(looped(stim))
+    src = "the interlock slice (lowid_flood_skip_bench.build_stimulus, %d frames in %.1f s), looped" % (
+        len(stim), stim[-1][0])
+    # each tool sends that slice, unchanged, through its pacer, and nothing else paced: its own lines
+    scans = [
+        ("B4", S, ["stim = LF.build_stimulus()", "player = Player(pc, stim)"],
+         ['player.request(base + off, filler, "%s#%d" % (name, k))']),
+        ("B1", B1, ["player = S.Player(pc, LF.build_stimulus())"], []),
+        ("B9", B9, ["stim = LF.build_stimulus()", "player = S.Player(pc, stim)"], []),
+        ("B10", B10, ["stim = LF.build_stimulus()", 'pl["p"] = S.Player(pc, stim)'], []),
+        ("B5-B8", XJ, ["stim = LF.build_stimulus()", "th = threading.Thread(target=LF.play, args=(tx, stim, seconds),"],
+         []),
+    ]
+    for cid, mod, lines, requests in scans:
+        got = src_lines(mod, *lines)
+        req = calls(mod, ".request(")
+        flood = calls(mod, "flood_period")
+        check("rate guard %s: scan: %s sends the slice through its pacer as it is (%s), with no other event "
+              "or flood" % (cid, os.path.basename(mod.__file__), "; ".join(lines)),
+              all(v == 1 for v in got.values()) and req == requests and flood == [], (got, req, flood))
+    ev, arm = b4_event_peak(S)
+    rates = [("B4", sl + ev, "%s, %.0f/s; plus arm %s's events, %.0f/s (skip_method_bench.ARMS, FILLER_FRAMES %d, "
+                             "the marker and N+1)" % (src, sl, arm, ev, S.FILLER_FRAMES))]
+    for cid in ("B1", "B9", "B10"):
+        rates.append((cid, sl, "%s by skip_method_bench.Player" % src))
+    rates.append(("B5-B8", sl, "%s by lowid_flood_skip_bench.play, no flood" % src))
+    # B20: every case's stimulus as interlock_bench.build writes it, played once by interlock_bench.play
+    work = gi_paths.scratch("busywait-rates")
+    saved = IB.STIM_DIR
+    IB.STIM_DIR = os.path.join(work, "stim")
+    try:
+        per_case = []
+        for c in IB.CASES:
+            _info, parsed = IB.build(c[0], os.path.join(work, "gen"))
+            per_case.append((peak_rate([t / 1e6 for t, _i, _h in parsed["frames"]]), c[0]))
+    finally:
+        IB.STIM_DIR = saved
+        gi_paths.remove_tree(work)
+    r20, case20 = max(per_case)
+    rates.append(("B20", r20, "case %s, the highest of interlock_bench.CASES' %d stimuli (interlock_bench.build)"
+                  % (case20, len(per_case))))
+    for cid, rate, why in rates:
+        check("rate guard %s: highest %.0f frames/s in any %g s, under %.0f/s (half the ~%.0f/s a thread kept "
+              "under a continuous spin); from %s" % (cid, rate, RATE_WINDOW_S, RATE_LIMIT, THREAD_CAPACITY, why),
+              rate < RATE_LIMIT, rate)
+
+
 # ---------------------------------------------------------------------- the VOID paths
 
 def dead(make_witness):
@@ -415,6 +529,20 @@ def void_cases():
         v = fn(dict(arm, went_live=True))["verdict"]
         check("B4 %s: such an arm is VOID, naming the dead witness" % name,
               v.startswith("VOID: the witness thread failed"), v)
+
+    # B4's raw pairs (the reviewer's ruling 2 to 860e32c9, 2026-11-19): every data frame since the arm's
+    # mark as [raw stamp, receipt], kept in the arm's record so the clock fit can be checked afterwards
+    check("B4 run_arm: the arm's record keeps the raw pairs (none read here)", arm.get("witness_raw_pairs") == [],
+          sorted(arm))
+    w = B4_W(SockBus(socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)[0], KEEP_B4))
+    w.start()
+    w.stop_ev.set()
+    w.join(3.0)
+    w.frames[:] = [(0, 5000.1234567, 0x051, "00"), (1, 5000.2, 0x051, "01"), (2, None, 0x050, "02")]
+    w.frame_rx[:] = [1.7e9 + 0.5, 1.7e9 + 0.6000004, 1.7e9 + 0.7]
+    got = w.raw_pairs(1)
+    check("B4 raw_pairs: each data frame since the mark, [raw stamp, receipt], to the microsecond, a missing "
+          "stamp kept as None", got == [[5000.2, round(1.7e9 + 0.6000004, 6)], [None, 1.7e9 + 0.7]], got)
 
     # B1: its witness dies; a command VOID where it would pass, a FAIL standing; the suite's judge
     w1 = dead(B1_W)
@@ -575,8 +703,10 @@ def main(argv):
     only = None
     if "--case" in argv:
         only = set(argv[argv.index("--case") + 1].split(","))
+    own = {"void", "rates"}
     for part, run_it, arg in ((void_cases, not only or "void" in only, ()),
-                              (wire_cases, not only or bool(only - {"void"}), (only - {"void"} if only else None,))):
+                              (rate_cases, not only or "rates" in only, ()),
+                              (wire_cases, not only or bool(only - own), (only - own if only else None,))):
         if not run_it:
             continue
         try:
@@ -635,6 +765,22 @@ MUTANTS = [
      "    t = text(F.one(r\"B10_trip6_rearm_check\\.txt\"))\n    pv = None\n"),
     ("suite_judges", "void", "suite jam judge misses a dead witness",
      "(witness clock |the witness (child|thread) )", "(witness clock )"),
+    # B4's raw pairs (ruling 2 to 860e32c9, 2026-11-19)
+    ("skip_method_bench", "void", "B4 run_arm keeps no raw pairs", "    rec_arm[\"witness_raw_pairs\"] = wit.raw_pairs(mark)\n",
+     ""),
+    ("skip_method_bench", "void", "B4 raw_pairs from the start, not the mark",
+     "            fr, frx = self.frames[mark:], self.frame_rx[mark:]\n        return [[None",
+     "            fr, frx = self.frames, self.frame_rx\n        return [[None"),
+    # the rate guard (ruling 1 to 860e32c9, 2026-11-19)
+    ("skip_method_bench", "rates", "B4's filler 30 frames, not 9", "FILLER_FRAMES = 9\n", "FILLER_FRAMES = 30\n"),
+    ("slcan_refusal_probe", "rates", "B1's Player given an event",
+     "        player = S.Player(pc, LF.build_stimulus())\n",
+     "        player = S.Player(pc, LF.build_stimulus())\n        player.request(0.0, True, \"extra\")\n"),
+    ("wrong_bitrate_errors", "rates", "B9 sends the slice twice over", "        stim = LF.build_stimulus()\n",
+     "        stim = LF.build_stimulus() * 2\n"),
+    ("x2_jam_cases", "rates", "B5-B8's replay floods", "args=(tx, stim, seconds),", "args=(tx, stim, seconds, 0.001),"),
+    ("interlock_bench", "rates", "B20's slice cases at twice the rate", "        fr = slice_frames()\n",
+     "        fr = sorted(slice_frames() * 2)\n"),
 ]
 
 

@@ -50,9 +50,11 @@ only evidence of the mode, so that is VOID whatever is believed installed.
 
   device_fit(points)  points [(perf_rx, epoch_rx, ts)] -> the fit: n, offset_s, epoch_lag_s,
                       the residual (receipt minus mapped) p50/p99/max and its p10-p90
-                      spread, slope_ppm, the bounds, and `void` (None, or why it is VOID:
-                      no message; the stamps on the epoch clock; fewer than MIN_POINTS;
-                      |slope| over SLOPE_MAX_PPM; residual p99 over RESIDUAL_P99_MAX_S)
+                      spread, slope_ppm, span_s, line_residual_p99_s, short_fit and the
+                      slope_bound_ppm it was held to (2026-11-19: COARSE_SLOPE_MAX_PPM for a
+                      short fit, see SHORT_FIT_FACTOR), the bounds, and `void` (None, or why it
+                      is VOID: no message; the stamps on the epoch clock; fewer than MIN_POINTS;
+                      |slope| over its slope bound; residual p99 over RESIDUAL_P99_MAX_S)
   mapped(fit, ts)     a PCAN stamp on the perf_counter clock
   gap_agrees(a, b)    a judged gap from mapped stamps and the receipt-time gap the live
                       sequence paced on are within RESIDUAL_P99_MAX_S
@@ -133,8 +135,10 @@ def kvaser_times(bus, frames, errs):
     if fit["void"]:
         return rx_frames, rx_errs, "%s: fit VOID (%s)" % (SOCKETCAN, fit["void"])
     note = ("%s (SocketCAN raw stamps, device_fit onto the epoch clock: n %d, residual p50 %.6f / p99 %.6f "
-            "/ max %.6f s, slope %s ppm; error frames on host receipt time)"
-            % (HW, fit["n"], fit["residual_p50_s"], fit["residual_p99_s"], fit["residual_max_s"], fit["slope_ppm"]))
+            "/ max %.6f s, slope %s ppm (bound %g%s); error frames on host receipt time)"
+            % (HW, fit["n"], fit["residual_p50_s"], fit["residual_p99_s"], fit["residual_max_s"], fit["slope_ppm"],
+               fit["slope_bound_ppm"], ", a short fit: span %.3f s under %.3f s" % (fit["span_s"], fit["short_fit_span_s"])
+               if fit["short_fit"] else ""))
     return [(mapped(fit, raw),) + tuple(rest) for raw, _rx, *rest in frames], rx_errs, note
 
 
@@ -201,8 +205,19 @@ def void(rec, note):
 EPOCH_LAG_S = 2.0            # stamps this close to time.time() at receipt are host time
 RESIDUAL_P99_MAX_S = 0.050   # host delivery latency measured p99 ~3 ms, max ~9 ms
 SLOPE_MAX_PPM = 100.0        # measured +0.8 ppm against perf_counter
+# A SHORT FIT (gen-inhibit reviewer, 2026-11-19, answer to 860e32c9 ruling 2 (a)): a fit whose span
+# of device stamps is under SHORT_FIT_FACTOR x its line residual p99 / SLOPE_MAX_PPM keeps the coarse
+# slope bound COARSE_SLOPE_MAX_PPM instead of SLOPE_MAX_PPM; its slope is recorded either way. The
+# line residual is receipt minus the least-squares line through the points (line_residual_p99_s),
+# not the offset-only residual the residual bound reads: a drift inflates the offset-only residual
+# by about half the drift over the span, so with it any slope over SLOPE_MAX_PPM would make its own
+# fit short and the full bound would never apply. The basis of the coarse bound is the judged gaps:
+# B4 judges gaps a few ms long, and a slope of several hundred ppm moves a 1.5 ms gap by under 1 us.
+SHORT_FIT_FACTOR = 2.0
+COARSE_SLOPE_MAX_PPM = 1000.0
 MIN_POINTS = 20
 BOUNDS = {"residual_p99_max_s": RESIDUAL_P99_MAX_S, "slope_max_ppm": SLOPE_MAX_PPM,
+          "coarse_slope_max_ppm": COARSE_SLOPE_MAX_PPM, "short_fit_factor": SHORT_FIT_FACTOR,
           "min_points": MIN_POINTS, "epoch_lag_min_s": EPOCH_LAG_S}
 PCAN_WHY = ("spec 12: the timing witness timestamps at the wire, in hardware; the PCAN's "
             "stamps do not map onto the host clock within the harness bounds, so nothing is "
@@ -235,22 +250,37 @@ def device_fit(points, who="PCAN"):
     ys = [p for p, _e, _ts in points]
     mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
     var = sum((x - mx) ** 2 for x in xs)
-    slope_ppm = None if var == 0 else (sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / var - 1.0) * 1e6
+    gain = None if var == 0 else sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / var
+    slope_ppm = None if gain is None else (gain - 1.0) * 1e6
+    span = max(xs) - min(xs)
+    line_p99 = None if gain is None else _rank(sorted(abs(y - (my + gain * (x - mx))) for x, y in zip(xs, ys)), 0.99)
+    short_span = None if line_p99 is None else SHORT_FIT_FACTOR * line_p99 / (SLOPE_MAX_PPM * 1e-6)
+    short = short_span is not None and span < short_span
+    bound = COARSE_SLOPE_MAX_PPM if short else SLOPE_MAX_PPM
     fit.update(epoch_lag_s=round(epoch_lag, 4), offset_s=off,
                residual_p50_s=round(_rank(res, 0.50), 6), residual_p99_s=round(_rank(res, 0.99), 6),
                residual_max_s=round(res[-1], 6),
                residual_spread_10_90_s=round(_rank(signed, 0.90) - _rank(signed, 0.10), 6),
-               slope_ppm=None if slope_ppm is None else round(slope_ppm, 3))
+               slope_ppm=None if slope_ppm is None else round(slope_ppm, 3),
+               span_s=round(span, 6), line_residual_p99_s=None if line_p99 is None else round(line_p99, 6),
+               short_fit_span_s=None if short_span is None else round(short_span, 3),
+               short_fit=short, slope_bound_ppm=bound)
     if abs(epoch_lag) < EPOCH_LAG_S:
         fit["void"] = ("the %s's stamps are on the host's epoch clock (median %.4f s behind "
                        "receipt): host receipt time, not the %s's device time" % (who, epoch_lag, who))
     elif len(points) < MIN_POINTS:
         fit["void"] = "%d %s messages, fewer than %d to fit its clock on" % (len(points), who, MIN_POINTS)
-    elif slope_ppm is None or abs(slope_ppm) > SLOPE_MAX_PPM:
-        fit["void"] = "slope %s ppm against the host clock, over %g" % (fit["slope_ppm"], SLOPE_MAX_PPM)
+    elif slope_ppm is None or abs(slope_ppm) > bound:
+        fit["void"] = "slope %s ppm against the host clock, over %g%s" % (
+            fit["slope_ppm"], bound, " (%s)" % _short_why(fit) if short else "")
     elif fit["residual_p99_s"] > RESIDUAL_P99_MAX_S:
         fit["void"] = "residual p99 %.4f s, over %g s" % (fit["residual_p99_s"], RESIDUAL_P99_MAX_S)
     return fit
+
+
+def _short_why(fit):
+    return ("a short fit: span %.3f s under %g x line residual p99 %.6f s / %g ppm = %.3f s, so the coarse bound"
+            % (fit["span_s"], SHORT_FIT_FACTOR, fit["line_residual_p99_s"], SLOPE_MAX_PPM, fit["short_fit_span_s"]))
 
 
 def mapped(fit, ts):
@@ -265,10 +295,11 @@ def fit_line(fit):
     if fit.get("offset_s") is None:
         return "pcan clock: n %d, no fit" % fit["n"]
     return ("pcan clock: n %d, offset %.6f s, epoch lag %.4f s (VOID under %g), residual p50 %.6f / "
-            "p99 %.6f s (bound %g) / max %.6f s, p10-p90 %.6f s, slope %s ppm (bound %g)"
+            "p99 %.6f s (bound %g) / max %.6f s, p10-p90 %.6f s, slope %s ppm (bound %g%s)"
             % (fit["n"], fit["offset_s"], fit["epoch_lag_s"], EPOCH_LAG_S, fit["residual_p50_s"],
                fit["residual_p99_s"], RESIDUAL_P99_MAX_S, fit["residual_max_s"],
-               fit["residual_spread_10_90_s"], fit["slope_ppm"], SLOPE_MAX_PPM))
+               fit["residual_spread_10_90_s"], fit["slope_ppm"], fit.get("slope_bound_ppm", SLOPE_MAX_PPM),
+               "; " + _short_why(fit) if fit.get("short_fit") else ""))
 
 
 def pcan_void_verdict(why):

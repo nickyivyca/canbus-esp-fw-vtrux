@@ -161,6 +161,15 @@ class Witness(PW.ThreadWitness):
         mfr, mer, note = sc
         return [(seq, t, arb, hx) for t, seq, arb, hx in mfr], mer, note
 
+    def raw_pairs(self, mark):
+        """[[raw stamp, receipt]] for each data frame since the mark, the points the clock fit takes, kept
+        in the arm's record so its slope bound can be checked against them afterwards (gen-inhibit
+        reviewer's answer to 860e32c9, ruling 2, 2026-11-19). Synced first."""
+        self.sync()
+        with self.lock:
+            fr, frx = self.frames[mark:], self.frame_rx[mark:]
+        return [[None if f[1] is None else round(f[1], 6), round(rx, 6)] for f, rx in zip(fr, frx)]
+
 
 class Player(threading.Thread):
     """Loops the interlock slice on the PCAN; performs requested events."""
@@ -473,6 +482,7 @@ def run_arm(name, player, wit, rec_arm):
     rec_arm["events"] = player.done[n_done:]
     frames, errs, clock = wit.clocked(mark, err_mark)
     rec_arm["witness_clock"] = clock
+    rec_arm["witness_raw_pairs"] = wit.raw_pairs(mark)
     if not WC.judgeable(clock):
         rec_arm["witness_clock_void"] = clock
     why = PW.void_reason(wit)
