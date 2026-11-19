@@ -176,7 +176,11 @@ setter replies with that result. No other task writes the worker's state, and
 there is no exception. A request not taken within 1 s of the setter's call is
 withdrawn and refused with a reason, and never applied later. One the worker
 has already taken is finished and its result reported. On a live bus
-the change takes effect at the next frame. On a quiet bus it can take up to
+the change is applied between frames, before the setter replies, and no
+frame received before it is left queued for the new mode. It is checked
+between the request leaving the client and the reply reaching it, with the
+witness and the device's receive queue showing no backlog; the exact frame
+it lands on is not judged. On a quiet bus it can take up to
 the receive timeout (200 ms), because a wake cannot interrupt a blocked
 receive. The worker's states and every transition between them are the
 table in section 8.1; the only other caller allowed to take the bus is the
@@ -1372,7 +1376,10 @@ queued (user, 2026-11-16).
 
 The handler returns **403 if `gen_inhibit_owns_bus()`**. The
 worker makes that decision (8.1 row 8): the handler posts an update request
-and replies 403 when the worker refuses it, with nothing touched. (OTA is one of
+and replies 403 when the worker refuses it, with nothing touched. The
+refusal is judged at the client: the whole 403 with its reason must reach
+it. How the connection ends afterwards (FIN or RST) is recorded, not
+judged. (OTA is one of
 several flash writers; section 5.1 item 3 extends the same refusal to every
 path that writes flash while the bus is owned.)
 Reflashing under an armed transmitter is never wanted, and `can_disable()` at

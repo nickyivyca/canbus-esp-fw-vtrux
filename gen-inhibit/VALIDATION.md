@@ -120,6 +120,14 @@ missing.
   the worker looked. About 120 frames arrived for the 64-deep queue on
   every re-arm from OBSERVE, and on 1 in 5 entries from OFF (review
   tracker, re-arm stale frames).
+- **"At the next frame" became "between frames, before the setter replies,
+  with no backlog"** on 2026-11-19 (user). On the full replayed bus, frames
+  are about 0.44 ms apart, so judging the exact frame took timing the
+  request's arrival on the air, which needed a Wi-Fi capture (B11raw).
+  madhouse-debian has no Wi-Fi adapter. What the requirement exists for is
+  the polling delay and the stale backlog above. The request-to-reply
+  window bounds the first, and the witness and the receive queue show the
+  second.
 - **Status:** validated.
 
 ### The worker makes every mode change
@@ -1045,6 +1053,13 @@ was read as a logger on the truck dropping frames).
   powertrain bus at 2250 fps that is ~45 unserviced frames and two
   consecutive missed 10 ms slots, against the at-least-64-frame receive
   queue of 5.1 item 1.
+- **The refusal judged at the client:** user, 2026-11-19. B21 had read the
+  403 and the connection's end from a Wi-Fi capture (the addendum of
+  2026-10-16: on `c65c45e` a RST straight after the 403 could cost the
+  client the reply). What the spec needs is the reply reaching the client,
+  and a client that keeps every byte (a raw socket) shows that directly. The
+  connection's end is recorded. madhouse-debian has no Wi-Fi adapter, and
+  the phone it reaches the device through can add or hide a RST.
 - **Status:** validated.
 
 ### 9.4 Image budget
