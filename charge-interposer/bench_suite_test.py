@@ -804,7 +804,9 @@ def test_suites():
     # 306: st.bench-coredump-readback and cf.bench-coredump-readback (spec 9's
     #      core dump read off over USB; the reviewer's follow-on to tracker I
     #      step 2, 2026-11-18)
-    assert len(seen) == 306, "checks across the suites: %d" % len(seen)
+    # 308: st.reset-check and cf.reset-check (its X2 port from --port, the
+    #      reviewer's follow-on to the adapter roles, 2026-11-18)
+    assert len(seen) == 308, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -1367,6 +1369,32 @@ def test_adapters_by_role():
     ka = [c for c in checks if c.id == "keepalive-probe"]
     assert len(ka) == 1 and ka[0].argv[-2:] == ["--port", "{serial_port}"], \
         [c.argv for c in ka]
+
+
+# case-sensitive: powerup-round-com3's "--mode com3" names a mode, not a port
+_HARD_PORT = re.compile(r"^(COM\d+|/dev/(tty|serial/)\S*)$")
+
+
+def test_x2_port_from_settings():
+    """The X2's port is the settings' serial_port for every bench check (the
+    charge-interposer reviewer's follow-on to the adapter roles,
+    2026-11-18: reset_check.py had COM3 in its code): reset-check passes
+    --port {serial_port}, every --port a check passes is {serial_port}, and
+    no check's argv names a port itself (COMn, /dev/tty*, /dev/serial/*)."""
+    s, su = _all()
+    checks = [c for g in su["bench"].groups for c in g.checks if not c.skip]
+    rc = [c for c in checks if c.id == "reset-check"]
+    assert len(rc) == 1, [c.id for c in checks]
+    a = [str(x) for x in rc[0].argv]
+    assert a[0].endswith("bench_drivers/reset_check.py"), a
+    assert "--port" in a and a[a.index("--port") + 1] == "{serial_port}", a
+    assert a[a.index("--serial-log") + 1].startswith("{outdir}"), a
+    for c in checks:
+        a = [str(x) for x in c.argv]
+        ports = [a[i + 1] for i, x in enumerate(a[:-1]) if x == "--port"]
+        assert all(p == "{serial_port}" for p in ports), (c.id, ports)
+        hard = [x for x in a if _HARD_PORT.match(x)]
+        assert not hard, (c.id, hard)
 
 
 def test_esptool_env():
@@ -2172,8 +2200,9 @@ def test_script_coverage():
         src = open(os.path.join(art, n), encoding="utf-8",
                    errors="replace").read()
         # keepalive_probe and rx_proc have one since 2026-11-13 (kvaser_link)
+        # reset_check since 2026-11-18 (its X2 port from --port)
         if (n.startswith("bench_") or n in ("keepalive_probe.py", "rx_proc.py",
-                                            "klog_windows.py")) \
+                                            "klog_windows.py", "reset_check.py")) \
                 and '"--self-test"' in src:
             st.add(n[:-3])
         if "script_can_fail.run(" in src and n != "script_can_fail.py":
@@ -2508,7 +2537,8 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_harness_py_canfails, test_strict_port_off,
          test_vport_split, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
-         test_m_lanes_host, test_idle_safe, test_adapters_by_role, test_esptool_env,
+         test_m_lanes_host, test_idle_safe, test_adapters_by_role,
+         test_x2_port_from_settings, test_esptool_env,
          test_canchg_mode_hooks, test_canx2_slcan_hooks,
          test_x2_test_images_identify, test_slcan_spi_identity,
          test_x2_test_image_flash_first]
@@ -2926,6 +2956,27 @@ def _charger_no_role(s):
                 del c.argv[i:i + 2]
 
 
+# test_x2_port_from_settings's mutants: a port not the settings' again
+def _reset_check_no_port(s):
+    c = _check(s, "reset-check")
+    i = c.argv.index("--port")
+    c.argv = c.argv[:i] + c.argv[i + 2:]
+
+
+def _reset_check_com3(s):
+    c = _check(s, "reset-check")
+    c.argv[c.argv.index("--port") + 1] = "COM3"
+
+
+def _other_port_hard(s):
+    c = _check(s, "charger-silent")
+    c.argv[c.argv.index("--port") + 1] = "/dev/ttyACM0"
+
+
+def _port_positional(s):
+    _check(s, "keepalive-probe").argv.append("/dev/serial/by-id/x2")
+
+
 def _mgroup_always_madhouse(self, name, checks):
     return B.Group(name, host="madhouse", ship=self.ship, checks=checks)
 
@@ -3197,6 +3248,15 @@ MUTANTS = {
          "the diag witness named by its PCAN channel"),
         ("bench", _wrap_suite("bench", _charger_no_role),
          "the charger's Innomaker with no role named")],
+    "test_x2_port_from_settings": [
+        ("bench", _wrap_suite("bench", _reset_check_no_port),
+         "reset-check passes no --port (its COM3 again)"),
+        ("bench", _wrap_suite("bench", _reset_check_com3),
+         "reset-check given COM3"),
+        ("bench", _wrap_suite("bench", _other_port_hard),
+         "another check's --port a tty of its own"),
+        ("bench", _wrap_suite("bench", _port_positional),
+         "a by-id link written into a check's argv")],
     "test_idle_safe": [
         ("bench", _wrap_suite("bench", _vport_left_safe),
          "vport_bench left idle-safe"),
