@@ -132,6 +132,13 @@ def analyse(run):
     arm = list(d["arms"])[0]
     a = d["arms"][arm]
     r = P.rejudge(run, arm, keep_frames=True)
+    # Spec 12.1 (c5849685): an arm void for any reason on its list (rejudge's arm_void, attribution
+    # over the same window from the arm included) is not judged; a reason on no entry is an error row
+    if r.get("arm_unlisted"):
+        return {"run": os.path.basename(run), "mode": d.get("mode"),
+                "error": "a void reason on no spec 12.1 entry: %s" % "; ".join(r["arm_unlisted"])}
+    if r.get("arm_void"):
+        return {"run": os.path.basename(run), "mode": d.get("mode"), "void": r["arm_void"]}
     wire = P.read_witness(os.path.join(os.path.dirname(run), a["witness_raw"]))
     diag, dsum = decode_diag(wire, d.get("decoder"))
     cmds = sorted(r["vcm_times"])

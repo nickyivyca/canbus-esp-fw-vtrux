@@ -8,7 +8,7 @@ an error.
 Run from the reverse-it root. Each mutant is a copy of this folder in the worktree's
 scratch/, with the five scripts from BATCH_SRC (default: this folder) and one edit, run
 through the test's BATCH_DIR. The whole folder, since the scripts run tools beside them
-($A, capture_window.py among them): a copy of the five alone failed the same five checks
+($A; capture_window.py among them until topic (E)'s follow-up removed it): a copy of the five alone failed the same five checks
 with no edit at all. The unmutated copy runs first, as the control: if it fails a check,
 no kill counts. About 25 minutes. Gen-inhibit tester, 2026-10-20.
 
@@ -28,17 +28,22 @@ FILES = ["baseline_b21.sh", "baseline_b_noX2.sh", "baseline_b_jam.sh", "x2_relea
          "baseline_b_otagroup.sh", "baseline_b_hand.sh", "b6_rate_run.sh", "b6_ecc_run.sh"]
 TEST = "test_baseline_capture_stop.py"
 MUTANTS = [
-    ("B21: the stop file is never written", "baseline_b21.sh", '  : > "$stop"\n', ""),
-    ("B21: no tail after the probe", "baseline_b21.sh", '  sleep $TAIL\n  : > "$stop"\n', '  : > "$stop"\n'),
-    ("B21: the stop file is left behind", "baseline_b21.sh", '  rm -f "$stop"\n', ""),
-    ("B21: dumpcap loses its own bound", "baseline_b21.sh", '-a duration:$CAPMAX -w "$cap"', '-w "$cap"'),
-    ("B21: the probe window is not recorded", "baseline_b21.sh",
-     '  echo "{\\"probe_start\\": $t0, \\"probe_end\\": $t1, \\"tail_s\\": $TAIL}" > "$D/B21_probe_window_${body}_$stamp.json"\n', ""),
-    ("B11raw: no tail after the arm", "baseline_b_noX2.sh",
-     '        sleep $TAIL\n        : > "$D/$n.stop"\n', '        : > "$D/$n.stop"\n'),
-    ("B11raw: the stop file is left behind", "baseline_b_noX2.sh", '        rm -f "$D/$n.stop"\n', ""),
-    ("B11raw: the capture record named like an e4 record", "baseline_b_noX2.sh",
-     '--record "$D/capture_$n.json"', '--record "$D/$n.capture.json"'),
+    # B21 at the client and B11raw without a capture (topic (E), 2026-11-19)
+    ("B21: the client judge never run", "baseline_b21.sh",
+     '    $PY -B $A/ota_guard_client_judge.py "$run" > "$D/B21_client_${body}_$C.txt" 2>&1; echo "client $body exit $?"\n',
+     '    echo "client $body skipped"\n'),
+    ("B21: the client judgement of both bodies under one name", "baseline_b21.sh",
+     '> "$D/B21_client_${body}_$C.txt" 2>&1; echo "client $body exit $?"', '> "$D/B21_client_$C.txt" 2>&1; echo "client $body exit $?"'),
+    ("B21: no record judged anyway, the file silent", "baseline_b21.sh",
+     '    echo "verdict ERROR: the probe wrote no record (${run:-no wrote line})" > "$D/B21_client_${body}_$C.txt"\n', ""),
+    ("B21: the newest record in runs/ taken, not the probe's own", "baseline_b21.sh",
+     '  run=$(sed -n \'s/^.*; wrote \\(.*ota_guard_raw_probe_[a-z]*_[0-9T]*\\.json\\)\\r*$/\\1/p\' "$D/B21_probe_${body}_$stamp.txt")\n',
+     '  run=$(ls -t "$GI_RUNS_DIR"/ota_guard_raw_probe_*.json | head -1)\n'),
+    ("B21: the capture interface needed again", "baseline_b21.sh",
+     'STEPS=${GI_B21_STEPS:-guards probe}\n',
+     'STEPS=${GI_B21_STEPS:-guards probe}\n[ -n "${GI_CAPTURE_IFACE:-}" ] || { echo "no capture interface"; exit 2; }\n'),
+    ("B11raw: the raw POSTs dropped", "baseline_b_noX2.sh",
+     '--post-schedule "10:1,20:$back" --post-raw-timeout 3', '--post-schedule "10:1,20:$back"'),
     ("jam: the dump record's ls unquoted again", "baseline_b_jam.sh",
      'rec=$(ls -t "${GI_RUNS_DIR:-$DATA/runs}"/x2_flash_custody_dump_*.json', 'rec=$(ls -t ${GI_RUNS_DIR:-$DATA/runs}/x2_flash_custody_dump_*.json'),
     ("jam: no stop on a missing dump record", "baseline_b_jam.sh",
@@ -82,8 +87,8 @@ def main():
     killed = errors = 0
 
     def run(label, target=None, old=None, new=None):
-        # The whole of bench/, since the scripts run tools from their own folder ($A), and
-        # the fake py runs capture_window.py from there for real; then the five scripts.
+        # The whole of bench/, since the scripts run tools from their own folder ($A); then
+        # the scripts under test.
         d = os.path.join(base, label)
         gi_paths.remove_tree(d)
         shutil.copytree(HERE, d, ignore=shutil.ignore_patterns("__pycache__"))

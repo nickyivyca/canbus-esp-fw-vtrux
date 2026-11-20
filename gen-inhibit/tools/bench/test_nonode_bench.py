@@ -629,6 +629,40 @@ def precondition_tests(m):
         check("precondition (ii): 850 echoes for 900 frames in the %s -> the arm VOID, naming the counts" % phase,
               m.arm_verdict(v)[0] == "VOID" and v.get("acked_" + phase, "").startswith("VOID: 850 echoes for 900")
               and ("acked_back" if phase == "slice" else "acked_slice") not in v, v)
+    # more echoes than frames, counted from the first send (the gen-inhibit reviewer's answer to 878d06fc, 2026-11-20)
+    leftover = {"echoes": 1, "rx": 0, "errors": 0, "kind": ["echo"],
+                "frames": [{"kind": "echo", "id": 0x6A9, "extended": False, "data": "01"}]}
+    for phase in ("slice", "back"):
+        a = base_arm()
+        a.update(driver_running=True, echoes_slice=ok_e(900), echoes_back=ok_e(400))
+        n = 900 if phase == "slice" else 400
+        a["echoes_" + phase] = dict(ok_e(n), echoes=n + 2, echoes_equal_sent=False, before_send=leftover)
+        v = m.judge_arm(a)
+        check("CAN-FAIL more echoes: %d echoes for %d frames in the %s -> the arm VOID, the item naming the counts, "
+              "the extra count and before_send's frames" % (n + 2, n, phase),
+              m.arm_verdict(v)[0] == "VOID"
+              and v.get("acked_" + phase, "").startswith("VOID: %d echoes for %d frames sent in the %s: 2 more echoes "
+                                                         "than frames sent" % (n + 2, n, phase))
+              and v["acked_" + phase].endswith("before the first send: 1 echoes, 0 rx, 0 error frames "
+                                               "(frames echo 0x6a9 [01])")
+              and ("acked_back" if phase == "slice" else "acked_slice") not in v, v)
+    a = base_arm()
+    a.update(driver_running=True, echoes_slice=dict(ok_e(900), echoes=901, echoes_equal_sent=False), echoes_back=ok_e(400))
+    v = m.judge_arm(a)
+    check("more echoes by one, no before_send recorded -> VOID, '1 more', before_send 'not recorded'",
+          v.get("acked_slice", "").startswith("VOID: 901 echoes for 900 frames sent in the slice: 1 more echoes")
+          and v["acked_slice"].endswith("before the first send: not recorded"), v.get("acked_slice"))
+    a = base_arm()
+    a.update(driver_running=True, echoes_slice=dict(ok_e(900), before_send=dict(leftover)), echoes_back=ok_e(400))
+    v = m.judge_arm(a)
+    check("echoes == frames with a leftover in before_send -> no acked item (the leftover stays out of the count)",
+          "acked_slice" not in v and m.arm_verdict(v) == ("main", True), v)
+    check("before_send_text: an extended frame marked x, an rx frame, no frames 'none'",
+          m.before_send_text({"echoes": 0, "rx": 1, "errors": 0, "frames": [
+              {"kind": "rx", "id": 0x18FEF100, "extended": True, "data": ""}]})
+          == "0 echoes, 1 rx, 0 error frames (frames rx 0x18fef100x [])"
+          and m.before_send_text({"echoes": 0, "rx": 0, "errors": 0, "frames": []})
+          == "0 echoes, 0 rx, 0 error frames (frames none)", None)
     a = base_arm()
     a.update(driver_running=True, echoes_slice=dict(ok_e(900), echoes=0, error="CanError: recv after shutdown"),
              echoes_back=ok_e(400))
@@ -706,6 +740,19 @@ MUTANTS += [
     ("player_start starts no Player", "    pl.start()\n    return pl\n", "    return pl\n"),
     ("the slice's echoes judged only when fewer is dropped (any count passes)",
      ' or e["echoes"] < e["sent"]:', ' or False:'),
+    # more echoes than frames sent (the gen-inhibit reviewer's answer to 878d06fc, 2026-11-20)
+    ("more echoes than frames not judged", '        elif e["echoes"] > e["sent"]:\n', '        elif False:\n'),
+    ("more echoes judged only from two extra", '        elif e["echoes"] > e["sent"]:\n',
+     '        elif e["echoes"] > e["sent"] + 1:\n'),
+    ("the extra count not written", '                                   % (e["echoes"], e["sent"], phase, e["echoes"] - e["sent"],\n',
+     '                                   % (e["echoes"], e["sent"], phase, 0,\n'),
+    ("before_send's frames not written", '                                      before_send_text(e.get("before_send"))))\n',
+     '                                      before_send_text(None)))\n'),
+    ("before_send_text drops the extended mark",
+     '"x" if f.get("extended") else ""', '""'),
+    ("before_send_text drops the frames",
+     '                                           f.get("data") or "") for f in bs.get("frames") or []) or "none"\n',
+     '                                           f.get("data") or "") for f in []) or "none"\n'),
 ]
 
 

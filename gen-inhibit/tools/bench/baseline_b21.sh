@@ -5,8 +5,9 @@
 #   1. bench_flash_guard.py --check-accepted   (firmware repo gen-inhibit/tools)
 #   2. bench_ota_guard.py --allow-ota-write    (OFF gets a deliberately invalid image)
 #   3. ota_guard_raw_probe.py, 5 reps per non-OFF mode, the 184-byte multipart body
-#      and then the whole running image, each with an unelevated dumpcap of the
-#      laptop's Wi-Fi, joined by ota_guard_pcap_join.py --expect=no-rst
+#      and then the whole running image, each record judged at the client by
+#      ota_guard_client_judge.py into B21_client_<body>_<commit>.txt (spec 9.3, topic (E),
+#      2026-11-19: no Wi-Fi capture and no pcap join since)
 #
 #   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... [GI_B21_STEPS="guards probe"] bash baseline_b21.sh <running image .bin>
 # Before a first run, read the INCIDENT in plans/gen-inhibit-wican-implementation.md
@@ -19,35 +20,27 @@ DATA=projects/vtrux/notes/artifacts/gen-inhibit   # the SeaDrive half, relative 
 [ -z "${GI_FW_TOOLS:-}" ] || { echo "GI_FW_TOOLS is retired (2026-10-22): unset it"; exit 2; }
 C=${GI_COMMIT:?set GI_COMMIT}
 D=${GI_OUT:-$DATA/runs/baseline_$C/bench}   # GI_OUT: the chain runner's check folder (2026-10-18)
-DUMPCAP=${GI_DUMPCAP:-$GI_HOST_DUMPCAP}   # bench_host.sh
-# GI_DUMPCAP_PRE: a command put in front of dumpcap (test_baseline_capture_stop.py's fake); empty here.
-DUMPCAP_PRE=${GI_DUMPCAP_PRE:-}
-# The capture stops TAIL s after the probe exits (reviewer, 2026-10-20; it ran a fixed
-# 600 s before). In the two e3d9437 captures the device ended every connection within
-# 24 ms of the client's FIN, and sent nothing on port 80 later than 3 ms after the last.
-TAIL=${GI_CAPTURE_TAIL_S:-10}
-CAPMAX=${GI_CAPTURE_MAX_S:-900}
-IFACE=${GI_CAPTURE_IFACE:-$GI_HOST_IFACE}   # bench_host.sh: none on Linux
 mkdir -p "$D"
 export GI_RUNS_DIR="${GI_RUNS_DIR:-$(hpath "$PWD/$DATA/runs")}"   # the guards and the probe write their records there
 STEPS=${GI_B21_STEPS:-guards probe}
-case " $STEPS " in *" probe "*) need_iface ;; esac   # refused before anything runs, as before
-# The host on the WiCAN's hotspot first, rejoined through gi_wifi if the page does not answer
-# (wican_reboot.on_hotspot). If it still does not, B21 is NOT-RUN with the reason, never judged on an
-# unread page (gen-inhibit reviewer, 2026-11-19: run cb08's guards failed on "returned None").
+# The device reached through the run's ota block first: its backend joins the WiCAN's hotspot (the
+# phone, with the host's /32 route to the device through it) and the page must answer after the join
+# (wican_reboot.ota_route; gen-inhibit reviewer, topic (E), 2026-11-19: the guard steps go through the
+# ota block, not whatever route answers). Unset, refused, not joined or no page: B21 is NOT-RUN with
+# the reason, never judged on an unread page (run cb08's guards failed on "returned None").
 if ! $PY -B - "$A" "$D/B21_not_run.txt" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
 import wican_reboot as W
-ok, why = W.on_hotspot()
-print("hotspot: %s" % why)
+ok, why = W.ota_route()
+print("ota route: %s" % why)
 if not ok:
     with open(sys.argv[2], "w", encoding="utf-8") as f:
-        f.write("NOT-RUN: the host is not on the WiCAN's hotspot: %s\n" % why)
+        f.write("NOT-RUN: the device is not reached through the run's ota block: %s\n" % why)
     sys.exit(1)
 PY
 then
-  echo "B21 not run: the host is not on the WiCAN's hotspot"
+  echo "B21 not run: the device is not reached through the run's ota block"
   exit 0
 fi
 case " $STEPS " in *" guards "*)
@@ -55,29 +48,21 @@ $PY -B "$(dirname "$A")/bench_flash_guard.py" --check-accepted > "$D/B21_bench_f
 $PY -B "$(dirname "$A")/bench_ota_guard.py" --host 192.168.80.1 --allow-ota-write > "$D/B21_bench_ota_guard.txt" 2>&1; echo "ota guard exit $?"
 ;; esac
 case " $STEPS " in *" probe "*)
-need_iface
+# Judged at the client (spec 9.3, user 2026-11-19; the gen-inhibit reviewer's topic (E)): the probe
+# keeps every byte of each reply and a page read around each request, and ota_guard_client_judge
+# judges its record. No capture, no pcap join.
 for body in multipart image; do
   stamp=$(date +%Y%m%dT%H%M%S)
-  cap="$D/B21_${C}_${body}_$stamp.pcapng"
-  stop="$D/B21_capture_${body}_$stamp.stop"
-  $PY -B $A/capture_window.py --stopfile "$stop" --record "$D/B21_capture_${body}_$stamp.json" --max $CAPMAX -- \
-    $DUMPCAP_PRE "$DUMPCAP" -q -i "$IFACE" -f "host 192.168.80.1 and tcp port 80" -a duration:$CAPMAX -w "$cap" \
-    > "$D/B21_dumpcap_${body}_$stamp.txt" 2>&1 &
-  dc=$!
-  sleep 3
   extra=""; [ $body = image ] && extra="--image $img"
-  t0=$(date +%s.%N)
   $PY -B $A/ota_guard_raw_probe.py --body $body $extra > "$D/B21_probe_${body}_$stamp.txt" 2>&1; echo "probe $body exit $?"
-  t1=$(date +%s.%N)
-  run=$(ls -t "$GI_RUNS_DIR"/ota_guard_raw_probe_${body}_*.json | head -1)
-  sleep $TAIL
-  : > "$stop"
-  wait $dc; echo "capture $body exit $?"
-  rm -f "$stop"
-  # the capture's start and stop beside the probe's (reviewer, 2026-10-20)
-  echo "{\"probe_start\": $t0, \"probe_end\": $t1, \"tail_s\": $TAIL}" > "$D/B21_probe_window_${body}_$stamp.json"
-  $PY -B $A/ota_guard_pcap_join.py --expect=no-rst "$run" "$cap" > "$D/B21_wire_${body}_$C.txt" 2>&1; echo "join $body exit $?"
-  tail -3 "$D/B21_wire_${body}_$C.txt"
+  run=$(sed -n 's/^.*; wrote \(.*ota_guard_raw_probe_[a-z]*_[0-9T]*\.json\)\r*$/\1/p' "$D/B21_probe_${body}_$stamp.txt")
+  if [ -n "$run" ] && [ -f "$run" ]; then
+    $PY -B $A/ota_guard_client_judge.py "$run" > "$D/B21_client_${body}_$C.txt" 2>&1; echo "client $body exit $?"
+  else
+    echo "verdict ERROR: the probe wrote no record (${run:-no wrote line})" > "$D/B21_client_${body}_$C.txt"
+    echo "client $body: no record"
+  fi
+  tail -1 "$D/B21_client_${body}_$C.txt"
 done
 ;; esac
 sed -i "s/$GI_WICAN_SSID/<GI_WICAN_SSID>/g" "$D"/B21_*.txt

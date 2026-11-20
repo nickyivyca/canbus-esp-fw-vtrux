@@ -177,28 +177,28 @@ def await_new_boot(before, t_post, wait, poll, timeout, select, errors, rejoins)
     return after, why
 
 
-def on_hotspot(wait=30.0, poll=2.0, timeout=8.0, environ=None):
-    """(True, how) when the page answers, at once or after the hotspot's rejoin; (False, why) when it
-    still does not after `wait` s of rejoins: the host is not on the WiCAN's hotspot, and a check that
-    needs it is NOT-RUN, not judged on an unread page (B21's guards; gen-inhibit reviewer, 2026-11-19:
-    run cb08's B21 failed its preconditions on "GET /gen_inhibit returned None")."""
-    errors, rejoins = [], []
-    if read_tries(1, 0, timeout, errors) is not None:
-        return True, "the page answers"
+def ota_route(tries=3, gap=1.0, timeout=8.0, environ=None):
+    """(True, how) once the run's settings.ota block (GI_OTA_SETTINGS) has joined the WiCAN's hotspot
+    through its backend (the phone: the host's /32 route to the device through it) and the page then
+    answers; (False, why) when the block is unset or refused, the join fails, or the page does not
+    answer after it. B21's guard steps reach the device this way, always joining first, never by
+    whatever route happens to answer (gen-inhibit reviewer, topic (E), 2026-11-19; it replaces
+    on_hotspot, which took a page answering by any route). Nothing but the page is asked for."""
+    environ = os.environ if environ is None else environ
     try:
-        select, how = hotspot_select(environ)
+        import gi_wifi as GW
+        cfg = GW.from_env(environ)
+        ok, why = GW.join(cfg)
     except Exception as e:      # gi_wifi.Refused, or a core that cannot be loaded
-        return False, "the page does not answer, and GI_OTA_SETTINGS: %s" % e
-    if select is None:
-        return False, "the page does not answer, and no GI_OTA_SETTINGS to rejoin the hotspot with"
-    rejoin = Rejoin(select, rejoins)
-    t0 = time.time()
-    while time.time() - t0 < wait:
-        rejoin.unreadable(t0)
-        time.sleep(poll)
-        if read_tries(1, 0, timeout, errors) is not None:
-            return True, "the page answers after %d rejoin(s)" % len(rejoins)
-    return False, "the page does not answer after %.0f s and %d rejoin(s) (%s)" % (wait, len(rejoins), how)
+        return False, "GI_OTA_SETTINGS: %s" % e
+    wifi = cfg.get("wifi") or "system"
+    if not ok:
+        return False, "the ota block's %s backend did not join the hotspot: %s" % (wifi, why)
+    errors = []
+    if read_tries(tries, gap, timeout, errors) is None:
+        return False, "joined through the ota block's %s backend (%s), but the page does not answer (%s)" % (
+            wifi, why, errors[-1] if errors else "no error")
+    return True, "joined through the ota block's %s backend (%s); the page answers" % (wifi, why)
 
 
 def reboot_in_check(wait=60.0, poll=1.0, settle=3.0, timeout=8.0, environ=None):

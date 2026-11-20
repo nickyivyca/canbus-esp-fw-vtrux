@@ -13,10 +13,15 @@
 #                                  (on e3d9437 it ran before the x2held arms existed)
 #   B25     <B20 dir>              b25_keystate_judge on B20's rekey-long record
 #   B11     <B11 dir>              quiesce_analysis
-#   B11raw  <B11raw dir>           b11_rawpost_judge, quiesce_analysis
+#   B11raw  <B11raw dir>           b11_rawpost_judge (into B11raw_window_judge.txt since topic (E),
+#                                  2026-11-19; B11raw_rawpost_judge.txt before), quiesce_analysis
 #   B13     <B13 dir> <B2 app dir> <B2 held dir>
 #                                  passive_analysis; respond_booking_check over B13's
 #                                  PASSIVE arms and B2's RESPOND arms
+#   B5      <B5 dir> <records dir> x2_jam_cases rejudge-livetrain on the four livetrain
+#                                  runs' records, into <output>_rejudged.txt (2026-11-19)
+#   B21client <B21 dir> <records dir>  ota_guard_client_judge on B21's two probe records, into
+#                                  B21_client_<body>_<commit>.txt (topic (E), 2026-11-19)
 #   B19present <rt dir> <txabort dir> <abortwin dir> <rxq dir>   copy the four in
 #
 # Run from the reverse-it root. A step whose inputs are missing says so and exits 2:
@@ -59,8 +64,9 @@ case $s in
   B11raw)
     dir=${1:?B11raw dir}
     set -- "$dir"/B11raw_e4_quiesce_*.json; need "$@"
-    args=(); for n in "$@"; do args+=("$n" "${n%.json}.pcapng"); done   # an array: run dirs have spaces
-    $PY -B $A/b11_rawpost_judge.py "${args[@]}" > "$D/B11raw_rawpost_judge.txt" 2>&1; echo "judge exit $?"
+    # the request-to-reply window, from the records alone (spec 3, topic (E), 2026-11-19), into a file
+    # of its own: B11raw_rawpost_judge.txt was the capture judge's
+    $PY -B $A/b11_rawpost_judge.py "$@" > "$D/B11raw_window_judge.txt" 2>&1; echo "judge exit $?"
     $PY -B $A/quiesce_analysis.py "$@" > "$D/B11raw_quiesce_analysis.txt" 2>&1; echo "qa exit $?" ;;
   B13)
     b13=${1:?B13 dir}; app=${2:?B2 app dir}; held=${3:?B2 held dir}
@@ -71,6 +77,50 @@ case $s in
     set -- "$b13"/B13_e4_passive_*passive_${C}_*.json "$app"/B2_e4_presence_respond_${C}_x2app.json "$held"/B2_e4_presence_respond_${C}_x2held.json; need "$@"
     for j in "$@"; do [ -f "$j" ] || { echo "B13: no $j"; exit 2; }; done
     $PY -B $A/respond_booking_check.py "$@" > "$D/B13_respond_booking_check.txt" 2>&1; echo "booking exit $?" ;;
+  B5)
+    # The four livetrain runs' arms re-judged from their records (x2_jam_cases.py
+    # rejudge-livetrain), with the jam's start the witness's first error frame at or after
+    # the train's send (gen-inhibit reviewer, answer to 0cfd6689, 2026-11-19). Each run's
+    # record is the one its output names on its "wrote" line; the re-judgement goes to
+    # <output>_rejudged.txt, which the suite's B5 reads in place of the output. Every record
+    # is found before anything is written.
+    txt=${1:?B5 dir}; recs=${2:?records dir}
+    set -- "$txt"/B5_livetrain_p5000.txt "$txt"/B5_livetrain_p2000_run[0-9].txt; need "$@"
+    [ $# -eq 4 ] && [ -e "$4" ] || { echo "B5: $# livetrain outputs, want 4"; exit 2; }
+    pairs=()
+    for f in "$@"; do
+      r=$(sed -n 's/^wrote .*[\\/]\(x2_jam_livetrain_[0-9T]*\.json\)\r*$/\1/p' "$f")
+      [ -n "$r" ] && [ -f "$recs/$r" ] || { echo "B5: no record for $(basename "$f") (${r:-no wrote line})"; exit 2; }
+      pairs+=("$f" "$recs/$r")
+    done
+    set -- "${pairs[@]}"
+    while [ $# -gt 0 ]; do
+      o="$D/$(basename "${1%.txt}")_rejudged.txt"
+      $PY -B $A/x2_jam_cases.py rejudge-livetrain "$2" > "$o" 2>&1; rc=$?   # before any other expansion
+      echo "B5 $(basename "$1") exit $rc"
+      shift 2
+    done ;;
+  B21client)
+    # B21's two probe runs judged at the client from their records (ota_guard_client_judge.py; spec
+    # 9.3, user 2026-11-19; the gen-inhibit reviewer's readings (s)-(w), answer to b07f7984), into
+    # B21_client_<body>_<commit>.txt, which the suite's B21 reads; baseline_b21.sh writes the same
+    # files on a run since topic (E). Each record is the one its probe output names on its "wrote"
+    # line, all found before anything is written.
+    txt=${1:?B21 dir}; recs=${2:?records dir}
+    pairs=()
+    for body in multipart image; do
+      set -- "$txt"/B21_probe_${body}_*.txt
+      [ $# -eq 1 ] && [ -e "$1" ] || { echo "B21client: $# $body probe outputs, want 1"; exit 2; }
+      r=$(sed -n 's/^.*; wrote .*[\\/]\(ota_guard_raw_probe_[a-z]*_[0-9T]*\.json\)\r*$/\1/p' "$1")
+      [ -n "$r" ] && [ -f "$recs/$r" ] || { echo "B21client: no record for $(basename "$1") (${r:-no wrote line})"; exit 2; }
+      pairs+=("$body" "$recs/$r")
+    done
+    set -- "${pairs[@]}"
+    while [ $# -gt 0 ]; do
+      $PY -B $A/ota_guard_client_judge.py "$2" > "$D/B21_client_$1_${C}.txt" 2>&1; rc=$?
+      echo "B21client $1 exit $rc"
+      shift 2
+    done ;;
   B19present)
     [ $# -eq 4 ] || { echo "B19present: 4 dirs, got $#"; exit 2; }
     for t in rt txabort abortwin rxq; do

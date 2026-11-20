@@ -82,6 +82,146 @@ def run_arm(bus):
             sys.modules["kvaser_bus"] = saved
 
 
+class PostLF(FakeLF):
+    """The POST raises `exc` for the modes in `bad`; the page reads `read` after a failed one."""
+
+    def __init__(self, exc, bad=(1,), read=0):
+        FakeLF.__init__(self, 0)
+        self.exc, self.bad, self.read, self.asked = exc, set(bad), read, None
+
+    def dev_post(self, path):
+        m = int(path.split("mode=")[1].split("&")[0])
+        self.asked = m
+        if m in self.bad:
+            raise self.exc
+        self.mode = m
+        return True
+
+    def page(self):
+        return dict(FakeLF.page(self), mode=self.read if self.asked in self.bad else self.mode)
+
+
+def http_error(code):
+    import urllib.error
+    return urllib.error.HTTPError("http://192.168.80.1/gen_inhibit_set", code, "refused", {}, None)
+
+
+def run_main(lf, pcan_open):
+    """main() with the WiCAN, the PCAN and the runs folder stubbed: (exit code, stdout, record)."""
+    import io
+    import json
+    import contextlib
+    folder = gi_paths.scratch("observe-ack-probe-main")
+    saved = {k: sys.modules.get(k) for k in ("kvaser_bus", "lowid_flood_skip_bench")}
+    sys.modules["kvaser_bus"] = types.SimpleNamespace(pcan_bus=lambda bitrate: pcan_open())
+    sys.modules["lowid_flood_skip_bench"] = lf
+    old_argv, old_runs, old_sleep = sys.argv, O.RUNS, O.time.sleep
+    sys.argv = ["observe_ack_probe.py", "--power", "x", "--x2", "held", "--hold-s", "0.02", "--settle-s", "0"]
+    O.RUNS, O.time.sleep = folder, (lambda s: None)
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            try:
+                code = O.main()
+            except Exception as e:      # noqa: BLE001  a main that raises is a failed check, not a crash
+                code = "raised %r" % e
+        recs = [f for f in os.listdir(folder) if f.endswith(".json")]
+        rec = json.load(open(os.path.join(folder, recs[0]))) if len(recs) == 1 else None
+        return code, out.getvalue(), rec
+    finally:
+        sys.argv, O.RUNS, O.time.sleep = old_argv, old_runs, old_sleep
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+        gi_paths.remove_tree(folder)
+
+
+def rulings_checks():
+    """The gen-inhibit reviewer's B14 rulings (2026-11-19, arm_rulings.b14_row / b14_verdict):
+    the probe records what they read. An INVALID row says whether its mode POST got no answer
+    on the bench path or an answer from the device; a probe cut short is INCOMPLETE, says so,
+    and is judged and recorded, never a bare traceback."""
+    import urllib.error
+    import arm_rulings as AR
+    J = O.judge
+    bench = dict(A(1, True, read=0), post_failure=O.post_failure(urllib.error.URLError("timed out")))
+    dev = dict(A(1, True, read=0), post_failure=O.post_failure(http_error(400)))
+    out = [
+        ("post_failure: an HTTP status is the device's answer",
+         O.post_failure(http_error(400)) == {"by": "device", "http_status": 400}),
+        ("post_failure: no connection is no answer, on the bench path",
+         O.post_failure(urllib.error.URLError("refused"))["by"] == "bench path"
+         and O.post_failure(TimeoutError("timed out"))["by"] == "bench path"),
+        ("INVALID with no answer on the bench path says so, and reads as the bench's",
+         O.BENCH_POST in J([A(0, True), bench, A(2, False)])["rows"][1]["result"]
+         and AR.b14_row(J([A(0, True), bench, A(2, False)])["rows"][1]["result"]) == AR.BENCH),
+        ("INVALID on the device's answer says so, and reads as the device's",
+         "answered 400" in J([A(0, True), dev, A(2, False)])["rows"][1]["result"]
+         and AR.b14_row(J([A(0, True), dev, A(2, False)])["rows"][1]["result"]) == AR.DEVICE),
+        ("INVALID with no POST failure (the page read another mode) is the device's",
+         AR.b14_row(J([A(0, True), A(1, True, read=2), A(2, False)])["rows"][1]["result"]) == AR.DEVICE),
+        ("a probe cut short with every mode tested is INCOMPLETE, cut short, never as specified",
+         O.CUT_SHORT in J([A(0, True), A(1, True), A(2, False)], 5, "OSError: x")["verdict"]
+         and J([A(0, True), A(1, True), A(2, False)], 5, "OSError: x")["verdict"].startswith("INCOMPLETE")),
+        ("a probe cut short names how many arms of how many",
+         "after 2 of 5 arms (OSError: x)" in J([A(0, True), A(1, True)], 5, "OSError: x")["verdict"]),
+        ("INCOMPLETE with no cut short does not say cut short (the reviewer's)",
+         O.CUT_SHORT not in J([A(0, True), A(1, True)])["verdict"]
+         and AR.b14_verdict(J([A(0, True), A(1, True)])["verdict"]) == AR.UNCLEAR),
+        ("a fairly read arm NOT as specified stands beside a probe cut short",
+         J([A(0, True), A(1, False)], 5, "OSError: x")["verdict"] == "NOT as specified"),
+        ("a fairly read arm NOT as specified stands beside an untested mode",
+         J([A(0, True), A(1, False), A(2, False, read=0)])["verdict"] == "NOT as specified"),
+        ("a probe cut short with its control ACKed is still VOID",
+         J([A(0, False), A(1, True)], 5, "OSError: x")["verdict"].startswith("VOID")),
+    ]
+    import can
+    a = O.build_parser().parse_args(["--power", "x", "--x2", "held", "--hold-s", "0.02", "--settle-s", "0"])
+    saved = sys.modules.get("kvaser_bus")
+    sys.modules["kvaser_bus"] = types.SimpleNamespace(pcan_bus=lambda bitrate: FakePcan(raise_at=()))
+    try:
+        def arm(lf):        # an arm that raises is a failed check, not a crash
+            try:
+                return O.one_arm(lf, can, 1, a)
+            except Exception as e:      # noqa: BLE001
+                return {"raised": repr(e)}
+        r1 = arm(PostLF(urllib.error.URLError("timed out")))
+        r2 = arm(PostLF(http_error(400)))
+    finally:
+        if saved is None:
+            sys.modules.pop("kvaser_bus", None)
+        else:
+            sys.modules["kvaser_bus"] = saved
+    out += [
+        ("arm: a POST with no answer is recorded on the bench path and the arm goes on",
+         r1.get("post_ok") is False and (r1.get("post_failure") or {}).get("by") == "bench path"
+         and r1.get("mode_read") == 0 and "ack_errors" in r1),
+        ("arm: a POST the device refused is recorded with its status",
+         (r2.get("post_failure") or {}) == {"by": "device", "http_status": 400}),
+    ]
+    opened = []
+
+    def pcan_open():
+        opened.append(1)
+        if len(opened) == 3:
+            raise OSError("PCAN gone")
+        return FakePcan(raise_at=())
+    code, text, rec = run_main(PostLF(http_error(400), bad=()), pcan_open)
+    out += [
+        ("main: a probe cut short prints how far it got", "STOPPED after 2 of 5 arms: OSError: PCAN gone" in text),
+        ("main: and still prints its rows and a verdict line naming the cut short",
+         "  mode 1: ack errors" in text and "verdict: INCOMPLETE" in text and O.CUT_SHORT in text),
+        ("main: the record keeps why it stopped", rec is not None and rec.get("stopped") == "OSError: PCAN gone"),
+        ("main: a probe cut short exits 1", code == 1),
+    ]
+    code2, text2, rec2 = run_main(PostLF(http_error(400), bad=()), lambda: FakePcan(raise_at=()))
+    out.append(("main: a probe run through exits 0 with stopped None",
+                code2 == 0 and rec2 is not None and rec2.get("stopped") is None and "STOPPED" not in text2))
+    return out
+
+
 def main():
     from can.interfaces.pcan import basic as B
     good = [A(0, True), A(1, True), A(2, False), A(1, True), A(0, True)]
@@ -140,6 +280,8 @@ def main():
                    and "error passive" in rec3["pcan_states"][0][1] and -1.0 < rec3["pcan_states"][0][0] < 1.0,
                    ))
 
+    checks += rulings_checks()
+
     fails = []
     for label, ok in checks:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))
@@ -162,6 +304,27 @@ MUTANTS = [
      '        states += [[round(p - t0, 4), s] for p, s in (getattr(bus, "vtrux_states", None) or [])]\n', ""),
     ("a bus state counted as a frame","                time.sleep(0.001)\n                continue\n",
      "                time.sleep(0.001)\n                n_rx += 1\n                continue\n"),
+    # the gen-inhibit reviewer's B14 rulings (2026-11-19): what the probe records for them
+    ("an HTTP refusal read as no answer", '    if isinstance(code, int):\n', '    if False:\n'),
+    ("the bench-path POST failure not named on its row",
+     '("; %s (%s)" % (BENCH_POST, pf.get("error")) if pf.get("by") == "bench path" else',
+     '("" if pf.get("by") == "bench path" else'),
+    ("a probe cut short with every mode tested reads as specified", "    elif tested != {1, 2} or stopped:\n",
+     "    elif tested != {1, 2}:\n"),
+    ("the cut short not said", '            verdict += "; %s after %d of %s arms (%s)" % (CUT_SHORT, len(arms), asked, stopped)\n',
+     "            pass\n"),
+    ("a fairly read FAIL hidden behind INCOMPLETE again",
+     '    elif any(r["result"] != "as specified" for r in rows if not r["result"].startswith("INVALID")):\n',
+     '    elif False:\n'),
+    ("a POST that raises ends the probe",
+     '    except Exception as e:      # noqa: BLE001\n        rec = {"mode": mode, "post_ok": False, "post_failure": post_failure(e)}\n',
+     '    except ImportError as e:\n        rec = {"mode": mode, "post_ok": False, "post_failure": post_failure(e)}\n'),
+    ("a probe cut short raises again, with no verdict",
+     "    except Exception as e:      # noqa: BLE001  a probe cut short is judged and recorded, never a bare traceback\n",
+     "    except ImportError as e:\n"),
+    ("a probe cut short exits 0", '    return 1 if rec["stopped"] else 0', "    return 0"),
+    ("the judge not told the probe stopped", '    rec["judge"] = judge(rec["arms"], len(modes), rec["stopped"])',
+     '    rec["judge"] = judge(rec["arms"], len(modes), None)'),
 ]
 
 

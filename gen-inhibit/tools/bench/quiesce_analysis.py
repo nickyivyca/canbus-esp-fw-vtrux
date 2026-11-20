@@ -66,12 +66,14 @@ def analyse(run):
     arm = list(d["arms"])[0]
     a = d["arms"][arm]
     r = P.rejudge(run, arm, keep_frames=True)
-    if r.get("arm_void"):     # the arm's witness clock refused in its run (2026-11-18): nothing judged
+    # Spec 12.1 (c5849685): void for any reason on its list (rejudge's arm_void: the reasons the run
+    # recorded, the witness short of the replay -- run cb08 raised IndexError here, 2026-11-19 --
+    # and attribution over the same window from the arm); a reason on no entry is an error row
+    if r.get("arm_unlisted"):
+        return {"run": os.path.basename(run), "initial_mode": d.get("mode"),
+                "error": "a void reason on no spec 12.1 entry: %s" % "; ".join(r["arm_unlisted"])}
+    if r.get("arm_void"):
         return {"run": os.path.basename(run), "initial_mode": d.get("mode"), "void": r["arm_void"]}
-    import witness_clock as WC  # noqa: E402
-    wv = WC.window_void(r)    # the witness short of the replay (run cb08 raised IndexError here, 2026-11-19)
-    if wv:
-        return {"run": os.path.basename(run), "initial_mode": d.get("mode"), "void": wv}
     rep = r["replayed_wire_times"]
     wire = P.read_witness(os.path.join(os.path.dirname(run), a["witness_raw"]))
     dev_cmd = sorted(r["device_times"])

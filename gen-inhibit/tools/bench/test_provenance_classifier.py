@@ -67,7 +67,19 @@ def main():
     r5 = P.classify(s5, w5, n5 + 1)
     sn, wn, _ = scene(answers=False)
     s6, w6, n6 = scene(swap_at=100)
+    # device_answers (topic (E), b11_rawpost_judge's stale answers): each device frame with the command
+    # it answers, the one in front when on time, the one before that when late
+    ra = P.classify(s, w, n, keep_frames=True)
+    ra3 = P.classify(s3, w3, n3, keep_frames=True)
+    vt3 = ra3["vcm_times"]
+    late3 = [x for x in ra3["device_answers"] if x[2] == 0]
     checks = [
+        ("device_answers: every on-time answer answers the command in front of it, 0.42 ms earlier",
+         len(ra["device_answers"]) == n and all(x[2] == 1 and x[1] is not None and 0.0003 < x[0] - x[1] < 0.0006
+                                                for x in ra["device_answers"])),
+        ("device_answers: the late answer answers the command before the one in front (command 20, not 21)",
+         len(late3) == 1 and late3[0][1] == vt3[20] and late3[0][0] > vt3[21]),
+        ("device_answers: not kept without keep_frames", "device_answers" not in r),
         ("on-time answers: as specified, every replayed frame found, counts hold",
          r["verdict"] == "as specified" and r["on_time"] == n and r["assigned"] == 60
          and r["device_frames"] == n and r["replayed_found"] == r["replayed_frames"]),

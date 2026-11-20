@@ -54,6 +54,13 @@ def run_poster(post_case, get_case="good", timeout=3.0):
         return real(host, path, timeout=timeout, method=method, port=p, base=base, **kw)
 
     E4.RHP.raw_request = routed
+    real_gi = E4.gi
+
+    def page(path, method="GET", timeout=6.0):      # the page read after the reply (topic (E))
+        calls.append(("page", path))
+        return PAGE_REPLY
+
+    E4.gi = page
     # The poster's raw timeout is this call's (2026-11-12). It was main()'s 3.0 s for every
     # case, so the silent case's 1.0 sized only the join, and its timeout raced the fake's
     # 3.0 s hold and FIN: on Linux the FIN won ("fin", not "timeout").
@@ -66,8 +73,12 @@ def run_poster(post_case, get_case="good", timeout=3.0):
         p.join(timeout=4 * timeout + 10)
     finally:
         E4.RHP.raw_request = real
+        E4.gi = real_gi
         E4.POST_RAW_TIMEOUT = saved
     return p, calls
+
+
+PAGE_REPLY = (200, '{"mode": 3, "self_off": "", "drv": {"msgs_to_rx": 2, "rx_missed": 0}, "ssid": "FAKE_SSID_VALUE"}')
 
 
 class _Stop(Exception):
@@ -205,7 +216,14 @@ def main():
     p, calls = run_poster("good")
     check("poster good: status 200", p.status == 200, p.status)
     check("poster good: raw recorded, ending fin", p.raw is not None and p.raw["ending"] == "fin")
-    check("poster good: no follow-up GET", p.followup is None and calls == [("POST", "/gen_inhibit_set?mode=3&offset=500")], calls)
+    check("poster good: no follow-up GET; the page read once, after the POST",
+          p.followup is None and calls == [("POST", "/gen_inhibit_set?mode=3&offset=500"), ("page", "/gen_inhibit")], calls)
+    pa = p.page_after or {}
+    check("poster good: the page after the reply kept: mode, msgs_to_rx, rx_missed, its send after the reply's end",
+          pa.get("http") == 200 and pa.get("mode") == 3 and pa.get("msgs_to_rx") == 2 and pa.get("rx_missed") == 0
+          and pa.get("error") is None and pa.get("t_sent") is not None and pa["t_sent"] >= p.raw["t_end"]
+          and pa["t_answered"] >= pa["t_sent"], (pa, p.raw.get("t_end")))
+    check("poster good: no other page field kept", "FAKE_SSID_VALUE" not in repr(pa), pa)
     check("poster good: t_end is the raw t_end", p.t_end == p.raw["t_end"])
     check("poster good: no exception", p.exc is None, p.exc)
     check("poster good: sockets recorded before and after",
@@ -219,6 +237,7 @@ def main():
     check("poster cut: follow-up after the POST", p.followup is not None
           and p.followup["t_sent"] >= p.raw["t_end"], (p.followup and p.followup["t_sent"], p.raw["t_end"]))
     check("poster cut: status still 200 (status line was fine)", p.status == 200, p.status)
+    check("poster cut: no page-after read (the follow-up instead)", p.page_after is None, p.page_after)
 
     # ModePoster, no reply at all: timeout, then the follow-up also times out.
     p, calls = run_poster("no_reply_open", "no_reply_open", timeout=1.0)
@@ -226,6 +245,16 @@ def main():
     check("poster silent: status None", p.status is None)
     check("poster silent: follow-up recorded its own timeout",
           p.followup is not None and p.followup["ending"] == "timeout")
+
+    # page_after_read on an unanswered page: the error kept, no mode or queue invented
+    real_gi = E4.gi
+    E4.gi = lambda path, method="GET", timeout=6.0: (None, "URLError: <urlopen error timed out>")
+    try:
+        pa = E4.page_after_read(time.perf_counter())
+    finally:
+        E4.gi = real_gi
+    check("page_after_read: an unanswered page keeps its error, mode and queue None",
+          pa["http"] is None and "timed out" in pa["error"] and pa["mode"] is None and pa["msgs_to_rx"] is None, pa)
 
     # ModePoster never raises: an exception inside is recorded.
     real = RHP.raw_request

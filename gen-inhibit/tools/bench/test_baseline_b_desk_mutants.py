@@ -41,9 +41,26 @@ MUTANTS = [   # (name, step, old, new)
     ("B13: B2's RESPOND arms by glob again", "B13",
      '"$app"/B2_e4_presence_respond_${C}_x2app.json "$held"/B2_e4_presence_respond_${C}_x2held.json',
      '"$app"/B2_e4_presence_respond_${C}_*.json "$held"/B2_e4_presence_respond_${C}_*.json'),
-    ("B11raw: arguments as one unquoted string", "B11raw",
-     'args=(); for n in "$@"; do args+=("$n" "${n%.json}.pcapng"); done',
-     'args=(); for n in "$@"; do args+=("$n ${n%.json}.pcapng"); done; args=(${args[*]})'),
+    ("B11raw: the records word-split", "B11raw",
+     '$PY -B $A/b11_rawpost_judge.py "$@" > "$D/B11raw_window_judge.txt"',
+     '$PY -B $A/b11_rawpost_judge.py $* > "$D/B11raw_window_judge.txt"'),
+    ("B11raw: the window judgement over the capture judge's file", "B11raw",
+     '> "$D/B11raw_window_judge.txt" 2>&1; echo "judge exit $?"', '> "$D/B11raw_rawpost_judge.txt" 2>&1; echo "judge exit $?"'),
+    ("B5: three livetrain outputs will do", "B5",
+     '[ $# -eq 4 ] && [ -e "$4" ] || { echo "B5: $# livetrain outputs, want 4"; exit 2; }', 'true'),
+    ("B5: a missing record skipped, not refused before writing", "B5",
+     '[ -n "$r" ] && [ -f "$recs/$r" ] || { echo "B5: no record for $(basename "$f") (${r:-no wrote line})"; exit 2; }',
+     '[ -n "$r" ] && [ -f "$recs/$r" ] || continue'),
+    ("B5: the re-judgement written under the run's own output name", "B5",
+     'o="$D/$(basename "${1%.txt}")_rejudged.txt"', 'o="$D/$(basename "$1")"'),
+    ("B21client: two probe outputs of a body will do", "B21client",
+     '[ $# -eq 1 ] && [ -e "$1" ] || { echo "B21client: $# $body probe outputs, want 1"; exit 2; }',
+     '[ -e "$1" ] || { echo "B21client: $# $body probe outputs, want 1"; exit 2; }'),
+    ("B21client: a missing record skipped, not refused before writing", "B21client",
+     '[ -n "$r" ] && [ -f "$recs/$r" ] || { echo "B21client: no record for $(basename "$1") (${r:-no wrote line})"; exit 2; }',
+     '[ -n "$r" ] && [ -f "$recs/$r" ] || continue'),
+    ("B21client: the two bodies' judgements under one name", "B21client",
+     '> "$D/B21_client_$1_${C}.txt" 2>&1; rc=$?', '> "$D/B21_client_${C}.txt" 2>&1; rc=$?'),
     ("B24: B3's arms left out", "B24",
      'set -- "$app"/B2_e4_presence_*_${C}_x2app.json "$b3"/B3_e4_golive_*_${C}_*.json; need "$@"',
      'set -- "$app"/B2_e4_presence_*_${C}_x2app.json; need "$@"'),
@@ -108,6 +125,13 @@ def clone(base):
     d = os.path.join(repo, os.path.relpath(HERE, wt))
     shutil.rmtree(d)
     shutil.copytree(HERE, d, ignore=shutil.ignore_patterns("__pycache__"))
+    # the pinned canre (canre_pin), which step B5's x2_jam_cases loads through
+    # lowid_flood_skip_bench: the clone's scratch/ has no install of its own, so this
+    # worktree's is copied in, and canre_pin.use() checks the copy in full (2026-11-19)
+    import canre_pin
+    src = canre_pin.folder(start=HERE)
+    if os.path.isdir(src):
+        shutil.copytree(src, canre_pin.folder(start=d), ignore=shutil.ignore_patterns("__pycache__"))
     return d
 
 

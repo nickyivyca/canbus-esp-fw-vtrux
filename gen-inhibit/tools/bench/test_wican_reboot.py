@@ -167,6 +167,13 @@ def select(cfg, be=None):
         return False, "fake select refused"
     urllib.request.urlopen("http://%s/__select" % os.environ["GI_WICAN_HOST"], timeout=2).read()
     return True, "fake select of profile %s" % cfg["profile"]
+
+
+def join(cfg, timeout=None, be=None):
+    """As select, then joined: {"joinfail": true} makes it not join."""
+    if cfg.get("joinfail"):
+        return False, "fake join: not joined"
+    return select(cfg, be)
 '''
 
 
@@ -203,11 +210,11 @@ print("RESULT " + json.dumps(W.reboot_in_check(wait=3.0, poll=0.2, settle=0.2, t
 '''
 
 
-ON_HOTSPOT = '''import json
+OTA_ROUTE = '''import json
 import sys
 sys.path.insert(0, sys.argv[1])
 import wican_reboot as W
-print("RESULT " + json.dumps(list(W.on_hotspot(wait=3.0, poll=0.2, timeout=2.0))))
+print("RESULT " + json.dumps(list(W.ota_route(tries=2, gap=0.2, timeout=2.0))))
 '''
 
 
@@ -436,25 +443,37 @@ def tests():
         check("in check: GI_OTA_SETTINGS set but unusable: not ok, nothing asked for or sent",
               r.get("ok") is False and "GI_OTA_SETTINGS" in (r.get("why") or "") and paths == [], (r, paths))
 
-        # on_hotspot, B21's gate (2026-11-19): the page answering, at once or after a rejoin; else not
-        r, paths = in_check(srv, tool, Dev(), ota, ON_HOTSPOT)
-        check("on hotspot: the page answers at once -> True, no select", r == [True, "the page answers"], r)
+        # ota_route, B21's gate (topic (E), 2026-11-19): the ota block's backend joins first, always, and
+        # the page must answer after it; unset or refused, not joined, or no page: not reached
+        dev = Dev()
+        r, paths = in_check(srv, tool, dev, ota, OTA_ROUTE)
+        check("ota route: joined through the block's backend, then the page -> True, saying so",
+              r[:1] == [True] and "joined through the ota block's adb backend" in r[1] and len(dev.selects) == 1
+              and paths == ["GET /gen_inhibit"], (r, dev.selects, paths))
         dev = Dev(rejoin=True)
-        dev.selected = False                    # the phone off the hotspot
-        r, paths = in_check(srv, tool, dev, ota, ON_HOTSPOT)
-        check("on hotspot: the page answers after the settings' select -> True, saying so",
-              r[:1] == [True] and "after 1 rejoin" in r[1] and len(dev.selects) == 1, (r, dev.selects))
-        dev = Dev(rejoin=True)
-        dev.selected = False
-        r, paths = in_check(srv, tool, dev, None, ON_HOTSPOT)
-        check("on hotspot: no answer and no GI_OTA_SETTINGS -> False at once, saying why",
-              r[:1] == [False] and "no GI_OTA_SETTINGS" in r[1] and not dev.selects, r)
+        dev.selected = False                    # the phone off the hotspot: no page until the join
+        r, paths = in_check(srv, tool, dev, ota, OTA_ROUTE)
+        check("ota route: off the hotspot, the join puts it back and the page answers -> True",
+              r[:1] == [True] and len(dev.selects) == 1, (r, dev.selects))
+        dev = Dev()
+        r, paths = in_check(srv, tool, dev, None, OTA_ROUTE)
+        check("ota route: no GI_OTA_SETTINGS -> False, saying why, though the page would answer; nothing asked",
+              r[:1] == [False] and "GI_OTA_SETTINGS" in r[1] and not dev.selects and paths == [], (r, paths))
+        dev = Dev()
+        r, paths = in_check(srv, tool, dev, {"GI_OTA_SETTINGS": "not json"}, OTA_ROUTE)
+        check("ota route: GI_OTA_SETTINGS refused -> False, nothing asked for",
+              r[:1] == [False] and "GI_OTA_SETTINGS" in r[1] and paths == [], (r, paths))
+        dev = Dev()
+        r, paths = in_check(srv, tool, dev, {"GI_OTA_SETTINGS": json.dumps({"profile": "79", "wifi": "adb",
+                                                                          "joinfail": True})}, OTA_ROUTE)
+        check("ota route: the join fails -> False, saying so, and the page is not read",
+              r[:1] == [False] and "did not join" in r[1] and paths == [], (r, paths))
         dev = Dev(down=True)
-        r, paths = in_check(srv, tool, dev, ota, ON_HOTSPOT)
-        check("on hotspot: no answer after the wait's rejoins -> False, with how many",
-              r[:1] == [False] and "rejoin(s)" in r[1] and "does not answer after" in r[1], r)
-        check("on hotspot: only the page asked for", set(paths) <= {"GET /gen_inhibit"}, paths)
-        # baseline_b21.sh's gate on that: the host off the hotspot makes B21 NOT-RUN, its file saying why,
+        r, paths = in_check(srv, tool, dev, ota, OTA_ROUTE)
+        check("ota route: joined but no page -> False, saying so",
+              r[:1] == [False] and "the page does not answer" in r[1] and len(dev.selects) == 1, (r, dev.selects))
+        check("ota route: only the page asked for", set(paths) <= {"GET /gen_inhibit"}, paths)
+        # baseline_b21.sh's gate on that: the device not reached makes B21 NOT-RUN, its file saying why,
         # and nothing after the gate runs (GI_B21_STEPS none: no guard can reach a real device)
         out = os.path.join(tmp, "b21gate")
         os.makedirs(out)
@@ -470,9 +489,9 @@ def tests():
         r = subprocess.run(["bash", b21, "img.bin"], capture_output=True, text=True, timeout=120, env=e)
         nr = os.path.join(out, "B21_not_run.txt")
         got = open(nr).read() if os.path.exists(nr) else ""
-        check("B21 gate: off the hotspot -> exit 0, B21_not_run.txt saying why, nothing else written",
-              r.returncode == 0 and got.startswith("NOT-RUN: the host is not on the WiCAN's hotspot: ")
-              and "no GI_OTA_SETTINGS" in got and sorted(os.listdir(out)) == ["B21_not_run.txt"],
+        check("B21 gate: not reached through the ota block -> exit 0, B21_not_run.txt saying why, nothing else written",
+              r.returncode == 0 and got.startswith("NOT-RUN: the device is not reached through the run's ota block: ")
+              and "GI_OTA_SETTINGS" in got and sorted(os.listdir(out)) == ["B21_not_run.txt"],
               (r.returncode, got, sorted(os.listdir(out)), r.stdout[-300:], r.stderr[-300:]))
     except Exception as e:                      # a crash is reported, never a pass
         check("ran without raising", False, repr(e))
@@ -537,13 +556,16 @@ MUTANTS = [
     ("in check: unusable settings ignored",
      "        out.update(why=\"GI_OTA_SETTINGS: %s: nothing sent\" % e, s=round(time.time() - t, 1))\n        return out\n",
      "        select = None\n"),
-    # on_hotspot (B21's gate, 2026-11-19)
-    ("on hotspot: no rejoin when the page does not answer",
-     "        rejoin.unreadable(t0)\n        time.sleep(poll)\n", "        time.sleep(poll)\n"),
-    ("on hotspot: an unanswered page taken as on it",
-     '    return False, "the page does not answer after %.0f s', '    return True, "the page does not answer after %.0f s'),
-    ("on hotspot: the first read not tried",
-     '    if read_tries(1, 0, timeout, errors) is not None:\n        return True, "the page answers"\n', ""),
+    # ota_route (B21's gate, topic (E), 2026-11-19)
+    ("ota route: no join, the page by whatever route answers", "        ok, why = GW.join(cfg)\n",
+     "        ok, why = True, \"not joined\"\n"),
+    ("ota route: a failed join ignored", '    if not ok:\n        return False, "the ota block\'s %s backend did not join',
+     '    if False:\n        return False, "the ota block\'s %s backend did not join'),
+    ("ota route: joined taken as reached, the page not read",
+     "    if read_tries(tries, gap, timeout, errors) is None:\n        return False, \"joined through",
+     "    if False:\n        return False, \"joined through"),
+    ("ota route: no settings, the page read anyway", '        return False, "GI_OTA_SETTINGS: %s" % e\n',
+     '        return (read_tries(1, 0, timeout, []) is not None), "GI_OTA_SETTINGS: %s" % e\n'),
     ("the rejoin's how not recorded", "        select, rec[\"rejoin\"] = hotspot_select()\n",
      "        select, _ = hotspot_select()\n"),
 ]

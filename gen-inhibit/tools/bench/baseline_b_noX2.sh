@@ -5,8 +5,9 @@
 #
 #   GI_COMMIT=e3d9437 REVERSE_IT_DIR=<reverse-it root> GI_WICAN_SSID=... bash baseline_b_noX2.sh [B4] [B11] [B13] [B11raw]
 #
-# B11raw (2026-10-17, not in the default set): B11's arms with raw POSTs and a
-# Wi-Fi capture per arm, for b11_rawpost_judge.py.
+# B11raw (2026-10-17, not in the default set): B11's arms with raw POSTs, for
+# b11_rawpost_judge.py (the request-to-reply window since topic (E), 2026-11-19; a
+# Wi-Fi capture per arm before).
 #
 # It runs from the reverse-it root, which it cd's to (DATA below is relative to it);
 # canre comes from the pin since 2026-10-26 (canre_pin.py). One arm at a time; each arm's stdout is kept beside its record in runs/baseline_<commit>/bench/.
@@ -19,18 +20,10 @@ C=${GI_COMMIT:?set GI_COMMIT}
 D=${GI_OUT:-$DATA/runs/baseline_$C/bench}   # GI_OUT: the chain runner's check folder (2026-10-18)
 mkdir -p "$D"
 STEPS=${*:-B4 B11 B13}
-# An arm (or B11raw capture) that exits non-zero makes the script exit 1 after the
+# An arm that exits non-zero makes the script exit 1 after the
 # rest have run (reviewer, 2026-10-25): the arms cases have no judge, so they were a
 # PASS on exit 0 while every arm failed (6926fb0 re-run 2, a Wi-Fi outage).
 ARMS_FAILED=0   # B4 is judged from its own output and is not counted
-DUMPCAP=${GI_DUMPCAP:-$GI_HOST_DUMPCAP}   # bench_host.sh
-DUMPCAP_PRE=${GI_DUMPCAP_PRE:-}   # a command put in front of dumpcap (the test's fake); empty here
-# B11raw's capture stops TAIL s after its arm (reviewer, 2026-10-20; a fixed 75 s before).
-# Its records are capture_<arm>.json and window_<arm>.json, not B11raw_e4_*.json, which
-# baseline_b_desk.sh B11raw takes as the e4 records.
-TAIL=${GI_CAPTURE_TAIL_S:-5}
-CAPMAX=${GI_CAPTURE_MAX_S:-300}
-IFACE=${GI_CAPTURE_IFACE:-$GI_HOST_IFACE}   # bench_host.sh: none on Linux
 uptime_line() {   # one line: uptime_ms and reset reason from the page
   $PY -B - "$A" <<'PY'
 import sys
@@ -67,33 +60,34 @@ for s in $STEPS; do
         echo "arm$k $m pre=[$pre] post=[$post] wall_s=$($PY -c "print('%.2f' % ($t1 - $t0))")" >> "$D/B11_quiesce_uptime_$stamp.txt"
       done
       ;;
-    B11raw)   # B11's arms again with raw POSTs and a Wi-Fi capture per arm (reviewer, 2026-10-17):
-              # the request's arrival at the device read from the capture (b11_rawpost_judge.py)
-      need_iface
+    B11raw)   # B11's arms again with raw POSTs (reviewer, 2026-10-17), each POST's request-to-reply
+              # window judged on the host clock and a page read after each reply (spec 3, user
+              # 2026-11-19; the gen-inhibit reviewer's topic (E)): no Wi-Fi capture since
       stamp=$(date +%Y%m%dT%H%M%S)
       k=0
       for m in inhibit passive passive inhibit inhibit passive; do
         k=$((k + 1))
         back=3; [ $m = passive ] && back=4
         n=B11raw_e4_quiesce_${m}_${C}_${stamp}_arm$k
-        $PY -B $A/capture_window.py --stopfile "$D/$n.stop" --record "$D/capture_$n.json" --max $CAPMAX -- \
-          $DUMPCAP_PRE "$DUMPCAP" -q -i "$IFACE" -f "host 192.168.80.1 and tcp port 80" -a duration:$CAPMAX \
-          -w "$D/$n.pcapng" > "$D/$n.dumpcap.txt" 2>&1 &
-        cap=$!
-        sleep 3
         pre=$(uptime_line); t0=$(date +%s.%N)
         e4 $n --capture "$(hpath "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
           --window-start 0 --seconds 35 --mode $m --post-schedule "10:1,20:$back" --post-raw-timeout 3
         post=$(uptime_line); t1=$(date +%s.%N)
-        sleep $TAIL
-        : > "$D/$n.stop"
-        wait $cap; r=$?; echo "  capture exit $r"
-        [ $r -eq 0 ] || ARMS_FAILED=$((ARMS_FAILED + 1))
-        rm -f "$D/$n.stop"
-        echo "{\"arm_start\": $t0, \"arm_end\": $t1, \"tail_s\": $TAIL}" > "$D/window_$n.json"
-        echo "arm$k $m pre=[$pre] post=[$post] wall_s=$($PY -c "print('%.2f' % ($t1 - $t0))") capture $(stat -c %s "$D/$n.pcapng") bytes" >> "$D/B11raw_quiesce_uptime_$stamp.txt"
+        echo "arm$k $m pre=[$pre] post=[$post] wall_s=$($PY -c "print('%.2f' % ($t1 - $t0))")" >> "$D/B11raw_quiesce_uptime_$stamp.txt"
       done
       sed -i "s/$GI_WICAN_SSID/<GI_WICAN_SSID>/g" "$D"/B11raw_e4_*.txt "$D"/B11raw_quiesce_uptime_*.txt   # not B11raw_run_log.txt (2026-10-17)
+      ;;
+    B11rawquiet)   # quiet data for B11raw's queue bound (spec 3, reading (q) of the gen-inhibit reviewer's
+                   # answer to b07f7984, 2026-11-19): B11raw's six arms on the same replay with no mode
+                   # change, the page polled at 10 Hz for drv.msgs_to_rx (e4's queue_series), read by
+                   # b11_queue_quiet.py; the bound goes in the test plan
+      stamp=$(date +%Y%m%dT%H%M%S)
+      k=0
+      for m in inhibit passive passive inhibit inhibit passive; do
+        k=$((k + 1))
+        e4 B11rawquiet_e4_${m}_${C}_${stamp}_arm$k --capture "$(hpath "$PWD/$DATA/runs/scottsvalley_armable_300s.log")" \
+          --window-start 0 --seconds 35 --mode $m --poll-hz 10
+      done
       ;;
     B13)   # P I I P P I on truck_passive2 0-30 s, then P I on scottsvalley 0-30 s
       stamp=$(date +%Y%m%dT%H%M%S)
@@ -112,4 +106,4 @@ for s in $STEPS; do
     *) echo "unknown step $s"; exit 2 ;;
   esac
 done
-[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED arm(s) or capture(s) exited non-zero"; exit 1; }
+[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED arm(s) exited non-zero"; exit 1; }

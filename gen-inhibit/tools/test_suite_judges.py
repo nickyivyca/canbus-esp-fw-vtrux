@@ -94,8 +94,22 @@ B22_VOID_BOTH = [
      "       - 3 replay frames were refused by the adapter, so the stimulus is incomplete"),
 ]
 
+# B11raw_window_judge.txt (topic (E)): arm 1's OBSERVE POST's verdict, and every POST passing
+B11RAW_ARM1_POST1 = (r'^(== B11raw_e4_quiesce_inhibit_e3d9437_20261017T010417_arm1\.json.*\n  \{"at_s": 10\.0, .*?'
+                     r'"verdict": )"VOID"')
+B11RAW_ARM1_POST1_P = B11RAW_ARM1_POST1[:-len('"VOID"')] + '"PASS"'
+B11RAW_ALL_PASS = (r'"verdict": "VOID"', '"verdict": "PASS"')
+
+# B5_livetrain_p2000_run1's re-judgement with its arm 0 back to what the run's own lines read
+# (judged from the jammer's ACK): the edits that read an arm's reason start from it.
+B5_RJ1 = r"B5_livetrain_p2000_run1_rejudged\.txt"
+B5_NOTLIVE = (r"^(arm 0 \(replay [\d.]+/s\): )SEE A/B/C \| A: PASS: trip 6 latched \| B: PASS \| "
+              r"C: NOT REACHED \(no bus_off sample\)", r"\g<1>INCONCLUSIVE | the device was not live at the start of the jam")
+
 # (check, folder, file regex, line regex, replacement, verdict wanted). The regex must
-# match exactly once in that file unless it is marked "all".
+# match exactly once in that file unless it is marked "all". A file regex starting "+" is a
+# new file beside the check's own, with the replacement its text; one starting "-" is a file
+# taken away.
 EDITS = [
     ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", r"'fail': 0", "'fail': 1", "FAIL"),
     ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", [(r"'commands': 20", "'commands': 0"), (r"^.*-> \w+ +\| counted .*\n", "")],
@@ -115,8 +129,29 @@ EDITS = [
      None, "ERROR all"),
     # the summary's error count alone (no ERROR line) is ERROR
     ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", r"^(summary .*'fail': 0,)", r"\g<1> 'error': 1,", "ERROR"),
+    # provenance's device count against tx_ok in an arm with no POST is attribution over the arm's window:
+    # VOID (spec 12.1, c5849685; FAIL before), and a FAIL in another arm read fairly still FAILs
     ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"device 0x051 670 \(device says 670\)",
-     "device 0x051 670 (device says 671)", "FAIL"),
+     "device 0x051 670 (device says 671)", "VOID"),
+    # ... a RESPOND arm has no POST either, so its old whole-arm probe count voiding it is attribution: VOID
+    ("B2", "bench", r"B2_e4_presence_respond_e3d9437_x2app\.txt",
+     [(r"^  wire agrees with the device: 2994 transmitted, 2994 seen \(probe 0x7F0\)$",
+       "  MISMATCH: the device reports tx_ok=2994 but the witness attributes 2993 probe 0x7F0 frames to us."),
+      (r"^(  \[idle\] provenance \(live\))",
+       "  ---- ARM VOID: the figures above do not support a verdict ----\n"
+       "       - attribution disagrees with the device: tx_ok=2994, witness attributes 2993\n\\g<1>")], None, "VOID"),
+    # ... and so is attach_provenance's same-window block, and any other 12.1 reason (a refused replay)
+    ("B2", "bench", r"B2_e4_presence_longarm_e3d9437_x2held\.txt", r"^(  \[idle\] old trail-window)",
+     "  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - attribution over the same window from the arm disagrees: the device reports tx_ok=29977, the "
+     "witness counts 29976 device 0x051 (provenance) from the start of the replay\n\\g<1>", "VOID"),
+    ("B2", "bench", r"B2_e4_presence_longarm_e3d9437_x2held\.txt", r"^(  \[idle\] provenance \(live\))",
+     "  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - 3 replay frames were refused by the adapter, so the stimulus is incomplete\n\\g<1>", "VOID"),
+    # a void reason on no 12.1 entry is ERROR, for the gen-inhibit reviewer, never mapped
+    ("B2", "bench", r"B2_e4_presence_longarm_e3d9437_x2held\.txt", r"^(  \[idle\] provenance \(live\))",
+     "  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - the moon was in the wrong phase\n\\g<1>", "ERROR"),
     ("B17a", "bench", "+B17_spec11_page_aaaaaaa_man.txt", None, "AS SPECIFIED\n", "ERROR"),
     ("B2", "bench", r"B2_x2_presence_count\.txt", r"(inhibit_e3d9437_x2app frames 71433  x2 7F4=)0", r"\g<1>3", "FAIL"),
     ("B2", "bench", r"B2_e4_presence_respond_e3d9437_x2app\.txt", r"2994 transmitted, 2994 seen", "2994 transmitted, 2993 seen", "FAIL"),
@@ -139,8 +174,9 @@ EDITS = [
     ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"^(  \[idle\] provenance \(live\))",
      "  ---- ARM VOID: the figures above do not support a verdict ----\n"
      "       - witness clock 'SocketCAN (test)': not judged on host time\n\\g<1>", "VOID"),
-    # an arm void for another reason (attribution) is judged as before: the accepted baseline
-    # has such arms judged (the reviewer is asked whether that should change, 2026-11-18)
+    # an INHIBIT arm's old trail-window attribution line (voiding nothing since 2026-10-29) is dropped,
+    # so the arm is judged (spec 12.1, c5849685: attribution counts over the same window from the arm;
+    # provenance's count is that, and agrees here); with the clock's reason beside it, VOID
     ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"^(  \[idle\] provenance \(live\))",
      "  ---- ARM VOID: the figures above do not support a verdict ----\n"
      "       - attribution disagrees with the device: tx_ok=670, witness attributes 669\n\\g<1>", "PASS"),
@@ -172,8 +208,10 @@ EDITS = [
     ("B24", "bench", r"B24_frame_content_e3d9437\.txt",
      [(r"(B3_e4_golive_observe_e3d9437_20261016T213056_arm1\.json +)AS SPECIFIED    ", r"\g<1>VOID            "),
       (r"(B2_e4_presence_inhibit_e3d9437_x2app\.json +)AS SPECIFIED", r"\g<1>FAULT SEEN  ")], None, "FAIL"),
-    ("B5", "bench", r"B5_livetrain_p5000\.txt", r"^(arm 1 .*?\| A: )PASS", r"\g<1>FAIL", "FAIL"),
-    ("B5", "bench", r"B5_livetrain_p2000_run2\.txt", r"^(arm 0 .*?\| B: )PASS", r"\g<1>FAIL", "FAIL"),
+    # B5 reads each run's re-judgement from its record where the folder holds one (the reviewer's
+    # answer to 2ddd4dcc, 2026-11-19: written beside the run's own lines), so its edits go there
+    ("B5", "bench", r"B5_livetrain_p5000_rejudged\.txt", r"^(arm 1 .*?\| A: )PASS", r"\g<1>FAIL", "FAIL"),
+    ("B5", "bench", r"B5_livetrain_p2000_run2_rejudged\.txt", r"^(arm 0 .*?\| B: )PASS", r"\g<1>FAIL", "FAIL"),
     ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^(arm 1 \(replay [\d.]+/s\): )PASS", r"\g<1>FAIL", "FAIL"),
     ("B6", "bench", r"B6_threshold_n9_lead1\.5\.txt", r"^verdict PASS", "verdict FAIL", "FAIL"),
     # an arm whose stimulus fell short is INCONCLUSIVE, and so is B6 (step 1a, 2026-10-29) ...
@@ -189,10 +227,12 @@ EDITS = [
       (r"^verdict PASS", "verdict FAIL")], None, "FAIL"),
     ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^(arm 1 \(replay [\d.]+/s\): )PASS", r"\g<1>VOID", "FAIL"),
     ("B7", "bench", r"B7_busoff_rearm\.txt", r"^arm 1: AS SPECIFIED", "arm 1: NOT AS SPECIFIED", "FAIL"),
-    # an arm the case could not judge is INCONCLUSIVE, and so is B7 (2026-11-16) ...
+    # an arm the case could not judge is judged by its reason (the gen-inhibit reviewer's answer to
+    # ba92acf0, 2026-11-19; INCONCLUSIVE from 2026-11-16 until then): a reason the record does not
+    # name is ERROR ...
     ("B7", "bench", r"B7_busoff_rearm\.txt",
      [(r"^arm 1: AS SPECIFIED", "arm 1: INCONCLUSIVE"), (r"^verdict AS SPECIFIED", "verdict INCONCLUSIVE")],
-     None, "INCONCLUSIVE"),
+     None, "ERROR"),
     # ... but not beside a NOT AS SPECIFIED arm, nor when the case's verdict disagrees,
     # nor for any other word
     ("B7", "bench", r"B7_busoff_rearm\.txt",
@@ -211,21 +251,42 @@ EDITS = [
      [(r'^\{"run": "(B11_e4_quiesce_inhibit_e3d9437_20261016T215437_arm1\.json)".*$',
        r'{"run": "\g<1>", "initial_mode": "inhibit", "void": ["witness clock (test): not judged on host time"]}'),
       (r'^(\{"run": "B11_e4_quiesce_passive_e3d9437_20261016T215437_arm2\.json"[^\n]*?"provenance": )"as specified"', r'\g<1>"late"')], None, "FAIL"),
-    ("B11raw", "bench", r"B11raw_rawpost_judge\.txt", r'^  \{"at_s": 10\.0, "mode": 1, "http": 200, "local_port": 61619, .*$',
-     '  {"at_s": 10.0, "mode": 1, "http": 200, "verdict": "VOID: arm void: witness clock (test): not judged on host time"}', "VOID"),
-    ("B11raw", "bench", r"B11raw_rawpost_judge\.txt",
-     [(r'^  \{"at_s": 10\.0, "mode": 1, "http": 200, "local_port": 61619, .*$',
-       '  {"at_s": 10.0, "mode": 1, "http": 200, "verdict": "VOID: arm void: witness clock (test): not judged on host time"}'),
-      (r'("local_port": 61947, .*"verdict": )"PASS"', r'\g<1>"FAIL"')], None, "FAIL"),
+    # B11raw in the request-to-reply window (spec 3, topic (E); the reviewer's readings (m)-(r), answer to
+    # b07f7984): the baseline's 12 POSTs read VOID (no page read after any reply); each POST's verdict,
+    # FAIL, then ERROR, then VOID, else PASS
+    ("B11raw", "bench", r"B11raw_window_judge\.txt", B11RAW_ARM1_POST1, r'\g<1>"FAIL"', "FAIL"),
+    ("B11raw", "bench", r"B11raw_window_judge\.txt", B11RAW_ARM1_POST1, r'\g<1>"ERROR"', "ERROR"),
+    ("B11raw", "bench", r"B11raw_window_judge\.txt", [B11RAW_ALL_PASS, (B11RAW_ARM1_POST1_P, r'\g<1>"FAIL"')], None, "FAIL all"),
+    ("B11raw", "bench", r"B11raw_window_judge\.txt", [B11RAW_ALL_PASS, (B11RAW_ARM1_POST1_P, r'\g<1>"ERROR"')], None, "ERROR all"),
+    ("B11raw", "bench", r"B11raw_window_judge\.txt", [B11RAW_ALL_PASS], None, "PASS all"),
+    ("B11raw", "bench", r"B11raw_window_judge\.txt",
+     [B11RAW_ALL_PASS, (B11RAW_ARM1_POST1_P, r'\g<1>"VOID: arm void: witness clock (test): not judged on host time"')],
+     None, "VOID all"),
+    ("B11raw", "bench", r"B11raw_window_judge\.txt",
+     [B11RAW_ALL_PASS, (B11RAW_ARM1_POST1_P, r'\g<1>"ERROR: a void reason on no spec 12.1 entry: x"')], None, "ERROR all"),
+    ("B11raw", "bench", r"B11raw_window_judge\.txt", [B11RAW_ALL_PASS, (B11RAW_ARM1_POST1_P, r'\g<1>"MAYBE"')],
+     None, "ERROR all"),
+    # the quiesce analysis beside the POSTs: one arm void there is VOID (with every POST passing too:
+    # block 2a''), one arm late FAIL
+    ("B11raw", "bench", r"B11raw_quiesce_analysis\.txt",
+     r'^\{"run": "(B11raw_e4_quiesce_inhibit_e3d9437_20261017T010417_arm1\.json)".*$',
+     r'{"run": "\g<1>", "initial_mode": "inhibit", "void": ["witness clock (test): not judged on host time"]}', "VOID"),
+    ("B11raw", "bench", r"B11raw_quiesce_analysis\.txt",
+     r'^(\{"run": "B11raw_e4_quiesce_passive_e3d9437_20261017T010417_arm2\.json"[^\n]*?"provenance": )"as specified"',
+     r'\g<1>"late"', "FAIL"),
+    # eleven POST rows, every one passing: a POST missing is ERROR, never PASS
+    ("B11raw", "bench", r"B11raw_window_judge\.txt",
+     [B11RAW_ALL_PASS, (r'^  \{"at_s": 20\.0, [^\n]*\n(== B11raw_e4_quiesce_inhibit_e3d9437_20261017T010417_arm4\.json)',
+                        r"\g<1>")], None, "ERROR all"),
     ("B11raw", "bench", r"B11raw_quiesce_analysis\.txt",
      r'^\{"run": "(B11raw_e4_quiesce_inhibit_e3d9437_20261017T010417_arm1\.json)".*$',
      r'{"run": "\g<1>", "initial_mode": "inhibit", "void": ["witness clock (test): not judged on host time"]}', "VOID"),
     # a run VOID on its witness clock (x2_jam_cases run_guarded, 2026-11-18) makes the check VOID,
     # never FAIL; an arm's FAIL before it still reads FAIL
-    ("B5", "bench", r"B5_livetrain_p2000_run2\.txt", r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test", "VOID"),
-    ("B5", "bench", r"B5_livetrain_p2000_run2\.txt", [(r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test"),
+    ("B5", "bench", r"B5_livetrain_p2000_run2_rejudged\.txt", r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test", "VOID"),
+    ("B5", "bench", r"B5_livetrain_p2000_run2_rejudged\.txt", [(r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test"),
                                                      (r"^(arm 0 .*?\| B: )PASS", r"\g<1>FAIL")], None, "FAIL"),
-    ("B5", "bench", r"B5_livetrain_p5000\.txt", [(r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test"), (r"^arm \d.*\n", "")],
+    ("B5", "bench", r"B5_livetrain_p5000_rejudged\.txt", [(r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test"), (r"^arm \d.*\n", "")],
      None, "VOID all"),
     ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^verdict PASS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test", "VOID"),
     ("B6", "bench", r"B6_threshold_n10_lead5\.txt", [(r"^verdict PASS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: SocketCAN: test"),
@@ -263,9 +324,6 @@ EDITS = [
      r"burst timing VOID nothing\n\g<1>", "INCONCLUSIVE"),     # a look-alike line: the baseline's own verdict stands
     ("B11", "bench", r"B11_quiesce_analysis\.txt", r'(_arm4\.json".*?"agree": )true', r"\g<1>false", "FAIL"),
     ("B11", "bench", r"B11_quiesce_analysis\.txt", r'(_arm3\.json".*?"provenance": )"as specified"', r'\g<1>"double"', "FAIL"),
-    ("B11raw", "bench", r"B11raw_rawpost_judge\.txt", r'("local_port": 61947, .*?"verdict": )"PASS"', r'\g<1>"strict FAIL"', "FAIL"),
-    ("B11raw", "bench", r"B11raw_rawpost_judge\.txt", r'"verdict": "strict FAIL, PASS on ACK"', '"verdict": "strict FAIL"', "FAIL"),
-    ("B11raw", "bench", r"B11raw_rawpost_judge\.txt", r'("local_port": 61873, .*?"other_requests_in_progress": )\[\]', r'\g<1>[61874]', "FAIL"),
     # an analysis row's "error" (a judged figure without decodable pages) is ERROR (reading Q9)
     ("B11", "bench", r"B11_quiesce_analysis\.txt", r'^(\{"run": "B11_e4_quiesce_inhibit_e3d9437_20261016T215437_arm4\.json".*)\}$',
      r'\g<1>, "error": "planted"}', "ERROR"),
@@ -322,10 +380,11 @@ EDITS = [
     ("B19absent", "bench", r"B19_absent_prod\.txt", r"^(OTA_HEALTH_FAULT_INJECT +)PASS", r"\g<1>FAIL", "FAIL"),
     ("B19page", "bench", r"B19_spec11_page_prod\.txt", r"^AS SPECIFIED", "NOT AS SPECIFIED", "FAIL"),
     ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^(gate-open +)AS SPECIFIED", r"\g<1>NOT AS SPECIFIED", "FAIL"),
-    # B21 NOT-RUN when the host is not on the WiCAN's hotspot (baseline_b21.sh's gate, 2026-11-19)
+    # B21 NOT-RUN when the device is not reached through the run's ota block (baseline_b21.sh's gate,
+    # 2026-11-19; through the ota block since topic (E))
     ("B21", "bench", "+B21_not_run.txt", None,
-     "NOT-RUN: the host is not on the WiCAN's hotspot: the page does not answer after 30 s and 6 rejoin(s) (x)\n",
-     "NOT-RUN"),
+     "NOT-RUN: the device is not reached through the run's ota block: the ota block's adb backend did not "
+     "join the hotspot: x\n", "NOT-RUN"),
     # B20 never PASSes with a requested scenario unjudged: a VOID case (run cb08's line, which the old
     # pattern skipped), an INCONCLUSIVE one, or one with no verdict line (gen-inhibit reviewer, 2026-11-19)
     ("B20", "bench", r"B20_interlock_bench_run\.txt", r"^(gate-open +)AS SPECIFIED( +\(interlock_)",
@@ -343,14 +402,25 @@ EDITS = [
     ("B21", "bench", r"B21_bench_flash_guard\.txt", r"spec 5\.1 item 3 holds on the device", "spec 5.1 item 3 does not hold", "FAIL"),
     # the car-data sentence (spec 12.4, user 2026-11-16), present in the copy (B21_NOW below)
     ("B21", "bench", r"B21_bench_flash_guard\.txt", r" are not registered \(404 in every mode\)\.", " are registered.", "FAIL"),
-    ("B21", "bench", r"B21_wire_image_e3d9437\.txt", r"^(PASSIVE  rep 2 .*?device_end )fin", r"\g<1>rst", "FAIL"),
-    ("B21", "bench", r"B21_wire_multipart_e3d9437\.txt", r"^(OBSERVE  rep 3 .*? wire )403", r"\g<1>200", "FAIL"),
+    # B21 at the client (spec 9.3, topic (E); the reviewer's readings (s)-(w), answer to b07f7984): the
+    # client judge's verdict per body, FAIL, then ERROR, then VOID; the baseline's re-judgements read VOID
+    # (no page read around a request), with 40 of 40 whole 403s
+    ("B21", "bench", r"B21_client_multipart_e3d9437\.txt", r"^verdict VOID: 20 reps, 0 PASS, 0 FAIL, 0 ERROR, 20 VOID, 20 ",
+     "verdict FAIL: 20 reps, 0 PASS, 1 FAIL, 0 ERROR, 19 VOID, 19 ", "FAIL"),
+    ("B21", "bench", r"B21_client_image_e3d9437\.txt", r"^verdict VOID: 20 reps, 0 PASS, 0 FAIL, 0 ERROR, 20 VOID, ",
+     "verdict ERROR: 20 reps, 0 PASS, 0 FAIL, 1 ERROR, 19 VOID, ", "ERROR"),
+    ("B21", "bench", r"B21_client_image_e3d9437\.txt", r"^verdict VOID: .*\n", "", "ERROR"),
+    ("B21", "bench", r"B21_client_image_e3d9437\.txt", r"^verdict VOID: 20 reps, 0 PASS, 0 FAIL, 0 ERROR, 20 VOID, ",
+     "verdict PASS: 20 reps, 20 PASS, 0 FAIL, 0 ERROR, 0 VOID, ", "VOID"),
+    ("B21", "bench", r"B21_client_multipart_e3d9437\.txt", r"^verdict VOID: 20 reps, 0 PASS, 0 FAIL, 0 ERROR, 20 VOID, ",
+     "verdict PASS: 20 reps, 20 PASS, 0 FAIL, 0 ERROR, 0 VOID, ", "VOID"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"tx_fail=0", "tx_fail=1", "FAIL"),
-    # an arm not run because its reboot was not confirmed (baseline_b22.sh, 2026-11-19): void, so B22 is
-    # INCONCLUSIVE, never PASS, and a FAIL in the other arm still FAILs
+    # an arm not run because its reboot was not confirmed (baseline_b22.sh, 2026-11-19): the bench's
+    # stimulus, so B22 is VOID (the gen-inhibit reviewer's answer to ba92acf0, 2026-11-19; INCONCLUSIVE
+    # from F3 until then), never PASS, and a FAIL in the other arm still FAILs
     ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"\A[\s\S]*\Z",
      "ARM NOT RUN\n  ---- ARM VOID: the figures above do not support a verdict ----\n"
-     "       - the WiCAN's reboot before the arm was not confirmed in mode 0: no page after the reboot\n", "INCONCLUSIVE"),
+     "       - the WiCAN's reboot before the arm was not confirmed in mode 0: no page after the reboot\n", "VOID"),
     ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"\), 0 error frames", "), 4 error frames", "FAIL"),
     # the old trail-window count decides nothing (gen-inhibit reviewer, 2026-10-29): a
     # disagreement in it alone, printed either way, or as the only void reason, is a PASS ...
@@ -360,20 +430,200 @@ EDITS = [
      "  superseded trail-window count (voids nothing; provenance decides): the device reports tx_ok=8983, "
      "the old classifier attributes 8982 zero-torque 0x051 frames to us", "PASS"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID_ATTR, None, "PASS"),
-    # ... while provenance's own count against the device still decides
+    # ... while provenance's own count against the device, over the arm (no POST: the arm's window), is
+    # attribution: VOID (spec 12.1, c5849685; FAIL from 2026-10-29 until then)
     ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"device 0x051 8983 \(device says 8983\)",
-     "device 0x051 8982 (device says 8983)", "FAIL"),
+     "device 0x051 8982 (device says 8983)", "VOID"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt",
-     B22_VOID_ATTR + [(r"device 0x051 8983 \(device says 8983\)", "device 0x051 8982 (device says 8983)")], None, "FAIL"),
-    # an arm the tool voids is INCONCLUSIVE, and so is B22 (step 1a, 2026-10-29) ...
-    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID, None, "INCONCLUSIVE"),
-    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID_BOTH, None, "INCONCLUSIVE"),
-    # ... but not when the void arm shows a failure, or the other arm fails
-    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"tx_fail=0", "tx_fail=1")], None, "FAIL"),
-    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"\), 0 error frames", "), 4 error frames")], None, "FAIL"),
+     B22_VOID_ATTR + [(r"device 0x051 8983 \(device says 8983\)", "device 0x051 8982 (device says 8983)")], None, "VOID"),
+    # an arm void for a 12.1 reason makes B22 VOID (INCONCLUSIVE from step 1a, 2026-10-29, until c5849685) ...
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID, None, "VOID"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID_BOTH, None, "VOID"),
+    # ... whatever the void arm's figures show: it is never judged as a normal arm (FAIL until c5849685)
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"tx_fail=0", "tx_fail=1")], None, "VOID"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"\), 0 error frames", "), 4 error frames")], None, "VOID"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"(provenance \(live\).*?)late 0", r"\g<1>late 1")],
+     None, "VOID"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"^  \[idle\] provenance \(live\).*\n", "")], None, "VOID"),
+    # a void reason on no 12.1 entry is ERROR, for the gen-inhibit reviewer, never mapped
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"^(  device rx_gap us: .*)$",
+     "\\g<1>\n  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - the moon was in the wrong phase", "ERROR"),
+    # B5 reads a run's re-judgement from its record in place of the run's own lines where the folder
+    # holds one (baseline_b_desk.sh B5, x2_jam_cases rejudge-livetrain; the jam's start from the witness,
+    # the reviewer's answer to 0cfd6689; written beside the lines, answer to 2ddd4dcc, 2026-11-19):
+    # the run's own lines changed move nothing while it stands, and with it taken away B5 reads them,
+    # whose arm 0 is "not live at the start of the jam", the bench's: VOID
+    ("B5", "bench", r"B5_livetrain_p2000_run1\.txt", r"^(arm 1 .*?\| B: )PASS", r"\g<1>FAIL", "PASS"),
+    ("B5", "bench", "-B5_livetrain_p2000_run1_rejudged.txt", None, None, "VOID"),
+    # Spec 12.1 (c5849685) in the other checks made of arms: one arm INCONCLUSIVE "not live at the start
+    # of the jam" is the bench's (answer to ba92acf0), and B5 is VOID, never PASS
+    ("B5", "bench", B5_RJ1, [B5_NOTLIVE], None, "VOID"),
+] + [
+    # The gen-inhibit reviewer's rulings on reasons on no 12.1 entry (answer to ba92acf0, 2026-11-19;
+    # bench/arm_rulings.py): the bench's VOID, the device's FAIL, what the record can't tell ERROR.
+    # B5: a reset by its reason; never went live by the gate on the wire
+    ("B5", "bench", B5_RJ1, [B5_NOTLIVE, (r"(the device was not live at the start of the jam)",
+                                          r"\g<1>; device reset seen at [-1.0] s rel jam; reset reason %s" % reason)],
+     None, want)
+    for reason, want in (("PANIC", "FAIL"), ("TASK_WDT", "FAIL"), ("SW", "FAIL"), ("POWERON", "VOID"),
+                         ("BROWNOUT", "VOID"), ("EXT", "ERROR"), ("none", "ERROR"))
+] + [
+    ("B5", "bench", B5_RJ1, [B5_NOTLIVE, (r"(the device was not live at the start of the jam)",
+                                          r"\g<1>; device reset seen at [-1.0] s rel jam")], None, "ERROR"),
+    # an older record whose placed send has an error frame between the arm's POST and it (the reviewer's
+    # guard on reading (g), answer to 2ddd4dcc): the record can't tell the start, ERROR
+    ("B5", "bench", B5_RJ1, [(B5_NOTLIVE[0], r"\g<1>INCONCLUSIVE | the train's send is not recorded, and the witness "
+                              r"saw an error frame between the arm's POST and the send its schedule places")], None, "ERROR"),
+] + [
+    ("B5", "bench", B5_RJ1, [B5_NOTLIVE, (r"^(arm 0 \(replay )[\d.]+(/s\): INCONCLUSIVE \| )the device was not "
+                                          r"live at the start of the jam \| ordering .*$",
+                                          r"\g<1>None\g<2>never went live%s | ordering None" % gate)], None, want)
+    # held long enough: FAIL only when the page named a wire condition or nothing while it held (the
+    # reviewer's refinement, answer to 0cfd6689, 2026-11-19); 7-9, or no page class, ERROR
+    for gate, want in (("; gate on the wire: never held", "VOID"),
+                       ("; gate on the wire: held 5.0 s at most; arm_block while held: wire", "FAIL"),
+                       ("; gate on the wire: held 5.0 s at most; arm_block while held: none", "FAIL"),
+                       ("; gate on the wire: held 5.0 s at most; arm_block while held: state 7-9", "ERROR"),
+                       ("; gate on the wire: held 5.0 s at most", "ERROR"),
+                       ("; gate on the wire: held 0.6 s at most; arm_block while held: wire", "ERROR"), ("", "ERROR"))
+] + [
+    # the re-judgement's own arms judged: arm 0's B failing in it is FAIL
+    ("B5", "bench", B5_RJ1, r"^(arm 0 .*?\| B: )PASS", r"\g<1>FAIL: device 0x051 after the latch", "FAIL"),
+    # a run VOID on its witness clock with every arm passing is VOID, never PASS
+    ("B5", "bench", B5_RJ1, r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) "
+     "witness on receipt time: SocketCAN: test", "VOID"),
+    # an arm the record can't tell beside a run VOID on its witness clock is ERROR, not VOID
+    ("B5", "bench", B5_RJ1,
+     [B5_NOTLIVE, (r"(the device was not live at the start of the jam)", r"\g<1>; device reset seen at [-1.0] s rel jam"),
+      (r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt "
+       "time: SocketCAN: test")], None, "ERROR"),
+] + [
+    # B6: each reason as ruled; delivery other than one error frame per pulse stays INCONCLUSIVE
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE %s |" % why), (r"^verdict PASS", "verdict INCONCLUSIVE")],
+     None, want)
+    for why, want in (("device reset while armed (reset reason PANIC)", "FAIL"),
+                      ("device reset while armed (reset reason INT_WDT)", "FAIL"),
+                      ("device reset while armed (reset reason POWERON)", "VOID"),
+                      ("device reset while armed (reset reason none)", "ERROR"),
+                      ("device reset while armed", "ERROR"),
+                      ("not live at the start of the pulses", "VOID"),
+                      ("abort already latched before the pulses", "VOID"),
+                      ("3 error frames between the arm and the pulses", "VOID"),
+                      ("never went live; gate on the wire: never held", "VOID"),
+                      ("never went live; gate on the wire: held 3.0 s at most; arm_block while held: wire", "FAIL"),
+                      ("never went live; gate on the wire: held 3.0 s at most; arm_block while held: state 7-9", "ERROR"),
+                      ("never went live", "ERROR"),
+                      ("the moon was in the wrong phase", "ERROR"))
+] + [
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^arm 1 \(replay [\d.]+/s\): PASS .*$", "arm 1: INCONCLUSIVE not armed: the reset before it was not shown (no page)"),
+      (r"^verdict PASS", "verdict INCONCLUSIVE")], None, "VOID"),
+    # an arm whose replay rate reads None is still read
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^arm 1 \(replay [\d.]+/s\): PASS ", "arm 1 (replay None/s): FAIL ",
+     "FAIL"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^(arm 1 \(replay [\d.]+/s\): )PASS ",
+     r"\g<1>FINDING another trip latched: '3 inhibit frames skipped within 1 s' ", "FAIL"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^verdict PASS", "verdict STOPPED", "FAIL"),
+    # VOID beside a delivery arm (INCONCLUSIVE) is VOID; a FAIL beside a VOID arm stands
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE not live at the start of the pulses |"),
+      (r"^(arm 0 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE delivery was not one error frame per pulse |"),
+      (r"^verdict PASS", "verdict INCONCLUSIVE")], None, "VOID"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE not live at the start of the pulses |"),
+      (r"^(arm 0 \(replay [\d.]+/s\): )PASS ", r"\g<1>FAIL "), (r"^verdict PASS", "verdict FAIL")], None, "FAIL"),
+] + [
+    # B7: each reason as ruled
+    ("B7", "bench", r"B7_busoff_rearm\.txt",
+     [(r"^arm 1: AS SPECIFIED: [^|]*\|", "arm 1: INCONCLUSIVE: %s |" % why), (r"^verdict AS SPECIFIED", "verdict INCONCLUSIVE")],
+     None, want)
+    for why, want in (("too few answered readings (3 no-arm, 30 after)", "VOID"),
+                      ("the replay was not running after the re-arm (2.0 VCM 0x051/s)", "VOID"),
+                      ("the page never read bus_off after the jam (12 answered readings from the jam to the re-arm)", "FAIL"),
+                      ("the page never read bus_off after the jam (0 answered readings from the jam to the re-arm)", "VOID"),
+                      ("the page never read bus_off after the jam", "ERROR"),
+                      ("never went live before the jam; gate on the wire: never held", "VOID"),
+                      ("never went live before the jam; gate on the wire: held 2.5 s at most; arm_block while held: none",
+                       "FAIL"),
+                      ("never went live before the jam; gate on the wire: held 2.5 s at most; arm_block while held: other",
+                       "ERROR"),
+                      ("never went live before the jam", "ERROR"))
+] + [
+    # an arm word other than AS SPECIFIED or INCONCLUSIVE FAILs, whatever the case's verdict says
+    ("B7", "bench", r"B7_busoff_rearm\.txt", r"^arm 1: AS SPECIFIED:", "arm 1: SEE ARM:", "FAIL"),
+    # a void arm beside a NOT AS SPECIFIED arm FAILs
+    ("B7", "bench", r"B7_busoff_rearm\.txt",
+     [(r"^arm 1: AS SPECIFIED: [^|]*\|", "arm 1: INCONCLUSIVE: too few answered readings (3 no-arm, 30 after) |"),
+      (r"^arm 0: AS SPECIFIED", "arm 0: NOT AS SPECIFIED"), (r"^verdict AS SPECIFIED", "verdict NOT AS SPECIFIED")],
      None, "FAIL"),
-    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"^  \[idle\] provenance \(live\).*\n", "")], None, "FAIL"),
+    # B14: both VOID verdicts are the bench's; INCOMPLETE VOID when cut short, else ERROR; INVALID FAILs
+    # unless its POST got no answer on the bench path
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;", "verdict: VOID: no valid mode-0 control;",
+     "VOID"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;",
+     "verdict: VOID: the mode-0 control was ACKed, so the WiCAN is not the only possible ACKer;", "VOID"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt",
+     [(r"^verdict: as specified;", "verdict: VOID: the mode-0 control was ACKed, so the WiCAN is not the only possible ACKer;"),
+      (r"^(  mode 2: ack errors )False -> as specified", r"\g<1>True -> NOT as specified")], None, "VOID"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;",
+     "verdict: INCOMPLETE: modes tested [1, 2], need OBSERVE and RESPOND; the probe was cut short after 3 of 5 arms "
+     "(OSError: PCAN gone);", "VOID"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;",
+     "verdict: INCOMPLETE: modes tested [1], need OBSERVE and RESPOND;", "ERROR"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt",
+     [(r"^(  mode 2: ack errors False -> )as specified", r"\g<1>INVALID (page read mode 0)"),
+      (r"^verdict: as specified;", "verdict: NOT as specified;")], None, "FAIL"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt",
+     [(r"^(  mode 2: ack errors False -> )as specified", r"\g<1>INVALID (page read mode 0); the mode POST was answered 400"),
+      (r"^verdict: as specified;", "verdict: NOT as specified;")], None, "FAIL"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt",
+     [(r"^(  mode 2: ack errors False -> )as specified",
+       r"\g<1>INVALID (page read mode 0); the mode POST got no answer on the bench path (URLError: timed out)"),
+      (r"^verdict: as specified;", "verdict: NOT as specified;")], None, "VOID"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt",
+     [(r"^(  mode 2: ack errors False -> )as specified", r"\g<1>INVALID (page read mode 0)"),
+      (r"^verdict: as specified;", "verdict: VOID: no valid mode-0 control;")], None, "FAIL"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;", "verdict: NOT as specified;", "FAIL"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;", "verdict: SEE ARMS;", "FAIL"),
+    # an arm the record can't tell is ERROR beside a void arm, and beside a run VOID on its witness clock
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE device reset while armed (reset reason none) |"),
+      (r"^(arm 0 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE not live at the start of the pulses |"),
+      (r"^verdict PASS", "verdict INCONCLUSIVE")], None, "ERROR"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE device reset while armed (reset reason none) |"),
+      (r"^verdict PASS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: "
+       "SocketCAN: test")], None, "ERROR"),
+    ("B7", "bench", r"B7_busoff_rearm\.txt",
+     [(r"^arm 1: AS SPECIFIED: [^|]*\|", "arm 1: INCONCLUSIVE: never went live before the jam |"),
+      (r"^verdict AS SPECIFIED *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt "
+       "time: SocketCAN: test")], None, "ERROR"),
+    # B2 and B22: UNRESOLVED provenance stays FAIL
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"provenance \(live\): as specified -- (.*)ambiguous 0",
+     r"provenance (live): UNRESOLVED -- \g<1>ambiguous 2", "FAIL"),
+    ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2held\.txt", r"provenance \(live\): as specified -- (.*)ambiguous 0",
+     r"provenance (live): UNRESOLVED -- \g<1>ambiguous 2", "FAIL"),
+    # B24: an arm whose void reason is on no 12.1 entry (b24_frame_content_judge's ERROR row) is ERROR
+    ("B24", "bench", r"B24_frame_content_e3d9437\.txt", r"(B3_e4_golive_off_e3d9437_20261016T212714_arm1\.json +)AS SPECIFIED    ",
+     r"\g<1>ERROR           ", "ERROR"),
+    # B13: an arm void for a 12.1 reason (passive_analysis's "void") is VOID, unless an arm read fairly fails
+    ("B13", "bench", r"B13_passive_analysis\.txt", r'^\{"run": "(B13_e4_passive_tp2_passive_e3d9437_20261016T215910_arm1\.json)".*$',
+     r'{"run": "\g<1>", "mode": "passive", "void": ["3 replay frames were refused by the adapter, so the stimulus is incomplete"]}',
+     "VOID"),
+    ("B13", "bench", r"B13_passive_analysis\.txt",
+     [(r'^\{"run": "(B13_e4_passive_tp2_passive_e3d9437_20261016T215910_arm1\.json)".*$',
+       r'{"run": "\g<1>", "mode": "passive", "void": ["3 replay frames were refused by the adapter, so the stimulus is incomplete"]}'),
+      (r'(_arm7\.json".*?"device_0x051": )0', r"\g<1>3")], None, "FAIL"),
+    # B26: an arm its run recorded void for a 12.1 reason is VOID; one on no entry ERROR; the old
+    # trail-window attribution reason (before 2026-10-29) is dropped, as everywhere
+    ("B26", "bench", r"B26_rxq_idle_a\.json", r'"void_reasons": \[\]',
+     '"void_reasons": ["3 replay frames were refused by the adapter, so the stimulus is incomplete"]', "VOID"),
+    ("B26", "bench", r"B26_rxq_idle_a\.json", r'"void_reasons": \[\]', '"void_reasons": ["the moon was in the wrong phase"]',
+     "ERROR"),
+    ("B26", "bench", r"B26_rxq_idle_a\.json", r'"void_reasons": \[\]',
+     '"void_reasons": ["attribution disagrees with the device: tx_ok=670, witness attributes 669"]', "PASS"),
     ("B23", "bench", r"B23_txabort_bench\.txt", r"RETRY LOOP: 78 of 78", "RETRY LOOP: 77 of 78", "FAIL"),
     ("B23", "bench", r"B23_txabort_bench\.txt", r"reached the wire anyway on 0 of 78", "reached the wire anyway on 1 of 78", "FAIL"),
     ("B23", "bench", r"B23_txabort_bench\.txt", r"monotonic: True", "monotonic: False", "FAIL"),
@@ -424,7 +674,36 @@ RULED = {
     # The B9 record was never live and had latched before the first burst; the judge now needs
     # a live arm and a latch after the first burst (reviewer, 2026-10-25).
     "B9": "INCONCLUSIVE",
+    # One 500/s arm (B5_livetrain_p2000_run1's arm 0) is INCONCLUSIVE in the run's own lines, "the device
+    # was not live at the start of the jam": the bench's, so VOID (the gen-inhibit reviewer's answer to
+    # ba92acf0, 2026-11-19), and B5 on those lines is VOID. INCONCLUSIVE from spec 12.1 (c5849685) until
+    # that ruling. Those lines judged the jam from the jammer's ACK; re-judged from the records with the
+    # jam's start the witness's (answer to 0cfd6689), the arm passes and B5 PASSes: baseline_b_desk.sh B5,
+    # checked by test_baseline_b_desk.py. The re-judgements are in this folder beside the run's own lines,
+    # which stay as they were (bench/B5_livetrain_p5000_rejudged.txt and B5_livetrain_p2000_run[1-3]_
+    # rejudged.txt, written by baseline_b_desk.sh B5; the reviewer's answer to 2ddd4dcc, 2026-11-19), and
+    # B5 reads them: PASS (REJUDGED), with the arm counted passing (RULED_FIGURES).
+    "B5": "PASS",
+    # B21 judged at the client (spec 9.3, topic (E)): the baseline's two probe records re-judged by
+    # ota_guard_client_judge into bench/B21_client_multipart_e3d9437.txt and B21_client_image_e3d9437.txt
+    # (baseline_b_desk.sh B21client), beside the old wire files, which stay as they were. The records
+    # hold no page read around any request, a reading the harness never sent, so every rep is VOID
+    # (the gen-inhibit reviewer's readings (t) and (w), answer to b07f7984, 2026-11-19), with 40 of 40
+    # whole 403s and their reason at the client. Its figures are the client's (FIGURES_SINCE).
+    "B21": "VOID",
+    # B11raw in the request-to-reply window (spec 3, topic (E)): the baseline's six arm records re-judged
+    # by b11_rawpost_judge into bench/B11raw_window_judge.txt (baseline_b_desk.sh B11raw's judge, the
+    # file copied in alone), beside the capture judge's B11raw_rawpost_judge.txt, which stays as it was.
+    # No page read follows any reply, a reading the harness never sent, so all 12 POSTs are VOID (the
+    # gen-inhibit reviewer's readings (t) and (w), answer to b07f7984, 2026-11-19); on the witness 9 show
+    # the change and 3 (OBSERVE from PASSIVE) have nothing to show.
+    "B11raw": "VOID",
 }
+RULED_FIGURES = {"B5": {"pass_500_per_s": 9, "inconclusive_500_per_s": 0}}
+# A check whose figures were all replaced by a ruling since (in place of the index's).
+FIGURES_SINCE = {"B21": {"multipart_reps": 20, "multipart_whole_403": 20, "image_reps": 20, "image_whole_403": 20},
+                 "B11raw": {"posts": 12, "pass": 0, "fail": 0, "error": 0, "void": 12, "witness_not_applicable": 3,
+                            "window_ms_min": 8.3, "window_ms_max": 37.5, "margin_ms_max": 0.46}}
 
 # B9 on synthetic records (2026-10-25): wrong_bitrate_errors.py's text and json, a live arm whose
 # page samples run from -4 s to the latch, then one change per case.
@@ -666,6 +945,8 @@ def main():
         # the index names B19's figures by the switches' names at e3d9437; port step 1c renamed two
         wf = {RENAMED_FROM.get(k, k): v for k, v in want["figures"].items()}
         wf.update(ADDED_SINCE.get(cid, {}))
+        wf.update(RULED_FIGURES.get(cid, {}))
+        wf = dict(FIGURES_SINCE[cid]) if cid in FIGURES_SINCE else wf
         check("%s: every figure is the index's, and no other" % cid, lambda: f == wf,
               {k: (f.get(k), wf.get(k)) for k in set(f) | set(wf) if f.get(k) != wf.get(k)})
 
@@ -683,6 +964,13 @@ def main():
                 continue
             open(p, "w", encoding="utf-8").write(new)
             old = "a new file %s" % frx[1:]
+        elif frx.startswith("-"):   # a file taken away
+            p = os.path.join(folder, frx[1:])
+            if not os.path.isfile(p):
+                check("edit %d (%s): %s is there to take away" % (n, cid, frx[1:]), lambda: False)
+                continue
+            os.remove(p)
+            old, new = "%s taken away" % frx[1:], ""
         else:
             names = [x for x in os.listdir(folder) if re.fullmatch(frx, x)]
             if len(names) != 1:
@@ -728,6 +1016,70 @@ def main():
     check("B3 void once: VOID, one void arm, named once",
           lambda: r3["verdict"] == "VOID" and r3["figures"].get("void_arms", {}).get("value") == 1
           and r3["detail"].count("T213601_arm3") == 1, (r3["verdict"], r3["figures"].get("void_arms"), r3["detail"]))
+    gi_paths.remove_tree(d)
+
+    # 2a'. B21 PASSes only when both bodies' client verdicts PASS (topic (E), 2026-11-19): the baseline's
+    #     two VOID re-judgements turned PASS, with the guards' copy passing, read PASS.
+    d = os.path.join(scratch, "b21_both_pass")
+    shutil.copytree(real, d)
+    for kind in ("multipart", "image"):
+        p = os.path.join(d, "bench", "B21_client_%s_e3d9437.txt" % kind)
+        s, k = re.subn(r"^verdict VOID: 20 reps, 0 PASS, 0 FAIL, 0 ERROR, 20 VOID, ",
+                       "verdict PASS: 20 reps, 20 PASS, 0 FAIL, 0 ERROR, 0 VOID, ", open(p, encoding="utf-8").read(), flags=re.M)
+        check("B21 both PASS: %s edited once" % kind, lambda: k == 1, k)
+        open(p, "w", encoding="utf-8").write(s)
+    r21 = judge_all(d)["B21"][0]
+    check("B21 both PASS: PASS, 40 whole 403s", lambda: r21["verdict"] == "PASS"
+          and r21["figures"]["multipart_whole_403"]["value"] + r21["figures"]["image_whole_403"]["value"] == 40,
+          (r21["verdict"], r21["detail"]))
+    check("B21 both PASS: no spec 3 finding figure or text", lambda: "spec3_findings" not in r21["figures"]
+          and "spec 3" not in r21["detail"], (r21["figures"], r21["detail"]))
+    gi_paths.remove_tree(d)
+
+    # 2a'''. B21's spec 3 findings lifted into its summary line (the gen-inhibit reviewer, answer to
+    #     48b1100e): the client files' verdict lines with "; F spec 3 finding(s)" after them (as
+    #     ota_guard_client_judge prints them when F > 0) give the summary their sum, first in the
+    #     line with each file named; "; 0 spec 3 finding(s)" gives none.
+    for case, counts, want in (("b21_spec3_both", {"multipart": 2, "image": 1}, 3),
+                               ("b21_spec3_one", {"multipart": 0, "image": 4}, 4),
+                               ("b21_spec3_zero", {"multipart": 0, "image": 0}, 0)):
+        d = os.path.join(scratch, case)
+        shutil.copytree(real, d)
+        for kind, k3 in counts.items():
+            p = os.path.join(d, "bench", "B21_client_%s_e3d9437.txt" % kind)
+            s, k = re.subn(r"^(verdict VOID: 20 reps, .*)$", r"\1; %d spec 3 finding(s)" % k3,
+                           open(p, encoding="utf-8").read(), flags=re.M)
+            check("%s: %s edited once" % (case, kind), lambda: k == 1, k)
+            open(p, "w", encoding="utf-8").write(s)
+        r21 = judge_all(d)["B21"][0]
+        if want:
+            named = ["%s %d (B21_client_%s_e3d9437.txt)" % (b, n, b) for b, n in counts.items() if n]
+            check("%s: VOID, %d spec 3 finding(s) first in the line, each file with one named" % (case, want),
+                  lambda: r21["verdict"] == "VOID" and r21["figures"].get("spec3_findings", {}).get("value") == want
+                  and r21["detail"].startswith("%d spec 3 finding(s): %s;" % (want, ", ".join(named))),
+                  (r21["verdict"], r21["figures"].get("spec3_findings"), r21["detail"][:200]))
+        else:
+            check("%s: VOID, no spec 3 finding figure or text" % case,
+                  lambda: r21["verdict"] == "VOID" and "spec3_findings" not in r21["figures"]
+                  and "spec 3" not in r21["detail"], (r21["verdict"], r21["figures"], r21["detail"][:200]))
+        gi_paths.remove_tree(d)
+
+    # 2a''. B11raw with every POST passing in the window and one arm void in the quiesce analysis:
+    #     VOID, never PASS (the edits above change one file each, and the baseline's POSTs are already
+    #     VOID, so they cannot show it; the suite_judges mutant m37 survived them, topic (E) follow-up).
+    d = os.path.join(scratch, "b11raw_pass_void_arm")
+    shutil.copytree(real, d)
+    for name, pat, rep in (
+            ("B11raw_window_judge.txt", B11RAW_ALL_PASS[0], B11RAW_ALL_PASS[1]),
+            ("B11raw_quiesce_analysis.txt", r'^\{"run": "(B11raw_e4_quiesce_inhibit_e3d9437_20261017T010417_arm1\.json)".*$',
+             r'{"run": "\g<1>", "initial_mode": "inhibit", "void": ["witness clock (test): not judged on host time"]}')):
+        p = os.path.join(d, "bench", name)
+        s, k = re.subn(pat, rep, open(p, encoding="utf-8").read(), flags=re.M)
+        check("B11raw PASS beside a void arm: %s edited" % name, lambda: k == (12 if name.startswith("B11raw_w") else 1), k)
+        open(p, "w", encoding="utf-8").write(s)
+    r11 = judge_all(d)["B11raw"][0]
+    check("B11raw PASS beside a void arm: VOID, never PASS", lambda: r11["verdict"] == "VOID",
+          (r11["verdict"], r11["detail"]))
     gi_paths.remove_tree(d)
 
     # 2b. B18's schema 8 form (port step 0c), which no baseline file has: the check's verdict

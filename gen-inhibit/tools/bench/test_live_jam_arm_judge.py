@@ -121,6 +121,19 @@ def reset_before_jam(r):
             x["snap"].update(mode=0, tx_ok=0, inhibit_live=False)
 
 
+def reset_with_boot(reason):
+    """reset_before_jam, with the page's uptime_ms falling at 9.0 s and reset_reason `reason`
+    on the new boot (spec 11): the reset rule reads that reason (gen-inhibit reviewer, 2026-11-19)."""
+    def fn(r):
+        reset_before_jam(r)
+        for x in r["samples"]:
+            if x["snap"] is not None:
+                new = x["pt"] >= 9.0
+                x["snap"].update(uptime_ms=int((x["pt"] - 9.0 if new else x["pt"] + 100.0) * 1000),
+                                 reset_reason=reason if new else "SW")
+    return fn
+
+
 def never_live(r):
     for x in r["samples"]:
         x["snap"]["inhibit_live"] = False
@@ -234,7 +247,18 @@ def main():
             # mode 0 with tx_ok 0 before the jam. Must not score as (A) FAIL.
             ("reset before the jam", reset_before_jam,
              lambda o: o["device_reset_seen_rel_jam_s"]
-             and o["A"] == "NOT EXERCISED")):
+             and o["A"] == "NOT EXERCISED"),
+            # the reset rule (gen-inhibit reviewer, 2026-11-19): the new boot's reason is recorded,
+            # in the summary the suite reads; a reset with no new boot on the page says so
+            ("reset before the jam: reason recorded", reset_with_boot("PANIC"),
+             lambda o: o["summary"].endswith("; reset reason PANIC")
+             and o["new_boots_rel_jam_s"] == [(-1.0, "PANIC")]),
+            ("reset before the jam: a power-on recorded", reset_with_boot("POWERON"),
+             lambda o: "reset reason POWERON" in o["summary"]),
+            ("reset before the jam: no new boot on the page", reset_before_jam,
+             lambda o: o["summary"].endswith("; reset reason none") and o["new_boots_rel_jam_s"] == []),
+            ("not live with no reset: no reason in the summary", never_live,
+             lambda o: o["summary"] == "the device was not live at the start of the jam")):
         out = L.judge(mut(fn))
         ok = out["verdict"] == "INCONCLUSIVE" and (extra is None or extra(out))
         print("  %-4s %-40s %s %s" % ("ok" if ok else "FAIL", label,

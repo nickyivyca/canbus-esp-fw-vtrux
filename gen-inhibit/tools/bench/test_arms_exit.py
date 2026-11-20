@@ -11,7 +11,9 @@ the script exit 1 once the rest have run, and every arm still runs.
   baseline_b3_golive.sh off   5 arms: all 0 -> exit 0; arm 3 fails -> exit 1, 5 arms run
   baseline_b_noX2.sh B11      6 arms: the same, arm 6 failing (the last counts)
   baseline_b_noX2.sh B13      8 arms: arm 1 failing (the first counts)
-  baseline_b_noX2.sh B11raw   6 arms: an arm failing -> exit 1; a capture failing -> exit 1
+  baseline_b_noX2.sh B11raw   6 arms: an arm failing -> exit 1 (its capture, and a capture's
+                              failure, gone since topic (E), 2026-11-19)
+  baseline_b_noX2.sh B11rawquiet  6 quiet arms (topic (E)): arm 2 failing -> exit 1
   baseline_b_noX2.sh B4       not an arm: B4's own exit is judged from its output, not counted
   baseline_b_hand.sh B2app    3 arms: all 0 -> exit 0; arm 2 fails -> exit 1
 
@@ -83,6 +85,7 @@ def main():
                 ("B11", "baseline_b_noX2.sh", ["B11"], 6, 6),
                 ("B13", "baseline_b_noX2.sh", ["B13"], 8, 1),
                 ("B11raw", "baseline_b_noX2.sh", ["B11raw"], 6, 4),
+                ("B11rawquiet", "baseline_b_noX2.sh", ["B11rawquiet"], 6, 2),
                 ("B2app", "baseline_b_hand.sh", ["B2app"], 3, 2)]:
             rc, n, text = case(tmp, label, script, args, arms)
             check("%s: every arm exits 0 -> exit 0 (%d arms)" % (label, n), rc == 0 and n == arms, (rc, n, text))
@@ -90,8 +93,6 @@ def main():
             check("%s: arm %d exits 2 -> exit 1" % (label, bad), rc == 1, (rc, text))
             check("%s: every arm still runs after the failing one" % label, n == arms, (n, text))
             check("%s: the failure is said" % label, "exited non-zero" in text, text)
-        rc, n, text = case(tmp, "B11raw capture", "baseline_b_noX2.sh", ["B11raw"], 6, FAKE_DUMPCAP_RC="3")
-        check("B11raw: a capture that fails -> exit 1", rc == 1 and n == 6, (rc, n, text))
         rc, n, text = case(tmp, "B4", "baseline_b_noX2.sh", ["B4"], 0, FAKE_B4_RC="1")
         check("B4: its own exit 1 is not an arm's -> exit 0", rc == 0 and "B4 exit 1" in text, (rc, text))
     finally:

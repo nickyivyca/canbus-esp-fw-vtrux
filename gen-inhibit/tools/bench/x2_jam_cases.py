@@ -51,7 +51,13 @@ VOID; Witness.recorded() still gives the times on either clock for the record.
   Every case needs --power (how the WiCAN is powered; recorded as given) and --jammer
   (what the X2 runs, as the step that flashed it names it; recorded as given, 2026-11-16).
   py -3.14 ... threshold --arms 3 --n 10 --interval-ms 1000
+  py -3.14 ... rejudge-livetrain <x2_jam_livetrain_*.json>   (off the bench: a record's arms
+                re-judged with this judge, printed as a live run prints them)
 Writes runs/x2_jam_<case>_<stamp>.json (never overwrites).
+
+B's jam starts at the witness's first error frame at or after the train's send (the
+gen-inhibit reviewer, answer to 0cfd6689, 2026-11-19); the jammer's ACK as the host received
+it is recorded beside it and not judged from. Until then the ACK was the start.
 """
 import argparse
 import gzip
@@ -73,6 +79,7 @@ import gi_ecc as GE                                             # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 import witness_clock as WC  # noqa: E402  never judged on receipt time (A2 (b), 2026-11-11)
+import arm_rulings as AR  # noqa: E402  the reset rule and the gate on the wire (gen-inhibit reviewer, 2026-11-19)
 import proc_witness as PW  # noqa: E402  the witness out of the replay's process (2026-11-19)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -80,8 +87,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 BITRATE = 500000
 PCAN_BUSOFF = 0x10   # PCAN-Basic's PCAN_ERROR_BUSOFF, as status() returns it (16)
-KEEP_IDS = {0x051, 0x7F1, 0x7F2, 0x7F3, 0x7F8, 0x7F9}
+# and since 2026-11-19 the arm gate's other IDs, so a "never went live" arm can be judged on
+# whether the replay put the go-live conditions on the wire (arm_rulings, the gen-inhibit
+# reviewer's ruling); every reader of the frames picks its IDs
+KEEP_IDS = {0x051, 0x7F1, 0x7F2, 0x7F3, 0x7F8, 0x7F9} | set(AR.GATE_IDS)
 TRIP6_TEXT = LJ.TRIP6_TEXT
+
+
+def gate_line(frames, ph, samples):
+    """The arm's record of spec 7's gate on the wire from the arm to the end of the wait
+    for live, with the page's arm_block while it held (arm_rulings.gate_text, held_block).
+    samples: the arm's page reads [(t, snap or None)]."""
+    spans = AR.gate_spans(frames, ph["arm_posted"], ph["mode0_posted"], AR.decoder())
+    return AR.gate_text(spans, AR.held_block(samples, spans))
 
 
 # ---------------------------------------------------------------- pure parts
@@ -163,8 +181,11 @@ def judge_threshold(errs, samples, ph, n_cmd, interval_s, window_s=10.0,
     out = {}
     r = resets_while_armed(samples, ph["arm_posted"], ph["mode0_posted"])
     if r:
-        return dict(out, verdict="INCONCLUSIVE", why="device reset while armed",
-                    reset_rel_pulses_s=[round(t - p0, 3) for t in r[:3]])
+        # the reset rule (gen-inhibit reviewer, 2026-11-19): the reason of each new boot, recorded
+        boots = AR.new_boots(samples, ph["arm_posted"] + 1.0, ph["mode0_posted"])
+        return dict(out, verdict="INCONCLUSIVE", why="device reset while armed (%s)" % AR.reset_text(boots),
+                    reset_rel_pulses_s=[round(t - p0, 3) for t in r[:3]],
+                    new_boots_rel_pulses_s=[(round(t - p0, 3), rr) for t, rr in boots])
     pre = [(t, s) for t, s in samples if s is not None and ph["arm_posted"] < t < p0]
     if not pre or pre[-1][0] < p0 - 1.0 or not pre[-1][1].get("inhibit_live"):
         return dict(out, verdict="INCONCLUSIVE", why="not live at the start of the pulses")
@@ -921,12 +942,14 @@ def case_livetrain(a, rec, con, wit):
     rec["arms"] = []
     for k in range(a.arms):
         def body(arm, ph, tl):
-            sleep_until(tl + 3.0)
+            sleep_until(tl + LIVE_TO_TRAIN_S)
+            # The send is taken before the request, so no error frame of the train can come
+            # before it; the jam's start is judged from the witness (judge_livetrain_arm).
+            ph["train_sent"] = time.time()
             ack = train(con, a.w, a.p, a.ms)
             arm["ack"] = ack[1]["raw"] if ack else None
-            ph["jam_start"] = ack[0] if ack else time.time()
-            ph["jam_stop"] = ph["jam_start"] + a.ms / 1000.0
-            sleep_until(ph["jam_stop"] + 15.0)
+            ph["jam_ack_host"] = ack[0] if ack else None
+            sleep_until((ack[0] if ack else time.time()) + a.ms / 1000.0 + 15.0)
         arm = arm_live(a, con, wit, k, body)
         rec["arms"].append(arm)
         ph = arm["phases"]
@@ -940,60 +963,120 @@ def case_livetrain(a, rec, con, wit):
             st_all = list(wit.status)
         arm["witness_status"] = [x for x in st_all if lo <= x[0] <= hi]
         arm["witness_status_error"] = wit.status_error
-        if "jam_start" in ph:
+        jph = judge_livetrain_arm(arm, frames, errs, a.ms, rec.get("decoder"))
+        if jph is not None:
+            ph["jam_start"], ph["jam_stop"] = jph["jam_start"], jph["jam_stop"]
             arm["witness_state_after_jam"] = witness_state_summary(st_all, ph["jam_stop"],
                                                                    ph["mode0_posted"])
             arm["witness_state_whole_arm"] = witness_state_summary(st_all, lo, hi)
-        if "jam_start" not in ph:
-            arm["judge"] = {"verdict": "INCONCLUSIVE", "summary": "never went live"}
-        else:
-            shaped = {"phases": ph,
-                      "samples": [{"pt": t, "snap": s} for t, s in arm["samples"]],
-                      "wire": [x for x in frames if ph["replay_start"] - 1 <= x[0]
-                               <= ph["mode0_posted"] + 1],
-                      "witness_error_pts": [t for t in errs if ph["replay_start"] - 1 <= t
-                                            <= ph["mode0_posted"] + 1],
-                      "witness_sees_replay": True, "decoder": rec.get("decoder")}
-            j = LJ.judge(shaped)
-            unused = {key: j.pop(key) for key in
-                      ("witness_error_frames_in_jam", "delivered_error_rate_per_s",
-                       "t_10th_error_rel_jam_s", "witness_errors_before_latch_sample")
-                      if key in j}
-            j["not_used_witness_blind_under_dense_train"] = unused
-            arm["judge"] = j
-            j0 = ph["jam_start"]
-            pcan_off = pcan_bus_off_time(arm["pcan_status_changes"])
-            boff = next((t for t, s in arm["samples"] if s and s.get("drv_state") == "bus_off"),
-                        None)
-            lat = next((t for t, s in arm["samples"] if t >= j0 and s and s.get("abort_latched")),
-                       None)
-            last051 = max((t for t, a_, _ in frames if a_ == 0x051
-                           and t <= ph["mode0_posted"]), default=None)
-            arm["ordering_rel_train_s"] = {
-                "train_start": 0.0,
-                "replayer_bus_off": None if pcan_off is None else round(pcan_off - j0, 3),
-                "wican_bus_off_page": None if boff is None else round(boff - j0, 3),
-                "first_latch_seen": None if lat is None else round(lat - j0, 3),
-                "first_latch_reason": j.get("latched_reason"),
-                "last_0x051_on_wire": None if last051 is None else round(last051 - j0, 3)}
-            arm["pcan_status_rel_train_s"] = [(round(t - j0, 3), c, lbl)
-                                              for t, c, lbl in arm["pcan_status_changes"]]
-            arm["x051_per_100ms_from_train_minus_1s"] = bins_0x051(frames, j0 - 1.0,
-                                                                   ph["jam_stop"] + 3.0)
-            arm["drv_summary"] = drv_summary(arm["samples"], j0)
-        print("arm %d (replay %s/s): %s | %s | ordering %s" % (
-            k, arm.get("replay_0x051_per_s_device_off"), arm["judge"].get("verdict"), arm["judge"].get("summary", "")[:200],
-            arm.get("ordering_rel_train_s")))
-        ws = arm.get("witness_state_after_jam")
-        print("    witness after the jam: %s; frames after jam_stop+1 s %d" % (
-            "NOT SAMPLED (%s)" % arm.get("witness_status_error") if ws is None else
-            "bus_off %s (from %s), error_passive %s, tec max %s, rec max %s, flags %s" % (
-                ws["bus_off"], None if ws["bus_off_from"] is None else round(ws["bus_off_from"] - ph["jam_start"], 3),
-                ws["error_passive"], ws["tec_max"], ws["rec_max"], ws["flags_seen"]),
-            sum(1 for x in arm["wire"] if "jam_stop" in ph and x[0] > ph["jam_stop"] + 1.0)))
+        for line in livetrain_lines(k, arm, ph):
+            print(line)
         time.sleep(3.0)
     v = [x["judge"].get("verdict") for x in rec["arms"]]
     rec["verdict"] = "FAIL" if "FAIL" in v else "SEE ARMS"
+
+
+LIVE_TO_TRAIN_S = 3.0   # livetrain sends its train this long after it read the device live
+JAM_START_FROM = "the witness's first error frame at or after the train's send"
+SEND_PLACED_ERRORS = ("the train's send is not recorded, and the witness saw an error frame between "
+                      "the arm's POST and the send its schedule places")
+
+
+def livetrain_jam(arm, errs):
+    """(jam start, the send it was found from, how the send is known) for a livetrain arm
+    that sent its train (the gen-inhibit reviewer, answer to 0cfd6689, 2026-11-19:
+    LJ.witness_jam_start). A record made before then keeps no send time: its arm sent the
+    train at sleep_until(went live + LIVE_TO_TRAIN_S), and went_live_after_s is rounded to
+    10 ms, so the send is no earlier than arm_posted + went_live_after_s - 5 ms + 3.0 s."""
+    ph = arm["phases"]
+    if "train_sent" in ph:
+        sent, how = ph["train_sent"], "recorded"
+    else:
+        sent = ph["arm_posted"] + arm["went_live_after_s"] - 0.005 + LIVE_TO_TRAIN_S
+        how = "not recorded: went live + %.1f s, the arm's schedule" % LIVE_TO_TRAIN_S
+    return LJ.witness_jam_start(errs, sent), sent, how
+
+
+def judge_livetrain_arm(arm, frames, errs, ms, decoder):
+    """Judge one livetrain arm (live_jam_arm.judge A/B/C), live or from its record: sets
+    arm["judge"], arm["jam"] and the orderings relative to the jam's start, and returns the
+    phases it judged on (jam_start the witness's, jam_stop jam_start + ms), or None when the
+    arm never went live, the witness saw no error frame from the send on, or a send placed by
+    the schedule has an error frame between the arm's POST and it. The jammer's
+    ACK as the host received it is recorded beside the start, never judged from (in a
+    record before 2026-11-19 it is phases["jam_start"]). frames [(t, arb, hex)], errs [t]:
+    the witness's, on the judging clock."""
+    ph = arm["phases"]
+    legacy = "train_sent" not in ph
+    if legacy and "jam_start" not in ph:
+        arm["judge"] = {"verdict": "INCONCLUSIVE", "summary": "never went live; " + gate_line(frames, ph, arm["samples"])}
+        return None
+    ack = ph.get("jam_start") if legacy else ph.get("jam_ack_host")
+    j0, sent, how = livetrain_jam(arm, errs)
+    arm["jam"] = {"start": j0, "start_from": JAM_START_FROM, "send": sent, "send_time": how,
+                  "ack_host": ack, "ack_not_judged": True,
+                  "start_rel_ack_s": None if j0 is None or ack is None else round(j0 - ack, 4)}
+    if j0 is None:
+        arm["judge"] = {"verdict": "INCONCLUSIVE",
+                        "summary": "the witness saw no error frame at or after the train's send"}
+        return None
+    # A send placed by the schedule is a bound: an error frame between the arm's POST and it
+    # would leave the bound to decide which frame starts the jam, so the arm is ERROR (the
+    # gen-inhibit reviewer's guard on reading (g), answer to 2ddd4dcc, 2026-11-19).
+    early = [t for t in errs if ph["arm_posted"] <= t < sent] if legacy else []
+    if early:
+        arm["jam"]["errors_before_placed_send"] = {"n": len(early), "first": early[0]}
+        arm["judge"] = {"verdict": "INCONCLUSIVE", "summary": SEND_PLACED_ERRORS}
+        return None
+    jph = dict(ph, jam_start=j0, jam_stop=j0 + ms / 1000.0)
+    lo, hi = ph["replay_start"] - 1, ph["mode0_posted"] + 1
+    shaped = {"phases": jph,
+              "samples": [{"pt": t, "snap": s} for t, s in arm["samples"]],
+              "wire": [x for x in frames if lo <= x[0] <= hi],
+              "witness_error_pts": [t for t in errs if lo <= t <= hi],
+              "witness_sees_replay": True, "decoder": decoder}
+    j = LJ.judge(shaped)
+    unused = {key: j.pop(key) for key in
+              ("witness_error_frames_in_jam", "delivered_error_rate_per_s",
+               "t_10th_error_rel_jam_s", "witness_errors_before_latch_sample")
+              if key in j}
+    j["not_used_witness_blind_under_dense_train"] = unused
+    arm["judge"] = j
+    pcan_off = pcan_bus_off_time(arm["pcan_status_changes"])
+    boff = next((t for t, s in arm["samples"] if s and s.get("drv_state") == "bus_off"), None)
+    lat = next((t for t, s in arm["samples"] if t >= j0 and s and s.get("abort_latched")), None)
+    last051 = max((t for t, a_, _ in frames if a_ == 0x051 and t <= ph["mode0_posted"]), default=None)
+    arm["ordering_rel_train_s"] = {
+        "train_start": 0.0,
+        "replayer_bus_off": None if pcan_off is None else round(pcan_off - j0, 3),
+        "wican_bus_off_page": None if boff is None else round(boff - j0, 3),
+        "first_latch_seen": None if lat is None else round(lat - j0, 3),
+        "first_latch_reason": j.get("latched_reason"),
+        "last_0x051_on_wire": None if last051 is None else round(last051 - j0, 3)}
+    arm["pcan_status_rel_train_s"] = [(round(t - j0, 3), c, lbl) for t, c, lbl in arm["pcan_status_changes"]]
+    arm["x051_per_100ms_from_train_minus_1s"] = bins_0x051(frames, j0 - 1.0, jph["jam_stop"] + 3.0)
+    arm["drv_summary"] = drv_summary(arm["samples"], j0)
+    return jph
+
+
+def livetrain_lines(k, arm, ph):
+    """The arm's two printed lines (the suite's B5 reads the first: suite_judges.jam_arms)."""
+    j = arm["judge"]
+    jam = arm.get("jam") or {}
+    ws = arm.get("witness_state_after_jam")
+    j0 = jam.get("start")
+    stop = None if j0 is None else ph.get("jam_stop")
+    return [
+        "arm %d (replay %s/s): %s | %s | ordering %s | jam start %s" % (
+            k, arm.get("replay_0x051_per_s_device_off"), j.get("verdict"), j.get("summary", "")[:200],
+            arm.get("ordering_rel_train_s"),
+            "none" if not jam else "%s s rel the jammer ACK (send %s)" % (jam.get("start_rel_ack_s"), jam.get("send_time"))),
+        "    witness after the jam: %s; frames after jam_stop+1 s %d" % (
+            "NOT SAMPLED (%s)" % arm.get("witness_status_error") if ws is None else
+            "bus_off %s (from %s), error_passive %s, tec max %s, rec max %s, flags %s" % (
+                ws["bus_off"], None if ws["bus_off_from"] is None or j0 is None else round(ws["bus_off_from"] - j0, 3),
+                ws["error_passive"], ws["tec_max"], ws["rec_max"], ws["flags_seen"]),
+            0 if stop is None else sum(1 for x in arm["wire"] if x[0] > stop + 1.0))]
 
 
 def case_threshold(a, rec, con, wit):
@@ -1039,7 +1122,7 @@ def case_threshold(a, rec, con, wit):
         iv = a.interval_ms / 1000.0
         jf = a.judge_first or a.n
         if "pulses_start" not in ph:
-            arm["judge"] = {"verdict": "INCONCLUSIVE", "why": "never went live"}
+            arm["judge"] = {"verdict": "INCONCLUSIVE", "why": "never went live; " + gate_line(frames, ph, arm["samples"])}
         else:
             arm["judge"] = judge_threshold(judged_errs(errs, ph["pulses_start"], iv, a.judge_first),
                                            arm["samples"], ph, jf, iv)
@@ -1318,7 +1401,11 @@ def judge_busoff_rearm(samples, frames, ph, reply_status, expect):
     out["first_device_0x051_after_rel_rearm_s"] = (round(dev_a[0] - ph["rearm_posted"], 3)
                                                    if dev_a else None)
     if boff is None:
-        out["verdict"] = "INCONCLUSIVE: the page never read bus_off after the jam"
+        # the device's, unless no page read was answered (device silent): the count is the
+        # record the gen-inhibit reviewer's ruling reads (2026-11-19, arm_rulings.b7_arm)
+        out["verdict"] = ("INCONCLUSIVE: the page never read bus_off after the jam (%d answered readings "
+                          "from the jam to the re-arm)"
+                          % len(window_states(samples, ph["jam_start"], ph["rearm_posted"])))
     elif len(noarm) < 20 or len(after) < 20:
         out["verdict"] = "INCONCLUSIVE: too few answered readings (%d no-arm, %d after)" % (len(noarm), len(after))
     elif any(x[1] != "bus_off" for x in noarm) or dev_n:
@@ -1471,7 +1558,7 @@ def case_busoff_rearm(a, rec, con, wit):
                                                       ("noarm", ph["jam_stop"], ph["rearm_posted"]),
                                                       ("after", ph["rearm_posted"], ph["rearm_end"]))}
         else:
-            arm["judge"] = {"verdict": "INCONCLUSIVE: never went live before the jam"}
+            arm["judge"] = {"verdict": "INCONCLUSIVE: never went live before the jam; " + gate_line(frames, ph, pol.samples)}
         arm["witness_error_count"] = sum(1 for t in errs if ph["replay_start"] - 1 <= t <= ph["mode0_posted"] + 1)
         rec["arms"].append(arm)
         print("arm %d: %s | restore %s" % (k, arm["judge"]["verdict"],
@@ -1579,7 +1666,41 @@ def hotspot_refusal(a, environ=None):
     return None
 
 
+REJUDGE = "rejudge-livetrain"
+
+
+def rejudge_livetrain(path, out=print):
+    """Re-judge a livetrain record's arms with this file's judge, off the bench, printing the
+    lines a live run prints (the suite's B5 reads them) and its verdict line. An arm whose
+    witness was not on a judging clock ends it VOID, as the live run's Witness.clocked()
+    did. Returns 0, or 2 for a record that is not a livetrain one (nothing printed but why)."""
+    with open(path, encoding="utf-8") as fh:
+        rec = json.load(fh)
+    if rec.get("case") != "livetrain" or not isinstance(rec.get("arms"), list):
+        out("REFUSED: %s is not a livetrain record" % os.path.basename(path))
+        return 2
+    ms = (rec.get("args") or {}).get("ms")
+    out("rejudged from %s (its own verdict %s); jam start: %s" % (
+        os.path.basename(path), rec.get("verdict"), JAM_START_FROM))
+    v = []
+    for k, arm in enumerate(rec["arms"]):
+        if not WC.judgeable(arm.get("clock")):
+            out("verdict %s" % WC.void_verdict(arm.get("clock")))
+            return 0
+        jph = judge_livetrain_arm(arm, arm["wire"], arm["witness_error_times"], ms, rec.get("decoder"))
+        for line in livetrain_lines(arm.get("n", k), arm, jph or arm["phases"]):
+            out(line)
+        v.append(arm["judge"].get("verdict"))
+    out("verdict %s" % ("FAIL" if "FAIL" in v else "SEE ARMS"))
+    return 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == REJUDGE:
+        if len(sys.argv) != 3:
+            print("usage: x2_jam_cases.py %s <x2_jam_livetrain_*.json>" % REJUDGE)
+            return 2
+        return rejudge_livetrain(sys.argv[2])
     a = build_parser().parse_args()
     if a.case == "threshold":
         why = threshold_refusal(a)

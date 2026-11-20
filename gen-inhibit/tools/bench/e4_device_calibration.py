@@ -281,17 +281,18 @@ def vcm_commands_on_wire(mode, cmd_on_wire, tx_ok):
 
 
 def attribution_check(mode, ours_on_wire, tx_ok, counted_as):
-    """The witness's count of our frames against the device's tx_ok: (line, void reason
-    or None).
+    """The witness's count of our frames over the WHOLE arm against the device's tx_ok:
+    (line, None). Reported only, since 2026-11-19: it voids nothing.
 
-    In INHIBIT `ours` comes from the old trail-window classifier, which provenance
-    replaced as the live classifier on 2026-10-10 (reviewer, tracker row "E4 answer
-    classifier", its figures kept, superseded, "for one cycle"). Since 2026-10-29
-    (gen-inhibit reviewer, from step 1a's acceptance, where it voided 2 of 6 B22 arms
-    on 8982 against 8983 while provenance found 8983 of 8983) its count is printed,
-    labelled, and voids nothing: the provenance check decides. In RESPOND the count is
-    of the 0x7F0 probes, by id, not the trail classifier, and a disagreement still voids
-    the arm."""
+    Spec 12.1 (c5849685) makes attribution a void reason when the two counts disagree
+    over the same window, from the arm: the device's counters reset on every arm, so an
+    arm re-armed mid-replay (--post-schedule) counts only from its last POST, and this
+    whole-arm count disagreed by construction (the e3d9437 baseline's B3 RESPOND arms,
+    POSTed into INHIBIT at 20 s: tx_ok 1497-1499 against 2000-2001 probes). That check is
+    made in attach_provenance (arm_void.attribution), on the provenance classifier's
+    wire times. In INHIBIT `ours` here is the old trail-window classifier's, superseded
+    since 2026-10-10 (reviewer, tracker row "E4 answer classifier") and voiding nothing
+    since 2026-10-29; in RESPOND the count is of the 0x7F0 probes, by id."""
     if ours_on_wire == tx_ok:
         return ("  wire agrees with the device: %d transmitted, %d seen (%s)"
                 % (tx_ok, ours_on_wire, counted_as)), None
@@ -299,16 +300,9 @@ def attribution_check(mode, ours_on_wire, tx_ok, counted_as):
         return ("  superseded trail-window count (voids nothing; provenance decides): the "
                 "device reports tx_ok=%d, the old classifier attributes %d %s frames to us"
                 % (tx_ok, ours_on_wire, counted_as)), None
-    #
-    # The two instruments disagreeing means the attribution is unsound, and every
-    # criterion below is computed from that attribution. Reporting them anyway is
-    # reporting the classifier's opinion as the device's behaviour.
-    #
-    return ("  MISMATCH: the device reports tx_ok=%d but the witness attributes %d %s "
-            "frames to us. One of the two is wrong -- the filter, or a frame that never "
-            "reached the wire." % (tx_ok, ours_on_wire, counted_as),
-            "attribution disagrees with the device: tx_ok=%d, witness attributes %d"
-            % (tx_ok, ours_on_wire))
+    return ("  whole-arm count (voids nothing; attribution is counted from the arm, after "
+            "provenance): the device reports tx_ok=%d, the witness saw %d %s frames over the "
+            "whole arm" % (tx_ok, ours_on_wire, counted_as)), None
 
 
 def bus_utilisation(frames, bitrate=BITRATE):
@@ -694,6 +688,7 @@ class ModePoster(threading.Thread):
         self.t_end = None
         self.raw = None             # raw_http_probe record (--post-raw-timeout)
         self.followup = None        # a fresh GET /gen_inhibit after a failed reply
+        self.page_after = None      # the page read right after a whole reply (page_after_read)
         self.sockets_before = None
         self.sockets_after = None
         self.exc = None             # an exception this thread raised, as text
@@ -717,6 +712,11 @@ class ModePoster(threading.Thread):
                 # (c), reviewer 2026-10-14: is the server still answering, and when?
                 self.followup = RHP.raw_request(HOST, "/gen_inhibit", timeout=POST_RAW_TIMEOUT,
                                                 method="GET", port=HTTP_PORT, base=self.base)
+            else:
+                # spec 3 (user, 2026-11-19): the page read right after the reply must show the POSTed
+                # mode, and its drv.msgs_to_rx no backlog (the gen-inhibit reviewer's readings (p) and
+                # (q), answer to b07f7984)
+                self.page_after = page_after_read(self.base)
             self.sockets_after = device_sockets()
         except Exception as e:
             # RECORDED, NOT RAISED: on 2026-10-12 this thread died on an exception
@@ -724,6 +724,20 @@ class ModePoster(threading.Thread):
             import traceback
             self.exc = traceback.format_exc()
             print("  POSTER EXCEPTION (recorded): %s" % self.exc.strip().splitlines()[-1])
+
+
+def page_after_read(base, timeout=6.0):
+    """The page read once, right after a raw POST's reply, timed on the replay's clock from the
+    request's send: {t_sent, t_answered, http, mode, msgs_to_rx, rx_missed, error}. No other field of
+    the page is kept."""
+    t0 = round(time.perf_counter() - base, 4)
+    st, txt = gi("/gen_inhibit", timeout=timeout)
+    out = {"t_sent": t0, "t_answered": round(time.perf_counter() - base, 4), "http": st,
+           "error": None if st == 200 else txt[:200]}
+    mode, _self_off = page_state_fields(txt) if st == 200 else (None, None)
+    q = page_queue_fields(txt) if st == 200 else [None, None]
+    out.update(mode=mode, msgs_to_rx=q[0], rx_missed=q[1])
+    return out
 
 
 def page_state_fields(txt):
@@ -1183,6 +1197,7 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
                            "reply_failed": (reply_failed(e["poster"].raw)
                                             if e["poster"].raw is not None else None),
                            "followup": e["poster"].followup,
+                           "page_after": e["poster"].page_after,
                            "sockets_before": e["poster"].sockets_before,
                            "sockets_after": e["poster"].sockets_after,
                            "exception": e["poster"].exc} for e in sched],
@@ -1259,6 +1274,8 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
     # says how many it saw from us. A classifier that silently mis-attributes is
     # exactly what happened here twice in one day, and neither failure changed
     # any number that was being read -- only this comparison would have.
+    # SINCE 2026-11-19 (spec 12.1, c5849685) the whole-arm count here is reported only:
+    # the comparison that voids is counted from the arm, in attach_provenance.
     #
     # WHICH FRAMES tx_ok COUNTS DEPENDS ON THE MODE. In INHIBIT the device
     # transmits zero-torque 0x051 and tx_ok counts those, so `ours` is the right
@@ -1281,10 +1298,8 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         arm["wire_vs_device"] = {"ours_on_wire": len(ours_counted),
                                  "device_tx_ok": tx_ok,
                                  "counted_as": counted_as}
-        line, reason = attribution_check(mode, len(ours_counted), tx_ok, counted_as)
+        line, _none = attribution_check(mode, len(ours_counted), tx_ok, counted_as)
         print(line)
-        if reason:
-            void_reasons.append(reason)
         #
         # DID THE STIMULUS ACTUALLY REACH THE WIRE? `refused` counts send()
         # exceptions, and on 2026-09-29 a re-paced arm reported refused 0 while 384
@@ -1477,8 +1492,9 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
 
     #
     # LAST, so it is the line left on the screen. An arm can be void for reasons
-    # discovered at three different points -- the witness write, the send loop and
-    # the attribution check -- and a reader who scrolled past the first two would
+    # discovered at several points -- the witness clock and write, the send loop and
+    # the stimulus count (attribution, since 2026-11-19, after provenance in
+    # attach_provenance, with its own block) -- and a reader who scrolled past them would
     # otherwise take the measurements above as results. The figures are still
     # printed and still written to the JSON, because they are what diagnoses the
     # degradation; what is withheld is their standing as a verdict.
@@ -1688,13 +1704,33 @@ def attach_provenance(path, out):
     max_hold_us, which is stamped when the worker credits a frame, not when it is on the
     wire. Since 2026-10-29 (gen-inhibit reviewer) they void no arm and decide no
     verdict; see attribution_check()."""
+    import arm_void as AV
     import provenance_classifier as P
     for name, arm in out["arms"].items():
+        res = None
         try:
             res = P.rejudge(path, name)
             arm["provenance"] = {k: res.get(k) for k in PROVENANCE_FIELDS}
         except Exception as e:                      # recorded, never silently skipped
             arm["provenance"] = {"verdict": "NOT RUN", "error": "%s: %s" % (type(e).__name__, e)}
+        # ATTRIBUTION OVER THE SAME WINDOW, FROM THE ARM (spec 12.1, c5849685): the device's
+        # tx_ok against the witness's count of what it counts, from the arm's last mode POST
+        # (arm_void.attribution). A disagreement voids the arm, with its own ARM VOID block,
+        # printed after the run's: the block above was printed before provenance existed.
+        att = res.get("attribution") if res else None
+        arm["attribution"] = att
+        if att is not None:
+            print("  [%s] attribution from %s (%s): %s" % (
+                name, att["from"], att["mode"],
+                "nothing on the wire that tx_ok counts" if att["agree"] is None else
+                "device tx_ok %d, witness %d %s -> %s" % (att["device_tx_ok"], att["witness"], att["counted_as"],
+                                                          "agree" if att["agree"] else "DISAGREE")))
+        why = AV.attribution_reason(att)
+        if why:
+            arm.setdefault("void_reasons", []).append(why)
+            arm["void"] = True
+            print("  ---- ARM VOID: the figures above do not support a verdict ----")
+            print("       - %s" % why)
         arm["superseded_classifier"] = ("late_at_wire, double_answers, misattributed_vcm and "
                                         "trail_window_us are the old trail-window classifier, "
                                         "printed and labelled; since 2026-10-29 they void no "
