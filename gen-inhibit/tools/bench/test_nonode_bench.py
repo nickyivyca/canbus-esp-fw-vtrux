@@ -581,9 +581,10 @@ def echo_tests(m):
     a.update(driver_running=True, echoes_slice=e5, echoes_back=ok_back)
     v5 = m.judge_arm(a)
     bs = e5.get("before_send") or {}
-    check("echo: a leftover echo at the open -> counted before the slice's first frame (player_start), kind echo, "
-          "the echoes after it == frames sent, the arm not voided by it",
-          bs.get("echoes") == 1 and bs.get("kind") == ["echo"] and bs.get("what") == "nonode slice"
+    check("echo: a leftover echo at the open -> in canbench's before_send (player_start settles before the slice's "
+          "first frame), kind echo, its frame (id 0x6a9), the echoes after it == frames sent, the arm not voided by it",
+          bs.get("echoes") == 1 and bs.get("kind") == ["echo"] and [f.get("id") for f in bs.get("frames") or []]
+          == [0x6A9] and (e5.get("at_settle") or {}).get("what") == "nonode slice"
           and e5.get("echoes") == pl5.sent > 0 and e5["drained"]["echoes"] == pl5.sent + 1
           and "acked_slice" not in v5 and [x.get("event") for x in evs] == ["before_send", "echoes"], (e5, v5, evs))
     e6, pl6 = run_slice(lambda n: n != 3, True)
@@ -599,9 +600,10 @@ def echo_tests(m):
     a = base_arm()
     a.update(driver_running=True, echoes_slice=e7, echoes_back=ok_back)
     v7 = m.judge_arm(a)
-    check("echo: a Player started with no snapshot -> the drain's stop names it, the arm VOID on acked_slice",
-          "no before_send snapshot" in str(e7.get("error")) and v7.get("acked_slice", "").startswith("VOID")
-          and "no before_send snapshot" in v7["acked_slice"], (e7, v7.get("acked_slice")))
+    check("echo: a Player started with no drain_before_send -> the drain's stop names it, the arm VOID on acked_slice",
+          "no wait for the open's frames (drain_before_send)" in str(e7.get("error"))
+          and v7.get("acked_slice", "").startswith("VOID")
+          and "no wait for the open's frames (drain_before_send)" in v7["acked_slice"], (e7, v7.get("acked_slice")))
 
 
 def precondition_tests(m):

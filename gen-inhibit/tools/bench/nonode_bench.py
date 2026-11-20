@@ -62,10 +62,11 @@ gives no echo, so fewer echoes than frames shows sends with no node there to ACK
 LEFTOVER FRAMES (the gen-inhibit reviewer's Q1 (i), 2026-11-19): canmain_burst_check's replays at 63e90da0
 each drained one frame more than they sent, once as an echo; here a leftover echo would make up for one
 unACKed frame and hide it from acked_<phase>, the unsafe side. So each phase starts its Player through
-player_start, which first takes the drain's counts as before_send (kvaser_bus.drain_before_send, settled
-BEFORE_SEND_SETTLE_S from the open, with the leftover's kind); the echoes judged are those after it, and the
-snapshot and the drain's whole counts are recorded in echoes_<phase>. A drain stopped with no snapshot is a
-failed drain (acked_<phase> VOID).
+player_start, which first waits BEFORE_SEND_SETTLE_S from the open (kvaser_bus.drain_before_send); from
+can-tools 262ba7b canbench's drain splits its counts at the first send, and the echoes judged are its after_send,
+with its before_send (the leftover's kind, id and data), the settle's event and the drain's whole counts recorded
+in echoes_<phase>. A drain stopped with no drain_before_send, or one after the first send, is a failed drain
+(acked_<phase> VOID).
 THE STIMULUS'S PRECONDITION (the gen-inhibit reviewer's rulings of 2026-11-19), each a VOID item
 with its reason, changing no PASS/FAIL bound:
   stimulus     the WiCAN's driver did not show running within DRIVER_WAIT_S (5 s) of the arm
@@ -439,7 +440,7 @@ def _kb(KB):
 
 
 def player_start(kv, stim, kf, what, KB=None):
-    """Takes the drain's counts just before the first frame (kvaser_bus.drain_before_send; module docstring,
+    """Waits out the open's frames before the first frame (kvaser_bus.drain_before_send; module docstring,
     LEFTOVER FRAMES), then starts a Player on `kv`. Returns the Player."""
     _kb(KB).drain_before_send(kv, what)
     pl = Player(kv, stim, kf)
