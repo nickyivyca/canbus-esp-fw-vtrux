@@ -3851,6 +3851,16 @@ the client, the connection's end recorded, not judged (B21). The gen-inhibit rev
   stay within a bound set from quiet data on the same replay with no mode change (reading (q)),
   which the test plan will carry beside `GATE_HELD_S` once measured. Until then the queue half
   reads ERROR, so B11raw cannot PASS.
+  - **2026-11-20, tester: the bound is set, 0.** `baseline_b_noX2.sh B11rawquiet` on `743cf7cd`
+    `_man` (`483bb940...`, loaded by OTA under the hold), 11:15-11:20: B11raw's six arms
+    (I P P I I P, `scottsvalley_armable_300s.log` 0-35 s) with no mode change, the page polled
+    at 10 Hz; `b11_queue_quiet.py` over the six records: 2069 answered reads, all in the arm's
+    own mode (344, 346, 344, 345, 344 and 346), `drv.msgs_to_rx` 0 in every one (median, p99
+    and largest 0 in each arm), `rx_missed` 0. `b11_rawpost_judge.QUEUE_BOUND` = 0, the largest
+    read (the gen-inhibit reviewer's answer to 8e2ed20c, item 1); test plan section 4a. Run
+    files: `runs/b11rawquiet_743cf7c_20261120T111518/` (the records, their stdout, and
+    `B11rawquiet_queue_quiet.txt`). B11raw itself has not been run on this code; this sets the
+    bound only.
 
 **Quiesce under traffic: INHIBIT / PASSIVE -> OBSERVE -> back -- tester,
 2026-10-10 18:43-18:48, on `cc34c80` `_man`. Result: OBSERVE in effect, no

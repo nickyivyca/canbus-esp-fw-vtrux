@@ -205,6 +205,11 @@ def main():
                        J.page_half(page(1, 0), 1)[1] == J.ERROR))
     finally:
         J.QUEUE_BOUND = saved
+    # the bound as set from the quiet data (test plan section 4a, 2026-11-20: the largest of 2069
+    # quiet reads on 743cf7cd's wican_man, 0), judged at the module's own value
+    checks.append(("page: the bound set from B11rawquiet is 0 (test plan 4a)", J.QUEUE_BOUND == 0))
+    checks.append(("page: at the set bound, msgs_to_rx 0 -> the queue PASS", J.page_half(page(1, 0), 1)[1] == J.PASS))
+    checks.append(("page: at the set bound, msgs_to_rx 1 -> the queue FAIL", J.page_half(page(1, 1), 1)[1] == J.FAIL))
     checks.append(("page: no read in the record (never sent) -> VOID, VOID", J.page_half(None, 1)[:2] == (J.VOID, J.VOID)))
     checks.append(("page: sent and unanswered -> ERROR, ERROR",
                    J.page_half(page(None, None, http=None, error="timed out"), 1)[:2] == (J.ERROR, J.ERROR)))

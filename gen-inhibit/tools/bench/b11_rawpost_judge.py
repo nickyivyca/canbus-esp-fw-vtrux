@@ -32,7 +32,8 @@ its length recorded; reading (m)):
     the window to a command from before t_sent is recorded beside the verdict.
   - The mode (reading (p)): the page read right after the reply must show the POSTed mode, else
     FAIL. The queue (reading (q)): that read's drv.msgs_to_rx must be at most QUEUE_BOUND, set from
-    quiet data on the same replay with no mode change (the test plan); none set yet is ERROR.
+    quiet data on the same replay with no mode change (the test plan, section 4a: 0 since
+    2026-11-20, the largest of 2069 quiet reads); a bound not set (None) is ERROR.
   - A read the harness never sent (a record with no page read after the reply) is VOID; one sent
     and unanswered, or answered without the field, is ERROR (reading (t)).
 A POST's verdict is FAIL, then ERROR, then VOID, then PASS over its halves (the witness half's NOT
@@ -51,7 +52,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 LIVE_BEFORE_S = 0.100          # a device that was answering before the request (reading (n))
 MAP_FRAMES = 200               # replayed frames each side of the POST that place it on the witness
-QUEUE_BOUND = None             # drv.msgs_to_rx after the reply, from quiet data (reading (q)); None: not set
+# drv.msgs_to_rx after the reply, from quiet data (reading (q)): the largest read, the gen-inhibit
+# reviewer's answer to 8e2ed20c, item 1 (2026-11-19). Set 2026-11-20 from B11rawquiet on 743cf7cd's
+# wican_man (runs/b11rawquiet_743cf7c_20261120T111518): 2069 reads in the arms' own modes over six
+# arms, every one 0 (the test plan, section 4a). None would be "not set": the queue half ERROR.
+QUEUE_BOUND = 0
 MODE_NUMBER = {"off": 0, "observe": 1, "respond": 2, "inhibit": 3, "passive": 4}
 PASS, FAIL, ERROR, VOID, NA = "PASS", "FAIL", "ERROR", "VOID", "NOT APPLICABLE"
 RANK = [FAIL, ERROR, VOID]
