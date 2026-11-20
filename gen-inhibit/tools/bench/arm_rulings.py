@@ -31,13 +31,17 @@ fresh (4); if 0x054 is fresh, GENE_RotSpd below 300 rpm (5). Conditions 7 (the 6
 shutdown suppression), 8 (no release or latch) and 9 (the receive queue drained) are the
 device's own state and are not read from the wire. The conditions count as on the wire
 when they held, frame after frame, for at least GATE_HELD_S; never holding is VOID;
-holding only for less is ERROR (the record can't tell). The arm's text carries
-"gate on the wire: held 4.2 s at most" or "gate on the wire: never held"; a record
-without it (one made before the witness kept the gate's IDs, 2026-11-19) is ERROR.
+holding only for less is ERROR (the record can't tell). Held long enough is FAIL only when
+the page's arm_block, read while it held, names a wire condition or nothing; naming 7, 8
+or 9 is ERROR (the reviewer's refinement, answer to 0cfd6689, 2026-11-19; held_block).
+The arm's text carries "gate on the wire: held 4.2 s at most; arm_block while held: wire"
+or "gate on the wire: never held"; a record without it (one made before the witness kept
+the gate's IDs, 2026-11-19) is ERROR, and so is a held line without the page's class.
 
-GATE_HELD_S is a CHOSEN bound, put to the gen-inhibit reviewer with these rulings: twice
-the slowest arm-to-live the harness has recorded on these images (0.24-0.58 s, the
-livetrain arms and the SW boot-to-live, autoarm_boot_to_live.py).
+GATE_HELD_S is a harness bound, accepted by the gen-inhibit reviewer (answer to 0cfd6689,
+2026-11-19) and recorded in the madhouse bench test plan: twice the slowest arm-to-live
+the harness has recorded on these images (0.24-0.58 s, the livetrain arms and the SW
+boot-to-live, autoarm_boot_to_live.py).
 
 Gen-inhibit tester, 2026-11-19.
 """
@@ -157,24 +161,88 @@ def gate_spans(frames, t0, t1, decode):
     return spans
 
 
-def gate_text(spans):
-    """The arm's record of the gate: "gate on the wire: held 4.2 s at most" or "... never held"."""
+# THE PAGE WHILE THE GATE HELD (the gen-inhibit reviewer, answer to 0cfd6689, 2026-11-19): a
+# gate held for at least GATE_HELD_S is the device's only when the page's arm_block, read
+# while it held, names a wire condition (1-6) or names nothing. Naming 7, 8 or 9 (the
+# shutdown suppression, a latched release or abort, the queue not drained) is ERROR: spec 7
+# says a device that can't drain doesn't go live, so FAIL there would be wrong. The page
+# gives arm_block as text: the wican_diag_schema.md "diag_arm_block values" meanings (a
+# number is read by that table too); it gives a latched abort as the abort's reason, so
+# abort_latched, disabled and shutdown_suppressed true are read as 8, 8 and 7 whatever the
+# text. Classes: "none" (the gate satisfied, ""), "wire" (1-6), "state 7-9", "other" (not
+# armed, gate not yet evaluated, or a text the schema does not name: the record can't
+# tell), "unread" (no answered page read while it held).
+BLOCK_NONE, BLOCK_WIRE, BLOCK_STATE, BLOCK_OTHER, BLOCK_UNREAD = "none", "wire", "state 7-9", "other", "unread"
+BLOCK_DEVICE = (BLOCK_NONE, BLOCK_WIRE)
+WIRE_BLOCKS = ("no fresh 0x051", "vcm fault active", "generator running", "vcm requesting engine",
+               "vcm commanding torque", "soc not yet valid", "main contactors not closed",
+               "no fresh 0x617", "no fresh 0x639")
+STATE_BLOCKS = ("vcm commanding 0x10", "latched disable", "latched abort", "receive queue not drained")
+WIRE_NUMBERS = (3, 4, 5, 6, 7, 9, 10, 11, 12)
+STATE_NUMBERS = (8, 13, 14, 15)
+
+
+def block_class(snap):
+    """One answered page read's arm_block class (the comment above)."""
+    if snap.get("abort_latched") or snap.get("disabled") or snap.get("shutdown_suppressed"):
+        return BLOCK_STATE
+    b = snap.get("arm_block")
+    if isinstance(b, bool) or b is None:
+        return BLOCK_OTHER
+    if isinstance(b, int):
+        return (BLOCK_NONE if b == 0 else BLOCK_WIRE if b in WIRE_NUMBERS
+                else BLOCK_STATE if b in STATE_NUMBERS else BLOCK_OTHER)
+    b = str(b).strip().lower()
+    if b in ("", "none"):
+        return BLOCK_NONE
+    if b.startswith(STATE_BLOCKS):
+        return BLOCK_STATE
+    if b.startswith(WIRE_BLOCKS):
+        return BLOCK_WIRE
+    return BLOCK_OTHER
+
+
+def held_block(samples, spans):
+    """The page's arm_block class while the gate held at least GATE_HELD_S: the gravest of
+    the answered reads stamped inside such a span (state 7-9, then other, then wire, then
+    none), "unread" with none answered there, None when no span is that long.
+    samples: [(t, snap or None)]."""
+    held = [(a, b) for a, b in spans if b - a >= GATE_HELD_S]
+    if not held:
+        return None
+    seen = {block_class(s) for t, s in samples if s and any(a <= t <= b for a, b in held)}
+    for c in (BLOCK_STATE, BLOCK_OTHER, BLOCK_WIRE, BLOCK_NONE):
+        if c in seen:
+            return c
+    return BLOCK_UNREAD
+
+
+def gate_text(spans, block=None):
+    """The arm's record of the gate: "gate on the wire: held 4.2 s at most; arm_block while
+    held: wire" (held_block's class, when given) or "gate on the wire: never held"."""
     if not spans:
         return "gate on the wire: never held"
-    return "gate on the wire: held %.1f s at most" % max(b - a for a, b in spans)
+    return "gate on the wire: held %.1f s at most%s" % (
+        max(b - a for a, b in spans), "" if block is None else "; arm_block while held: %s" % block)
 
 
-GATE_RE = re.compile(r"gate on the wire: (?:(never held)|held ([\d.]+) s at most)")
+GATE_RE = re.compile(r"gate on the wire: (?:(never held)|held ([\d.]+) s at most"
+                     r"(?:; arm_block while held: (none|wire|state 7-9|other|unread))?)")
 
 
 def gate_kind(line):
-    """The kind of a "never went live" an arm's line records (gate_text), UNCLEAR without one."""
+    """The kind of a "never went live" an arm's line records (gate_text), UNCLEAR without one:
+    never held BENCH; held at least GATE_HELD_S DEVICE when the page named a wire condition
+    or nothing while it held, else UNCLEAR (7-9, other, unread, or a line without the page's
+    class: one made before 2026-11-19's refinement); held less UNCLEAR."""
     m = GATE_RE.search(line)
     if not m:
         return UNCLEAR
     if m.group(1):
         return BENCH
-    return DEVICE if float(m.group(2)) >= GATE_HELD_S else UNCLEAR
+    if float(m.group(2)) < GATE_HELD_S:
+        return UNCLEAR
+    return DEVICE if m.group(3) in BLOCK_DEVICE else UNCLEAR
 
 
 # ---------------------------------------------------------------- the reasons, per check

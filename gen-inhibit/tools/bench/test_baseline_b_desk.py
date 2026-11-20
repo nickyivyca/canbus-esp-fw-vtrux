@@ -28,8 +28,16 @@ TOOLS = gi_paths.fw_tools()
 # WSL's bash.exe; PATH's (Git Bash) is the one these scripts are written for.
 BASH = os.environ.get("GI_BASH") or shutil.which("bash")
 C = "e3d9437"
-STEPS = ["B2", "B3", "B24", "B25", "B11", "B11raw", "B13", "B19present"]
-NDIRS = {"B2": 2, "B3": 1, "B24": 2, "B25": 1, "B11": 1, "B11raw": 1, "B13": 3, "B19present": 4}
+STEPS = ["B2", "B3", "B24", "B25", "B11", "B11raw", "B13", "B5", "B19present"]
+NDIRS = {"B2": 2, "B3": 1, "B24": 2, "B25": 1, "B11": 1, "B11raw": 1, "B13": 3, "B5": 2, "B19present": 4}
+# Where a step's re-judgement differs from the index, on a ruling since: B5's arms re-judged
+# from their records with the jam's start the witness's first error frame at or after the
+# train's send (gen-inhibit reviewer, answer to 0cfd6689, 2026-11-19). p2000_run1's arm 0,
+# INCONCLUSIVE on e3d9437 ("not live at the start of the jam", against the jammer's ACK, which
+# trailed the train's first error frame by 49 ms), reads A PASS and B PASS.
+REJUDGED = {"B5": {"verdict": "PASS", "figures": {
+    "arms_200_per_s": 3, "pass_200_per_s": 3, "inconclusive_200_per_s": 0,
+    "arms_500_per_s": 9, "pass_500_per_s": 9, "inconclusive_500_per_s": 0}}}
 fails = []
 oks = 0
 
@@ -82,7 +90,7 @@ def main():
         new_name = {old: new for new, old in SJ.RENAMED.items()}
         for s in steps:
             out = os.path.join(tmp, "real", s)
-            dirs = [runs if s == "B25" else bench] * NDIRS[s]
+            dirs = [bench, runs] if s == "B5" else [runs if s == "B25" else bench] * NDIRS[s]
             if s == "B11raw":
                 # b11_rawpost_judge reads the captures with tshark (gi_paths.tshark()); without
                 # it the step judges no arm, and this says why first (2026-11-12).
@@ -92,10 +100,17 @@ def main():
                       "not found: install tshark, or set GI_TSHARK")
             rc, log = desk(s, dirs, out)
             check("%s: exits 0 on the e3d9437 files" % s, rc == 0, log[-300:])
+            if s == "B5":
+                # beside the run's own output, never over it: the default GI_OUT is the bench folder
+                want_names = sorted(["B5_livetrain_p5000_rejudged.txt"] +
+                                    ["B5_livetrain_p2000_run%d_rejudged.txt" % r for r in (1, 2, 3)])
+                check("B5: writes the four re-judgements as <output>_rejudged.txt, and nothing else",
+                      written(out) == want_names, written(out))
             res = SJ.judge_one(s, out)
             v = [r["verdict"] for r in res]
             fg = {k: x["value"] for r in res for k, x in r["figures"].items()}
             want = dict(idx[s], figures={new_name.get(k, k): x for k, x in idx[s]["figures"].items()})
+            want.update(REJUDGED.get(s, {}))
             check("%s: judged as the index (%s)" % (s, want["verdict"]), v == [want["verdict"]],
                   [(r["verdict"], r["detail"][:120]) for r in res])
             check("%s: every figure is the index's, and no other" % s, fg == want["figures"],
@@ -142,6 +157,34 @@ def main():
                 shutil.copy(os.path.join(bench, "B19_present_%s.txt" % t), three)
             rc, log = desk("B19present", [three] * 4, os.path.join(tmp, "b19three_out"))
             check("B19present: three of the four files exits 2", rc == 2, (rc, log[-200:]))
+        if "B5" in steps:
+            # three of the four outputs; then all four with one run's record missing: exit 2,
+            # nothing written (every record is found before anything is written)
+            three = os.path.join(tmp, "b5three")
+            os.makedirs(three)
+            for n in ("B5_livetrain_p5000.txt", "B5_livetrain_p2000_run1.txt", "B5_livetrain_p2000_run2.txt"):
+                shutil.copy(os.path.join(bench, n), three)
+            out = os.path.join(tmp, "b5three_out")
+            rc, log = desk("B5", [three, runs], out)
+            check("B5: three livetrain outputs, not four, exits 2", rc == 2, (rc, log[-200:]))
+            check("B5: three livetrain outputs writes nothing", written(out) == [], written(out))
+            norec = os.path.join(tmp, "b5norec")
+            os.makedirs(norec)
+            names = ["B5_livetrain_p5000.txt"] + ["B5_livetrain_p2000_run%d.txt" % r for r in (1, 2, 3)]
+            for n in names:
+                shutil.copy(os.path.join(bench, n), norec)
+            recs = os.path.join(tmp, "b5recs")
+            os.makedirs(recs)
+            for n in names[:3]:
+                with open(os.path.join(bench, n), encoding="utf-8", errors="replace") as f:
+                    w = [x.strip() for x in f if x.startswith("wrote ")]
+                r = w[-1].replace("\\", "/").rsplit("/", 1)[-1]
+                shutil.copy(os.path.join(runs, r), recs)
+            out = os.path.join(tmp, "b5norec_out")
+            rc, log = desk("B5", [norec, recs], out)
+            check("B5: one run's record missing exits 2", rc == 2 and "no record for B5_livetrain_p2000_run3.txt" in log,
+                  (rc, log[-200:]))
+            check("B5: one run's record missing writes nothing", written(out) == [], written(out))
         if "B13" in steps:
             noheld = os.path.join(tmp, "b13noheld")
             some("B2_e4_presence_respond_%s_x2app.json" % C, 1, noheld)

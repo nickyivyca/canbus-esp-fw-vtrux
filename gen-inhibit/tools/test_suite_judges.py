@@ -423,8 +423,24 @@ EDITS = [
 ] + [
     ("B5", "bench", r"B5_livetrain_p2000_run1\.txt", r"^(arm 0 \(replay )[\d.]+(/s\): INCONCLUSIVE \| )the device was not "
      r"live at the start of the jam \| ordering .*$", r"\g<1>None\g<2>never went live%s | ordering None" % gate, want)
-    for gate, want in (("; gate on the wire: never held", "VOID"), ("; gate on the wire: held 5.0 s at most", "FAIL"),
-                       ("; gate on the wire: held 0.6 s at most", "ERROR"), ("", "ERROR"))
+    # held long enough: FAIL only when the page named a wire condition or nothing while it held (the
+    # reviewer's refinement, answer to 0cfd6689, 2026-11-19); 7-9, or no page class, ERROR
+    for gate, want in (("; gate on the wire: never held", "VOID"),
+                       ("; gate on the wire: held 5.0 s at most; arm_block while held: wire", "FAIL"),
+                       ("; gate on the wire: held 5.0 s at most; arm_block while held: none", "FAIL"),
+                       ("; gate on the wire: held 5.0 s at most; arm_block while held: state 7-9", "ERROR"),
+                       ("; gate on the wire: held 5.0 s at most", "ERROR"),
+                       ("; gate on the wire: held 0.6 s at most; arm_block while held: wire", "ERROR"), ("", "ERROR"))
+] + [
+    # B5's re-judgement from a run's record (baseline_b_desk.sh B5, x2_jam_cases rejudge-livetrain, the jam's
+    # start from the witness: the reviewer's answer to 0cfd6689, 2026-11-19) stands in for the run's own lines
+    ("B5", "bench", "+B5_livetrain_p2000_run1_rejudged.txt", None,
+     "rejudged from x2_jam_livetrain_20261016T222448.json (its own verdict SEE ARMS); jam start: test\n"
+     + "".join("arm %d (replay 100.0/s): %s | ordering {} | jam start -0.04 s rel the jammer ACK (send not recorded)\n"
+               % (k, a) for k, a in enumerate(arms)) + "verdict SEE ARMS\n", want)
+    for arms, want in ((["SEE A/B/C | A: PASS: trip 6 latched | B: PASS | C: NOT REACHED (no bus_off sample)"] * 3, "PASS"),
+                       (["SEE A/B/C | A: PASS: trip 6 latched | B: FAIL: device 0x051 after the latch | C: NOT REACHED"]
+                        + ["SEE A/B/C | A: PASS: trip 6 latched | B: PASS | C: NOT REACHED (no bus_off sample)"] * 2, "FAIL"))
 ] + [
     # a run VOID on its witness clock with every arm passing is VOID, never PASS
     ("B5", "bench", r"B5_livetrain_p2000_run1\.txt",
@@ -451,7 +467,8 @@ EDITS = [
                       ("abort already latched before the pulses", "VOID"),
                       ("3 error frames between the arm and the pulses", "VOID"),
                       ("never went live; gate on the wire: never held", "VOID"),
-                      ("never went live; gate on the wire: held 3.0 s at most", "FAIL"),
+                      ("never went live; gate on the wire: held 3.0 s at most; arm_block while held: wire", "FAIL"),
+                      ("never went live; gate on the wire: held 3.0 s at most; arm_block while held: state 7-9", "ERROR"),
                       ("never went live", "ERROR"),
                       ("the moon was in the wrong phase", "ERROR"))
 ] + [
@@ -483,7 +500,10 @@ EDITS = [
                       ("the page never read bus_off after the jam (0 answered readings from the jam to the re-arm)", "VOID"),
                       ("the page never read bus_off after the jam", "ERROR"),
                       ("never went live before the jam; gate on the wire: never held", "VOID"),
-                      ("never went live before the jam; gate on the wire: held 2.5 s at most", "FAIL"),
+                      ("never went live before the jam; gate on the wire: held 2.5 s at most; arm_block while held: none",
+                       "FAIL"),
+                      ("never went live before the jam; gate on the wire: held 2.5 s at most; arm_block while held: other",
+                       "ERROR"),
                       ("never went live before the jam", "ERROR"))
 ] + [
     # an arm word other than AS SPECIFIED or INCONCLUSIVE FAILs, whatever the case's verdict says
@@ -609,9 +629,12 @@ RULED = {
     # The B9 record was never live and had latched before the first burst; the judge now needs
     # a live arm and a latch after the first burst (reviewer, 2026-10-25).
     "B9": "INCONCLUSIVE",
-    # One 500/s arm (B5_livetrain_p2000_run1's arm 0) is INCONCLUSIVE, "the device was not live at the
-    # start of the jam": the bench's, so VOID (the gen-inhibit reviewer's answer to ba92acf0, 2026-11-19),
-    # and B5 is VOID. INCONCLUSIVE from spec 12.1 (c5849685) until that ruling.
+    # One 500/s arm (B5_livetrain_p2000_run1's arm 0) is INCONCLUSIVE in the run's own lines, "the device
+    # was not live at the start of the jam": the bench's, so VOID (the gen-inhibit reviewer's answer to
+    # ba92acf0, 2026-11-19), and B5 on those lines is VOID. INCONCLUSIVE from spec 12.1 (c5849685) until
+    # that ruling. Those lines judged the jam from the jammer's ACK; re-judged from the records with the
+    # jam's start the witness's (answer to 0cfd6689), the arm passes and B5 PASSes: baseline_b_desk.sh B5,
+    # checked by test_baseline_b_desk.py. This folder holds no re-judgement, so it reads the lines.
     "B5": "VOID",
 }
 

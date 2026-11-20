@@ -137,6 +137,12 @@ MUTANTS = [
     ("B5: the ruled arms left out of the verdict", "        all_arms += arms\n",
      '        all_arms += [a for a in arms if a in ("PASS", "FAIL")]\n'),
     ("B5: a void arm passes", '    verdict = "FAIL" if bad else ruled_verdict(arms)', '    verdict = "FAIL" if bad else "PASS"'),
+    # a run's re-judgement from its record stands in for its lines (answer to 0cfd6689, 2026-11-19)
+    ("B5: a re-judgement read beside the run's lines, not in place of them",
+     '    return [f for f in files if f.endswith("_rejudged.txt") or base(f)[:-4] + "_rejudged.txt" not in names]\n',
+     "    return list(files)\n"),
+    ("B5: a re-judgement not read", '                      ("500", r"B5_livetrain_p2000_run\\d(?:_rejudged)?\\.txt")):',
+     '                      ("500", r"B5_livetrain_p2000_run\\d\\.txt")):'),
     ("jam_arms: an arm with no replay rate, or none at all, is not read",
      r'''re.findall(r"^arm (\d+)(?: \(replay [^)]*\))?: (.+)$", t, re.M)''',
      r'''re.findall(r"^arm (\d+) \(replay [\d.]+/s\): (.+)$", t, re.M)'''),

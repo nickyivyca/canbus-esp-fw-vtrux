@@ -17,6 +17,8 @@
 #   B13     <B13 dir> <B2 app dir> <B2 held dir>
 #                                  passive_analysis; respond_booking_check over B13's
 #                                  PASSIVE arms and B2's RESPOND arms
+#   B5      <B5 dir> <records dir> x2_jam_cases rejudge-livetrain on the four livetrain
+#                                  runs' records, into <output>_rejudged.txt (2026-11-19)
 #   B19present <rt dir> <txabort dir> <abortwin dir> <rxq dir>   copy the four in
 #
 # Run from the reverse-it root. A step whose inputs are missing says so and exits 2:
@@ -71,6 +73,28 @@ case $s in
     set -- "$b13"/B13_e4_passive_*passive_${C}_*.json "$app"/B2_e4_presence_respond_${C}_x2app.json "$held"/B2_e4_presence_respond_${C}_x2held.json; need "$@"
     for j in "$@"; do [ -f "$j" ] || { echo "B13: no $j"; exit 2; }; done
     $PY -B $A/respond_booking_check.py "$@" > "$D/B13_respond_booking_check.txt" 2>&1; echo "booking exit $?" ;;
+  B5)
+    # The four livetrain runs' arms re-judged from their records (x2_jam_cases.py
+    # rejudge-livetrain), with the jam's start the witness's first error frame at or after
+    # the train's send (gen-inhibit reviewer, answer to 0cfd6689, 2026-11-19). Each run's
+    # record is the one its output names on its "wrote" line; the re-judgement goes to
+    # <output>_rejudged.txt, which the suite's B5 reads in place of the output. Every record
+    # is found before anything is written.
+    txt=${1:?B5 dir}; recs=${2:?records dir}
+    set -- "$txt"/B5_livetrain_p5000.txt "$txt"/B5_livetrain_p2000_run[0-9].txt; need "$@"
+    [ $# -eq 4 ] && [ -e "$4" ] || { echo "B5: $# livetrain outputs, want 4"; exit 2; }
+    pairs=()
+    for f in "$@"; do
+      r=$(sed -n 's/^wrote .*[\\/]\(x2_jam_livetrain_[0-9T]*\.json\)\r*$/\1/p' "$f")
+      [ -n "$r" ] && [ -f "$recs/$r" ] || { echo "B5: no record for $(basename "$f") (${r:-no wrote line})"; exit 2; }
+      pairs+=("$f" "$recs/$r")
+    done
+    set -- "${pairs[@]}"
+    while [ $# -gt 0 ]; do
+      o="$D/$(basename "${1%.txt}")_rejudged.txt"
+      $PY -B $A/x2_jam_cases.py rejudge-livetrain "$2" > "$o" 2>&1; echo "B5 $(basename "$1") exit $?"
+      shift 2
+    done ;;
   B19present)
     [ $# -eq 4 ] || { echo "B19present: 4 dirs, got $#"; exit 2; }
     for t in rt txabort abortwin rxq; do

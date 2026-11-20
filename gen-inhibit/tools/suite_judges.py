@@ -386,11 +386,24 @@ def jam_void(t):
     return bool(re.search(r"^verdict VOID: witness clock ", t, re.M))
 
 
+def rejudged(files):
+    """The run outputs, each replaced by its re-judgement from its record where the desk step
+    wrote one (baseline_b_desk.sh B5: <output>_rejudged.txt, x2_jam_cases rejudge-livetrain,
+    2026-11-19)."""
+    names = {base(f) for f in files}
+    return [f for f in files if f.endswith("_rejudged.txt") or base(f)[:-4] + "_rejudged.txt" not in names]
+
+
 @judge("B5", "B")
 def b5(F):
     figs, bad, void, ruled, all_arms = {}, [], 0, [], []
-    for rate, pat in (("200", r"B5_livetrain_p5000\.txt"), ("500", r"B5_livetrain_p2000_run\d\.txt")):
-        files = F.some(pat)
+    # The jam's start is the witness's first error frame at or after the train's send (gen-inhibit
+    # reviewer, answer to 0cfd6689, 2026-11-19; x2_jam_cases.judge_livetrain_arm): a run's own
+    # lines judge so from that day, and an older run's re-judgement from its record stands in
+    # for its lines where the desk step wrote one.
+    for rate, pat in (("200", r"B5_livetrain_p5000(?:_rejudged)?\.txt"),
+                      ("500", r"B5_livetrain_p2000_run\d(?:_rejudged)?\.txt")):
+        files = rejudged(F.some(pat))
         lines = [(base(f), n, v) for f in files for n, v in jam_arms(text(f))]
         arms = [livetrain_arm(v) for _f, _n, v in lines]
         nv = sum(jam_void(text(f)) for f in files)

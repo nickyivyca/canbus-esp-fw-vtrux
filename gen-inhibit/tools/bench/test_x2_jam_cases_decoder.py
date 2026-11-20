@@ -51,11 +51,11 @@ def tried(fn):
 
 
 class FakeWit:
-    def __init__(self, frames):
-        self.frames, self.lock, self.status, self.status_error = frames, threading.Lock(), [], None
+    def __init__(self, frames, errs=()):
+        self.frames, self.errs, self.lock, self.status, self.status_error = frames, list(errs), threading.Lock(), [], None
 
     def clocked(self):
-        return list(self.frames), [], {"stub": True}
+        return list(self.frames), list(self.errs), {"stub": True}
 
 
 class FakePoller:
@@ -119,11 +119,15 @@ def checks(C):
     # 2. livetrain: live_jam_arm.judge is handed the record's identity.
     seen_lj = []
     C.LJ.judge = lambda rec: seen_lj.append(rec) or {"verdict": "PASS", "summary": ""}
-    ph = {"replay_start": 95.0, "arm_posted": 100.0, "jam_start": 102.0, "jam_stop": 107.0, "mode0_posted": 122.0}
+    # the phases a live arm records since 2026-11-19: the train's send and the jammer's ACK (the jam's
+    # start is then the witness's first error frame from the send on)
+    ph = {"replay_start": 95.0, "arm_posted": 100.0, "train_sent": 101.9, "jam_ack_host": 102.0, "mode0_posted": 122.0}
     C.arm_live = lambda a_, con, wit, k, body: {"n": k, "phases": dict(ph), "pcan_status_changes": [],
+                                                "went_live_after_s": 0.5,
                                                 "samples": [(103.0, {"drv_state": "running"})]}
     a = argparse.Namespace(w=20, p=2000, ms=5000, arms=1)
-    r = tried(lambda: C.case_livetrain(a, {"decoder": ident}, None, FakeWit(wire)))
+    r = tried(lambda: C.case_livetrain(a, {"decoder": ident}, None,
+                                       FakeWit(wire, [101.95 + 0.002 * k for k in range(100)])))
     check("livetrain: the case runs with the bench stubbed", not isinstance(r, str), r)
     check("livetrain: live_jam_arm.judge is called once per arm", len(seen_lj) == 1, len(seen_lj))
     check("livetrain: live_jam_arm.judge is handed the record's decoder identity",
@@ -144,8 +148,10 @@ MUTANTS = [
     ("the busoff arm drops the identity", '"wire_0x7F1": w7f1, "decoder": decoder}', '"wire_0x7F1": w7f1}'),
     ("case_busoff does not pass the identity", 'arm_busoff(a, con, wit, k, tr, rec.get("decoder"))',
      "arm_busoff(a, con, wit, k, tr)"),
-    ("the livetrain arm drops the identity", '"witness_sees_replay": True, "decoder": rec.get("decoder")}',
+    ("the livetrain arm drops the identity", '"witness_sees_replay": True, "decoder": decoder}',
      '"witness_sees_replay": True}'),
+    ("case_livetrain does not pass the identity", "judge_livetrain_arm(arm, frames, errs, a.ms, rec.get(\"decoder\"))",
+     "judge_livetrain_arm(arm, frames, errs, a.ms, None)"),
 ]
 
 

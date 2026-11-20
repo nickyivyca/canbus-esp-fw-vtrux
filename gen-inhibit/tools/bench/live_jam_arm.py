@@ -202,6 +202,14 @@ def vcm_duplicates(frames, samples):
             if d0 == d1 and t1 - t0 <= DUP_MAX_S and tx_ok_flat(samples, t0, t1)]
 
 
+def witness_jam_start(errs, sent):
+    """The jam's start for judging (the gen-inhibit reviewer, answer to 0cfd6689, 2026-11-19):
+    the witness's first error frame at or after the train's send, on the frames' clock, or
+    None when it saw none. Until then it was the jammer's ACK as the host received it, which
+    trails the train's first error frame on the wire (by 14-57 ms in the e3d9437 B5 arms)."""
+    return next((t for t in sorted(errs) if t >= sent), None)
+
+
 def judge(rec):
     ph = rec["phases"]
     samples = sorted(rec["samples"], key=lambda x: x["pt"])
