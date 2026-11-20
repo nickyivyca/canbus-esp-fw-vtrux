@@ -465,6 +465,10 @@ def desk():
         gi_paths.remove_tree(work)
 
 
+# skip_method_bench's judges open with the dead-witness VOID (2026-11-19), before the clock VOID
+PROC_VOID = ("    if arm.get(\"witness_proc_void\"):\n"
+             "        return dict(out, verdict=PW.void_verdict(arm[\"witness_proc_void\"]), why=[\"witness process\"])\n")
+
 MUTANTS = [
     ("witness_clock.py", "    return m.hw_timestamp if hasattr(m, \"hw_timestamp\") else m.timestamp\n",
      "    return m.timestamp\n"),
@@ -489,10 +493,12 @@ MUTANTS = [
     ("interlock_bench.py", "                rx = WC.receipt(m)\n", "                rx = time.time()\n"),
     ("x2_jam_cases.py", "                        self.frames.append((WC.raw_stamp(m), rx, m.arbitration_id,\n",
      "                        self.frames.append((m.timestamp, rx, m.arbitration_id,\n"),
-    ("skip_method_bench.py", "    out = {\"expected_class\": want_cls, \"expected_trip7\": want_trip}\n    if arm.get(\"witness_clock_void\"):",
-     "    out = {\"expected_class\": want_cls, \"expected_trip7\": want_trip}\n    if False:"),
-    ("skip_method_bench.py", "           \"expected_trip7\": want_trip}\n    if arm.get(\"witness_clock_void\"):",
-     "           \"expected_trip7\": want_trip}\n    if False:"),
+    # re-anchored 2026-11-19: the dead-witness VOID (witness_proc_void) now comes first in both judges
+    ("skip_method_bench.py", "    out = {\"expected_class\": want_cls, \"expected_trip7\": want_trip}\n" + PROC_VOID
+     + "    if arm.get(\"witness_clock_void\"):",
+     "    out = {\"expected_class\": want_cls, \"expected_trip7\": want_trip}\n" + PROC_VOID + "    if False:"),
+    ("skip_method_bench.py", "           \"expected_trip7\": want_trip}\n" + PROC_VOID + "    if arm.get(\"witness_clock_void\"):",
+     "           \"expected_trip7\": want_trip}\n" + PROC_VOID + "    if False:"),
     ("skip_method_bench.py", "        if sc is None:\n            return fr, er, CANLIB_NOTE\n",
      "        if True:\n            return fr, er, CANLIB_NOTE\n"),
     ("skip_method_bench.py", "        return [(seq, t, arb, hx) for t, seq, arb, hx in mfr], mer, note\n",

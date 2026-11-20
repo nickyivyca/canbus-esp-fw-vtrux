@@ -62,6 +62,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import witness_clock as WC  # noqa: E402  the PCAN's own stamps, mapped (A2 (a), 2026-11-11)
 import burst_measures as BM  # noqa: E402  burst length and close on those stamps (condition 5, 2026-11-18)
+import proc_witness as PW  # noqa: E402  the witness out of the Player's process (2026-11-19)
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 SOURCE_ID = 0x6A7
@@ -119,19 +120,22 @@ def pre_burst_window(series, errors, first_burst):
     return {"from_s": round(t0 - first_burst, 4), "errors": len(times), "error_times_s": times}
 
 
-class PcanWitness(threading.Thread):
+class PcanWitness(PW.ThreadWitness):
     """Every message the PCAN delivers: its receipt on perf_counter and the epoch, and its own
     stamp (points, for the clock fit); each error frame's receipt (errors) and stamp (error_ts).
-    Since 2026-11-11 (A2 (a)) the judged times are the stamps, mapped (judged_errors)."""
+    Since 2026-11-11 (A2 (a)) the judged times are the stamps, mapped (judged_errors). Read in a
+    thread beside the Player (at the slice's rate its pacer did not starve a thread witness,
+    test_busywait_witnesses); a loop that dies is recorded and the run VOID, with the "witness
+    VOID" line (proc_witness.ThreadWitness, gen-inhibit reviewer 2026-11-19)."""
 
     def __init__(self, bus):
         super().__init__(daemon=True)
         self.bus, self.errors, self.error_ts, self.points, self.frames = bus, [], [], [], 0
-        self.stop = threading.Event()
+        self.stop = self.event()
 
     def run(self):
         while not self.stop.is_set():
-            m = self.bus.recv(timeout=0.1)
+            m = self.recv(timeout=0.1)
             if m is None:
                 continue
             p, e = time.perf_counter(), time.time()
@@ -306,6 +310,7 @@ def main():
         if wit is not None:
             wit.stop.set()
             wit.join(3)
+            rec["witness_proc"] = wit.proc_info
         pc_status = None
         if pc is not None:
             try:
@@ -321,6 +326,9 @@ def main():
     errs, fit, figures_clock = judged_errors(wit)
     rec["witness_clock"] = fit
     rec["witness_clock_figures"] = figures_clock
+    # the witness loop died before the run's end: a short witness, never judged (its verdict set
+    # below, over the clock's and the bursts', which a short witness also spoils)
+    proc_void, void_line = PW.void_line(wit) if wit is not None else (None, None)
     if fit["void"]:
         rec["witness_clock_void"] = fit["void"]
         rec["verdict"] = WC.pcan_void_verdict(fit["void"])
@@ -333,6 +341,9 @@ def main():
         if burst_line:
             rec["burst_timing_void"] = burst_line
             rec["verdict"] = "VOID: %s" % burst_line
+    if proc_void:
+        rec["witness_proc_void"] = proc_void
+        rec["verdict"] = PW.void_verdict(proc_void)
     series = poll.series if poll else []
     t_ref = st[0] if st else 0.0
     # open_s: how long the Kvaser's open took, from the burst's start (2026-10-29)
@@ -357,6 +368,9 @@ def main():
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(rec, fh, indent=1)
     print(WC.fit_line(fit))
+    if void_line:
+        # the suite's B9 judge reads this line before the others: VOID, never judged (2026-11-19)
+        print(void_line)
     if fit["void"]:
         # the suite's B9 judge reads this line first: VOID, never judged (A2 (a))
         print("witness clock VOID: %s" % fit["void"])

@@ -143,6 +143,12 @@ def b1(F):
         return [result("B1", "ERROR", figs, "%d command(s) raised; %s" % (max(errors, s.get("error") or 0), detail))]
     if len(not_run) != len(s.get("not_run") or []):
         return [result("B1", "ERROR", figs, "NOT-RUN lines and the summary disagree; " + detail)]
+    # A command read by a witness whose loop died is VOID where it would have
+    # passed (slcan_refusal_probe.command_result, 2026-11-19); with no FAIL, B1 is VOID, never PASS.
+    voids = sum(1 for a, _b in lines if a == "VOID")
+    if (voids or s.get("void")) and s["fail"] == 0:
+        return [result("B1", "VOID", figs, "%d command(s) VOID: the witness died; %s"
+                       % (max(voids, s.get("void") or 0), detail))]
     ok = s["fail"] == 0 and passed == s["commands"] == len(lines)
     if ok and s["commands"] > 0 and not not_run:
         return [result("B1", "PASS", figs, detail)]
@@ -311,8 +317,10 @@ def livetrain_arm(v):
 
 def jam_void(t):
     """x2_jam_cases' run VOID on its witness clock (witness_clock.void_verdict, run_guarded,
-    2026-11-18): its last verdict line. The arms judged before it keep their verdicts."""
-    return bool(re.search(r"^verdict VOID: witness clock ", t, re.M))
+    2026-11-18) or on its witness's child process failing or stopping (proc_witness.void_verdict,
+    2026-11-19), or on its witness's load (proc_witness.load_reason, "witness load", 2026-11-19):
+    its last verdict line. The arms judged before it keep their verdicts."""
+    return bool(re.search(r"^verdict VOID: (witness clock |the witness (child|thread) |witness load: )", t, re.M))
 
 
 @judge("B5", "B")
@@ -415,6 +423,9 @@ CLOCK_VOID_RE = re.compile(r"^witness clock VOID: (.*)$", re.M)
 # each is measured on the PCAN's mapped stamps (bench/burst_measures.py); a burst outside the bounds
 # prints this line, and the check is VOID, never FAIL, whatever its arms say.
 BURST_VOID_RE = re.compile(r"^burst timing VOID: (.*)$", re.M)
+# A witness whose loop died (B9's and B10's thread, B12's child: proc_witness.void_line, 2026-11-19) prints
+# this line at the run's end, and the check is VOID, read before the rest: never a short witness's count.
+WITNESS_VOID_RE = re.compile(r"^witness VOID: (.*)$", re.M)
 
 
 @judge("B9", "B")
@@ -431,6 +442,9 @@ def b9(F):
     # cannot be credited to the bursts (reviewer, 2026-10-25). Short of that it is INCONCLUSIVE.
     # Then, as before, trip 6 the latch and every burst drawing error frames, or FAIL.
     t = text(F.one(r"B9_wrong_bitrate_calibrate\.txt"))
+    pv = WITNESS_VOID_RE.search(t)
+    if pv:
+        return [result("B9", "VOID", detail="the witness: %s" % pv.group(1)[:300])]
     cv = CLOCK_VOID_RE.search(t)
     if cv:
         return [result("B9", "VOID", detail="the PCAN's clock: %s" % cv.group(1))]
@@ -485,6 +499,9 @@ def b9(F):
 @judge("B10", "B")
 def b10(F):
     t = text(F.one(r"B10_trip6_rearm_check\.txt"))
+    pv = WITNESS_VOID_RE.search(t)
+    if pv:
+        return [result("B10", "VOID", detail="the witness: %s" % pv.group(1)[:300])]
     cv = CLOCK_VOID_RE.search(t)
     if cv:
         return [result("B10", "VOID", detail="the PCAN's clock: %s" % cv.group(1))]
@@ -610,10 +627,15 @@ def b12_record(path):
 
 @judge("B12", "B")
 def b12(F):
-    sw, panic, bad, rec_bad = [], [], [], []
+    sw, panic, bad, rec_bad, voids = [], [], [], [], []
     files = F.some(r"B12_\d_(live|off)_(reboot|crash)\.txt", 7)
     for f in files:
         restart = re.search(r"_(reboot|crash)\.txt$", f).group(1)
+        # a cycle whose witness died read a short witness (restart_error_frames, proc_witness.void_line,
+        # 2026-11-19): its 0 error frames are not "no error frames", so B12 is VOID unless it FAILs
+        pv = WITNESS_VOID_RE.search(text(f))
+        if pv:
+            voids.append("%s witness: %s" % (base(f), pv.group(1)[:200]))
         m = re.search(r"^cycle 0 \w+: hook \S+, reset \['(\w+)'\], build \S+, live_at_post \S+, boot ([\d.]+) s after POST, errors (\d+)",
                       text(f), re.M)
         if not m:
@@ -631,6 +653,8 @@ def b12(F):
         figs.update(sw_boot_s_min=fig(min(sw), "s"), sw_boot_s_max=fig(max(sw), "s"))
     if panic:
         figs.update(panic_boot_s_min=fig(min(panic), "s"), panic_boot_s_max=fig(max(panic), "s"))
+    if voids and not (bad or rec_bad):
+        return [result("B12", "VOID", figs, "; ".join(voids))]
     return [result("B12", "FAIL" if bad or rec_bad else "PASS", figs, "; ".join(bad + rec_bad) or
                    "7 of 7 cycles, 0 error frames; 7 restart records: did_twai, did_stdby true, timed_out false")]
 

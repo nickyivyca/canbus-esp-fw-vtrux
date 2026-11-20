@@ -66,6 +66,10 @@ MUTANTS = [
     ("a burst breach not made VOID", '            rec["verdict"] = "VOID: %s" % burst_line\n', '            pass\n'),
     ("the burst timing VOID line not printed", '        print(burst_line)\n', '        pass\n'),
     ("the burst measures not recorded", '        rec["burst_measures"] = [', '        rec["burst_measures_unused"] = ['),
+    # a witness loop that dies VOIDs the run (the gen-inhibit reviewer's ruling (i), 2026-11-19)
+    ("a dead witness leaves no VOID verdict", '        rec["verdict"] = PW.void_verdict(proc_void)\n', '        pass\n'),
+    ("the witness VOID line not printed", '        print(void_line)\n', '        pass\n'),
+    ("a dead witness not recorded", '        rec["witness_proc_void"] = proc_void\n', '        pass\n'),
 ]
 
 
