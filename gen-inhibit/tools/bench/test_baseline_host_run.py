@@ -111,23 +111,35 @@ def check(name, ok, detail=""):
         FAILS.append(name)
 
 
+# The fake ssh reads stdin only where the remote command does ("bash -s", "tar xf -"), as a real
+# ssh's remote end does; any other command ends without reading it, as a real ssh returns when
+# its remote command exits. Until 2026-11-20 the last branch was `cat > /dev/null`, which waited
+# for the caller's stdin to close: the script's last call (`tar czf -` of the traces) has no
+# stdin of its own, so with the test's stdin an open pipe, as some of the tester's full runs'
+# were, the script hung there to the 300 s timeout (the gen-inhibit reviewer's answer to
+# b2386988: 5 of 7 full runs from 2026-11-18 to 2026-11-20; alone it passed).
 FAKE_SSH = r"""#!/usr/bin/env bash
 # the second argument is the remote command; "bash -s" carries the script on stdin
 case "$2" in
   "bash -s") cat > "$CAPTURE"; echo "=== exit 0 (fake)" ;;
   *"tar xf"*) if [ -n "$ARCHIVE" ]; then cat > "$ARCHIVE"; else cat > /dev/null; fi ;;
-  *) cat > /dev/null ;;
+  *) ;;
 esac
 exit 0
 """
+# The fake as it was before 2026-11-20, for the can-fail of "stdin held open": it hangs there.
+FAKE_SSH_READS_ALL = FAKE_SSH.replace("  *) ;;\n", "  *) cat > /dev/null ;;\n")
 
 
-def remote_script(script_dir, tmp, rroot=RROOT, tag="plain", commit=None):
+def remote_script(script_dir, tmp, rroot=RROOT, tag="plain", commit=None, fake=FAKE_SSH, stdin=subprocess.DEVNULL,
+                  timeout=300):
+    """Run the script with the fake ssh first on PATH. Its stdin is /dev/null unless `stdin` is
+    given; a run past `timeout` is killed and returns rc None."""
     bin_ = os.path.join(tmp, "bin")
     if not os.path.isdir(bin_):
         os.makedirs(bin_)
         with open(os.path.join(bin_, "ssh"), "w", newline="\n") as fh:
-            fh.write(FAKE_SSH)
+            fh.write(fake)
         # executable, or bash on Linux passes it over for the real ssh on PATH (Git Bash runs a
         # #! script without the bit): the reviewer's Linux leftovers, 2026-11-12
         os.chmod(os.path.join(bin_, "ssh"), 0o755)
@@ -137,10 +149,25 @@ def remote_script(script_dir, tmp, rroot=RROOT, tag="plain", commit=None):
     e.update({"PATH": fw(bin_) + os.pathsep + e.get("PATH", ""), "CAPTURE": fw(cap), "ARCHIVE": fw(arc), "FW": fw(FW),
               "RROOT": rroot, "PY": "PYTHON", "GI_OUT": fw(os.path.join(tmp, "out_" + tag)), "REMOTE": "nowhere",
               "MSYS_NO_PATHCONV": "1"})
-    r = subprocess.run([BASH, fw(os.path.join(script_dir, SCRIPT)), commit or COMMIT], capture_output=True, text=True,
-                       env=e, timeout=300)
+    try:
+        r = subprocess.run([BASH, fw(os.path.join(script_dir, SCRIPT)), commit or COMMIT], capture_output=True,
+                           text=True, env=e, timeout=timeout, stdin=stdin)
+    except subprocess.TimeoutExpired as x:
+        return None, "", "timed out after %s s; %s" % (timeout, (x.stdout or b"")[-300:])
     s = open(cap, encoding="utf-8").read() if os.path.exists(cap) else ""
     return r.returncode, s, r.stdout + r.stderr
+
+
+def held_open(script_dir, tmp, fake, timeout):
+    """The script run with its stdin a pipe whose write end this test keeps open (as a chain
+    runner's or a session's background task's can be) until the run ends: (rc or None, output)."""
+    rfd, wfd = os.pipe()
+    try:
+        rc, _, out = remote_script(script_dir, tmp, tag="heldopen", fake=fake, stdin=rfd, timeout=timeout)
+    finally:
+        os.close(rfd)
+        os.close(wfd)    # a reader the timeout left behind (the old fake's cat) gets EOF and exits
+    return rc, out
 
 
 def run_lines(s, tree, home=None):
@@ -236,6 +263,18 @@ def checks(script_dir):
         check("an old commit (%s): the copy holds main/ and test/, and no tools/ or diag_schemas/" % COMMIT,
               any(n.startswith("main/") for n in names) and any(n.startswith("test/") for n in names)
               and not any(n.startswith(("tools/", "diag_schemas")) for n in names), sorted(set(n.split("/")[0] for n in names)))
+        # stdin held open (2026-11-20, the gen-inhibit reviewer's answer to b2386988): the script
+        # reads its caller's stdin nowhere, so it ends; can-fail, the fake as it was, which read
+        # stdin to its end on the last call, hangs there
+        with tempfile.TemporaryDirectory(prefix="held-", dir=tmp) as t2:
+            rc_h, out_h = held_open(script_dir, t2, FAKE_SSH, 120)
+        check("stdin held open: the script runs to the end (it reads its caller's stdin nowhere)", rc_h == 0,
+              (rc_h, out_h[-300:]))
+        with tempfile.TemporaryDirectory(prefix="held-old-", dir=tmp) as t3:
+            rc_o, out_o = held_open(script_dir, t3, FAKE_SSH_READS_ALL, 15)
+        gi_paths.remove_tree(stage)    # the killed run's EXIT trap never ran, so its stage stayed
+        check("stdin held open, can-fail: the fake before 2026-11-20 (its last branch read stdin to the end) "
+              "hangs to the timeout", rc_o is None, (rc_o, out_o[-200:]))
         rc5, s5, out5 = remote_script(script_dir, tmp, tag="rootdecode", commit=ROOT_COMMIT)
         names = archive_names(tmp, "rootdecode")
         check("a root-layout commit with gi_diag.py (%s): the script runs to the end" % ROOT_COMMIT,
@@ -496,6 +535,9 @@ MUTANTS = [
     ("every commit hashes the shared CAN port", "CANSRC='$M/can.c'\n",
      "CANSRC='shared/can_port/can_port.c shared/can_port/can_stock.c'\n"),
     ("a leading ~/ is quoted as a literal ~", '''  "~/"*) RQ='"$HOME"/'$(printf %q "${RROOT#"~/"}") ;;\n''', ""),
+    # stdin held open (2026-11-20)
+    ("the script waits on its caller's stdin", 'echo "commit $C: $LAYOUT layout"\n',
+     'cat > /dev/null; echo "commit $C: $LAYOUT layout"\n'),
 ]
 
 
