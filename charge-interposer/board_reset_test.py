@@ -29,6 +29,13 @@ Also the two other things run_scenario does differently for a real board
     line is never written as two (partial_line_case, which fails on the
     SerialTap before this change).
 
+And the board's start (the charge-interposer reviewer's ruling (1),
+2026-11-20, after run 40e6, where the Linux open of the port left each
+board scenario on the scenario before's state): on Linux esptool's hard
+reset right after the first open, before boot-mid-session's own reset, and
+the premise board_start_premise, with a can-fail on run_scenario's real
+source with the start reset taken out (start_reset_cases).
+
 Run: python board_reset_test.py   (exit 0 = all checks passed)
 """
 
@@ -560,6 +567,254 @@ def priority_cases(R):
         child.wait()
 
 
+class CarriedBoard(object):
+    """The X2 as run 40e6 showed it on Linux: opening the port does not
+    reset it, so it goes on printing the scenario before's uptime and
+    counters (override-ended-by-vcu's first status line, t=8115s synth=104)
+    until an esptool hard reset (RTS high then low, DTR low); each reset
+    makes it boot on the same port (40e6's boot-mid-session: no
+    re-enumeration), print its boot lines and count again from 0."""
+
+    def __init__(self):
+        self.lines = []              # (what, value)
+        self.resets = []             # perf_counter of each reset seen
+        self.n = 0                   # lines since the last boot
+
+    def saw(self, what, value):
+        self.lines.append((what, value))
+        if what != "rts":
+            return
+        rts = [v for w, v in self.lines if w == "rts"]
+        dtr = [v for w, v in self.lines if w == "dtr"]
+        if rts[-2:] == [True, False] and dtr and dtr[-1] is False:
+            self.resets.append(time.perf_counter())
+            self.n = 0
+
+    def line(self):
+        self.n += 1
+        if not self.resets:
+            return ("t=%ds state=PASSTHROUGH vmax=3430mV chgmax=9275cA ibat=0cA soc=97.0%% "
+                    "chg=11 | v2c=645508 c2v=260580 mod=57291 synth=104\r\n"
+                    % (8115 + self.n)).encode()
+        boot = [b"ESP-ROM:esp32s3-20210327\r\n",
+                b"rst:0x15 (USB_UART_CHIP_RESET),boot:0x28 (SPI_FAST_FLASH_BOOT)\r\n",
+                b"Vtrux charge interposer\r\n"]
+        if self.n <= len(boot):
+            return boot[self.n - 1]
+        return ("t=%ds state=PASSTHROUGH vmax=3366mV chgmax=30000cA ibat=1550cA soc=79.0%% "
+                "chg=12 | v2c=%d c2v=165 mod=0 synth=0\r\n"
+                % (5 * (self.n - len(boot)), 400 * (self.n - len(boot)))).encode()
+
+
+class CarriedPort(object):
+    def __init__(self, board, port=None, baud=None, timeout=None):
+        self.b, self._dtr, self._rts = board, True, True
+
+    @property
+    def dtr(self):
+        return self._dtr
+
+    @dtr.setter
+    def dtr(self, v):
+        self._dtr = v
+        self.b.saw("dtr", v)
+
+    @property
+    def rts(self):
+        return self._rts
+
+    @rts.setter
+    def rts(self, v):
+        self._rts = v
+        self.b.saw("rts", v)
+
+    def readline(self):
+        time.sleep(0.01)
+        return self.b.line()
+
+    def close(self):
+        pass
+
+
+class CarriedModule(object):
+    def __init__(self, board):
+        self.board = board
+
+    def Serial(self, port=None, baud=None, timeout=None):
+        return CarriedPort(self.board, port, baud, timeout)
+
+
+def start_tap(mod, board, args_platform, mid_reset_after=None, run_s=0.8):
+    """mod.board_tap's SerialTap for a host (args_platform) on a
+    CarriedBoard, started and waited on as run_one does, with an optional
+    mid-run reset_board() (boot-mid-session's) after mid_reset_after s.
+    -> (tap, stamped rows, wait_started's answer)."""
+    import types
+    tmp = Path(scratch_dir.make("board-start-test"))
+    try:
+        a = types.SimpleNamespace(serial_port="FAKE", serial_baud=115200)
+        tap = mod.board_tap(a, tmp / "i.log", platform=args_platform)
+        tap._serial_mod = CarriedModule(board)
+        tap.start()
+        started = tap.wait_started(2.0)
+        if mid_reset_after is not None:
+            time.sleep(mid_reset_after)
+            tap.reset_board()
+        time.sleep(run_s)
+        tap.stop()
+        return tap, R.diag_cadence_rows(tap.stamped_path), started
+    finally:
+        scratch_dir.remove(str(tmp))
+
+
+def without_start_reset():
+    """run_scenario as it was before the reviewer's ruling (1): a copy of its
+    real source with the start reset taken out of board_tap, loaded from a
+    scratch folder (the can-fail)."""
+    import importlib.util
+    src = (HERE / "run_scenario.py").read_text(encoding="utf-8")
+    old = ("    return SerialTap(args.serial_port, args.serial_baud, int_log,\n"
+           "                     start_reset=start_reset_path(platform) == \"hard-reset\")")
+    assert src.count(old) == 1, "board_tap's start reset not found once in run_scenario.py"
+    tmp = Path(scratch_dir.make("board-start-cf"))
+    try:
+        p = tmp / "run_scenario_no_start_reset.py"
+        p.write_text(src.replace(old, "    return SerialTap(args.serial_port, "
+                                      "args.serial_baud, int_log)"), encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("run_scenario_no_start_reset", str(p))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+    finally:
+        scratch_dir.remove(str(tmp))
+
+
+def start_reset_cases(R):
+    """The board scenario's start reset and its premise (the charge-interposer
+    reviewer's ruling (1), 2026-11-20)."""
+    print("a board scenario's start: esptool's hard reset on Linux, and the "
+          "premise (2026-11-20)")
+    check(R.start_reset_path("linux") == "hard-reset" and R.start_reset_path("win32") == "open",
+          "the start reset on Linux, the open alone elsewhere")
+    # Linux: the reset right after the first open, the banner waited for,
+    # then boot-mid-session's own reset after it
+    b = CarriedBoard()
+    tap, rows, started = start_tap(R, b, "linux", mid_reset_after=0.3)
+    marks = [ln for _h, ln in rows if ln.startswith("# ")]
+    order = [m.split(" host=")[0] for m in marks if "RESET SENT" in m]
+    check(tap.start_reset and started is True and len(b.resets) == 2,
+          "Linux: the start reset sent, the banner waited for and read, then the "
+          "scenario's own reset: %s resets, wait_started %r" % (len(b.resets), started))
+    check(order == ["# START RESET SENT", "# RESET SENT"]
+          and tap.start_reset_host_t is not None and tap.reset_host_t is not None
+          and tap.start_reset_host_t < tap.reset_host_t,
+          "boot-mid-session's own reset comes after the start reset: %s" % order)
+    seq = [(w, v) for w, v in b.lines[:5]]
+    check(seq == [("dtr", False), ("rts", True), ("dtr", False), ("rts", False),
+                  ("dtr", False)],
+          "the start reset is esptool's sequence, before anything else on the port: %s"
+          % seq)
+    ok, why = R.board_start_premise(rows, tap.start_reset_host_t, tap.reset_host_t)
+    check(ok and "mod=0 synth=0" in why and "t=5s" in why,
+          "the premise holds: a boot line after the start reset, the first status "
+          "line after it at 0 -> %s" % why)
+    ok, why = R.board_reset_proof(rows, veh(4, 0, 20.0), tap.reset_host_t,
+                                  tap.reset_host_t - 20.0, db=FakeDb())
+    check(ok, "the scenario's own reset is still proven after the start reset -> %s" % why)
+    # elsewhere: no start reset, nothing waited for (Windows as before)
+    b2 = CarriedBoard()
+    tap2, rows2, started2 = start_tap(R, b2, "win32")
+    check(not tap2.start_reset and started2 is None and not b2.resets
+          and tap2.start_reset_host_t is None,
+          "off Linux: no start reset, wait_started returns at once")
+
+    # the can-fail: the start reset taken out of run_scenario's real source.
+    # The Linux open leaves the board as the scenario before left it, and
+    # what the scenario would judge is that carried-over state: here the
+    # repeat check's FAIL (40e6's "per-burst sum 20 but final synth 124").
+    # The premise makes it NOT EXERCISED (VOID), never FAIL.
+    m = without_start_reset()
+    b3 = CarriedBoard()
+    tap3, rows3, started3 = start_tap(m, b3, "linux")
+    check(not b3.resets and tap3.start_reset_host_t is None,
+          "can-fail copy: without the start reset the board is never reset")
+    ok3, why3 = R.board_start_premise(rows3, tap3.start_reset_host_t, tap3.reset_host_t)
+    check(not ok3 and "no boot line" in why3 and "synth=104" in why3,
+          "can-fail: without the start reset the premise does not hold -> %s" % why3)
+    carried = {"results": [(False, "spec 4.1 repeats: per-burst sum 20 but final synth 124")]}
+    check(R.verdict_of(carried)[0] == "FAIL",
+          "can-fail: with no premise the carried-over state is judged: FAIL")
+    carried["premises"] = [(ok3, "bench premise, the board's start: %s" % why3)]
+    v, vwhy = R.verdict_of(carried)
+    check(v == "NOT EXERCISED" and "the board's start" in vwhy,
+          "can-fail: with the premise it is NOT EXERCISED (VOID), not judged -> %s" % v)
+
+    print("the start premise, on its own")
+    h = 1000.0
+    fresh = [(h - 3, "t=8116s state=PASSTHROUGH | v2c=1 c2v=1 mod=57291 synth=104"),
+             (h, "# START RESET SENT host=1000"),
+             (h + 0.4, "ESP-ROM:esp32s3-20210327"),
+             (h + 0.5, "Vtrux charge interposer"),
+             (h + 5.5, "t=5s state=PASSTHROUGH | v2c=400 c2v=165 mod=0 synth=0")]
+    ok, why = R.board_start_premise(fresh, h)
+    check(ok and "t=5s mod=0 synth=0" in why, "a fresh boot holds -> %s" % why)
+    ok, why = R.board_start_premise(fresh[:1] + [fresh[1], fresh[4]], h)
+    check(not ok and "no boot line" in why, "no boot line after the start reset -> %s" % why)
+    ok, why = R.board_start_premise([(h - 1, "Vtrux charge interposer")] + fresh[:2]
+                                    + [(h + 5, "t=8121s state=P | mod=57291 synth=104")], h)
+    check(not ok and "no boot line" in why,
+          "a boot line from before the start reset does not count -> %s" % why)
+    for bad, want in (("mod=0 synth=104", "synth=104"), ("mod=3 synth=0", "mod=3")):
+        rows_b = fresh[:4] + [(h + 5.5, "t=5s state=PASSTHROUGH | v2c=400 c2v=165 %s" % bad)]
+        ok, why = R.board_start_premise(rows_b, h)
+        check(not ok and want in why and "not 0" in why,
+              "a first status line with %s fails -> %s" % (want, why))
+    ok, why = R.board_start_premise(fresh[:4], h)
+    check(not ok and "no status line" in why, "a boot with no status line after it -> %s" % why)
+    ok, why = R.board_start_premise(fresh[:4] + [(h + 5.5, "t=5s state=PASSTHROUGH vmax=0mV")], h)
+    check(not ok and "carries no mod=/synth=" in why,
+          "a status line without the counters fails -> %s" % why)
+    # boot-mid-session: only the boot before its own reset counts
+    mid = fresh[:3] + [(h + 20, "# RESET SENT host=1020"), (h + 20.4, "Vtrux charge interposer"),
+                       (h + 25, "t=5s state=PASSTHROUGH | mod=0 synth=0")]
+    ok, why = R.board_start_premise(mid, h, h + 20)
+    check(not ok and "no status line" in why,
+          "the boot after the scenario's own reset does not stand in for the start -> %s" % why)
+    ok, why = R.board_start_premise(fresh, h + 10, h + 5)
+    check(not ok and "came before its start reset" in why,
+          "the scenario's own reset before the start reset fails -> %s" % why)
+    # 40e6's boot-mid-session, as its serial log has it: the reset, a panic
+    # on chip reset 0x15, the reboot, the banner, the first status line
+    panic = [(h, "# START RESET SENT host=1000"), (h + .4, "ESP-ROM:esp32s3-20210327"),
+             (h + .4, "rst:0x15 (USB_UART_CHIP_RESET),boot:0x28 (SPI_FAST_FLASH_BOOT)"),
+             (h + .4, "Guru Meditation Error: Core  1 panic'ed"), (h + .4, "Rebooting..."),
+             (h + .4, "ESP-ROM:esp32s3-20210327"), (h + .5, "Vtrux charge interposer"),
+             (h + .5, "diag st=PASSTHROUGH trip=0 flags=0xc0 mod=0 synth=0"),
+             (h + 5.5, "t=5s state=PASSTHROUGH | v2c=400 c2v=165 mod=0 synth=0")]
+    ok, why = R.board_start_premise(panic, h)
+    check(ok, "a reboot after the reset still holds, on its first status line -> %s" % why)
+
+    print("the premise in evaluate")
+    import types
+    tmp = Path(scratch_dir.make("board-start-eval"))
+    try:
+        for n in ("v", "c", "i"):
+            (tmp / n).write_text("")
+        sc = types.SimpleNamespace(name="x", expect=[("intp_event", "nothing")])
+        res = R.evaluate(sc, tmp / "v", tmp / "c", tmp / "i", False, l1=(True, "-"),
+                         board_start=(False, "no boot line"))
+        v, vwhy = R.verdict_of(res)
+        check(v == "NOT EXERCISED" and "bench premise, the board's start: no boot line" in vwhy,
+              "evaluate: a start premise that does not hold -> NOT EXERCISED: %s" % vwhy)
+        res = R.evaluate(sc, tmp / "v", tmp / "c", tmp / "i", False, l1=(True, "-"),
+                         board_start=(True, "boot line"))
+        check(R.verdict_of(res)[0] == "FAIL" and
+              (True, "bench premise, the board's start: boot line") in res["premises"],
+              "evaluate: one that holds is shown and the results are judged")
+    finally:
+        scratch_dir.remove(str(tmp))
+
+
 def main():
     print("a board that honours the reset")
     b = Board()
@@ -698,6 +953,7 @@ def main():
     teardown_cases(R)
     no_trip_cases(R)
     priority_cases(R)
+    start_reset_cases(R)
 
     print("\nboard_reset_test: %s" % ("all checks OK" if not FAILS else
                                      "%d FAILED" % len(FAILS)))

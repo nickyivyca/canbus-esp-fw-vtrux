@@ -167,7 +167,8 @@ def test_witness_premise():
         (True, "8.2: planted"), None) and called
     src = inspect.getsource(R.run_one)
     assert "diag82, witness_void = witness_outcome(witness, score82)" in src
-    assert "witness_void=witness_void)" in src, "run_one does not pass it on"
+    assert "witness_void=witness_void," in src, "run_one does not pass it on"
+    assert "board_start=board_start)" in src, "run_one does not pass the start premise on"
     assert "the witness failed" not in src, "run_one still FAILS 8.2 on it"
     with scratch_dir.run("forced-order-witness") as d:
         d = Path(d)
