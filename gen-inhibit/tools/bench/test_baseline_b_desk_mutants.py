@@ -115,6 +115,13 @@ def clone(base):
     d = os.path.join(repo, os.path.relpath(HERE, wt))
     shutil.rmtree(d)
     shutil.copytree(HERE, d, ignore=shutil.ignore_patterns("__pycache__"))
+    # the pinned canre (canre_pin), which step B5's x2_jam_cases loads through
+    # lowid_flood_skip_bench: the clone's scratch/ has no install of its own, so this
+    # worktree's is copied in, and canre_pin.use() checks the copy in full (2026-11-19)
+    import canre_pin
+    src = canre_pin.folder(start=HERE)
+    if os.path.isdir(src):
+        shutil.copytree(src, canre_pin.folder(start=d), ignore=shutil.ignore_patterns("__pycache__"))
     return d
 
 

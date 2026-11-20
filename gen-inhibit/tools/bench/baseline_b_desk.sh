@@ -92,7 +92,8 @@ case $s in
     set -- "${pairs[@]}"
     while [ $# -gt 0 ]; do
       o="$D/$(basename "${1%.txt}")_rejudged.txt"
-      $PY -B $A/x2_jam_cases.py rejudge-livetrain "$2" > "$o" 2>&1; echo "B5 $(basename "$1") exit $?"
+      $PY -B $A/x2_jam_cases.py rejudge-livetrain "$2" > "$o" 2>&1; rc=$?   # before any other expansion
+      echo "B5 $(basename "$1") exit $rc"
       shift 2
     done ;;
   B19present)
