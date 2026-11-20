@@ -77,7 +77,10 @@ and the Kvaser is recovered (stall_report). In the no-ACK windows (step
 1's no-ack arm and its can-fail) and the wrong-rate ones (the wrong-rate
 listen arms, 1b discrim, 1c offpair, step 2, m1) the rule is suspended
 (Node.expect_acks(False)): ENOBUFS is a refused send, as CANlib's full
-queue was, and an unechoed frame is not sent. When the ACK returns, every
+queue was, and an unechoed frame is not sent. The node starts with the rule
+suspended, since step 0 leaves nothing to acknowledge it, and each step
+turns it on once its ACKer is on the bus (the reviewer's ruling (2),
+2026-11-20: run 40e6's six "0 echoed" stalls). When the ACK returns, every
 frame still held must echo within 100 ms of that moment, flushed before
 the next window starts (node_sender), else a stall; the flush's frames are
 kept out of the next window's node share, timing and settle rule
@@ -1619,7 +1622,12 @@ class Node(object):
     send's host-side lag is logged (take_log). Since 2026-11-13 a frame is
     SENT when its own echo came back (take_echoes; D3), each echo carrying
     its send call's time so window() attributes it to the window that sent
-    it; expect_acks() switches the stall rule (node_sender)."""
+    it; expect_acks() switches the stall rule (node_sender). It starts
+    with no ACK expected (2026-11-20, the reviewer's ruling (2)): step 0
+    leaves the board and the witness listen-only, so nothing acknowledges
+    its first frames, and in run 40e6 six runs were VOIDed by that stall
+    before their step's ACKer came up. Each step turns expect_acks(True)
+    on once its ACKer is on the bus."""
 
     def __init__(self, channel=None):
         import multiprocessing as mp
@@ -1627,8 +1635,7 @@ class Node(object):
         self.q = ctx.Queue()
         self.stop_ev = ctx.Event()
         self.ready_ev = ctx.Event()
-        self.expect_ev = ctx.Event()
-        self.expect_ev.set()
+        self.expect_ev = ctx.Event()      # clear: no ACK expected yet
         self.p = ctx.Process(target=_node_proc, args=(
             self.q, self.stop_ev, self.ready_ev, self.expect_ev), daemon=True)
         self.sent, self.fails, self.log, self.echoes = [], 0, [], []
@@ -2965,6 +2972,7 @@ def run_bench(args):
             quiet_rows = wit.take()
             save_rows(quiet_rows, "recstart quiet")
             node = Node(args.kvaser_channel).start()
+            node.expect_acks(True)           # the witness acknowledging
             t0 = time.perf_counter()
             node_reads = []
             for at in RECSTART_NODE_AT:
@@ -3184,6 +3192,7 @@ def run_bench(args):
             print("\n== 3 flood: delay added to the node's 0x%X" % NODE_ID)
             wit = set_witness(wit, True)
             board.cmd("MODE normal")
+            node.expect_acks(True)           # the witness and the board ACK
             # settle (reviewer, 2026-10-16): the 00:01 baseline ran straight
             # after step 2's 1M flood and lost a node send. The board idle,
             # wait for SETTLE_CLEAN_S with no failed node send.
@@ -3239,6 +3248,7 @@ def run_bench(args):
             print("\n== 4 stalled task")
             wit = set_witness(wit, False)
             board.cmd("MODE normal")
+            node.expect_acks(True)           # the board acknowledging
             rows, _s = window(board, wit, node, 2.0, "STALL %d" % STALL_N,
                               from_command=True)
             ok, _m, lines = score_stall(rows, STALL_N, acked=True)
@@ -3258,6 +3268,7 @@ def run_bench(args):
                     print("    " + ln)
                 board.cmd("RESET")
                 node = Node(args.kvaser_channel).start()
+                node.expect_acks(True)       # the board acknowledging
             else:
                 print("    no-ACKer variant NOT RUN: needs --no-acker-ready "
                       "(the WiCAN off or passive; the node is closed)")
@@ -3342,6 +3353,22 @@ def _bframe(t, ident, counter):
 
 def _pframe(t, seq):
     return (t, NODE_ID, False, bytes(node_payload(seq)))
+
+
+STEP_HEAD = re.compile(r'^        if "(\w+)" in steps:\s*$', re.M)
+
+
+def step_blocks(src):
+    """run_bench's source -> {step name: its block's text}, each up to the
+    next step or the verdicts (the self-test's check of the node's stall
+    rule per step)."""
+    heads = list(STEP_HEAD.finditer(src))
+    end = src.find('print("\\n== verdicts")')
+    out = {}
+    for i, m in enumerate(heads):
+        stop = heads[i + 1].start() if i + 1 < len(heads) else end
+        out[m.group(1)] = src[m.start():stop]
+    return out
 
 
 def self_test():
@@ -3553,6 +3580,30 @@ def self_test():
     check("above_normal()" in inspect.getsource(_node_proc)
           and 'get_context("spawn")' in inspect.getsource(Node),
           "the node runs in its own (spawned) process at ABOVE_NORMAL")
+    # the node's start (the reviewer's ruling (2), 2026-11-20): step 0 leaves
+    # the board and the witness listen-only, so the node starts with no ACK
+    # expected, and each step that has its frames complete turns it on
+    fresh = Node()
+    check(not fresh.expect_ev.is_set(),
+          "the node starts with no ACK expected (nothing acknowledges it after step 0)")
+    blocks = step_blocks(rsrc)
+    s0 = rsrc[rsrc.find("== 0 witness silence"):rsrc.find('if "listen" in steps')]
+    check("Node(args.kvaser_channel).start()" in s0 and "expect_acks(True)" not in s0
+          and "set_witness(wit, True)" not in s0,
+          "step 0 starts the node with no ACKer on the bus and no ACK expected")
+    need = ("listen", "recstart", "discrim", "offpair", "bitrate", "m1", "flood", "stall")
+    lack = [s for s in need if "node.expect_acks(True)" not in blocks.get(s, "")]
+    check(sorted(blocks) == sorted(need + ("dominant",)) and not lack,
+          "each step whose node frames complete turns the stall rule on (missing: %s; "
+          "steps %s)" % (lack, sorted(blocks)))
+    for s in ("flood", "stall"):
+        b = blocks.get(s, "")
+        i_ack = b.find('board.cmd("MODE normal")')
+        i_on = b.find("node.expect_acks(True)")
+        i_win = b.find("window(")
+        check(0 <= i_ack < i_on < i_win,
+              "%s: the stall rule on after the board's ACK and before its first window"
+              % s)
 
     # 1 listen
     pc = [_pframe(i * 0.01 + 0.0001234, i) for i in range(500)]
@@ -5201,6 +5252,29 @@ PRIO_SKIPPED = {
     "posix": "F2's ABOVE_NORMAL mutant (Windows code only)",
 }
 MUTANTS.append(PRIO_MUTANT["nt" if os.name == "nt" else "posix"])
+# the node's start (the reviewer's ruling (2), 2026-11-20): the 40e6 form,
+# the node expecting an ACK from its first frame, and each step's turn-on
+MUTANTS += [
+    ("the node starts expecting an ACK (40e6's step-0 stall)",
+     "        self.expect_ev = ctx.Event()      # clear: no ACK expected yet\n",
+     "        self.expect_ev = ctx.Event()      # clear: no ACK expected yet\n"
+     "        self.expect_ev.set()\n"),
+    ("recstart never turns the stall rule on",
+     "            node.expect_acks(True)           # the witness acknowledging\n",
+     ""),
+    ("flood never turns the stall rule on",
+     "            node.expect_acks(True)           # the witness and the board ACK\n",
+     ""),
+    ("the stall step never turns the stall rule on",
+     "            node.expect_acks(True)           # the board acknowledging\n"
+     "            rows, _s = window(board, wit, node, 2.0",
+     "            rows, _s = window(board, wit, node, 2.0"),
+    ("flood turns the stall rule on before the board ACKs",
+     "            board.cmd(\"MODE normal\")\n"
+     "            node.expect_acks(True)           # the witness and the board ACK\n",
+     "            node.expect_acks(True)           # the witness and the board ACK\n"
+     "            board.cmd(\"MODE normal\")\n"),
+]
 
 
 def main():
