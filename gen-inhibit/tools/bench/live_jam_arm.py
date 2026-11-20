@@ -69,6 +69,7 @@ import can                                                      # noqa: E402
 import lowid_flood_skip_bench as LF                             # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
+import arm_rulings as AR  # noqa: E402  the reset rule (gen-inhibit reviewer, 2026-11-19)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS = gi_paths.runs()
@@ -243,6 +244,11 @@ def judge(rec):
             last_tx = tx
     out["unanswered_samples_while_armed"] = unanswered
     out["device_reset_seen_rel_jam_s"] = resets[:5]
+    # The reset rule (gen-inhibit reviewer, 2026-11-19; arm_rulings): a reset is a result, judged
+    # by its reason, so the reason of each new boot the page showed while armed is recorded.
+    boots = AR.new_boots([(s["pt"], s["snap"]) for s in samples], ph["arm_posted"],
+                         ph.get("mode0_posted", float("inf")))
+    out["new_boots_rel_jam_s"] = [(round(t - (j0 or t), 3), r) for t, r in boots]
     answered_pre = [s for s in samples if s["snap"] and j0 is not None
                     and ph["arm_posted"] < s["pt"] < j0]
     # Fresh, not merely last: one unanswered page request blocks for up to
@@ -254,7 +260,7 @@ def judge(rec):
     if j0 is None or not live_at_jam or resets:
         out["verdict"] = "INCONCLUSIVE"
         out["summary"] = ("the device was not live at the start of the jam"
-                          + ("; device reset seen at %s s rel jam" % resets[:3]
+                          + ("; device reset seen at %s s rel jam; %s" % (resets[:3], AR.reset_text(boots))
                              if resets else ""))
         out["A"] = out["B"] = out["C"] = "NOT EXERCISED"
         return out

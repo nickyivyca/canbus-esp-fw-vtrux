@@ -73,14 +73,24 @@ import gi_ecc as GE                                             # noqa: E402
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 import gi_diag  # noqa: E402  the diag DBC from git, by schema byte (toolkit item 10)
 import witness_clock as WC  # noqa: E402  never judged on receipt time (A2 (b), 2026-11-11)
+import arm_rulings as AR  # noqa: E402  the reset rule and the gate on the wire (gen-inhibit reviewer, 2026-11-19)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # GI_RUNS_DIR: the chain runner points a check's records at its own folder (2026-10-18).
 RUNS = os.environ.get("GI_RUNS_DIR") or gi_paths.runs()
 BITRATE = 500000
 PCAN_BUSOFF = 0x10   # PCAN-Basic's PCAN_ERROR_BUSOFF, as status() returns it (16)
-KEEP_IDS = {0x051, 0x7F1, 0x7F2, 0x7F3, 0x7F8, 0x7F9}
+# and since 2026-11-19 the arm gate's other IDs, so a "never went live" arm can be judged on
+# whether the replay put the go-live conditions on the wire (arm_rulings, the gen-inhibit
+# reviewer's ruling); every reader of the frames picks its IDs
+KEEP_IDS = {0x051, 0x7F1, 0x7F2, 0x7F3, 0x7F8, 0x7F9} | set(AR.GATE_IDS)
 TRIP6_TEXT = LJ.TRIP6_TEXT
+
+
+def gate_line(frames, ph):
+    """The arm's record of spec 7's gate on the wire from the arm to the end of the wait
+    for live (arm_rulings.gate_text)."""
+    return AR.gate_text(AR.gate_spans(frames, ph["arm_posted"], ph["mode0_posted"], AR.decoder()))
 
 
 # ---------------------------------------------------------------- pure parts
@@ -162,8 +172,11 @@ def judge_threshold(errs, samples, ph, n_cmd, interval_s, window_s=10.0,
     out = {}
     r = resets_while_armed(samples, ph["arm_posted"], ph["mode0_posted"])
     if r:
-        return dict(out, verdict="INCONCLUSIVE", why="device reset while armed",
-                    reset_rel_pulses_s=[round(t - p0, 3) for t in r[:3]])
+        # the reset rule (gen-inhibit reviewer, 2026-11-19): the reason of each new boot, recorded
+        boots = AR.new_boots(samples, ph["arm_posted"] + 1.0, ph["mode0_posted"])
+        return dict(out, verdict="INCONCLUSIVE", why="device reset while armed (%s)" % AR.reset_text(boots),
+                    reset_rel_pulses_s=[round(t - p0, 3) for t in r[:3]],
+                    new_boots_rel_pulses_s=[(round(t - p0, 3), rr) for t, rr in boots])
     pre = [(t, s) for t, s in samples if s is not None and ph["arm_posted"] < t < p0]
     if not pre or pre[-1][0] < p0 - 1.0 or not pre[-1][1].get("inhibit_live"):
         return dict(out, verdict="INCONCLUSIVE", why="not live at the start of the pulses")
@@ -934,7 +947,7 @@ def case_livetrain(a, rec, con, wit):
                                                                    ph["mode0_posted"])
             arm["witness_state_whole_arm"] = witness_state_summary(st_all, lo, hi)
         if "jam_start" not in ph:
-            arm["judge"] = {"verdict": "INCONCLUSIVE", "summary": "never went live"}
+            arm["judge"] = {"verdict": "INCONCLUSIVE", "summary": "never went live; " + gate_line(frames, ph)}
         else:
             shaped = {"phases": ph,
                       "samples": [{"pt": t, "snap": s} for t, s in arm["samples"]],
@@ -1028,7 +1041,7 @@ def case_threshold(a, rec, con, wit):
         iv = a.interval_ms / 1000.0
         jf = a.judge_first or a.n
         if "pulses_start" not in ph:
-            arm["judge"] = {"verdict": "INCONCLUSIVE", "why": "never went live"}
+            arm["judge"] = {"verdict": "INCONCLUSIVE", "why": "never went live; " + gate_line(frames, ph)}
         else:
             arm["judge"] = judge_threshold(judged_errs(errs, ph["pulses_start"], iv, a.judge_first),
                                            arm["samples"], ph, jf, iv)
@@ -1307,7 +1320,11 @@ def judge_busoff_rearm(samples, frames, ph, reply_status, expect):
     out["first_device_0x051_after_rel_rearm_s"] = (round(dev_a[0] - ph["rearm_posted"], 3)
                                                    if dev_a else None)
     if boff is None:
-        out["verdict"] = "INCONCLUSIVE: the page never read bus_off after the jam"
+        # the device's, unless no page read was answered (device silent): the count is the
+        # record the gen-inhibit reviewer's ruling reads (2026-11-19, arm_rulings.b7_arm)
+        out["verdict"] = ("INCONCLUSIVE: the page never read bus_off after the jam (%d answered readings "
+                          "from the jam to the re-arm)"
+                          % len(window_states(samples, ph["jam_start"], ph["rearm_posted"])))
     elif len(noarm) < 20 or len(after) < 20:
         out["verdict"] = "INCONCLUSIVE: too few answered readings (%d no-arm, %d after)" % (len(noarm), len(after))
     elif any(x[1] != "bus_off" for x in noarm) or dev_n:
@@ -1460,7 +1477,7 @@ def case_busoff_rearm(a, rec, con, wit):
                                                       ("noarm", ph["jam_stop"], ph["rearm_posted"]),
                                                       ("after", ph["rearm_posted"], ph["rearm_end"]))}
         else:
-            arm["judge"] = {"verdict": "INCONCLUSIVE: never went live before the jam"}
+            arm["judge"] = {"verdict": "INCONCLUSIVE: never went live before the jam; " + gate_line(frames, ph)}
         arm["witness_error_count"] = sum(1 for t in errs if ph["replay_start"] - 1 <= t <= ph["mode0_posted"] + 1)
         rec["arms"].append(arm)
         print("arm %d: %s | restore %s" % (k, arm["judge"]["verdict"],

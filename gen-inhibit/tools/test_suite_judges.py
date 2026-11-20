@@ -211,10 +211,12 @@ EDITS = [
       (r"^verdict PASS", "verdict FAIL")], None, "FAIL"),
     ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^(arm 1 \(replay [\d.]+/s\): )PASS", r"\g<1>VOID", "FAIL"),
     ("B7", "bench", r"B7_busoff_rearm\.txt", r"^arm 1: AS SPECIFIED", "arm 1: NOT AS SPECIFIED", "FAIL"),
-    # an arm the case could not judge is INCONCLUSIVE, and so is B7 (2026-11-16) ...
+    # an arm the case could not judge is judged by its reason (the gen-inhibit reviewer's answer to
+    # ba92acf0, 2026-11-19; INCONCLUSIVE from 2026-11-16 until then): a reason the record does not
+    # name is ERROR ...
     ("B7", "bench", r"B7_busoff_rearm\.txt",
      [(r"^arm 1: AS SPECIFIED", "arm 1: INCONCLUSIVE"), (r"^verdict AS SPECIFIED", "verdict INCONCLUSIVE")],
-     None, "INCONCLUSIVE"),
+     None, "ERROR"),
     # ... but not beside a NOT AS SPECIFIED arm, nor when the case's verdict disagrees,
     # nor for any other word
     ("B7", "bench", r"B7_busoff_rearm\.txt",
@@ -368,11 +370,12 @@ EDITS = [
     ("B21", "bench", r"B21_wire_image_e3d9437\.txt", r"^(PASSIVE  rep 2 .*?device_end )fin", r"\g<1>rst", "FAIL"),
     ("B21", "bench", r"B21_wire_multipart_e3d9437\.txt", r"^(OBSERVE  rep 3 .*? wire )403", r"\g<1>200", "FAIL"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"tx_fail=0", "tx_fail=1", "FAIL"),
-    # an arm not run because its reboot was not confirmed (baseline_b22.sh, 2026-11-19): void, so B22 is
-    # INCONCLUSIVE, never PASS, and a FAIL in the other arm still FAILs
+    # an arm not run because its reboot was not confirmed (baseline_b22.sh, 2026-11-19): the bench's
+    # stimulus, so B22 is VOID (the gen-inhibit reviewer's answer to ba92acf0, 2026-11-19; INCONCLUSIVE
+    # from F3 until then), never PASS, and a FAIL in the other arm still FAILs
     ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"\A[\s\S]*\Z",
      "ARM NOT RUN\n  ---- ARM VOID: the figures above do not support a verdict ----\n"
-     "       - the WiCAN's reboot before the arm was not confirmed in mode 0: no page after the reboot\n", "INCONCLUSIVE"),
+     "       - the WiCAN's reboot before the arm was not confirmed in mode 0: no page after the reboot\n", "VOID"),
     ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"\), 0 error frames", "), 4 error frames", "FAIL"),
     # the old trail-window count decides nothing (gen-inhibit reviewer, 2026-10-29): a
     # disagreement in it alone, printed either way, or as the only void reason, is a PASS ...
@@ -406,6 +409,137 @@ EDITS = [
     ("B5", "bench", r"B5_livetrain_p2000_run1\.txt",
      r"^(arm 0 \(replay [\d.]+/s\): )INCONCLUSIVE \| the device was not live at the start of the jam",
      r"\g<1>SEE A/B/C | A: PASS: trip 6 latched | B: PASS | C: NOT REACHED (no bus_off sample)", "PASS"),
+] + [
+    # The gen-inhibit reviewer's rulings on reasons on no 12.1 entry (answer to ba92acf0, 2026-11-19;
+    # bench/arm_rulings.py): the bench's VOID, the device's FAIL, what the record can't tell ERROR.
+    # B5: a reset by its reason; never went live by the gate on the wire
+    ("B5", "bench", r"B5_livetrain_p2000_run1\.txt", r"(the device was not live at the start of the jam)",
+     r"\g<1>; device reset seen at [-1.0] s rel jam; reset reason %s" % reason, want)
+    for reason, want in (("PANIC", "FAIL"), ("TASK_WDT", "FAIL"), ("SW", "FAIL"), ("POWERON", "VOID"),
+                         ("BROWNOUT", "VOID"), ("EXT", "ERROR"), ("none", "ERROR"))
+] + [
+    ("B5", "bench", r"B5_livetrain_p2000_run1\.txt", r"(the device was not live at the start of the jam)",
+     r"\g<1>; device reset seen at [-1.0] s rel jam", "ERROR"),
+] + [
+    ("B5", "bench", r"B5_livetrain_p2000_run1\.txt", r"^(arm 0 \(replay )[\d.]+(/s\): INCONCLUSIVE \| )the device was not "
+     r"live at the start of the jam \| ordering .*$", r"\g<1>None\g<2>never went live%s | ordering None" % gate, want)
+    for gate, want in (("; gate on the wire: never held", "VOID"), ("; gate on the wire: held 5.0 s at most", "FAIL"),
+                       ("; gate on the wire: held 0.6 s at most", "ERROR"), ("", "ERROR"))
+] + [
+    # a run VOID on its witness clock with every arm passing is VOID, never PASS
+    ("B5", "bench", r"B5_livetrain_p2000_run1\.txt",
+     [(r"^(arm 0 \(replay [\d.]+/s\): )INCONCLUSIVE \| the device was not live at the start of the jam",
+       r"\g<1>SEE A/B/C | A: PASS: trip 6 latched | B: PASS | C: NOT REACHED (no bus_off sample)"),
+      (r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt "
+       "time: SocketCAN: test")], None, "VOID"),
+    # an arm the record can't tell beside a run VOID on its witness clock is ERROR, not VOID
+    ("B5", "bench", r"B5_livetrain_p2000_run1\.txt",
+     [(r"(the device was not live at the start of the jam)", r"\g<1>; device reset seen at [-1.0] s rel jam"),
+      (r"^verdict SEE ARMS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt "
+       "time: SocketCAN: test")], None, "ERROR"),
+] + [
+    # B6: each reason as ruled; delivery other than one error frame per pulse stays INCONCLUSIVE
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE %s |" % why), (r"^verdict PASS", "verdict INCONCLUSIVE")],
+     None, want)
+    for why, want in (("device reset while armed (reset reason PANIC)", "FAIL"),
+                      ("device reset while armed (reset reason INT_WDT)", "FAIL"),
+                      ("device reset while armed (reset reason POWERON)", "VOID"),
+                      ("device reset while armed (reset reason none)", "ERROR"),
+                      ("device reset while armed", "ERROR"),
+                      ("not live at the start of the pulses", "VOID"),
+                      ("abort already latched before the pulses", "VOID"),
+                      ("3 error frames between the arm and the pulses", "VOID"),
+                      ("never went live; gate on the wire: never held", "VOID"),
+                      ("never went live; gate on the wire: held 3.0 s at most", "FAIL"),
+                      ("never went live", "ERROR"),
+                      ("the moon was in the wrong phase", "ERROR"))
+] + [
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^arm 1 \(replay [\d.]+/s\): PASS .*$", "arm 1: INCONCLUSIVE not armed: the reset before it was not shown (no page)"),
+      (r"^verdict PASS", "verdict INCONCLUSIVE")], None, "VOID"),
+    # an arm whose replay rate reads None is still read
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^arm 1 \(replay [\d.]+/s\): PASS ", "arm 1 (replay None/s): FAIL ",
+     "FAIL"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^(arm 1 \(replay [\d.]+/s\): )PASS ",
+     r"\g<1>FINDING another trip latched: '3 inhibit frames skipped within 1 s' ", "FAIL"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt", r"^verdict PASS", "verdict STOPPED", "FAIL"),
+    # VOID beside a delivery arm (INCONCLUSIVE) is VOID; a FAIL beside a VOID arm stands
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE not live at the start of the pulses |"),
+      (r"^(arm 0 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE delivery was not one error frame per pulse |"),
+      (r"^verdict PASS", "verdict INCONCLUSIVE")], None, "VOID"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE not live at the start of the pulses |"),
+      (r"^(arm 0 \(replay [\d.]+/s\): )PASS ", r"\g<1>FAIL "), (r"^verdict PASS", "verdict FAIL")], None, "FAIL"),
+] + [
+    # B7: each reason as ruled
+    ("B7", "bench", r"B7_busoff_rearm\.txt",
+     [(r"^arm 1: AS SPECIFIED: [^|]*\|", "arm 1: INCONCLUSIVE: %s |" % why), (r"^verdict AS SPECIFIED", "verdict INCONCLUSIVE")],
+     None, want)
+    for why, want in (("too few answered readings (3 no-arm, 30 after)", "VOID"),
+                      ("the replay was not running after the re-arm (2.0 VCM 0x051/s)", "VOID"),
+                      ("the page never read bus_off after the jam (12 answered readings from the jam to the re-arm)", "FAIL"),
+                      ("the page never read bus_off after the jam (0 answered readings from the jam to the re-arm)", "VOID"),
+                      ("the page never read bus_off after the jam", "ERROR"),
+                      ("never went live before the jam; gate on the wire: never held", "VOID"),
+                      ("never went live before the jam; gate on the wire: held 2.5 s at most", "FAIL"),
+                      ("never went live before the jam", "ERROR"))
+] + [
+    # an arm word other than AS SPECIFIED or INCONCLUSIVE FAILs, whatever the case's verdict says
+    ("B7", "bench", r"B7_busoff_rearm\.txt", r"^arm 1: AS SPECIFIED:", "arm 1: SEE ARM:", "FAIL"),
+    # a void arm beside a NOT AS SPECIFIED arm FAILs
+    ("B7", "bench", r"B7_busoff_rearm\.txt",
+     [(r"^arm 1: AS SPECIFIED: [^|]*\|", "arm 1: INCONCLUSIVE: too few answered readings (3 no-arm, 30 after) |"),
+      (r"^arm 0: AS SPECIFIED", "arm 0: NOT AS SPECIFIED"), (r"^verdict AS SPECIFIED", "verdict NOT AS SPECIFIED")],
+     None, "FAIL"),
+    # B14: both VOID verdicts are the bench's; INCOMPLETE VOID when cut short, else ERROR; INVALID FAILs
+    # unless its POST got no answer on the bench path
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;", "verdict: VOID: no valid mode-0 control;",
+     "VOID"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;",
+     "verdict: VOID: the mode-0 control was ACKed, so the WiCAN is not the only possible ACKer;", "VOID"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt",
+     [(r"^verdict: as specified;", "verdict: VOID: the mode-0 control was ACKed, so the WiCAN is not the only possible ACKer;"),
+      (r"^(  mode 2: ack errors )False -> as specified", r"\g<1>True -> NOT as specified")], None, "VOID"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;",
+     "verdict: INCOMPLETE: modes tested [1, 2], need OBSERVE and RESPOND; the probe was cut short after 3 of 5 arms "
+     "(OSError: PCAN gone);", "VOID"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;",
+     "verdict: INCOMPLETE: modes tested [1], need OBSERVE and RESPOND;", "ERROR"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt",
+     [(r"^(  mode 2: ack errors False -> )as specified", r"\g<1>INVALID (page read mode 0)"),
+      (r"^verdict: as specified;", "verdict: NOT as specified;")], None, "FAIL"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt",
+     [(r"^(  mode 2: ack errors False -> )as specified", r"\g<1>INVALID (page read mode 0); the mode POST was answered 400"),
+      (r"^verdict: as specified;", "verdict: NOT as specified;")], None, "FAIL"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt",
+     [(r"^(  mode 2: ack errors False -> )as specified",
+       r"\g<1>INVALID (page read mode 0); the mode POST got no answer on the bench path (URLError: timed out)"),
+      (r"^verdict: as specified;", "verdict: NOT as specified;")], None, "VOID"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt",
+     [(r"^(  mode 2: ack errors False -> )as specified", r"\g<1>INVALID (page read mode 0)"),
+      (r"^verdict: as specified;", "verdict: VOID: no valid mode-0 control;")], None, "FAIL"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;", "verdict: NOT as specified;", "FAIL"),
+    ("B14", "bench", r"B14_observe_ack_probe\.txt", r"^verdict: as specified;", "verdict: SEE ARMS;", "FAIL"),
+    # an arm the record can't tell is ERROR beside a void arm, and beside a run VOID on its witness clock
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE device reset while armed (reset reason none) |"),
+      (r"^(arm 0 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE not live at the start of the pulses |"),
+      (r"^verdict PASS", "verdict INCONCLUSIVE")], None, "ERROR"),
+    ("B6", "bench", r"B6_threshold_n10_lead5\.txt",
+     [(r"^(arm 1 \(replay [\d.]+/s\): )PASS  \|", r"\g<1>INCONCLUSIVE device reset while armed (reset reason none) |"),
+      (r"^verdict PASS *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt time: "
+       "SocketCAN: test")], None, "ERROR"),
+    ("B7", "bench", r"B7_busoff_rearm\.txt",
+     [(r"^arm 1: AS SPECIFIED: [^|]*\|", "arm 1: INCONCLUSIVE: never went live before the jam |"),
+      (r"^verdict AS SPECIFIED *$", "verdict VOID: witness clock 'SocketCAN: test', not judged (test) witness on receipt "
+       "time: SocketCAN: test")], None, "ERROR"),
+    # B2 and B22: UNRESOLVED provenance stays FAIL
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"provenance \(live\): as specified -- (.*)ambiguous 0",
+     r"provenance (live): UNRESOLVED -- \g<1>ambiguous 2", "FAIL"),
+    ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2held\.txt", r"provenance \(live\): as specified -- (.*)ambiguous 0",
+     r"provenance (live): UNRESOLVED -- \g<1>ambiguous 2", "FAIL"),
     # B24: an arm whose void reason is on no 12.1 entry (b24_frame_content_judge's ERROR row) is ERROR
     ("B24", "bench", r"B24_frame_content_e3d9437\.txt", r"(B3_e4_golive_off_e3d9437_20261016T212714_arm1\.json +)AS SPECIFIED    ",
      r"\g<1>ERROR           ", "ERROR"),
@@ -476,9 +610,9 @@ RULED = {
     # a live arm and a latch after the first burst (reviewer, 2026-10-25).
     "B9": "INCONCLUSIVE",
     # One 500/s arm (B5_livetrain_p2000_run1's arm 0) is INCONCLUSIVE, "the device was not live at the
-    # start of the jam": unjudged, so B5 never PASSes (spec 12.1, c5849685); the reason is on no 12.1
-    # entry, so not mapped to VOID until the gen-inhibit reviewer rules (2026-11-19).
-    "B5": "INCONCLUSIVE",
+    # start of the jam": the bench's, so VOID (the gen-inhibit reviewer's answer to ba92acf0, 2026-11-19),
+    # and B5 is VOID. INCONCLUSIVE from spec 12.1 (c5849685) until that ruling.
+    "B5": "VOID",
 }
 
 # B9 on synthetic records (2026-10-25): wrong_bitrate_errors.py's text and json, a live arm whose

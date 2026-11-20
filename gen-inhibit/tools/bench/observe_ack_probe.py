@@ -66,12 +66,35 @@ def ack_errors(status):
                ("BUSLIGHT", "BUSHEAVY", "BUSWARNING", "BUSPASSIVE", "BUSOFF"))
 
 
-def judge(arms):
-    """arms: [{mode, mode_read, ack_errors}] -> verdict dict."""
+BENCH_POST = "the mode POST got no answer on the bench path"
+CUT_SHORT = "the probe was cut short"
+
+
+def post_failure(e):
+    """How a mode POST that raised failed: an HTTP status is the device's answer; anything
+    else (no connection, a timeout, a reset) is no answer, on the bench path."""
+    code = getattr(e, "code", None)
+    if isinstance(code, int):
+        return {"by": "device", "http_status": code}
+    return {"by": "bench path", "error": "%s: %s" % (type(e).__name__, e)}
+
+
+def judge(arms, asked=None, stopped=None):
+    """arms: [{mode, mode_read, ack_errors[, post_failure]}] -> verdict dict. asked: the
+    number of arms asked for; stopped: why the probe stopped early, or None.
+
+    The gen-inhibit reviewer's rulings (2026-11-19, arm_rulings.b14_row/b14_verdict) read
+    two things here: an INVALID row says when its mode POST got no answer on the bench
+    path, and an INCOMPLETE verdict says when the probe was cut short. A probe cut short
+    is INCOMPLETE, never as specified, unless an arm read fairly is NOT as specified or
+    the run is VOID."""
     rows = []
     for a in arms:
         if a.get("mode_read") != a["mode"]:
-            rows.append(dict(a, result="INVALID (page read mode %r)" % a.get("mode_read")))
+            pf = a.get("post_failure") or {}
+            why = ("; %s (%s)" % (BENCH_POST, pf.get("error")) if pf.get("by") == "bench path" else
+                   "; the mode POST was answered %s" % pf.get("http_status") if pf.get("by") == "device" else "")
+            rows.append(dict(a, result="INVALID (page read mode %r)%s" % (a.get("mode_read"), why)))
             continue
         exp = EXPECT_ACK_ERRORS.get(a["mode"])
         rows.append(dict(a, expected_ack_errors=exp,
@@ -83,9 +106,13 @@ def judge(arms):
     if void:
         verdict = ("VOID: no valid mode-0 control" if not controls else
                    "VOID: the mode-0 control was ACKed, so the WiCAN is not the only possible ACKer")
-    elif tested != {1, 2}:
+    elif any(r["result"] != "as specified" for r in rows if not r["result"].startswith("INVALID")):
+        verdict = "NOT as specified"
+    elif tested != {1, 2} or stopped:
         verdict = "INCOMPLETE: modes tested %s, need OBSERVE and RESPOND" % sorted(tested)
-    elif any(r["result"] != "as specified" for r in rows):
+        if stopped:
+            verdict += "; %s after %d of %s arms (%s)" % (CUT_SHORT, len(arms), asked, stopped)
+    elif rows and any(r["result"] != "as specified" for r in rows):
         verdict = "NOT as specified"
     else:
         verdict = "as specified"
@@ -105,7 +132,11 @@ def build_parser():
 
 
 def one_arm(LF, can, mode, a):
-    rec = {"mode": mode, "post_ok": LF.dev_post("/gen_inhibit_set?mode=%d&offset=500" % mode)}
+    # a POST that raises is recorded, not an end: the rulings tell a device's answer from no answer
+    try:
+        rec = {"mode": mode, "post_ok": LF.dev_post("/gen_inhibit_set?mode=%d&offset=500" % mode)}
+    except Exception as e:      # noqa: BLE001
+        rec = {"mode": mode, "post_ok": False, "post_failure": post_failure(e)}
     time.sleep(a.settle_s)
     p = LF.page() or {}
     drv = p.get("drv") or {}
@@ -152,19 +183,26 @@ def main():
     import can
     import lowid_flood_skip_bench as LF
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    rec = {"when": stamp, "power": a.power, "x2": a.x2, "args": vars(a), "arms": []}
+    modes = [int(x) for x in a.modes.split(",")]
+    rec = {"when": stamp, "power": a.power, "x2": a.x2, "args": vars(a), "arms": [], "stopped": None}
     try:
-        for m in [int(x) for x in a.modes.split(",")]:
+        for m in modes:
             arm = one_arm(LF, can, m, a)
             rec["arms"].append(arm)
             print("mode %d (%s): page mode %s, drv %s -> PCAN %s (rx %d, err frames %d, bus states raised %d)"
                   % (m, MODE_NAMES.get(m), arm["mode_read"], arm["drv_state"],
                      arm["pcan_status"], arm["pcan_rx"], arm["pcan_error_frames"], len(arm["pcan_states"])))
+    except Exception as e:      # noqa: BLE001  a probe cut short is judged and recorded, never a bare traceback
+        rec["stopped"] = "%s: %s" % (type(e).__name__, e)
+        print("STOPPED after %d of %d arms: %s" % (len(rec["arms"]), len(modes), rec["stopped"]))
     finally:
-        LF.dev_post("/gen_inhibit_set?mode=0")
+        try:
+            LF.dev_post("/gen_inhibit_set?mode=0")
+        except Exception as e:  # noqa: BLE001
+            rec["mode0_post_failure"] = post_failure(e)
         time.sleep(1.0)
         rec["mode_at_end"] = (LF.page() or {}).get("mode")
-    rec["judge"] = judge(rec["arms"])
+    rec["judge"] = judge(rec["arms"], len(modes), rec["stopped"])
     path = os.path.join(RUNS, "observe_ack_probe_%s.json" % stamp)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(rec, f, indent=1)
@@ -172,7 +210,7 @@ def main():
         print("  mode %d: ack errors %s -> %s" % (r["mode"], r["ack_errors"], r["result"]))
     print("verdict: %s; mode at end %s" % (rec["judge"]["verdict"], rec["mode_at_end"]))
     print("wrote", path)
-    return 0
+    return 1 if rec["stopped"] else 0
 
 
 if __name__ == "__main__":
