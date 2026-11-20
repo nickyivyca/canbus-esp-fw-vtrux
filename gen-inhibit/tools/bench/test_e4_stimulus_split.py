@@ -1,7 +1,9 @@
 """Harness test for e4_device_calibration.vcm_commands_on_wire (the stimulus check), and
 attribution_check (2026-10-29, gen-inhibit reviewer): the old trail-window count of our
-frames voids no arm in INHIBIT, where provenance decides; the RESPOND probe count still
-does.
+frames voids no arm in INHIBIT, where provenance decides. Since spec 12.1 (c5849685,
+2026-11-19) the RESPOND probe count over the whole arm voids nothing either: attribution
+is counted over the same window from the arm, in attach_provenance, which voids the arm
+on a disagreement.
 
     py -3.14 gen-inhibit/tools/bench/test_e4_stimulus_split.py
 Mutants: test_e4_attribution_mutants.py (E4_DIR runs another copy of the tool).
@@ -73,13 +75,54 @@ def attribution_case(mode, ours, tx_ok, want_reason, want_in_line):
 
 
 def run_arm_uses_check():
-    """The arm's code calls attribution_check and acts on both halves of its answer (read
-    from the source: run_arm needs the bench)."""
+    """The arm's code calls attribution_check and prints its line, and voids nothing on it
+    (spec 12.1, c5849685: the whole-arm count is reported only). Read from the source:
+    run_arm needs the bench."""
     import inspect
     src = inspect.getsource(E.run_arm)
     i = src.find("attribution_check(")
-    return (i > 0 and "print(line)" in src[i:i + 300] and
-            "if reason:\n            void_reasons.append(reason)" in src[i:i + 300])
+    return i > 0 and "print(line)" in src[i:i + 300] and "void_reasons" not in src[i:i + 300]
+
+
+def attach_attribution(att):
+    """attach_provenance with rejudge giving `att` as its same-window attribution: (the arm
+    as written to the record, what it printed). A scratch record, removed after."""
+    import contextlib
+    import io
+    import json
+    import provenance_classifier as P
+    path = os.path.join(gi_paths.scratch("e4-attach-attribution"), "rec.json")
+    out = {"arms": {"idle": {"device": {"tx_ok": 5}, "void": False, "void_reasons": []}}}
+    real = P.rejudge
+    P.rejudge = lambda p, name: {"verdict": "as specified", "attribution": att}
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            E.attach_provenance(path, out)
+        return json.load(open(path))["arms"]["idle"], buf.getvalue()
+    finally:
+        P.rejudge = real
+        gi_paths.remove_tree(os.path.dirname(path))
+
+
+def attach_voids_on_disagreement():
+    import arm_void as AV
+    att = {"from": "scheduled POST 1 (at 20.0 s, mode 3)", "index": 7, "start_s": 1.0, "mode": "inhibit",
+           "counted_as": "device 0x051 (provenance)", "witness": 4, "device_tx_ok": 5, "agree": False}
+    arm, printed = attach_attribution(att)
+    return (arm["void"] is True and len(arm["void_reasons"]) == 1
+            and arm["void_reasons"][0] == AV.attribution_reason(att) and arm["attribution"] == att
+            and "---- ARM VOID:" in printed and "       - " + AV.ATTRIBUTION in printed and "DISAGREE" in printed)
+
+
+def attach_agreement_voids_nothing():
+    base = {"from": "the start of the replay", "index": None, "start_s": None, "device_tx_ok": 5}
+    ok = []
+    for att in (dict(base, mode="respond", counted_as="probe 0x7F0", witness=5, agree=True),
+                dict(base, mode="passive", counted_as=None, witness=None, agree=None), None):
+        arm, printed = attach_attribution(att)
+        ok.append(arm["void"] is False and arm["void_reasons"] == [] and "ARM VOID" not in printed)
+    return all(ok)
 
 
 def main():
@@ -116,13 +159,17 @@ def main():
          attribution_case(E.MODE_INHIBIT, 8983, 8983, None, "wire agrees")),
         ("PASSIVE: the trail count voids nothing either",
          attribution_case(E.MODE_PASSIVE, 0, 5, None, "superseded")),
-        ("RESPOND: the probe count, by id, 2990 against 2999 still voids the arm",
-         attribution_case(E.MODE_RESPOND, 2990, 2999, "attribution disagrees with the device: tx_ok=2999, "
-                          "witness attributes 2990", "MISMATCH")),
+        # spec 12.1 (c5849685): the whole-arm count voids nothing in any mode; attribution is counted
+        # over the same window from the arm, in attach_provenance
+        ("RESPOND: the whole-arm probe count 2990 against 2999 is reported and voids nothing",
+         attribution_case(E.MODE_RESPOND, 2990, 2999, None, "whole-arm count (voids nothing")),
         ("RESPOND: a probe count that agrees voids nothing", attribution_case(E.MODE_RESPOND, 2999, 2999, None,
                                                                              "wire agrees")),
-        ("run_arm prints attribution_check's line and voids the arm on its reason",
-         run_arm_uses_check()),
+        ("run_arm prints attribution_check's line and voids nothing on it", run_arm_uses_check()),
+        ("attach_provenance: the counts disagreeing over the same window from the arm void the arm, with the "
+         "reason in the record and its own ARM VOID block", attach_voids_on_disagreement()),
+        ("attach_provenance: counts that agree, nothing to compare (PASSIVE) or no count void nothing",
+         attach_agreement_voids_nothing()),
     ]
     fails = []
     for label, ok in checks:

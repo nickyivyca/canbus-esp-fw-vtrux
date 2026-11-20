@@ -115,8 +115,29 @@ EDITS = [
      None, "ERROR all"),
     # the summary's error count alone (no ERROR line) is ERROR
     ("B1", "bench", r"B1_slcan_refusal_stdout\.txt", r"^(summary .*'fail': 0,)", r"\g<1> 'error': 1,", "ERROR"),
+    # provenance's device count against tx_ok in an arm with no POST is attribution over the arm's window:
+    # VOID (spec 12.1, c5849685; FAIL before), and a FAIL in another arm read fairly still FAILs
     ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"device 0x051 670 \(device says 670\)",
-     "device 0x051 670 (device says 671)", "FAIL"),
+     "device 0x051 670 (device says 671)", "VOID"),
+    # ... a RESPOND arm has no POST either, so its old whole-arm probe count voiding it is attribution: VOID
+    ("B2", "bench", r"B2_e4_presence_respond_e3d9437_x2app\.txt",
+     [(r"^  wire agrees with the device: 2994 transmitted, 2994 seen \(probe 0x7F0\)$",
+       "  MISMATCH: the device reports tx_ok=2994 but the witness attributes 2993 probe 0x7F0 frames to us."),
+      (r"^(  \[idle\] provenance \(live\))",
+       "  ---- ARM VOID: the figures above do not support a verdict ----\n"
+       "       - attribution disagrees with the device: tx_ok=2994, witness attributes 2993\n\\g<1>")], None, "VOID"),
+    # ... and so is attach_provenance's same-window block, and any other 12.1 reason (a refused replay)
+    ("B2", "bench", r"B2_e4_presence_longarm_e3d9437_x2held\.txt", r"^(  \[idle\] old trail-window)",
+     "  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - attribution over the same window from the arm disagrees: the device reports tx_ok=29977, the "
+     "witness counts 29976 device 0x051 (provenance) from the start of the replay\n\\g<1>", "VOID"),
+    ("B2", "bench", r"B2_e4_presence_longarm_e3d9437_x2held\.txt", r"^(  \[idle\] provenance \(live\))",
+     "  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - 3 replay frames were refused by the adapter, so the stimulus is incomplete\n\\g<1>", "VOID"),
+    # a void reason on no 12.1 entry is ERROR, for the gen-inhibit reviewer, never mapped
+    ("B2", "bench", r"B2_e4_presence_longarm_e3d9437_x2held\.txt", r"^(  \[idle\] provenance \(live\))",
+     "  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - the moon was in the wrong phase\n\\g<1>", "ERROR"),
     ("B17a", "bench", "+B17_spec11_page_aaaaaaa_man.txt", None, "AS SPECIFIED\n", "ERROR"),
     ("B2", "bench", r"B2_x2_presence_count\.txt", r"(inhibit_e3d9437_x2app frames 71433  x2 7F4=)0", r"\g<1>3", "FAIL"),
     ("B2", "bench", r"B2_e4_presence_respond_e3d9437_x2app\.txt", r"2994 transmitted, 2994 seen", "2994 transmitted, 2993 seen", "FAIL"),
@@ -139,8 +160,9 @@ EDITS = [
     ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"^(  \[idle\] provenance \(live\))",
      "  ---- ARM VOID: the figures above do not support a verdict ----\n"
      "       - witness clock 'SocketCAN (test)': not judged on host time\n\\g<1>", "VOID"),
-    # an arm void for another reason (attribution) is judged as before: the accepted baseline
-    # has such arms judged (the reviewer is asked whether that should change, 2026-11-18)
+    # an INHIBIT arm's old trail-window attribution line (voiding nothing since 2026-10-29) is dropped,
+    # so the arm is judged (spec 12.1, c5849685: attribution counts over the same window from the arm;
+    # provenance's count is that, and agrees here); with the clock's reason beside it, VOID
     ("B2", "bench", r"B2_e4_presence_inhibit_e3d9437_x2app\.txt", r"^(  \[idle\] provenance \(live\))",
      "  ---- ARM VOID: the figures above do not support a verdict ----\n"
      "       - attribution disagrees with the device: tx_ok=670, witness attributes 669\n\\g<1>", "PASS"),
@@ -360,20 +382,49 @@ EDITS = [
      "  superseded trail-window count (voids nothing; provenance decides): the device reports tx_ok=8983, "
      "the old classifier attributes 8982 zero-torque 0x051 frames to us", "PASS"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID_ATTR, None, "PASS"),
-    # ... while provenance's own count against the device still decides
+    # ... while provenance's own count against the device, over the arm (no POST: the arm's window), is
+    # attribution: VOID (spec 12.1, c5849685; FAIL from 2026-10-29 until then)
     ("B22", "bench", r"B22_case3_e3d9437_man_a\.txt", r"device 0x051 8983 \(device says 8983\)",
-     "device 0x051 8982 (device says 8983)", "FAIL"),
+     "device 0x051 8982 (device says 8983)", "VOID"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt",
-     B22_VOID_ATTR + [(r"device 0x051 8983 \(device says 8983\)", "device 0x051 8982 (device says 8983)")], None, "FAIL"),
-    # an arm the tool voids is INCONCLUSIVE, and so is B22 (step 1a, 2026-10-29) ...
-    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID, None, "INCONCLUSIVE"),
-    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID_BOTH, None, "INCONCLUSIVE"),
-    # ... but not when the void arm shows a failure, or the other arm fails
-    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"tx_fail=0", "tx_fail=1")], None, "FAIL"),
-    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"\), 0 error frames", "), 4 error frames")], None, "FAIL"),
+     B22_VOID_ATTR + [(r"device 0x051 8983 \(device says 8983\)", "device 0x051 8982 (device says 8983)")], None, "VOID"),
+    # an arm void for a 12.1 reason makes B22 VOID (INCONCLUSIVE from step 1a, 2026-10-29, until c5849685) ...
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID, None, "VOID"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID_BOTH, None, "VOID"),
+    # ... whatever the void arm's figures show: it is never judged as a normal arm (FAIL until c5849685)
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"tx_fail=0", "tx_fail=1")], None, "VOID"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"\), 0 error frames", "), 4 error frames")], None, "VOID"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"(provenance \(live\).*?)late 0", r"\g<1>late 1")],
-     None, "FAIL"),
-    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"^  \[idle\] provenance \(live\).*\n", "")], None, "FAIL"),
+     None, "VOID"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"^  \[idle\] provenance \(live\).*\n", "")], None, "VOID"),
+    # a void reason on no 12.1 entry is ERROR, for the gen-inhibit reviewer, never mapped
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"^(  device rx_gap us: .*)$",
+     "\\g<1>\n  ---- ARM VOID: the figures above do not support a verdict ----\n"
+     "       - the moon was in the wrong phase", "ERROR"),
+    # Spec 12.1 (c5849685) in the other checks made of arms. B5: its one INCONCLUSIVE arm read as passing
+    # leaves no arm unjudged, so B5 PASSes (the baseline reads INCONCLUSIVE: RULED)
+    ("B5", "bench", r"B5_livetrain_p2000_run1\.txt",
+     r"^(arm 0 \(replay [\d.]+/s\): )INCONCLUSIVE \| the device was not live at the start of the jam",
+     r"\g<1>SEE A/B/C | A: PASS: trip 6 latched | B: PASS | C: NOT REACHED (no bus_off sample)", "PASS"),
+    # B24: an arm whose void reason is on no 12.1 entry (b24_frame_content_judge's ERROR row) is ERROR
+    ("B24", "bench", r"B24_frame_content_e3d9437\.txt", r"(B3_e4_golive_off_e3d9437_20261016T212714_arm1\.json +)AS SPECIFIED    ",
+     r"\g<1>ERROR           ", "ERROR"),
+    # B13: an arm void for a 12.1 reason (passive_analysis's "void") is VOID, unless an arm read fairly fails
+    ("B13", "bench", r"B13_passive_analysis\.txt", r'^\{"run": "(B13_e4_passive_tp2_passive_e3d9437_20261016T215910_arm1\.json)".*$',
+     r'{"run": "\g<1>", "mode": "passive", "void": ["3 replay frames were refused by the adapter, so the stimulus is incomplete"]}',
+     "VOID"),
+    ("B13", "bench", r"B13_passive_analysis\.txt",
+     [(r'^\{"run": "(B13_e4_passive_tp2_passive_e3d9437_20261016T215910_arm1\.json)".*$',
+       r'{"run": "\g<1>", "mode": "passive", "void": ["3 replay frames were refused by the adapter, so the stimulus is incomplete"]}'),
+      (r'(_arm7\.json".*?"device_0x051": )0', r"\g<1>3")], None, "FAIL"),
+    # B26: an arm its run recorded void for a 12.1 reason is VOID; one on no entry ERROR; the old
+    # trail-window attribution reason (before 2026-10-29) is dropped, as everywhere
+    ("B26", "bench", r"B26_rxq_idle_a\.json", r'"void_reasons": \[\]',
+     '"void_reasons": ["3 replay frames were refused by the adapter, so the stimulus is incomplete"]', "VOID"),
+    ("B26", "bench", r"B26_rxq_idle_a\.json", r'"void_reasons": \[\]', '"void_reasons": ["the moon was in the wrong phase"]',
+     "ERROR"),
+    ("B26", "bench", r"B26_rxq_idle_a\.json", r'"void_reasons": \[\]',
+     '"void_reasons": ["attribution disagrees with the device: tx_ok=670, witness attributes 669"]', "PASS"),
     ("B23", "bench", r"B23_txabort_bench\.txt", r"RETRY LOOP: 78 of 78", "RETRY LOOP: 77 of 78", "FAIL"),
     ("B23", "bench", r"B23_txabort_bench\.txt", r"reached the wire anyway on 0 of 78", "reached the wire anyway on 1 of 78", "FAIL"),
     ("B23", "bench", r"B23_txabort_bench\.txt", r"monotonic: True", "monotonic: False", "FAIL"),
@@ -424,6 +475,10 @@ RULED = {
     # The B9 record was never live and had latched before the first burst; the judge now needs
     # a live arm and a latch after the first burst (reviewer, 2026-10-25).
     "B9": "INCONCLUSIVE",
+    # One 500/s arm (B5_livetrain_p2000_run1's arm 0) is INCONCLUSIVE, "the device was not live at the
+    # start of the jam": unjudged, so B5 never PASSes (spec 12.1, c5849685); the reason is on no 12.1
+    # entry, so not mapped to VOID until the gen-inhibit reviewer rules (2026-11-19).
+    "B5": "INCONCLUSIVE",
 }
 
 # B9 on synthetic records (2026-10-25): wrong_bitrate_errors.py's text and json, a live arm whose

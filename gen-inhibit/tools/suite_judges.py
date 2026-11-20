@@ -27,6 +27,9 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench"))
+import arm_void as AV  # noqa: E402  spec 12.1's void reasons (2026-11-19)
+
 VERDICTS = ("PASS", "FAIL", "KNOWN-FAIL", "VOID", "ERROR", "NOT-RUN", "INCONCLUSIVE", "NOT-APPLICABLE")
 # A short commit in a file name, at whatever length git abbreviates it: 7 until the repo
 # grew, 8 by port step 1d (2026-11-05: 7f2d5032, and 5f2fe2c became 5f2fe2c4).
@@ -170,18 +173,60 @@ def prov_ok(p):
             and p["dev"] == p["dev_says"] and p["late"] == p["double"] == p["ambiguous"] == 0)
 
 
+E4_VOID_BLOCK = re.compile(r"^ *---- ARM VOID: .*\n((?: +- .*(?:\n|\Z))*)", re.M)
+
+
+def e4_void(t, old_attribution_counts=False):
+    """Spec 12.1 (c5849685): an e4 arm's void reasons from its text record, (listed,
+    unlisted) by arm_void.kind: every "---- ARM VOID:" block's "- " lines (the run's, and
+    attach_provenance's for attribution over the same window). The whole-arm attribution
+    line of before 2026-11-19 ("attribution disagrees with the device:") counts only where
+    the whole arm is the arm's window and the count was of what tx_ok counts: a RESPOND arm
+    with no POST (old_attribution_counts). In INHIBIT it was the trail-window count,
+    superseded since 2026-10-29, and dropped.
+    For an arm with no POST the whole arm is its window, so the provenance line's device
+    0x051 against tx_ok ("device says") is attribution too: e4_attribution."""
+    listed, unlisted = [], []
+    for block in E4_VOID_BLOCK.findall(t):
+        for r in re.findall(r"^ +- (.+?) *$", block, re.M):
+            if r.startswith(AV.OLD_ATTRIBUTION):
+                if old_attribution_counts:
+                    listed.append(r)
+                continue
+            (listed if AV.kind(r) else unlisted).append(r)
+    return listed, unlisted
+
+
+def e4_attribution(p):
+    """[reason] when the provenance line's device 0x051 and tx_ok disagree (an arm with no
+    POST: the whole arm is its window, spec 12.1), else []."""
+    if p is not None and p["dev"] != p["dev_says"]:
+        return ["%sthe device reports tx_ok=%d, provenance counts %d device 0x051 over the arm"
+                % (AV.ATTRIBUTION, p["dev_says"], p["dev"])]
+    return []
+
+
 @judge("B2", "B")
 def b2(F):
-    figs, bad, void = {}, [], []
+    figs, bad, void, err = {}, [], [], []
     for arm in ("inhibit", "respond", "longarm"):
         for x2 in ("x2app", "x2held"):
             t = text(F.one(r"B2_e4_presence_%s_%s_%s\.txt" % (arm, C7, x2)))
-            # the arm's own VOID for its witness clock (2026-11-18): e4's ARM VOID block names the
-            # reason (witness_clock.clock_void_reason); a void for another reason is judged as before
-            if re.search(r"---- ARM VOID:.*\n(?:\s+- .*\n)*?\s+- witness clock .*: not judged on host time", t):
-                void.append("%s %s" % (arm, x2))
-                continue
             p = e4_prov(t)
+            # Spec 12.1 (c5849685): an arm void for any reason on its list is never judged as a
+            # normal arm (before, only the witness clock's, 2026-11-18). B2's arms have no POST,
+            # so the whole arm is the window: RESPOND's old whole-arm probe count counts, and an
+            # INHIBIT arm's provenance count against tx_ok is attribution. A reason on no entry is
+            # ERROR, for the gen-inhibit reviewer.
+            listed, unlisted = e4_void(t, old_attribution_counts=arm == "respond")
+            if arm != "respond":
+                listed += e4_attribution(p)
+            if unlisted:
+                err.append("%s %s: a void reason on no spec 12.1 entry: %s" % (arm, x2, "; ".join(unlisted)))
+                continue
+            if listed:
+                void.append("%s %s (%s)" % (arm, x2, "; ".join(listed)))
+                continue
             if not prov_ok(p):
                 bad.append("%s %s provenance %s" % (arm, x2, p and p["verdict"]))
             if arm == "respond":
@@ -199,6 +244,8 @@ def b2(F):
     figs["x2_frames"] = fig(x2)
     if x2:
         bad.append("X2 sent %d frames" % x2)
+    if err and not bad:
+        return [result("B2", "ERROR", figs, "; ".join(err))]
     if void and not bad:
         figs["void_arms"] = fig(len(void))
         return [result("B2", "VOID", figs, "arms VOID: %s" % ", ".join(void))]
@@ -214,10 +261,12 @@ def b3(F):
                       % (C7, TS), text(F.one(r"B3_golive_stale_check\.txt")), re.M)
     entries = json_lines(F.one(r"B3_mode_entry_analysis\.txt"))
     figs = {"arms": fig(len(rows)), "stale": fig(sum(int(r[3]) for r in rows))}
-    # An arm VOID in its own run on its witness clock (2026-11-18), or whose witness does not hold the
-    # whole replay (an empty or short window, 2026-11-19), is no judgement: B3 VOID unless another arm
-    # fails. Each arm counts once, by its run file (the stale check and the entry analysis name the
-    # same arm; the figure counted it twice before 2026-11-19).
+    # An arm void for any reason on spec 12.1's list (c5849685: the desk tools' "VOID: arm void" and
+    # "void", from provenance_classifier.rejudge's arm_void, attribution over the same window from the
+    # arm included; before, only the witness clock's, 2026-11-18, and a short window, 2026-11-19) is
+    # no judgement: B3 VOID unless an arm read fairly fails. void_arms counts every reason, each arm
+    # once, by its run file (the stale check and the entry analysis name the same arm; the figure
+    # counted it twice before 2026-11-19). A reason on no entry is the entry analysis's error: ERROR.
     void = {r[0] for r in rows if r[4].startswith("VOID: arm void")}
     void |= {e["run"] for e in entries if e.get("void")}
     void_modes = {m for run in void for m in B3_MODES if re.match(r"B3_e4_golive_%s_" % m, run)}
@@ -255,10 +304,16 @@ def b24(F):
                       text(F.one(r"B24_frame_content_%s\.txt" % C7)), re.M)
     spec = sum(1 for _, v in rows if v == "AS SPECIFIED")
     none = [n for n, v in rows if v == "NO DEVICE FRAMES"]
-    void = [n for n, v in rows if v == "VOID"]           # the arm's own VOID (2026-11-18)
-    other = [n for n, v in rows if v not in ("AS SPECIFIED", "NO DEVICE FRAMES", "VOID")]
+    # the arm void for a spec 12.1 reason (c5849685; its witness clock's alone from 2026-11-18); ERROR:
+    # a void reason on no 12.1 entry (b24_frame_content_judge), for the gen-inhibit reviewer
+    void = [n for n, v in rows if v == "VOID"]
+    err = [n for n, v in rows if v == "ERROR"]
+    other = [n for n, v in rows if v not in ("AS SPECIFIED", "NO DEVICE FRAMES", "VOID", "ERROR")]
     # The RESPOND arm sends no 0x051 by design; any other arm without device frames judges nothing.
     bad = other + [n for n in none if "_respond_" not in n]
+    if err and not bad:
+        return [result("B24", "ERROR", {"as_specified": fig(spec), "error": fig(len(err))},
+                       "a void reason on no spec 12.1 entry: %s" % ", ".join(err))]
     if void and not bad:
         return [result("B24", "VOID", {"as_specified": fig(spec), "void": fig(len(void))},
                        "arms VOID: %s" % ", ".join(void))]
@@ -331,7 +386,12 @@ def b5(F):
     if void and not bad:
         figs["void_runs"] = fig(void)
         return [result("B5", "VOID", figs, "%d run(s) VOID on the witness clock; no arm FAIL" % void)]
-    return [result("B5", "FAIL" if bad else "PASS", figs, "; ".join(bad) or
+    # Spec 12.1 (c5849685): never PASS while an arm it asked for is unjudged. An INCONCLUSIVE arm's
+    # reasons (live_jam_arm: "the device was not live at the start of the jam", with any reset seen;
+    # "never went live") are on no 12.1 entry, so they are not mapped to VOID: B5 reads INCONCLUSIVE
+    # until the gen-inhibit reviewer rules (2026-11-19). Before, B5 PASSed beside one.
+    inc = figs["inconclusive_200_per_s"]["value"] + figs["inconclusive_500_per_s"]["value"]
+    return [result("B5", "FAIL" if bad else "INCONCLUSIVE" if inc else "PASS", figs, "; ".join(bad) or
                    "200/s %d of %d, 500/s %d of %d, %d inconclusive" % (
                        figs["pass_200_per_s"]["value"], figs["arms_200_per_s"]["value"],
                        figs["pass_500_per_s"]["value"], figs["arms_500_per_s"]["value"],
@@ -638,13 +698,21 @@ def b12(F):
 @judge("B13", "B")
 def b13(F):
     rows = json_lines(F.one(r"B13_passive_analysis\.txt"))
-    bad = [r["run"] for r in rows if r.get("provenance") != "as specified"
+    # an arm void for a spec 12.1 reason (c5849685; passive_analysis's "void") is no judgement: B13
+    # VOID unless an arm read fairly, or the booking check, fails
+    void = [r["run"] for r in rows if r.get("void")]
+    bad = [r["run"] for r in rows if not r.get("void") and not r.get("error") and (
+           r.get("provenance") != "as specified"
            or (r["mode"] == "passive" and r["device_0x051"] != 0)
-           or (r["mode"] == "inhibit" and r["device_0x051"] == 0)]
+           or (r["mode"] == "inhibit" and r["device_0x051"] == 0))]
     book = re.findall(r"^\[(\w+) *\] ", text(F.one(r"B13_respond_booking_check\.txt")), re.M)
     bfail = [b for b in book if b != "PASS"]
     ok = len(rows) == 8 and not bad and book and not bfail
     err = row_errors(rows)
+    if void and not err and not bad and book and not bfail:
+        return [result("B13", "VOID", {"arms": fig(len(rows)), "void_arms": fig(len(void))},
+                       "arms VOID: %s" % "; ".join("%s (%s)" % (r["run"], "; ".join(r["void"]))
+                                                   for r in rows if r.get("void")))]
     return [result("B13", "ERROR" if err else "PASS" if ok else "FAIL",
                    {"arms": fig(len(rows)), "booking_rows": fig(len(book)), "booking_fail": fig(len(bfail))},
                    err or "; ".join(bad) or "%d arms ok, booking %s" % (len(rows), "PASS" if not bfail else bfail))]
@@ -909,33 +977,35 @@ def e4_response(t):
 
 @judge("B22", "B")
 def b22(F):
-    figs, bad, void = {}, [], []
+    figs, bad, void, err, not_run = {}, [], [], [], []
     for arm in ("a", "b"):
         t = text(F.one(r"B22_case3_%s_man_%s\.txt" % (C7, arm)))
         # an arm whose reboot before it was not confirmed was never run (baseline_b22.sh, 2026-11-19:
-        # run cb08's arms ran after unconfirmed reboots): void, judged on nothing
+        # run cb08's arms ran after unconfirmed reboots): judged on nothing, INCONCLUSIVE as ruled then.
+        # Not a reason on spec 12.1's list (c5849685), so not mapped to VOID: the gen-inhibit reviewer's.
         rb = re.search(r"^       - (the WiCAN's reboot before the arm was not confirmed.*)$", t, re.M)
         if rb:
-            void.append("%s: void (%s)" % (arm, rb.group(1)))
+            not_run.append("%s: not run (%s)" % (arm, rb.group(1)))
             continue
         p = e4_prov(t)
         r = e4_response(t)
         d = re.search(r"device: tx_ok=(\d+) tx_fail=(\d+) ctr_ok=\d+ ctr_bad=(\d+) tx_queued_behind=(\d+)", t)
         e = re.search(r"witness saw \d+ frames \([\d.]+/s\), (\d+) error frames", t)
         ld = re.search(r"carried load >= ([\d.]+)%", t)
-        # The old trail-window classifier's count of our zero-torque frames voids nothing and
-        # decides nothing since 2026-10-29 (gen-inhibit reviewer): provenance decides. A record
-        # whose only void reason is that count (written before) is judged as an unvoided arm.
-        reasons = [x for x in re.findall(r"^       - (.+)$", t, re.M)
-                   if not x.startswith("attribution disagrees with the device:")]
-        # An arm the tool voids ("ARM VOID": its figures do not support a verdict) judges
-        # nothing, so it makes B22 INCONCLUSIVE, not FAIL (step 1a's acceptance, 2026-10-29),
-        # unless what it does show fails: provenance, tx_fail, ctr_bad, queued, error frames.
-        if "---- ARM VOID:" in t and reasons:
-            if not (p and d and e) or not prov_ok(p) or any(int(d.group(i)) for i in (2, 3, 4)) or int(e.group(1)):
-                bad.append(arm + " (void) not as before")
-            else:
-                void.append(arm + ": void (" + "; ".join(reasons) + ")")
+        # Spec 12.1 (c5849685): an arm void for any reason on its list is never judged as a normal
+        # arm, so it makes B22 VOID, whatever its figures show; a FAIL in the other arm, read fairly,
+        # stands. Before, a void arm made B22 INCONCLUSIVE, or FAIL when its figures failed (step 1a's
+        # acceptance, 2026-10-29). The old trail-window count of our zero-torque frames ("attribution
+        # disagrees with the device:", voiding nothing since 2026-10-29) is dropped (e4_void); B22's
+        # arms have no POST, so provenance's count against tx_ok is attribution (e4_attribution). A
+        # reason on no entry is ERROR, for the gen-inhibit reviewer.
+        listed, unlisted = e4_void(t)
+        listed += e4_attribution(p)
+        if unlisted:
+            err.append("%s: a void reason on no spec 12.1 entry: %s" % (arm, "; ".join(unlisted)))
+            continue
+        if listed:
+            void.append(arm + ": void (" + "; ".join(listed) + ")")
             continue
         if not (p and r and d and e and ld):
             bad.append(arm + ": a line is missing")
@@ -947,9 +1017,13 @@ def b22(F):
                      "ctr_bad_%s" % arm: fig(int(d.group(3))), "error_frames_%s" % arm: fig(int(e.group(1))),
                      "load_pct_lower_%s" % arm: fig(float(ld.group(1)), "%")})
     if bad:
-        return [result("B22", "FAIL", figs, "; ".join(bad + void))]
+        return [result("B22", "FAIL", figs, "; ".join(bad + void + err + not_run))]
+    if err:
+        return [result("B22", "ERROR", figs, "; ".join(err + void + not_run))]
     if void:
-        return [result("B22", "INCONCLUSIVE", figs, "; ".join(void))]
+        return [result("B22", "VOID", figs, "; ".join(void + not_run))]
+    if not_run:
+        return [result("B22", "INCONCLUSIVE", figs, "; ".join(not_run))]
     return [result("B22", "PASS", figs, "both arms: provenance clean, 0 tx_fail, 0 error frames")]
 
 
@@ -1009,16 +1083,31 @@ def b25(F):
 
 @judge("B26", "B")
 def b26(F):
-    figs, bad = {}, []
+    figs, bad, void, err = {}, [], [], []
     for arm in ("idle_a", "idle_b", "loaded"):
         d = json.load(open(F.one(r"B26_rxq_%s\.json" % arm), encoding="utf-8"))
-        rxq = ((d.get("arms") or {}).get("idle" if arm != "loaded" else "loaded") or {}).get("device", {}).get("rxq")
+        a = (d.get("arms") or {}).get("idle" if arm != "loaded" else "loaded") or {}
+        # Spec 12.1 (c5849685): an arm void for a reason on its list, as its run recorded it
+        # (attach_provenance adds attribution over the same window), is not judged; the old
+        # trail-window attribution reason is dropped (arm_void.reasons); a reason on no entry: ERROR
+        listed, unlisted = AV.reasons(a)
+        if unlisted:
+            err.append("%s: a void reason on no spec 12.1 entry: %s" % (arm, "; ".join(unlisted)))
+            continue
+        if listed:
+            void.append("%s (%s)" % (arm, "; ".join(listed)))
+            continue
+        rxq = a.get("device", {}).get("rxq")
         if not rxq or not rxq.get("samples"):
             bad.append(arm + ": no rxq samples")
             continue
         figs["max_backlog_" + arm] = fig(rxq["max"])
         figs["ge2_" + arm] = fig(dict(zip(rxq["ge_edges"], rxq["ge"])).get(2))
         figs["samples_" + arm] = fig(rxq["samples"])
+    if err or bad:
+        return [result("B26", "ERROR", figs, "; ".join(err + bad + void))]
+    if void:
+        return [result("B26", "VOID", figs, "arms VOID: %s" % "; ".join(void))]
     return [result("B26", "ERROR" if bad else "PASS", figs, "; ".join(bad) or "max backlog %s / %s / %s" % tuple(
         figs["max_backlog_" + a]["value"] for a in ("idle_a", "idle_b", "loaded")))]
 

@@ -110,17 +110,22 @@ def plan():
 def judge_file(path):
     d = json.load(open(path, encoding="utf-8"))
     if "arms" in d:                                   # e4
-        a = d["arms"].get("idle") or next(iter(d["arms"].values()))
-        import witness_clock as WC  # noqa: E402
-        cv = WC.arm_clock_void(a)                # the arm's own VOID for its witness clock (2026-11-18)
-        if cv:
-            return {"run": os.path.basename(path), "verdict": "VOID: arm void: %s" % "; ".join(cv)}
+        name = "idle" if "idle" in d["arms"] else next(iter(d["arms"]))
+        a = d["arms"][name]
+        # Spec 12.1 (c5849685): the arm is void for any reason on its list, attribution counted
+        # over the same window from the arm included (provenance_classifier.rejudge's arm_void;
+        # before, only the witness clock's, 2026-11-18, and the witness short of the replay,
+        # 2026-11-19). A reason on no entry is an error, for the gen-inhibit reviewer.
+        import provenance_classifier as P  # noqa: E402
+        r = P.rejudge(path, name)
+        if r["arm_unlisted"]:
+            return {"run": os.path.basename(path),
+                    "verdict": "ERROR: a void reason on no spec 12.1 entry: %s" % "; ".join(r["arm_unlisted"])}
+        if r["arm_void"]:
+            return {"run": os.path.basename(path), "verdict": "VOID: arm void: %s" % "; ".join(r["arm_void"])}
         prov = a.get("provenance") or {}
         if isinstance(prov, str) or not prov:
             return {"run": os.path.basename(path), "verdict": "UNRESOLVED: no provenance (%s)" % prov}
-        wv = WC.window_void(prov)                # the witness short of the replay (2026-11-19)
-        if wv:
-            return {"run": os.path.basename(path), "verdict": "VOID: arm void: %s" % "; ".join(wv)}
         if d.get("mode") == "inhibit" and not d.get("arm_after_s"):
             return {"run": os.path.basename(path), "verdict": "VOID: armed INHIBIT from the start, no entry"}
         n_dev = prov.get("device_frames") or 0

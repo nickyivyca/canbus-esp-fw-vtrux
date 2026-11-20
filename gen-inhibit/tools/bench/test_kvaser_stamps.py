@@ -334,71 +334,107 @@ def e4():
 def desk():
     P = mod("provenance_classifier")
     G = mod("golive_stale_check")
+    AVm = mod("arm_void")
     work = gi_paths.scratch("kvaser-stamps-desk")
     gi_paths.remove_tree(work)
     os.makedirs(work)
+    # rejudge with its capture and witness reading stubbed (every desk tool reads the arm's void through
+    # it since spec 12.1, c5849685): cls is what the stubbed classifier returns
+    cls = {"verdict": "as specified", "device_times": [], "vcm_times": [], "replayed_wire_times": []}
+    fake_e4 = types.ModuleType("e4_device_calibration")
+    fake_e4.load_window = lambda seconds: []
+    saved = (sys.modules.get("e4_device_calibration"), P.read_witness, P.classify, P.gi_paths.verify)
+    sys.modules["e4_device_calibration"] = fake_e4
+    P.read_witness = lambda p: []
+    P.classify = lambda *a, **k: dict(cls)
+    P.gi_paths.verify = lambda p: None
+    clock = "witness clock 'x': not judged on host time"
+    old_att = "attribution disagrees with the device: tx_ok=3, witness attributes 2"
+
+    def put(**arm):
+        rec["arms"]["idle"].update(arm)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+
     try:
         rec = {"capture": os.path.join(work, "cap.log"), "window_start": 0, "seconds": 1, "mode": "inhibit",
                "arm_after_s": 5,
-               "arms": {"idle": {"void": True, "void_reasons": ["witness clock 'x': not judged on host time"],
+               "arms": {"idle": {"void": True, "void_reasons": [clock],
                                  "witness_raw": "w.log.gz", "provenance": {"device_frames": 3}}}}
         path = os.path.join(work, "B3_e4_golive_observe_x_arm1.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(rec, f)
+        put()
         r = G.judge_file(path)
         check("golive_stale_check: an arm VOID in its run -> VOID: arm void, with the reason",
               r["verdict"].startswith("VOID: arm void") and "witness clock" in r["verdict"], r)
-        rec["arms"]["idle"]["void"] = False
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(rec, f)
+        put(void=False, void_reasons=[])
         check("golive_stale_check: the same arm not void is judged", not G.judge_file(path)["verdict"].startswith("VOID"),
               G.judge_file(path)["verdict"])
-        # void for another reason only (attribution): judged as before (the accepted baseline's B3
-        # arms; the reviewer asked, 2026-11-18)
-        rec["arms"]["idle"]["void"] = True
-        rec["arms"]["idle"]["void_reasons"] = ["attribution disagrees with the device: tx_ok=3, witness attributes 2"]
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(rec, f)
-        check("golive_stale_check: an arm void only on attribution is judged as before",
+        # spec 12.1 (c5849685): every reason on its list voids (before, the clock's alone, 2026-11-18) ...
+        put(void=True, void_reasons=["3 replay frames were refused by the adapter, so the stimulus is incomplete"])
+        r = G.judge_file(path)
+        check("golive_stale_check: an arm void for another 12.1 reason (a refused replay) -> VOID: arm void",
+              r["verdict"].startswith("VOID: arm void: 3 replay frames were refused"), r)
+        # ... the old whole-arm attribution reason is dropped and attribution counted again from the arm:
+        # with no device count there is nothing to compare, so the arm is judged
+        put(void=True, void_reasons=[old_att])
+        check("golive_stale_check: an arm void only on the old whole-arm attribution is counted again (no "
+              "tx_ok: judged)", not G.judge_file(path)["verdict"].startswith("VOID"), G.judge_file(path)["verdict"])
+        # ... and counted again it disagrees (tx_ok 3, provenance's device frames 2, from the start): VOID
+        put(device={"tx_ok": 3})
+        cls["device_times"] = [1.0, 2.0]
+        r = G.judge_file(path)
+        check("golive_stale_check: the device's count and the witness's disagreeing over the arm -> VOID: arm "
+              "void, attribution", r["verdict"].startswith("VOID: arm void: " + AVm.ATTRIBUTION)
+              and "tx_ok=3" in r["verdict"] and "counts 2 device 0x051" in r["verdict"], r)
+        res = P.rejudge(path, "idle")
+        check("provenance_classifier.rejudge: the recount's reason replaces the old one in arm_void, and the "
+              "count is kept as attribution", len(res["arm_void"]) == 1
+              and res["arm_void"][0].startswith(AVm.ATTRIBUTION) and res["attribution"]["agree"] is False
+              and res["attribution"]["witness"] == 2 and res["arm_unlisted"] == [], res)
+        cls["device_times"] = [1.0, 2.0, 3.0]
+        check("golive_stale_check: the two counts agreeing over the arm -> judged",
               not G.judge_file(path)["verdict"].startswith("VOID"), G.judge_file(path)["verdict"])
-        rec["arms"]["idle"]["void_reasons"] = ["attribution disagrees with the device: tx_ok=3, witness attributes 2",
-                                               "witness clock 'x': not judged on host time"]
-        rec["arms"]["idle"]["void"] = True
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(rec, f)
-        # rejudge with its capture and witness reading stubbed: the arm's VOID is carried
-        fake_e4 = types.ModuleType("e4_device_calibration")
-        fake_e4.load_window = lambda seconds: []
-        saved = (sys.modules.get("e4_device_calibration"), P.read_witness, P.classify, P.gi_paths.verify)
-        sys.modules["e4_device_calibration"] = fake_e4
-        P.read_witness = lambda p: []
-        P.classify = lambda *a, **k: {"verdict": "as specified", "device_times": [], "vcm_times": []}
-        P.gi_paths.verify = lambda p: None
+        # a reason on no 12.1 entry: an error, for the gen-inhibit reviewer, never a verdict
+        put(void=True, void_reasons=["the moon was in the wrong phase"])
+        r = G.judge_file(path)
+        check("golive_stale_check: a void reason on no 12.1 entry -> ERROR, naming it",
+              r["verdict"] == "ERROR: a void reason on no spec 12.1 entry: the moon was in the wrong phase", r)
+        MEA = mod("mode_entry_analysis")
+        QA = mod("quiesce_analysis")
+        PA = mod("passive_analysis")
+        for nm, fn in (("mode_entry_analysis", MEA.analyse), ("quiesce_analysis", QA.analyse),
+                       ("passive_analysis", PA.analyse)):
+            r = fn(path)
+            check("%s: a void reason on no 12.1 entry -> an error row, no void" % nm,
+                  "no spec 12.1 entry" in (r.get("error") or "") and "void" not in r, r)
+        put(void=True, void_reasons=[old_att, clock])
+        res = P.rejudge(path, "idle", keep_frames=True)
+        check("provenance_classifier.rejudge: the arm's witness-clock VOID carried as arm_void, its old whole-arm "
+              "attribution reason not", res.get("arm_void") == [clock], res.get("arm_void"))
+        B24 = mod("b24_frame_content_judge")
+        B24.P.read_witness = lambda p: []
+        r = B24.judge_run(path)
+        check("b24_frame_content_judge: a VOID arm reads VOID, with the reason first in its faults",
+              r["verdict"] == "VOID" and "witness clock" in str(r["faults"][0]), r)
+        r = MEA.analyse(path)
+        check("mode_entry_analysis: a VOID arm gives {run, void}, no figures",
+              r.get("void") == [clock] and "first_answer_after_post_ms" not in r, r)
+        r = PA.analyse(path)
+        check("passive_analysis: a VOID arm gives {run, mode, void}, no figures (spec 12.1, c5849685)",
+              r.get("void") == [clock] and "device_0x051" not in r, r)
+        put(void=True, void_reasons=["the moon was in the wrong phase"])
+        r = B24.judge_run(path)
+        check("b24_frame_content_judge: a void reason on no 12.1 entry reads ERROR",
+              r["verdict"] == "ERROR" and "no spec 12.1 entry" in str(r["faults"][0]), r)
+        put(void=False, void_reasons=[])
+        check("provenance_classifier.rejudge: an arm not void carries arm_void []",
+              P.rejudge(path, "idle")["arm_void"] == [])
+        cls["device_times"] = []
+        put(device={}, void=True, void_reasons=[old_att])
+        check("provenance_classifier.rejudge: an arm void only on the old whole-arm attribution, with nothing "
+              "to count again, carries arm_void []", P.rejudge(path, "idle")["arm_void"] == [])
+        rec["arms"]["idle"].pop("device")
         try:
-            res = P.rejudge(path, "idle", keep_frames=True)
-            check("provenance_classifier.rejudge: the arm's witness-clock VOID carried as arm_void, its other "
-                  "reasons not", res.get("arm_void") == ["witness clock 'x': not judged on host time"], res.get("arm_void"))
-            B24 = mod("b24_frame_content_judge")
-            B24.P.read_witness = lambda p: []
-            r = B24.judge_run(path)
-            check("b24_frame_content_judge: a VOID arm reads VOID, with the reason first in its faults",
-                  r["verdict"] == "VOID" and "witness clock" in str(r["faults"][0]), r)
-            MEA = mod("mode_entry_analysis")
-            r = MEA.analyse(path)
-            check("mode_entry_analysis: a VOID arm gives {run, void}, no figures",
-                  r.get("void") == ["witness clock 'x': not judged on host time"] and "first_answer_after_post_ms" not in r, r)
-            rec["arms"]["idle"]["void"] = False
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(rec, f)
-            check("provenance_classifier.rejudge: an arm not void carries arm_void []",
-                  P.rejudge(path, "idle")["arm_void"] == [])
-            rec["arms"]["idle"]["void"] = True
-            rec["arms"]["idle"]["void_reasons"] = ["attribution disagrees with the device: tx_ok=3, witness attributes 2"]
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(rec, f)
-            check("provenance_classifier.rejudge: an arm void only on attribution carries arm_void [] (judged as "
-                  "before)", P.rejudge(path, "idle")["arm_void"] == [])
-
             # The witness short of the replay, an empty or short window (run cb08, 2026-11-19): every
             # desk tool reads the arm VOID, and an analysis that raises gives an error row, never a crash.
             WCm = mod("witness_clock")
@@ -416,16 +452,19 @@ def desk():
             rec["post_schedule"] = []
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(rec, f)
+            # golive_stale_check reads the short window through rejudge (spec 12.1, c5849685)
+            short = {"verdict": "UNRESOLVED", "replayed_frames": 100, "replayed_found": 10, "device_times": [],
+                     "vcm_times": [], "replayed_wire_times": [float(k) for k in range(10)]}
+            P.classify = lambda *a, **k: dict(short)
             r = G.judge_file(path)
             check("golive_stale_check: the witness short of the replay -> VOID: arm void, with the reason",
                   r["verdict"] == "VOID: arm void: " + why, r)
             rec["arms"]["idle"]["provenance"] = {"device_frames": 3, "replayed_frames": 100, "replayed_found": 100}
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(rec, f)
+            P.classify = lambda *a, **k: dict(cls, replayed_frames=100, replayed_found=100)
             check("golive_stale_check: the whole replay on the witness is judged",
                   not G.judge_file(path)["verdict"].startswith("VOID: arm void"), G.judge_file(path)["verdict"])
-            short = {"verdict": "UNRESOLVED", "replayed_frames": 100, "replayed_found": 10, "device_times": [],
-                     "vcm_times": [], "replayed_wire_times": [float(k) for k in range(10)]}
             P.classify = lambda *a, **k: dict(short)
             r = MEA.analyse(path)
             check("mode_entry_analysis: the witness short of the replay gives {run, void}, no figures, not an error",
@@ -503,28 +542,30 @@ MUTANTS = [
     ("e4_rig_calibration.py", "                raw_append(raw)\n", ""),
     ("e4_device_calibration.py", "        void_reasons.append(WC.clock_void_reason(witness_clock))\n",
      "        pass\n"),
-    ("provenance_classifier.py", "    res[\"arm_void\"] = WC.arm_clock_void(a)\n",
-     "    res[\"arm_void\"] = []\n"),
-    ("provenance_classifier.py", "    res[\"arm_void\"] = WC.arm_clock_void(a)\n",
-     "    res[\"arm_void\"] = list(a.get(\"void_reasons\") or []) if a.get(\"void\") else []\n"),
-    ("golive_stale_check.py", "        if cv:\n", "        if False:\n"),
-    ("golive_stale_check.py", "        cv = WC.arm_clock_void(a)", "        cv = a.get(\"void_reasons\") if a.get(\"void\") else []"),
+    # spec 12.1 (c5849685): rejudge carries every listed reason, attribution counted again from the arm
+    ("provenance_classifier.py",
+     "    res[\"arm_void\"], res[\"arm_unlisted\"] = AV.reasons(a, wv + [AV.attribution_reason(res[\"attribution\"])],\n"
+     "                                                      recounted=True)\n",
+     "    res[\"arm_void\"], res[\"arm_unlisted\"] = [], []\n"),
+    ("provenance_classifier.py", "AV.reasons(a, wv + [AV.attribution_reason(res[\"attribution\"])],",
+     "AV.reasons(a, wv,"),
+    ("provenance_classifier.py", "    wv = WC.window_void(res)\n", "    wv = []\n"),
+    ("golive_stale_check.py", "        if r[\"arm_void\"]:\n", "        if False:\n"),
+    ("golive_stale_check.py", "        if r[\"arm_unlisted\"]:\n", "        if False:\n"),
+    ("quiesce_analysis.py", "    if r.get(\"arm_unlisted\"):\n", "    if False:\n"),
+    ("passive_analysis.py", "    if r.get(\"arm_unlisted\"):\n", "    if False:\n"),
+    ("passive_analysis.py", "    if r.get(\"arm_void\"):\n", "    if False:\n"),
+    ("mode_entry_analysis.py", "    if r.get(\"arm_unlisted\"):\n", "    if False:\n"),
+    ("b24_frame_content_judge.py", "        res[\"verdict\"] = \"ERROR\"\n", "        pass\n"),
     ("witness_clock.py", "    if not arm.get(\"void\"):\n        return []\n", ""),
     ("witness_clock.py", "    return [r for r in (arm.get(\"void_reasons\") or []) if str(r).startswith(CLOCK_VOID_PREFIX)]\n",
      "    return list(arm.get(\"void_reasons\") or [])\n"),
     ("b24_frame_content_judge.py", "        res[\"verdict\"] = \"VOID\"\n", "        pass\n"),
-    ("mode_entry_analysis.py", "    if r.get(\"arm_void\"):                          # the arm's own VOID (2026-11-18)\n",
-     "    if False:\n"),
+    ("mode_entry_analysis.py", "    if r.get(\"arm_void\"):\n", "    if False:\n"),
     # the witness short of the replay reads VOID; an analysis that raises gives an error row (2026-11-19)
     ("witness_clock.py", "    if not isinstance(n, int) or not isinstance(p, int) or p >= n:\n        return []\n",
      "    return []\n"),
-    ("golive_stale_check.py", "        wv = WC.window_void(prov)                # the witness short of the replay (2026-11-19)\n",
-     "        wv = []\n"),
-    ("mode_entry_analysis.py", "    wv = WC.window_void(r)                          # the witness short of the replay (2026-11-19)\n",
-     "    wv = []\n"),
-    ("quiesce_analysis.py",
-     "    wv = WC.window_void(r)    # the witness short of the replay (run cb08 raised IndexError here, 2026-11-19)\n",
-     "    wv = []\n"),
+    ("quiesce_analysis.py", "    if r.get(\"arm_void\"):\n", "    if False:\n"),
     ("quiesce_analysis.py", "            except Exception as e:      # noqa: BLE001  a row the judge reads as ERROR",
      "            except ImportError as e:      # noqa: BLE001  a row the judge reads as ERROR"),
     ("mode_entry_analysis.py", "    except Exception as e:      # noqa: BLE001\n        return {\"run\": os.path.basename(run), \"error\": \"analysis raised",

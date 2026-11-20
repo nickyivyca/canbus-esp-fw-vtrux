@@ -136,8 +136,10 @@ def judge_run(run, pcap):
     arm = list(d["arms"])[0]
     a = d["arms"][arm]
     r = P.rejudge(run, arm, keep_frames=True)
-    if r.get("arm_void"):     # the arm's witness clock refused in its run (2026-11-18): nothing judged
-        why = "VOID: arm void: %s" % "; ".join(r["arm_void"])
+    # void for any spec 12.1 reason (c5849685; the witness clock's alone from 2026-11-18): nothing judged
+    if r.get("arm_void") or r.get("arm_unlisted"):
+        why = ("ERROR: a void reason on no spec 12.1 entry: %s" % "; ".join(r["arm_unlisted"])
+               if r.get("arm_unlisted") else "VOID: arm void: %s" % "; ".join(r["arm_void"]))
         posts = [{"at_s": e.get("at_s"), "mode": e.get("mode"), "http": e.get("http"), "verdict": why}
                  for e in (a.get("post_schedule") or []) if e.get("mode") == 1]
         return {"run": os.path.basename(run), "capture": os.path.basename(pcap), "device": d.get("device"),

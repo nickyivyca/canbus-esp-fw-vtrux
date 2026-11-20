@@ -241,16 +241,36 @@ def rejudge(run_path, arm="idle", keep_frames=False):
     # quiesce_analysis.py checks it per span instead (2026-10-10).
     if any(e.get("mode") in (3, 4) for e in (a.get("post_schedule") or [])):
         device_cmd_tx = None
-    res = classify(src, wire, device_cmd_tx, keep_frames)
+    # Spec 12.1 (c5849685): the device's count against the witness's, over the same window from
+    # the arm, is attribution, and a disagreement voids the arm (arm_void.attribution). So where
+    # the arm's window is INHIBIT, whose tx_ok counts the device's 0x051, classify() does not make
+    # that count UNRESOLVED; device_cmd_tx stays in the record as the figure reported beside it.
+    # Elsewhere its 0 (RESPOND or PASSIVE from the start: no device 0x051) is behaviour, kept.
+    import arm_void as AV  # noqa: E402
+    import witness_clock as WC  # noqa: E402
+    win_mode = AV.arm_post(d, a)[2]
+    res = classify(src, wire, None if win_mode == "inhibit" else device_cmd_tx, keep_frames=True)
+    res["device_cmd_tx"] = device_cmd_tx
     res["method"] = ("queue order: the replay's frames on the wire in capture order; "
                      "timing (scheduled capture offsets fitted to the witness) reported only")
     res["run"] = os.path.basename(run_path)
     res["arm"] = arm
-    # an arm its own run made VOID for its witness clock (2026-11-18) carries that reason here,
-    # so a desk judge reads it as VOID, never as a result (witness_clock.arm_clock_void; other
-    # void reasons are judged as before)
-    import witness_clock as WC  # noqa: E402
-    res["arm_void"] = WC.arm_clock_void(a)
+    # Every spec 12.1 reason the arm is void for (c5849685; before, only the witness clock's, from
+    # 2026-11-18): the reasons its run recorded, the witness short of the replay, and attribution
+    # counted again over the same window. A desk judge reads arm_void as VOID, never as a result;
+    # arm_unlisted (a reason on no 12.1 entry) as an error, for the gen-inhibit reviewer.
+    wv = WC.window_void(res)
+    res["attribution"] = None
+    if not wv:
+        try:
+            res["attribution"] = AV.attribution(d, a, wire, res["device_times"], res["replayed_wire_times"])
+        except ValueError as e:
+            wv = ["the arm cannot be placed on the witness: %s" % e]
+    res["arm_void"], res["arm_unlisted"] = AV.reasons(a, wv + [AV.attribution_reason(res["attribution"])],
+                                                      recounted=True)
+    if not keep_frames:
+        for k in ("vcm_times", "device_times", "replayed_wire_times"):
+            res.pop(k, None)
     res["current_classifier"] = {k: a.get(k) for k in ("late_at_wire", "double_answers",
                                                        "misattributed_vcm",
                                                        "missing_command_in_front",

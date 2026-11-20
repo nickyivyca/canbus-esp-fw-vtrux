@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Mutants of e4_device_calibration.py's attribution check (2026-10-29, gen-inhibit
-reviewer: the old trail-window count voids no arm, provenance decides);
-test_e4_stimulus_split.py must fail on each BY A CHECK. A crash is not a kill, and an
+reviewer: the old trail-window count voids no arm, provenance decides; spec 12.1,
+c5849685, 2026-11-19: no whole-arm count voids, attach_provenance voids on the count over
+the same window from the arm); test_e4_stimulus_split.py must fail on each BY A CHECK. A crash is not a kill, and an
 edit that does not apply is an error. The unmutated copy runs first as the control.
 
     py -3.14 -B gen-inhibit/tools/bench/test_e4_attribution_mutants.py
@@ -24,12 +25,23 @@ MUTANTS = [
     (None, None, None),
     ("the superseded count still voids, as before 2026-10-29",
      "    if mode != MODE_RESPOND:\n", "    if False:\n"),
-    ("a RESPOND probe disagreement voids nothing",
+    ("RESPOND's whole-arm count printed as the trail count",
      "    if mode != MODE_RESPOND:\n", "    if True:\n"),
     ("an agreeing count is read as a disagreement",
      "    if ours_on_wire == tx_ok:\n", "    if False:\n"),
-    ("run_arm drops the check's void reason",
-     "        if reason:\n            void_reasons.append(reason)\n", "        if reason:\n            pass\n"),
+    # spec 12.1 (c5849685): the whole-arm count voids nothing; the same-window count does
+    ("run_arm voids on the whole-arm count again, as before c5849685",
+     "        line, _none = attribution_check(mode, len(ours_counted), tx_ok, counted_as)\n        print(line)\n",
+     "        line, _none = attribution_check(mode, len(ours_counted), tx_ok, counted_as)\n        print(line)\n"
+     "        void_reasons.append(line)\n"),
+    ("attach_provenance drops the same-window reason",
+     "        if why:\n            arm.setdefault(\"void_reasons\", []).append(why)\n",
+     "        if False:\n            arm.setdefault(\"void_reasons\", []).append(why)\n"),
+    ("attach_provenance records the reason but leaves the arm unvoided",
+     "            arm[\"void\"] = True\n            print(\"  ---- ARM VOID:", "            print(\"  ---- ARM VOID:"),
+    ("attach_provenance voids on an agreement too",
+     "        why = AV.attribution_reason(att)\n",
+     "        why = AV.attribution_reason(att) or (att and \"x\")\n"),
 ]
 
 
