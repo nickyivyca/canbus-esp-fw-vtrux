@@ -67,22 +67,18 @@ than trusting the log or the file. Follow the process-cleanup rules in
   under way: a build's suite (its cases written and committed, the boards
   identified and the first case running), a firmware build, or a long local
   test or mutant run. Write the task id, where its output goes and the next
-  steps in your working log first. The resume message names the task and
-  says to wait for its notification without polling, then carry on: for a
-  suite, judge the run and report per `VERIFICATION.md`.
+  steps in your working log first, then compact with `--compact-only`: the
+  task's notification wakes you. The compact message names the task and what
+  you do when it ends: for a suite, judge the run and report per
+  `VERIFICATION.md`.
 - **After you have reported a piece of work,** a build or any other item
-  the reviewer assigned. If you already hold your next work and it does not
-  need the reviewer's answer to this report, compact now and start it: the
-  resume message names that work and where it is written. Otherwise wait for
-  the answer (the reviewer always sends one). If it names
-  your next work, compact before you start on it: the resume message names
-  that work and the reviewer message it is in, and says to start on it. If
-  it says to wait, for a build message or for another session, the resume
-  message names what you are waiting for and where that is written, and
-  says to wait for it. If you are only waiting, for the next batch or the
-  reviewer's reply, and that is written in your working log, you may use
-  `--compact-only` instead. When in doubt, resume (the skill's "Resume or
-  compact-only").
+  the reviewer assigned, if `<python> .claude/tools/check_context.py --mark
+  250000` says the context is above the mark. Below it, carry on without
+  compacting. If you already hold your next work and it does not need the
+  reviewer's answer, compact and resume with it: the resume message names
+  that work and where it is written. Otherwise compact with
+  `--compact-only`: the reviewer's answer wakes you (it always sends one),
+  and the compact message names the report it answers and your working log.
 
 At either point you may run `/self-compact`. Not while you are driving
 hardware steps by hand, not while you hold a bench lock you took by hand,
@@ -97,11 +93,10 @@ When the idle-compaction hook asks (AGENTS.md, "Compacting your own
 context"), that is a compaction point too, whatever state you are in: an
 hour idle means no work is in progress. Before it, write in your working log
 what is uncommitted, any question to the reviewer still open, and any run or
-bench lock you hold, with its task id. The resume message names what you
-were waiting for. If you are only waiting, for the next batch or the
-reviewer's reply, and that is written in your working log, you may use
-`--compact-only` instead. When in doubt, resume (the skill's "Resume or
-compact-only"). The compaction does not release the bench lock. At any
+bench lock you hold, with its task id. The compaction is `--compact-only`
+(the skill's "Resume or compact-only"); the compact message names what you
+were waiting for and where it is written. The compaction does not release
+the bench lock. At any
 other time, only when the user asks.
 
 **Starting up:** check that you are in your worktree, on a

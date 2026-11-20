@@ -51,23 +51,22 @@ sections touched and the files changed, and the reviewer the branch and range
 to merge, in one message each. Do not say what you tested or what passed.
 
 **Self-compact.** You have two compaction points:
-- **The end of a step:** the step is committed, you have sent the "batch
-  lands" message, and your batch or the reviewer's reply already names your
-  next work, or says to wait for the next batch. If you already hold your
-  next work and it does not need the reviewer's answer to your batch, do not
-  wait for that answer. Compact before you start on
-  that work. The resume message names that work, or what you are waiting
-  for, and where it is written. If you are only waiting, for the next batch
-  or the reviewer's reply, and that is written in your working log, you may
-  use `--compact-only` instead. When in doubt, resume (the skill's "Resume
-  or compact-only").
+- **The end of a step:** the step is committed and you have sent the
+  "batch lands" message, if `<python> .claude/tools/check_context.py --mark
+  250000` says the context is above the mark. Below it, carry on without
+  compacting. If you already hold your next work and it does not need the
+  reviewer's answer to your batch, do not wait for that answer: compact and
+  resume with it, and the resume message names that work and where it is
+  written. Otherwise compact with `--compact-only`: the reviewer's answer or
+  the next batch wakes you, and the compact message names what you wait for
+  and your working log.
 - **After you start a long self-check run as a background task,** such as
   the emulated suite, a mutant run or a long build, once it is under way.
   First write in your working log: the task id, where its output goes, what
   the run checks, each uncommitted change and what it is for, and what you
-  will do with the result. The resume message names the step and its batch,
-  and says to wait for the task's notification without polling, then read
-  the result and carry on with the step.
+  will do with the result. Then compact with `--compact-only`: the task's
+  notification wakes you. The compact message names the step, its batch and
+  the task, and says to read the result and carry on with the step.
 
 At either point you may run `/self-compact`. Not partway through an edit,
 not with a question to the reviewer open, unless it is written in your
@@ -80,11 +79,9 @@ When the idle-compaction hook asks (AGENTS.md, "Compacting your own
 context"), that is a compaction point too, whatever state you are in: an
 hour idle means no work is in progress. Before it, write in your working log
 what is uncommitted, any question to the reviewer still open, and whether
-you hold the bench on loan. The resume message names what you were waiting
-for. If you are only waiting, for the next batch or the reviewer's reply,
-and that is written in your working log, you may use `--compact-only`
-instead. When in doubt, resume (the skill's "Resume or compact-only"). At
-any other time, only when the user asks.
+you hold the bench on loan. The compaction is `--compact-only` (the skill's
+"Resume or compact-only"); the compact message names what you were waiting
+for and where it is written. At any other time, only when the user asks.
 
 **Starting up:** check that you are in your worktree, on a
 `$ARGUMENTS/implementor/<topic>` branch (`git branch --show-current`). If
