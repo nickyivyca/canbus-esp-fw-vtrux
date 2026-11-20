@@ -253,10 +253,15 @@ def check_channel(channel):
 
 
 def open_bus(channel=ROLE, receive_own_messages=True, root=None, can_mod=None,
-             platform=None):
+             platform=None, error_frames=True):
     """python-can's socketcan Bus on role kvaser's netdev (netdev()), after
     its link reads up. Echoes are kept by default (EchoWatch counts them as
-    "sent")."""
+    "sent"). Error frames come in by default, as python-can opens; with
+    error_frames=False the socket takes none (python-can's
+    ignore_rx_error_frames), for a sender that reads nothing but its echoes:
+    with nothing acknowledging, the error frames come at thousands a second
+    and fill the socket's receive queue, and an echo that arrives on a full
+    queue is lost (2026-11-20, the hand take for the reviewer's ruling (2))."""
     if not linux(platform):
         raise LinkError("the Kvaser is opened on Linux only (role %s): the bench host is "
                         "madhouse-debian from port step 3" % ROLE)
@@ -266,7 +271,8 @@ def open_bus(channel=ROLE, receive_own_messages=True, root=None, can_mod=None,
     if can_mod is None:
         import can as can_mod
     return can_mod.Bus(interface="socketcan", channel=dev,
-                       receive_own_messages=receive_own_messages)
+                       receive_own_messages=receive_own_messages,
+                       ignore_rx_error_frames=not error_frames)
 
 
 # ---- the stall rule -----------------------------------------------------------
