@@ -27,6 +27,7 @@ Run:  python charge-interposer/sims_test.py
 
 import logging
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -793,6 +794,66 @@ def chg_read_problems(chg_every=None, drain=None):
     return out
 
 
+SKIP_LINE = "busmod.is_error_frame(msg)"
+
+
+def error_skip_problems(is_err=None, srcs=None):
+    """The sims skip error frames (the charge-interposer reviewer's PCAN item
+    2, 2026-11-20: a PCAN opened with bus_states="report" hands up bus
+    states and overruns as error frames). bus.is_error_frame tells them;
+    interposer_sim's drain_ports hands neither port's error frames on (run
+    here); vehicle_sim's and charger_sim's CAN read loops skip them before
+    anything reads the frame's id (their source, read here: the loops are
+    inside main). `is_err`: a wrong is_error_frame (set as
+    bus.is_error_frame while drain_ports runs); `srcs`: {file: text}, wrong
+    sources; both for the can-fail."""
+    import can
+    import bus as busmod
+    import interposer_sim as IS
+    out = []
+    err = can.Message(arbitration_id=0x004, is_error_frame=True, data=bytes(8))
+    fr = can.Message(arbitration_id=0x7F4, data=bytes(8), is_extended_id=False)
+    for m, want in ((err, True), (fr, False), (None, False), (7, False)):
+        if busmod.is_error_frame(m) is not want:
+            out.append("bus.is_error_frame(%r) is not %r" % (m, want))
+
+    class Port(object):
+        def __init__(self, q):
+            self.q = list(q)
+
+        def recv(self, timeout=None):
+            return self.q.pop(0) if self.q else None
+    veh, chg, got_v, got_c = Port([fr, err, fr]), Port([err, fr]), [], []
+    real = busmod.is_error_frame
+    if is_err is not None:
+        busmod.is_error_frame = is_err
+    try:
+        n_v, n_c, _hit = IS.drain_ports(veh, chg, got_v.append, got_c.append, [0])
+    finally:
+        busmod.is_error_frame = real
+    if got_v != [fr, fr] or got_c != [fr]:
+        out.append("drain_ports handed on %d vehicle and %d charger frame(s), %d error "
+                   "frame(s) among them (want 2 and 1, none)"
+                   % (len(got_v), len(got_c), sum(m is err for m in got_v + got_c)))
+    if (n_v, n_c) != (3, 2):
+        out.append("drain_ports counted %d and %d reads, not 3 and 2" % (n_v, n_c))
+    for name, start, end in (("vehicle_sim.py", "msg = b.recv(timeout=0.0)", "msg.arbitration_id"),
+                             ("charger_sim.py", "msg = b.recv(timeout=0.0)", "msg.arbitration_id")):
+        src = (srcs or {}).get(name)
+        if src is None:
+            with open(os.path.join(HERE, name), encoding="utf-8") as f:
+                src = f.read()
+        if src.count(start) != 1:
+            out.append("%s: %d CAN read loops found, not 1" % (name, src.count(start)))
+            continue
+        body = src[src.index(start):]
+        body = body[:body.find(end)]
+        if not re.search(r"if %s:\s*(#[^\n]*)?\n\s*continue\b" % re.escape(SKIP_LINE), body):
+            out.append("%s: its CAN read loop does not skip an error frame before reading "
+                       "its id" % name)
+    return out
+
+
 def vehicle_drain_problems(drain_for=None):
     """vehicle_sim's drain choice (the charge-interposer reviewer,
     2026-11-19): open_bus(drain=True) for --mode replay on gs_usb only, and
@@ -1078,6 +1139,20 @@ def main():
           "can fail: chg read only once per pass on gs_usb (512 unread) is caught")
     check(bool(chg_read_problems(chg_every=256)),
           "can fail: chg read every 256 frames on gs_usb is caught")
+    for p in error_skip_problems():
+        check(False, "error frames: " + p)
+    check(not error_skip_problems(), "the sims skip error frames: interposer_sim's drain "
+          "hands none on, vehicle_sim's and charger_sim's CAN loops skip them")
+    check(bool(error_skip_problems(is_err=lambda m: False)),
+          "can fail: drain_ports handing error frames on is caught")
+
+    def unskipped(name):
+        with open(os.path.join(HERE, name), encoding="utf-8") as f:
+            src = f.read()
+        return {name: re.sub(r"if %s:[^\n]*\n\s*continue\n" % re.escape(SKIP_LINE), "", src)}
+    for name in ("vehicle_sim.py", "charger_sim.py"):
+        check(bool(error_skip_problems(srcs=unskipped(name))),
+              "can fail: %s without its skip is caught" % name)
     for p in vehicle_drain_problems():
         check(False, "vehicle_sim: " + p)
     check(not vehicle_drain_problems(), "vehicle_sim opens its bus with drain=True for "

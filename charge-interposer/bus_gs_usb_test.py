@@ -26,8 +26,9 @@ each half can fail:
   - drain=True (2026-11-19, for a caller that only sends) asks the layer
     for its drain on canchg, with no echo filter; on any other transport,
     or with receive_own_messages, it is refused before anything opens;
-  - pcan is role pcanfd through adapter_roles.pcanfd (the layer's default
-    mode, pcan), with auto_reset and a reset() at startup;
+  - pcan is role pcanfd through adapter_roles.pcanfd_report (the layer's
+    default mode, pcan, with bus_states="report": the reviewer's PCAN item
+    2, 2026-11-20), with auto_reset and a reset() at startup;
   - the Kvaser (transport kvaser or socketcan; 2026-11-13, the
     charge-interposer reviewer's A, D and D6) is role kvaser: bus.open_kvaser
     brings its link up (kvaser_link.set_link) BEFORE it opens the role with
@@ -159,10 +160,11 @@ def _with_layer(fn):
     return call
 
 
-# bus.open_gs_usb / open_pcan's _roles: adapter_roles' own canchg and
-# pcanfd, over FakeBR
+# bus.open_gs_usb / open_pcan's _roles: adapter_roles' own canchg, pcanfd
+# and pcanfd_report, over FakeBR
 ROLES = types.SimpleNamespace(canchg=_with_layer(adapter_roles.canchg),
-                              pcanfd=_with_layer(adapter_roles.pcanfd))
+                              pcanfd=_with_layer(adapter_roles.pcanfd),
+                              pcanfd_report=_with_layer(adapter_roles.pcanfd_report))
 
 
 def args(transport, channel, bitrate=500000):
@@ -320,13 +322,14 @@ def _run(real):
         check(b is None and err and err.startswith("ValueError") and FakeBR.calls == [],
               "drain=True on %s %s: refused before anything opens -> %s" % (t, kw, err))
 
-    print("pcan: role pcanfd, auto_reset, reset() at startup")
+    print("pcan: role pcanfd, bus states reported, auto_reset, reset() at startup")
     b, err = _open("pcan", "pcanfd")
     check(err is None and FakeBR.calls == [("pcanfd", 500000, None, True,
-                                            {"receive_own_messages": False,
+                                            {"bus_states": "report",
+                                             "receive_own_messages": False,
                                              "auto_reset": True})],
-          "opened by role pcanfd, pcan mode, auto_reset, no channel or device id from the "
-          "harness -> %s %s" % (err, FakeBR.calls))
+          "opened by role pcanfd, pcan mode, bus_states=report, auto_reset, no channel or "
+          "device id from the harness -> %s %s" % (err, FakeBR.calls))
     check(err is None and b.resets == 1, "... and reset() once at startup -> %s"
           % (b and b.resets))
 
@@ -421,12 +424,14 @@ MUTANTS = [
      "    from canbench.live.receiver import detect_all_can_interfaces\n"
      "    return detect_all_can_interfaces(bitrate, brands={transport})[0]\n"),
     ("the PCAN by its channel number",
-     "    bus = roles.pcanfd(bitrate, receive_own_messages=receive_own_messages,\n"
-     "                       auto_reset=True)\n",
-     "    bus = roles.pcanfd(bitrate, receive_own_messages=receive_own_messages,\n"
-     "                       auto_reset=True, channel=\"PCAN_USBBUS1\")\n"),
+     "    bus = roles.pcanfd_report(bitrate, receive_own_messages=receive_own_messages,\n"
+     "                              auto_reset=True)\n",
+     "    bus = roles.pcanfd_report(bitrate, receive_own_messages=receive_own_messages,\n"
+     "                              auto_reset=True, channel=\"PCAN_USBBUS1\")\n"),
     ("a PCAN opens without auto_reset",
-     "                       auto_reset=True)\n", "                       )\n"),
+     "                              auto_reset=True)\n", "                              )\n"),
+    ("the PCAN on the default bus states (raised)",
+     "    bus = roles.pcanfd_report(bitrate,", "    bus = roles.pcanfd(bitrate,"),
     ("no reset() at startup", "        bus.reset()\n", "        pass\n"),
     ("gs_usb without the echo filter",
      "    return drop_echoes(roles.canchg(bitrate), receive_own_messages)\n",

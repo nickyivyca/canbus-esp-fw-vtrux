@@ -32,7 +32,10 @@ A PCAN READER THAT DIES (the charge-interposer reviewer, 2026-11-19): the
 PCAN's receive thread runs under reader_death's guard, and a phase whose
 reader died is VOID with the error, its rows not judged; no later phase
 runs and no RESULT line follows (exit 1 with a VOID line: VOID). It was a
-TEST FAULT, which the suite counted FAIL.
+TEST FAULT, which the suite counted FAIL. Since 2026-11-20 (the reviewer's
+PCAN item 2) the PCAN opens with bus states reported: its state rows are
+not error rows (shown as "PCAN state row(s)", not judged), and a row
+reporting frames lost VOIDs the phase the same way.
 
 Phases:
   ACK     the Kvaser's link UP: CYCLES cycles, the measurement
@@ -320,6 +323,32 @@ def reader_death_checks(link):
                     and not any(x.startswith("VOID") for x in logged),
                     "the same rows from a reader that lived are counted, both "
                     "phases judged: %s" % v))
+        # the reviewer's PCAN item 2 (2026-11-20): the PCAN opened with bus
+        # states reported. An overrun row mid-phase VOIDs it as lost frames,
+        # NOACK not run; a state row is not an error row, only shown
+        R = reader_death.report_rows()
+        U.open_pcan = lambda acks: reader_death.report_bus(
+            frames() + [R["passive"], R["overrun"]], delay=0.04)
+        link.calls = []
+        logged = []
+        v = run_phases(Port(), Inno(), logged.append, 1, link)
+        voids = [x for x in logged if x.startswith("VOID")]
+        out.append((v is None and len(voids) == 1 and "the pcan reader lost frames" in voids[0]
+                    and link.calls == [True]
+                    and not any(x.startswith("RESULT") for x in logged),
+                    "CAN-FAIL: an overrun row mid-phase: the phase VOID as lost "
+                    "frames, NOACK not run: %s" % voids))
+        U.open_pcan = lambda acks: reader_death.report_bus(
+            frames() + [R["passive"]], delay=0.04)
+        link.calls = []
+        logged = []
+        v = run_phases(Port(), Inno(), logged.append, 1, link)
+        ack = [x for x in logged if x.startswith("phase ACK:") and "seen complete" in x]
+        out.append((v is not None and "void" not in v.values() and len(ack) == 1
+                    and "3 seen complete" in ack[0] and "1 PCAN state row(s)" in ack[0]
+                    and not any(x.startswith("VOID") for x in logged),
+                    "a state row is shown, not counted as an error row, and the "
+                    "phases judged: %s" % ack))
     finally:
         U.open_pcan, g["SETTLE_S"], g["ON_S"], g["CYCLE_S"] = saved
     return out
@@ -400,9 +429,14 @@ def phase(name, hp, gs, acked, cycles, log):
     iv = intervals(smp, err_hosts)
     v, lines = judge(iv, acked)
     bridged = sum(1 for r in rows if r[2] == H.FILLER and not r[3])
+    # the PCAN opens with bus states reported (bench_usb_host.open_pcan, the
+    # reviewer's PCAN item 2, 2026-11-20): its states come up as state rows,
+    # kept out of the error rows and counted in death.states, where python-can
+    # logged a warning; both are shown, neither is judged
     log("phase %s: %d cycles, %d charger frames sent, %d seen complete on the "
-        "vehicle wire by the PCAN, %d PCAN bus-state warning(s) -> %s"
-        % (name, cycles, n, bridged, warn[0], v.upper()))
+        "vehicle wire by the PCAN, %d PCAN bus-state warning(s), %d PCAN state "
+        "row(s) -> %s"
+        % (name, cycles, n, bridged, warn[0], pc.death.states, v.upper()))
     for ln in lines:
         log("  " + ln)
     return v
@@ -423,7 +457,7 @@ def run_phases(hp, gs, log, cycles, link=kvaser_link):
             return None
         v[name] = phase(name, hp, gs, acked, n, log)
         if v[name] == "void":
-            log("phase %s not judged: its PCAN reader died" % name)
+            log("phase %s not judged: its PCAN reader died or lost frames" % name)
             return None
     return v
 
@@ -473,8 +507,12 @@ MUTANTS = [
     ("reader death: no VOID line", "        log(pc.death.void_line())\n", ""),
     ("reader death: the phases go on after it",
      "        if v[name] == \"void\":\n"
-     "            log(\"phase %s not judged: its PCAN reader died\" % name)\n"
+     "            log(\"phase %s not judged: its PCAN reader died or lost frames\" % name)\n"
      "            return None\n", ""),
+    # 2026-11-20, the reviewer's PCAN item 2
+    ("PCAN item 2: the state rows not shown",
+     "        % (name, cycles, n, bridged, warn[0], pc.death.states, v.upper()))",
+     "        % (name, cycles, n, bridged, warn[0], 0, v.upper()))"),
 ]
 
 

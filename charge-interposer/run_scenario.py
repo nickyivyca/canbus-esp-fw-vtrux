@@ -2368,7 +2368,7 @@ def witness_outcome(witness, score):
     if witness is None:
         return None, None
     if witness.error:
-        return None, ("bench premise, the PCAN witness: its reader died (%s), "
+        return None, ("bench premise, the PCAN witness: its reader died or lost frames (%s), "
                       "so spec 8.2 and every check read from its rows are not "
                       "judged" % witness.error)
     return score(), None

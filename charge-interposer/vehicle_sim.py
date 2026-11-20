@@ -863,6 +863,8 @@ def run_model(args, b, phys):
             if msg is None:
                 break
             n_b += 1
+            if busmod.is_error_frame(msg):      # the sims skip error frames (PCAN item 2)
+                continue
             if msg.is_extended_id and _dc.is_charger_frame(
                     msg.arbitration_id):
                 VPORT.charger(t)

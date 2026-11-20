@@ -342,6 +342,13 @@ def _synth(lost_at_normal=(), lost_at_listen=(), lost_bg=(), first_not=()):
     return veh, chg, serial, starts, stops, phases, dumps
 
 
+def sender_void(sent):
+    """The PCAN sender's summary (bench_hold12.proc_identifier) -> the VOID
+    line of its drain when that died or read a row reporting frames lost
+    ("reader"; the reviewer's PCAN item 2, 2026-11-20), else None."""
+    return sent.get("reader") or None
+
+
 def self_test():
     fails = []
 
@@ -430,6 +437,16 @@ def self_test():
                               (1.1, 2.1, 0x001, False, 8, "00" * 8, True, True)]})
     check(rows == [(1.0, 2.0, H.ID, True, 3, "000001")],
           "veh_rows: a reader process's rows as analyse() reads them, error frames out")
+    # the PCAN item 2: the sender's drain VOID line reaches the verdict
+    import inspect
+    check(sender_void({"sent": 5, "reader": "VOID: x"}) == "VOID: x"
+          and sender_void({"sent": 5, "reader": None}) is None
+          and sender_void({"sent": 5}) is None,
+          "sender_void: the PCAN sender's drain VOID line, or None")
+    src = inspect.getsource(run_bench)
+    check("    sv = sender_void(sent)\n    if sv:\n        rc, verdict = 3, verdict + [sv]\n"
+          in src,
+          "the run: a sender drain VOID line makes the run VOID (rc 3)")
     print("\nbench_switch_loss self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -598,6 +615,9 @@ def run_bench(a):
         # the witness may have missed frames: a frame it missed would read
         # as a frame the board lost
         rc, verdict = 3, verdict + [wv]
+    sv = sender_void(sent)
+    if sv:
+        rc, verdict = 3, verdict + [sv]
     for s in verdict:
         log(s)
     out.close()
@@ -654,6 +674,11 @@ def reanalyse(base):
 
 # --can-fail: each edit must make --self-test fail (script_can_fail.py)
 MUTANTS = [
+    ("PCAN item 2: the sender's drain VOID not taken",
+     "    return sent.get(\"reader\") or None", "    return None"),
+    ("PCAN item 2: the run ignores the sender's VOID",
+     "    if sv:\n        rc, verdict = 3, verdict + [sv]",
+     "    if False:\n        rc, verdict = 3, verdict + [sv]"),
     ("in-window loss not judged",
      "        if n_lo:\n", "        if False:\n"),
     ("loss away from the switches not judged",

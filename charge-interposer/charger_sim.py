@@ -708,6 +708,8 @@ def main():
                 msg = b.recv(timeout=0.0)
                 if msg is None:
                     break
+                if busmod.is_error_frame(msg):  # the sims skip error frames (PCAN item 2)
+                    continue
                 if msg.arbitration_id == P.CMD_ID and len(msg.data) >= 8:
                     if sp_fh is not None:
                         sp_record(sp_fh, bytes(msg.data), time.perf_counter())

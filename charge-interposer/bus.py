@@ -17,7 +17,8 @@ Two transport families:
             channel number or the first adapter detected: a real transport
             with no role, or a role that is not its brand's (ROLE_OF), is
             refused, and ixxat, which has no bench role, is refused. pcan is
-            pcanfd (adapter_roles.pcanfd). gs_usb is canchg in libusb mode
+            pcanfd with bus_states="report" (adapter_roles.pcanfd_report:
+            bus states as error frames, never raised). gs_usb is canchg in libusb mode
             (adapter_roles.canchg), its TX echoes drained and dropped
             (open_gs_usb), or, for a caller that only sends (open_bus
             drain=True), read by the layer's drain thread. kvaser and socketcan are the Kvaser on the
@@ -253,8 +254,12 @@ def open_bus(args, *, prefix="", default_channel=VEHICLE_SEGMENT,
 
 def open_pcan(channel, bitrate, *, receive_own_messages=False, logger=None,
               _roles=None):
-    """The vehicle segment's PCAN-USB FD, role pcanfd (adapter_roles.pcanfd:
-    python-can pcan by the device id canctl reads, never PCAN_USBBUSn).
+    """The vehicle segment's PCAN-USB FD, role pcanfd, with
+    bus_states="report" (adapter_roles.pcanfd_report, the charge-interposer
+    reviewer's PCAN item 2, 2026-11-20: canbench's CanbenchPcanBus by the
+    device id canctl reads, never PCAN_USBBUSn). Its bus states and overruns
+    come up from recv as error frames, never raised, so a simulator's loop
+    is not ended by one; the simulators skip error frames.
     _roles exists only for bus_gs_usb_test (a stand-in for adapter_roles)."""
     roles = _roles
     if roles is None:
@@ -265,11 +270,12 @@ def open_pcan(channel, bitrate, *, receive_own_messages=False, logger=None,
     # see canbench/live/pcan-busoff-recovery.md. On Linux PCAN-Basic 9.3.3,
     # auto_reset alone does not clear a bus-off: the reset only flushes the
     # queues unless PCAN_HARD_RESET_STATUS is on, and the write path's
-    # auto-reset never fires (that note at can-tools 521eb24). Recovery
-    # there needs canbench's own PCAN class (backends.install()), which this
-    # harness does not use.
-    bus = roles.pcanfd(bitrate, receive_own_messages=receive_own_messages,
-                       auto_reset=True)
+    # auto-reset never fires (that note at can-tools 521eb24).
+    # CanbenchPcanBus turns that parameter on and resets a bus-off channel
+    # itself (canbench_busoff_reset, its default), reporting the reset as a
+    # CAN_ERR_RESTARTED error frame.
+    bus = roles.pcanfd_report(bitrate, receive_own_messages=receive_own_messages,
+                              auto_reset=True)
     try:
         bus.reset()
     except Exception as e:
@@ -306,6 +312,15 @@ def open_kvaser(channel, bitrate, *, receive_own_messages=False, logger=None,
         logger.info("Opening the Kvaser: %s", line)
     b = link.open_bus(channel=ch, receive_own_messages=True, can_mod=_can_mod)
     return link.WatchedBus(b)
+
+
+def is_error_frame(msg):
+    """Whether msg is an error frame. The simulators skip error frames: a
+    PCAN opened with bus_states="report" (open_pcan) hands its bus states
+    and overruns up as error frames, and a sim must neither answer nor
+    forward one as traffic (the charge-interposer reviewer's PCAN item 2,
+    2026-11-20)."""
+    return bool(getattr(msg, "is_error_frame", False))
 
 
 def drop_echoes(bus, keep=False):

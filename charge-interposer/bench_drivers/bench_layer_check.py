@@ -17,7 +17,12 @@ one process under the session's hand take, and judges what it reads back:
                in sysfs (IFF_UP), up at 500000
   opens        the Kvaser (kvaser_link.open_bus), the PCAN (pcanfd, listen-
                only) and canchg (libusb) each opened through the harness's
-               openers and read for 1 s (counted, not judged), then shut
+               openers and read for 1 s (counted, not judged), then shut;
+               the PCAN twice (the reviewer's PCAN item 2, 2026-11-20): with
+               bus states raised (pcanfd: python-can's PcanBus, bench_vport's
+               witness) and reported (pcanfd_report: can-tools'
+               CanbenchPcanBus, every other PCAN reader), each the class its
+               option gives
   canchg mode  canchg_mode.start (to_libusb, the run-long hold), canchg's
                open changing nothing, canchg_mode.end (to_socketcan: on
                gs_usb with a netdev, link down), then start again when it
@@ -126,6 +131,14 @@ def _listen(bus):
     return n
 
 
+def _listen_pcan(bus):
+    """_listen for a PCAN open, with the class the open returned: python-
+    can's PcanBus by default, can-tools' CanbenchPcanBus with
+    bus_states="report" (the reviewer's PCAN item 2, 2026-11-20)."""
+    cls = type(bus).__name__
+    return {"frames": _listen(bus), "cls": cls}
+
+
 def observe(out):
     import can
     import shared_pin
@@ -153,8 +166,10 @@ def observe(out):
     step("kv_down", lambda: kvaser_link.set_link(False))
     step("kv_up", lambda: kvaser_link.set_link(True))
     step("kv_open", lambda: _listen(kvaser_link.open_bus(receive_own_messages=False)))
-    step("pcan_open", lambda: _listen(adapter_roles.pcanfd(BITRATE,
-                                                           state=can.BusState.PASSIVE)))
+    step("pcan_open", lambda: _listen_pcan(adapter_roles.pcanfd(
+        BITRATE, state=can.BusState.PASSIVE)))
+    step("pcan_open_report", lambda: _listen_pcan(adapter_roles.pcanfd_report(
+        BITRATE, state=can.BusState.PASSIVE)))
     step("chg_libusb", lambda: canchg_mode.start(out))
     step("chg_open", lambda: _listen(adapter_roles.canchg(BITRATE)))
     step("recover", lambda: list(kvaser_link.recover(environ={})))
@@ -205,13 +220,21 @@ def judge(obs):
         "kvaser link: set_link(True) through the layer, up at %d in sysfs and ip (%s; %s)"
         % (BITRATE, (st.get("kv_up") or {}).get("value") or (st.get("kv_up") or {}).get("error"),
            ku))
-    for name, what in (("kv_open", "the Kvaser (kvaser_link.open_bus)"),
-                       ("pcan_open", "the PCAN (pcanfd, listen-only)"),
-                       ("chg_open", "canchg (libusb)")):
+    for name, what, cls in (("kv_open", "the Kvaser (kvaser_link.open_bus)", None),
+                            ("pcan_open", "the PCAN (pcanfd, listen-only, bus states "
+                             "raised: python-can's PcanBus)", "PcanBus"),
+                            ("pcan_open_report", "the PCAN (pcanfd_report, listen-only, "
+                             "bus states reported: can-tools' CanbenchPcanBus)",
+                             "Canbench" "PcanBus"),
+                            ("chg_open", "canchg (libusb)", None)):
         s = st.get(name) or {}
-        say(ok_step(name), "opens: %s opened, read %s s and shut (%s)"
-            % (what, LISTEN_S, ("%s frame(s)" % s.get("value")) if s.get("ok")
-               else s.get("error")))
+        v = s.get("value")
+        n = v.get("frames") if isinstance(v, dict) else v
+        got = v.get("cls") if isinstance(v, dict) else None
+        say(ok_step(name) and (cls is None or got == cls),
+            "opens: %s opened, read %s s and shut (%s)"
+            % (what, LISTEN_S, ("%s frame(s)%s" % (n, ", class %s" % got if cls else ""))
+               if s.get("ok") else s.get("error")))
     cl = state("chg_libusb", "canchg")
     say(ok_step("chg_libusb") and cl.get("mode") == "libusb" and cl.get("driver") != "gs_usb",
         "canchg mode: canchg_mode.start (to_libusb) leaves it in libusb, off gs_usb (%s)" % cl)
@@ -258,7 +281,8 @@ def _good():
         "found": roles(),
         "steps": [s("kv_down", "kvaser link down", link="down", sysfs="down"),
                   s("kv_up", "kvaser link up"),
-                  s("kv_open", 12), s("pcan_open", 30),
+                  s("kv_open", 12), s("pcan_open", {"frames": 30, "cls": "PcanBus"}),
+                  s("pcan_open_report", {"frames": 31, "cls": "Canbench" "PcanBus"}),
                   s("chg_libusb", {"ok": True, "detail": "canchg: libusb mode"}),
                   s("chg_open", 0),
                   s("recover", [True, "kvaser recovered"]),
@@ -277,7 +301,7 @@ def self_test():
             fails.append(what)
 
     lines, ok = judge(_good())
-    check(ok and len(lines) == 13, "the good observations PASS, 13 lines: %s"
+    check(ok and len(lines) == 14, "the good observations PASS, 14 lines: %s"
           % [ln for ln in lines if not ln.startswith("PASS")])
 
     def bad(what, edit):
@@ -311,8 +335,15 @@ def self_test():
     bad("link_up failed", setp("kv_up", ok=False, error="LinkError: x"))
     bad("link up at another bitrate", sets("kv_up", "kvaser", bitrate=250000))
     bad("link up but sysfs down", sets("kv_up", "kvaser", sysfs="down"))
-    for n in ("kv_open", "pcan_open", "chg_open"):
+    for n in ("kv_open", "pcan_open", "pcan_open_report", "chg_open"):
         bad("%s raised" % n, setp(n, ok=False, error="NotHeld: x"))
+    # the reviewer's PCAN item 2: each PCAN open is the class its option gives
+    bad("the bus-states-reported open is python-can's PcanBus",
+        setp("pcan_open_report", value={"frames": 31, "cls": "PcanBus"}))
+    bad("the default open is CanbenchPcanBus",
+        setp("pcan_open", value={"frames": 30, "cls": "Canbench" "PcanBus"}))
+    bad("the bus-states-reported open missing", lambda o: o.update(
+        steps=[x for x in o["steps"] if x["name"] != "pcan_open_report"]))
     bad("to_libusb not ok", setp("chg_libusb", value={"ok": False, "detail": "x"}))
     bad("to_libusb left it on gs_usb", sets("chg_libusb", "canchg", driver="gs_usb"))
     bad("canchg's open moved it", sets("chg_open", "canchg", mode="socketcan"))
@@ -386,7 +417,11 @@ MUTANTS = [
     ("link up's bitrate not compared",
      "    say(ok_step(\"kv_up\") and ku.get(\"sysfs\") == \"up\" and ku.get(\"bitrate\") == BITRATE,",
      "    say(ok_step(\"kv_up\") and ku.get(\"sysfs\") == \"up\","),
-    ("a failed open passes", "        say(ok_step(name), \"opens:", "        say(True, \"opens:"),
+    ("a failed open passes", "        say(ok_step(name) and (cls is None or got == cls),",
+     "        say(True,"),
+    ("PCAN item 2: the open's class not checked",
+     "        say(ok_step(name) and (cls is None or got == cls),",
+     "        say(ok_step(name),"),
     ("a step's own not-ok ignored",
      "        return not (isinstance(v, dict) and v.get(\"ok\") is False) and not (",
      "        return True or not (isinstance(v, dict) and v.get(\"ok\") is False) and not ("),

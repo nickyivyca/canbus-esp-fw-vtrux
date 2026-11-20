@@ -185,16 +185,28 @@ def test_witness_premise():
                          diag82=(False, "8.2: the witness failed: %s" % err))
         assert R.verdict_of(res)[0] == "FAIL"
         # DiagWitness on a stand-in bus that raises: the error with its type
-        saved = adapter_roles.pcanfd
+        saved = adapter_roles.pcanfd_report
         try:
-            adapter_roles.pcanfd = lambda *a, **k: reader_death.RaisingBus(
+            adapter_roles.pcanfd_report = lambda *a, **k: reader_death.RaisingBus(
                 [], RuntimeError("A PCAN status 0x40000 BUSPASSIVE"))
             w = diag_cadence.DiagWitness(str(d / "w.txt")).start()
             w._t.join(2.0)
             w.stop()
+            # the reviewer's PCAN item 2 (2026-11-20): the PCAN opened with bus
+            # states reported; a state row is not logged and an overrun row
+            # ends the reader with LostFrames: NOT EXERCISED, never scored
+            Rw = reader_death.report_rows()
+            adapter_roles.pcanfd_report = lambda *a, **k: reader_death.report_bus(
+                [Rw["passive"], Rw["ack"], Rw["overrun"]], delay=0.05)
+            w2 = diag_cadence.DiagWitness(str(d / "w2.txt")).start()
+            w2._t.join(2.0)
+            w2.stop()
         finally:
-            adapter_roles.pcanfd = saved
+            adapter_roles.pcanfd_report = saved
         assert w.error == err, w.error
+        assert w2.error and w2.error.startswith("LostFrames:") and w2.n == 0, (w2.error, w2.n)
+        d82, void2 = R.witness_outcome(w2, score)
+        assert d82 is None and "LostFrames" in void2 and "lost frames" in void2, void2
 
 
 TESTS = [test_forced_order_premise, test_kvaser_premise, test_witness_premise]
@@ -244,6 +256,23 @@ def _outcome_scores_dead(witness, score):
     return (score() if witness is not None else d82), void
 
 
+def _blind_witness():
+    """DiagWitness that never sees frames lost (its lost_frames always False)."""
+    import types
+    import diag_cadence
+
+    class Blind(_ORIG_DW):
+        def start(self):
+            r = _ORIG_DW.start(self)
+            self.roles = types.SimpleNamespace(lost_frames=lambda m: False)
+            return r
+    return Blind
+
+
+import diag_cadence as _DC                                  # noqa: E402
+_ORIG_DW = _DC.DiagWitness
+
+
 MUTANTS = {
     "test_forced_order_premise": [
         ("_forced_order", lambda: _premise_always, "the premise always held"),
@@ -265,7 +294,9 @@ MUTANTS = {
         ("evaluate", lambda: (lambda *a, **k: _ORIG_EVAL(*a, **dict(k, witness_void=None))),
          "the witness premise dropped by evaluate"),
         ("verdict_of", lambda: _verdict_no_premises,
-         "a witness premise ignored by the verdict")],
+         "a witness premise ignored by the verdict"),
+        ("D:DiagWitness", _blind_witness,
+         "the diag witness blind to an overrun row (PCAN item 2)")],
 }
 
 
@@ -284,7 +315,10 @@ def main():
             continue
         for name, make, what in MUTANTS[t.__name__]:
             n += 1
-            setattr(R, name, make())
+            if name.startswith("D:"):
+                setattr(_DC, name[2:], make())         # a diag_cadence name
+            else:
+                setattr(R, name, make())
             try:
                 t()
                 bad += 1
@@ -299,6 +333,7 @@ def main():
                 R.kvaser_void = _ORIG_KV
                 R.witness_outcome = _ORIG_WO
                 R.evaluate = _ORIG_EVAL
+                _DC.DiagWitness = _ORIG_DW
     print("\n%d of %d %s" % (n - bad, n, "mutants caught" if can_fail else "passed"))
     return 1 if bad else 0
 

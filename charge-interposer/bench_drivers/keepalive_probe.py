@@ -26,6 +26,11 @@ adapter's reader runs under reader_death.guard, so a recv that raises
 then prints a VOID line per dead reader instead of the counts, and exits 3,
 which recorded_judge reads VOID.
 
+Since 2026-11-20 (the reviewer's PCAN item 2): the PCAN opens with
+bus_states="report" (adapter_roles.pcanfd_report), and each reader passes
+what it reads through reader_death.screen: a state row is not counted, and
+a row reporting frames lost stops that reader, VOID as above.
+
     python3.13 -B keepalive_probe.py --port /dev/...
     python3.13 -B keepalive_probe.py --self-test | --can-fail
 """
@@ -75,7 +80,9 @@ def run(a, link=kvaser_link, opener=None, out=print):
 
     def drain(bus, name):
         def step():
-            m = bus.recv(timeout=0.05)
+            # a state row is not counted; a row reporting frames lost stops
+            # the reader and VOIDs the record (the reviewer's PCAN item 2)
+            m = reader_death.screen(bus, bus.recv(timeout=0.05), deaths[name])
             if m is not None:
                 got.append((time.perf_counter(), name, m))
         # a raise ends the thread with the error kept (reader_death)
@@ -142,7 +149,7 @@ def open_all(port):
     ser = serial_open.open_quiet(port, 115200, 0.2)
     tx = bcw.open_gs_usb()
     kv = kvaser_link.open_bus(receive_own_messages=False)
-    pc = adapter_roles.pcanfd(500000, state=can.BusState.PASSIVE)
+    pc = adapter_roles.pcanfd_report(500000, state=can.BusState.PASSIVE)
     return ser, tx, kv, pc
 
 
@@ -251,6 +258,26 @@ def self_test():
             else:
                 check(rc == 0 and not voids and any(x.startswith("sent ") for x in outl),
                       "the same with the PCAN reader alive: rc 0, the counts printed")
+        # the PCAN item 2: bus states reported. A state row is not counted;
+        # an overrun row VOIDs the record as lost frames
+        R = reader_death.report_rows()
+        for lost in (True, False):
+            pcan = reader_death.report_bus(
+                [R["frame"], R["passive"]] + ([R["overrun"]] if lost else []), delay=0.03)
+            outl = []
+            rc = run(a, Link, lambda port, _p=pcan: (Ser(), Quiet([]), Quiet([]), _p),
+                     outl.append)
+            voids = [x for x in outl if x.startswith("VOID")]
+            if lost:
+                check(rc == 3 and len(voids) == 1 and "the pcan reader lost frames" in voids[0]
+                      and not any(x.startswith("sent ") for x in outl),
+                      "CAN-FAIL: an overrun row: rc 3, one VOID line saying frames were "
+                      "lost, no counts: rc %s %s" % (rc, voids))
+            else:
+                rows = [x for x in outl if x.strip().startswith("pcan ") and " x" in x]
+                check(rc == 0 and not voids and len(rows) == 1 and "7F4" in rows[0],
+                      "a state row is not counted: the PCAN's only count is its frame: %s"
+                      % rows)
     finally:
         TIMING = saved_timing
     print("\nkeepalive_probe self-test: %s" % ("all checks OK" if not fails
@@ -290,6 +317,10 @@ MUTANTS = [
      "    if dead:\n        # a reader", "    if False:\n        # a reader"),
     ("reader death: a dead reader exits 0",
      "        ser.close()\n        return 3", "        ser.close()\n        return 0"),
+    # 2026-11-20, the reviewer's PCAN item 2
+    ("PCAN item 2: the readers unscreened",
+     "            m = reader_death.screen(bus, bus.recv(timeout=0.05), deaths[name])",
+     "            m = bus.recv(timeout=0.05)"),
 ]
 
 
