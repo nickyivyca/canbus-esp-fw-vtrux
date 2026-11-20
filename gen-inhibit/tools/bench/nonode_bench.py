@@ -72,7 +72,9 @@ with its reason, changing no PASS/FAIL bound:
   stimulus     the WiCAN's driver did not show running within DRIVER_WAIT_S (5 s) of the arm
                (arm driver_running False), so the slice started with no node shown to ACK it.
   acked_slice, acked_back   fewer echoes than frames sent in that phase (or its drain failed):
-               frames went out with no node ACKing them.
+               frames went out with no node ACKing them. More echoes than frames sent, counted from
+               the first send, is VOID too, with the extra count and the drain's before_send frames
+               in the item (the gen-inhibit reviewer's answer to 878d06fc, 2026-11-20).
 Older records carry neither field and get neither item.
 
 JUDGED per arm (judge_arm, pure, tested by test_nonode_bench.py):
@@ -197,6 +199,16 @@ def device_051_by_provenance(seq):
     return [p[0] for p in pairs if p not in dups], len(dups)
 
 
+def before_send_text(bs):
+    """A drain's before_send (kvaser_bus.drain_stop) as written in an item: its counts, then its frames as
+    canmain_burst_check prints them ("<kind> 0x<id>[x] [<data hex>]"); "not recorded" for an older drain."""
+    if not isinstance(bs, dict):
+        return "not recorded"
+    frames = ", ".join("%s 0x%x%s [%s]" % (f.get("kind"), f.get("id") or 0, "x" if f.get("extended") else "",
+                                           f.get("data") or "") for f in bs.get("frames") or []) or "none"
+    return "%s echoes, %s rx, %s error frames (frames %s)" % (bs.get("echoes"), bs.get("rx"), bs.get("errors"), frames)
+
+
 def judge_arm(arm):
     """Verdicts for one arm record (see the module docstring). Times: host seconds
     (perf counter) except the witness's, which are its own microseconds."""
@@ -279,6 +291,13 @@ def judge_arm(arm):
             v["acked_" + phase] = ("VOID: %s echoes for %s frames sent in the %s%s: frames went out with no node "
                                    "ACKing them" % (e.get("echoes"), e.get("sent"), phase,
                                                     " (the echo drain failed: %s)" % e["error"] if e.get("error") else ""))
+        elif e["echoes"] > e["sent"]:
+            # counted from the first send, an echo more than the frames sent is one the count can't place, and it could
+            # stand in for an unACKed frame (the gen-inhibit reviewer's answer to 878d06fc, 2026-11-20)
+            v["acked_" + phase] = ("VOID: %d echoes for %d frames sent in the %s: %d more echoes than frames sent, so "
+                                   "an unACKed frame could be hidden; before the first send: %s"
+                                   % (e["echoes"], e["sent"], phase, e["echoes"] - e["sent"],
+                                      before_send_text(e.get("before_send"))))
     if "close_measure" in arm:          # condition 5 (2026-11-18); older records have none
         cm = arm["close_measure"]
         v["close"] = ("VOID: %s" % WC.pcan_void_verdict(cm["void"]) if cm.get("void") else

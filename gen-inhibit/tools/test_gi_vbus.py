@@ -92,7 +92,10 @@ wrong way and must see 5 fail every time.
      bus always joins its group, a send-only socket, replayer or probe need
      not (gen-inhibit reviewer, 2026-11-12: each must join, and be covered
      by the counter checks or shown to be none). The scan is shown able to
-     fail on a planted send-only socket in a made-up tree.
+     fail on a planted send-only socket in a made-up tree. An AF_UNIX
+     socketpair's SOCK_DGRAM is local and not counted (the gen-inhibit
+     reviewer, 2026-11-20); an AF_INET SOCK_DGRAM beside one, and an AF_INET
+     socketpair, are shown still found.
 
 --can-fail runs the network checks where they must fail, and passes only if
 they do:
@@ -764,12 +767,16 @@ RAW_UDP_ALLOWED = {
     "tools/gi_vbus.py": "sets and reads back the TTL on python-can's own socket",
     "tools/test_gi_vbus.py": "the deliberate TTL-1 control, and this scan",
 }
+# A local socket pair (AF_UNIX) never reaches a network, so its SOCK_DGRAM is taken out
+# before the scan; any other SOCK_DGRAM in the same file is still found (the gen-inhibit
+# reviewer's answer to 878d06fc, 2026-11-20: test fakes feed witnesses from such pairs).
+UNIX_PAIR = re.compile(r"socketpair\(\s*(?:socket\.)?AF_UNIX\s*,\s*(?:socket\.)?SOCK_DGRAM\b")
 
 
 def raw_udp_users(root):
     """{path relative to root, '/' separated: [patterns]} for every .py under root
     (not firmware/, the upstream WiCAN tree) that uses a raw UDP or multicast
-    socket call."""
+    socket call. An AF_UNIX socketpair's SOCK_DGRAM is not one (UNIX_PAIR)."""
     found = {}
     for d, dirs, files in os.walk(root):
         dirs[:] = [x for x in dirs if not (d == root and x == "firmware")
@@ -778,7 +785,7 @@ def raw_udp_users(root):
             if f.endswith(".py"):
                 p = os.path.join(d, f)
                 try:
-                    text = open(p, encoding="utf-8", errors="replace").read()
+                    text = UNIX_PAIR.sub("socketpair(AF_UNIX", open(p, encoding="utf-8", errors="replace").read())
                 except OSError:
                     continue
                 hits = [s for s in RAW_UDP if s in text]
@@ -812,9 +819,23 @@ def part_scan():
                 "s.sendto(b'x', ('239.0.2.4', 43217))\n")
     with open(os.path.join(t, "firmware", "upstream.py"), "w") as f:
         f.write("s.sendto(b'x', addr)\n")
+    with open(os.path.join(t, "tools", "bench", "pair_only.py"), "w") as f:
+        f.write("import socket\na, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
+                "c, d = socketpair(AF_UNIX, SOCK_DGRAM)\n")
+    with open(os.path.join(t, "tools", "bench", "pair_and_inet.py"), "w") as f:
+        f.write("import socket\na, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)\n"
+                "s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n")
+    with open(os.path.join(t, "tools", "bench", "inet_pair.py"), "w") as f:
+        f.write("import socket\na, b = socket.socketpair(socket.AF_INET, socket.SOCK_DGRAM)\n")
     got = raw_udp_users(t)
     check("scan can-fail: a planted send-only socket is found",
           "tools/bench/probe.py" in got, "found: %s" % got)
+    check("scan: an AF_UNIX socketpair's SOCK_DGRAM (both spellings) is not a raw UDP socket",
+          "tools/bench/pair_only.py" not in got, "found: %s" % got)
+    check("scan can-fail: an AF_INET SOCK_DGRAM beside an AF_UNIX socketpair is still found",
+          got.get("tools/bench/pair_and_inet.py") == ["SOCK_DGRAM"], "found: %s" % got)
+    check("scan can-fail: an AF_INET socketpair's SOCK_DGRAM is found",
+          got.get("tools/bench/inet_pair.py") == ["SOCK_DGRAM"], "found: %s" % got)
     check("scan: firmware/ (upstream WiCAN) is not scanned",
           "firmware/upstream.py" not in got, "found: %s" % got)
 
