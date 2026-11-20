@@ -29,6 +29,7 @@ requires a FAIL line on each. Runs in build.slice (AGENTS.md); about 40 s.
 """
 import importlib.util
 import os
+import re
 import socket
 import struct
 import subprocess
@@ -218,24 +219,138 @@ def main():
     check("stats: before the child ends, the parent's bus answers", before == {"read_here": 0}, before)
     a.close()
     b.close()
+    proc_thread_cases()
     print("\n%s, %d ok, %d FAIL" % ("PASS" if not fails else "FAIL", oks, len(fails)))
     return 0 if not fails else 1
 
 
+def proc_thread_cases():
+    """ProcThread, a tool's own witness loop in a forked child (2026-11-19): what the parent gets back."""
+    class W(PW.ProcThread):
+        LISTS = ("frames", "rx")
+        VALUES = ("count", "note")
+        BUS_LISTS = ("states",)
+
+        def __init__(self, bus, batch_s=PW.BATCH_S, ignore_stop=False):
+            super().__init__(daemon=True, batch_s=batch_s)
+            self.bus, self.frames, self.rx, self.count, self.note = bus, [], [], 0, None
+            self.lock = threading.Lock()
+            self.stop = self.event()
+            self.ignore_stop = ignore_stop
+
+        def run(self):
+            while self.ignore_stop or not self.stop.is_set():
+                m = self.bus.recv(timeout=0.05)
+                if m is None:
+                    continue
+                with self.lock:
+                    self.frames.append(struct.unpack("<I", m.data[:4])[0])
+                    self.rx.append(m.host_timestamp)
+                    self.count += 1
+                self.note = "seen %d" % self.count
+                if self.count % 10 == 0:
+                    self.bus.states.append(self.count)
+
+    a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    for k in range(100):
+        b.send(struct.pack("<II", k, 0) + b"\0" * 8)
+    bus = SockBus(a)
+    bus.states = []
+    w = W(bus, batch_s=30.0)        # no batch on its own within the test: only sync() brings frames
+    w.start()
+    time.sleep(0.5)
+    before = len(w.frames)
+    synced = w.sync(timeout=5.0)
+    check("ProcThread sync: the frames come only when asked, then all the child had read",
+          before == 0 and synced and w.frames == list(range(100)), (before, synced, len(w.frames)))
+    check("ProcThread VALUES: the child's count and note", (w.count, w.note) == (100, "seen 100"), (w.count, w.note))
+    check("ProcThread lock: lists appended together arrive the same length", len(w.rx) == len(w.frames))
+    check("ProcThread BUS: stamp_stats answers with the child's bus while it runs",
+          (w.bus.stamp_stats() or {}).get("read_here") == 100 and bus.n == 0, (w.bus.stamp_stats(), bus.n))
+    check("ProcThread BUS_LISTS: the child's bus list lands in the parent's bus object",
+          bus.states == list(range(10, 101, 10)), bus.states)
+    check("ProcThread: void_reason None while the child runs whole", PW.void_reason(w) is None, PW.void_reason(w))
+    w.stop.set()
+    w.join(timeout=10.0)
+    check("ProcThread end: the child gone, exit code 0, its last stats kept, no void",
+          not w.is_alive() and w.proc_info["exitcode"] == 0 and w.child_stats_final
+          and PW.void_line(w) == (None, None), (w.proc_info, PW.void_line(w)))
+    check("ProcThread: void_reason with running names a child no longer running",
+          (PW.void_reason(w, running=True) or "").startswith("the witness child is not running"),
+          PW.void_reason(w, running=True))
+    a.close()
+    b.close()
+
+    a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    bus = SockBus(a)
+    bus.states = []
+    w = W(bus, ignore_stop=True)
+    w.start()
+    w.stop.set()
+    w.join(timeout=0.5)
+    check("ProcThread join: a child that does not end in time is killed, and that is the void reason",
+          not w.is_alive() and "did not end" in (PW.void_reason(w, running=False) or ""), w.proc_info)
+    a.close()
+    b.close()
+
+    got = []
+
+    def fn():
+        got.append(1)
+        raise OSError("gone (test)")
+    w = PW.ProcThread(target=fn, lists={"got": got})
+    w.start()
+    w.join(timeout=5.0)
+    check("ProcThread function form: the list comes back into the same object, the error kept",
+          got == [1] and "gone" in (w.proc_info["error"] or ""), (got, w.proc_info))
+
+    tw = PW.ThreadWitness(target=fn, lists={})
+    tw.start()
+    tw.join(timeout=5.0)
+    check("ThreadWitness: a loop that raises in its thread is kept and named",
+          (PW.void_reason(tw, running=False) or "").startswith("the witness thread failed: OSError: gone"),
+          tw.proc_info)
+
+
 MUTANTS = [
     ("the witness reads in the parent's process, as before",
-     '        self._ctx = multiprocessing.get_context("fork")\n',
-     '        self._ctx = multiprocessing.get_context("fork")\n        self._thread_mode = True\n'),
+     '        self._ctx = multiprocessing.get_context("fork")\n        self._ev = self._ctx.Event()\n',
+     '        self._ctx = multiprocessing.get_context("fork")\n        self._ev = self._ctx.Event()\n'
+     '        self._reads_in_parent = True\n'),
     ("the child stops at the first empty read, leaving the queue unread",
      "                m = recv(timeout=0.2 if not stop_ev.is_set() else 0.0)\n",
      "                m = recv(timeout=0.2) if not stop_ev.is_set() else None\n"),
     ("the last batch not sent", "        if out:\n            conn.send((\"frames\", out))\n        if finished:\n            break\n",
      "        if out and not finished:\n            conn.send((\"frames\", out))\n        if finished:\n            break\n"),
-    ("stamp_stats from the parent's bus", "        if self._owner.child_stats is not None:\n",
-     "        if False:\n"),
-    ("an error in the child dropped", "            err.append(\"%s: %s\" % (type(e).__name__, e))\n", "            pass\n"),
+    ("stamp_stats from the parent's bus",
+     "    def stamp_stats(self):\n        if self._owner.child_stats is not None:\n            return self._owner.child_stats\n"
+     "        return self._bus.stamp_stats()\n\n    def __getattr__(self, name):\n        return getattr(self._bus, name)\n"
+     "\n\nclass ProcWitness",
+     "    def stamp_stats(self):\n        if False:\n            return self._owner.child_stats\n"
+     "        return self._bus.stamp_stats()\n\n    def __getattr__(self, name):\n        return getattr(self._bus, name)\n"
+     "\n\nclass ProcWitness"),
+    ("an error in the child dropped",
+     "never a silent short witness\n            err.append(\"%s: %s\" % (type(e).__name__, e))\n",
+     "never a silent short witness\n            pass\n"),
     ("frames only at the end, not while the child runs", "        finished = done.wait(batch_s)\n",
      "        finished = done.wait(3600)\n"),
+    # ProcThread (2026-11-19)
+    ("ProcThread: a sync never answered", "            conn.send((\"sync\", req))\n", "            pass\n"),
+    ("ProcThread: VALUES not sent", "            vals = dict((n, getattr(owner, n, None)) for n in owner.VALUES)\n",
+     "            vals = {}\n"),
+    ("ProcThread: BUS_LISTS not shipped", "                out[\"bus.\" + n] = getattr(bus, n)\n", "                pass\n"),
+    ("ProcThread: stamp_stats from the parent's bus",
+     "the bus's own (shutdown, status, send).\"\"\"\n\n    def __init__(self, bus, owner):\n"
+     "        self._bus, self._owner = bus, owner\n\n    def stamp_stats(self):\n"
+     "        if self._owner.child_stats is not None:\n",
+     "the bus's own (shutdown, status, send).\"\"\"\n\n    def __init__(self, bus, owner):\n"
+     "        self._bus, self._owner = bus, owner\n\n    def stamp_stats(self):\n"
+     "        if False:\n"),
+    ("ProcThread: a child that does not end is left running", "                self._proc.kill()\n                self._proc.join(1.0)\n"
+     "                if self._recv_th is not None:\n", "                if self._recv_th is not None:\n"),
+    ("ProcThread: the function form's error dropped",
+     "            traceback.print_exc()       # as a thread's death prints it\n            err.append(",
+     "            traceback.print_exc()       # as a thread's death prints it\n            (lambda x: None)("),
 ]
 
 
@@ -263,7 +378,9 @@ def mutants():
         r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__)], capture_output=True, text=True,
                            env=dict(os.environ, PROC_WITNESS=path), timeout=300)
         fl = [ln for ln in r.stdout.splitlines() if ln.startswith("FAIL ")]
-        dead = bool(fl) and "Traceback" not in r.stderr
+        # killed: a check FAILed and the test ran to its summary (a crash is not a kill; since 2026-11-19
+        # the ProcThread cases' children raise on purpose, so a traceback on stderr is expected)
+        dead = bool(fl) and bool(re.search(r"^FAIL, \d+ ok, \d+ FAIL$", r.stdout, re.M))
         killed += dead
         print("%s m%d %s  (exit %d, %d FAIL%s)" % ("KILLED  " if dead else "SURVIVED", n, name, r.returncode, len(fl),
                                                    ("; " + fl[0][:110]) if fl else (r.stderr.strip()[-160:] if r.stderr else "")))

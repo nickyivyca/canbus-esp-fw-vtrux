@@ -60,8 +60,8 @@ MUTANTS = [
      "if lags and abs(statistics.median(lags)) < WC.MAX_LAG_S:",
      "if lags and abs(statistics.median(lags)) < 1e12:"),
     ("x2_jam_cases.py", "clocked() does not refuse receipt time",
-     "        fr, er, note = self.recorded()\n        WC.require(note)\n",
-     "        fr, er, note = self.recorded()\n"),
+     "        PW.require(self)\n        WC.require(note)\n",
+     "        PW.require(self)\n"),
     ("x2_jam_cases.py", "run_guarded does not void",
      "        WC.void(rec, e.note)\n        print(rec[\"verdict\"])\n", "        pass\n"),
     ("x2_jam_cases.py", "the witness takes any lag as hardware time",
@@ -106,7 +106,20 @@ MUTANTS = [
     ("witness_clock.py", "too few points are not VOID",
      "    elif len(points) < MIN_POINTS:\n", "    elif False:\n"),
     ("witness_clock.py", "the slope bound is not applied",
-     "    elif slope_ppm is None or abs(slope_ppm) > SLOPE_MAX_PPM:\n", "    elif False:\n"),
+     "    elif slope_ppm is None or abs(slope_ppm) > bound:\n", "    elif False:\n"),
+    # a short fit keeps a coarse slope bound (gen-inhibit reviewer, 2026-11-19, ruling 2 (a))
+    ("witness_clock.py", "the coarse bound is the full one", "COARSE_SLOPE_MAX_PPM = 1000.0\n",
+     "COARSE_SLOPE_MAX_PPM = 100.0\n"),
+    ("witness_clock.py", "a short fit has no slope bound",
+     "    bound = COARSE_SLOPE_MAX_PPM if short else SLOPE_MAX_PPM\n", "    bound = 1e12 if short else SLOPE_MAX_PPM\n"),
+    ("witness_clock.py", "every fit is short", "    short = short_span is not None and span < short_span\n",
+     "    short = short_span is not None\n"),
+    ("witness_clock.py", "the factor 1, not 2", "SHORT_FIT_FACTOR = 2.0\n", "SHORT_FIT_FACTOR = 1.0\n"),
+    ("witness_clock.py", "short judged on the offset-only residual (a drift makes its own fit short)",
+     "    short_span = None if line_p99 is None else SHORT_FIT_FACTOR * line_p99 /",
+     "    short_span = None if line_p99 is None else SHORT_FIT_FACTOR * _rank(res, 0.99) /"),
+    ("witness_clock.py", "fit_line names the full bound for a short fit",
+     'fit.get("slope_bound_ppm", SLOPE_MAX_PPM),', "SLOPE_MAX_PPM,"),
     ("witness_clock.py", "the residual bound is not applied",
      '    elif fit["residual_p99_s"] > RESIDUAL_P99_MAX_S:\n', "    elif False:\n"),
     ("witness_clock.py", "no offset: the stamps taken as they are",
@@ -754,8 +767,29 @@ def checks(work):
         lambda: (lambda f: (f["void"] is None and f["n"] == 200 and abs(f["offset_s"] - (DEV0 + LAT)) < 1e-6
                             and f["residual_p99_s"] < 1e-6 and abs(f["slope_ppm"]) < 1.0, f))(fit_of()))
     add("device_fit: the bounds are recorded beside the figures",
-        lambda: (lambda f: (f["bounds"] == {"residual_p99_max_s": 0.05, "slope_max_ppm": 100.0, "min_points": 20,
-                                            "epoch_lag_min_s": 2.0}, f["bounds"]))(fit_of()))
+        lambda: (lambda f: (f["bounds"] == {"residual_p99_max_s": 0.05, "slope_max_ppm": 100.0,
+                                            "coarse_slope_max_ppm": 1000.0, "short_fit_factor": 2.0,
+                                            "min_points": 20, "epoch_lag_min_s": 2.0}, f["bounds"]))(fit_of()))
+    # a short fit (gen-inhibit reviewer, 2026-11-19, ruling 2 (a)): span under 2 x line residual p99 / 100 ppm
+    # keeps the coarse bound of 1000 ppm. Jitter 2 ms on every other message: line residual p99 1 ms, so the
+    # short-fit span is 20 s; 200 messages 0.09 s apart span 17.9 s (short), 0.11 s apart 21.9 s (not).
+    add("device_fit, short fit (17.9 s under 20 s): a 500 ppm slope held to 1000 ppm, not VOID, the slope recorded",
+        lambda: (lambda f: (f["void"] is None and f["short_fit"] is True and f["slope_bound_ppm"] == 1000.0
+                            and abs(f["slope_ppm"] - 500) < 5 and abs(f["short_fit_span_s"] - 20.0) < 0.5
+                            and abs(f["span_s"] - 17.91) < 0.02, f))(fit_of(ppm=500, step=0.09, jitter=0.002)))
+    add("device_fit, short fit: a 1500 ppm slope -> VOID over 1000, naming the short fit",
+        lambda: (lambda f: ("over 1000" in str(f["void"]) and "short fit" in str(f["void"]), f["void"]))(
+            fit_of(ppm=1500, step=0.09, jitter=0.002)))
+    add("device_fit, not short (21.9 s over 20 s): a 500 ppm slope -> VOID over 100 (the drift does not make "
+        "its own fit short)",
+        lambda: (lambda f: (f["short_fit"] is False and f["slope_bound_ppm"] == 100.0
+                            and "over 100 " in str(f["void"]) + " " and "short" not in str(f["void"]), f["void"]))(
+            fit_of(ppm=500, step=0.11, jitter=0.002)))
+    add("device_fit, no jitter: never short (line residual ~0)",
+        lambda: (lambda f: (f["short_fit"] is False and f["slope_bound_ppm"] == 100.0, f))(fit_of()))
+    add("fit_line, short fit: the coarse bound and why",
+        lambda: (lambda s: ("(bound 1000; a short fit: span 17.901 s under 2 x line residual p99" in s, s))(
+            WC.fit_line(fit_of(ppm=500, step=0.09, jitter=0.002))))
     add("device_fit: stamps on the host's epoch clock (COOKED) -> VOID",
         lambda: (lambda f: ("epoch clock" in str(f["void"]), f["void"]))(fit_of(epoch=True)))
     add("device_fit: 19 messages -> VOID; 20 -> fit",

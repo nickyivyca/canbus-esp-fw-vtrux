@@ -151,7 +151,8 @@ MUTANTS = [
     ("e4_rig_calibration.py", "    return errf, len(errs) - len(errf)\n", "    return errf, 0\n"),
     ("e4_device_calibration.py", "    errf, not_bus = bus_errors(w)",
      "    errf, not_bus = [f for f in w.frames if f[3]], 0"),
-    ("kvaser_bus.py", "    return bool(can_id & BUS_ERROR_CLASSES)\n", "    return True\n"),
+    # re-anchored 2026-11-19: the class mask moved into canbench's bench_layer (ab3a5990); kvaser_bus delegates
+    ("kvaser_bus.py", "    return layer().bus_error_class(b, can_id)\n", "    return True\n"),
 ]
 
 
@@ -159,6 +160,11 @@ def mutants():
     base = gi_paths.scratch("error-frame-sites-mutants")
     killed = 0
     try:
+        # kvaser_bus loads the project's pin tool from beside its own folder (PIN_TOOL, since ab3a5990):
+        # each copy mN/ gets it at base/, as test_kvaser_bus does (2026-11-19: the control raised without it)
+        os.makedirs(base, exist_ok=True)
+        for f in ("can_tools_pin.py", "can_tools_pin.json"):
+            shutil.copy2(os.path.join(os.path.dirname(HERE), f), os.path.join(base, f))
         for n, (fn, old, new) in enumerate([(None, None, None)] + MUTANTS):
             d = os.path.join(base, "m%d" % n)
             shutil.copytree(HERE, d, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
