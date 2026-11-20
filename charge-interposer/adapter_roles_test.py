@@ -242,6 +242,15 @@ class FakeCan:
         self.opened.append(kw)
         return Opened(kw)
 
+    def report_bus(self, **kw):
+        """Stands in for canbench's CanbenchPcanBus (pcanfd_report)."""
+        kw = dict(kw, interface=CPB)
+        self.opened.append(kw)
+        return Opened(kw)
+
+
+CPB = "Canbench" "PcanBus"
+
 
 class Opened:
     """A bus python-can's Bus returned. send() is there because can-tools
@@ -267,15 +276,20 @@ def _with_fake_can(fn):
     import can
     from canbench.live import linux_fixes
     import canbench.live.receiver as rcv
+    from canbench.live import pcan_bus
     fc, applied, released = FakeCan(), [], []
-    saved = (can.Bus, linux_fixes.apply, rcv.release_gs_usb)
+    # canbench's PCAN class, named by string so bench_scan does not take this
+    # stand-in for an open
+    saved = (can.Bus, linux_fixes.apply, rcv.release_gs_usb, getattr(pcan_bus, CPB))
     can.Bus = fc.Bus
+    setattr(pcan_bus, CPB, fc.report_bus)
     linux_fixes.apply = lambda: applied.append(len(fc.opened)) or {}
     rcv.release_gs_usb = lambda b: released.append(b)
     try:
         fn(fc, applied, released)
     finally:
-        can.Bus, linux_fixes.apply, rcv.release_gs_usb = saved
+        can.Bus, linux_fixes.apply, rcv.release_gs_usb = saved[:3]
+        setattr(pcan_bus, CPB, saved[3])
 
 
 def case_layer(M, work):
@@ -298,6 +312,12 @@ def case_layer(M, work):
         assert lock.calls >= 1 and lock.made[-1] == (Lock.LOG, CI_ROLES), (lock.calls,
                                                                             lock.made)
         assert b.bench_role.role.role == "pcanfd"
+        # pcanfd_report: the same role, opened as canbench's CanbenchPcanBus
+        # (bus_states="report"), the caller's keywords passed
+        b = M.pcanfd_report(500000, auto_reset=True)
+        assert fc.opened[-1] == {"interface": "CanbenchPcanBus", "bitrate": 500000,
+                                 "device_id": 3, "auto_reset": True}, fc.opened
+        assert b.bench_role.role.role == "pcanfd"
         b = M.canchg(250000)
         assert fc.opened[-1] == {"interface": "gs_usb", "bitrate": 250000,
                                  "channel": "gs_usb:canchg", "bus": 1, "address": 40}, fc.opened
@@ -306,9 +326,13 @@ def case_layer(M, work):
         # drain=True through adapter_roles.canchg reaches the pinned layer's
         # drain (can-tools 7a27cc94; vehicle_sim --mode replay on canchg, the
         # charge-interposer reviewer, 2026-11-19): what arrives is read and
-        # counted by its thread, recv is refused, shutdown stops it
+        # counted by its thread, recv is refused, shutdown stops it. From
+        # 262ba7b9 the drain keeps each frame read before the first send
+        # (id, extended, data), so the stand-in echo carries them
         b = M.canchg(250000, drain=True)
-        echo = type("Echo", (), {"is_error_frame": False, "is_rx": False})()
+        echo = type("Echo", (), {"is_error_frame": False, "is_rx": False,
+                                 "arbitration_id": 0x123, "is_extended_id": False,
+                                 "data": b"\x01"})()
         b.inbox += [echo, echo]
         t_end = time.monotonic() + 2
         while b.bench_drain["echoes"] < 2 and time.monotonic() < t_end:
@@ -371,9 +395,26 @@ def case_layer(M, work):
     # a wrapper naming the SocketCAN bus as .inner (kvaser_link.WatchedBus)
     wrapped = type("WatchedBus", (), {"inner": sc})()
     assert not M.bus_error(wrapped, Msg), "a wrapped SocketCAN bus classified as the wrapper"
+    # canbench's PCAN bus (pcanfd_report) reports in the Linux layout: a
+    # state row (CRTL alone) is not an error row there, a bus error is
+    from canbench.live import pcan_bus
+    cpb = object.__new__(getattr(pcan_bus, CPB))
+    assert not M.bus_error(cpb, Msg), "a CRTL-only frame counted on CanbenchPcanBus"
     Msg.arbitration_id = 0x20000000 | E.CAN_ERR_PROT | E.CAN_ERR_BUSERROR
     assert M.bus_error(sc, Msg), "a bus error not counted on SocketCAN"
     assert M.bus_error(wrapped, Msg), "a bus error not counted on a wrapped SocketCAN bus"
+    assert M.bus_error(cpb, Msg), "a bus error not counted on CanbenchPcanBus"
+    # lost_frames: can-tools' own test, on the rows its PCAN bus makes from
+    # PCAN-Basic's statuses (errors.from_pcan_status): an overrun or a queue
+    # overrun is lost frames, error passive or bus-off alone is not, nor is a
+    # data frame
+    import can
+    for st, want in ((E.PCAN_ERROR_OVERRUN, True), (E.PCAN_ERROR_QOVERRUN, True),
+                     (E.PCAN_ERROR_BUSPASSIVE, False), (E.PCAN_ERROR_BUSOFF, False)):
+        row = E.from_pcan_status(st)
+        assert M.lost_frames(row) is want, ("lost_frames", hex(st), row, want)
+    assert M.lost_frames(can.Message(arbitration_id=0x7F4, data=bytes(8))) is False
+    assert M.errors() is E, "lost_frames not from the pinned canbench.errors"
 
 
 class Rec:
@@ -399,11 +440,14 @@ def case_wiring(M, work):
     M.LAYER = R
     M.BENCH_LOCK = Lock()
     assert M.pcanfd(500000, auto_reset=True) == "bus"
+    assert M.pcanfd_report(500000, state="passive") == "bus"
     M.canchg(250000)
     M.kvaser_canlib(500000, receive_own_messages=False)
     M.open_bench("canmain", 500000, mode="socketcan", restore=False)
     M.open_bench("kvaser", 500000)
     assert R.got == [("pcanfd", 500000, None, True, {"auto_reset": True}),
+                     ("pcanfd", 500000, None, True, {"bus_states": "report",
+                                                     "state": "passive"}),
                      ("canchg", 250000, None, True, {}),
                      ("kvaser", 500000, "linuxcan", True, {"receive_own_messages": False}),
                      ("canmain", 500000, "socketcan", False, {}),
@@ -416,6 +460,9 @@ def case_wiring(M, work):
         assert isinstance(e, M.NotARole), e
     assert len(R.got) == n, ("the layer asked for a name that is not a role", R.got[n:])
     assert M.bus_error("b", "m") == "classified" and R.got[-1] == ("bus_error", "b", "m")
+    # lost_frames is the errors module's, its answer made a bool
+    M.ERRORS = type("E", (), {"lost_frames": staticmethod(lambda m: m == "overrun" and 1)})
+    assert M.lost_frames("overrun") is True and M.lost_frames("passive") is False
 
 
 def case_guard(M, work):
@@ -514,7 +561,8 @@ ALLOWED = [
 ]
 # the project's own forms bench_scan cannot know: adapter_roles' openers
 # given a pick, and the pickers removed on 2026-11-18 (adapter_fixes)
-OWN_OPENERS = {"pcanfd", "canchg", "kvaser_canlib", "open_bench", "resolve", "kvaser_netdev"}
+OWN_OPENERS = {"pcanfd", "pcanfd_report", "canchg", "kvaser_canlib", "open_bench", "resolve",
+               "kvaser_netdev"}
 PICK_KW = {"channel", "device_id", "index", "bus", "address", "serial", "interface"}
 REMOVED = {"canchg_target", "find_canchg", "adapter_fixes"}
 # adapter_roles.<opener>(...) calls outside tests: 16 on 2026-11-19, so a
@@ -675,11 +723,30 @@ OPENERS = [
 ]
 # how each role is asked for: the adapter_roles opener of that role, or a
 # role call with it named (ROLE_CALLS), or (kvaser) kvaser_link's
-ASKS = {"pcanfd": {"pcanfd"}, "canchg": {"canchg"},
+ASKS = {"pcanfd": {"pcanfd", "pcanfd_report"}, "canchg": {"canchg"},
         "kvaser": {"kvaser_netdev", "kvaser_canlib", "open_bus", "set_link"}}
 ROLE_CALLS = {"open_role", "resolve", "open_bench", "link_up", "link_down", "to_libusb",
               "to_socketcan", "set_mode", "canctl"}
 ROLE_CONSTS = {"ROLE"}      # a module's ROLE constant names its role (kvaser_link, canchg_mode)
+# the charge-interposer reviewer's PCAN item 2 (2026-11-20): the PCAN readers
+# of the audit open the role with bus_states="report" (pcanfd_report), and
+# bench_vport's witness stays on the default (pcanfd). (file, function)
+REPORT_READERS = [
+    ("bus.py", "open_pcan"),
+    ("diag_cadence.py", "start"),
+    ("bench_drivers/bench_usb_host.py", "open_pcan"),       # Rx, and rx_proc's ProcReader
+    ("bench_drivers/bench_powerup_round.py", "__init__"),   # Witness
+    ("bench_drivers/bench_rate_feasibility.py", "<module>"),
+    ("bench_drivers/keepalive_probe.py", "open_all"),
+    ("bench_drivers/reset_check.py", "open_all"),
+    # the reviewer's ruling (4), 2026-11-20, after run 40e6
+    ("bench_drivers/bench_hold12.py", "proc_identifier"),
+    ("bench_drivers/bench_topology.py", "<module>"),
+]
+DEFAULT_READERS = [("bench_drivers/bench_vport.py", "_open_witness_reader")]
+# opens the PCAN once with each option and checks both (ruling (4))
+BOTH_READERS = [("bench_drivers/bench_layer_check.py", "observe")]
+PCAN_OPENERS = {"pcanfd", "pcanfd_report"}
 
 
 def _scope(tree, name):
@@ -725,6 +792,35 @@ def _consts(tree):
     return out
 
 
+def pcan_opens(tree, scope_name):
+    """-> the PCAN openers (pcanfd, pcanfd_report) the scope calls."""
+    got = set()
+    for sc in _scope(tree, scope_name):
+        nodes = ast.walk(sc) if scope_name != "<module>" else [
+            n for top in sc.body if not isinstance(top, (ast.FunctionDef, ast.ClassDef))
+            for n in ast.walk(top)]
+        got |= {n.func.attr for n in nodes if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute) and n.func.attr in PCAN_OPENERS}
+    return got
+
+
+def check_bus_states(report, default, root, both=()):
+    """-> a line per reader that opens the PCAN other than as ruled: each of
+    report only through pcanfd_report, each of default only through
+    pcanfd, each of both through both."""
+    bad = []
+    for want, readers in (({"pcanfd_report"}, report), ({"pcanfd"}, default),
+                          ({"pcanfd", "pcanfd_report"}, both)):
+        for rel, fn in readers:
+            p = os.path.join(root, rel)
+            with open(p, encoding="utf-8") as f:
+                got = pcan_opens(ast.parse(f.read(), p), fn)
+            if got != want:
+                bad.append("%s %s opens the PCAN through %s, not %s"
+                           % (rel, fn, sorted(got) or "nothing", " and ".join(sorted(want))))
+    return bad
+
+
 def check_openers(openers, root):
     bad = []
     for rel, fn, role in openers:
@@ -758,6 +854,38 @@ def case_openers(M, work):
                          ("x.py", "<module>", "pcanfd"), ("x.py", "zz", "pcanfd"),
                          ("x.py", "f", "kvaser"), ("x.py", "f", "canchg")], d)
     assert [g.split()[1] for g in got] == ["b", "d", "no", "f"], got
+    # the bus states: the ruled readers report, bench_vport's witness does not
+    bad = check_bus_states(REPORT_READERS, DEFAULT_READERS, HERE, BOTH_READERS)
+    assert not bad, bad
+    # can-fail on the real sources: each ruled reader, its pcanfd_report put
+    # back to pcanfd in a copy, is caught; so is bench_vport's witness moved
+    # to pcanfd_report, and bench_layer_check's second open taken out
+    for rel, fn in REPORT_READERS + DEFAULT_READERS + BOTH_READERS:
+        with open(os.path.join(HERE, rel), encoding="utf-8") as f:
+            src = f.read()
+        if (rel, fn) in DEFAULT_READERS:
+            mut = src.replace("adapter_roles.pcanfd(", "adapter_roles.pcanfd_report(")
+        elif (rel, fn) in BOTH_READERS:
+            mut = src.replace("pcanfd_report(", "pcanfd(")
+        else:
+            mut = src.replace(".pcanfd_report(", ".pcanfd(")
+        assert mut != src, (rel, "nothing to revert")
+        mdir = os.path.join(d, "revert", os.path.dirname(rel))
+        os.makedirs(mdir, exist_ok=True)
+        with open(os.path.join(d, "revert", rel), "w", encoding="utf-8") as f:
+            f.write(mut)
+        got = check_bus_states([x for x in REPORT_READERS if x[0] == rel],
+                               [x for x in DEFAULT_READERS if x[0] == rel],
+                               os.path.join(d, "revert"),
+                               [x for x in BOTH_READERS if x[0] == rel])
+        assert got, ("a reverted %s %s not caught" % (rel, fn))
+    with open(os.path.join(d, "y.py"), "w", encoding="utf-8") as f:
+        f.write("def r():\n    return adapter_roles.pcanfd_report(500000)\n"
+                "def p():\n    return adapter_roles.pcanfd(500000)\n"
+                "def both():\n    adapter_roles.pcanfd(1)\n    adapter_roles.pcanfd_report(1)\n")
+    got = check_bus_states([("y.py", "r"), ("y.py", "p"), ("y.py", "both")],
+                           [("y.py", "p"), ("y.py", "r")], d)
+    assert [g.split()[1] for g in got] == ["p", "both", "r"], got
 
 
 CASES = [case_resolve, case_layer, case_wiring, case_guard, case_real_guard, case_kvaser_netdev,
@@ -806,6 +934,22 @@ MUTANTS = [
      "    return bool(msg.is_error_frame)"),
     ("a wrapper classified as itself", "    return L.bus_error(getattr(bus, \"inner\", bus), msg)",
      "    return L.bus_error(bus, msg)"),
+    ("pcanfd_report on the default bus states",
+     '    return open_bench("pcanfd", bitrate, bus_states="report", **kw)',
+     '    return open_bench("pcanfd", bitrate, **kw)'),
+    ("pcanfd_report opens another role",
+     '    return open_bench("pcanfd", bitrate, bus_states="report", **kw)',
+     '    return open_bench("canmain", bitrate, bus_states="report", **kw)'),
+    ("pcanfd_report drops the caller's keywords",
+     '    return open_bench("pcanfd", bitrate, bus_states="report", **kw)',
+     '    return open_bench("pcanfd", bitrate, bus_states="report")'),
+    ("pcanfd reports too (bench_vport's witness off the default)",
+     '    return open_bench("pcanfd", bitrate, **kw)\n',
+     '    return open_bench("pcanfd", bitrate, bus_states="report", **kw)\n'),
+    ("no frame ever lost", "    return bool(errors().lost_frames(msg))", "    return False"),
+    ("lost frames read as any error frame", "    return bool(errors().lost_frames(msg))",
+     "    return bool(msg.is_error_frame)"),
+    ("the errors stand-in ignored", "    if ERRORS is not None:\n        return ERRORS\n", ""),
 ]
 
 

@@ -54,7 +54,9 @@ def drain_ports(veh, chg, on_vehicle, on_charger, sent, chg_every=None,
     more than chg_every frames (and the rest of that one frame's outputs)
     go to chg between two reads. n_c counts every charger frame read in the
     pass; hit is True when the vehicle port, or any one read of chg, met
-    `limit`."""
+    `limit`. An error frame is read and counted but handed to neither
+    (bus.is_error_frame: the sims skip error frames, the reviewer's PCAN
+    item 2, 2026-11-20)."""
     n_c, hit = [0], [False]
 
     def read_chg():
@@ -63,7 +65,8 @@ def drain_ports(veh, chg, on_vehicle, on_charger, sent, chg_every=None,
         msg = chg.recv(timeout=0.0)
         while msg is not None and k < limit:
             k += 1
-            on_charger(msg)
+            if not busmod.is_error_frame(msg):
+                on_charger(msg)
             msg = chg.recv(timeout=0.0)
         n_c[0] += k
         hit[0] = hit[0] or k >= limit
@@ -72,7 +75,8 @@ def drain_ports(veh, chg, on_vehicle, on_charger, sent, chg_every=None,
     msg = veh.recv(timeout=0.0)
     while msg is not None and n_v < limit:
         n_v += 1
-        on_vehicle(msg)
+        if not busmod.is_error_frame(msg):
+            on_vehicle(msg)
         if chg_every and sent[0] >= chg_every:
             read_chg()
         msg = veh.recv(timeout=0.0)

@@ -193,8 +193,14 @@ class DiagWitness(object):
 
     def start(self):
         import adapter_roles
-        self.bus = adapter_roles.pcanfd(self.bitrate,
-                                        state=witness_bus_state(self.acks))
+        # bus states reported (the charge-interposer reviewer's PCAN item 2,
+        # 2026-11-20): its states and overruns come up as error frames, never
+        # raised. _run logs no error frame, and one reporting frames lost
+        # (adapter_roles.lost_frames) ends it with self.error, so the case is
+        # NOT EXERCISED (run_scenario.witness_outcome)
+        self.roles = adapter_roles
+        self.bus = adapter_roles.pcanfd_report(self.bitrate,
+                                               state=witness_bus_state(self.acks))
         self.fh = open(self.path, "w")
         self._t = threading.Thread(target=self._run, daemon=True)
         self._t.start()
@@ -209,6 +215,12 @@ class DiagWitness(object):
                 # witness_outcome makes the case NOT EXERCISED with it
                 self.error = "%s: %s" % (type(exc).__name__, exc)
                 return
+            if m is not None and m.is_error_frame:
+                if self.roles.lost_frames(m):
+                    self.error = ("LostFrames: error frame 0x%08X data %s reports frames "
+                                  "lost" % (m.arbitration_id, bytes(m.data).hex()))
+                    return
+                continue                    # a state or bus-error row: not logged
             host = time.perf_counter()
             # the status frames, and the charger frames the board forwards:
             # spec 2.3's mode is read from the latter (ModeWindows)

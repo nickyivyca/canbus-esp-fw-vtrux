@@ -132,7 +132,9 @@ def open_gs_usb():
 
 
 OPENERS = {
-    "pcan": lambda: adapter_roles.pcanfd(BITRATE, auto_reset=True),
+    # bus states reported (the reviewer's PCAN item 2, 2026-11-20): drain
+    # screens what it reads (reader_death.screen)
+    "pcan": lambda: adapter_roles.pcanfd_report(BITRATE, auto_reset=True),
     "innomaker": open_gs_usb,
 }
 
@@ -181,9 +183,14 @@ def drain(bus, stop, counter, death):
     that chain -- 23 %, 24 %, a "0.5 ms period" that came out at
     1.91 ms -- had this one cause, and sleep() granularity was a
     contributing factor that got the blame.
+
+    WHAT IT COUNTS (the reviewer's PCAN item 2, 2026-11-20): what it reads
+    goes through reader_death.screen, so a state row (the PCAN opened with
+    bus states reported) is not counted, and a row reporting frames lost
+    stops the drain with death.lost: the plans on that adapter are VOID.
     """
     def step():
-        if bus.recv(timeout=0.05) is not None:
+        if reader_death.screen(bus, bus.recv(timeout=0.05), death) is not None:
             counter[0] += 1
     reader_death.guard(death, stop, step)
 
@@ -726,6 +733,20 @@ def self_test():
     check(not t.is_alive() and n[0] == 2 and d.error == "RuntimeError: %s" % exc,
           "drain: a recv that raises ends it with the error kept, the frames "
           "before it counted (%d, %s)" % (n[0], d.error))
+    # the PCAN item 2: on the PCAN opened with bus states reported, a state
+    # row is not counted and an overrun row stops the drain as lost frames
+    R = reader_death.report_rows()
+    d2, stop2, n2 = reader_death.Death("pcan"), threading.Event(), [0]
+    rb = reader_death.report_bus([R["frame"], R["passive"], R["frame"], R["overrun"],
+                                  R["frame"]])
+    t = threading.Thread(target=drain, args=(rb, stop2, n2, d2), daemon=True)
+    t.start()
+    t.join(2.0)
+    check(not t.is_alive() and n2[0] == 2 and d2.lost and d2.states == 1
+          and len(rb.left) == 1 and plan_verdict(True, "2000 fps", True, d2.void_line())
+          .startswith("VOID: the pcan reader lost frames"),
+          "drain: the state row not counted, the overrun row stops it as lost "
+          "frames and VOIDs the plan (%d counted, %s)" % (n2[0], d2.error))
     w = Witness(reader_death.RaisingBus([frame(TARGET_ID, 0), frame(0x100, 0),
                                          frame(TARGET_ID, 1)], exc), TARGET_ID).start()
     w._t.join(2.0)
@@ -777,6 +798,10 @@ MUTANTS = [
      "            dead = None"),
     ("run(): exits 0 on a VOID plan",
      "        return 3 if voids else 0", "        return 0"),
+    # 2026-11-20, the reviewer's PCAN item 2
+    ("PCAN item 2: the drain unscreened",
+     "        if reader_death.screen(bus, bus.recv(timeout=0.05), death) is not None:",
+     "        if bus.recv(timeout=0.05) is not None:"),
 ]
 
 

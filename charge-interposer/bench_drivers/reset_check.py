@@ -75,7 +75,9 @@ def open_all(port, serial_log):
     import run_scenario
     tap = run_scenario.SerialTap(port, 115200, serial_log)
     tap.start()
-    pc = adapter_roles.pcanfd(500000)
+    # bus states reported (the reviewer's PCAN item 2, 2026-11-20): collect's
+    # reader screens what it reads (reader_death.screen)
+    pc = adapter_roles.pcanfd_report(500000)
     tx = bcw.open_gs_usb()
     return tap, pc, tx
 
@@ -126,8 +128,8 @@ def judge(rh, rows, frames, pre_up, uptime_of, reader_void=None):
         % ", ".join("%.3f:%X" % r for r in rnd))
     gap = [x for _dt, x in marks if x.startswith("# SERIAL BACK")]
     if reader_void:
-        out("RESET PROVEN: NOT-PROVEN (the PCAN reader died, so its 0x7F7 "
-            "frames end there: not judged)")
+        out("RESET PROVEN: NOT-PROVEN (the PCAN reader died or lost frames, so "
+            "its 0x7F7 frames are not whole: not judged)")
         out(reader_void)
         return None, lines
     ok = (rh is not None and bool(boots) and pre_up is not None and pre_up >= 2
@@ -168,7 +170,9 @@ def collect(a, out=print):
     death = reader_death.Death("pcan")
 
     def pcan_step():
-        m = pc.recv(timeout=0.1)
+        # a state row is dropped; a row reporting frames lost stops the
+        # reader like a raise, death.lost (the reviewer's PCAN item 2)
+        m = reader_death.screen(pc, pc.recv(timeout=0.1), death)
         if m is not None and 0x7F4 <= m.arbitration_id <= 0x7F7:
             frames.append((time.perf_counter(), m.arbitration_id,
                            bytes(m.data)))
@@ -241,8 +245,8 @@ def self_test():
         events.append("pcanfd")
         raise RuntimeError("stop here: the adapters would open")
 
-    saved = (run_scenario.SerialTap, adapter_roles.pcanfd)
-    run_scenario.SerialTap, adapter_roles.pcanfd = Tap, pcanfd
+    saved = (run_scenario.SerialTap, adapter_roles.pcanfd_report)
+    run_scenario.SerialTap, adapter_roles.pcanfd_report = Tap, pcanfd
     try:
         try:
             run(parse(["--port", "/dev/x2", "--serial-log", "x2.serial.log"]),
@@ -251,7 +255,7 @@ def self_test():
         except RuntimeError:
             pass
     finally:
-        run_scenario.SerialTap, adapter_roles.pcanfd = saved
+        run_scenario.SerialTap, adapter_roles.pcanfd_report = saved
     check(taps == [("/dev/x2", 115200, "x2.serial.log")],
           "the serial tap on the port given, with the serial log given: %s" % taps)
     check(events == ["tap started", "pcanfd"],
@@ -402,14 +406,26 @@ def collect_checks():
                                             perf_counter=real.perf_counter),
                  UPTIME_WAIT_S=5.0, WATCH_S=0.05)
         a = parse(["--port", "/dev/x2", "--serial-log", os.path.join(d, "s.log")])
+        R = reader_death.report_rows()
         for bus, dies in ((reader_death.RaisingBus(
                 [seven], RuntimeError("A PCAN status 0x10 BUSOFF")), True),
-                          (QuietBus([seven]), False)):
+                          (QuietBus([seven]), False),
+                          # the PCAN item 2: bus states reported, an overrun row
+                          (reader_death.report_bus([seven, R["passive"], R["overrun"]]),
+                           "lost")):
             g["open_all"] = lambda port, log, _b=bus: (Tap(log), _b, Tx())
             t0 = real.perf_counter()
             got = collect(a, out=lambda s: None)
             took = real.perf_counter() - t0
-            if dies:
+            if dies == "lost":
+                out.append((len(got) == 6 and got[5] is not None
+                            and got[5].startswith("VOID: the pcan reader lost frames")
+                            and took < 2.0 and judge(*got)[0] is None and run_rc(got) == 3
+                            and any("NOT-PROVEN" in x for x in judge(*got)[1]),
+                            "CAN-FAIL collect: an overrun row -> the VOID line says "
+                            "frames were lost, the wait cut short (%.1f s), NOT-PROVEN, "
+                            "exit 3: %s" % (took, got[5:])))
+            elif dies:
                 out.append((len(got) == 6 and got[5] is not None
                             and got[5].startswith("VOID: the pcan reader died")
                             and "BUSOFF" in got[5] and took < 2.0,
@@ -462,7 +478,7 @@ MUTANTS = [
     ("the serial log given ignored",
      "    tap, pc, tx = open_all(a.port, a.serial_log or default_serial_log())",
      "    tap, pc, tx = open_all(a.port, \"reset_check.serial.log\")"),
-    ("the tap never started", "    tap.start()\n    pc = ", "    pc = "),
+    ("the tap never started", "    tap.start()\n    # bus states", "    # bus states"),
     ("the port optional",
      "    ap.add_argument(\"--port\", required=\"--self-test\" not in argv",
      "    ap.add_argument(\"--port\", required=False and \"--self-test\" not in argv"),
@@ -503,6 +519,10 @@ MUTANTS = [
     ("reader death: collect drops the VOID line",
      "            death.void_line() if death.error else None)",
      "            None)"),
+    # 2026-11-20, the reviewer's PCAN item 2
+    ("PCAN item 2: the reader unscreened",
+     "        m = reader_death.screen(pc, pc.recv(timeout=0.1), death)",
+     "        m = pc.recv(timeout=0.1)"),
 ]
 
 

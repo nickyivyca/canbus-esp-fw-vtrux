@@ -618,6 +618,58 @@ def _synth(n_run=50400, pre_s=6.0, pre_jitter=None, run_gap=0.0005,
     return veh, chg, serial, dump, t_pre0, t_pre1, t_id0, t_id1
 
 
+def sender_drain_self_test(check):
+    """proc_identifier in this process, its PCAN a stand-in for the bus
+    opened with bus states reported (reader_death.report_bus): a drain that
+    reads an overrun row puts its VOID line in the summary ("reader"), one
+    that reads a state row and a frame does not (the reviewer's PCAN item 2,
+    2026-11-20)."""
+    import adapter_roles
+    import reader_death
+    import scratch_dir
+    R = reader_death.report_rows()
+    saved = adapter_roles.pcanfd_report
+    d = scratch_dir.make("hold12-sender-drain")
+    try:
+        for lost in (True, False):
+            src = [R["frame"], R["passive"]] + ([R["overrun"]] if lost else [])
+            got = []
+            buses = []
+
+            def opener(*a, **k):
+                got.append(k)
+                buses.append(reader_death.report_bus(list(src)))
+                return buses[-1]
+            adapter_roles.pcanfd_report = opener
+
+            class Go(object):
+                """go: the pacer's busy loop holds the GIL, so the stand-in
+                rows are all read before it starts (the real recv waits in
+                the driver, without the GIL)."""
+
+                def wait(self):
+                    t_end = time.monotonic() + 5.0
+                    while buses[-1].left and time.monotonic() < t_end:
+                        time.sleep(0.01)
+                    time.sleep(0.1)
+            go, done = Go(), threading.Event()
+            p = os.path.join(d, "sent_%s.json" % lost)
+            proc_identifier(go, done, p, 0.3)
+            s = json.load(open(p))
+            if lost:
+                check(done.is_set() and s.get("reader") and
+                      s["reader"].startswith("VOID: the pcan sender's drain reader lost frames"),
+                      "can-fail: the PCAN sender's drain reads an overrun row -> its VOID "
+                      "line in the summary: %s" % s.get("reader"))
+            else:
+                check(s.get("reader") is None and s["sent"] > 0 and got == [{"auto_reset": True}],
+                      "the PCAN sender (pcanfd_report, auto_reset) with a state row and a "
+                      "frame: no VOID line, %d sent" % s["sent"])
+    finally:
+        adapter_roles.pcanfd_report = saved
+        scratch_dir.remove(d)
+
+
 def self_test():
     fails = []
 
@@ -809,6 +861,7 @@ def self_test():
           "run_bench: the Kvaser's process sends, the PCAN (normal) witnesses in its own "
           "process, and both voids reach the verdict")
     gate_self_test(check)
+    sender_drain_self_test(check)
     print("\nbench_hold12 self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -850,13 +903,21 @@ def gap_stats(gaps_ms, nominal_ms):
 
 
 def proc_identifier(go, done, out_path, seconds):
-    """The PCAN sends the identifier, paced, when `go` is set."""
+    """The PCAN sends the identifier, paced, when `go` is set. Its drain
+    reads under reader_death's guard, the PCAN opened with bus states
+    reported (adapter_roles.pcanfd_report) and what it reads screened
+    (reader_death.screen), the charge-interposer reviewer's PCAN item 2,
+    2026-11-20: python-can's raise ("The CAN controller was read too late")
+    ended this drain in run 40e6. A drain that died or read a row reporting
+    frames lost is written to the summary as "reader", its VOID line, and
+    the caller's run is VOID (bench_switch_loss)."""
     import can
     import adapter_roles
     import bench_pacer
+    import reader_death
     prio = above_normal()
     # role pcanfd (shared/bench SPEC section 8, 2026-11-18)
-    bus = adapter_roles.pcanfd(BITRATE, auto_reset=True)
+    bus = adapter_roles.pcanfd_report(BITRATE, auto_reset=True)
     buf = bytearray(3)
     msg = can.Message(arbitration_id=ID, is_extended_id=True, data=buf)
 
@@ -866,10 +927,11 @@ def proc_identifier(go, done, out_path, seconds):
     def send():
         bus.send(msg, timeout=0.05)
     stop = threading.Event()
+    death = reader_death.Death("pcan sender's drain")
 
     def drain():
-        while not stop.is_set():
-            bus.recv(timeout=0.05)
+        reader_death.guard(death, stop,
+                           lambda: reader_death.screen(bus, bus.recv(timeout=0.05), death))
     th = threading.Thread(target=drain, daemon=True)
     th.start()
     go.wait()
@@ -880,7 +942,8 @@ def proc_identifier(go, done, out_path, seconds):
     th.join(timeout=1.0)
     json.dump(dict(sent=off.sent, errs=off.errs, first_err=off.first_err,
                    t0=t0, t1=t1, max_lag_ms=off.max_lag_ms, priority=prio,
-                   sender_gaps=gap_stats(off._sender_gaps_ms, NOMINAL_GAP_MS)),
+                   sender_gaps=gap_stats(off._sender_gaps_ms, NOMINAL_GAP_MS),
+                   reader=death.void_line() if death.error else None),
               open(out_path, "w"))
     bus.shutdown()
     done.set()
@@ -1269,6 +1332,13 @@ MUTANTS = [
     ("unechoed sends judged", "    elif sent.get(\"unechoed\"):", "    elif False:"),
     ("the PCAN sends again", "    pv = ctx.Process(target=proc_identifier_kvaser, args=(",
      "    pv = ctx.Process(target=proc_identifier, args=("),
+    # 2026-11-20, the reviewer's PCAN item 2
+    ("PCAN item 2: the sender's drain unscreened",
+     "                           lambda: reader_death.screen(bus, bus.recv(timeout=0.05), death))",
+     "                           lambda: bus.recv(timeout=0.05))"),
+    ("PCAN item 2: the sender's drain death not in the summary",
+     "                   reader=death.void_line() if death.error else None),",
+     "                   reader=None),"),
 ]
 
 

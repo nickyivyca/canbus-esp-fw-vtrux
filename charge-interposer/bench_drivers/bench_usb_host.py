@@ -649,7 +649,11 @@ class HostPort(object):
 
 class Rx(object):
     """A receive thread on a python-can bus: rows (stamp, host, id, err,
-    data), host on time.perf_counter()."""
+    data), host on time.perf_counter(). What it reads goes through
+    reader_death.screen (the reviewer's PCAN item 2, 2026-11-20): err is a
+    bus error by can-tools' classifier, a state row is kept out of the rows
+    (death.states), and a row reporting frames lost stops the reader with
+    death.lost, so its window is VOID (void_if_dead)."""
 
     def __init__(self, bus, name):
         self.bus, self.name = bus, name
@@ -664,7 +668,7 @@ class Rx(object):
         reader_death.guard(self.death, self.stop_ev, self._step)
 
     def _step(self):
-        m = self.bus.recv(timeout=0.05)
+        m = reader_death.screen(self.bus, self.bus.recv(timeout=0.05), self.death)
         if m is None:
             return
         if getattr(m, "is_rx", True) is False:
@@ -687,14 +691,17 @@ class Rx(object):
 
 def open_pcan(acks):
     """The PCAN witness, role pcanfd (adapter_roles; shared/bench SPEC
-    section 8, 2026-11-18: by its role, never PCAN_USBBUSn)."""
+    section 8, 2026-11-18: by its role, never PCAN_USBBUSn), with
+    bus_states="report" (adapter_roles.pcanfd_report; the reviewer's PCAN
+    item 2, 2026-11-20): bus states and overruns as error frames, never
+    raised. Rx and rx_proc's ProcReader open it."""
     import can
     kw = {}
     if acks:
         kw["auto_reset"] = True
     else:
         kw["state"] = can.BusState.PASSIVE
-    return adapter_roles.pcanfd(500000, **kw)
+    return adapter_roles.pcanfd_report(500000, **kw)
 
 
 def open_kvaser():
@@ -1420,6 +1427,25 @@ def self_test():
           "a boot whose reader died is VOID with the error: %s" % ln)
     ok, ln = void_if_dead(False, ["FAIL x"], rx, "t")
     check(ok == D, "... whatever its own verdict was (the rows are not judged)")
+    # the PCAN item 2 (2026-11-20): on the PCAN opened with bus states
+    # reported, a state row is not a row, a bus error is an error row, and
+    # an overrun stops the reader and VOIDs its window
+    R = reader_death.report_rows()
+    rb = reader_death.report_bus([R["frame"], R["passive"], R["ack"], R["overrun"], R["frame"]])
+    rx = Rx(rb, "pcan")
+    rx.t.join(2.0)
+    rows = rx.take()
+    check(not rx.t.is_alive() and rx.death.lost and len(rb.left) == 1,
+          "Rx: an overrun row stops the reader as lost frames (%s)" % rx.death.error)
+    check([(r[2], r[3]) for r in rows] == [(0x7F4, False), (R["ack"].arbitration_id, True)]
+          and rx.death.states == 1,
+          "Rx: the frame and the bus error are rows (err only on the bus error), the "
+          "state row kept out: %s" % [(hex(r[2]), r[3]) for r in rows])
+    rx.close()
+    ok, ln = void_if_dead(True, ["  boot fine"], rx, "noread_ack_02")
+    check(ok == D and len(ln) == 1 and ln[0].startswith(
+        "VOID noread_ack_02: the pcan reader lost frames"),
+          "a boot whose reader lost frames is VOID, saying so: %s" % ln)
     live = Rx(reader_death.RaisingBus([]), "pcan")
     live.stop_ev.set()
     live.t.join(2.0)
@@ -1704,6 +1730,10 @@ MUTANTS = [
      "        ok, ln = score_noread(st, off, hs, hr, base, tag)"),
     ("reader death: close-boots judged without it",
      "        ok, ln = void_if_dead(ok, [ln], wit, tag)\n        ln = ln[0]\n", ""),
+    # 2026-11-20, the reviewer's PCAN item 2
+    ("PCAN item 2: Rx reads unscreened",
+     "        m = reader_death.screen(self.bus, self.bus.recv(timeout=0.05), self.death)",
+     "        m = self.bus.recv(timeout=0.05)"),
 ]
 
 

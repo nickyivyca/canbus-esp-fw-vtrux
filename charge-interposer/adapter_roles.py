@@ -10,7 +10,7 @@ a channel number or the first one of its kind it finds.
 
 Since 2026-11-19 (the charge-interposer reviewer's bench-layer item) this
 module is a thin caller of canbench.bench_layer, the bench-role layer both
-ESP projects share (can-tools 7a27cc94, pinned in pins.json and loaded by
+ESP projects share (can-tools 262ba7b9, pinned in pins.json and loaded by
 can_tools_pin.use; reverse-it tools/plans/bench-role-layer.md). The layer
 brings a role to the mode asked for, brings a SocketCAN link up, opens the
 role through canbench.bench_roles (which applies canbench.live.linux_fixes
@@ -25,7 +25,18 @@ left here: the role names, the canctl path, and the bench guard.
                              (pcanfd pcan, canchg libusb, canmain libusb,
                              kvaser socketcan; canx2 has none)
     pcanfd(bitrate, **kw)    the PEAK PCAN-USB FD on the vehicle segment
-                             (pcan, by the device id canctl reads)
+                             (pcan, by the device id canctl reads), python-
+                             can's PcanBus (bus_states="raise", the layer's
+                             default): only bench_vport's witness
+    pcanfd_report(bitrate, **kw)
+                             the same role with bus_states="report" (the
+                             charge-interposer reviewer's PCAN item 2,
+                             2026-11-20): canbench's CanbenchPcanBus, whose
+                             bus states, status messages and overruns come
+                             up in the stream as Linux-layout error frames,
+                             never raised (python-can 4.6.1's PcanBus raises
+                             from recv on error passive, bus-off and
+                             overruns). Every other PCAN reader opens this
     canchg(bitrate, **kw)    the charger segment's Innomaker (libusb, by USB
                              bus and address)
     kvaser_canlib(bitrate, **kw)
@@ -41,7 +52,14 @@ left here: the role names, the canctl path, and the bench guard.
                              recovery's usbreset) and canchg_mode (to_libusb,
                              to_socketcan)
     bus_error(bus, msg)      the layer's error-frame classifier: on
-                             SocketCAN only the bus-error classes count
+                             SocketCAN and on CanbenchPcanBus only the
+                             bus-error classes count, so a state row is not
+                             an error row; every error frame elsewhere
+    lost_frames(msg)         canbench.errors.lost_frames: an error frame
+                             reporting frames lost (CAN_ERR_CRTL_RX_OVERFLOW:
+                             a PCAN overrun or queue overrun). A reader's
+                             window with such a row is VOID (the reviewer's
+                             PCAN item 2)
 
 THE GUARD. The layer touches nothing on the bench unless a guard is set
 (bench_layer.set_guard). layer() always sets _guard, which runs shared/
@@ -52,7 +70,7 @@ tester or implementor (a loan), under this process's pid or an ancestor's
 Otherwise bench_lock.NotHeld, and nothing is run. A pinned shared/bench with
 no bench_lock.guard refuses the same way (BenchGuardMissing).
 
-CANCTL, LAYER, BENCH_ROLES and BENCH_LOCK are module globals read at each
+CANCTL, LAYER, BENCH_ROLES, ERRORS and BENCH_LOCK are module globals read at each
 call, so adapter_roles_test.py points them at a fake canctl and stand-ins.
 The harness's own openers are listed, with their roles, in
 adapter_roles_test's OPENERS, and canbench.bench_scan, run there, refuses any
@@ -74,6 +92,7 @@ CANCTL = "/usr/local/sbin/canctl"
 HOLDER_ROLES = ("tester (charge-interposer)", "implementor (charge-interposer)")
 LAYER = None            # canbench.bench_layer, or a stand-in (tests)
 BENCH_ROLES = None      # canbench.bench_roles, or a stand-in (tests)
+ERRORS = None           # canbench.errors, or a stand-in (tests)
 BENCH_LOCK = None       # shared/bench's vtrux_bench.bench_lock, or a stand-in (tests)
 
 
@@ -159,6 +178,14 @@ def pcanfd(bitrate, **kw):
     return open_bench("pcanfd", bitrate, **kw)
 
 
+def pcanfd_report(bitrate, **kw):
+    """The PCAN-USB FD (role pcanfd) with bus_states="report": can-tools'
+    CanbenchPcanBus, bus states and overruns as error frames in the stream,
+    never raised. kw: python-can's pcan keywords (auto_reset, state, ...),
+    never a pick."""
+    return open_bench("pcanfd", bitrate, bus_states="report", **kw)
+
+
 def canchg(bitrate, **kw):
     """The charger segment's Innomaker (role canchg) in libusb mode."""
     return open_bench("canchg", bitrate, **kw)
@@ -186,6 +213,23 @@ def bus_error(bus, msg):
     is classified on that bus."""
     L = LAYER if LAYER is not None else _pinned_layer()
     return L.bus_error(getattr(bus, "inner", bus), msg)
+
+
+def errors():
+    """The pinned canbench.errors (or ERRORS)."""
+    if ERRORS is not None:
+        return ERRORS
+    import can_tools_pin
+    can_tools_pin.use()
+    from canbench import errors as e
+    return e
+
+
+def lost_frames(msg):
+    """Whether msg is an error frame that reports frames lost (can-tools'
+    errors.lost_frames: a controller report with CAN_ERR_CRTL_RX_OVERFLOW).
+    Reads nothing on the bench."""
+    return bool(errors().lost_frames(msg))
 
 
 def main(argv):

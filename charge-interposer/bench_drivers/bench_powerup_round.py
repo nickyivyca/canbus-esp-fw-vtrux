@@ -476,8 +476,11 @@ class Witness(object):
         else:
             kw["state"] = can.BusState.PASSIVE
         self.mode = "normal (ACKs)" if acks else "listen-only"
-        # role pcanfd (shared/bench SPEC section 8, 2026-11-18)
-        self.bus = adapter_roles.pcanfd(500000, **kw)
+        # role pcanfd (shared/bench SPEC section 8, 2026-11-18), bus states
+        # reported (the reviewer's PCAN item 2, 2026-11-20): what it reads goes
+        # through reader_death.screen, so a state row is not an error row and
+        # an overrun row VOIDs the boot as lost frames (run_boot's DIED)
+        self.bus = adapter_roles.pcanfd_report(500000, **kw)
         self.rows, self.lock = [], threading.Lock()
         self.stop_ev = threading.Event()
         self.death = reader_death.Death("pcan witness")
@@ -489,7 +492,7 @@ class Witness(object):
         reader_death.guard(self.death, self.stop_ev, self._step)
 
     def _step(self):
-        m = self.bus.recv(timeout=0.05)
+        m = reader_death.screen(self.bus, self.bus.recv(timeout=0.05), self.death)
         if m is not None:
             with self.lock:
                 self.rows.append((m.timestamp, m.arbitration_id,
@@ -1049,7 +1052,7 @@ def reader_death_checks():
             return None
 
     exc = RuntimeError("A PCAN status 0x40000 BUSPASSIVE")
-    saved = (adapter_roles.pcanfd, run_scenario.SerialTap, globals()["time"])
+    saved = (adapter_roles.pcanfd_report, run_scenario.SerialTap, globals()["time"])
     d = scratch_dir.make("powerup-reader-death")
     try:
         run_scenario.SerialTap = Tap
@@ -1058,7 +1061,7 @@ def reader_death_checks():
             perf_counter=real_time.perf_counter)
         args = types.SimpleNamespace(port="/dev/x2", wican_state="test")
         for mode in ("noack", "ack"):
-            adapter_roles.pcanfd = lambda *a, **k: reader_death.RaisingBus(frames(), exc)
+            adapter_roles.pcanfd_report = lambda *a, **k: reader_death.RaisingBus(frames(), exc)
             ok, lines = run_boot(args, d, 1, mode)
             voids = [x for x in lines if x.startswith("VOID")]
             out.append((ok == reader_death.DIED and len(voids) == 1
@@ -1068,12 +1071,41 @@ def reader_death_checks():
                         "%s CAN-FAIL: a witness that raises mid-window makes "
                         "the boot VOID with the error, no FAIL line: %s"
                         % (mode, voids or lines[-1:])))
-            adapter_roles.pcanfd = lambda *a, **k: QuietBus(frames())
+            adapter_roles.pcanfd_report = lambda *a, **k: QuietBus(frames())
             ok, lines = run_boot(args, d, 2, mode)
             out.append((ok is False and any(x.startswith("FAIL") for x in lines),
                         "%s: the same three rows from a witness that lived are "
                         "judged, a FAIL (what a dead reader's rows were before)"
                         % mode))
+            # the reviewer's PCAN item 2 (2026-11-20): an overrun row from the
+            # PCAN opened with bus states reported VOIDs the boot as lost frames
+            R = reader_death.report_rows()
+            adapter_roles.pcanfd_report = lambda *a, **k: reader_death.report_bus(
+                frames() + [R["passive"], R["overrun"]])
+            ok, lines = run_boot(args, d, 3, mode)
+            voids = [x for x in lines if x.startswith("VOID")]
+            out.append((ok == reader_death.DIED and len(voids) == 1
+                        and "VOID %s_03: the pcan witness reader lost frames" % mode in voids[0]
+                        and not any(x.startswith("FAIL") for x in lines),
+                        "%s CAN-FAIL: an overrun row makes the boot VOID as lost "
+                        "frames, no FAIL line: %s" % (mode, voids or lines[-1:])))
+        # the Witness itself: a state row is not an error row, a bus error is
+        R = reader_death.report_rows()
+        got = []
+        adapter_roles.pcanfd_report = lambda *a, **k: got.append(k) or reader_death.report_bus(
+            [R["frame"], R["passive"], R["ack"]])
+        w = Witness(acks=False)
+        real_time.sleep(0.2)
+        rows = w.take()
+        w.close()
+        out.append(([(r[1], r[2]) for r in rows] == [(0x7F4, False),
+                                                    (R["ack"].arbitration_id, True)]
+                    and w.death.states == 1 and w.death.error is None,
+                    "Witness: the frame and the bus error are rows (err only on "
+                    "the bus error), the state row kept out and counted: %s"
+                    % [(hex(r[1]), r[2]) for r in rows]))
+        out.append((len(got) == 1 and "state" in got[0] and "auto_reset" not in got[0],
+                    "Witness: listen-only opens pcanfd_report with state=PASSIVE: %s" % got))
         out.append((bench_rc([True, reader_death.DIED]) == 1
                     and bench_rc([True, None]) == 0
                     and bench_rc([False, True]) == 1,
@@ -1082,7 +1114,7 @@ def reader_death_checks():
         out.append((VERDICT_WORD[reader_death.DIED].startswith("VOID"),
                     "its verdict word is VOID"))
     finally:
-        adapter_roles.pcanfd, run_scenario.SerialTap, globals()["time"] = saved
+        adapter_roles.pcanfd_report, run_scenario.SerialTap, globals()["time"] = saved
         scratch_dir.remove(d)
     return out
 
@@ -1189,6 +1221,10 @@ MUTANTS = [
     ("reader death: a dead witness's boot exits 0",
      "    return 1 if any(o is False or o == reader_death.DIED for o in oks) else 0",
      "    return 1 if any(o is False for o in oks) else 0"),
+    # 2026-11-20, the reviewer's PCAN item 2
+    ("PCAN item 2: the witness reads unscreened",
+     "        m = reader_death.screen(self.bus, self.bus.recv(timeout=0.05), self.death)",
+     "        m = self.bus.recv(timeout=0.05)"),
 ]
 
 

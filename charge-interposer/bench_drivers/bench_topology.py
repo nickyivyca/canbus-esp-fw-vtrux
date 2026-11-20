@@ -49,6 +49,12 @@ lines, never a topology answer, and the Kvaser is recovered. The sends here
 are slow (10 per second, 40 probes 10 ms apart), so the drains stay
 threads.
 
+THE PCAN (the reviewer's PCAN item 2, 2026-11-20): opened with bus states
+reported (adapter_roles.pcanfd_report). Each drain reads under
+reader_death's guard; a raise other than a kvaser TX stall, or a row
+reporting frames lost (adapter_roles.lost_frames), ends it, and the run is
+VOID with its line (void_in), never a topology answer.
+
     py -3.14 charge-interposer/bench_drivers/bench_topology.py
     py -3.14 .../bench_topology.py --self-test | --can-fail
 """
@@ -67,6 +73,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adapter_roles               # noqa: E402  (every adapter by its bench role)
 import kvaser_link                 # noqa: E402  (the Kvaser on kvaser_usb)
+import reader_death                # noqa: E402  (a drain that dies or loses frames is VOID)
 
 import can                                                   # noqa: E402
 
@@ -130,8 +137,9 @@ OPENERS = {
     # auto_reset on the PCAN is not optional: phase 2 transmits, and a
     # python-can PCAN bus without it latches BUS-OFF silently, turning a
     # reachability test into one that cannot fail honestly. Role pcanfd
-    # (2026-11-18).
-    "pcan": lambda: adapter_roles.pcanfd(BITRATE, auto_reset=True),
+    # (2026-11-18), bus states reported (the reviewer's PCAN item 2,
+    # 2026-11-20): its states come up as error frames, never raised
+    "pcan": lambda: adapter_roles.pcanfd_report(BITRATE, auto_reset=True),
     # the Kvaser on kvaser_usb, role kvaser (2026-11-13): its echoes kept
     # and consumed by the stall rule, never counted as heard (WatchedBus)
     "kvaser": lambda: kvaser_link.WatchedBus(kvaser_link.open_bus(receive_own_messages=True)),
@@ -146,6 +154,16 @@ def stall_in(drains, exc=None):
     for d in drains.values():
         if isinstance(d.exc, kvaser_link.Stall):
             return d.exc
+    return None
+
+
+def void_in(drains):
+    """The VOID line of a drain that died other than on a kvaser TX stall,
+    or read a row reporting frames lost (reader_death; the reviewer's PCAN
+    item 2, 2026-11-20), or None: its counts are not a topology answer."""
+    for d in drains.values():
+        if d.death.error and not isinstance(d.exc, kvaser_link.Stall):
+            return d.death.void_line()
     return None
 
 
@@ -172,27 +190,37 @@ class Drain(object):
         self.not_bus = 0
         self.total = 0
         self.exc = None          # what ended the drain early (a kvaser TX stall)
+        # under reader_death's guard (the reviewer's PCAN item 2,
+        # 2026-11-20): a raise or a row reporting frames lost ends the drain,
+        # kept in death, and the run is VOID (void_in)
+        self.death = reader_death.Death(name)
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._run)
         self._t.daemon = True
 
     def _run(self):
-        while not self._stop.is_set():
-            try:
-                m = self.bus.recv(timeout=0.05)
-            except Exception as e:
-                self.exc = e
-                return
-            if m is None:
-                continue
-            if getattr(m, "is_error_frame", False):
-                if adapter_roles.bus_error(self.bus, m):
-                    self.errors += 1
-                else:
-                    self.not_bus += 1
-                continue
-            self.total += 1
-            self.ids[m.arbitration_id] += 1
+        reader_death.guard(self.death, self._stop, self._step)
+
+    def _step(self):
+        try:
+            m = self.bus.recv(timeout=0.05)
+        except Exception as e:
+            self.exc = e
+            raise
+        if m is None:
+            return
+        if getattr(m, "is_error_frame", False):
+            if adapter_roles.lost_frames(m):
+                raise reader_death.LostFrames(
+                    "error frame 0x%08X data %s reports frames lost"
+                    % (m.arbitration_id, bytes(m.data).hex()))
+            if adapter_roles.bus_error(self.bus, m):
+                self.errors += 1
+            else:
+                self.not_bus += 1
+            return
+        self.total += 1
+        self.ids[m.arbitration_id] += 1
 
     def start(self):
         self._t.start()
@@ -338,6 +366,7 @@ def self_test():
     # SocketCAN every error frame counts
     class Err(object):
         is_error_frame, is_rx = True, True
+        data = bytes(8)             # no overflow bit: not lost frames
 
         def __init__(self, cls):
             self.arbitration_id = 0x20000000 | cls
@@ -377,6 +406,30 @@ def self_test():
           % (got,))
     got = drained(None)
     check(got == (2, 0, 1), "not SocketCAN: both error frames counted: %s" % (got,))
+    # the reviewer's PCAN item 2 (2026-11-20): the PCAN opened with bus states
+    # reported. A state row is not a bus error; an overrun row ends the drain
+    # as lost frames and the run is VOID (void_in); a stall stays a stall
+    R = reader_death.report_rows()
+    rb = reader_death.report_bus([R["frame"], R["passive"], R["ack"], R["overrun"], R["frame"]])
+    d = Drain("pcan", rb).start()
+    d._t.join(2.0)
+    v = void_in({"pcan": d})
+    check(not d._t.is_alive() and d.death.lost and (d.errors, d.not_bus, d.total) == (1, 1, 1)
+          and len(rb.left) == 1 and v and v.startswith("VOID: the pcan reader lost frames"),
+          "CAN-FAIL: an overrun row ends the drain (1 bus error, 1 state row, 1 frame "
+          "counted before it) and VOIDs the run: %s %s" % ((d.errors, d.not_bus, d.total), v))
+    d2 = Drain("pcan", reader_death.RaisingBus([], RuntimeError("A PCAN status BUSOFF"))).start()
+    d2._t.join(2.0)
+    check((void_in({"pcan": d2}) or "").startswith("VOID: the pcan reader died"),
+          "a drain whose recv raises: VOID, the error kept")
+    d3 = Drain("kvaser", reader_death.RaisingBus(
+        [], kvaser_link.Stall("kvaser TX stall: planted", 1.0))).start()
+    d3._t.join(2.0)
+    check(stall_in({"kvaser": d3}) is d3.exc and void_in({"kvaser": d3}) is None,
+          "a kvaser TX stall in a drain is still the stall's, not void_in's")
+    import inspect
+    check(inspect.getsource(main).count("if void_in(drains):\n") == 3,
+          "main: each phase's counts are taken only if no drain died or lost frames")
     print("\nbench_topology self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -475,6 +528,9 @@ def main():
         print("\nphase 1: listening (no data frames; adapters DO ack), "
               "%.0f s" % args.seconds)
         time.sleep(args.seconds)
+        if void_in(drains):
+            print(void_in(drains))
+            return 2
         vehicle, quiet = [], []
         for n, d in drains.items():
             pages = DIAG_IDS & set(d.ids)
@@ -502,6 +558,9 @@ def main():
                 windows[x] = talk_as_charger(x, buses, drains, args.seconds)
                 if stall_in(drains):
                     raise stall_in(drains)
+                if void_in(drains):
+                    print(void_in(drains))
+                    return 2
             verdict, vehicle, known_charger, lines = classify_charger_up(windows)
             for ln in lines:
                 print(ln)
@@ -542,6 +601,9 @@ def main():
         time.sleep(0.5)
         if stall_in(drains):
             raise stall_in(drains)
+        if void_in(drains):
+            print(void_in(drains))
+            return 2
 
         print("  offered %d, send errors %d" % (sent, errs))
         if sent == 0:
@@ -601,6 +663,15 @@ def main():
 
 # --can-fail (script_can_fail.py): each edit must make --self-test fail
 MUTANTS = [
+    # 2026-11-20, the reviewer's PCAN item 2
+    ("PCAN item 2: a lost-frames row counted as a state row",
+     "            if adapter_roles.lost_frames(m):\n", "            if False:\n"),
+    ("PCAN item 2: a dead drain's counts used",
+     "        if d.death.error and not isinstance(d.exc, kvaser_link.Stall):",
+     "        if False:"),
+    ("PCAN item 2: the drain unguarded",
+     "        reader_death.guard(self.death, self._stop, self._step)",
+     "        while not self._stop.is_set():\n            self._step()"),
     ("one page is enough",
      "def classify_charger_up(windows, min_pages=MIN_DIAG_PAGES):",
      "def classify_charger_up(windows, min_pages=1):"),
@@ -630,11 +701,11 @@ MUTANTS = [
     ("a drain's stall not found", "        if isinstance(d.exc, kvaser_link.Stall):",
      "        if False:"),
     ("drain: every error frame a bus error",
-     "                if adapter_roles.bus_error(self.bus, m):", "                if True:"),
+     "            if adapter_roles.bus_error(self.bus, m):", "            if True:"),
     ("drain: no error frame a bus error",
-     "                if adapter_roles.bus_error(self.bus, m):", "                if False:"),
-    ("drain: not-bus errors not counted", "                    self.not_bus += 1\n",
-     "                    pass\n"),
+     "            if adapter_roles.bus_error(self.bus, m):", "            if False:"),
+    ("drain: not-bus errors not counted", "                self.not_bus += 1\n",
+     "                pass\n"),
 ]
 
 
