@@ -38,7 +38,8 @@ VOID; else PASS.
 Prints a header line naming the record, one line per rep (a rep with a spec 3 finding is followed
 by a line "spec 3 finding (<mode> rep <n>): ..."), and a last line "verdict V: N reps, ..., W with
 the whole 403 and its reason (<body> body)", with "; F spec 3 finding(s)" after it when there are
-any; exit 0 PASS, 1 otherwise.
+any (suite_judges' B21 reads that count off the verdict line and puts it first in B21's summary
+line: the reviewer, answer to 48b1100e); exit 0 PASS, 1 otherwise.
 """
 import json
 import os

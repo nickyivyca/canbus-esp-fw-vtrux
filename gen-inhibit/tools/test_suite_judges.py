@@ -1032,7 +1032,37 @@ def main():
     check("B21 both PASS: PASS, 40 whole 403s", lambda: r21["verdict"] == "PASS"
           and r21["figures"]["multipart_whole_403"]["value"] + r21["figures"]["image_whole_403"]["value"] == 40,
           (r21["verdict"], r21["detail"]))
+    check("B21 both PASS: no spec 3 finding figure or text", lambda: "spec3_findings" not in r21["figures"]
+          and "spec 3" not in r21["detail"], (r21["figures"], r21["detail"]))
     gi_paths.remove_tree(d)
+
+    # 2a'''. B21's spec 3 findings lifted into its summary line (the gen-inhibit reviewer, answer to
+    #     48b1100e): the client files' verdict lines with "; F spec 3 finding(s)" after them (as
+    #     ota_guard_client_judge prints them when F > 0) give the summary their sum, first in the
+    #     line with each file named; "; 0 spec 3 finding(s)" gives none.
+    for case, counts, want in (("b21_spec3_both", {"multipart": 2, "image": 1}, 3),
+                               ("b21_spec3_one", {"multipart": 0, "image": 4}, 4),
+                               ("b21_spec3_zero", {"multipart": 0, "image": 0}, 0)):
+        d = os.path.join(scratch, case)
+        shutil.copytree(real, d)
+        for kind, k3 in counts.items():
+            p = os.path.join(d, "bench", "B21_client_%s_e3d9437.txt" % kind)
+            s, k = re.subn(r"^(verdict VOID: 20 reps, .*)$", r"\1; %d spec 3 finding(s)" % k3,
+                           open(p, encoding="utf-8").read(), flags=re.M)
+            check("%s: %s edited once" % (case, kind), lambda: k == 1, k)
+            open(p, "w", encoding="utf-8").write(s)
+        r21 = judge_all(d)["B21"][0]
+        if want:
+            named = ["%s %d (B21_client_%s_e3d9437.txt)" % (b, n, b) for b, n in counts.items() if n]
+            check("%s: VOID, %d spec 3 finding(s) first in the line, each file with one named" % (case, want),
+                  lambda: r21["verdict"] == "VOID" and r21["figures"].get("spec3_findings", {}).get("value") == want
+                  and r21["detail"].startswith("%d spec 3 finding(s): %s;" % (want, ", ".join(named))),
+                  (r21["verdict"], r21["figures"].get("spec3_findings"), r21["detail"][:200]))
+        else:
+            check("%s: VOID, no spec 3 finding figure or text" % case,
+                  lambda: r21["verdict"] == "VOID" and "spec3_findings" not in r21["figures"]
+                  and "spec 3" not in r21["detail"], (r21["verdict"], r21["figures"], r21["detail"][:200]))
+        gi_paths.remove_tree(d)
 
     # 2a''. B11raw with every POST passing in the window and one arm void in the quiesce analysis:
     #     VOID, never PASS (the edits above change one file each, and the baseline's POSTs are already

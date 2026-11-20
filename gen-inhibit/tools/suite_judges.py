@@ -1068,16 +1068,22 @@ def b21(F):
     # the refusal judged at the client (spec 9.3, user 2026-11-19; topic (E)): ota_guard_client_judge's
     # verdict per body, FAIL, ERROR or VOID as it reads them (the reviewer's readings (s)-(w), answer to
     # b07f7984); how each connection ended is in its lines, recorded, not judged
-    worst, notes = "PASS", []
+    worst, notes, spec3 = "PASS", [], []
     for kind in ("multipart", "image"):
+        cf = F.one(r"B21_client_%s_%s\.txt" % (kind, C7))
         m = re.search(r"^verdict (PASS|FAIL|ERROR|VOID): (\d+) reps, (\d+) PASS, (\d+) FAIL, (\d+) ERROR, "
-                      r"(\d+) VOID, (\d+) with the whole 403 and its reason", text(F.one(
-                          r"B21_client_%s_%s\.txt" % (kind, C7))), re.M)
+                      r"(\d+) VOID, (\d+) with the whole 403 and its reason(.*)$", text(cf), re.M)
         if not m:
             v, n, whole = "ERROR", 0, 0
             notes.append("%s: no client verdict line" % kind)
         else:
             v, n, whole = m.group(1), int(m.group(2)), int(m.group(7))
+            # a rep whose mode setter replied 200 while the page shows another mode: VOID in the
+            # client's verdict, and its spec 3 finding count lifted to the front of this line when
+            # above 0, so it can't sit unseen in the client file (the reviewer, answer to 48b1100e)
+            f3 = re.search(r"; (\d+) spec 3 finding\(s\)\s*$", m.group(8))
+            if f3 and int(f3.group(1)) > 0:
+                spec3.append((kind, int(f3.group(1)), base(cf)))
             if v != "PASS":
                 notes.append("%s %s (%s PASS, %s FAIL, %s ERROR, %s VOID of %d reps)" % (
                     kind, v, m.group(3), m.group(4), m.group(5), m.group(6), n))
@@ -1085,8 +1091,14 @@ def b21(F):
         figs[kind + "_whole_403"] = fig(whole)
         worst = ruled_verdict([worst, v])
         notes.append("%s %d of %d with the whole 403 and its reason" % (kind, whole, n))
+    lead = []
+    if spec3:
+        figs["spec3_findings"] = fig(sum(k for _b, k, _f in spec3))
+        lead = ["%d spec 3 finding(s): %s" % (figs["spec3_findings"]["value"], ", ".join(
+            "%s %d (%s)" % (b, k, f) for b, k, f in spec3))]
     v = "FAIL" if bad else worst
-    return [result("B21", v, figs, "; ".join(bad + notes) if v != "PASS" else "both guards hold; " + "; ".join(notes))]
+    return [result("B21", v, figs, "; ".join(lead + bad + notes) if v != "PASS"
+                   else "both guards hold; " + "; ".join(notes))]
 
 
 def e4_response(t):

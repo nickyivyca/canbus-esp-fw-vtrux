@@ -240,6 +240,16 @@ MUTANTS = [
     ("B21: the whole-403 figure from the VOID count", "v, n, whole = m.group(1), int(m.group(2)), int(m.group(7))",
      "v, n, whole = m.group(1), int(m.group(2)), int(m.group(6))"),
     ("B21: the guards' FAIL lost under a client verdict", '    v = "FAIL" if bad else worst\n', "    v = worst\n"),
+    # B21's spec 3 findings lifted into the summary line (the reviewer, answer to 48b1100e)
+    ("B21: the spec 3 finding count not lifted", "                spec3.append((kind, int(f3.group(1)), base(cf)))\n",
+     "                pass\n"),
+    ("B21: a zero spec 3 finding count lifted too", "            if f3 and int(f3.group(1)) > 0:\n",
+     "            if f3:\n"),
+    ("B21: the spec 3 findings summed as one per file", "fig(sum(k for _b, k, _f in spec3))",
+     "fig(len(spec3))"),
+    ("B21: the spec 3 findings after the guards and notes", "lead + bad + notes",
+     "bad + notes + lead"),
+    ("B21: the spec 3 finding's file not named", '"%s %d (%s)" % (b, k, f)', '"%s %d" % (b, k)'),
     # the car-data endpoints not registered (spec 12.4, user 2026-11-16)
     ("B21: the car-data sentence not required", "    elif B21_UNREGISTERED not in fg:\n", "    elif False:\n"),
     ("B21: any line naming the car-data endpoints will do",
