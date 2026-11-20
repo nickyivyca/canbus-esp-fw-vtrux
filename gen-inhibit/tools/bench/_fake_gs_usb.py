@@ -16,9 +16,14 @@ import time
 
 
 class Msg:
-    def __init__(self, arbitration_id=0, data=b"", is_rx=True, is_error_frame=False, timestamp=0.0):
+    """python-can's Message as the drain reads it; is_extended_id (from can-tools 262ba7b the drain keeps the
+    frames read before the first send with their id and whether it is extended) defaults to an id above 0x7FF."""
+
+    def __init__(self, arbitration_id=0, data=b"", is_rx=True, is_error_frame=False, timestamp=0.0,
+                 is_extended_id=None):
         self.arbitration_id, self.data = arbitration_id, bytes(data)
         self.is_rx, self.is_error_frame, self.timestamp = is_rx, is_error_frame, timestamp
+        self.is_extended_id = arbitration_id > 0x7FF if is_extended_id is None else is_extended_id
 
 
 class StallError(Exception):

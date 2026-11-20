@@ -167,6 +167,7 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
                      is_rx=True):
             self.arbitration_id, self.data = arbitration_id, bytes(data)
             self.is_error_frame, self.timestamp, self.is_rx = is_error_frame, timestamp, is_rx
+            self.is_extended_id = is_extended_id    # canbench's drain keeps it with each frame (262ba7b)
     can.Message, can.CanError = Message, CanError
     wire = {"q": [], "open": None, "ghost": False, "lock": threading.Lock()}
 
@@ -386,15 +387,18 @@ def checks(C):
           shuts and shuts[0][1:] == (500000, False) and sum(1 for e in log if e[0] == "echoes") == 1
           and k.index("echoes") < k.index("gs shutdown"), (shuts, log[-8:]))
     bsend = [e[1] for e in log if e[0] == "before_send"]
-    check("control: the drain's counts taken once, before the replay's first send and at least the settle after "
-          "its open, nothing yet (kind none, no id), kept with the replay, in the measure and printed",
-          len(bsend) == 1 and "gs first send" in k and k.index("before_send") < k.index("gs first send")
-          and (bsend[0].get("echoes"), bsend[0].get("rx"), bsend[0].get("errors"), bsend[0].get("kind"),
-               bsend[0].get("id")) == (0, 0, 0, [], None)
+    empty = {"echoes": 0, "rx": 0, "errors": 0, "kind": [], "frames": []}
+    check("control: the settle waited once, before the replay's first send and at least the settle after its open; "
+          "canbench's before_send empty (no frame), kept with the replay with the settle's event, in the measure and "
+          "printed", len(bsend) == 1 and "gs first send" in k and k.index("before_send") < k.index("gs first send")
+          and {x: bsend[0].get(x) for x in empty} == empty
           and bsend[0]["since_open_ms"] >= bsend[0]["settle_s"] * 1000 - 0.01
-          and ed.get("before_send") == bsend[0] and (rec.get("echoes") or {}).get("before_send") == bsend[0]
+          and ed.get("before_send") == empty and ed.get("at_settle") == bsend[0]
+          and (rec.get("echoes") or {}).get("before_send") == empty
+          and (rec.get("echoes") or {}).get("at_settle") == bsend[0]
           and ed.get("drained", {}).get("echoes") == rp.get("frames")
-          and "\nbefore the first send: 0 echoes, 0 rx, 0 error frames (kind none, id -), " in out, (bsend, ed))
+          and "\nbefore the first send: 0 echoes, 0 rx, 0 error frames (kind none; frames none), settled " in out,
+          (bsend, ed))
     ws = rec.get("witness_states") or []
     check("control: the PCAN's error-passive state raised from recv after the probe is recorded, and the witness "
           "read on (the bursts above were witnessed)", len(ws) == 1 and "error passive" in ws[0][1] and ws[0][0] > 0.020,
@@ -413,13 +417,14 @@ def checks(C):
         ed = (rec.get("replay") or {}).get("echo_drain") or {}
         bs = ed.get("before_send") or {}
         n = (rec.get("replay") or {}).get("frames")
-        check("a leftover %s at the open: PASS, exit 0; counted before the first send with its kind (the id not "
-              "told: canbench's drain keeps counts), the echoes judged after it, the drain's whole count kept" % kind,
+        check("a leftover %s at the open: PASS, exit 0; in canbench's before_send with its kind and its frame (id "
+              "0x6a9, data 01), the echoes judged canbench's after_send, the drain's whole count kept" % kind,
               rc == 0 and rec.get("verdict") == "PASS" and bs.get("kind") == [kind]
-              and bs.get("echoes" if kind == "echo" else "rx") == 1 and "counts only" in str(bs.get("id"))
+              and bs.get("echoes" if kind == "echo" else "rx") == 1
+              and bs.get("frames") == [{"kind": kind, "id": 0x6A9, "extended": False, "data": "01"}]
               and ed.get("echoes") == n
               and (ed.get("drained") or {}).get("echoes") == n + (1 if kind == "echo" else 0)
-              and "(kind %s, id not told" % kind in out, (rc, rec.get("verdict"), ed))
+              and "(kind %s; frames %s 0x6a9 [01]), settled " % (kind, kind) in out, (rc, rec.get("verdict"), ed))
     rc, rec, log, out = run(C, [], leftover="echo", drop_one=True)
     n = (rec.get("replay") or {}).get("frames")
     check("CAN-FAIL: a leftover echo and one frame giving no echo: FAIL by its verdict naming one echo short "
@@ -431,8 +436,9 @@ def checks(C):
     check("one frame giving no echo, no leftover: FAIL naming one echo short, exit 1",
           rc == 1 and "echoes for" in str(rec.get("verdict")), (rc, rec.get("verdict")))
     rc, rec, log, out = run(C, [], no_snapshot=True)
-    check("no before_send snapshot taken: FAIL by its verdict naming the missing snapshot, exit 1",
-          rc == 1 and "no before_send snapshot" in str(rec.get("verdict")), (rc, rec.get("verdict")))
+    check("no drain_before_send before the first send: FAIL by its verdict naming it, exit 1",
+          rc == 1 and "no wait for the open's frames (drain_before_send)" in str(rec.get("verdict")),
+          (rc, rec.get("verdict")))
 
     for label, argv, kw, want in (
             ("--hold-extra-ms 20 (can-fail)", ["--hold-extra-ms", "20"], {}, "over"),
@@ -488,10 +494,14 @@ MUTANTS_ECHO = [
      'FRAMES)\n        t0 = time.perf_counter()\n',
      "        t0 = time.perf_counter()\n"
      '        threading.Timer(0.05, KB.drain_before_send, (b, "canmain_burst_check replay")).start()\n'),
-    ("canmain_burst_check.py", "the snapshot not kept in the measure",
+    ("canmain_burst_check.py", "canbench's before_send not kept in the measure",
      '         "before_send": echo.get("before_send"), ', "         "),
-    ("canmain_burst_check.py", "the snapshot not printed",
+    ("canmain_burst_check.py", "the settle's event not kept in the measure",
+     '"at_settle": echo.get("at_settle"), ', ""),
+    ("canmain_burst_check.py", "the before_send line not printed",
      '        print("before the first send: ', '        0 and print("before the first send: '),
+    ("canmain_burst_check.py", "the before_send frames not printed",
+     "frames_text(bs.get(\"frames\"))", '"none"'),
     # the witness reads on past a bus state (2026-11-19)
     ("canmain_burst_check.py", "the witness stops at a bus state raised from recv",
      "                time.sleep(0.001)\n                continue\n            if m is None:",

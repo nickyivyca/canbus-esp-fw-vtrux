@@ -151,13 +151,17 @@ LEFTOVER FRAMES AT THE OPEN (the gen-inhibit reviewer's Q1 (i), 2026-11-19). In 
 63e90da0 (runs/benchcheck_63e90da_20261119T101544/) every replay's drain read one frame more than it sent:
 the first run of the take as an echo (502 echoes for 501 frames, a FAIL), the later ones as another frame;
 not yet known: whether the device hands up a frame left from its previous session at the open. A leftover echo
-would also hide one unACKed frame in NONODE, whose void item counts fewer echoes than frames. So a sender calls
-drain_before_send(bus, what) just before its first frame: it waits BEFORE_SEND_SETTLE_S from the open, takes
-the drain's counts as "before_send" (with the kinds that moved; canbench's drain keeps no frame ids, so the id
-is not told) and records them; drain_stop then judges only the counts after it, and records the snapshot and
-the drain's whole counts ("drained") beside them. A drain stopped with no snapshot taken is an "error" in its
-echoes event, so a sender that skips it is judged as a failed drain. When can-tools' drain reports the frames
-read before the first send itself, drain_before_send becomes a thin wrapper over it.
+would also hide one unACKed frame in NONODE, whose void item counts fewer echoes than frames. From can-tools
+262ba7b (gen-inhibit main 226e9f01, 2026-11-20) canbench's drain splits its counts at the bus's first send()
+itself: before_send, with the first frames' kind, id, extended flag and data, and after_send; its open returns
+once a read has come back empty, so what the device held at the open lands in before_send. A sender calls
+drain_before_send(bus, what) just before its first frame: it waits BEFORE_SEND_SETTLE_S from the open and
+records canbench's before_send so far; drain_stop judges only canbench's after_send, and records its
+before_send (at the stop, frames included), the settle's event and the drain's whole counts ("drained") beside
+it. A drain stopped with no drain_before_send call is an "error" in its echoes event, so a sender that skips it
+is judged as a failed drain. The CAN replay tooling's bench run (reverse-it tools/artifacts/can-tools-bench/runs/
+drain_split_20261120*/) saw both leftovers this is for, each read in before_send: a close's last frame's echo
+read at the next open, and a frame the Kvaser kept retrying before canmain opened, read as rx (3 of 3 rounds).
 
 THE PCAN, BY ROLE (the same ruling, 2026-11-18). PCAN-Basic numbers PCAN-USB channels
 PCAN_USBBUS1, 2, ... in the order it finds them, so channel PCAN_USBBUS1 is the first found.
@@ -569,20 +573,19 @@ def _innomaker_not_up(role, what):
                              % (role, row.netdev, what))
 
 
-FOUND_UP_REFUSAL = "found up, refused (if_up='refuse')"     # canbench bench_layer's refusal text (0f9c85f)
-
-
 def _innomaker_open(role, bitrate, kw, restore, drain, what):
-    """open_bench(role, mode="libusb", if_up="refuse", drain=drain): canbench's found-up refusal recorded as the
-    finding (module docstring, "FOUND WITH ITS LINK UP")."""
+    """open_bench(role, mode="libusb", if_up="refuse", drain=drain): canbench's found-up refusal (its LinkFoundUp,
+    from can-tools 262ba7b; matched by its text before) recorded as the finding, with the link canbench read
+    (module docstring, "FOUND WITH ITS LINK UP")."""
     bl = layer()
     try:
         b = _call(InnomakerError, "open_bench %s" % role, bl.open_bench, role, bitrate, mode="libusb",
                   restore=restore, if_up="refuse", drain=drain, **kw)
     except InnomakerError as e:
-        if FOUND_UP_REFUSAL in str(e.__cause__ or ""):
+        if isinstance(e.__cause__, bl.LinkFoundUp):
             record({"event": "refused", "backend": "gs_usb", "role": role, "what": what, "finding": "found up",
-                    "by": "canbench open_bench if_up='refuse'", "refusal": str(e.__cause__)})
+                    "by": "canbench open_bench if_up='refuse' (LinkFoundUp)", "refusal": str(e.__cause__),
+                    "link": getattr(e.__cause__, "link", None)})
             raise InnomakerError("%s: found up, which is interference (in a run the runner brings it down); "
                                  "recorded as a finding, its link not touched, %s refused (%s)"
                                  % (role, what, e.__cause__)) from e.__cause__
@@ -680,19 +683,35 @@ class innomaker_held:
         return False
 
 
-BEFORE_SEND_SETTLE_S = 0.05    # drain_before_send: the drain reads this long from the open before the snapshot
+BEFORE_SEND_SETTLE_S = 0.05    # drain_before_send: the drain reads this long from the open before the first send
 DRAIN_COUNTS = (("echoes", "echo"), ("rx", "rx"), ("errors", "error frame"))
-NO_ID = "not told: canbench's drain keeps counts only"
+NO_SPLIT = "the pinned canbench's drain does not split its counts at the first send (no before_send/after_send)"
+LATE_SETTLE = "drain_before_send called after the first send (canbench's after_send already counting)"
+
+
+def _before_send(st):
+    """canbench's before_send part of a drain's stats (can-tools 262ba7b): the counts and the frames it kept."""
+    bs = st.get("before_send")
+    if not isinstance(bs, dict):
+        return None
+    out = {k: bs.get(k) for k, _kind in DRAIN_COUNTS}
+    out["kind"] = [kind for k, kind in DRAIN_COUNTS if bs.get(k)]
+    out["frames"] = [dict(f) for f in (bs.get("frames") or [])]
+    return out
 
 
 def drain_before_send(bus, what, settle_s=BEFORE_SEND_SETTLE_S):
-    """The drain's counts just before a sender's first frame (the gen-inhibit reviewer's Q1 (i), 2026-11-19):
-    waits until settle_s after the open (bus.vtrux_opened_at; from now if the open left none), so what the device
-    hands up at the open has been read, then snapshots bus.bench_drain's counts onto bus.vtrux_before_send,
-    records a "before_send" event and returns it: echoes, rx, errors, settle_s, since_open_ms, kind (the counters
-    that moved: "echo", "rx", "error frame"; the leftover's kind), id (NO_ID: canbench's drain keeps no ids), and
-    "error" when the bus has no drain. drain_stop judges only what came after it (module docstring, "LEFTOVER
-    FRAMES AT THE OPEN")."""
+    """Waits, before a sender's first frame, until what the device hands up at the open has been read, and
+    records what the drain read so far (the gen-inhibit reviewer's Q1 (i), 2026-11-19). From can-tools 262ba7b
+    canbench's drain splits its counts at the bus's first send() itself (before_send, with the frames' kind, id,
+    extended flag and data; after_send), so this is a thin wrapper over it: it waits until settle_s after the open
+    (bus.vtrux_opened_at; from now if the open left none), marks the bus (bus.vtrux_before_send), records a
+    "before_send" event and returns it: canbench's before_send counts so far (echoes, rx, errors), kind (the
+    counters that moved: "echo", "rx", "error frame"), frames, primed (canbench's: a read came back empty after the
+    open), settle_s, since_open_ms, and "error" when the bus has no drain, the drain's read failed, the pinned
+    drain does not split, or canbench's after_send is already counting (LATE_SETTLE: called after the first send,
+    so a leftover read late could have been judged). drain_stop judges only canbench's after_send, and judges
+    nothing after a failed before_send (module docstring, "LEFTOVER FRAMES AT THE OPEN")."""
     ev = {"event": "before_send", "backend": "gs_usb", "role": getattr(bus, "vtrux_role", None), "what": what,
           "settle_s": settle_s}
     opened = getattr(bus, "vtrux_opened_at", None)
@@ -702,12 +721,16 @@ def drain_before_send(bus, what, settle_s=BEFORE_SEND_SETTLE_S):
     if not isinstance(st, dict):
         ev["error"] = "no echo drain on this bus (not opened with drain=True)"
     else:
-        snap = dict(st)
-        ev.update({k: snap.get(k) for k, _kind in DRAIN_COUNTS})
-        ev["kind"] = [kind for k, kind in DRAIN_COUNTS if snap.get(k)]
-        ev["id"] = NO_ID if ev["kind"] else None
-        if snap.get("error"):
-            ev["error"] = snap["error"]
+        bs = _before_send(st)
+        if bs is None:
+            ev["error"] = NO_SPLIT
+        else:
+            ev.update(bs)
+            ev["primed"] = st.get("primed")
+            if any((st.get("after_send") or {}).get(k) for k, _kind in DRAIN_COUNTS):
+                ev["error"] = LATE_SETTLE
+        if st.get("error"):
+            ev["error"] = st["error"]
     ev["since_open_ms"] = None if opened is None else round((time.perf_counter() - opened) * 1000, 3)
     bus.vtrux_before_send = ev
     record(ev)
@@ -717,10 +740,13 @@ def drain_before_send(bus, what, settle_s=BEFORE_SEND_SETTLE_S):
 def drain_stop(bus, sent, what):
     """Stops canbench's echo drain on `bus` (opened with drain=True: bus.stop_drain(), which waits out at most one
     1 ms read and puts recv back), records an "echoes" event and returns it: sent; echoes, rx (other frames) and
-    errors (error frames) counted AFTER drain_before_send's snapshot; before_send (that snapshot); drained (the
-    drain's whole counts); stop_ms (how long the stop took); echoes_equal_sent; and "error" when the drain's read
-    failed, the bus has no drain, or no snapshot was taken before the first send (module docstring, "A SENDER ON A
-    libusb ROLE READS ITS ECHOES" and "LEFTOVER FRAMES AT THE OPEN")."""
+    errors (error frames) from canbench's after_send (counted from the bus's first send(); can-tools 262ba7b);
+    before_send (canbench's before_send at the stop: its counts, kind and frames, everything read from the open up
+    to the first send, a leftover from the device's previous session included); at_settle (drain_before_send's
+    event); drained (the drain's whole counts); stop_ms (how long the stop took); echoes_equal_sent; and "error"
+    when the drain's read failed, the bus has no drain, the pinned drain does not split, or drain_before_send was
+    not called before the first send (module docstring, "A SENDER ON A libusb ROLE READS ITS ECHOES" and "LEFTOVER
+    FRAMES AT THE OPEN")."""
     ev = {"event": "echoes", "backend": "gs_usb", "role": getattr(bus, "vtrux_role", None), "what": what,
           "sent": sent}
     stop = getattr(bus, "stop_drain", None)
@@ -735,16 +761,19 @@ def drain_stop(bus, sent, what):
         ev.update(echoes=None, echoes_equal_sent=None, error="%s: %s" % (type(e).__name__, e))
         record(ev)
         return ev
-    before = getattr(bus, "vtrux_before_send", None)
+    settled = getattr(bus, "vtrux_before_send", None)
     ev["drained"] = {k: st.get(k) for k, _kind in DRAIN_COUNTS}
-    ev["before_send"] = before
-    if before is None or before.get("error"):
+    ev["before_send"] = _before_send(st)
+    ev["at_settle"] = settled
+    split = isinstance(st.get("after_send"), dict) and ev["before_send"] is not None
+    if settled is None or settled.get("error") or not split:
         ev.update(echoes=None, echoes_equal_sent=None, stop_ms=st.get("stop_ms"),
-                  error=("no before_send snapshot (drain_before_send) before the first send"
-                         if before is None else "the before_send snapshot failed: %s" % before["error"]))
+                  error=(NO_SPLIT if not split else
+                         "no wait for the open's frames (drain_before_send) before the first send" if settled is None
+                         else "drain_before_send failed: %s" % settled["error"]))
         record(ev)
         return ev
-    after = {k: (None if st.get(k) is None else st.get(k) - (before.get(k) or 0)) for k, _kind in DRAIN_COUNTS}
+    after = {k: st["after_send"].get(k) for k, _kind in DRAIN_COUNTS}
     ev.update(after, stop_ms=st.get("stop_ms"),
               echoes_equal_sent=(None if sent is None else after["echoes"] == sent))
     if st.get("error"):

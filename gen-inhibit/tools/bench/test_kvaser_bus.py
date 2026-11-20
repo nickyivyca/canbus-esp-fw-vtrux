@@ -635,10 +635,11 @@ def innomaker():
                       "and no open recorded" % role,
                       [(x["event"], x.get("finding"), x.get("what")) for x in evs]
                       == [("refused", "found up", "innomaker_bus")], evs)
-                check("innomaker: %s found up -> the refusal is canbench's open_bench(if_up='refuse') (can-tools "
-                      "0f9c85f), its text kept in the finding" % role,
-                      evs and evs[0].get("by") == "canbench open_bench if_up='refuse'"
-                      and "found up, refused (if_up='refuse')" in str(evs[0].get("refusal")), evs)
+                check("innomaker: %s found up -> the refusal is canbench's LinkFoundUp from open_bench(if_up='refuse') "
+                      "(can-tools 262ba7b), its text and the link it read kept in the finding" % role,
+                      evs and evs[0].get("by") == "canbench open_bench if_up='refuse' (LinkFoundUp)"
+                      and "found up" in str(evs[0].get("refusal")) and isinstance(evs[0].get("link"), dict)
+                      and evs[0]["link"].get("up") is True, evs)
         finally:
             gi_paths.remove_tree(runs)
         f = InnoFakes(start_up=("canchg",))
@@ -986,15 +987,47 @@ def echo():
                 got = send(g, 300)
                 time.sleep(0.02)
                 ev = kb.drain_stop(g, got, "test")
-            check("echo: a leftover %s at the open -> before_send counts it (%s 1), kind [%r], the id not told" % (
-                  label, key, kind), bs.get(key) == 1 and bs.get("kind") == [kind] and bs.get("id") == kb.NO_ID
-                  and "error" not in bs and bs.get("event") == "before_send" and bs.get("role") == "canmain", bs)
-            check("echo: a leftover %s -> the counts after it judged (echoes 300 == sent 300), the snapshot and "
-                  "the drain's whole counts recorded beside them" % label,
-                  (ev.get("echoes"), ev.get("echoes_equal_sent"), ev.get("before_send")) == (300, True, bs)
+            want_frame = {"kind": {"echoes": "echo", "rx": "rx", "errors": "error"}[key], "id": msg.arbitration_id,
+                          "extended": msg.arbitration_id > 0x7FF, "data": bytes(msg.data).hex()}
+            check("echo: a leftover %s at the open -> before_send counts it (%s 1), kind [%r], the frame with its id "
+                  "(canbench's, can-tools 262ba7b), primed" % (label, key, kind),
+                  bs.get(key) == 1 and bs.get("kind") == [kind] and bs.get("frames") == [want_frame]
+                  and bs.get("primed") is True and "error" not in bs and bs.get("event") == "before_send"
+                  and bs.get("role") == "canmain", bs)
+            check("echo: a leftover %s -> canbench's after_send judged (echoes 300 == sent 300), its before_send "
+                  "(the frame), the settle's event and the drain's whole counts recorded beside them" % label,
+                  (ev.get("echoes"), ev.get("echoes_equal_sent"), ev.get("at_settle")) == (300, True, bs)
+                  and ev["before_send"][key] == 1 and ev["before_send"]["frames"] == [want_frame]
                   and ev["drained"][key] == (301 if key == "echoes" else 1) and ev.get(key if key != "echoes" else
                                                                                       "rx") == 0
                   and "error" not in ev and evs == [bs, ev], (ev, evs))
+        # the CAN replay tooling's bench run (drain_split_20261120*): a frame read after the settle but before
+        # the first send (the Kvaser's retried frame came up as rx) is still before_send, not judged
+        with InnoFakes() as kb:
+            kb.record = lambda ev: None
+            g = FG.drained(FG.StallingGs(cap=256), kb=kb)
+            bs = kb.drain_before_send(g, "test")
+            g.put(FG.Msg(0x6B8, b"\x00\x5b"))       # read after the settle, before the first send
+            time.sleep(0.02)
+            got = send(g, 300)
+            time.sleep(0.02)
+            ev = kb.drain_stop(g, got, "test")
+        check("echo: a frame read after the settle but before the first send -> in before_send at the stop (rx 1, "
+              "its id), not in the judged counts (rx 0, echoes 300 == sent)",
+              bs.get("rx") == 0 and ev["before_send"]["rx"] == 1
+              and [f["id"] for f in ev["before_send"]["frames"]] == [0x6B8]
+              and (ev.get("rx"), ev.get("echoes"), ev.get("echoes_equal_sent")) == (0, 300, True)
+              and "error" not in ev, (bs, ev))
+        with InnoFakes() as kb:
+            kb.record = lambda ev: None
+            g = FG.drained(FG.StallingGs(cap=256), kb=kb)
+            bs = kb.drain_before_send(g, "test")
+            got = send(g, 50)
+            g.put(FG.Msg(0x6B8, b"\x01\x5b"))       # after the first send: another node's frame, judged
+            time.sleep(0.02)
+            ev = kb.drain_stop(g, got, "test")
+        check("echo: a frame read after the first send -> judged (rx 1), not in before_send",
+              (ev.get("rx"), ev["before_send"]["rx"], ev.get("echoes")) == (1, 0, 50), ev)
         with InnoFakes() as kb:
             kb.record = lambda ev: None
             g = FG.StallingGs(cap=256, acked=lambda n: n != 5)
@@ -1014,9 +1047,24 @@ def echo():
             got = send(g, 20)
             time.sleep(0.02)
             ev = kb.drain_stop(g, got, "test")
-        check("echo: no before_send snapshot -> an error naming it, no counts judged, the whole counts kept",
-              "no before_send snapshot" in str(ev.get("error")) and ev.get("echoes") is None
-              and ev.get("echoes_equal_sent") is None and ev["drained"]["echoes"] == 20 and evs == [ev], ev)
+        check("echo: no drain_before_send before the first send -> an error naming it, no counts judged, the whole "
+              "counts kept", "no wait for the open's frames (drain_before_send)" in str(ev.get("error"))
+              and ev.get("echoes") is None and ev.get("echoes_equal_sent") is None and ev["drained"]["echoes"] == 20
+              and evs == [ev], ev)
+        # a drain that does not split at the first send (a pin before can-tools 262ba7b): refused, not judged
+        evs = []
+        with InnoFakes() as kb:
+            kb.record = evs.append
+            g = FG.StallingGs(cap=256)
+            g.vtrux_role, g.vtrux_opened_at = "canmain", time.perf_counter()
+            g.bench_drain = {"echoes": 3, "rx": 0, "errors": 0, "running": True, "error": None}
+            g.stop_drain = lambda: {"echoes": 3, "rx": 0, "errors": 0, "running": False, "error": None,
+                                    "stop_ms": 0.1}
+            bs = kb.drain_before_send(g, "test", settle_s=0.0)
+            ev = kb.drain_stop(g, 3, "test")
+        check("echo: a drain with no before_send/after_send split -> before_send and drain_stop each name it, no "
+              "counts judged", kb.NO_SPLIT == str(bs.get("error")) and kb.NO_SPLIT == str(ev.get("error"))
+              and ev.get("echoes") is None and ev.get("echoes_equal_sent") is None and evs == [bs, ev], (bs, ev))
         with InnoFakes() as kb:
             kb.record = lambda ev: None
             g = FG.drained(FG.StallingGs(cap=256), kb=kb)
@@ -1024,9 +1072,22 @@ def echo():
             time.sleep(0.01)
             bs = kb.drain_before_send(g, "test", settle_s=0.0)
             ev = kb.drain_stop(g, 0, "test")
-        check("echo: a snapshot of a drain that already failed -> its error kept, and drain_stop names the failed "
-              "snapshot, no counts judged", "recv after shutdown" in str(bs.get("error"))
-              and "before_send snapshot failed" in str(ev.get("error")) and ev.get("echoes") is None, (bs, ev))
+        check("echo: a before_send read of a drain that already failed -> its error kept, and drain_stop names the "
+              "failed read, no counts judged", "recv after shutdown" in str(bs.get("error"))
+              and "drain_before_send failed: " in str(ev.get("error")) and ev.get("echoes") is None, (bs, ev))
+        # drain_before_send after the first send (canbench's after_send already counting): refused, nothing judged
+        with InnoFakes() as kb:
+            kb.record = lambda ev: None
+            g = FG.drained(FG.StallingGs(cap=256), kb=kb)
+            got = send(g, 20)
+            time.sleep(0.02)
+            bs = kb.drain_before_send(g, "test", settle_s=0.0)
+            got += send(g, 20)
+            time.sleep(0.02)
+            ev = kb.drain_stop(g, got, "test")
+        check("echo: drain_before_send after the first send -> LATE_SETTLE in it, drain_stop names it, no counts judged",
+              bs.get("error") == kb.LATE_SETTLE and ("drain_before_send failed: " + kb.LATE_SETTLE) == ev.get("error")
+              and ev.get("echoes") is None and ev.get("echoes_equal_sent") is None, (bs, ev))
         with InnoFakes() as kb:
             kb.record = lambda ev: None
             bs = kb.drain_before_send(FG.StallingGs(cap=256), "test", settle_s=0.0)
@@ -2316,30 +2377,41 @@ MUTANTS = [
      '              echoes_equal_sent=True)\n'),
     ("echo: stop_ms not recorded", '    ev.update(after, stop_ms=st.get("stop_ms"),\n', "    ev.update(after,\n"),
     # leftover frames at the open (the gen-inhibit reviewer's Q1 (i), 2026-11-19)
-    ("echo: the snapshot not subtracted", 'st.get(k) - (before.get(k) or 0)) for k', "st.get(k)) for k"),
+    # canbench's split at the first send (can-tools 262ba7b; gen-inhibit main 226e9f01, 2026-11-20)
+    ("echo: the whole counts judged, not canbench's after_send",
+     'after = {k: st["after_send"].get(k) for k', "after = {k: st.get(k) for k"),
+    ("echo: the frames before the first send not kept",
+     '    out["frames"] = [dict(f) for f in (bs.get("frames") or [])]\n', '    out["frames"] = []\n'),
+    ("echo: the echoes event's before_send is the settle's, not canbench's at the stop",
+     '    ev["before_send"] = _before_send(st)\n', '    ev["before_send"] = settled\n'),
+    ("echo: the settle's event not in the echoes event", '    ev["at_settle"] = settled\n', ""),
+    ("echo: a drain with no split not reported at the settle", "            ev[\"error\"] = NO_SPLIT\n",
+     "            pass\n"),
+    ("echo: canbench's primed not recorded", '            ev["primed"] = st.get("primed")\n', ""),
+    ("echo: a settle after the first send not refused", "                ev[\"error\"] = LATE_SETTLE\n",
+     "                pass\n"),
     ("echo: no settle before the snapshot",
      "    time.sleep(max(0.0, t_from + settle_s - time.perf_counter()))\n", ""),
     ("echo: the settle from the call, not the open",
      "    t_from = opened if opened is not None else time.perf_counter()\n", "    t_from = time.perf_counter()\n"),
     ("echo: the settle is 10 ms", "BEFORE_SEND_SETTLE_S = 0.05 ", "BEFORE_SEND_SETTLE_S = 0.01 "),
     ("echo: the leftover's kind not recorded",
-     '        ev["kind"] = [kind for k, kind in DRAIN_COUNTS if snap.get(k)]\n', '        ev["kind"] = []\n'),
-    ("echo: the id note missing", '        ev["id"] = NO_ID if ev["kind"] else None\n', '        ev["id"] = None\n'),
-    ("echo: a missing snapshot judged on the whole counts",
-     '    if before is None or before.get("error"):\n',
-     '    if before is not None and before.get("error"):\n'
-     '        pass\n    if before is None:\n        before = {}\n    if before.get("error"):\n'),
-    ("echo: a failed snapshot judged anyway",
-     '    if before is None or before.get("error"):\n', "    if before is None:\n"),
-    ("echo: the snapshot not kept on the bus", "    bus.vtrux_before_send = ev\n", ""),
-    ("echo: the snapshot not recorded", "    bus.vtrux_before_send = ev\n    record(ev)\n", "    bus.vtrux_before_send = ev\n"),
-    ("echo: the snapshot not in the echoes event", '    ev["before_send"] = before\n', ""),
+     '    out["kind"] = [kind for k, kind in DRAIN_COUNTS if bs.get(k)]\n', '    out["kind"] = []\n'),
+    ("echo: a sender with no drain_before_send judged",
+     '    if settled is None or settled.get("error") or not split:\n',
+     '    if (settled is not None and settled.get("error")) or not split:\n'),
+    ("echo: a failed before_send read judged anyway",
+     '    if settled is None or settled.get("error") or not split:\n', "    if settled is None or not split:\n"),
+    ("echo: the settle mark not kept on the bus", "    bus.vtrux_before_send = ev\n", ""),
+    ("echo: the before_send event not recorded", "    bus.vtrux_before_send = ev\n    record(ev)\n",
+     "    bus.vtrux_before_send = ev\n"),
     ("echo: the whole counts not recorded",
      '    ev["drained"] = {k: st.get(k) for k, _kind in DRAIN_COUNTS}\n', ""),
     ("echo: a snapshot of a bus with no drain not reported",
      '        ev["error"] = "no echo drain on this bus (not opened with drain=True)"\n    else:\n',
      '        pass\n    else:\n'),
-    ("echo: a snapshot's drain error not kept", '        if snap.get("error"):\n', "        if False:\n"),
+    ("echo: a before_send read's drain error not kept",
+     '        if st.get("error"):\n            ev["error"] = st["error"]\n', ""),
     ("echo: the open time not stamped",
      "    b.vtrux_opened_at = time.perf_counter()     # drain_before_send's settle runs from here\n", ""),
     ("echo: the counts not recorded", '        ev["error"] = st["error"]\n    record(ev)\n    return ev\n',
@@ -2357,7 +2429,9 @@ MUTANTS = [
      '                  restore=restore, if_up="refuse", drain=drain, **kw)\n',
      '                  restore=restore, drain=drain, **kw)\n'),
     ("innomaker: canbench's found-up refusal not recorded as the finding",
-     "        if FOUND_UP_REFUSAL in str(e.__cause__ or \"\"):\n", "        if False:\n"),
+     "        if isinstance(e.__cause__, bl.LinkFoundUp):\n", "        if False:\n"),
+    ("innomaker: the link canbench read not kept in the finding",
+     ',\n                    "link": getattr(e.__cause__, "link", None)})', "})"),
     # gi_paths for the guard in a process without this folder on sys.path (run ffdf, 2026-11-19)
     ("by file: gi_paths only by a plain import (the run ffdf defect)",
      "        try:\n            import gi_paths as mod\n        except ImportError:\n",
