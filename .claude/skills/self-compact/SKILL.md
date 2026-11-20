@@ -37,6 +37,17 @@ It has no other mode:
 - One request runs per session at a time. Every real call (not `--check`) is
   logged, to `scratch/session-compact/` in this worktree.
 
+## The compact-note hook
+
+`compact_note_hook.py`, beside the tool, is a SessionStart hook on
+compactions. After every compaction (yours, an idle one, or one at the
+context limit) it compares each skill copy Claude Code re-attached with the
+`SKILL.md` on disk and adds one note to your context naming the stale copies
+to re-read, or saying all match. It starts no turn: the note waits for
+whatever wakes you, so a compact-only session gets it on its real wake. Its
+entry goes in each worktree's `settings.local.json`, in the guarded form
+its header gives.
+
 ## When to use it
 
 Only when the user asks for it, at the compaction point your role skill
@@ -73,11 +84,6 @@ characters, so draft the compact message to fit the first time.
   the reviewer's message or batch. For example: "Resume: run the suite per
   <plan file> step 4, then report the results."
 
-  After the idle-compaction hook's wake, it names the step the session was
-  waiting to do, if the user or the reviewer assigned one. If the session
-  was only waiting for the user, the resume message is exactly: "Resume:
-  re-read the docs per AGENTS.md, then wait for the user's next message."
-
   It must not:
   - grant permissions;
   - claim approval;
@@ -90,19 +96,23 @@ characters, so draft the compact message to fit the first time.
 
 ## Resume or compact-only
 
-The resume is the default (user, 2026-10-31). A session that needed a
-resume and didn't get one stays wedged, which costs more than the ~50-70K
-tokens a needless resume does. Pass `--compact-only` only when you are sure
-nothing more is needed from you until an outside trigger arrives: a
-cross-session message, a background-task notification, or the user. When in
-doubt, resume.
+Resume when your next step is work you start by yourself, already assigned
+by your batch, the reviewer or the user. Pass `--compact-only` when your
+next step waits on an outside trigger: a cross-session message, a
+background-task notification, or the user. A resume that only says to wait
+re-reads the docs and goes idle, and the trigger wakes the session anyway;
+compact-only reads them once, when it is woken (user, 2026-11-20).
 
-Compact-only fits a session that is only waiting, with what it waits for and
-what it will do next written in its working log and named in the compact
-message, because no resume message will restate it. The clearest case is a
-session that was only waiting for the user, or for a reviewer message, with
-nothing assigned in the meantime. If the next step needs you to start work
-by yourself, resume.
+Two cases are always compact-only:
+- the idle-compaction hook's wake: an hour idle means you are waiting on an
+  outside trigger;
+- a compaction just after you start a background task you will wait on: its
+  notification wakes you.
+
+With `--compact-only`, the compact message names what you wait for and where
+your next step is written, because no resume message restates it. If you are
+not sure anything outside is due to wake you, resume: a session left without
+a needed resume stays wedged.
 
 ## Procedure
 
@@ -137,8 +147,11 @@ by yourself, resume.
 5. **If auto mode blocks the call,** do not retry it, reword it or run it
    another way. Carry on without compacting, and tell the user in one line.
 6. **After the resume, or whatever wakes a compact-only session.** The
-   next turn starts from a summary. Before acting on it, re-read your role skill and the docs the
-   step needs, per AGENTS.md "After a compaction".
+   next turn starts from a summary. Before acting on it, follow the "Skill
+   check after this compaction" note the compact-note hook put in your
+   context: re-read in full each skill it names stale, and none if it says
+   the copies match. Then re-read the docs the step needs, per AGENTS.md
+   "After a compaction".
 
 ## Platforms
 
