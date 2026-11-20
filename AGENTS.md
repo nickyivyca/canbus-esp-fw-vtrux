@@ -163,11 +163,15 @@ is too long for one read, read it in parts.
 
 A compaction summary records what the session did, not what the docs say.
 Before the first action a doc governs, re-read it in full: `local-paths.md`,
-your role skill's `SKILL.md`, and `$REVERSE_IT_DIR/AGENTS.md` if the step
-works in reverse-it. **Skills especially:** Claude Code re-attaches each
-skill invoked earlier as the text it had when invoked, not the current
-`SKILL.md`, so a skill edited or cherry-picked since then would be followed
-in its old form.
+and `$REVERSE_IT_DIR/AGENTS.md` if the step works in reverse-it.
+
+**Skills:** Claude Code re-attaches each skill invoked earlier as the text
+it had when invoked, not the current `SKILL.md`. After every compaction the
+compact-note hook (`.claude/skills/self-compact/compact_note_hook.py`, a
+SessionStart hook; its entry goes in `settings.local.json` beside the idle
+hook's) adds a "Skill check" note: re-read in full each skill it names
+stale; one it says matches is already current in your context. If no note
+came, re-read your role skill in full.
 
 ### Messages between sessions
 
@@ -202,11 +206,13 @@ message it only reads costs as much as one it acts on.
 A session can compact its own context and resume without anyone at the
 keyboard, with the `/self-compact` skill. It types `/compact` into this
 session's terminal and then, once the compaction is done, one resume message
-naming the next step. By default it resumes. A session sure that nothing
-more is needed from it until a message, a task notification or the user
-arrives may pass `--compact-only` instead, and then nothing is typed; when in
-doubt, resume, since a wedged session costs more than a needless resume. It
-is the only sanctioned way for a session to type into its own input.
+naming the next step. It resumes when the session's next step is work it
+starts by itself. When the next step waits on a message, a task
+notification or the user, which wake the session anyway, it passes
+`--compact-only` and nothing is typed; the idle-compaction hook's wake is
+always compact-only. If nothing outside is due, it resumes: a wedged
+session costs more than a needless resume. It is the only sanctioned way
+for a session to type into its own input.
 
 - **When:** only when the user asks for it, at the compaction point your
   role skill names, or when the idle-compaction hook asks for it. A session
@@ -218,12 +224,20 @@ is the only sanctioned way for a session to type into its own input.
   `.claude/skills/self-compact/idle_compact_hook.py`, blocks the first such
   attempt and wakes the session with a message asking it to self-compact.
   Do it, per the skill. If you can't, say so in one line; the hook lets the
-  next attempt through, as a plain compaction. Its two entries go in each
-  machine's `settings.local.json`, in the guarded form its header gives.
+  next attempt through, as a plain compaction. Its two entries, and the
+  compact-note hook's one, go in each worktree's `settings.local.json`, in
+  the guarded form their headers give. The same file's `env` sets
+  `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` to `100000`, meant to lower the 200K
+  to 100K for a session started after it is set; it has not yet been seen to
+  take effect. Claude Code skips idle compaction near the weekly usage
+  limit.
+- **Context size,** for a compaction point with a size mark: `<python>
+  .claude/tools/check_context.py [--mark TOKENS]`, read-only, separate from
+  the self-compact tool.
 - **Before it:** write everything worth keeping to its files. The summary
   loses detail; files do not.
-- **After it:** re-read your role skill and the docs the step needs before
-  acting (see "After a compaction").
+- **After it:** follow the compact-note hook's skill check and re-read the
+  docs the step needs before acting (see "After a compaction").
 - **If auto mode blocks it,** do not retry it, reword it or run it another
   way. Carry on without compacting and tell the user in one line.
 - **Where it works:** in tmux on Linux, and in terminal Claude Code on
