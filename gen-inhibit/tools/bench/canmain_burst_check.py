@@ -28,9 +28,19 @@ So only canmain and the PCAN can ACK on CAN1.
   the close; no REPLAY_ID frame from the close + 20 ms to the re-open; the probe not ACKed (an
   error frame on the witness after it, before the re-open).
   ECHOES (the gen-inhibit reviewer's ruling (C), 2026-11-19): canmain's echoes are read while it
-  sends (kvaser_bus.echo_drain; unread, gs_usb took no frame after 257, the short bench check of
-  2026-11-19), the drain stopped DRAIN_LEAD_S before the close, and echo_measure checks one echo
-  per frame sent (the PCAN ACKs each); another count, or a drain error, is a breach.
+  sends (unread, gs_usb took no frame after 257, the short bench check of 2026-11-19). From can-tools
+  7a27cc9 the reader is canbench's (inno.open(drain=True): bench_layer.open_bench's drain, 1 ms
+  reads); kvaser_bus.drain_stop stops it DRAIN_LEAD_S before the close and records its counts and
+  stop_ms. echo_measure checks one echo per frame sent (the PCAN ACKs each), and that the stop took
+  at most DRAIN_LEAD_S, so the close is not late for it; another count, a stop past the lead, or a
+  drain error, is a breach.
+  LEFTOVER FRAMES (the gen-inhibit reviewer's Q1 (i), 2026-11-19): every replay of the short bench
+  check of 63e90da0 drained one frame more than it sent, the first run's as an echo (a FAIL). From
+  can-tools 262ba7b canbench's drain splits its counts at the bus's first send (before_send, with the
+  frames' kind, id and data; after_send): kvaser_bus.drain_before_send waits BEFORE_SEND_SETTLE_S from
+  the open before the first frame, and the echoes judged are canbench's after_send; its before_send
+  (frames included), the settle's event and the drain's whole counts are recorded with the replay and
+  printed.
 (a) BURST LENGTH, at 250 kbit: for each --bursts-ms (1, 5, 20: every length B9's and B10's
   schedules use), --repeats times, --gap-s apart, wrong_bitrate_errors.burst (open canmain, one
   send of its SOURCE_ID, hold, close). burst_measure on its window: at least one error frame; the
@@ -68,7 +78,7 @@ PROBE_ID = 0x6A9
 REPLAY_BITRATE = 500000
 PROBE_S = 0.2
 ACK_S = 0.1
-DRAIN_LEAD_S = 0.003      # the echo drain stopped this long before the close (its stop: a 1 ms read or two)
+DRAIN_LEAD_S = 0.003      # the echo drain stopped this long before the close (canbench's stop: one 1 ms read)
 
 
 class Witness(threading.Thread):
@@ -124,15 +134,16 @@ def bench_state(LF, NN, KB):
 
 def replay_and_close(inno, pc, a, can, KB):
     """(b): returns the host times {last_send, close, probe, ack_open, ack_close}, the count, the last payload
-    and the echo drain's record (kvaser_bus.echo_drain: canmain's echoes read while it sends, stopped before
-    its close)."""
-    b = inno.open(bitrate=REPLAY_BITRATE)
-    drain = KB.echo_drain(b, ROLE, "canmain_burst_check replay")
+    and the echo drain's record (canbench's, inno.open(drain=True): canmain's echoes read while it sends;
+    kvaser_bus.drain_stop before its close)."""
+    b = inno.open(bitrate=REPLAY_BITRATE, drain=True)
     echo = None
     period = a.replay_period_ms / 1000.0
-    n, t0 = 0, time.perf_counter()
+    n = 0
     last_send = None
     try:
+        KB.drain_before_send(b, "canmain_burst_check replay")     # what the open handed up, apart (LEFTOVER FRAMES)
+        t0 = time.perf_counter()
         while True:
             b.send(can.Message(arbitration_id=REPLAY_ID, is_extended_id=False, data=n.to_bytes(4, "big")),
                    timeout=0.05)
@@ -146,11 +157,11 @@ def replay_and_close(inno, pc, a, can, KB):
         # DRAIN_LEAD_S before it, so its join is not inside the close
         target = last_send + a.close_after_ms / 1000.0
         time.sleep(max(0.0, target - DRAIN_LEAD_S - time.perf_counter()))
-        echo = drain.stop(sent=n)
+        echo = KB.drain_stop(b, n, "canmain_burst_check replay")
         time.sleep(max(0.0, target - time.perf_counter()))
     finally:
         if echo is None:
-            echo = drain.stop(sent=n)
+            echo = KB.drain_stop(b, n, "canmain_burst_check replay")
         t_close = time.perf_counter()
         b.shutdown()
     while time.perf_counter() < t_close + BM.SILENCE_EDGE_S + 0.005:
@@ -169,14 +180,28 @@ def replay_and_close(inno, pc, a, can, KB):
             "ack_close": time.perf_counter()}, n, "%08x" % (n - 1), echo
 
 
+def frames_text(frames):
+    """canbench's before_send frames as printed: "<kind> 0x<id>[x] [<data hex>]", comma separated, or none."""
+    return ", ".join("%s 0x%x%s [%s]" % (f.get("kind"), f.get("id") or 0, "x" if f.get("extended") else "",
+                                         f.get("data") or "") for f in frames or []) or "none"
+
+
 def echo_measure(echo):
     """The replay's echoes against its frames: every frame the PCAN ACKed completes, so each gives one echo.
-    {"sent", "echoes", "breaches"}; fewer or more echoes than frames (or a drain error) is a breach."""
-    m = {"sent": echo.get("sent"), "echoes": echo.get("echoes"), "breaches": []}
+    {"sent", "echoes", "stop_ms", "before_send", "at_settle", "drained", "breaches"}; echoes are canbench's
+    after_send, from the first send (kvaser_bus.drain_stop); fewer or more echoes than frames (or a drain error, a
+    sender with no drain_before_send among them) is a breach, and so is a drain stop longer than DRAIN_LEAD_S (the
+    close would be late for it)."""
+    m = {"sent": echo.get("sent"), "echoes": echo.get("echoes"), "stop_ms": echo.get("stop_ms"),
+         "before_send": echo.get("before_send"), "at_settle": echo.get("at_settle"), "drained": echo.get("drained"),
+         "breaches": []}
     if echo.get("error"):
         m["breaches"].append("replay: the echo drain failed: %s" % echo["error"])
     elif echo.get("echoes") != echo.get("sent"):
         m["breaches"].append("replay: %s echoes for %s frames sent" % (echo.get("echoes"), echo.get("sent")))
+    if echo.get("stop_ms") is not None and echo["stop_ms"] > DRAIN_LEAD_S * 1000:
+        m["breaches"].append("replay: the echo drain's stop took %s ms, over its %g ms lead before the close"
+                             % (echo["stop_ms"], DRAIN_LEAD_S * 1000))
     return m
 
 
@@ -285,7 +310,12 @@ def main(argv=None):
         print("close: %s ms after the last frame, %d late frames, probe %s (%d error frames)"
               % (c["gap_ms"], c["late"], c["probe"], c["probe_error_frames"]))
         e = rec.get("echoes") or {}
-        print("echoes: %s for %s frames sent" % (e.get("echoes"), e.get("sent")))
+        print("echoes: %s for %s frames sent, drain stopped in %s ms" % (e.get("echoes"), e.get("sent"),
+                                                                       e.get("stop_ms")))
+        bs, st = e.get("before_send") or {}, e.get("at_settle") or {}
+        print("before the first send: %s echoes, %s rx, %s error frames (kind %s; frames %s), settled %s ms after "
+              "the open" % (bs.get("echoes"), bs.get("rx"), bs.get("errors"), ", ".join(bs.get("kind") or []) or "none",
+                            frames_text(bs.get("frames")), st.get("since_open_ms")))
         for m in rec["bursts"]:
             print("burst %g ms (held %g): %d error frames, span %s ms, last %s ms after the close"
                   % (m["asked_ms"], m["held_ms"], m["n"], m["span_ms"], m["last_after_close_ms"]))

@@ -137,17 +137,20 @@ def judging(C):
 ECHO_CAP = 64      # the fake gs_usb stalls with this many echoes unread (canmain: 256; the replay here is short)
 
 
-def real_echo_drain(log):
-    """The REAL kvaser_bus.echo_drain (by file, from beside this test), its record into the log."""
+def real_kb(log):
+    """The REAL kvaser_bus (by file, from beside this test): its drain_stop, its record into the log, and through
+    its layer() the pinned canbench, whose open_bench(drain=True) reader (_start_drain) the fake held open starts
+    on the fake gs_usb (can-tools 7a27cc9; the gen-inhibit reviewer, 2026-11-19)."""
     spec = importlib.util.spec_from_file_location("kvaser_bus_echo_cbc", os.path.join(HERE, "kvaser_bus.py"))
     kb = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(kb)
-    kb.record = lambda ev: log.append(("echoes", ev))
-    return kb.echo_drain
+    kb.record = lambda ev: log.append((ev.get("event"), ev))      # "before_send" and "echoes" events
+    return kb
 
 
 def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late=0.0, wican_mode=0,
-          x2_held=True, kvaser_up=False, drop_echoes=False):
+          x2_held=True, kvaser_up=False, drop_echoes=False, slow_recv=0.0, leftover=None, drop_one=False,
+          no_snapshot=False):
     DEV0 = 5000.0
     EPOCH = time.time() - time.perf_counter()
 
@@ -164,6 +167,7 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
                      is_rx=True):
             self.arbitration_id, self.data = arbitration_id, bytes(data)
             self.is_error_frame, self.timestamp, self.is_rx = is_error_frame, timestamp, is_rx
+            self.is_extended_id = is_extended_id    # canbench's drain keeps it with each frame (262ba7b)
     can.Message, can.CanError = Message, CanError
     wire = {"q": [], "open": None, "ghost": False, "lock": threading.Lock()}
 
@@ -195,13 +199,16 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
                         log.append(("gs stall", self.sent))
                         raise CanError("The message could not be sent")
                 put(time.perf_counter(), msg.arbitration_id, data=msg.data)
-                if not (drop_echoes and self.sent % 10 == 9):
+                if self.sent == 0:
+                    log.append(("gs first send", self.bitrate))
+                if not (drop_echoes and self.sent % 10 == 9) and not (drop_one and self.sent == 7):
                     with self.elock:
                         self.echoes.append(Message(msg.arbitration_id, data=msg.data, is_rx=False))
                 self.sent += 1
 
         def recv(self, timeout=None):
-            end = time.perf_counter() + max(timeout or 0.0, 0.001)
+            # slow_recv: an empty read lasts that long whatever the timeout (a drain whose stop is slow)
+            end = time.perf_counter() + max(timeout or 0.0, 0.001, slow_recv)
             while True:
                 if self.shut:
                     raise CanError("recv after shutdown")
@@ -214,8 +221,8 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
 
         def shutdown(self):
             t_c = time.perf_counter()
-            d = getattr(self, "echo_drain", None)
-            log.append(("gs shutdown", self.bitrate, bool(d is not None and d.is_alive())))
+            d = getattr(self, "bench_drain", None)     # canbench's drain (open_bench drain=True)
+            log.append(("gs shutdown", self.bitrate, bool(d is not None and d.get("running"))))
             self.shut = True
             wire["open"] = None
             if self.th is not None:
@@ -255,7 +262,9 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
 
     KB = types.ModuleType("kvaser_bus")
     KB.fixes = lambda: {"kvaser": False, "gs_usb": True}
-    KB.echo_drain = real_echo_drain(log)
+    kb = real_kb(log)
+    KB.drain_stop = kb.drain_stop
+    KB.drain_before_send = (lambda bus, what: None) if no_snapshot else kb.drain_before_send
 
     def link_down():
         log.append(("kvaser down",))
@@ -275,8 +284,16 @@ def fakes(log, stamps="raw", acks_after_close=False, late_frame=False, stop_late
             log.append(("held enter", self.role))
             return self
 
-        def open(self, bitrate=500000, **kw):
-            return Gs(bitrate)
+        def open(self, bitrate=500000, drain=False, **kw):
+            g = Gs(bitrate)
+            if drain:       # as open_bench(drain=True): the pinned canbench's reader on the bus
+                if leftover:    # a frame the device hands up at the open (its previous session's)
+                    g.echoes.append(Message(0x6A9, data=b"\x01", is_rx=(leftover == "rx")))
+                g.vtrux_role = self.role
+                kb.layer()._start_drain(g, self.role)
+                g.vtrux_opened_at = time.perf_counter()     # as kvaser_bus._innomaker_open sets it
+            log.append(("held open", bitrate, bool(drain)))
+            return g
 
         def __exit__(self, *exc):
             log.append(("held exit", self.role))
@@ -356,10 +373,32 @@ def checks(C):
     check("control: the echo drain's counts recorded with the replay (echoes == frames sent) and judged",
           ed.get("event") == "echoes" and ed.get("sent") == rp.get("frames") == ed.get("echoes")
           and ed.get("echoes_equal_sent") is True and (rec.get("echoes") or {}).get("breaches") == []
-          and "\nechoes: %s for %s frames sent" % (rp.get("frames"), rp.get("frames")) in out, (ed, rec.get("echoes")))
+          and "\nechoes: %s for %s frames sent, drain stopped in " % (rp.get("frames"), rp.get("frames")) in out,
+          (ed, rec.get("echoes")))
+    check("control: the drain's stop time recorded and judged (canbench's stop_ms, within the 3 ms lead)",
+          isinstance(ed.get("stop_ms"), (int, float)) and ed["stop_ms"] <= C.DRAIN_LEAD_S * 1000
+          and (rec.get("echoes") or {}).get("stop_ms") == ed["stop_ms"], ed)
+    opens = [e for e in log if e[0] == "held open"]
+    check("control: the replay's canmain opened with canbench's drain (drain=True); the ACK re-open and the bursts "
+          "without", opens and opens[0] == ("held open", 500000, True) and all(not e[2] for e in opens[1:]), opens)
     shuts = [e for e in log if e[0] == "gs shutdown"]
-    check("control: the drain stopped before the replay's close (not running at canmain's shutdown), once",
-          shuts and shuts[0][1:] == (500000, False) and sum(1 for e in log if e[0] == "echoes") == 1, (shuts, log[-8:]))
+    k = [e[0] for e in log]
+    check("control: the drain stopped (drain_stop, recorded once) before the replay's close, not by the close",
+          shuts and shuts[0][1:] == (500000, False) and sum(1 for e in log if e[0] == "echoes") == 1
+          and k.index("echoes") < k.index("gs shutdown"), (shuts, log[-8:]))
+    bsend = [e[1] for e in log if e[0] == "before_send"]
+    empty = {"echoes": 0, "rx": 0, "errors": 0, "kind": [], "frames": []}
+    check("control: the settle waited once, before the replay's first send and at least the settle after its open; "
+          "canbench's before_send empty (no frame), kept with the replay with the settle's event, in the measure and "
+          "printed", len(bsend) == 1 and "gs first send" in k and k.index("before_send") < k.index("gs first send")
+          and {x: bsend[0].get(x) for x in empty} == empty
+          and bsend[0]["since_open_ms"] >= bsend[0]["settle_s"] * 1000 - 0.01
+          and ed.get("before_send") == empty and ed.get("at_settle") == bsend[0]
+          and (rec.get("echoes") or {}).get("before_send") == empty
+          and (rec.get("echoes") or {}).get("at_settle") == bsend[0]
+          and ed.get("drained", {}).get("echoes") == rp.get("frames")
+          and "\nbefore the first send: 0 echoes, 0 rx, 0 error frames (kind none; frames none), settled " in out,
+          (bsend, ed))
     ws = rec.get("witness_states") or []
     check("control: the PCAN's error-passive state raised from recv after the probe is recorded, and the witness "
           "read on (the bursts above were witnessed)", len(ws) == 1 and "error passive" in ws[0][1] and ws[0][0] > 0.020,
@@ -367,6 +406,39 @@ def checks(C):
     rc, rec, log, out = run(C, [], drop_echoes=True)
     check("one frame in ten giving no echo: FAIL by its verdict naming the echo count, exit 1",
           rc == 1 and "echoes for" in str(rec.get("verdict")) and "verdict: FAIL" in out, (rc, rec.get("verdict")))
+    rc, rec, log, out = run(C, [], slow_recv=0.02)
+    check("a drain whose stop takes ~18 ms (each empty read 20 ms): FAIL by its verdict naming the stop past its "
+          "lead, exit 1", rc == 1 and "echo drain's stop took" in str(rec.get("verdict")) and "verdict: FAIL" in out,
+          (rc, rec.get("verdict")))
+
+    # LEFTOVER FRAMES (the gen-inhibit reviewer's Q1 (i), 2026-11-19): a frame the device hands up at the open
+    for kind in ("echo", "rx"):
+        rc, rec, log, out = run(C, [], leftover=kind)
+        ed = (rec.get("replay") or {}).get("echo_drain") or {}
+        bs = ed.get("before_send") or {}
+        n = (rec.get("replay") or {}).get("frames")
+        check("a leftover %s at the open: PASS, exit 0; in canbench's before_send with its kind and its frame (id "
+              "0x6a9, data 01), the echoes judged canbench's after_send, the drain's whole count kept" % kind,
+              rc == 0 and rec.get("verdict") == "PASS" and bs.get("kind") == [kind]
+              and bs.get("echoes" if kind == "echo" else "rx") == 1
+              and bs.get("frames") == [{"kind": kind, "id": 0x6A9, "extended": False, "data": "01"}]
+              and ed.get("echoes") == n
+              and (ed.get("drained") or {}).get("echoes") == n + (1 if kind == "echo" else 0)
+              and "(kind %s; frames %s 0x6a9 [01]), settled " % (kind, kind) in out, (rc, rec.get("verdict"), ed))
+    rc, rec, log, out = run(C, [], leftover="echo", drop_one=True)
+    n = (rec.get("replay") or {}).get("frames")
+    check("CAN-FAIL: a leftover echo and one frame giving no echo: FAIL by its verdict naming one echo short "
+          "(the whole count, %s, would have matched), exit 1" % n,
+          rc == 1 and n and "replay: %d echoes for %d frames sent" % (n - 1, n) in str(rec.get("verdict"))
+          and ((rec.get("replay") or {}).get("echo_drain") or {}).get("drained", {}).get("echoes") == n,
+          (rc, rec.get("verdict")))
+    rc, rec, log, out = run(C, [], drop_one=True)
+    check("one frame giving no echo, no leftover: FAIL naming one echo short, exit 1",
+          rc == 1 and "echoes for" in str(rec.get("verdict")), (rc, rec.get("verdict")))
+    rc, rec, log, out = run(C, [], no_snapshot=True)
+    check("no drain_before_send before the first send: FAIL by its verdict naming it, exit 1",
+          rc == 1 and "no wait for the open's frames (drain_before_send)" in str(rec.get("verdict")),
+          (rc, rec.get("verdict")))
 
     for label, argv, kw, want in (
             ("--hold-extra-ms 20 (can-fail)", ["--hold-extra-ms", "20"], {}, "over"),
@@ -398,19 +470,38 @@ def checks(C):
 
 MUTANTS_ECHO = [
     # the echo drain (the gen-inhibit reviewer's ruling (C), 2026-11-19)
-    ("canmain_burst_check.py", "the replay's drain not started (stopped at once)",
-     '    drain = KB.echo_drain(b, ROLE, "canmain_burst_check replay")\n',
-     '    drain = KB.echo_drain(b, ROLE, "canmain_burst_check replay")\n    drain.stop()\n'),
-    ("canmain_burst_check.py", "the replay's drain not stopped before the close",
-     "        echo = drain.stop(sent=n)\n        time.sleep(max(0.0, target - time.perf_counter()))\n    finally:\n"
-     "        if echo is None:\n            echo = drain.stop(sent=n)\n        t_close = time.perf_counter()\n"
-     "        b.shutdown()\n",
+    ("canmain_burst_check.py", "the replay's canmain opened without canbench's drain",
+     "    b = inno.open(bitrate=REPLAY_BITRATE, drain=True)\n", "    b = inno.open(bitrate=REPLAY_BITRATE)\n"),
+    ("canmain_burst_check.py", "the replay's drain not stopped before the close (left to the close)",
+     '        echo = KB.drain_stop(b, n, "canmain_burst_check replay")\n        time.sleep(max(0.0, target - time.perf_counter()))\n'
+     '    finally:\n        if echo is None:\n            echo = KB.drain_stop(b, n, "canmain_burst_check replay")\n'
+     "        t_close = time.perf_counter()\n        b.shutdown()\n",
      "        time.sleep(max(0.0, target - time.perf_counter()))\n    finally:\n        t_close = time.perf_counter()\n"
-     "        b.shutdown()\n        echo = drain.stop(sent=n)\n"),
+     '        b.shutdown()\n        echo = KB.drain_stop(b, n, "canmain_burst_check replay")\n'),
+    ("canmain_burst_check.py", "the drain's stop time not judged",
+     '    if echo.get("stop_ms") is not None and echo["stop_ms"] > DRAIN_LEAD_S * 1000:\n', "    if False:\n"),
+    ("canmain_burst_check.py", "the drain's stop time not kept in the measure",
+     '"echoes": echo.get("echoes"), "stop_ms": echo.get("stop_ms"),', '"echoes": echo.get("echoes"),'),
     ("canmain_burst_check.py", "the echo count not checked",
      '    elif echo.get("echoes") != echo.get("sent"):\n', "    elif False:\n"),
     ("canmain_burst_check.py", "the echo measure left out of the verdict",
      '([out["echoes"]] if "echoes" in out else [])', "[]"),
+    # leftover frames at the open (the gen-inhibit reviewer's Q1 (i), 2026-11-19)
+    ("canmain_burst_check.py", "no before_send snapshot before the replay's first send",
+     '        KB.drain_before_send(b, "canmain_burst_check replay")', "        pass"),
+    ("canmain_burst_check.py", "the snapshot taken after the replay's sends",
+     '        KB.drain_before_send(b, "canmain_burst_check replay")     # what the open handed up, apart (LEFTOVER '
+     'FRAMES)\n        t0 = time.perf_counter()\n',
+     "        t0 = time.perf_counter()\n"
+     '        threading.Timer(0.05, KB.drain_before_send, (b, "canmain_burst_check replay")).start()\n'),
+    ("canmain_burst_check.py", "canbench's before_send not kept in the measure",
+     '         "before_send": echo.get("before_send"), ', "         "),
+    ("canmain_burst_check.py", "the settle's event not kept in the measure",
+     '"at_settle": echo.get("at_settle"), ', ""),
+    ("canmain_burst_check.py", "the before_send line not printed",
+     '        print("before the first send: ', '        0 and print("before the first send: '),
+    ("canmain_burst_check.py", "the before_send frames not printed",
+     "frames_text(bs.get(\"frames\"))", '"none"'),
     # the witness reads on past a bus state (2026-11-19)
     ("canmain_burst_check.py", "the witness stops at a bus state raised from recv",
      "                time.sleep(0.001)\n                continue\n            if m is None:",
