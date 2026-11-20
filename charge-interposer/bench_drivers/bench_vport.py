@@ -77,7 +77,10 @@ and the Kvaser is recovered (stall_report). In the no-ACK windows (step
 1's no-ack arm and its can-fail) and the wrong-rate ones (the wrong-rate
 listen arms, 1b discrim, 1c offpair, step 2, m1) the rule is suspended
 (Node.expect_acks(False)): ENOBUFS is a refused send, as CANlib's full
-queue was, and an unechoed frame is not sent. When the ACK returns, every
+queue was, and an unechoed frame is not sent. The node starts with the rule
+suspended, since step 0 leaves nothing to acknowledge it, and each step
+turns it on once its ACKer is on the bus (the reviewer's ruling (2),
+2026-11-20: run 40e6's six "0 echoed" stalls). When the ACK returns, every
 frame still held must echo within 100 ms of that moment, flushed before
 the next window starts (node_sender), else a stall; the flush's frames are
 kept out of the next window's node share, timing and settle rule
@@ -1546,7 +1549,13 @@ def node_sender(watch, msg_of, expect, now, put):
     turns True again (the ACK back) every frame still pending must echo
     within STALL_S of that moment -- the flush, done before the next send
     and reported as ("expected", n flushed, seconds) -- else Stall. Returns
-    the seconds a flush held the node (node_loop shifts its schedule)."""
+    the seconds a flush held the node (node_loop shifts its schedule).
+    The socket is read after every send, a refused one too (2026-11-20, the
+    hand take for the reviewer's ruling (2)): with nothing acknowledging,
+    sends are refused for seconds at a time, and a node that skipped its
+    reads then found its receive queue full when the ACK came back, lost
+    the held frames' echoes and VOIDed the flush (run 40e6's vport-listen,
+    "28 sends unechoed, 552 echoed")."""
     st = {"exp": True}
 
     def send(seq):
@@ -1569,10 +1578,101 @@ def node_sender(watch, msg_of, expect, now, put):
         except kvaser_link.Stall as e:
             if exp:
                 raise
+            watch.poll(0.0)             # a refused send still reads the socket
             raise RuntimeError("refused, no ACK expected: %s" % e)
+        except Exception:                                  # noqa: BLE001
+            watch.poll(0.0)
+            raise
         watch.poll(0.0)
         return pause
     return send
+
+
+class _HeldBus(object):
+    """The self-test's Kvaser on kvaser_usb, as the 2026-11-20 hand take
+    showed it (runs/vport_stall_20261120): with nothing acknowledging it
+    holds HOLD frames and refuses the rest (ENOBUFS, or python-can's
+    "Transmit buffer full"), and each send interval puts ERRS error frames
+    into the socket's receive queue of CAP frames, where one past full is
+    lost, as the kernel drops it; when the ACK comes back every held frame
+    echoes at once."""
+    HOLD, CAP, ERRS = 75, 200, 37
+
+    class M(object):
+        def __init__(self, aid, data, is_rx=True, err=False):
+            self.arbitration_id, self.data = aid, data
+            self.is_extended_id, self.is_rx, self.is_error_frame = False, is_rx, err
+
+    def __init__(self, clock, refuse="enobufs"):
+        self.clock, self.refuse = clock, refuse
+        self.acked, self.held, self.rx, self.lost = False, [], collections.deque(), 0
+
+    def _in(self, m):
+        if len(self.rx) >= self.CAP:
+            self.lost += 1
+        else:
+            self.rx.append(m)
+
+    def _echo(self, msg):
+        self._in(self.M(msg.arbitration_id, msg.data, is_rx=False))
+
+    def send(self, msg, timeout=None):
+        if self.acked:
+            self._echo(msg)
+            return
+        for _ in range(self.ERRS):
+            self._in(self.M(0x20000288, b"\0" * 8, err=True))
+        if len(self.held) >= self.HOLD:
+            if self.refuse == "enobufs":
+                raise OSError(105, "No buffer space available")
+            raise RuntimeError("Transmit buffer full")
+        self.held.append(msg)
+
+    def ack(self):
+        self.acked = True
+        for m in self.held:
+            self._echo(m)
+        self.held = []
+
+    def recv(self, timeout=0.0):
+        self.clock[0] += timeout            # time passes while it waits
+        return self.rx.popleft() if self.rx else None
+
+
+def held_flush_cases():
+    """node_sender on a real kvaser_link.EchoWatch over _HeldBus: 4 s with
+    nothing acknowledging (frames held, the rest refused, error frames
+    arriving), then the ACK back and the flush. -> [(kind, the flush's put
+    or ("stall", text), why)] for a refused send by ENOBUFS and by
+    python-can's buffer-full timeout."""
+    out = []
+    for kind in ("enobufs", "transmit buffer full"):
+        clock, put = [0.0], []
+        bus = _HeldBus(clock, refuse="enobufs" if kind == "enobufs" else "timeout")
+        w = kvaser_link.EchoWatch(bus, clock=lambda: clock[0])
+        exp = [False]
+        snd = node_sender(w, lambda s: _HeldBus.M(NODE_ID, s.to_bytes(8, "little")),
+                          lambda: exp[0], lambda: clock[0], put.append)
+        res = None
+        for seq in range(400):
+            clock[0] += NODE_PERIOD_S
+            try:
+                snd(seq)
+            except kvaser_link.Stall as e:
+                res = ("stall", str(e))
+                break
+            except Exception:                              # noqa: BLE001
+                pass                                       # a refused send
+        if res is None:
+            bus.ack()
+            exp[0] = True
+            try:
+                snd(400)
+                res = put[-1] if put else ("no flush",)
+            except kvaser_link.Stall as e:
+                res = ("stall", str(e))
+        out.append((kind, res, "%d frames lost on the full receive queue" % bus.lost))
+    return out
 
 
 def _node_proc(q, stop_ev, ready_ev, expect_ev):
@@ -1586,7 +1686,9 @@ def _node_proc(q, stop_ev, ready_ev, expect_ev):
     epoch) and ends the node."""
     import can
     q.put(("prio", above_normal()))
-    bus = kvaser_link.open_bus(receive_own_messages=True)
+    # no error frames: the node reads only its echoes, and a flood of error
+    # frames with nothing acknowledging would fill its receive queue
+    bus = kvaser_link.open_bus(receive_own_messages=True, error_frames=False)
     calls = {}
 
     def on_echo(k, tr, te):
@@ -1619,7 +1721,12 @@ class Node(object):
     send's host-side lag is logged (take_log). Since 2026-11-13 a frame is
     SENT when its own echo came back (take_echoes; D3), each echo carrying
     its send call's time so window() attributes it to the window that sent
-    it; expect_acks() switches the stall rule (node_sender)."""
+    it; expect_acks() switches the stall rule (node_sender). It starts
+    with no ACK expected (2026-11-20, the reviewer's ruling (2)): step 0
+    leaves the board and the witness listen-only, so nothing acknowledges
+    its first frames, and in run 40e6 six runs were VOIDed by that stall
+    before their step's ACKer came up. Each step turns expect_acks(True)
+    on once its ACKer is on the bus."""
 
     def __init__(self, channel=None):
         import multiprocessing as mp
@@ -1627,8 +1734,7 @@ class Node(object):
         self.q = ctx.Queue()
         self.stop_ev = ctx.Event()
         self.ready_ev = ctx.Event()
-        self.expect_ev = ctx.Event()
-        self.expect_ev.set()
+        self.expect_ev = ctx.Event()      # clear: no ACK expected yet
         self.p = ctx.Process(target=_node_proc, args=(
             self.q, self.stop_ev, self.ready_ev, self.expect_ev), daemon=True)
         self.sent, self.fails, self.log, self.echoes = [], 0, [], []
@@ -2965,6 +3071,7 @@ def run_bench(args):
             quiet_rows = wit.take()
             save_rows(quiet_rows, "recstart quiet")
             node = Node(args.kvaser_channel).start()
+            node.expect_acks(True)           # the witness acknowledging
             t0 = time.perf_counter()
             node_reads = []
             for at in RECSTART_NODE_AT:
@@ -3184,6 +3291,7 @@ def run_bench(args):
             print("\n== 3 flood: delay added to the node's 0x%X" % NODE_ID)
             wit = set_witness(wit, True)
             board.cmd("MODE normal")
+            node.expect_acks(True)           # the witness and the board ACK
             # settle (reviewer, 2026-10-16): the 00:01 baseline ran straight
             # after step 2's 1M flood and lost a node send. The board idle,
             # wait for SETTLE_CLEAN_S with no failed node send.
@@ -3239,6 +3347,7 @@ def run_bench(args):
             print("\n== 4 stalled task")
             wit = set_witness(wit, False)
             board.cmd("MODE normal")
+            node.expect_acks(True)           # the board acknowledging
             rows, _s = window(board, wit, node, 2.0, "STALL %d" % STALL_N,
                               from_command=True)
             ok, _m, lines = score_stall(rows, STALL_N, acked=True)
@@ -3258,6 +3367,7 @@ def run_bench(args):
                     print("    " + ln)
                 board.cmd("RESET")
                 node = Node(args.kvaser_channel).start()
+                node.expect_acks(True)       # the board acknowledging
             else:
                 print("    no-ACKer variant NOT RUN: needs --no-acker-ready "
                       "(the WiCAN off or passive; the node is closed)")
@@ -3344,6 +3454,22 @@ def _pframe(t, seq):
     return (t, NODE_ID, False, bytes(node_payload(seq)))
 
 
+STEP_HEAD = re.compile(r'^        if "(\w+)" in steps:\s*$', re.M)
+
+
+def step_blocks(src):
+    """run_bench's source -> {step name: its block's text}, each up to the
+    next step or the verdicts (the self-test's check of the node's stall
+    rule per step)."""
+    heads = list(STEP_HEAD.finditer(src))
+    end = src.find('print("\\n== verdicts")')
+    out = {}
+    for i, m in enumerate(heads):
+        stop = heads[i + 1].start() if i + 1 < len(heads) else end
+        out[m.group(1)] = src[m.start():stop]
+    return out
+
+
 def self_test():
     fails = []
 
@@ -3392,10 +3518,10 @@ def self_test():
     check("adapter_roles.pcanfd(" in wcode and "BusState.PASSIVE" in wcode
           and "kvaser" not in wcode,
           "the witness is the PCAN, role pcanfd, opened PASSIVE (not the Kvaser)")
-    check("kvaser_link.open_bus(receive_own_messages=True)" in nsrc
+    check("kvaser_link.open_bus(receive_own_messages=True, error_frames=False)" in nsrc
           and "kvaser_link.set_link(True)" in nsrc,
           "the node is the Kvaser on kvaser_usb, its link brought up first, its "
-          "echoes kept (2026-11-13)")
+          "echoes kept (2026-11-13), no error frames taken (2026-11-20)")
 
     # 2026-11-13, the reviewer's D3/D5 and the (a)/(b) ruling: the node's
     # stall rule per window kind, a frame sent when its echo came back,
@@ -3463,6 +3589,10 @@ def self_test():
         check(False, "node: a held frame not echoed within 100 ms of the ACK was accepted")
     except kvaser_link.Stall:
         check(True, "node: a held frame not echoed within 100 ms of the ACK is a stall")
+    for kind, held_flush, why in held_flush_cases():
+        check(held_flush[0] == "expected" and held_flush[1] == _HeldBus.HOLD,
+              "node: %s, the ACK back -> every held frame's echo read, the flush "
+              "passes (%s) -> %s" % (kind, why, held_flush))
     log = []
     stalls = [0]
 
@@ -3553,6 +3683,30 @@ def self_test():
     check("above_normal()" in inspect.getsource(_node_proc)
           and 'get_context("spawn")' in inspect.getsource(Node),
           "the node runs in its own (spawned) process at ABOVE_NORMAL")
+    # the node's start (the reviewer's ruling (2), 2026-11-20): step 0 leaves
+    # the board and the witness listen-only, so the node starts with no ACK
+    # expected, and each step that has its frames complete turns it on
+    fresh = Node()
+    check(not fresh.expect_ev.is_set(),
+          "the node starts with no ACK expected (nothing acknowledges it after step 0)")
+    blocks = step_blocks(rsrc)
+    s0 = rsrc[rsrc.find("== 0 witness silence"):rsrc.find('if "listen" in steps')]
+    check("Node(args.kvaser_channel).start()" in s0 and "expect_acks(True)" not in s0
+          and "set_witness(wit, True)" not in s0,
+          "step 0 starts the node with no ACKer on the bus and no ACK expected")
+    need = ("listen", "recstart", "discrim", "offpair", "bitrate", "m1", "flood", "stall")
+    lack = [s for s in need if "node.expect_acks(True)" not in blocks.get(s, "")]
+    check(sorted(blocks) == sorted(need + ("dominant",)) and not lack,
+          "each step whose node frames complete turns the stall rule on (missing: %s; "
+          "steps %s)" % (lack, sorted(blocks)))
+    for s in ("flood", "stall"):
+        b = blocks.get(s, "")
+        i_ack = b.find('board.cmd("MODE normal")')
+        i_on = b.find("node.expect_acks(True)")
+        i_win = b.find("window(")
+        check(0 <= i_ack < i_on < i_win,
+              "%s: the stall rule on after the board's ACK and before its first window"
+              % s)
 
     # 1 listen
     pc = [_pframe(i * 0.01 + 0.0001234, i) for i in range(500)]
@@ -5201,6 +5355,42 @@ PRIO_SKIPPED = {
     "posix": "F2's ABOVE_NORMAL mutant (Windows code only)",
 }
 MUTANTS.append(PRIO_MUTANT["nt" if os.name == "nt" else "posix"])
+# the node's start (the reviewer's ruling (2), 2026-11-20): the 40e6 form,
+# the node expecting an ACK from its first frame, and each step's turn-on
+MUTANTS += [
+    ("the node starts expecting an ACK (40e6's step-0 stall)",
+     "        self.expect_ev = ctx.Event()      # clear: no ACK expected yet\n",
+     "        self.expect_ev = ctx.Event()      # clear: no ACK expected yet\n"
+     "        self.expect_ev.set()\n"),
+    ("recstart never turns the stall rule on",
+     "            node.expect_acks(True)           # the witness acknowledging\n",
+     ""),
+    ("flood never turns the stall rule on",
+     "            node.expect_acks(True)           # the witness and the board ACK\n",
+     ""),
+    ("the stall step never turns the stall rule on",
+     "            node.expect_acks(True)           # the board acknowledging\n"
+     "            rows, _s = window(board, wit, node, 2.0",
+     "            rows, _s = window(board, wit, node, 2.0"),
+    ("flood turns the stall rule on before the board ACKs",
+     "            board.cmd(\"MODE normal\")\n"
+     "            node.expect_acks(True)           # the witness and the board ACK\n",
+     "            node.expect_acks(True)           # the witness and the board ACK\n"
+     "            board.cmd(\"MODE normal\")\n"),
+    # 2026-11-20, the hand take for ruling (2): the node's own echoes lost
+    # on a full receive queue
+    ("a refused send (ENOBUFS) skips the node's socket read",
+     "            watch.poll(0.0)             # a refused send still reads the socket\n",
+     ""),
+    ("a buffer-full refusal skips the node's socket read",
+     "        except Exception:                                  # noqa: BLE001\n"
+     "            watch.poll(0.0)\n"
+     "            raise\n",
+     ""),
+    ("the node takes error frames",
+     "    bus = kvaser_link.open_bus(receive_own_messages=True, error_frames=False)",
+     "    bus = kvaser_link.open_bus(receive_own_messages=True)"),
+]
 
 
 def main():

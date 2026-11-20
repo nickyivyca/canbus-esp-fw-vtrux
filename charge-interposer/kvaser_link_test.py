@@ -298,8 +298,16 @@ def case_open_bus(M, work):
     fc = FakeCan()
     assert M.open_bus(root=b.net, can_mod=fc, platform="linux") == "a bus"
     assert fc.opened == [{"interface": "socketcan", "channel": NETDEV,
-                          "receive_own_messages": True}], fc.opened
+                          "receive_own_messages": True,
+                          "ignore_rx_error_frames": False}], fc.opened
     assert b.roles.asked >= 1, "the netdev not taken from the role table"
+    # error_frames=False: the socket takes no error frames (a sender that
+    # reads only its echoes, bench_vport's node; 2026-11-20)
+    fc = FakeCan()
+    assert M.open_bus(root=b.net, can_mod=fc, platform="linux", error_frames=False) == "a bus"
+    assert fc.opened == [{"interface": "socketcan", "channel": NETDEV,
+                          "receive_own_messages": True,
+                          "ignore_rx_error_frames": True}], fc.opened
     fc = FakeCan()
     M.ROLES = FakeRoles(err="kvaser is not attached")
     e = _raises(M.LinkError, M.open_bus, root=b.net, can_mod=fc, platform="linux")
@@ -803,8 +811,14 @@ MUTANTS = [
     ("open_bus: the link not read", "    dev = netdev()\n    require(True, root)\n",
      "    dev = netdev()\n"),
     ("open_bus: any channel", "    if channel != ROLE:", "    if False:"),
-    ("open_bus: echoes dropped", "                       receive_own_messages=receive_own_messages)",
-     "                       receive_own_messages=False)"),
+    ("open_bus: echoes dropped", "                       receive_own_messages=receive_own_messages,\n",
+     "                       receive_own_messages=False,\n"),
+    ("open_bus: error_frames=False ignored",
+     "                       ignore_rx_error_frames=not error_frames)",
+     "                       ignore_rx_error_frames=False)"),
+    ("open_bus: error frames always off",
+     "                       ignore_rx_error_frames=not error_frames)",
+     "                       ignore_rx_error_frames=True)"),
     ("open_bus: by position", "    return can_mod.Bus(interface=\"socketcan\", channel=dev,",
      "    return can_mod.Bus(interface=\"socketcan\", channel=None,"),
     ("kernel lines left off the VOID line",
