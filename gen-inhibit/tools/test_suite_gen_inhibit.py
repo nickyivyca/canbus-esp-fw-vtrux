@@ -1954,34 +1954,23 @@ def test_ota(settings, bench):
     check("tools: every check gets GI_ESPTOOL_ARGV, GI_X2_DEVICE and GI_WICAN_DEVICE, reading back "
           "as the settings' after the core's formatting", not short, short[:4])
 
-    # The capture checks are NOT-RUN "no capture interface" on Linux with GI_CAPTURE_IFACE unset, and run
-    # with it set or on Git Bash (run cb08 ran them to exit 2; gen-inhibit reviewer, 2026-11-19).
-    cs = SG.capture_skip
-    check("capture: Linux, GI_CAPTURE_IFACE unset or blank -> the reason",
-          (cs({}, "linux") or "").startswith("no capture interface") and cs({"GI_CAPTURE_IFACE": " "}, "linux")
-          and "GI_CAPTURE_IFACE" in cs({}, "linux"), cs({}, "linux"))
-    check("capture: Linux with GI_CAPTURE_IFACE set, or Git Bash, -> run",
-          cs({"GI_CAPTURE_IFACE": "test0"}, "linux") is None and cs({}, "win32") is None)
+    # No check captures since topic (E) (spec 3 and 9.3, user 2026-11-19): B11raw's arms and desk step
+    # and B21 run with no capture interface, and B21 hands its judge the client's files, not a wire join
+    # (the gen-inhibit reviewer, answer to b07f7984: the capture-skip path removed).
     saved_if = os.environ.pop("GI_CAPTURE_IFACE", None)
     try:
-        for val, want_skip in ((None, True), ("test0", False)):
-            if val is None:
-                os.environ.pop("GI_CAPTURE_IFACE", None)
-            else:
-                os.environ["GI_CAPTURE_IFACE"] = val
-            b = SG.bench(settings)
-            got = {c.id: c.skip for g in b.groups for c in g.checks}
-            skipped = sorted(k for k, v in got.items() if v and k != "B27")
-            if sys.platform.startswith("linux") and want_skip:
-                check("capture: GI_CAPTURE_IFACE unset -> exactly B11rawarms, B11raw and B21 skipped, with the reason",
-                      skipped == ["B11raw", "B11rawarms", "B21"]
-                      and all(got[k].startswith("no capture interface") for k in skipped), skipped)
-            else:
-                check("capture: GI_CAPTURE_IFACE set -> no check skipped but B27", skipped == [], skipped)
+        b = SG.bench(settings)
+        got = {c.id: c for g in b.groups for c in g.checks}
+        skipped = sorted(k for k, c in got.items() if c.skip and k != "B27")
+        check("capture: no check skipped but B27 with GI_CAPTURE_IFACE unset (B11rawarms, B11raw and B21 run)",
+              skipped == [] and {"B11rawarms", "B11raw", "B21"} <= set(got), skipped)
+        outs = list(got["B21"].outputs) if "B21" in got else []
+        check("capture: B21's outputs are the client judge's files, and no wire join",
+              any(o.startswith("B21_client_multipart_") for o in outs) and any(o.startswith("B21_client_image_")
+                                                                                for o in outs)
+              and not any(o.startswith("B21_wire_") for o in outs), outs)
     finally:
-        if saved_if is None:
-            os.environ.pop("GI_CAPTURE_IFACE", None)
-        else:
+        if saved_if is not None:
             os.environ["GI_CAPTURE_IFACE"] = saved_if
 
     for name, bad in [("no settings.ota", dict(settings, ota=None)),
@@ -2128,9 +2117,6 @@ def test_kvaser_link_down(settings):
 
 
 def main():
-    # a capture interface, so the suite built for the index checks runs every check it has
-    # (test_ota builds it without one too: capture_skip, 2026-11-19)
-    os.environ["GI_CAPTURE_IFACE"] = "test-iface"
     try:
         settings, shas = fixture()
         try:        # a suite that will not load on the fixture is a failed check, not a crash

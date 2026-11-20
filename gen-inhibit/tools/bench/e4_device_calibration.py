@@ -688,6 +688,7 @@ class ModePoster(threading.Thread):
         self.t_end = None
         self.raw = None             # raw_http_probe record (--post-raw-timeout)
         self.followup = None        # a fresh GET /gen_inhibit after a failed reply
+        self.page_after = None      # the page read right after a whole reply (page_after_read)
         self.sockets_before = None
         self.sockets_after = None
         self.exc = None             # an exception this thread raised, as text
@@ -711,6 +712,11 @@ class ModePoster(threading.Thread):
                 # (c), reviewer 2026-10-14: is the server still answering, and when?
                 self.followup = RHP.raw_request(HOST, "/gen_inhibit", timeout=POST_RAW_TIMEOUT,
                                                 method="GET", port=HTTP_PORT, base=self.base)
+            else:
+                # spec 3 (user, 2026-11-19): the page read right after the reply must show the POSTed
+                # mode, and its drv.msgs_to_rx no backlog (the gen-inhibit reviewer's readings (p) and
+                # (q), answer to b07f7984)
+                self.page_after = page_after_read(self.base)
             self.sockets_after = device_sockets()
         except Exception as e:
             # RECORDED, NOT RAISED: on 2026-10-12 this thread died on an exception
@@ -718,6 +724,20 @@ class ModePoster(threading.Thread):
             import traceback
             self.exc = traceback.format_exc()
             print("  POSTER EXCEPTION (recorded): %s" % self.exc.strip().splitlines()[-1])
+
+
+def page_after_read(base, timeout=6.0):
+    """The page read once, right after a raw POST's reply, timed on the replay's clock from the
+    request's send: {t_sent, t_answered, http, mode, msgs_to_rx, rx_missed, error}. No other field of
+    the page is kept."""
+    t0 = round(time.perf_counter() - base, 4)
+    st, txt = gi("/gen_inhibit", timeout=timeout)
+    out = {"t_sent": t0, "t_answered": round(time.perf_counter() - base, 4), "http": st,
+           "error": None if st == 200 else txt[:200]}
+    mode, _self_off = page_state_fields(txt) if st == 200 else (None, None)
+    q = page_queue_fields(txt) if st == 200 else [None, None]
+    out.update(mode=mode, msgs_to_rx=q[0], rx_missed=q[1])
+    return out
 
 
 def page_state_fields(txt):
@@ -1177,6 +1197,7 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
                            "reply_failed": (reply_failed(e["poster"].raw)
                                             if e["poster"].raw is not None else None),
                            "followup": e["poster"].followup,
+                           "page_after": e["poster"].page_after,
                            "sockets_before": e["poster"].sockets_before,
                            "sockets_after": e["poster"].sockets_after,
                            "exception": e["poster"].exc} for e in sched],

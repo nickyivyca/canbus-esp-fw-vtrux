@@ -196,6 +196,22 @@ def classify(src, wire, device_cmd_tx, keep_frames=False):
         out["vcm_times"] = [round(t, 6) for t, _d in vcm]
         out["device_times"] = [round(t, 6) for t, _d, _f in dev]
         out["replayed_wire_times"] = rep_t
+        # each device 0x051 with the replayed command it answers on the wire (b11_rawpost_judge's
+        # stale answers, spec 3, topic (E), 2026-11-19): [t, answered command's wire time or None,
+        # counter delta to the command in front]. On time (delta 1) it answers the command in front;
+        # late (delta 0) the command before that, the next one being on the wire already.
+        vt = [t for t, _d in vcm]
+        at = {t: k for k, t in enumerate(vt)}
+        fronts = []
+        for t, d, front in dev:
+            if front is None:
+                fronts.append([round(t, 6), None, None])
+                continue
+            delta = (d[5] - front[1][5]) & 0x0F if len(d) > 5 and len(front[1]) > 5 else None
+            k = at.get(front[0])
+            ans = front[0] if delta == 1 else (vt[k - 1] if delta == 0 and k else None)
+            fronts.append([round(t, 6), None if ans is None else round(ans, 6), delta])
+        out["device_answers"] = fronts
     out.update({"on_time": ontime, "late": late, "double": double, "unexplained": unexplained,
                 "verdict": "UNRESOLVED" if out["unresolved"] else
                            ("as specified" if not late and not double and not unexplained
@@ -269,7 +285,7 @@ def rejudge(run_path, arm="idle", keep_frames=False):
     res["arm_void"], res["arm_unlisted"] = AV.reasons(a, wv + [AV.attribution_reason(res["attribution"])],
                                                       recounted=True)
     if not keep_frames:
-        for k in ("vcm_times", "device_times", "replayed_wire_times"):
+        for k in ("vcm_times", "device_times", "replayed_wire_times", "device_answers"):
             res.pop(k, None)
     res["current_classifier"] = {k: a.get(k) for k in ("late_at_wire", "double_answers",
                                                        "misattributed_vcm",

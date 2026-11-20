@@ -259,20 +259,10 @@ def kvaser_link_down(settings, logdir):
 
 B27_SKIP ="needs the user at the bench, USB plugged in (deferred by the user 2026-10-17, paired with the WiCAN config reset)"
 
-# The checks that capture the host's Wi-Fi with dumpcap (B11raw's arms and desk step, B21's probe).
-CAPTURE_CHECKS = ("B11rawarms", "B11raw", "B21")
-
-
-def capture_skip(environ=None, platform=None):
-    """The skip reason for CAPTURE_CHECKS, or None. On Linux bench_host.sh has no default capture
-    interface (madhouse-debian has no Wi-Fi adapter of its own), so with GI_CAPTURE_IFACE unset they
-    are NOT-RUN "no capture interface", recorded, not run to the scripts' exit 2 (run cb08; gen-inhibit
-    reviewer, 2026-11-19). On Git Bash the scripts default to NICKY-XPS's Wi-Fi."""
-    environ = os.environ if environ is None else environ
-    platform = sys.platform if platform is None else platform
-    if platform.startswith("linux") and not (environ.get("GI_CAPTURE_IFACE") or "").strip():
-        return "no capture interface: GI_CAPTURE_IFACE is not set, and this host has no default (bench_host.sh)"
-    return None
+# No check captures the host's Wi-Fi since topic (E) (spec 3 and 9.3, user 2026-11-19: B11raw judged
+# in the request-to-reply window, B21 at the client), so the capture checks and their skip on a host
+# with no capture interface (run cb08, 2026-11-19) are gone (the gen-inhibit reviewer, answer to
+# b07f7984).
 
 
 def need(settings, key):
@@ -843,8 +833,6 @@ def suite(settings):
     env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in esptool_env(settings).items()})
     env0.update({k: v.replace("{", "{{").replace("}", "}}") for k, v in serial_env(settings).items()})
 
-    cap_skip = capture_skip()
-
     def chk(cid, script, args, judge=None, outputs=(), timeout=3600, pw="wican_man", env=None, cls="wallclock"):
         e = dict(env0, GI_PW_IMAGE=desc[pw])
         e.update(env or {})
@@ -852,8 +840,6 @@ def suite(settings):
                   timeout_s=timeout, cls=cls, outputs=list(outputs) + ["check.log"])
         if judge:
             kw["judge"] = judge
-        if cid in CAPTURE_CHECKS and cap_skip:
-            kw["skip"] = cap_skip
         return Check(**kw)
 
     def desk(cid, step, inputs, judge, outputs):
@@ -875,7 +861,7 @@ def suite(settings):
             desk("B11", "B11", ["man_app/B11arms"], judged("B11"), ["B11_quiesce_analysis.txt"]),
             chk("B11rawarms", "baseline_b_noX2.sh", ["B11raw"], None, timeout=1800),
             desk("B11raw", "B11raw", ["man_app/B11rawarms"], judged("B11raw"),
-                 ["B11raw_rawpost_judge.txt", "B11raw_quiesce_analysis.txt"]),
+                 ["B11raw_window_judge.txt", "B11raw_quiesce_analysis.txt"]),
             chk("B13arms", "baseline_b_noX2.sh", ["B13"], None, timeout=1800),
             chk("B15", "baseline_b_hand.sh", ["B15"], judged("B15"), ["B15_wican_segment_probe.txt"], 900),
             chk("B16", "baseline_b_hand.sh", ["B16"], judged("B16"), ["B16_page_only_baseline.txt"], 900),
@@ -885,7 +871,7 @@ def suite(settings):
             desk("B25", "B25", ["man_app/B20"], judged("B25"), ["B25_keystate_rekey-long_%s.txt" % C]),
             chk("B21", "baseline_b21.sh", [man_bin], judged("B21"),
                 ["B21_bench_flash_guard.txt", "B21_bench_ota_guard.txt",
-                 "B21_wire_multipart_%s.txt" % C, "B21_wire_image_%s.txt" % C], 3600),
+                 "B21_client_multipart_%s.txt" % C, "B21_client_image_%s.txt" % C], 3600),
         ]),
         Group("man_held", needs_lock=True, image=["wican_man", "x2_held"], checks=[
             chk("B2held", "baseline_b_hand.sh", ["B2held"], None, timeout=1200),

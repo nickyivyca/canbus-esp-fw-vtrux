@@ -3813,6 +3813,39 @@ test running.
 
 ## 12.4 Required tests
 
+**B11raw and B21 under the wording of 2026-11-19 -- tester, 2026-11-19, harness topic (E) on
+`gen-inhibit/tester/arm-void-12.1`. No device run: the harness change, and the `e3d9437`
+baseline re-judged from its records. Result: no B11raw or B21 pass stands under the new wording;
+the baseline reads VOID for both.** Spec 3 and 9.3 as the user changed them (`f7865461`): a mode
+change judged in the request-to-reply window, with no backlog on the witness or the receive queue,
+not on the exact frame (B11raw); the OTA refusal judged by the whole 403 with its reason reaching
+the client, the connection's end recorded, not judged (B21). The gen-inhibit reviewer's readings
+(m)-(w) (answer to b07f7984) set how each is judged (`bench/README.md`, `b11_rawpost_judge.py`,
+`ota_guard_client_judge.py`).
+- **Earlier passes are not carried forward.** Every B11raw and B21 result in this document before
+  this entry was judged under the old wording: B11raw by the request's arrival on the air in a
+  Wi-Fi capture, B21 by the 403 and the device's end of the connection on the wire. They are not
+  passes under the new wording; the full re-run (C) gives the first results.
+- **The `e3d9437` baseline, re-judged from its records** (written into
+  `runs/baseline_e3d9437/bench/` beside the old files, which stay as they were):
+  - B21 (`B21_client_multipart_e3d9437.txt`, `B21_client_image_e3d9437.txt`): **VOID**. All 40
+    reps got the whole 403 with its reason at the client ("gen_inhibit is armed; POST
+    /gen_inhibit_set?mode=0 first", Content-Length 56, read from each row's raw_head, which holds
+    the whole 127-byte reply). The records hold no page read around any request, a reading the
+    harness never sent, so nothing-touched cannot be judged.
+  - B11raw (`B11raw_window_judge.txt`): **VOID**. No page read follows any reply, so the mode after
+    and the queue cannot be judged. On the witness, 9 of the 12 POSTs show the change in the window
+    (no device `0x051` after the reply into OBSERVE, no stale answer after the POST back), and 3
+    (OBSERVE from PASSIVE) have nothing to show. Windows 8.3-37.5 ms; the clock margins 0.35-0.46
+    ms.
+- **B21's limit** (reading (v)): the image check reads `elf_sha256` before and after each refused
+  request, and the uptime its continuity. A write to the other OTA slot without a reboot is not
+  visible to this check.
+- **B11raw's queue half has no bound yet.** `drv.msgs_to_rx` on the page after each reply must
+  stay within a bound set from quiet data on the same replay with no mode change (reading (q)),
+  which the test plan will carry beside `GATE_HELD_S` once measured. Until then the queue half
+  reads ERROR, so B11raw cannot PASS.
+
 **Quiesce under traffic: INHIBIT / PASSIVE -> OBSERVE -> back -- tester,
 2026-10-10 18:43-18:48, on `cc34c80` `_man`. Result: OBSERVE in effect, no
 panic, PASSIVE re-arms cleanly. The re-arm into INHIBIT is NOT AS SPECIFIED:
@@ -5276,6 +5309,9 @@ reviewer's (2026-10-16). X2 on `756d6714`, untouched.
 `c6fdab5` `_man` (`72c83f53`, pre-port batch 1). Result: AS SPECIFIED, 40 of
 40.** Spec 5.1 item 3 and 9.3; the reviewer's check for the refusal-reply
 change. B21 on the wire. HTTP only; no CAN adapter was used.
+- **2026-11-19:** judged under 9.3's wording before `f7865461` (the device's end of each connection
+  on the wire); not a pass under the new wording (the 12.4 entry "B11raw and B21 under the wording
+  of 2026-11-19").
 - **Rig:** `ota_guard_raw_probe.py`, 5 reps in each non-OFF mode, with
   unelevated tshark on the laptop's Wi-Fi. `ota_guard_pcap_join.py
   --expect=no-rst` joins each request to its connection by client port.
@@ -5391,6 +5427,8 @@ on `e3d9437` `_man` (`25f50ac0...`). Result: AS SPECIFIED, 40 of 40.** Spec
 5.1 item 3 and 9.3. The user's ruling (2026-10-22, through the reviewer) lifts
 the hold on Wi-Fi captures during OTAs. HTTP only. No CAN adapter or COM port
 was opened, and the X2 was not touched.
+- **2026-11-19:** judged under 9.3's wording before `f7865461` (from the wire); not a pass under the
+  new wording (the 12.4 entry "B11raw and B21 under the wording of 2026-11-19").
 - **Rig:** `baseline_b21.sh` with `GI_B21_STEPS=probe`:
   - `ota_guard_raw_probe.py`, 5 reps in each non-OFF mode;
   - an unelevated dumpcap of the laptop's Wi-Fi (`host 192.168.80.1 and tcp

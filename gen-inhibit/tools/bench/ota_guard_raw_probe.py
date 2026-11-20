@@ -50,6 +50,7 @@ HOST = "192.168.80.1"
 PORT = 80
 MODES = {1: "OBSERVE", 2: "RESPOND", 3: "INHIBIT", 4: "PASSIVE"}
 SEND_CHUNK = 4096
+REPLY_BODY_KEEP = 2000   # bytes of the reply's body kept in the record (a refusal's reason is short)
 
 
 def build_request(path, body, ctype, host=HOST):
@@ -166,7 +167,28 @@ def raw_post(path, body, ctype, timeout=10.0, host=None, port=None, sndbuf=None,
     rec["bytes"] = len(raw)
     rec["status_line"] = raw.split(b"\r\n", 1)[0].decode("latin-1") if raw else None
     rec["raw_head"] = raw[:300].decode("latin-1")
+    # the reply as the client holds it (spec 9.3, user 2026-11-19: the whole 403 with its reason must
+    # reach the client): whether it is whole (Content-Length bytes after the headers) and its body
+    head, sep, rbody = raw.partition(b"\r\n\r\n")
+    m = re.search(rb"(?im)^content-length:\s*(\d+)\s*$", head) if sep else None
+    rec["reply_complete"] = reply_complete(raw)
+    rec["content_length"] = int(m.group(1)) if m else None
+    rec["reply_body"] = rbody[:REPLY_BODY_KEEP].decode("latin-1") if sep else None
     return rec
+
+
+PAGE_KEEP = ("mode", "uptime_ms", "elf_sha256", "reset_reason")
+
+
+def page_read(host=None):
+    """The page read once, timed on the host clock from the request's send (AGENTS.md: HTTP windows
+    from when the request was sent): {epoch_sent, epoch_answered, the PAGE_KEEP fields, error}. No
+    other field of the page is kept."""
+    t0 = time.time()
+    pg, err = G.gi_status(host or HOST)
+    out = {"epoch_sent": t0, "epoch_answered": time.time(), "error": None if pg else err}
+    out.update({k: (pg or {}).get(k) for k in PAGE_KEEP})
+    return out
 
 
 def main():
@@ -181,7 +203,8 @@ def main():
     body, ctype = G.multipart_bogus()
     if args.body == "empty":
         body = b""
-    st0, _ = G.gi_status(HOST)
+    first = page_read()
+    st0 = {k: first[k] for k in PAGE_KEEP} if first["error"] is None else None
     image = None
     if args.body == "image":
         if not args.image:
@@ -196,28 +219,33 @@ def main():
         body, ctype = multipart_file(data)
     timeout = args.timeout or (120.0 if args.body == "image" else 10.0)
     out = {"when": time.strftime("%Y%m%dT%H%M%S"), "uptime_before_ms": (st0 or {}).get("uptime_ms"),
-           "body_bytes": len(body), "body": args.body, "image": image, "timeout_s": timeout, "grace_s": args.grace,
+           "page_first": first, "body_bytes": len(body), "body": args.body, "image": image, "timeout_s": timeout, "grace_s": args.grace,
            "rows": []}
     try:
         for mode in (1, 2, 3, 4):
             for k in range(args.reps):
                 code, _ = G.set_mode(HOST, mode)
-                got, _ = G.gi_status(HOST)
-                row = {"mode": MODES[mode], "rep": k, "set_http": code,
-                       "mode_read": (got or {}).get("mode")}
-                if code == 200 and got and got.get("mode") == mode:
+                before = page_read()
+                row = {"mode": MODES[mode], "mode_set": mode, "rep": k, "set_http": code,
+                       "mode_read": before["mode"], "page_before": before}
+                if code == 200 and before["mode"] == mode:
                     row.update(raw_post("/upload/ota.bin", body, ctype, timeout=timeout, grace=args.grace))
-                print("%-8s rep %d: port %s body %s status %-24s ending %-28s bytes %s first %s reply %s sent %s end %s"
+                    row["page_after"] = page_read()     # nothing touched: mode, image and uptime after it
+                after = row.get("page_after") or {}
+                print("%-8s rep %d: port %s body %s status %-24s whole %s ending %-28s bytes %s first %s reply %s "
+                      "sent %s end %s; after: mode %s uptime %s"
                       % (MODES[mode], k, row.get("local_port"), row.get("body_len"),
-                         row.get("status_line"), row.get("ending"), row.get("bytes"),
-                         row.get("t_first_byte"), row.get("t_reply"), row.get("t_sent"), row.get("t_end")))
+                         row.get("status_line"), row.get("reply_complete"), row.get("ending"), row.get("bytes"),
+                         row.get("t_first_byte"), row.get("t_reply"), row.get("t_sent"), row.get("t_end"),
+                         after.get("mode"), after.get("uptime_ms")))
                 out["rows"].append(row)
                 time.sleep(0.5)
     finally:
         G.set_mode(HOST, 0)
-        st1, _ = G.gi_status(HOST)
-        out["uptime_after_ms"] = (st1 or {}).get("uptime_ms")
-        out["mode_after"] = (st1 or {}).get("mode")
+        last = page_read()
+        out["page_last"] = last
+        out["uptime_after_ms"] = last["uptime_ms"]
+        out["mode_after"] = last["mode"]
         path = os.path.join(os.environ.get("GI_RUNS_DIR") or gi_paths.runs(),   # the chain runner, 2026-10-18
                             "ota_guard_raw_probe_%s_%s.json" % (args.body, out["when"]))
         json.dump(out, open(path, "w"), indent=1)

@@ -28,8 +28,13 @@ TOOLS = gi_paths.fw_tools()
 # WSL's bash.exe; PATH's (Git Bash) is the one these scripts are written for.
 BASH = os.environ.get("GI_BASH") or shutil.which("bash")
 C = "e3d9437"
-STEPS = ["B2", "B3", "B24", "B25", "B11", "B11raw", "B13", "B5", "B19present"]
-NDIRS = {"B2": 2, "B3": 1, "B24": 2, "B25": 1, "B11": 1, "B11raw": 1, "B13": 3, "B5": 2, "B19present": 4}
+STEPS = ["B2", "B3", "B24", "B25", "B11", "B11raw", "B13", "B5", "B21client", "B19present"]
+NDIRS = {"B2": 2, "B3": 1, "B24": 2, "B25": 1, "B11": 1, "B11raw": 1, "B13": 3, "B5": 2, "B21client": 2,
+         "B19present": 4}
+# B21client writes the half of B21 the client judges (topic (E), 2026-11-19); B21's own judge also reads
+# the guard steps' files, so this step is checked on its two files, not through the index: each the
+# baseline folder's byte for byte, VOID with 20 of 20 whole 403s (the reviewer's readings (t), (w)).
+CLIENT_LAST = "verdict VOID: 20 reps, 0 PASS, 0 FAIL, 0 ERROR, 20 VOID, 20 with the whole 403 and its reason (%s body)"
 # Where a step's re-judgement differs from the index, on a ruling since: B5's arms re-judged
 # from their records with the jam's start the witness's first error frame at or after the
 # train's send (gen-inhibit reviewer, answer to 0cfd6689, 2026-11-19). p2000_run1's arm 0,
@@ -37,7 +42,12 @@ NDIRS = {"B2": 2, "B3": 1, "B24": 2, "B25": 1, "B11": 1, "B11raw": 1, "B13": 3, 
 # trailed the train's first error frame by 49 ms), reads A PASS and B PASS.
 REJUDGED = {"B5": {"verdict": "PASS", "figures": {
     "arms_200_per_s": 3, "pass_200_per_s": 3, "inconclusive_200_per_s": 0,
-    "arms_500_per_s": 9, "pass_500_per_s": 9, "inconclusive_500_per_s": 0}}}
+    "arms_500_per_s": 9, "pass_500_per_s": 9, "inconclusive_500_per_s": 0}},
+    # B11raw in the request-to-reply window (spec 3, topic (E), 2026-11-19): no page read follows any
+    # reply in the e3d9437 records, a reading never sent, so every POST is VOID (the reviewer's (t), (w))
+    "B11raw": {"verdict": "VOID", "figures": {
+        "posts": 12, "pass": 0, "fail": 0, "error": 0, "void": 12, "witness_not_applicable": 3,
+        "window_ms_min": 8.3, "window_ms_max": 37.5, "margin_ms_max": 0.46}}}
 fails = []
 oks = 0
 
@@ -90,14 +100,7 @@ def main():
         new_name = {old: new for new, old in SJ.RENAMED.items()}
         for s in steps:
             out = os.path.join(tmp, "real", s)
-            dirs = [bench, runs] if s == "B5" else [runs if s == "B25" else bench] * NDIRS[s]
-            if s == "B11raw":
-                # b11_rawpost_judge reads the captures with tshark (gi_paths.tshark()); without
-                # it the step judges no arm, and this says why first (2026-11-12).
-                ts = gi_paths.tshark()
-                check("B11raw: tshark is there to read the captures (%s)" % ts,
-                      os.path.isfile(ts) or shutil.which(ts) is not None,
-                      "not found: install tshark, or set GI_TSHARK")
+            dirs = [bench, runs] if s in ("B5", "B21client") else [runs if s == "B25" else bench] * NDIRS[s]
             rc, log = desk(s, dirs, out)
             check("%s: exits 0 on the e3d9437 files" % s, rc == 0, log[-300:])
             if s == "B5":
@@ -112,6 +115,26 @@ def main():
                                   == open(os.path.join(bench, n), "rb").read())
                 check("B5: the baseline folder's re-judgements are byte for byte what this step writes",
                       all(same(n) for n in want_names), [n for n in want_names if not same(n)])
+            if s == "B11raw":
+                # the window judge's file is in the baseline folder beside the capture judge's (the
+                # reviewer's (w)), copied in alone: it is this step's output
+                n = "B11raw_window_judge.txt"
+                check("B11raw: the baseline folder's window judgement is byte for byte what this step writes",
+                      os.path.isfile(os.path.join(bench, n)) and os.path.isfile(os.path.join(out, n))
+                      and open(os.path.join(out, n), "rb").read() == open(os.path.join(bench, n), "rb").read())
+            if s == "B21client":
+                want_names = ["B21_client_image_%s.txt" % C, "B21_client_multipart_%s.txt" % C]
+                check("B21client: writes the two client judgements, and nothing else", written(out) == want_names,
+                      written(out))
+                same = lambda n: (os.path.isfile(os.path.join(bench, n)) and open(os.path.join(out, n), "rb").read()
+                                  == open(os.path.join(bench, n), "rb").read())
+                check("B21client: the baseline folder's are byte for byte what this step writes",
+                      all(same(n) for n in want_names), [n for n in want_names if not same(n)])
+                lasts = [open(os.path.join(out, "B21_client_%s_%s.txt" % (k, C)), encoding="utf-8").read().splitlines()[-1:]
+                         for k in ("multipart", "image")]
+                check("B21client: each VOID (no page read around a request), 20 of 20 whole 403s",
+                      lasts == [[CLIENT_LAST % "multipart"], [CLIENT_LAST % "image"]], lasts)
+                continue
             res = SJ.judge_one(s, out)
             v = [r["verdict"] for r in res]
             fg = {k: x["value"] for r in res for k, x in r["figures"].items()}
@@ -191,6 +214,30 @@ def main():
             check("B5: one run's record missing exits 2", rc == 2 and "no record for B5_livetrain_p2000_run3.txt" in log,
                   (rc, log[-200:]))
             check("B5: one run's record missing writes nothing", written(out) == [], written(out))
+        if "B21client" in steps:
+            # two multipart probe outputs; then one body's record missing: exit 2, nothing written
+            two = os.path.join(tmp, "b21two")
+            os.makedirs(two)
+            for p in glob.glob(os.path.join(bench, "B21_probe_*.txt")):
+                shutil.copy(p, two)
+            mp = glob.glob(os.path.join(two, "B21_probe_multipart_*.txt"))[0]
+            shutil.copy(mp, mp[:-4] + "_again.txt")
+            out = os.path.join(tmp, "b21two_out")
+            rc, log = desk("B21client", [two, runs], out)
+            check("B21client: two multipart probe outputs exits 2", rc == 2 and "2 multipart probe outputs" in log,
+                  (rc, log[-200:]))
+            check("B21client: two multipart probe outputs writes nothing", written(out) == [], written(out))
+            os.remove(mp[:-4] + "_again.txt")
+            recs = os.path.join(tmp, "b21recs")
+            os.makedirs(recs)
+            with open(mp, encoding="utf-8", errors="replace") as f:
+                w = [x.strip() for x in f if "; wrote " in x]
+            shutil.copy(os.path.join(runs, w[-1].replace("\\", "/").rsplit("/", 1)[-1]), recs)
+            out = os.path.join(tmp, "b21norec_out")
+            rc, log = desk("B21client", [two, recs], out)
+            check("B21client: the image probe's record missing exits 2", rc == 2 and "no record for B21_probe_image_" in log,
+                  (rc, log[-200:]))
+            check("B21client: the image probe's record missing writes nothing", written(out) == [], written(out))
         if "B13" in steps:
             noheld = os.path.join(tmp, "b13noheld")
             some("B2_e4_presence_respond_%s_x2app.json" % C, 1, noheld)
@@ -198,23 +245,25 @@ def main():
             check("B13: no held RESPOND arm exits 2", rc == 2, (rc, log[-200:]))
         if "B11raw" in steps:
             # 4. a run folder with a space in its path judges the same: the step hands each
-            # record and its capture to the judge as separate words (an array). The e3d9437
-            # folder had spaces on Windows (SeaDrive's "My Libraries"); on Linux it has none,
-            # so without this copy a word-split argument list passes unseen (2026-11-16).
+            # record to the judge as its own word. The e3d9437 folder had spaces on Windows
+            # (SeaDrive's "My Libraries"); on Linux it has none, so without this copy a
+            # word-split argument list passes unseen (2026-11-16). The records and their witness
+            # logs only since topic (E): no capture.
             spaced = os.path.join(tmp, "spaced run dir")
             os.makedirs(spaced)
             for j in sorted(glob.glob(os.path.join(bench, "B11raw_e4_quiesce_*.json"))):
                 for p in glob.glob(os.path.splitext(j)[0] + "*"):
-                    shutil.copy(p, spaced)
+                    if not p.endswith(".pcapng"):
+                        shutil.copy(p, spaced)
             out = os.path.join(tmp, "spaced out", "B11raw")
             rc, log = desk("B11raw", [spaced], out)
             check("B11raw: a run folder with a space in its path exits 0", rc == 0, log[-300:])
             res = SJ.judge_one("B11raw", out)
             fg = {k: x["value"] for r in res for k, x in r["figures"].items()}
-            want = {new_name.get(k, k): x for k, x in idx["B11raw"]["figures"].items()}
-            check("B11raw: a run folder with a space in its path judges as the index (%s)"
-                  % idx["B11raw"]["verdict"],
-                  [r["verdict"] for r in res] == [idx["B11raw"]["verdict"]] and fg == want,
+            want = REJUDGED["B11raw"]["figures"]
+            check("B11raw: a run folder with a space in its path, with no capture, judges as ruled (%s)"
+                  % REJUDGED["B11raw"]["verdict"],
+                  [r["verdict"] for r in res] == [REJUDGED["B11raw"]["verdict"]] and fg == want,
                   ([(r["verdict"], r["detail"][:120]) for r in res],
                    {k: (fg.get(k), want.get(k)) for k in set(fg) | set(want) if fg.get(k) != want.get(k)}))
     finally:

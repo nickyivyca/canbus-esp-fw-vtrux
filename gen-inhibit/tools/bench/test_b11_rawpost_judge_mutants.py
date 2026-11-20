@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mutants of b11_rawpost_judge's pure parts (reviewer, 2026-10-17);
+"""Mutants of b11_rawpost_judge (the request-to-reply window since topic (E), 2026-11-19);
 test_b11_rawpost_judge.py must fail on each BY A CHECK. A crash is not a kill, and
 an edit that does not apply is an error.
 
@@ -21,24 +21,58 @@ SRC = "b11_rawpost_judge.py"
 TEST = "test_b11_rawpost_judge.py"
 
 MUTANTS = [
-    ("a device that sent no 0x051 is judged",
-     "    if not any(arrival - LIVE_BEFORE_S <= t <= arrival for t in answers):\n        return NOT_APPLICABLE, []\n", ""),
-    ("any earlier answer makes it applicable", "if not any(arrival - LIVE_BEFORE_S <= t <= arrival for t in answers):", "if not any(t <= arrival for t in answers):"),
-    ('the wake frame is not allowed', 'strict_ok = all(n <= 1 for n in k)', 'strict_ok = all(n <= 0 for n in k)'),
-    ('two commands after arrival allowed', 'strict_ok = all(n <= 1 for n in k)', 'strict_ok = all(n <= 2 for n in k)'),
-    ('a pass on the ACK is folded into PASS', '        return ACK_ONLY, k', '        return STRICT_PASS, k'),
-    ('a pass on the ACK is folded into FAIL', '        return ACK_ONLY, k', '        return STRICT_FAIL, k'),
-    ('no arrival passes', '        return NO_DATA, []', '        return STRICT_PASS, []'),
-    ('a command at the arrival counts as after it', 'bisect.bisect_right(commands, arrival)', 'bisect.bisect_left(commands, arrival)'),
-    ("answers past the span's end count", 'if arrival < t < t_end:', 'if arrival < t:'),
-    ('the request time is the retransmission', 't_req = min(p["t"] for p in req if p["seq"] + p["len"] == end)', 't_req = last["t"]'),
-    ('the request time is the first segment, not the last', 'last = max(req, key=lambda p: (p["seq"] + p["len"], p["t"]))', 'last = min(req, key=lambda p: (p["seq"], p["t"]))'),
-    ('any device packet is the ACK', 'p["src"] == DEVICE_IP and p["ack"] >= end and p["t"] >= t_req', 'p["src"] == DEVICE_IP and p["t"] >= t_req'),
-    ('a finished page read is still in progress', 'if sent and (not done or max(done) > t):', 'if sent:'),
-    # the arm's witness clock (2026-11-18)
-    ("an arm voided on its witness clock is judged", '    if r.get("arm_void"):     # the arm', '    if False:     # the arm'),
-    ("a void arm's posts are dropped", '                 for e in (a.get("post_schedule") or []) if e.get("mode") == 1]\n',
-     '                 for e in [] if e.get("mode") == 1]\n'),
+    # the request-to-reply window (spec 3, topic (E), 2026-11-19; the reviewer's readings (m)-(r))
+    ("mapping: the margin from the largest lateness, not the smallest", "    return off, off - min(late)\n",
+     "    return off, max(late) - off\n"),
+    ("mapping: the mean, not the median", "    off = statistics.median(late)\n", "    off = sum(late) / len(late)\n"),
+    ("mapping: every frame of the replay, not those near the POST", "    lo, hi = max(0, idx - n), min(len(src_t), idx + n)\n",
+     "    lo, hi = 0, len(src_t)\n"),
+    ("OBSERVE: a device 0x051 after the reply passes", "    if late:\n        return FAIL,", "    if False:\n        return FAIL,"),
+    ("OBSERVE: no margin, inside it FAIL", "    late = [t for t in device if tc + margin < t < t_end]\n",
+     "    late = [t for t in device if tc < t < t_end]\n"),
+    ("OBSERVE: inside the margin passes", "    if near:\n        return ERROR, \"a device 0x051 %s ms after the reply, within",
+     "    if False:\n        return ERROR, \"a device 0x051 %s ms after the reply, within"),
+    ("OBSERVE: the next POST's frames counted", "    late = [t for t in device if tc + margin < t < t_end]\n",
+     "    late = [t for t in device if tc + margin < t]\n"),
+    ("OBSERVE: nothing to see read as PASS",
+     "    if not any(ts - LIVE_BEFORE_S <= t <= ts for t in device):\n        return NA,",
+     "    if False:\n        return NA,"),
+    ("OBSERVE: any earlier frame makes it applicable", "    if not any(ts - LIVE_BEFORE_S <= t <= ts for t in device):\n",
+     "    if not any(t <= ts for t in device):\n"),
+    ("back: a stale answer passes", "    if stale:\n        t, a = stale[0]\n        return FAIL,",
+     "    if False:\n        t, a = stale[0]\n        return FAIL,"),
+    ("back: an answer to any command after the reply is stale",
+     "    stale = [(t, a) for t, a in after if t > tc + margin and a is not None and a < ts - margin]\n",
+     "    stale = [(t, a) for t, a in after if t > tc + margin and a is not None]\n"),
+    ("back: commands in the window counted as from before the request",
+     "    stale = [(t, a) for t, a in after if t > tc + margin and a is not None and a < ts - margin]\n",
+     "    stale = [(t, a) for t, a in after if t > tc + margin and a is not None and a < tc]\n"),
+    ("back: within the margins passes", "    if near:\n        t, a = near[0]\n        return ERROR,",
+     "    if False:\n        t, a = near[0]\n        return ERROR,"),
+    ("back: the in-window count not kept", "               sum(1 for t, a in after if ts < t <= tc and a is not None and a < ts)}",
+     "               0}"),
+    ("page: a missing read ERROR, not VOID (before reading (t))",
+     '        return VOID, VOID, ["no page read after the reply in the record"]',
+     '        return ERROR, ERROR, ["no page read after the reply in the record"]'),
+    ("page: an unanswered read VOID, not ERROR", '        return ERROR, ERROR, ["the page read after the reply did not answer',
+     '        return VOID, VOID, ["the page read after the reply did not answer'),
+    ("page: the mode not compared", "    mv = PASS if page.get(\"mode\") == mode else FAIL\n", "    mv = PASS\n"),
+    ("page: the queue over the bound passes", "    elif q > QUEUE_BOUND:\n", "    elif False:\n"),
+    ("page: no bound set passes", "    elif QUEUE_BOUND is None:\n        qv = ERROR\n", "    elif QUEUE_BOUND is None:\n        qv = PASS\n"),
+    ("POST: a refused POST judged anyway", '    if raw.get("t_complete") is None or raw.get("t_sent") is None or e.get("http") != 200:\n',
+     '    if raw.get("t_complete") is None or raw.get("t_sent") is None:\n'),
+    ("POST: the stale rule for OBSERVE, the silence rule for the rest", '    if e.get("mode") == 1:\n        wv, wwhy = observe_half',
+     '    if e.get("mode") != 1:\n        wv, wwhy = observe_half'),
+    ("POST: the page halves left out of the verdict", "verdict=worst([wv, mv, qv])", "verdict=worst([wv])"),
+    ("worst: a VOID outranks an ERROR", "RANK = [FAIL, ERROR, VOID]", "RANK = [FAIL, VOID, ERROR]"),
+    ("worst: NOT APPLICABLE never passes", "    return next((v for v in RANK if v in vs), PASS)",
+     "    return next((v for v in RANK + [NA] if v in vs), PASS)"),
+    ("judge_run: the window placed without the offset", "        w = (lambda t: None if t is None or off is None else t + off)",
+     "        w = (lambda t: None if t is None or off is None else t)"),
+    ("judge_run: the first POST from the arm's mode lost", '    prev = MODE_NUMBER.get(d.get("mode"))\n', "    prev = None\n"),
+    # the arm void (spec 12.1)
+    ("an arm void for a 12.1 reason is judged", '    if r.get("arm_void") or r.get("arm_unlisted"):\n', "    if False:\n"),
+    ("a void arm's posts are dropped", '"verdict": why} for e in sched])', '"verdict": why} for e in sched[:1]])'),
 ]
 
 

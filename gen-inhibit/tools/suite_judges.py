@@ -678,38 +678,44 @@ def b11(F):
                    err or "; ".join(bad) or "6 arms as specified, tx_ok agrees with every INHIBIT span")]
 
 
+B11RAW_POSTS = 12      # baseline_b_noX2.sh B11raw: 6 arms, an OBSERVE POST and a POST back in each
+
+
 @judge("B11raw", "B")
 def b11raw(F):
-    t = text(F.one(r"B11raw_rawpost_judge\.txt"))
+    # spec 3 in the request-to-reply window (user, 2026-11-19; topic (E), the gen-inhibit reviewer's
+    # readings (m)-(r), answer to b07f7984): b11_rawpost_judge's row per POST, FAIL, then ERROR, then
+    # VOID (an arm void for a spec 12.1 reason, or a read the harness never sent), else PASS; the
+    # witness half NOT APPLICABLE where nothing could show on it. Until then the capture judge's
+    # B11raw_rawpost_judge.txt, its OBSERVE POSTs by arrival on the air.
+    t = text(F.one(r"B11raw_window_judge\.txt"))
     posts = [json.loads(l.strip()) for l in t.splitlines() if l.strip().startswith('{"at_s"')]
-    verdicts = [p["verdict"] for p in posts if "verdict" in p]
-    # "strict FAIL, PASS on ACK" passes (reviewer, 2026-10-17: the bound is the device's ACK);
-    # "strict FAIL" alone fails.
-    passing = [v for v in verdicts if v in ("PASS", "strict FAIL, PASS on ACK")]
-    na = [v for v in verdicts if v.startswith("NOT APPLICABLE")]
-    # an OBSERVE POST of an arm its e4 run voided on its witness clock (b11_rawpost_judge's
-    # "VOID: arm void", quiesce_analysis's "void", 2026-11-18) is no judgement
-    vv = [v for v in verdicts if v.startswith("VOID: arm void")]
-    fails = [v for v in verdicts if v not in passing and v not in na and v not in vv]
-    sends = [p["send_to_first_byte_ms"] for p in posts if "send_to_first_byte_ms" in p]
-    others = sum(len(p.get("other_requests_in_progress") or []) for p in posts)
+    vs = []
+    for p in posts:
+        v = str(p.get("verdict"))
+        vs.append("VOID" if v.startswith("VOID") else "ERROR" if v.startswith("ERROR") else v)
+    bad_words = [v for v in vs if v not in ("PASS", "FAIL", "ERROR", "VOID")]
     prov = json_lines(F.one(r"B11raw_quiesce_analysis\.txt"))
     pvoid = [r["run"] for r in prov if r.get("void")]
     pbad = [r["run"] for r in prov if not r.get("void") and r.get("provenance") != "as specified"]
-    ok = len(verdicts) == 6 and not fails and not pbad and others == 0
     err = row_errors(prov)
-    if (vv or pvoid) and not fails and not pbad and others == 0 and not err:
-        return [result("B11raw", "VOID", {"observe_posts": fig(len(verdicts)), "void_posts": fig(len(vv)),
-                                          "void_arms": fig(len(pvoid))},
-                       "%d OBSERVE POSTs and %d arms VOID on the witness clock" % (len(vv), len(pvoid)))]
-    return [result("B11raw", "ERROR" if err else "PASS" if ok else "FAIL",
-                   {"observe_posts": fig(len(verdicts)), "pass": fig(len(passing)), "not_applicable": fig(len(na)),
-                    "pass_on_ack": fig(verdicts.count("strict FAIL, PASS on ACK")),
-                    "send_to_first_byte_ms_min": fig(min(sends) if sends else None, "ms"),
-                    "send_to_first_byte_ms_max": fig(max(sends) if sends else None, "ms"),
-                    "other_requests_in_progress": fig(others)},
-                   err or "; ".join(fails + pbad) or "%d PASS (%d on ACK), %d not applicable" % (
-                       len(passing), verdicts.count("strict FAIL, PASS on ACK"), len(na)))]
+    arms = vs + ["FAIL"] * len(pbad) + ["VOID"] * len(pvoid) + (["ERROR"] if err or bad_words else [])
+    if len(posts) != B11RAW_POSTS:
+        arms.append("ERROR")
+    verdict = ruled_verdict(arms)
+    wins = [p["window_ms"] for p in posts if p.get("window_ms") is not None]
+    margins = [p["margin_ms"] for p in posts if p.get("margin_ms") is not None]
+    figs = {"posts": fig(len(posts)), "pass": fig(vs.count("PASS")), "fail": fig(vs.count("FAIL")),
+            "error": fig(vs.count("ERROR")), "void": fig(vs.count("VOID")),
+            "witness_not_applicable": fig(sum(1 for p in posts if p.get("witness") == "NOT APPLICABLE")),
+            "window_ms_min": fig(min(wins) if wins else None, "ms"), "window_ms_max": fig(max(wins) if wins else None, "ms"),
+            "margin_ms_max": fig(max(margins) if margins else None, "ms")}
+    why = ["%s at %s s into mode %s: %s" % (v, p.get("at_s"), p.get("mode"), "; ".join(p.get("why") or [str(p.get("verdict"))]))
+           for p, v in zip(posts, vs) if v != "PASS"]
+    if len(posts) != B11RAW_POSTS:
+        why.insert(0, "%d POST rows, want %d" % (len(posts), B11RAW_POSTS))
+    return [result("B11raw", verdict, figs, err or "; ".join(why + pbad + bad_words)[:600]
+                   or "%d POSTs PASS in the request-to-reply window" % len(posts))]
 
 
 # The restart record each B12 cycle reads back after the restart (--record-get, record_get_after
@@ -1047,7 +1053,8 @@ B21_UNREGISTERED = "/store_car_data and /upload/car_data.json are not registered
 @judge("B21", "B")
 def b21(F):
     bad, figs = [], {}
-    # the host not on the WiCAN's hotspot after a rejoin (baseline_b21.sh, 2026-11-19): NOT-RUN, with why
+    # the device not reached through the run's ota block (baseline_b21.sh's gate, 2026-11-19; through
+    # the ota block since topic (E)): NOT-RUN, with why
     nr = F.all(r"B21_not_run\.txt")
     if nr:
         return [result("B21", "NOT-RUN", figs, text(nr[0]).strip()[:300])]
@@ -1058,17 +1065,28 @@ def b21(F):
         bad.append("flash guard: the car-data endpoints not shown unregistered (404 in every mode)")
     if "the OTA guard holds in every non-OFF mode" not in text(F.one(r"B21_bench_ota_guard\.txt")):
         bad.append("OTA guard")
+    # the refusal judged at the client (spec 9.3, user 2026-11-19; topic (E)): ota_guard_client_judge's
+    # verdict per body, FAIL, ERROR or VOID as it reads them (the reviewer's readings (s)-(w), answer to
+    # b07f7984); how each connection ended is in its lines, recorded, not judged
+    worst, notes = "PASS", []
     for kind in ("multipart", "image"):
-        reps = re.findall(r"^\w+ +rep \d+ .*? wire (\d+) .*? device_end (\w+) .*? (consistent|\S+) *$",
-                          text(F.one(r"B21_wire_%s_%s\.txt" % (kind, C7))), re.M)
-        got = sum(1 for w, _, _ in reps if w == "403")
-        rst = sum(1 for _, e, _ in reps if e == "rst")
-        figs[kind + "_403"] = fig(got)
-        figs[kind + "_reps"] = fig(len(reps))
-        figs[kind + "_rst"] = fig(rst)
-        if not reps or got != len(reps) or rst or any(c != "consistent" for *_, c in reps):
-            bad.append("%s %d of %d 403, %d RST" % (kind, got, len(reps), rst))
-    return [result("B21", "FAIL" if bad else "PASS", figs, "; ".join(bad) or "both guards hold; raw probe 403 without RST")]
+        m = re.search(r"^verdict (PASS|FAIL|ERROR|VOID): (\d+) reps, (\d+) PASS, (\d+) FAIL, (\d+) ERROR, "
+                      r"(\d+) VOID, (\d+) with the whole 403 and its reason", text(F.one(
+                          r"B21_client_%s_%s\.txt" % (kind, C7))), re.M)
+        if not m:
+            v, n, whole = "ERROR", 0, 0
+            notes.append("%s: no client verdict line" % kind)
+        else:
+            v, n, whole = m.group(1), int(m.group(2)), int(m.group(7))
+            if v != "PASS":
+                notes.append("%s %s (%s PASS, %s FAIL, %s ERROR, %s VOID of %d reps)" % (
+                    kind, v, m.group(3), m.group(4), m.group(5), m.group(6), n))
+        figs[kind + "_reps"] = fig(n)
+        figs[kind + "_whole_403"] = fig(whole)
+        worst = ruled_verdict([worst, v])
+        notes.append("%s %d of %d with the whole 403 and its reason" % (kind, whole, n))
+    v = "FAIL" if bad else worst
+    return [result("B21", v, figs, "; ".join(bad + notes) if v != "PASS" else "both guards hold; " + "; ".join(notes))]
 
 
 def e4_response(t):

@@ -66,10 +66,10 @@ def server(mode):
             buf += c.recv(4096)
         head, _, rest = buf.partition(b"\r\n\r\n")
         cl = int([l.split(b":")[1] for l in head.split(b"\r\n") if l.lower().startswith(b"content-length")][0])
-        if mode == "fin":
+        if mode in ("fin", "short"):
             while len(rest) < cl:
                 rest += c.recv(4096)
-            c.sendall(REPLY)
+            c.sendall(REPLY if mode == "fin" else REPLY[:-5])     # short: the 403 cut off in its body
             c.shutdown(socket.SHUT_WR)
             c.recv(10)
             c.close()
@@ -116,6 +116,14 @@ def main():
     check("raw_post: a clean close reads 'fin' with the 403", r["ending"] == "fin"
           and r["status_line"] == "HTTP/1.1 403 Forbidden" and r["body_len"] == len(body)
           and isinstance(r["local_port"], int), r)
+    check("raw_post: the whole reply recorded as the client holds it (spec 9.3, topic (E))",
+          r["reply_complete"] is True and r["content_length"] == 9 and r["reply_body"] == "Forbidden", r)
+    port, t = server("short")
+    r = R.raw_post("/upload/ota.bin", body, ctype, timeout=5, host="127.0.0.1", port=port)
+    t.join(3)
+    check("raw_post: a 403 cut short in its body is recorded not whole, with what came",
+          r["status_line"] == "HTTP/1.1 403 Forbidden" and r["reply_complete"] is False
+          and r["content_length"] == 9 and r["reply_body"] == "Forb", r)
     port, t = server("rst")
     r = R.raw_post("/upload/ota.bin", body, ctype, timeout=5, host="127.0.0.1", port=port)
     t.join(3)

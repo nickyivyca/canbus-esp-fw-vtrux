@@ -2,10 +2,12 @@
 """Test the 2026-10-20 batch in the baseline scripts, with fakes for everything that
 would touch the bench (reviewer, 2026-10-20):
 
-  1. B21 (baseline_b21.sh, probe step): each capture runs under capture_window.py and is
-     stopped TAIL s after its probe exits, cleanly; the capture's start and stop are
-     recorded beside the probe's; the join gets the capture.
-  2. B11raw (baseline_b_noX2.sh): the same per arm.
+  1. B21 (baseline_b21.sh, probe step): since topic (E) (2026-11-19, spec 9.3) no capture
+     and no pcap join, with no capture interface named: each probe's record, by the path
+     its "wrote" line names, is judged at the client into B21_client_<body>_<commit>.txt;
+     a probe that wrote no record leaves its client file saying ERROR. (Until then: each
+     capture under capture_window.py, stopped TAIL s after its probe.)
+  2. B11raw (baseline_b_noX2.sh): six arms with raw POSTs and no capture (topic (E)).
   3. baseline_b_jam.sh custody with GI_RUNS_DIR holding a space: flash-jammer gets the
      dump record; with no dump record it stops before flash-jammer.
   4. baseline_b_jam.sh restore and x2_release_identify.sh with a spaced GI_RUNS_DIR:
@@ -48,8 +50,10 @@ case "$(basename "$script")" in
   capture_window.py) exec "$REAL_PY" -B "$script" "$@" ;;
   -|"") cat > /dev/null; echo "1000 SW" ;;
   ota_guard_raw_probe.py) sleep 1
-    echo '{"rows": []}' > "$GI_RUNS_DIR/ota_guard_raw_probe_$(arg --body "$@")_$(date +%s%N).json" ;;
-  ota_guard_pcap_join.py) echo "JOIN $*" >> "$FAKE_LOG"; echo "joined" ;;
+    rec="$GI_RUNS_DIR/ota_guard_raw_probe_$(arg --body "$@")_$(date +%Y%m%dT%H%M%S).json"
+    [ -n "${FAKE_NO_PROBE_RECORD:-}" ] || echo '{"rows": []}' > "$rec"
+    echo "uptime 1 -> 2 ms, mode after 0; wrote $rec" ;;
+  ota_guard_client_judge.py) echo "CLIENT $*" >> "$FAKE_LOG"; echo "verdict PASS: 0 reps (fake)" ;;
   e4_device_calibration.py) sleep 1; echo '{}' > "$(arg --out "$@")" ;;
   x2_flash_custody.py)
     case "$1" in
@@ -159,20 +163,6 @@ def calls(tmp):
     return open(p).read() if os.path.exists(p) else ""
 
 
-def windows_ok(name, cap_recs, win_recs, start_key, end_key):
-    check("%s: one capture record per window (%d, %d)" % (name, len(cap_recs), len(win_recs)),
-          len(cap_recs) == len(win_recs) and cap_recs, (cap_recs, win_recs))
-    for c, w in zip(cap_recs, win_recs):
-        cr, wr = json.load(open(c)), json.load(open(w))
-        tag = os.path.basename(c)
-        check("%s: %s stopped by its stop file, cleanly, rc 0" % (name, tag),
-              cr["how"] == "stopfile" and cr["stopped_cleanly"] is True and cr["rc"] == 0, cr)
-        check("%s: %s started before and stopped %d s after the window" % (name, tag, TAIL),
-              cr["t_start"] < wr[start_key] and TAIL - 0.5 <= cr["t_stop_requested"] - wr[end_key] <= TAIL + 3,
-              (cr["t_start"], cr["t_stop_requested"], wr))
-        check("%s: %s's stop file is gone" % (name, tag), not os.path.exists(cr["stopfile"]), cr["stopfile"])
-
-
 def main():
     tmp = gi_paths.scratch("capture-stop-test")
     gi_paths.remove_tree(tmp)
@@ -183,44 +173,51 @@ def main():
         # 0. bench_host.sh: the scripts call the host's Python, under its own name
         check("bench_host.sh: the scripts' Python is %s here" % " ".join(PY_CMD), host_py() == PY_CMD,
               host_py())
-        if os.name != "nt":
-            # no capture interface on Linux unless named (madhouse-debian has no Wi-Fi yet)
-            for label, script, args, extra in [("B21 probe", "baseline_b21.sh", ["img.bin"], {"GI_B21_STEPS": "probe"}),
-                                               ("B11raw", "baseline_b_noX2.sh", ["B11raw"], {})]:
-                runs, out = os.path.join(tmp, "noif runs"), os.path.join(tmp, "noif out")
-                os.makedirs(runs, exist_ok=True)
-                e = env_for(tmp, runs, out, **extra)
-                del e["GI_CAPTURE_IFACE"]
-                open(os.path.join(tmp, "calls.log"), "w").close()
-                rc, text = bash(script, args, e)
-                check("%s: no GI_CAPTURE_IFACE on Linux -> exit 2, nothing run" % label,
-                      rc == 2 and "GI_CAPTURE_IFACE" in text and calls(tmp) == "", (rc, text[-300:], calls(tmp)[-300:]))
+        # 1. B21's probe step, judged at the client since topic (E) (spec 9.3, 2026-11-19): no capture
+        #    and no pcap join, with no capture interface named; each probe's record goes to the client
+        #    judge by the path its "wrote" line names, into B21_client_<body>_<commit>.txt
         open(os.path.join(tmp, "calls.log"), "w").close()
-        # 1. B21's probe step
         runs, out = os.path.join(tmp, "b21runs"), os.path.join(tmp, "b21out")
         os.makedirs(runs)
-        rc, text = bash("baseline_b21.sh", ["img.bin"], env_for(tmp, runs, out, GI_B21_STEPS="probe"))
-        check("B21: the probe step ran (two probes, two captures)",
-              text.count("probe ") >= 2 and text.count("capture ") >= 2, text[-600:])
-        windows_ok("B21", sorted(glob.glob(os.path.join(out, "B21_capture_*.json"))),
-                   sorted(glob.glob(os.path.join(out, "B21_probe_window_*.json"))), "probe_start", "probe_end")
-        dc = [json.loads(l) for l in open(os.path.join(tmp, "dumpcap.log"))] if os.path.exists(os.path.join(tmp, "dumpcap.log")) else []
-        begins = [d for d in dc if "t_begin" in d]
-        check("B21: dumpcap wrote to each capture file the join reads",
-              len(begins) == 2 and all(os.path.basename(d["argv"][d["argv"].index("-w") + 1]) in calls(tmp) for d in begins),
-              (begins, calls(tmp)[-400:]))
-        check("B21: dumpcap keeps its own bound (-a duration)",
-              begins and all("duration:60" in d["argv"] for d in begins), begins)
-        check("B21: dumpcap captures on GI_CAPTURE_IFACE",
-              begins and all(d["argv"][d["argv"].index("-i") + 1] == "test-iface" for d in begins), begins)
-        # 2. B11raw
-        open(os.path.join(tmp, "dumpcap.log"), "w").close()
+        # a stray record newer than any the probes write: the probe's own record is judged, by its
+        # "wrote" line, never the newest in runs/
+        stray = os.path.join(runs, "ota_guard_raw_probe_image_29991231T000000.json")
+        open(stray, "w").write('{"rows": []}')
+        os.utime(stray, (4102444800, 4102444800))
+        e = env_for(tmp, runs, out, GI_B21_STEPS="probe", GI_CAPTURE_IFACE=None)
+        rc, text = bash("baseline_b21.sh", ["img.bin"], e)
+        recs = sorted(r for r in glob.glob(os.path.join(runs, "ota_guard_raw_probe_*.json")) if r != stray)
+        judged = [l for l in calls(tmp).splitlines() if l.startswith("CLIENT ")]
+        check("B21: two probes, each its own record judged at the client, with no capture interface named",
+              rc == 0 and len(recs) == 2 and len(judged) == 2 and not any("29991231" in l for l in judged)
+              and all(any(fw(r) in l for l in judged) for r in recs), (rc, recs, judged, text[-400:]))
+        check("B21: the two client judgements written, B21_client_<body>_e3d9437.txt",
+              sorted(n for n in os.listdir(out) if n.startswith("B21_client_"))
+              == ["B21_client_image_e3d9437.txt", "B21_client_multipart_e3d9437.txt"], sorted(os.listdir(out)))
+        check("B21: no dumpcap, no capture_window, no pcap join",
+              not os.path.exists(os.path.join(tmp, "dumpcap.log")) and "capture_window" not in calls(tmp)
+              and "pcap_join" not in calls(tmp) and not glob.glob(os.path.join(out, "*.pcapng")), calls(tmp)[-400:])
+        open(os.path.join(tmp, "calls.log"), "w").close()
+        runs, out = os.path.join(tmp, "b21norec runs"), os.path.join(tmp, "b21norec out")
+        os.makedirs(runs)
+        rc, text = bash("baseline_b21.sh", ["img.bin"], env_for(tmp, runs, out, GI_B21_STEPS="probe",
+                                                                FAKE_NO_PROBE_RECORD="1"))
+        got = [open(os.path.join(out, "B21_client_%s_e3d9437.txt" % k)).read() if os.path.exists(
+            os.path.join(out, "B21_client_%s_e3d9437.txt" % k)) else "" for k in ("multipart", "image")]
+        check("B21: a probe that wrote no record -> its client file says ERROR, nothing judged",
+              all(g.startswith("verdict ERROR: the probe wrote no record") for g in got)
+              and "CLIENT " not in calls(tmp), (got, calls(tmp)[-300:]))
+        # 2. B11raw: six arms with raw POSTs and no capture (topic (E))
         runs, out = os.path.join(tmp, "b11runs"), os.path.join(tmp, "b11out")
         os.makedirs(runs)
-        rc, text = bash("baseline_b_noX2.sh", ["B11raw"], env_for(tmp, runs, out))
-        windows_ok("B11raw", sorted(glob.glob(os.path.join(out, "capture_B11raw_*.json"))),
-                   sorted(glob.glob(os.path.join(out, "window_B11raw_*.json"))), "arm_start", "arm_end")
-        check("B11raw: six arms", len(glob.glob(os.path.join(out, "capture_B11raw_*.json"))) == 6, text[-400:])
+        rc, text = bash("baseline_b_noX2.sh", ["B11raw"], env_for(tmp, runs, out, GI_CAPTURE_IFACE=None))
+        e4 = [l for l in calls(tmp).splitlines() if "e4_device_calibration.py" in l and "B11raw_e4_quiesce_" in l]
+        check("B11raw: six arms with raw POSTs, no capture interface named, exit 0",
+              rc == 0 and len(e4) == 6 and all("--post-raw-timeout 3" in l for l in e4), (rc, len(e4), text[-400:]))
+        check("B11raw: no dumpcap, no capture_window, no capture files",
+              not os.path.exists(os.path.join(tmp, "dumpcap.log")) and "capture_window" not in calls(tmp)
+              and not glob.glob(os.path.join(out, "*.pcapng")) and not glob.glob(os.path.join(out, "capture_*.json")),
+              calls(tmp)[-300:])
         # baseline_b_desk.sh B11raw takes "$dir"/B11raw_e4_quiesce_*.json as the e4 records
         desk = glob.glob(os.path.join(out, "B11raw_e4_quiesce_*.json"))
         check("B11raw: the desk step's glob finds the six e4 records and nothing else",
