@@ -106,6 +106,12 @@ def main():
                                     ["B5_livetrain_p2000_run%d_rejudged.txt" % r for r in (1, 2, 3)])
                 check("B5: writes the four re-judgements as <output>_rejudged.txt, and nothing else",
                       written(out) == want_names, written(out))
+                # the baseline folder holds them beside the run's own lines (the reviewer's answer
+                # to 2ddd4dcc, 2026-11-19), and the suite reads those: they are this step's output
+                same = lambda n: (os.path.isfile(os.path.join(bench, n)) and open(os.path.join(out, n), "rb").read()
+                                  == open(os.path.join(bench, n), "rb").read())
+                check("B5: the baseline folder's re-judgements are byte for byte what this step writes",
+                      all(same(n) for n in want_names), [n for n in want_names if not same(n)])
             res = SJ.judge_one(s, out)
             v = [r["verdict"] for r in res]
             fg = {k: x["value"] for r in res for k, x in r["figures"].items()}

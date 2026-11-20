@@ -516,14 +516,30 @@ def jam_checks():
               jam2.get("start") == 7.01 and j2.get("verdict") == j.get("verdict") and j2.get("A") == j.get("A"),
               (jam2, j2.get("verdict")))
     j3, jam3, _ = lt_judge(C, lt_arm(stray=(6.8,), live_after=0.5))
-    check("jam start: an error frame before the recorded send is not the start",
-          jam3.get("start") == 7.01 and jam3.get("send_time") == "recorded", jam3)
-    j4, jam4, _ = lt_judge(C, lt_arm(legacy=True, stray=(5.0,)))
+    check("jam start: an error frame before the recorded send is not the start, and the arm is judged",
+          jam3.get("start") == 7.01 and jam3.get("send_time") == "recorded" and j3.get("verdict") == "SEE A/B/C",
+          (jam3, j3.get("verdict")))
+    j4, jam4, _ = lt_judge(C, lt_arm(legacy=True, stray=(2.9,)))
     check("jam start, an older record: the send placed by the schedule (went live + 3.0 s)",
           jam4.get("start") == 7.01 and abs(jam4.get("send") - 6.995) < 1e-9
           and str(jam4.get("send_time")).startswith("not recorded") and jam4.get("ack_host") == 7.06, jam4)
-    check("jam start, an older record: judged as the new one", j4.get("verdict") == "SEE A/B/C"
-          and str(j4.get("A")).startswith("PASS"), (j4.get("verdict"), j4.get("A")))
+    check("jam start, an older record: judged as the new one (an error frame before the arm's POST aside)",
+          j4.get("verdict") == "SEE A/B/C" and str(j4.get("A")).startswith("PASS"), (j4.get("verdict"), j4.get("A")))
+    # THE CAN-FAIL for the reviewer's guard on (g) (answer to 2ddd4dcc): an older record with
+    # an error frame between the arm's POST and the placed send is ERROR, not judged
+    for at in (3.0, 5.0, 6.99):
+        jg, jamg, jphg = lt_judge(C, lt_arm(legacy=True, stray=(at,)))
+        check("jam start, an older record: an error frame at %.2f s, between the POST (3.0) and the placed send"
+              " (6.995), is INCONCLUSIVE and B5 reads it ERROR" % at,
+              jphg is None and jg.get("verdict") == "INCONCLUSIVE" and jg.get("summary") == C.SEND_PLACED_ERRORS
+              and AR.VERDICT[AR.b5_arm("INCONCLUSIVE | " + jg["summary"])] == "ERROR"
+              and jamg.get("errors_before_placed_send") == {"n": 1, "first": at}, (jg, jamg))
+    jg, _, _ = lt_judge(C, lt_arm(legacy=True, stray=(6.995,)))
+    check("jam start, an older record: an error frame at the placed send itself is the start, judged",
+          jg.get("verdict") == "SEE A/B/C", (jg.get("verdict"), jg.get("summary")))
+    jg, _, _ = lt_judge(C, lt_arm(stray=(5.0,)))
+    check("jam start: the guard is for a placed send only; a recorded one with an error frame before it is judged",
+          jg.get("verdict") == "SEE A/B/C", (jg.get("verdict"), jg.get("summary")))
     j5, jam5, jph5 = lt_judge(C, lt_arm(errs=False))
     check("jam start: no error frame from the send on is INCONCLUSIVE, and B5 reads it ERROR",
           jph5 is None and j5.get("summary") == "the witness saw no error frame at or after the train's send"
@@ -658,6 +674,15 @@ MUTANTS = [
     ("x2_jam_cases.py", "no error frame from the send read as never live",
      '                        "summary": "the witness saw no error frame at or after the train\'s send"}',
      '                        "summary": "never went live"}'),
+    ("x2_jam_cases.py", "the guard on a placed send gone (answer to 2ddd4dcc)",
+     '    if early:\n        arm["jam"]["errors_before_placed_send"]',
+     '    if False:\n        arm["jam"]["errors_before_placed_send"]'),
+    ("x2_jam_cases.py", "the guard counts the frame at the placed send itself",
+     'if ph["arm_posted"] <= t < sent]', 'if ph["arm_posted"] <= t <= sent]'),
+    ("x2_jam_cases.py", "the guard counts frames before the arm's POST",
+     'if ph["arm_posted"] <= t < sent]', 'if t < sent]'),
+    ("x2_jam_cases.py", "the guard applied to a recorded send too",
+     "if ph[\"arm_posted\"] <= t < sent] if legacy else []", "if ph[\"arm_posted\"] <= t < sent]"),
     ("x2_jam_cases.py", "rejudge: an off-clock arm judged",
      '        if not WC.judgeable(arm.get("clock")):\n', '        if False:\n'),
     ("x2_jam_cases.py", "the arm line without the jam start", ' | jam start %s" % (', ' | %s" % ('),

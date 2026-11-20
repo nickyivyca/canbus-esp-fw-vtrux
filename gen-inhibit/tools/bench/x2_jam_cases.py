@@ -967,6 +967,8 @@ def case_livetrain(a, rec, con, wit):
 
 LIVE_TO_TRAIN_S = 3.0   # livetrain sends its train this long after it read the device live
 JAM_START_FROM = "the witness's first error frame at or after the train's send"
+SEND_PLACED_ERRORS = ("the train's send is not recorded, and the witness saw an error frame between "
+                      "the arm's POST and the send its schedule places")
 
 
 def livetrain_jam(arm, errs):
@@ -988,7 +990,8 @@ def judge_livetrain_arm(arm, frames, errs, ms, decoder):
     """Judge one livetrain arm (live_jam_arm.judge A/B/C), live or from its record: sets
     arm["judge"], arm["jam"] and the orderings relative to the jam's start, and returns the
     phases it judged on (jam_start the witness's, jam_stop jam_start + ms), or None when the
-    arm never went live or the witness saw no error frame from the send on. The jammer's
+    arm never went live, the witness saw no error frame from the send on, or a send placed by
+    the schedule has an error frame between the arm's POST and it. The jammer's
     ACK as the host received it is recorded beside the start, never judged from (in a
     record before 2026-11-19 it is phases["jam_start"]). frames [(t, arb, hex)], errs [t]:
     the witness's, on the judging clock."""
@@ -1005,6 +1008,14 @@ def judge_livetrain_arm(arm, frames, errs, ms, decoder):
     if j0 is None:
         arm["judge"] = {"verdict": "INCONCLUSIVE",
                         "summary": "the witness saw no error frame at or after the train's send"}
+        return None
+    # A send placed by the schedule is a bound: an error frame between the arm's POST and it
+    # would leave the bound to decide which frame starts the jam, so the arm is ERROR (the
+    # gen-inhibit reviewer's guard on reading (g), answer to 2ddd4dcc, 2026-11-19).
+    early = [t for t in errs if ph["arm_posted"] <= t < sent] if legacy else []
+    if early:
+        arm["jam"]["errors_before_placed_send"] = {"n": len(early), "first": early[0]}
+        arm["judge"] = {"verdict": "INCONCLUSIVE", "summary": SEND_PLACED_ERRORS}
         return None
     jph = dict(ph, jam_start=j0, jam_stop=j0 + ms / 1000.0)
     lo, hi = ph["replay_start"] - 1, ph["mode0_posted"] + 1
