@@ -18,8 +18,10 @@ would touch the bench (reviewer, 2026-10-20):
     py -3.14 -B gen-inhibit/tools/bench/test_baseline_capture_stop.py
 
 Run from the reverse-it root (the scripts use paths relative to it). A fake `py` goes
-first on PATH: it runs capture_window.py for real and fakes every other tool by name; a
-fake dumpcap (GI_DUMPCAP_PRE) writes its -w file and exits 0 on CTRL_BREAK. BATCH_DIR
+first on PATH and fakes every tool by name (it ran capture_window.py for real until that
+was removed in topic (E)'s follow-up, the gen-inhibit reviewer's answer to 8e2ed20c,
+2026-11-19); a fake dumpcap (GI_DUMPCAP_PRE) logs any call, which parts 1 and 2 must not
+see. BATCH_DIR
 names the folder of the scripts under test (default: this folder; the mutant runner sets
 it). About 2 minutes. Gen-inhibit tester.
 """
@@ -47,7 +49,6 @@ if [ "${1:-}" = "-c" ]; then exec "$REAL_PY" "$@"; fi
 script=${1:-}; [ $# -gt 0 ] && shift
 arg() { local k=$1; shift; while [ $# -gt 0 ]; do [ "$1" = "$k" ] && { echo "$2"; return; }; shift; done; }
 case "$(basename "$script")" in
-  capture_window.py) exec "$REAL_PY" -B "$script" "$@" ;;
   -|"") cat > /dev/null; echo "1000 SW" ;;
   ota_guard_raw_probe.py) sleep 1
     rec="$GI_RUNS_DIR/ota_guard_raw_probe_$(arg --body "$@")_$(date +%Y%m%dT%H%M%S).json"

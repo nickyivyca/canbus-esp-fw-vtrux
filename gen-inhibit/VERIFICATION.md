@@ -3838,6 +3838,12 @@ the client, the connection's end recorded, not judged (B21). The gen-inhibit rev
     (no device `0x051` after the reply into OBSERVE, no stale answer after the POST back), and 3
     (OBSERVE from PASSIVE) have nothing to show. Windows 8.3-37.5 ms; the clock margins 0.35-0.46
     ms.
+  - 2026-11-19, the topic (E) follow-up (the gen-inhibit reviewer's answer to 8e2ed20c): a stale
+    answer is judged from the request's send, not from the reply, so an answer inside the window to
+    a command from before the request now FAILs. Re-judged with that rule, the baseline's
+    `B11raw_window_judge.txt` and both B21 client files come out byte for byte the same: no POST
+    back has such an answer. B21 also prints a spec 3 finding where the mode setter replied 200
+    and the page showed another mode; the baseline has none.
 - **B21's limit** (reading (v)): the image check reads `elf_sha256` before and after each refused
   request, and the uptime its continuity. A write to the other OTA slot without a reboot is not
   visible to this check.

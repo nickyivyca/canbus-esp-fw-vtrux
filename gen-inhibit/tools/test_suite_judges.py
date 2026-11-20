@@ -266,7 +266,8 @@ EDITS = [
      [B11RAW_ALL_PASS, (B11RAW_ARM1_POST1_P, r'\g<1>"ERROR: a void reason on no spec 12.1 entry: x"')], None, "ERROR all"),
     ("B11raw", "bench", r"B11raw_window_judge\.txt", [B11RAW_ALL_PASS, (B11RAW_ARM1_POST1_P, r'\g<1>"MAYBE"')],
      None, "ERROR all"),
-    # every POST passing, beside the quiesce analysis: one arm void there is VOID, one arm late FAIL
+    # the quiesce analysis beside the POSTs: one arm void there is VOID (with every POST passing too:
+    # block 2a''), one arm late FAIL
     ("B11raw", "bench", r"B11raw_quiesce_analysis\.txt",
      r'^\{"run": "(B11raw_e4_quiesce_inhibit_e3d9437_20261017T010417_arm1\.json)".*$',
      r'{"run": "\g<1>", "initial_mode": "inhibit", "void": ["witness clock (test): not judged on host time"]}', "VOID"),
@@ -1031,6 +1032,24 @@ def main():
     check("B21 both PASS: PASS, 40 whole 403s", lambda: r21["verdict"] == "PASS"
           and r21["figures"]["multipart_whole_403"]["value"] + r21["figures"]["image_whole_403"]["value"] == 40,
           (r21["verdict"], r21["detail"]))
+    gi_paths.remove_tree(d)
+
+    # 2a''. B11raw with every POST passing in the window and one arm void in the quiesce analysis:
+    #     VOID, never PASS (the edits above change one file each, and the baseline's POSTs are already
+    #     VOID, so they cannot show it; the suite_judges mutant m37 survived them, topic (E) follow-up).
+    d = os.path.join(scratch, "b11raw_pass_void_arm")
+    shutil.copytree(real, d)
+    for name, pat, rep in (
+            ("B11raw_window_judge.txt", B11RAW_ALL_PASS[0], B11RAW_ALL_PASS[1]),
+            ("B11raw_quiesce_analysis.txt", r'^\{"run": "(B11raw_e4_quiesce_inhibit_e3d9437_20261017T010417_arm1\.json)".*$',
+             r'{"run": "\g<1>", "initial_mode": "inhibit", "void": ["witness clock (test): not judged on host time"]}')):
+        p = os.path.join(d, "bench", name)
+        s, k = re.subn(pat, rep, open(p, encoding="utf-8").read(), flags=re.M)
+        check("B11raw PASS beside a void arm: %s edited" % name, lambda: k == (12 if name.startswith("B11raw_w") else 1), k)
+        open(p, "w", encoding="utf-8").write(s)
+    r11 = judge_all(d)["B11raw"][0]
+    check("B11raw PASS beside a void arm: VOID, never PASS", lambda: r11["verdict"] == "VOID",
+          (r11["verdict"], r11["detail"]))
     gi_paths.remove_tree(d)
 
     # 2b. B18's schema 8 form (port step 0c), which no baseline file has: the check's verdict

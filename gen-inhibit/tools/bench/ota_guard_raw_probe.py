@@ -17,9 +17,9 @@ Writes runs/ota_guard_raw_probe_<body>_<stamp>.json.
 --body (2026-10-16, the B21 addendum, reviewer): `multipart` is the guard's 184-byte
 body, `empty` the same request with Content-Length 0. The implementor's reading is
 that a refused request with unread body bytes ends in RST and one without them in
-FIN. Each row records the client's local port, so ota_guard_pcap_join.py can find
-the request's TCP stream in a tshark capture and say from the WIRE whether the 403
-was sent and how the device closed. Tested by test_ota_guard_probe.py.
+FIN. Each row records the client's local port (ota_guard_pcap_join.py found the
+request's TCP stream in a capture by it until the topic (E) follow-up removed the
+join, 2026-11-19). Tested by test_ota_guard_probe.py.
 
 --body image --image <bin> (2026-10-16, reviewer, on c6fdab5: refusals now return
 ESP_OK, so httpd reads the rest of the body off after the reply): the whole OTA

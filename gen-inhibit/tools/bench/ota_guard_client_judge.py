@@ -21,7 +21,9 @@ Per rep (one non-OFF mode set, one refused upload):
     the other slot without a reboot (reading (v)); the uptime sees an install's reboot.
   - VOID when a reading the harness never sent is missing (reading (t)): the mode set was not read
     back as set, so no request was sent; a record with no page read before or after the request,
-    or no first page.
+    or no first page. Where the mode setter replied 200 and the page shows another mode, the rep is
+    VOID and that is also printed as a spec 3 finding (the gen-inhibit reviewer, answer to
+    8e2ed20c, 2026-11-19).
   - ERROR when a read was sent and got no answer, or an answer without the uptime or the image: the
     record can't tell the bench from the device (reading (t)).
   - The ending (fin, rst, "open: client closed", timeout) is printed beside it, never judged (u).
@@ -33,8 +35,10 @@ The run (arm_rulings.ruled_verdict's order): FAIL if any rep FAILs, then ERROR, 
 VOID; else PASS.
 
     python3.13 -B ota_guard_client_judge.py <ota_guard_raw_probe_*.json>
-Prints a header line naming the record, one line per rep, and a last line "verdict V: N reps, ...,
-W with the whole 403 and its reason (<body> body)"; exit 0 PASS, 1 otherwise.
+Prints a header line naming the record, one line per rep (a rep with a spec 3 finding is followed
+by a line "spec 3 finding (<mode> rep <n>): ..."), and a last line "verdict V: N reps, ..., W with
+the whole 403 and its reason (<body> body)", with "; F spec 3 finding(s)" after it when there are
+any; exit 0 PASS, 1 otherwise.
 """
 import json
 import os
@@ -48,6 +52,7 @@ PASS, FAIL, ERROR, VOID = "PASS", "FAIL", "ERROR", "VOID"
 RANK = {PASS: 0, VOID: 1, ERROR: 2, FAIL: 3}
 NOT_SENT, UNANSWERED, ANSWERED = "not sent", "unanswered", "answered"
 MODE_NUMBER = {"OBSERVE": 1, "RESPOND": 2, "INHIBIT": 3, "PASSIVE": 4}   # ota_guard_raw_probe.MODES
+SPEC3 = "spec 3 finding"
 
 
 def with_reply(row):
@@ -119,8 +124,13 @@ def judge_rep(row, first):
         return ERROR, ["the page read after the mode set did not answer (%s): no request sent" % before.get("error")]
     mode_read = before.get("mode") if before is not None else row.get("mode_read")
     if row.get("set_http") != 200 or mode_read != row.get("mode_set"):
-        return VOID, ["the mode set was not read back as set (set %s, read %s): no request sent" % (
+        why = ["the mode set was not read back as set (set %s, read %s): no request sent" % (
             row.get("set_http"), mode_read)]
+        if row.get("set_http") == 200 and mode_read is not None:
+            # the reviewer, answer to 8e2ed20c: VOID for the rep, and printed as a spec 3 finding
+            why.append("%s: the mode setter replied 200 and the page shows mode %s, not the mode set %s"
+                       % (SPEC3, mode_read, row.get("mode_set")))
+        return VOID, why
     full = with_reply(row)
     if full is None:
         return ERROR, ["the record keeps only the reply's first %d of %s bytes: whether it was whole can't "
@@ -166,10 +176,15 @@ def main(argv=None):
         print("%-8s rep %s: %-5s %s | status %s whole %s body %r | ending %s (recorded, not judged)" % (
             r.get("mode"), r.get("rep"), rv, "; ".join(why), r.get("status_line"), r.get("reply_complete"),
             (r.get("reply_body") or "")[:60], r.get("ending")))
+        for w in why:
+            if w.startswith(SPEC3 + ": "):
+                print("%s (%s rep %s): %s" % (SPEC3, r.get("mode"), r.get("rep"), w[len(SPEC3) + 2:]))
     n = {k: sum(1 for _r, x, _w in rows if x == k) for k in (PASS, FAIL, ERROR, VOID)}
+    found = sum(1 for _r, _v, why in rows for w in why if w.startswith(SPEC3 + ": "))
     print("verdict %s: %d reps, %d PASS, %d FAIL, %d ERROR, %d VOID, %d with the whole 403 and its reason "
-          "(%s body)" % (v, len(rows), n[PASS], n[FAIL], n[ERROR], n[VOID],
-                         sum(1 for r, _v, _w in rows if whole_403(r)), rec.get("body")))
+          "(%s body)%s" % (v, len(rows), n[PASS], n[FAIL], n[ERROR], n[VOID],
+                           sum(1 for r, _v, _w in rows if whole_403(r)), rec.get("body"),
+                           "; %d %s(s)" % (found, SPEC3) if found else ""))
     return 0 if v == PASS else 1
 
 

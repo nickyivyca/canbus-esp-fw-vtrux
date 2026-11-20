@@ -8,7 +8,7 @@ an error.
 Run from the reverse-it root. Each mutant is a copy of this folder in the worktree's
 scratch/, with the five scripts from BATCH_SRC (default: this folder) and one edit, run
 through the test's BATCH_DIR. The whole folder, since the scripts run tools beside them
-($A, capture_window.py among them): a copy of the five alone failed the same five checks
+($A; capture_window.py among them until topic (E)'s follow-up removed it): a copy of the five alone failed the same five checks
 with no edit at all. The unmutated copy runs first, as the control: if it fails a check,
 no kill counts. About 25 minutes. Gen-inhibit tester, 2026-10-20.
 
@@ -87,8 +87,8 @@ def main():
     killed = errors = 0
 
     def run(label, target=None, old=None, new=None):
-        # The whole of bench/, since the scripts run tools from their own folder ($A), and
-        # the fake py runs capture_window.py from there for real; then the five scripts.
+        # The whole of bench/, since the scripts run tools from their own folder ($A); then
+        # the scripts under test.
         d = os.path.join(base, label)
         gi_paths.remove_tree(d)
         shutil.copytree(HERE, d, ignore=shutil.ignore_patterns("__pycache__"))

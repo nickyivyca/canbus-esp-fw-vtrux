@@ -105,6 +105,13 @@ def main():
     check("the mode set not read back as set (no request sent): VOID", r[0] == "VOID" and "not read back" in r[1][0], r)
     r = v(row(page_before=page(100.0, 500000, 1), status_line=None, reply_complete=None))
     check("the mode read back another mode (no request sent): VOID", r[0] == "VOID", r)
+    # the reviewer, answer to 8e2ed20c: the setter replied 200 and the page shows another mode ->
+    # VOID for the rep, and a spec 3 finding
+    check("... the setter replied 200: a spec 3 finding beside the VOID",
+          r[1][1:] == ["spec 3 finding: the mode setter replied 200 and the page shows mode 1, not the mode set 3"], r)
+    r = v(row(set_http=500, page_before=page(100.0, 500000, 1), status_line=None, reply_complete=None))
+    check("the setter not replying 200, another mode read: VOID, no spec 3 finding",
+          r[0] == "VOID" and len(r[1]) == 1, r)
     r = v(row(page_before=dict(page(100.0, None, None), error="GET /gen_inhibit returned None", elf_sha256=None),
               status_line=None, reply_complete=None))
     check("the read after the mode set sent and unanswered: ERROR", r[0] == "ERROR" and "did not answer" in r[1][0], r)
@@ -185,6 +192,11 @@ def main():
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             rc = J.main([p])
+        with open(p, "w", encoding="ascii") as f:
+            json.dump(rec(row(), row(rep=1, page_before=page(100.0, 500000, 2))), f)
+        out2 = io.StringIO()
+        with contextlib.redirect_stdout(out2):
+            J.main([p])
     finally:
         gi_paths.remove_tree(d)
     lines = out.getvalue().splitlines()
@@ -193,6 +205,13 @@ def main():
           and "ending rst (x) (recorded, not judged)" in lines[2]
           and lines[-1] == "verdict VOID: 3 reps, 2 PASS, 0 FAIL, 0 ERROR, 1 VOID, 3 with the whole 403 and its "
                            "reason (multipart body)", lines)
+    lines = out2.getvalue().splitlines()
+    check("main: a spec 3 finding printed after its rep's line, and counted after the verdict",
+          len(lines) == 5 and lines[2].startswith("INHIBIT  rep 1: VOID ")
+          and lines[3] == "spec 3 finding (INHIBIT rep 1): the mode setter replied 200 and the page shows mode 2, "
+                          "not the mode set 3"
+          and lines[-1].startswith("verdict VOID: 2 reps, 1 PASS, 0 FAIL, 0 ERROR, 1 VOID, ")
+          and lines[-1].endswith("(multipart body); 1 spec 3 finding(s)"), lines)
     print("\n%d ok, %d FAIL" % (oks, len(fails)))
     print("PASS" if not fails else "FAIL")
     return 1 if fails else 0
@@ -214,7 +233,14 @@ MUTANTS = [
     ("a mode not read back judged anyway",
      '    if row.get("set_http") != 200 or mode_read != row.get("mode_set"):\n', "    if False:\n"),
     ("a mode not read back ERROR, not VOID (before reading (t))",
-     '        return VOID, ["the mode set was not read back', '        return ERROR, ["the mode set was not read back'),
+     '        return VOID, why\n', '        return ERROR, why\n'),
+    ("a 200 setter with another mode read: no spec 3 finding",
+     '        if row.get("set_http") == 200 and mode_read is not None:\n', "        if False:\n"),
+    ("a spec 3 finding whatever the setter replied",
+     '        if row.get("set_http") == 200 and mode_read is not None:\n', "        if mode_read is not None:\n"),
+    ("the spec 3 finding not printed", '            if w.startswith(SPEC3 + ": "):\n                print(',
+     '            if False:\n                print('),
+    ("the spec 3 findings not counted on the verdict line", '"; %d %s(s)" % (found, SPEC3) if found else ""', '""'),
     ("a read never sent ERROR, not VOID", '        return (FAIL if bad else VOID), bad + ["no page read',
      '        return (FAIL if bad else ERROR), bad + ["no page read'),
     ("a read sent and unanswered VOID, not ERROR", '        return (FAIL if bad else ERROR), bad + ["the page read %s did',

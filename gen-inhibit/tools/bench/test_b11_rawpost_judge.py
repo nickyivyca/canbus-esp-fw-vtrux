@@ -172,11 +172,17 @@ def main():
                    v == J.FAIL))
     checks.append(("back: the answered command within the margin before the request -> ERROR",
                    J.stale_half(TS, TC, END, M, fresh + [(10.05, 9.9998)])[0] == J.ERROR))
-    checks.append(("back: the stale answer within the margin after the reply -> ERROR",
-                   J.stale_half(TS, TC, END, M, fresh + [(10.0302, 9.99)])[0] == J.ERROR))
+    checks.append(("back: the stale answer within the margin after the request -> ERROR",
+                   J.stale_half(TS, TC, END, M, fresh + [(10.0002, 9.99)])[0] == J.ERROR))
+    checks.append(("back: an answer at the request itself to a command from before -> PASS (before the request)",
+                   J.stale_half(TS, TC, END, M, fresh + [(10.000, 9.99)])[0] == J.PASS))
+    # the reviewer, answer to 8e2ed20c: stale from t_sent, not from the reply
     v, why, rec = J.stale_half(TS, TC, END, M, fresh + [(10.02, 9.99)])
-    checks.append(("back: an answer inside the window to a command from before -> PASS, counted, not judged",
-                   v == J.PASS and rec["in_window_answers_to_commands_before_request"] == 1))
+    checks.append(("back: an answer inside the window to a command from before -> FAIL (stale from t_sent), counted",
+                   v == J.FAIL and rec["in_window_answers_to_commands_before_request"] == 1
+                   and why.startswith("a stale answer: a device 0x051 20.0 ms after the request")))
+    checks.append(("back: one just past the margin after the request -> FAIL",
+                   J.stale_half(TS, TC, END, M, fresh + [(10.0005, 9.99)])[0] == J.FAIL))
     checks.append(("back: a stale answer after the next POST is not this POST's",
                    J.stale_half(TS, TC, END, M, fresh + [(20.5, 9.99)])[0] == J.PASS))
     checks.append(("back: an answer with no command placed is not judged stale",

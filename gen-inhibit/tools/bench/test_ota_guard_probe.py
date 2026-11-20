@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests ota_guard_raw_probe.py (--body, raw_post's ending) and ota_guard_pcap_join.py.
+"""Tests ota_guard_raw_probe.py (--body, raw_post's ending).
 
     REVERSE_IT_DIR=<reverse-it root> python3.13 test_ota_guard_probe.py [--mutants]
     (py -3.14 on Windows)
@@ -7,13 +7,15 @@
 raw_post is run against a local server that answers 403 and then either closes
 cleanly after reading the whole request (FIN) or aborts with unread bytes and
 SO_LINGER 0 (RST), so the client's "fin" / "rst" reading is tested on real
-sockets. The pcap join is tested on synthetic tshark rows. Added 2026-10-16.
+sockets. Added 2026-10-16.
 
 Since 2026-10-16 (c6fdab5's refusal fix) also: multipart_file, check_image (the
-full-image run's safety refusal), raw_post's reader thread (a server that answers
+full-image run's safety refusal) and raw_post's reader thread (a server that answers
 403 at once and only then drains an 8 MB body through small socket buffers: the 403 must be timed before
-the send completes), and pcap_join's no-RST expectation. --mutants runs the
-mutants of both files; each must make a check fail.
+the send completes). --mutants runs the probe's mutants; each must make a check fail.
+The pcap join's checks and mutants went with ota_guard_pcap_join.py (topic (E)
+follow-up, the gen-inhibit reviewer's answer to 8e2ed20c, 2026-11-19): B21 is judged at
+the client (ota_guard_client_judge.py).
 
 A mutant of one platform's code (a 5th field, "nt" or "posix") is printed N/A on the
 other and not counted; its edit must still apply (2026-11-12, the reviewer's Linux
@@ -37,7 +39,6 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import ota_guard_raw_probe as R     # noqa: E402
-import ota_guard_pcap_join as J     # noqa: E402
 
 FAILS = []
 REPLY = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden"
@@ -129,31 +130,6 @@ def main():
     t.join(3)
     check("raw_post: an abort reads 'rst'", r["ending"].startswith("rst"), r["ending"])
 
-    D = "192.168.80.1"
-    p403 = (b"HTTP/1.1 403 Forbidden\r\n").hex()
-    seg = lambda src, sp, dp, fin=False, rst=False, pl="": (0, src, sp, dp, fin, rst, len(pl) // 2, pl)
-    segs = [seg("192.168.80.2", 50001, 80, pl="aa" * 10), seg(D, 80, 50001, pl=p403), seg(D, 80, 50001, rst=True),
-            seg("192.168.80.2", 50002, 80), seg(D, 80, 50002, pl=p403), seg(D, 80, 50002, fin=True),
-            seg(D, 80, 50003, fin=True),
-            seg(D, 80, 50004, rst=True)]
-    c = J.per_connection(segs)
-    check("join: 403 then RST", c[50001]["wire_403"] and c[50001]["device_end"] == "rst", c[50001])
-    check("join: 403 then FIN", c[50002]["wire_403"] and c[50002]["device_end"] == "fin", c[50002])
-    check("join: FIN with no 403 on the wire", not c[50003]["wire_403"] and c[50003]["device_end"] == "fin",
-          c[50003])
-    rows = J.join([{"mode": "OBSERVE", "rep": 0, "local_port": 50001, "body_len": 184,
-                    "status_line": "HTTP/1.1 403 Forbidden", "ending": "rst"},
-                   {"mode": "OBSERVE", "rep": 1, "local_port": 50004, "body_len": 0,
-                    "status_line": None, "ending": "rst"},
-                   {"mode": "OBSERVE", "rep": 2, "local_port": 50003, "body_len": 0,
-                    "status_line": None, "ending": "fin"},
-                   {"mode": "OBSERVE", "rep": 3, "local_port": 59999, "body_len": 0}], c)
-    v = [J.against_prediction(r) for r in rows]
-    check("prediction: a body with RST is consistent", v[0] == "consistent", v[0])
-    check("prediction: a body-less RST is AGAINST", v[1].startswith("AGAINST"), v[1])
-    check("prediction: a FIN with no 403 on the wire is AGAINST", v[2].startswith("AGAINST"), v[2])
-    check("prediction: a request missing from the capture says so", v[3] == "not in capture", v[3])
-
     # c6fdab5 additions
     fb, fct = R.multipart_file(b"\x01IMAGE\x02")
     check("multipart_file: the data whole between the part head and the closing boundary",
@@ -171,18 +147,6 @@ def main():
           r["t_first_byte"] is not None and r["t_sent"] is not None and r["t_first_byte"] < r["t_sent"]
           and r["ending"] == "fin" and r["status_line"] == "HTTP/1.1 403 Forbidden",
           {k: r.get(k) for k in ("t_first_byte", "t_sent", "t_end", "ending")})
-    base = {"in_capture": True, "wire_403": True, "device_end": "fin", "client_got_403": True, "body_len": 184}
-    nr = lambda **k: J.against_no_rst(dict(base, **k))
-    check("no-rst: 403 then FIN, read by the client, is consistent", nr() == "consistent", nr())
-    check("no-rst: an RST is AGAINST, and says RST", nr(device_end="rst").startswith("AGAINST")
-          and "RST" in nr(device_end="rst"), nr(device_end="rst"))
-    check("no-rst: FIN then RST is AGAINST, and says RST", nr(device_end="fin+rst").startswith("AGAINST")
-          and "RST" in nr(device_end="fin+rst"), nr(device_end="fin+rst"))
-    check("no-rst: no close at all is AGAINST", nr(device_end="none").startswith("AGAINST"))
-    check("no-rst: FIN with no 403 on the wire is AGAINST", nr(wire_403=False).startswith("AGAINST"))
-    check("no-rst: the client missing the 403 is AGAINST", nr(client_got_403=False).startswith("AGAINST"))
-    check("no-rst: a full-image body is judged the same", nr(body_len=1278300) == "consistent")
-    check("no-rst: missing from the capture says so", nr(in_capture=False) == "not in capture")
 
     # the held-open connection (c6fdab5 keeps a refused connection open after its 403)
     check("reply_complete: headers alone, a short body, no Content-Length are not complete; a full one is",
@@ -199,50 +163,17 @@ def main():
     r = R.raw_post("/upload/ota.bin", body, ctype, timeout=4, host="127.0.0.1", port=port, grace=1.0)
     t.join(3)
     check("raw_post grace: a device that closes within the grace reads 'fin'", r["ending"] == "fin", r["ending"])
-    fc = J.per_connection([seg("192.168.80.2", 50010, 80, pl="aa"), seg(D, 80, 50010, pl=p403),
-                           seg("192.168.80.2", 50010, 80, fin=True), seg(D, 80, 50010, fin=True),
-                           seg(D, 80, 50011, pl=p403), seg(D, 80, 50011, fin=True),
-                           seg("192.168.80.2", 50011, 80, fin=True)])
-    ws = J.per_connection([seg(D, 80, 50020, pl=(b"HTTP/1.1 200 OK\r\n").hex()), seg(D, 80, 50020, pl="41" * 4),
-                           seg(D, 80, 50021, pl=p403)])
-    check("join: wire_status is the first response's code (200 for a success, 403 for a refusal)",
-          ws[50020]["wire_status"] == "200" and not ws[50020]["wire_403"] and ws[50021]["wire_status"] == "403",
-          ws)
-    check("join: first_close names the side that closed first",
-          fc[50010]["first_close"] == "client" and fc[50010]["device_end"] == "fin"
-          and fc[50011]["first_close"] == "device", fc)
-    check("join: client_got_403 from the probe's status line", rows[0]["client_got_403"]
-          and not rows[1]["client_got_403"], rows[:2])
     print("\n%d failure(s)" % len(FAILS))
     return 1 if FAILS else 0
 
 
 MUTANTS = [
-    ("ota_guard_pcap_join.py", "403 never seen on the wire",
-     'startswith(b"HTTP/1.1 403")', 'startswith(b"HTTP/1.1 999")'),
-    ("ota_guard_pcap_join.py", "RST read as FIN",
-     '                c["device_end"] = "rst" if c["device_end"] == "none" else (',
-     '                c["device_end"] = "fin" if c["device_end"] == "none" else ('),
-    ("ota_guard_pcap_join.py", "a body-less RST is not flagged",
-     'if row["body_len"] == 0 and row["device_end"] in ("rst", "fin+rst"):',
-     'if False:'),
-    ("ota_guard_pcap_join.py", "a FIN with no 403 is not flagged",
-     'if row["device_end"] == "fin" and not row["wire_403"]:', 'if False:'),
-    ("ota_guard_pcap_join.py", "no-rst accepts an RST",
-     'if row["device_end"] in ("rst", "fin+rst"):\n        return "AGAINST: the device ended with RST"',
-     'if False:\n        return "AGAINST: the device ended with RST"'),
-    ("ota_guard_pcap_join.py", "no-rst ignores the client's read",
-     'if not row["client_got_403"]:', 'if False:'),
     ("ota_guard_raw_probe.py", "reading after the send, not beside it",
      [('    th.start()\n    try:\n', '    try:\n'),
       ('        th.join(timeout + 5)\n', '        th.start()\n        th.join(timeout + 5)\n')]),
     ("ota_guard_raw_probe.py", "grace ignored (wait for the end)", "    if grace is None:", "    if True:"),
     ("ota_guard_raw_probe.py", "reply complete without its body",
      "    return m is not None and len(body) >= int(m.group(1))", "    return m is not None"),
-    ("ota_guard_pcap_join.py", "wire_status reads the wrong bytes",
-     'bytes.fromhex(payload)[9:12].decode("latin-1")', 'bytes.fromhex(payload)[0:3].decode("latin-1")'),
-    ("ota_guard_pcap_join.py", "first close always the device",
-     'c["first_close"] = "device" if src == device else "client"', 'c["first_close"] = "device"'),
     ("ota_guard_raw_probe.py", "one send of the whole request",
      "            s.sendall(req[k:k + SEND_CHUNK])", "            s.sendall(req) if k == 0 else None", "nt"),
     ("ota_guard_raw_probe.py", "check_image accepts anything",
@@ -276,8 +207,7 @@ def mutants():
         d = os.path.join(base, "m%d" % n)
         gi_paths.remove_tree(d)
         os.makedirs(d)
-        for f in ("ota_guard_pcap_join.py", "ota_guard_raw_probe.py"):
-            shutil.copy(os.path.join(HERE, f), d)
+        shutil.copy(os.path.join(HERE, "ota_guard_raw_probe.py"), d)
         open(os.path.join(d, fname), "w", encoding="utf-8").write(src)
         shutil.copy(os.path.abspath(__file__), d)
         r = subprocess.run([sys.executable, os.path.join(d, os.path.basename(__file__))],

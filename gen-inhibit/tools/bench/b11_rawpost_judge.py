@@ -23,11 +23,13 @@ its length recorded; reading (m)):
     t_complete + margin, up to the next POST's t_sent, is FAIL; one within the margin after
     t_complete is ERROR. No device 0x051 in the LIVE_BEFORE_S before t_sent: nothing to see on
     the witness, NOT APPLICABLE (the witness half; the mode still judges).
-  - Into any other mode (reading (o)): a stale answer is FAIL, a device 0x051 later than
-    t_complete + margin answering a VCM 0x051 that reached the wire earlier than t_sent - margin
-    (provenance_classifier's device_answers); one within either margin is ERROR. The first answer
-    after t_sent and its delay from t_complete are recorded, not judged: going live is the gate's
-    (GATE_HELD_S). So is the count of answers inside the window to a command from before t_sent.
+  - Into any other mode (reading (o); from t_sent, not from the reply, the gen-inhibit reviewer's
+    answer to 8e2ed20c, 2026-11-19): a stale answer is FAIL, a device 0x051 later than t_sent +
+    margin, up to the next POST's t_sent, answering a VCM 0x051 that reached the wire earlier than
+    t_sent - margin (provenance_classifier's device_answers): inside the window as after the reply.
+    One within either margin is ERROR. The first answer after t_sent and its delay from t_complete
+    are recorded, not judged: going live is the gate's (GATE_HELD_S). The count of answers inside
+    the window to a command from before t_sent is recorded beside the verdict.
   - The mode (reading (p)): the page read right after the reply must show the POSTed mode, else
     FAIL. The queue (reading (q)): that read's drv.msgs_to_rx must be at most QUEUE_BOUND, set from
     quiet data on the same replay with no mode change (the test plan); none set yet is ERROR.
@@ -93,24 +95,24 @@ def stale_half(ts, tc, t_end, margin, answers):
     """Into any other mode: (verdict, why, first answer) from [(device t, answered command t)].
     Pure."""
     after = [(t, a) for t, a in answers if t < t_end]
-    stale = [(t, a) for t, a in after if t > tc + margin and a is not None and a < ts - margin]
+    # stale from t_sent, inside the window as after the reply (the reviewer, answer to 8e2ed20c)
+    stale = [(t, a) for t, a in after if t > ts + margin and a is not None and a < ts - margin]
     first = next(((t, a) for t, a in after if t > ts), None)
     rec = {"first_t_rel_reply_ms": None if first is None else ms(first[0] - tc),
            "first_answers_rel_request_ms": None if first is None or first[1] is None else ms(first[1] - ts),
-           # recorded, not judged (the reviewer's rule is after the reply): answers inside the window
-           # to a command from before the request
+           # recorded beside the verdict: answers inside the window to a command from before the request
            "in_window_answers_to_commands_before_request":
                sum(1 for t, a in after if ts < t <= tc and a is not None and a < ts)}
     if stale:
         t, a = stale[0]
-        return FAIL, "a stale answer: a device 0x051 %s ms after the reply answering a VCM 0x051 %s ms before " \
-                     "the request" % (ms(t - tc), ms(ts - a)), rec
-    near = [(t, a) for t, a in after if t > tc and a is not None and a < ts
-            and (t <= tc + margin or a >= ts - margin)]
+        return FAIL, "a stale answer: a device 0x051 %s ms after the request (%s ms from the reply) answering " \
+                     "a VCM 0x051 %s ms before the request" % (ms(t - ts), ms(t - tc), ms(ts - a)), rec
+    near = [(t, a) for t, a in after if t > ts and a is not None and a < ts
+            and (t <= ts + margin or a >= ts - margin)]
     if near:
         t, a = near[0]
-        return ERROR, "a device 0x051 %s ms after the reply answering a VCM 0x051 %s ms before the request, " \
-                      "within the clock margin %s ms" % (ms(t - tc), ms(ts - a), ms(margin)), rec
+        return ERROR, "a device 0x051 %s ms after the request answering a VCM 0x051 %s ms before it, " \
+                      "within the clock margin %s ms" % (ms(t - ts), ms(ts - a), ms(margin)), rec
     return PASS, "no stale answer", rec
 
 
