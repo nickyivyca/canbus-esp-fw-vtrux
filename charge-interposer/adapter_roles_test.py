@@ -404,16 +404,29 @@ def case_layer(M, work):
     assert M.bus_error(sc, Msg), "a bus error not counted on SocketCAN"
     assert M.bus_error(wrapped, Msg), "a bus error not counted on a wrapped SocketCAN bus"
     assert M.bus_error(cpb, Msg), "a bus error not counted on CanbenchPcanBus"
-    # lost_frames: can-tools' own test, on the rows its PCAN bus makes from
-    # PCAN-Basic's statuses (errors.from_pcan_status): an overrun or a queue
-    # overrun is lost frames, error passive or bus-off alone is not, nor is a
-    # data frame
+    # lost_frames, on the rows can-tools' PCAN bus makes from PCAN-Basic's
+    # statuses (errors.from_pcan_status) and the row it hands up when it has
+    # reset a bus-off channel (CAN_ERR_RESTARTED): an overrun or a queue
+    # overrun is frames lost (can-tools' errors.lost_frames); bus-off and the
+    # restart after it are missed frames too (the reviewer's ruling,
+    # 2026-11-20: the reader reads nothing while off); error passive, an
+    # error warning, back to active, a bus error and a data frame are not
     import can
-    for st, want in ((E.PCAN_ERROR_OVERRUN, True), (E.PCAN_ERROR_QOVERRUN, True),
-                     (E.PCAN_ERROR_BUSPASSIVE, False), (E.PCAN_ERROR_BUSOFF, False)):
+    for st, want in ((E.PCAN_ERROR_OVERRUN, "frames lost"),
+                     (E.PCAN_ERROR_QOVERRUN, "frames lost"),
+                     (E.PCAN_ERROR_BUSOFF, "bus-off"),
+                     (E.PCAN_ERROR_BUSPASSIVE, None), (E.PCAN_ERROR_BUSHEAVY, None),
+                     (E.PCAN_ERROR_OK, None)):
         row = E.from_pcan_status(st)
-        assert M.lost_frames(row) is want, ("lost_frames", hex(st), row, want)
-    assert M.lost_frames(can.Message(arbitration_id=0x7F4, data=bytes(8))) is False
+        assert M.missed(row) == want, ("missed", hex(st), row, M.missed(row), want)
+        assert M.lost_frames(row) is (want is not None), ("lost_frames", hex(st), row, want)
+    restarted = E.error_frame(E.CAN_ERR_RESTARTED, b"")
+    assert M.missed(restarted) == "a restart after bus-off" and M.lost_frames(restarted), \
+        ("a RESTARTED row not missed frames", M.missed(restarted))
+    ack = E.error_frame(E.CAN_ERR_ACK, bytes(8))
+    assert M.missed(ack) is None and M.lost_frames(ack) is False, "a bus error read as missed frames"
+    data = can.Message(arbitration_id=0x7F4, data=bytes(8))
+    assert M.lost_frames(data) is False and M.missed(data) is None
     assert M.errors() is E, "lost_frames not from the pinned canbench.errors"
 
 
@@ -946,9 +959,18 @@ MUTANTS = [
     ("pcanfd reports too (bench_vport's witness off the default)",
      '    return open_bench("pcanfd", bitrate, **kw)\n',
      '    return open_bench("pcanfd", bitrate, bus_states="report", **kw)\n'),
-    ("no frame ever lost", "    return bool(errors().lost_frames(msg))", "    return False"),
-    ("lost frames read as any error frame", "    return bool(errors().lost_frames(msg))",
+    ("no frame ever lost", "    return missed(msg) is not None", "    return False"),
+    ("lost frames read as any error frame", "    return missed(msg) is not None",
      "    return bool(msg.is_error_frame)"),
+    ("an overrun not frames lost", "    if E.lost_frames(msg):\n        return \"frames lost\"",
+     "    if False:\n        return \"frames lost\""),
+    ("bus-off not missed frames", "    if state == \"busoff\":\n        return \"bus-off\"",
+     "    if state == \"busoff\":\n        return None"),
+    ("a restart after bus-off not missed frames",
+     "    if state == \"restarted\":\n        return \"a restart after bus-off\"",
+     "    if state == \"restarted\":\n        return None"),
+    ("error passive read as missed frames", "        return \"a restart after bus-off\"\n    return None",
+     "        return \"a restart after bus-off\"\n    return state and \"state\""),
     ("the errors stand-in ignored", "    if ERRORS is not None:\n        return ERRORS\n", ""),
 ]
 

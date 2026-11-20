@@ -195,9 +195,11 @@ class DiagWitness(object):
         import adapter_roles
         # bus states reported (the charge-interposer reviewer's PCAN item 2,
         # 2026-11-20): its states and overruns come up as error frames, never
-        # raised. _run logs no error frame, and one reporting frames lost
-        # (adapter_roles.lost_frames) ends it with self.error, so the case is
-        # NOT EXERCISED (run_scenario.witness_outcome)
+        # raised. _run logs no error frame, and one saying the witness missed
+        # frames (adapter_roles.missed: frames lost, a bus-off, a restart
+        # after bus-off; the reviewer's ruling on bus-off, 2026-11-20) ends
+        # it with self.error, so the case is NOT EXERCISED
+        # (run_scenario.witness_outcome)
         self.roles = adapter_roles
         self.bus = adapter_roles.pcanfd_report(self.bitrate,
                                                state=witness_bus_state(self.acks))
@@ -216,9 +218,10 @@ class DiagWitness(object):
                 self.error = "%s: %s" % (type(exc).__name__, exc)
                 return
             if m is not None and m.is_error_frame:
-                if self.roles.lost_frames(m):
-                    self.error = ("LostFrames: error frame 0x%08X data %s reports frames "
-                                  "lost" % (m.arbitration_id, bytes(m.data).hex()))
+                why = self.roles.missed(m)
+                if why:
+                    self.error = ("LostFrames: error frame 0x%08X data %s reports %s"
+                                  % (m.arbitration_id, bytes(m.data).hex(), why))
                     return
                 continue                    # a state or bus-error row: not logged
             host = time.perf_counter()

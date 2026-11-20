@@ -29,13 +29,17 @@ screen(bus, msg) in its step:
   - a frame, or an error frame that counts as a bus error by can-tools'
     classifier (adapter_roles.bus_error), is returned and kept as a row;
   - any other error frame (a controller-state report: error warning,
-    error passive, bus-off, back to active) is a state row, not an error
-    row: None, kept out of the rows, counted in the Death's states;
-  - an error frame reporting frames lost (adapter_roles.lost_frames,
-    can-tools' errors.lost_frames: an overrun or queue overrun) raises
-    LostFrames, which guard() records like any raise. The reader stops,
-    and its window is VOID with a line saying the reader lost frames: a
-    window a reader missed frames in is not judged.
+    error passive, back to active) is a state row, not an error row: None,
+    kept out of the rows, counted in the Death's states;
+  - an error frame saying the reader missed frames (adapter_roles.missed:
+    can-tools' errors.lost_frames, an overrun or queue overrun; or a
+    bus-off, or the restart after it, during which the reader read
+    nothing) raises LostFrames, which guard() records like any raise. The
+    reader stops, and its window is VOID with a line saying the reader lost
+    frames: a window a reader missed frames in is not judged. Bus-off was a
+    raise before report, so a dead reader; it stays VOID, and can-tools'
+    canbench_busoff_reset stays on so the reader recovers (the reviewer's
+    ruling, 2026-11-20).
 
     python3.13 -B reader_death.py --self-test | --can-fail
 """
@@ -98,15 +102,17 @@ def screen(bus, msg, death=None, roles=None):
     """A message a reader read from bus -> msg to keep as a row (a frame,
     or an error frame that is a bus error), or None (nothing read, or a
     state row: counted in death.states). Raises LostFrames on an error
-    frame that reports frames lost. roles: adapter_roles, or a stand-in
-    (self-tests)."""
+    frame that says the reader missed frames (adapter_roles.missed: frames
+    lost, bus-off, a restart after bus-off). roles: adapter_roles, or a
+    stand-in (self-tests)."""
     if msg is None or not getattr(msg, "is_error_frame", False):
         return msg
     if roles is None:
         import adapter_roles as roles
-    if roles.lost_frames(msg):
-        raise LostFrames("error frame 0x%08X data %s reports frames lost%s"
-                         % (msg.arbitration_id, bytes(msg.data).hex(),
+    why = roles.missed(msg)
+    if why:
+        raise LostFrames("error frame 0x%08X data %s reports %s%s"
+                         % (msg.arbitration_id, bytes(msg.data).hex(), why,
                             (" (%s)" % msg.raw_note) if getattr(msg, "raw_note", None)
                             else ""))
     if roles.bus_error(bus, msg):
@@ -140,14 +146,18 @@ def first_dead(deaths):
 def report_rows():
     """For the self-tests: the rows can-tools' CanbenchPcanBus hands up,
     made by can-tools itself (pinned canbench.errors): "passive" and
-    "busoff" (PCAN-Basic statuses as controller-state frames: state rows),
-    "overrun" and "qoverrun" (lost frames), "ack" (a bus error), and
-    "frame" (a data frame, 0x7F4)."""
+    "warning" (PCAN-Basic statuses as controller-state frames: state rows),
+    "overrun" and "qoverrun" (lost frames), "busoff" and "restarted" (the
+    controller off the bus, and the row CanbenchPcanBus hands up when it
+    has reset it: missed frames), "ack" (a bus error), and "frame" (a data
+    frame, 0x7F4)."""
     import can
     import adapter_roles
     E = adapter_roles.errors()
     return {"passive": E.from_pcan_status(E.PCAN_ERROR_BUSPASSIVE),
+            "warning": E.from_pcan_status(E.PCAN_ERROR_BUSHEAVY),
             "busoff": E.from_pcan_status(E.PCAN_ERROR_BUSOFF),
+            "restarted": E.error_frame(E.CAN_ERR_RESTARTED, b""),
             "overrun": E.from_pcan_status(E.PCAN_ERROR_OVERRUN),
             "qoverrun": E.from_pcan_status(E.PCAN_ERROR_QOVERRUN),
             "ack": E.error_frame(E.CAN_ERR_ACK, bytes(8)),
@@ -189,21 +199,26 @@ def screen_checks(check):
     classifier and lost_frames are can-tools', not decoded here."""
     R = report_rows()
     bus = report_bus([])
-    frame, passive, busoff, ack = R["frame"], R["passive"], R["busoff"], R["ack"]
+    frame, passive, warning, ack = R["frame"], R["passive"], R["warning"], R["ack"]
     d = Death("pcan")
     check(screen(bus, frame, d) is frame and screen(bus, None, d) is None,
           "screen: a frame is kept, nothing read is nothing")
     check(screen(bus, ack, d) is ack, "screen: a bus error (ACK) is kept as an error row")
-    check(screen(bus, passive, d) is None and screen(bus, busoff, d) is None and d.states == 2,
-          "screen: error passive and bus-off are state rows, not error rows, "
+    check(screen(bus, passive, d) is None and screen(bus, warning, d) is None and d.states == 2,
+          "screen: error passive and error warning are state rows, not error rows, "
           "counted: %d" % d.states)
-    for name in ("overrun", "qoverrun"):
+    # frames lost, bus-off and the restart after it each raise, saying which
+    # (the reviewer's ruling, 2026-11-20: bus-off VOIDs like an overrun)
+    for name, says in (("overrun", "reports frames lost"), ("qoverrun", "reports frames lost"),
+                       ("busoff", "reports bus-off"),
+                       ("restarted", "reports a restart after bus-off")):
         try:
             screen(bus, R[name], d)
             check(False, "screen: a %s row raises LostFrames" % name)
         except LostFrames as e:
-            check("reports frames lost" in str(e), "screen: a %s row raises LostFrames: %s"
-                  % (name, e))
+            check(says in str(e), "screen: a %s row raises LostFrames, '%s': %s"
+                  % (name, says, e))
+    check(d.states == 2, "screen: no missed-frames row counted as a state row: %d" % d.states)
     # off canbench's PCAN bus (a stand-in that is no SocketCAN bus either)
     # every error frame is a bus error, as can-tools classifies it
     d0 = Death("x")
@@ -232,6 +247,23 @@ def screen_checks(check):
     check(ln.startswith("VOID noack_01: the pcan witness reader lost frames at host ")
           and "reports frames lost" in ln and "FAIL" not in ln,
           "its VOID line says the reader lost frames: %s" % ln)
+    # a bus-off in the loop: the reader stops there, its window VOID
+    src4, rows4, d4, stop4 = [frame, R["busoff"], R["restarted"], frame], [], \
+        Death("pcan witness"), threading.Event()
+
+    def step4():
+        if not src4:
+            stop4.set()
+            return
+        m = screen(bus, src4.pop(0), d4)
+        if m is not None:
+            rows4.append(m)
+    guard(d4, stop4, step4)
+    ln4 = d4.void_line("noack_02")
+    check(rows4 == [frame] and len(src4) == 2 and d4.lost
+          and ln4.startswith("VOID noack_02: the pcan witness reader lost frames at host ")
+          and "reports bus-off" in ln4,
+          "screen in guard: a bus-off stops the reader, its window VOID: %s" % ln4)
     d3 = Death("pcan")
     d3.record(RuntimeError("x"))
     check(not d3.lost and "died" in d3.void_line(), "a plain raise still reads 'died'")
@@ -367,8 +399,13 @@ MUTANTS = [
     ("first_dead takes a live reader",
      "        if d is not None and d.error is not None:",
      "        if d is not None:"),
-    ("a lost-frames row not raised", "    if roles.lost_frames(msg):\n",
-     "    if False:\n"),
+    ("a lost-frames row not raised", "    why = roles.missed(msg)\n    if why:\n",
+     "    why = roles.missed(msg)\n    if False:\n"),
+    ("only an overrun raised (bus-off a state row)", "    why = roles.missed(msg)\n",
+     "    why = roles.missed(msg) == \"frames lost\" and \"frames lost\"\n"),
+    ("the raise does not say what was missed",
+     "% (msg.arbitration_id, bytes(msg.data).hex(), why,",
+     "% (msg.arbitration_id, bytes(msg.data).hex(), \"frames lost\","),
     ("state rows kept as error rows", "        death.states += 1\n    return None",
      "        death.states += 1\n    return msg"),
     ("bus errors dropped", "    if roles.bus_error(bus, msg):\n        return msg",

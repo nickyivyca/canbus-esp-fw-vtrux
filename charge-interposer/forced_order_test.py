@@ -264,7 +264,8 @@ def _blind_witness():
     class Blind(_ORIG_DW):
         def start(self):
             r = _ORIG_DW.start(self)
-            self.roles = types.SimpleNamespace(lost_frames=lambda m: False)
+            self.roles = types.SimpleNamespace(lost_frames=lambda m: False,
+                                               missed=lambda m: None)
             return r
     return Blind
 
