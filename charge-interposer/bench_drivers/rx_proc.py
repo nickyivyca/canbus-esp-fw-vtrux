@@ -19,9 +19,10 @@ beside a sender in the same check, runs here.
                             # overrun shows here), with their host times
     res["status"]           # the bus's status() at the end, if it has one
     res["not_bus_errors"]   # error frames that are not bus errors (below)
-    res["lost_frames"]      # (host t, text) of each error frame reporting
-                            # frames lost (adapter_roles.lost_frames: a PCAN
-                            # overrun or queue overrun, opened with bus states
+    res["lost_frames"]      # (host t, text) of each error frame saying the
+                            # reader missed frames (adapter_roles.missed: a
+                            # PCAN overrun or queue overrun, a bus-off, a
+                            # restart after bus-off, opened with bus states
                             # reported); witness_void makes the window VOID
 
 An error frame is a row (is_err True) only when it counts as a bus error by
@@ -71,10 +72,11 @@ def bus_error(bus, msg):
 
 
 def lost_frames(msg):
-    """can-tools' errors.lost_frames (adapter_roles.lost_frames): whether
-    the error frame msg reports frames lost."""
+    """What the error frame msg says the reader missed frames on
+    (adapter_roles.missed: "frames lost", can-tools' errors.lost_frames;
+    "bus-off"; "a restart after bus-off"), or None."""
     import adapter_roles
-    return adapter_roles.lost_frames(msg)
+    return adapter_roles.missed(msg)
 
 
 def _child(mod, fn, kw, keep_echoes, conn, ready, stop, paths, count_ids=(), count=None):
@@ -107,9 +109,10 @@ def _child(mod, fn, kw, keep_echoes, conn, ready, stop, paths, count_ids=(), cou
                 continue
             if m is None:
                 continue
-            if getattr(m, "is_error_frame", False) and lost_frames(m):
+            why = getattr(m, "is_error_frame", False) and lost_frames(m)
+            if why:
                 lost.append((time.perf_counter(), "error frame 0x%08X data %s reports "
-                             "frames lost" % (m.arbitration_id, bytes(m.data).hex())))
+                             "%s" % (m.arbitration_id, bytes(m.data).hex(), why)))
                 continue
             if getattr(m, "is_error_frame", False) and not bus_error(bus, m):
                 not_bus += 1
@@ -207,7 +210,8 @@ def witness_void(name, res, t0, t1, journal=None):
             name, len(res["recv_errors"]), res["recv_errors"][0][1])
     elif res.get("lost_frames"):
         # the reviewer's PCAN item 2 (2026-11-20): an errors.lost_frames row
-        # VOIDs its window
+        # VOIDs its window, and so does a bus-off or restart row (its ruling,
+        # 2026-11-20)
         why = "the %s reader: %d lost-frames row(s), first %s" % (
             name, len(res["lost_frames"]), res["lost_frames"][0][1])
     else:
@@ -295,11 +299,11 @@ def open_fake(**kw):
 def open_report_fake():
     """For the self-test, opened in the child: the PCAN opened with bus
     states reported (reader_death.report_bus): a frame, a state row, a bus
-    error, an overrun row, a frame."""
+    error, an overrun row, a bus-off row, a frame."""
     import reader_death
     R = reader_death.report_rows()
     return reader_death.report_bus([R["frame"], R["passive"], R["ack"], R["overrun"],
-                                    R["frame"]])
+                                    R["busoff"], R["frame"]])
 
 
 def self_test():
@@ -361,19 +365,21 @@ def self_test():
                  res.get("not_bus_errors"), [hex(i) for i in want_rows], want_not))
     # the reviewer's PCAN item 2 (2026-11-20): on the PCAN opened with bus
     # states reported, the state row is not a row, the bus error is, and the
-    # overrun row is kept in lost_frames, which VOIDs the window
+    # overrun row is kept in lost_frames, which VOIDs the window; so is the
+    # bus-off row (the reviewer's ruling, 2026-11-20)
     r = ProcReader(me, "open_report_fake", {}, name="pcan")
     r.wait_ready(30)
     time.sleep(0.3)
     res = r.finish()
     check([(x[2], x[7]) for x in res["rows"]] == [(0x7F4, False), (0x020, True), (0x7F4, False)]
-          and res.get("not_bus_errors") == 1 and len(res.get("lost_frames", [])) == 1
-          and "reports frames lost" in res["lost_frames"][0][1],
+          and res.get("not_bus_errors") == 1 and len(res.get("lost_frames", [])) == 2
+          and "reports frames lost" in res["lost_frames"][0][1]
+          and "reports bus-off" in res["lost_frames"][1][1],
           "bus states reported: rows %s, not bus errors %s, lost-frames rows %s"
           % ([(hex(x[2]), x[7]) for x in res["rows"]], res.get("not_bus_errors"),
              res.get("lost_frames")))
     v = witness_void("pcan", res, 0, 1, lambda s, u: "")
-    check(v is not None and v.startswith("VOID: the pcan reader: 1 lost-frames row(s)"),
+    check(v is not None and v.startswith("VOID: the pcan reader: 2 lost-frames row(s)"),
           "CAN-FAIL witness_void: a lost-frames row -> VOID: %s" % v)
     r = ProcReader(me, "open_fake", {"n": 2, "delay": 0.25}, name="fake")
     r.wait_ready(30)
@@ -465,12 +471,12 @@ MUTANTS = [
      "            rows.append((m.timestamp, time.time(), m.arbitration_id,"),
     # 2026-11-20, the reviewer's PCAN item 2
     ("lost-frames rows not kept",
-     "            if getattr(m, \"is_error_frame\", False) and lost_frames(m):",
-     "            if False:"),
+     "            if why:\n                lost.append",
+     "            if False:\n                lost.append"),
     ("witness_void: lost-frames rows ignored", "    elif res.get(\"lost_frames\"):",
      "    elif False:"),
-    ("lost_frames not can-tools'", "    return adapter_roles.lost_frames(msg)",
-     "    return False"),
+    ("lost_frames not can-tools'", "    return adapter_roles.missed(msg)",
+     "    return None"),
 ]
 
 

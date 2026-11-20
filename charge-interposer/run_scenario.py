@@ -1600,7 +1600,7 @@ class SerialTap(object):
 
     STATE_RE = re.compile(r"state=(\w+)")
 
-    def __init__(self, port, baud, path):
+    def __init__(self, port, baud, path, start_reset=False):
         if not port:
             raise SystemExit(
                 "--external-interposer needs --serial-port (e.g. COM7). "
@@ -1624,6 +1624,15 @@ class SerialTap(object):
         # thread, which owns the port. reset_host_t is when it was sent.
         self._reset_req = threading.Event()
         self.reset_host_t = None
+        # A board scenario's start reset (the charge-interposer reviewer's
+        # ruling (1), 2026-11-20; start_reset_path): esptool's hard reset,
+        # sent by the reader thread right after its first open, before any
+        # reset_board() request is served, so boot-mid-session's own reset
+        # always comes after it. start_reset_host_t is when it was sent;
+        # _started is set once the application's banner is read after it.
+        self.start_reset = bool(start_reset)
+        self.start_reset_host_t = None
+        self._started = threading.Event()
         self._partial = b""         # a line still arriving (see _run)
         # tests hand in a stand-in for the pyserial module
         self._serial_mod = None
@@ -1632,6 +1641,17 @@ class SerialTap(object):
         """Ask for esptool's USB-Serial-JTAG hard reset on the board's
         port. Returns at once; the reader thread sends it."""
         self._reset_req.set()
+
+    def wait_started(self, timeout_s=None):
+        """With a start reset: wait until the application's banner is read
+        after it, or timeout_s (START_BOOT_WAIT_S), so what the run opens
+        next (the witness, the sims) meets a board that has booted. True
+        when it was read, False on the timeout; None at once without a
+        start reset."""
+        if not self.start_reset:
+            return None
+        return self._started.wait(START_BOOT_WAIT_S if timeout_s is None
+                                  else timeout_s)
 
     def _mark(self, text):
         """A '#' marker in both copies: never an event or a status line."""
@@ -1642,12 +1662,13 @@ class SerialTap(object):
         self._fh.flush()
         return host
 
-    def _hard_reset(self, ser):
+    def _hard_reset(self, ser, start=False):
         """esptool's HardReset(uses_usb=True) (esptool/reset.py): RTS high
         (EN low) for 0.2 s, then low, then 0.2 s, each RTS change followed
         by a dummy DTR write so Windows' usbser.sys sends the new line
         state. DTR is held low first, as esptool leaves it, so RTS reads as
-        reset and not as a boot strap."""
+        reset and not as a boot strap. start: the scenario's start reset
+        (start_reset_host_t, "START RESET SENT"), not reset_board()'s."""
         def set_rts(v):
             ser.rts = v
             ser.dtr = ser.dtr
@@ -1657,6 +1678,11 @@ class SerialTap(object):
         time.sleep(0.2)
         set_rts(False)
         time.sleep(0.2)
+        if start:
+            self.start_reset_host_t = t0
+            self._mark("START RESET SENT host=%.6f (esptool HardReset, "
+                       "USB-Serial-JTAG: RTS 0.2 s; the scenario's start)" % t0)
+            return
         self.reset_host_t = t0
         self._mark("RESET SENT host=%.6f (esptool HardReset, USB-Serial-JTAG: "
                    "RTS 0.2 s)" % t0)
@@ -1708,8 +1734,16 @@ class SerialTap(object):
         except Exception as exc:                       # noqa: BLE001
             self._fh.write("SERIAL OPEN FAILED: %s\n" % exc)
             self._fh.flush()
+            self._started.set()                    # nothing to wait for
             return
         try:
+            if self.start_reset:
+                # before the loop, so before any reset_board() request
+                try:
+                    self._hard_reset(ser, start=True)
+                except Exception as exc:               # noqa: BLE001
+                    self._mark("START RESET FAILED: %s" % exc)
+                    self._started.set()
             while not self._stop.is_set():
                 if self._reset_req.is_set():
                     self._reset_req.clear()
@@ -1755,6 +1789,8 @@ class SerialTap(object):
                 m = self.STATE_RE.search(line)
                 if m:
                     self._last_state = m.group(1)
+                if self.start_reset_host_t is not None and APP_BANNER in line:
+                    self._started.set()
                 self._fh.write(line + "\n")
                 self._fh.flush()
         finally:
@@ -1782,6 +1818,67 @@ class SerialTap(object):
 BOARD_PREROLL_S = 150
 BOOT_LINE = re.compile(r"Vtrux charge interposer|^rst:0x|^ESP-ROM:")
 STATUS_T = re.compile(r"^t=(\d+)s state=")
+APP_BANNER = "Vtrux charge interposer"
+# the start reset (start_reset_path): how long run_one waits for the
+# application's banner before it opens the witness and starts the sims
+# (40e6's boot-mid-session read it 0.47 s after its reset was sent)
+START_BOOT_WAIT_S = 10.0
+# the counters a board scenario's first status line must show at 0
+# (board_start_premise): mod= and synth= count since boot (spec 8.2's
+# modified and synthesised); v2c= and c2v= count the frames bridged in the
+# first seconds, so they are not 0 even on a fresh boot
+START_COUNTERS = ("mod", "synth")
+
+
+def start_reset_path(platform=None):
+    """How a board scenario starts from a fresh boot (the charge-interposer
+    reviewer's ruling (1), 2026-11-20). "hard-reset" on Linux: opening the
+    port there does not reset the board (run 40e6: each board scenario's
+    first status line carried the scenario before's uptime and counters,
+    e.g. override-ended-by-vcu's t=8115s synth=104), so SerialTap sends
+    esptool's hard reset right after its first open, as bench_usb_host's
+    close-boots does on Linux. "open" elsewhere: Windows as before."""
+    return ("hard-reset" if (platform or sys.platform).startswith("linux")
+            else "open")
+
+
+def board_start_premise(stamped_rows, start_host=None, end_host=None):
+    """-> (ok, why): a board scenario's premise (the charge-interposer
+    reviewer's ruling (1), 2026-11-20): a boot line on serial (BOOT_LINE)
+    in the scenario's own window -- after its start reset when one was
+    sent (start_host), before boot-mid-session's own reset (end_host) --
+    and, on the first status line after that boot, the counters
+    (START_COUNTERS) at 0. Without it the board carried the scenario
+    before's state, and the scenario is VOID (premise), never judged."""
+    if start_host is not None and end_host is not None and end_host <= start_host:
+        return (False, "the scenario's own reset came before its start reset")
+    rows = [(h, ln) for h, ln in stamped_rows if not ln.startswith("#")
+            and (start_host is None or h > start_host)
+            and (end_host is None or h < end_host)]
+    where = "%s%s" % (" after the start reset" if start_host is not None else "",
+                      " before the scenario's own reset" if end_host is not None else "")
+    first_any = next((ln for _h, ln in rows if STATUS_T.search(ln)), None)
+    boot = next((i for i, (_h, ln) in enumerate(rows) if BOOT_LINE.search(ln)), None)
+    if boot is None:
+        return (False, "no boot line on serial in the scenario's window%s; its first "
+                       "status line: %s" % (where, (first_any or "none")[:200]))
+    status = next((ln for _h, ln in rows[boot + 1:] if STATUS_T.search(ln)), None)
+    if status is None:
+        return (False, "boot line %r%s, but no status line after it"
+                % (rows[boot][1][:40], where))
+    got = dict(re.findall(r"\b(%s)=(\d+)" % "|".join(START_COUNTERS), status))
+    missing = [k for k in START_COUNTERS if k not in got]
+    if missing:
+        return (False, "the first status line after the boot carries no %s: %s"
+                % ("/".join(k + "=" for k in missing), status[:200]))
+    nonzero = ["%s=%s" % (k, got[k]) for k in START_COUNTERS if int(got[k])]
+    t = STATUS_T.search(status).group(1)
+    if nonzero:
+        return (False, "the first status line after the boot shows %s, not 0 (t=%ss)"
+                % (" ".join(nonzero), t))
+    return (True, "boot line %r%s; first status line after it t=%ss %s"
+            % (rows[boot][1][:40], where, t,
+               " ".join("%s=0" % k for k in START_COUNTERS)))
 
 
 def diag_cadence_rows(stamped_path):
@@ -2190,8 +2287,15 @@ def run_one(sc, args, outdir):
                 print("   note: scenario passes %s to the interposer, which an "
                       "external board cannot accept -- flash a matching build "
                       "or expect this scenario to fail" % (sc.interposer,))
-            tap = SerialTap(args.serial_port, args.serial_baud, int_log)
+            tap = board_tap(args, int_log)
             tap.start()
+            # the start reset (start_reset_path): the witness and the sims
+            # start once the board has booted
+            started = tap.wait_started()
+            if started is not None:
+                print("   board start: esptool hard reset sent; %s"
+                      % ("the application's banner read" if started else
+                         "no application banner within %.0f s" % START_BOOT_WAIT_S))
             if args.diag_witness:
                 import diag_cadence
                 prev_stop = read_last_charger(outdir)
@@ -2281,6 +2385,12 @@ def run_one(sc, args, outdir):
     order = None
     hold = None
     reset = None
+    board_start = None
+    if tap is not None:
+        # the board booted in this scenario's own window, counters at 0
+        # (the reviewer's ruling (1), 2026-11-20)
+        board_start = board_start_premise(diag_cadence_rows(tap.stamped_path),
+                                          tap.start_reset_host_t, tap.reset_host_t)
     if tap is not None and sc.board_reset_at_s is not None:
         reset = board_reset_proof(
             diag_cadence_rows(tap.stamped_path), veh_log.read_text(
@@ -2354,7 +2464,14 @@ def run_one(sc, args, outdir):
                     order=order, hold=hold, diag82=diag82, reset=reset,
                     acker_first=acker_first, stimulus=stimulus, vstim=vstim,
                     hold_wire=hold_wire, wrows=wrows, prio=prio,
-                    witness_void=witness_void)
+                    witness_void=witness_void, board_start=board_start)
+
+
+def board_tap(args, int_log, platform=None):
+    """A board scenario's SerialTap, with the start reset start_reset_path
+    gives for this host (the reviewer's ruling (1), 2026-11-20)."""
+    return SerialTap(args.serial_port, args.serial_baud, int_log,
+                     start_reset=start_reset_path(platform) == "hard-reset")
 
 
 def witness_outcome(witness, score):
@@ -4031,7 +4148,7 @@ def _wsl_path(p):
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
              order=None, hold=None, diag82=None, reset=None, acker_first=None,
              stimulus=None, vstim=None, hold_wire=None, wrows=None,
-             prio=None, witness_void=None):
+             prio=None, witness_void=None, board_start=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -4076,6 +4193,12 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
     # the PCAN diag witness's reader died (witness_outcome, 2026-11-19)
     if witness_void:
         premises.append((False, witness_void))
+    # a board run: the board booted in the scenario's own window, counters
+    # at 0 at its first status line (board_start_premise; the reviewer's
+    # ruling (1), 2026-11-20), else NOT EXERCISED (VOID), never judged
+    if board_start is not None:
+        premises.append((board_start[0], "bench premise, the board's start: %s"
+                         % board_start[1]))
     for kind, val in sc.expect:
         if kind == "forced_order":
             ok, why = _forced_order(order, val["first"], val["min_gap_s"])

@@ -52,7 +52,9 @@ threads.
 THE PCAN (the reviewer's PCAN item 2, 2026-11-20): opened with bus states
 reported (adapter_roles.pcanfd_report). Each drain reads under
 reader_death's guard; a raise other than a kvaser TX stall, or a row
-reporting frames lost (adapter_roles.lost_frames), ends it, and the run is
+saying the reader missed frames (adapter_roles.missed: frames lost, a
+bus-off, a restart after bus-off; the reviewer's ruling on bus-off,
+2026-11-20), ends it, and the run is
 VOID with its line (void_in), never a topology answer.
 
     py -3.14 charge-interposer/bench_drivers/bench_topology.py
@@ -210,10 +212,11 @@ class Drain(object):
         if m is None:
             return
         if getattr(m, "is_error_frame", False):
-            if adapter_roles.lost_frames(m):
+            why = adapter_roles.missed(m)
+            if why:
                 raise reader_death.LostFrames(
-                    "error frame 0x%08X data %s reports frames lost"
-                    % (m.arbitration_id, bytes(m.data).hex()))
+                    "error frame 0x%08X data %s reports %s"
+                    % (m.arbitration_id, bytes(m.data).hex(), why))
             if adapter_roles.bus_error(self.bus, m):
                 self.errors += 1
             else:
@@ -665,7 +668,8 @@ def main():
 MUTANTS = [
     # 2026-11-20, the reviewer's PCAN item 2
     ("PCAN item 2: a lost-frames row counted as a state row",
-     "            if adapter_roles.lost_frames(m):\n", "            if False:\n"),
+     "            why = adapter_roles.missed(m)\n            if why:\n",
+     "            why = adapter_roles.missed(m)\n            if False:\n"),
     ("PCAN item 2: a dead drain's counts used",
      "        if d.death.error and not isinstance(d.exc, kvaser_link.Stall):",
      "        if False:"),

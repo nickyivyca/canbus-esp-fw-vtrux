@@ -55,11 +55,17 @@ left here: the role names, the canctl path, and the bench guard.
                              SocketCAN and on CanbenchPcanBus only the
                              bus-error classes count, so a state row is not
                              an error row; every error frame elsewhere
-    lost_frames(msg)         canbench.errors.lost_frames: an error frame
-                             reporting frames lost (CAN_ERR_CRTL_RX_OVERFLOW:
-                             a PCAN overrun or queue overrun). A reader's
+    lost_frames(msg)         an error frame saying the reader missed frames:
+                             canbench.errors.lost_frames (CAN_ERR_CRTL_RX_
+                             OVERFLOW: a PCAN overrun or queue overrun), or
+                             errors.decode's state bus-off or restarted (the
+                             controller off the bus; canbench_busoff_reset
+                             stays on, so the reader recovers). A reader's
                              window with such a row is VOID (the reviewer's
-                             PCAN item 2)
+                             PCAN item 2, and its ruling on bus-off,
+                             2026-11-20)
+    missed(msg)              which of those msg says ("frames lost",
+                             "bus-off", "a restart after bus-off"), or None
 
 THE GUARD. The layer touches nothing on the bench unless a guard is set
 (bench_layer.set_guard). layer() always sets _guard, which runs shared/
@@ -225,11 +231,31 @@ def errors():
     return e
 
 
+def missed(msg):
+    """What msg says a reader missed frames on, or None: "frames lost"
+    (can-tools' errors.lost_frames: a controller report with
+    CAN_ERR_CRTL_RX_OVERFLOW), "bus-off" or "a restart after bus-off"
+    (errors.decode's state busoff or restarted: the reader's controller was
+    off the bus and read nothing meanwhile; the reviewer's ruling,
+    2026-11-20). Reads nothing on the bench."""
+    E = errors()
+    if E.lost_frames(msg):
+        return "frames lost"
+    if not getattr(msg, "is_error_frame", False):
+        return None
+    state = getattr(E.decode(msg), "state", None)
+    if state == "busoff":
+        return "bus-off"
+    if state == "restarted":
+        return "a restart after bus-off"
+    return None
+
+
 def lost_frames(msg):
-    """Whether msg is an error frame that reports frames lost (can-tools'
-    errors.lost_frames: a controller report with CAN_ERR_CRTL_RX_OVERFLOW).
-    Reads nothing on the bench."""
-    return bool(errors().lost_frames(msg))
+    """Whether msg is an error frame that says the reader missed frames
+    (missed: an overrun, a bus-off, or a restart after bus-off). Reads
+    nothing on the bench."""
+    return missed(msg) is not None
 
 
 def main(argv):
