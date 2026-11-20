@@ -120,6 +120,14 @@ missing.
   the worker looked. About 120 frames arrived for the 64-deep queue on
   every re-arm from OBSERVE, and on 1 in 5 entries from OFF (review
   tracker, re-arm stale frames).
+- **"At the next frame" became "between frames, before the setter replies,
+  with no backlog"** on 2026-11-19 (user). On the full replayed bus, frames
+  are about 0.44 ms apart, so judging the exact frame took timing the
+  request's arrival on the air, which needed a Wi-Fi capture (B11raw).
+  madhouse-debian has no Wi-Fi adapter. What the requirement exists for is
+  the polling delay and the stale backlog above. The request-to-reply
+  window bounds the first, and the witness and the receive queue show the
+  second.
 - **Status:** validated.
 
 ### The worker makes every mode change
@@ -1045,6 +1053,13 @@ was read as a logger on the truck dropping frames).
   powertrain bus at 2250 fps that is ~45 unserviced frames and two
   consecutive missed 10 ms slots, against the at-least-64-frame receive
   queue of 5.1 item 1.
+- **The refusal judged at the client:** user, 2026-11-19. B21 had read the
+  403 and the connection's end from a Wi-Fi capture (the addendum of
+  2026-10-16: on `c65c45e` a RST straight after the 403 could cost the
+  client the reply). What the spec needs is the reply reaching the client,
+  and a client that keeps every byte (a raw socket) shows that directly. The
+  connection's end is recorded. madhouse-debian has no Wi-Fi adapter, and
+  the phone it reaches the device through can add or hide a RST.
 - **Status:** validated.
 
 ### 9.4 Image budget
@@ -1170,6 +1185,35 @@ was read as a logger on the truck dropping frames).
   meant when the earlier record was taken (`VERIFICATION.md` 12.1). The
   scheduler runs immediately after anything is queued, so with an empty
   transmit buffer the handover is as prompt as the old direct call.
+- **Void arms:** user ruling, 2026-11-19, option C of the gen-inhibit
+  reviewer's question Q-VOID.
+  - The background: the bench tools had grown their own rule. Only a failed
+    clock fit made a check read VOID; arms void for any other reason were
+    judged as normal arms, except in B22, where any VOID was INCONCLUSIVE.
+  - What exposed it: the XPS baseline on `e3d9437`. Its B3 had 5 RESPOND arms
+    void on attribution (the device's `tx_ok` about 1498 against the
+    witness's about 2000). Carried as void, B3 reads VOID; dropped, it FAILs.
+  - The ruling: the listed reasons, all an incomplete stimulus or reading,
+    make the check VOID.
+  - Attribution waited on the tester's check of whether the 20 s re-arm
+    resets `tx_ok`. If it did, the attribution check would count both sides
+    over the same window, the baseline B3 would be judged again, and
+    attribution would join the list. Otherwise it went back to the user.
+  - **The re-arm check, 2026-11-19 (tester, read from the records of the
+    baseline B3's RESPOND arms 1-5):**
+    - In each arm the mode-3 POST went at 20.000 s, and its reply came at
+      20.03-20.05 s.
+    - All 2000-2001 probes the witness saw lay before that POST.
+    - `tx_ok` (1497-1499) equalled, arm by arm, the count of device `0x051`
+      frames after it. `ctr_ok` and the `rx_gap` count were each `tx_ok`
+      - 1, with a 10.0 ms mean gap: about 15 s, from 20 s to 35 s.
+    - Counted over the same window, device and witness agree in all five.
+    - This matches the spec's "The count resets on every arm, as `tx_ok`
+      does".
+    - So attribution joins the list as a same-window comparison.
+    - Its limit: the records hold no device read before the POST. The reset
+      shows in which window the counters cover, not in a reading taken
+      before and after.
 - **Status:** validated.
 
 ### 12.2 Fidelity the simple bench does not have

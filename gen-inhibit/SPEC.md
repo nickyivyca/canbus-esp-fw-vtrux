@@ -176,7 +176,11 @@ setter replies with that result. No other task writes the worker's state, and
 there is no exception. A request not taken within 1 s of the setter's call is
 withdrawn and refused with a reason, and never applied later. One the worker
 has already taken is finished and its result reported. On a live bus
-the change takes effect at the next frame. On a quiet bus it can take up to
+the change is applied between frames, before the setter replies, and no
+frame received before it is left queued for the new mode. It is checked
+between the request leaving the client and the reply reaching it, with the
+witness and the device's receive queue showing no backlog; the exact frame
+it lands on is not judged. On a quiet bus it can take up to
 the receive timeout (200 ms), because a wake cannot interrupt a blocked
 receive. The worker's states and every transition between them are the
 table in section 8.1; the only other caller allowed to take the bus is the
@@ -1372,7 +1376,10 @@ queued (user, 2026-11-16).
 
 The handler returns **403 if `gen_inhibit_owns_bus()`**. The
 worker makes that decision (8.1 row 8): the handler posts an update request
-and replies 403 when the worker refuses it, with nothing touched. (OTA is one of
+and replies 403 when the worker refuses it, with nothing touched. The
+refusal is judged at the client: the whole 403 with its reason must reach
+it. How the connection ends afterwards (FIN or RST) is recorded, not
+judged. (OTA is one of
 several flash writers; section 5.1 item 3 extends the same refusal to every
 path that writes flash while the bus is owned.)
 Reflashing under an armed transmitter is never wanted, and `can_disable()` at
@@ -1684,6 +1691,22 @@ the driver**. It is not the moment the probe enters the
 scheduler's own queue. A probe that waits behind a telemetry frame shows that
 wait in its figure. One RESPOND baseline is re-measured on the bench after the
 switchover, to show comparability rather than assume it.
+
+**A void arm is never judged as a normal arm.** An arm is void when the
+bench could not give it a fair reading, for one of these reasons:
+
+- the witness clock fit fails its bounds;
+- there is no witness log, or the witness left it short of the arm's window;
+- the replay was refused;
+- the stimulus fell short of what the arm asked for;
+- the device went silent, so its own figures could not be read;
+- attribution: the device's count and the witness's count disagree when both
+  are counted over the same window. A device counter resets on every arm, so
+  that window starts at the arm.
+
+A check made of arms reads VOID when any arm it asked for is void. It never
+reads PASS while an arm it asked for is void or unjudged. A FAIL in an arm
+that was read fairly stands, whatever the other arms read.
 
 Every arm must report the rolling-counter check (`ctr_bad`), which must be
 zero. Under load the device is allowed to be **late but never lossy**: the
