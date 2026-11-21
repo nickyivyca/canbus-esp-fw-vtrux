@@ -41,6 +41,10 @@ MUTANTS = [
      "any(isinstance(r.get(\"tx_ok\"), int)"),
     ("tx_ok in mode 3 not counted as live", "any(r.get(\"mode\") == 3 and isinstance(r.get(\"tx_ok\"), int)",
      "any(False and isinstance(r.get(\"tx_ok\"), int)"),
+    ("the run voids on every burst breach, as before the ruling",
+     "    burst_line = BM.run_void_line([arm[\"burst_measure\"]", "    burst_line = BM.breach_line([arm[\"burst_measure\"]"),
+    ("the burst's source not read", "W.burst(a.burst_ms, inno, read_source=True)",
+     "W.burst(a.burst_ms, inno) + ({},)"),
     ("the arm line drops the aborts", "                 (round(lives[0] - arm[\"armed_at\"], 3) if lives else None), aborts,",
      "                 (round(lives[0] - arm[\"armed_at\"], 3) if lives else None), [],"),
 ]

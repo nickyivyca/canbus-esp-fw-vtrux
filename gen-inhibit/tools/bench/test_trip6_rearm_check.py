@@ -61,6 +61,17 @@ def arm_line_has_aborts():
     return 0 < i < j < k
 
 
+def bursts_per_ruling():
+    """B10's bursts (the gen-inhibit reviewer's ruling of 2026-11-20, item 4(ii)): the run VOIDs only on
+    run_void_line (a burst with no witness error frame), each burst is read with its source's own state,
+    recorded, and printed under the arm (read from the source: main needs the bench)."""
+    import inspect
+    src = inspect.getsource(T.main)
+    return ("burst_line = BM.run_void_line([arm[\"burst_measure\"]" in src and "BM.breach_line" not in src
+            and "W.burst(a.burst_ms, inno, read_source=True)" in src and "arm[\"burst_source\"] = src_state" in src
+            and "W.burst_detail_line({\"source\": arm[\"burst_source\"]}, arm.get(\"burst_measure\"))" in src)
+
+
 def main():
     checks = [
         ("expired arm: live, no abort -> as specified", T.judge_expired(CLEAN, 0) == "as specified"),
@@ -87,6 +98,8 @@ def main():
         ("expired arm: the A4 shape with no 0x051 and no tx_ok in mode 3 -> never live",
          T.judge_expired(A4_NO_TX, 0, 0) == "NOT as specified: never live"),
         ("the arm line prints the arm's aborts beside its verdict", arm_line_has_aborts()),
+        ("bursts: VOID only with no witness error frame; each read with its source state, recorded and printed",
+         bursts_per_ruling()),
         ("expired arm: no read live, no 0x051, tx_ok only on a read in mode 0 (the last arm's) -> never live",
          T.judge_expired(A4_NO_TX + [{"live": False, "abort": "", "mode": 0, "tx_ok": 40}], 0, 0)
          == "NOT as specified: never live"),

@@ -31,7 +31,10 @@ is measured: the caller's check is VOID on the fit, as everywhere else.
                     (3 ms, twice the PCAN fit's worst p99 residual of 2026-11-12) after the last
                     frame; any late frame; the probe ACKed.
   breach_line(measures)   "" or the one line a check prints when any measure breached; the suite
-                    judges read it (BURST_VOID_PREFIX) and make the check VOID.
+                    judges read it (BURST_VOID_PREFIX) and make the check VOID. canmain_burst_check's.
+  run_void_line(measures)   "" or the line B9's and B10's runs print, since 2026-11-20 (the gen-inhibit
+                    reviewer's ruling, item 4(ii)): only a burst with no witness error frame (each
+                    measure's "void"); a run's spans and closes are recorded, not judged.
 """
 
 CLOSE_EDGE_S = 0.005        # the last error frame at most this after the host close
@@ -63,9 +66,10 @@ def burst_measure(asked_ms, t_close, errors):
     asked = asked_ms / 1000.0
     errors = sorted(errors)
     m = {"asked_ms": asked_ms, "n": len(errors), "first_s": None, "last_s": None, "span_ms": None,
-         "last_after_close_ms": None, "breaches": []}
+         "last_after_close_ms": None, "breaches": [], "void": []}
     if not errors:
         m["breaches"].append("burst %g ms: no witness error frame" % asked_ms)
+        m["void"].append("burst %g ms: no witness error frame" % asked_ms)
         return m
     first, last = errors[0], errors[-1]
     span, after = last - first, last - t_close
@@ -105,3 +109,15 @@ def close_measure(t_last, t_close, late, probe_acked=None):
 def breach_line(measures):
     br = [b for m in measures for b in m["breaches"]]
     return BURST_VOID_PREFIX + "; ".join(br) if br else ""
+
+
+def run_void_line(measures):
+    """"" or the one line B9's and B10's runs print when a burst cannot support the check: one that drew
+    no witness error frame (the gen-inhibit reviewer's ruling of 2026-11-20, item 4(ii)). A run's bursts
+    are measured on the witness from their first error frame (bus-on included) to their last, and a
+    source going bus-off is an acceptable end, so the length and close bounds (breaches) are recorded,
+    not judged, in a run: one sender cannot hold a burst against an error-active 500k node. A burst
+    that cannot be timed is the clock fit's VOID, judged before this. canmain_burst_check, which measures
+    gs_usb's own hold with nothing else on the segment, still judges every breach (breach_line)."""
+    vo = [v for m in measures for v in m["void"]]
+    return BURST_VOID_PREFIX + "; ".join(vo) if vo else ""

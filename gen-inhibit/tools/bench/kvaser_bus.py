@@ -413,6 +413,15 @@ def link():
     return _call(KvaserLinkError, "netdev %s" % NETDEV, bl.link_info, NETDEV)
 
 
+def link_counters():
+    """bench_layer.link_counters("kvaser") (can-tools 49eb777, read-only, no root): {netdev, state, bus_off,
+    restarts, error_passive, error_warning, bus_error, arbitration_lost, tx_dropped, tx_aborted_errors, tx_errors,
+    tx_packets}, cumulative since the netdev appeared. KvaserLinkError when a key is missing or the netdev cannot be
+    read (canbench never gives 0 for a missing one). The x2_jam_cases witness's status on SocketCAN (2026-11-20)."""
+    bl = layer()
+    return _call(KvaserLinkError, "link counters %s" % KVASER_ROLE, bl.link_counters, KVASER_ROLE)
+
+
 def link_down():
     """bench_layer.link_down("kvaser"): canctl down, read back not UP. KvaserLinkError otherwise. Read back
     down, it clears the Kvaser state file: no tool has it open, and a found-up episode is over."""

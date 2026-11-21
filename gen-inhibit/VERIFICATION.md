@@ -2343,6 +2343,14 @@ reviewer's step-9 plan, approved 2026-10-08.
   - Per arm: 5 s baseline, then `TRAIN 20 200 3000` (a 20 us pulse every
     200 us for 3 s), then 15 s more. The page was polled at ~10 Hz and
     `0x7F1` captured off the wire.
+  - **2026-11-20, tester: B8's baseline from harness branch
+    gen-inhibit/tester/runc-rulings on.** At least 5 s, and until the Kvaser
+    witness's stamp check (SocketCAN, canbench's StampCheck) has left pending
+    with at least 20 data frames judged, at most 15 s; past 15 s the run is
+    VOID on its witness clock and no train is sent (the gen-inhibit
+    reviewer's ruling of 2026-11-20, item 4(iii); `x2_jam_cases.wait_baseline`,
+    the 15 s bound in the madhouse test plan, section 4b). The arms above,
+    and every B8 run before this, had the fixed 5 s.
 
 | Arm | Page states | Page vs `drv.state` | Reached bus-off | At first `bus_off` reading |
 |---|---|---|---|---|

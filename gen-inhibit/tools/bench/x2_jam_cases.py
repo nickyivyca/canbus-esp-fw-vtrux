@@ -13,7 +13,10 @@ VOID; Witness.recorded() still gives the times on either clock for the record.
 
   A  busoff     spec 11 bus-off half. WiCAN in mode 2 (RESPOND), no replay,
                 PCAN closed; its only transmissions are its diag pages. Per arm:
-                5 s baseline, TRAIN 20 200 3000, 15 s after, page ~10 Hz, 0x7F1
+                a baseline of at least 5 s, lasting until the witness's stamp check
+                has left pending with at least 20 data frames, at most 15 s, VOID
+                past that (2026-11-20; it was 5 s, wait_baseline),
+                TRAIN 20 200 3000, 15 s after, page ~10 Hz, 0x7F1
                 off the wire. Judged per arm by tec_busoff_sweep.judge_bus_on().
                 What happens after bus-off (recovering / running / staying
                 bus_off until the mode change) is RECORDED, NOT JUDGED: no spec
@@ -490,6 +493,46 @@ def witness_state_summary(status, lo, hi):
             "flags_seen": sorted(set().union(*names))}
 
 
+# THE WITNESS'S STATE ON SOCKETCAN (the gen-inhibit reviewer's ruling of 2026-11-20, item 4(i)). On
+# madhouse the Kvaser opens over SocketCAN, where CANlib's status calls do not exist (every arm of run
+# (C) recorded "NOT SAMPLED"). There the witness samples bench_layer.link_counters("kvaser") (can-tools
+# 49eb777, an `ip -s -s -json link show` each, read-only) every LINK_EVERY_S in its own thread. SocketCAN
+# gives no TEC, REC, overrun or CANlib flags: those fields read NA_SOCKETCAN, never 0, and nothing is
+# judged from them (none of x2_jam_cases' or the suite's judges reads them).
+LINK_EVERY_S = 0.25
+NA_SOCKETCAN = "not available on socketcan"
+LINK_DELTAS = ("bus_off", "restarts", "error_passive", "error_warning", "bus_error", "arbitration_lost",
+               "tx_dropped", "tx_aborted_errors", "tx_errors", "tx_packets")
+
+
+def witness_link_summary(link, lo, hi):
+    """The SocketCAN witness's state over [lo, hi] from its link-counter samples [(t, counters)]
+    (kvaser_bus.link_counters). None if not sampled there. bus_off: a sample in state BUS-OFF, or the
+    bus_off counter above the span's first sample; error_passive the same for ERROR-PASSIVE and its
+    counter; counter_deltas last minus first. CANlib's fields read NA_SOCKETCAN."""
+    s = [x for x in link if lo <= x[0] <= hi]
+    if not s:
+        return None
+    first, last = s[0][1], s[-1][1]
+    states = [str(c.get("state") or "").lower() for _t, c in s]
+    off_t = [t for (t, c), st in zip(s, states) if st == "bus-off" or c["bus_off"] > first["bus_off"]]
+    pas_t = [t for (t, c), st in zip(s, states)
+             if st == "error-passive" or c["error_passive"] > first["error_passive"]]
+    return {"source": "socketcan link counters", "samples": len(s), "states_seen": sorted(set(states)),
+            "bus_off": bool(off_t), "bus_off_from": off_t[0] if off_t else None,
+            "bus_off_last": off_t[-1] if off_t else None,
+            "error_passive": bool(pas_t), "counter_deltas": {k: last[k] - first[k] for k in LINK_DELTAS},
+            "tec_max": NA_SOCKETCAN, "rec_max": NA_SOCKETCAN, "overrun_max": NA_SOCKETCAN,
+            "overruns_stat_delta": NA_SOCKETCAN, "err_frames_stat_delta": NA_SOCKETCAN, "flags_seen": NA_SOCKETCAN}
+
+
+def witness_states(socketcan, status, link, after_jam, whole_arm):
+    """(after the jam, whole arm): the witness's state over each (lo, hi) span, from its link counters
+    on SocketCAN (witness_link_summary), else its CANlib status (witness_state_summary)."""
+    f, src = (witness_link_summary, link) if socketcan else (witness_state_summary, status)
+    return f(src, *after_jam), f(src, *whole_arm)
+
+
 class Witness(PW.ThreadWitness):
     """Kvaser, NORMAL mode: KEEP_IDS frames and error frames, hw and receipt time;
     and its own controller state every STATUS_EVERY_S (status). Read in a thread beside
@@ -497,7 +540,7 @@ class Witness(PW.ThreadWitness):
     a thread witness, test_busywait_witnesses). A judgement whose witness loop died
     raises PW.WitnessFailed, and the run is VOID (run_guarded; proc_witness.ThreadWitness,
     gen-inhibit reviewer 2026-11-19)."""
-    LISTS = ("frames", "errs", "status")
+    LISTS = ("frames", "errs", "status", "link_status")
     VALUES = ("not_bus_errors", "status_error")
 
     def __init__(self):
@@ -509,12 +552,32 @@ class Witness(PW.ThreadWitness):
         self.frames = []     # (hw, rx, arb, hex)
         self.errs = []       # (hw, rx): bus errors only (kvaser_bus.bus_error)
         self.not_bus_errors = 0
-        self.status = []     # (t, tec, rec, overrun, flags, err_frames, overruns)
+        self.status = []     # (t, tec, rec, overrun, flags, err_frames, overruns): CANlib
+        self.link_status = []    # (t, link counters): SocketCAN (2026-11-20)
         self.status_error = None
         self.lock = threading.Lock()
         self._next_status = 0.0
+        self.socketcan = WC.socketcan(self.bus)
+
+    def _sample_link(self):
+        """One link-counter sample (SocketCAN); a failure is recorded, the first one kept."""
+        try:
+            from kvaser_bus import link_counters  # noqa: E402
+            c = link_counters()
+            with self.lock:
+                self.link_status.append((time.time(), c))
+        except Exception as e:          # recorded, never silently skipped
+            if self.status_error is None:
+                self.status_error = "%s: %s" % (type(e).__name__, e)
+
+    def _link_loop(self):
+        while not self.stop_flag.is_set():
+            self._sample_link()
+            self.stop_flag.wait(LINK_EVERY_S)
 
     def _sample_status(self):
+        if getattr(self, "socketcan", False):
+            return          # sampled by _link_loop, in its own thread
         import ctypes
         import can.interfaces.kvaser.canlib as kv
         try:
@@ -531,6 +594,8 @@ class Witness(PW.ThreadWitness):
             self.status_error = "%s: %s" % (type(e).__name__, e)
 
     def run(self):
+        if getattr(self, "socketcan", False):
+            threading.Thread(target=self._link_loop, daemon=True).start()
         while not self.stop_flag.is_set():
             if time.time() >= self._next_status:
                 self._next_status = time.time() + STATUS_EVERY_S
@@ -731,6 +796,48 @@ def bins_0x051(frames, t0, t1, step=0.1):
     return out
 
 
+# B8'S BASELINE AND THE WITNESS'S STAMP CHECK (the gen-inhibit reviewer's ruling of 2026-11-20, item 4(iii)).
+# On SocketCAN the Kvaser's open decides whether its stamps are its own clock from its first STAMP_FRAMES data
+# frames (canbench's StampCheck), and B8 has no replay: before the train only the WiCAN's diag pages, ~2.5/s,
+# so a 5 s baseline left it pending at 16 of 20 and the run VOID on its witness clock (runs (C) and b840). The
+# baseline lasts at least BASELINE_MIN_S and until the check has left pending with at least STAMP_FRAMES data
+# frames judged, at most BASELINE_MAX_S; past that bound the run is VOID on its witness clock (WC.ReceiptClock),
+# with the check's counts, and no train is sent. A bus with no stamp check (CANlib) keeps the 5 s.
+BASELINE_MIN_S = 5.0
+BASELINE_MAX_S = 15.0
+STAMP_FRAMES = 20
+
+
+def stamp_gate_open(st):
+    """Whether the witness's stamp check lets B8's baseline end: no check (None: CANlib) does; else it has left
+    pending with at least STAMP_FRAMES data frames judged."""
+    if st is None:
+        return True
+    return st.get("state") != "pending" and (st.get("data_frames_judged") or 0) >= STAMP_FRAMES
+
+
+def wait_baseline(bus, t0, clock=None, sleep=None):
+    """B8's baseline from t0: (ok, seconds, the stamp check as last read). ok once BASELINE_MIN_S has passed and
+    stamp_gate_open; not ok at BASELINE_MAX_S. clock and sleep default to time's, looked up at the call."""
+    from kvaser_bus import stamp_stats  # noqa: E402
+    clock, sleep = clock or time.time, sleep or time.sleep
+    while True:
+        el = clock() - t0
+        st = stamp_stats(bus)
+        if el >= BASELINE_MIN_S and stamp_gate_open(st):
+            return True, round(el, 3), st
+        if el >= BASELINE_MAX_S:
+            return False, round(el, 3), st
+        sleep(0.1)
+
+
+def baseline_void_note(st, waited):
+    """The witness-clock note for a baseline that hit BASELINE_MAX_S."""
+    what = WC.pending_note(st) if (st or {}).get("state") == "pending" else "stamp check %s (%s data frames)" % (
+        (st or {}).get("state"), (st or {}).get("data_frames_judged"))
+    return "B8 baseline: %s after %.1f s, the %g s bound" % (what, waited, BASELINE_MAX_S)
+
+
 def arm_busoff(a, con, wit, k, with_train, decoder=None):
     """decoder: the record's gi_diag.run_identity(), which judge_bus_on holds the 0x7F1s to."""
     arm = {"n": k, "train": with_train}
@@ -739,7 +846,13 @@ def arm_busoff(a, con, wit, k, with_train, decoder=None):
     time.sleep(1.0)
     pol = Poller()
     pol.start()
-    time.sleep(5.0)
+    ok, waited, st = wait_baseline(getattr(wit, "bus", None), time.time())
+    arm["baseline_s"], arm["baseline_stamp_check"] = waited, st
+    if not ok:
+        pol.stop_flag.set()
+        pol.join(timeout=2.0)
+        LF.dev_post("/gen_inhibit_set?mode=0")
+        raise WC.ReceiptClock(baseline_void_note(st, waited))
     t_tr = time.time()
     if with_train:
         ack = train(con, a.w, a.p, a.ms)
@@ -961,14 +1074,15 @@ def case_livetrain(a, rec, con, wit):
         arm["replay_0x051_per_s_device_off"] = replay_rate_device_off(frames, ph)
         with wit.lock:
             st_all = list(wit.status)
+            link_all = list(getattr(wit, "link_status", []))
         arm["witness_status"] = [x for x in st_all if lo <= x[0] <= hi]
+        arm["witness_link_status"] = [x for x in link_all if lo <= x[0] <= hi]
         arm["witness_status_error"] = wit.status_error
         jph = judge_livetrain_arm(arm, frames, errs, a.ms, rec.get("decoder"))
         if jph is not None:
             ph["jam_start"], ph["jam_stop"] = jph["jam_start"], jph["jam_stop"]
-            arm["witness_state_after_jam"] = witness_state_summary(st_all, ph["jam_stop"],
-                                                                   ph["mode0_posted"])
-            arm["witness_state_whole_arm"] = witness_state_summary(st_all, lo, hi)
+            arm["witness_state_after_jam"], arm["witness_state_whole_arm"] = witness_states(
+                getattr(wit, "socketcan", False), st_all, link_all, (ph["jam_stop"], ph["mode0_posted"]), (lo, hi))
         for line in livetrain_lines(k, arm, ph):
             print(line)
         time.sleep(3.0)
@@ -1073,9 +1187,12 @@ def livetrain_lines(k, arm, ph):
             "none" if not jam else "%s s rel the jammer ACK (send %s)" % (jam.get("start_rel_ack_s"), jam.get("send_time"))),
         "    witness after the jam: %s; frames after jam_stop+1 s %d" % (
             "NOT SAMPLED (%s)" % arm.get("witness_status_error") if ws is None else
-            "bus_off %s (from %s), error_passive %s, tec max %s, rec max %s, flags %s" % (
+            "bus_off %s (from %s), error_passive %s, %s" % (
                 ws["bus_off"], None if ws["bus_off_from"] is None or j0 is None else round(ws["bus_off_from"] - j0, 3),
-                ws["error_passive"], ws["tec_max"], ws["rec_max"], ws["flags_seen"]),
+                ws["error_passive"],
+                ("states %s, counter deltas %s; tec/rec/flags %s" % (ws["states_seen"], ws["counter_deltas"], ws["tec_max"])
+                 if ws.get("source") else
+                 "tec max %s, rec max %s, flags %s" % (ws["tec_max"], ws["rec_max"], ws["flags_seen"]))),
             0 if stop is None else sum(1 for x in arm["wire"] if x[0] > stop + 1.0))]
 
 

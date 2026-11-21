@@ -403,10 +403,13 @@ def main():
         arm = poll_arm(name, 4.0)
         wit.sync()
         n_err = len(wit.errors)
-        tb, opened, tc = W.burst(a.burst_ms, inno)      # from the source's open since 2026-10-29 (recorded only)
+        # from the source's open since 2026-10-29 (recorded only); the source's own state read during the
+        # hold (bus-off, restarts: the gen-inhibit reviewer's ruling of 2026-11-20, item 4(ii))
+        tb, opened, tc, src_state = W.burst(a.burst_ms, inno, read_source=True)
         time.sleep(1.0)
         wit.sync()
         arm["_burst"] = (tb, a.burst_ms, tc)
+        arm["burst_source"] = src_state
         arm["burst_at"] = round(tb - t0, 3)
         arm["burst_open_s"] = round(opened, 4)
         arm["burst_close_s"] = round(tc - tb, 4)
@@ -492,7 +495,9 @@ def main():
     proc_void, void_line = PW.void_line(wit) if wit is not None else (None, None)
     if proc_void:
         rec["witness_proc_void"] = proc_void
-    burst_line = BM.breach_line([arm["burst_measure"] for arm in rec["arms"] if "burst_measure" in arm])
+    # only a burst with no witness error frame VOIDs the run; spans and closes are recorded, not judged
+    # (the gen-inhibit reviewer's ruling of 2026-11-20, item 4(ii); BM.run_void_line)
+    burst_line = BM.run_void_line([arm["burst_measure"] for arm in rec["arms"] if "burst_measure" in arm])
     if burst_line:
         rec["burst_timing_void"] = burst_line
     for arm in rec["arms"]:
@@ -523,6 +528,9 @@ def main():
                  (round(lives[0] - arm["armed_at"], 3) if lives else None), aborts, arm.get("verdict", "")))
         if "history_verdict" in arm:
             print("            history %s | prediction %s" % (arm["history_verdict"], arm["prediction_verdict"]))
+        if "burst_source" in arm:
+            import wrong_bitrate_errors as W  # noqa: E402  burst_detail_line (2026-11-20)
+            print("        " + W.burst_detail_line({"source": arm["burst_source"]}, arm.get("burst_measure")))
         h = arm["host_0x617"]
         print("            0x617 host sends: quiet before the arm %s s, last before the arm %s s, first after %s s, "
               "gaps over %g s %s" % (arm.get("slice_quiet_before_arm_s"), h["last_before_arm_s"],
