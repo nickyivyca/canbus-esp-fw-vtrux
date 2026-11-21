@@ -8756,6 +8756,236 @@ with at least 20 data frames judged, at most 15 s, VOID past it.
   `progress.jsonl`, `record.json`, `board_state.txt`, `man_app/{B2app,B3arms,B24}`,
   `man_held/{B9,B10}`, `man_jammer/B5_B8`, `man_slcan/B22`).
 
+**Port step 3: madhouse against the Windows records -- tester, 2026-11-21, records only, no
+build and no bench run. Result: of the 44 check ids, 43 have the same standing verdict on both
+sides. B6 differs: PASS on madhouse, INCONCLUSIVE in both Windows runs. Figures differ on 14
+checks, below.** This is port plan step 3's third acceptance bullet
+(`esp-shared-code-port.md`, step 3, "Accepted by"): gen-inhibit's whole emulated and bench suites
+on madhouse-debian, compared with the existing Windows records, every difference listed with
+its cause. The basis was ruled by the user on 2026-11-21 (option 1), relayed by the gen-inhibit
+reviewer: run C on `743cf7cd` with its triage re-runs and the rulings re-run, and the emulated
+`eed2`, against step 1d's Windows runs. No new Windows run was made (user, 2026-11-11).
+- **The two sides.**
+  - **madhouse-debian, code `743cf7cd`.** The emulated run
+    `gen-inhibit-emulated_20261118T122828_eed2` used harness `48725311`. The bench runs were run C
+    `gen-inhibit-bench_20261120T122548_6846` and its re-runs `_150438_b840` and `_155948_bdbe`,
+    all at harness `21753d42`, and the rulings re-run `_190456_0d8c` at harness `e42c5707`. The
+    shared core was the checkout of shared/main tag `2026.11.16.5` (`d2b545c8`), on each run's
+    `PYTHONPATH` in its `record.json`. The settings' `_comment` still names `2026.11.11.6`: stale
+    text, not what ran. Each run's own entry, above and in section 12.4, has its conditions.
+  - **NICKY-XPS, code `7f2d5032`, step 1d.** The emulated run was
+    `gen-inhibit-emulated_20261105T093208_cabf`. The bench runs were
+    `gen-inhibit-bench_20261105T095243_575b` and its automatic re-run `_121949_a61f`. All three
+    used harness `bb09b5f6`, with the core from the `b9896a0` archive (`scratch/gen-inhibit-core/b9896a0/shared/bench`
+    on `PYTHONPATH`). Step 1d's entry above has the conditions.
+- **How the list was made.** `gen-inhibit/tools/run_pair.py` (committed with this entry, with its
+  test `test_run_pair.py`: PASS, 0 FAIL, three can-fails failing as they must) prints both sides
+  from the runs' `record.json` files, one block per check. A side's standing result is its last
+  run that has the check: run C's re-runs and 0d8c over run C, and a61f over 575b. Its output is
+  `runs/step3_diff_743cf7cd_vs_1d/pair.txt` (`README.md` beside it).
+- **Causes.** A cause is written where the records or the commits show it: a harness change with
+  its commit, a spec change, or the bench's adapters. Otherwise it is "not known", and the
+  verified differences in how the check ran on the two sides are listed beside it. They are not
+  claimed to explain the figure.
+- **The firmware differs.** `7f2d5032` and `743cf7cd` are two gen-inhibit re-pins apart:
+  - `5e28d6d3`: shared/main `2026.11.16.2`, shared/wican W12-W14 in the OTA upload (spec 9.2 items 4-6);
+  - `a481019a`: `2026.11.16.3`, W7, so `/store_car_data` and `/upload/car_data.json` are not registered with AutoPID off.
+
+  Between those pins, the only product source file that changed in the six vtrux components is
+  `shared/wican/config_server.c` (`b781599d` W7, `f4414ba7` W12-W14). Beside it, shared/tools
+  changed, and in `gen-inhibit/firmware/` only `idf_component.yml`, `dependencies.lock` and
+  `shared_pins.json`. Rows the re-pins could touch name them as a possible cause.
+- **Image identities, different by construction.** These are the descriptors' `elf_sha256`
+  values, madhouse against Windows:
+
+  | Image | madhouse | Windows |
+  |---|---|---|
+  | `_man` and the prod stand-in | `483bb940` | `f515a383` |
+  | `_rt` | `4fd1c77d` | `6ab7bc79` |
+  | `_txabort` | `0c7b3268` | `ca8fd54a` |
+  | `_abortwin` | `8b415a6c` | `6c4047d3` |
+  | `_rxq` | `d9e8ae62` | `ea3c0c05` |
+
+  The same code builds to a different image hash on each host. `runs/man7f2d_madhouse` (2026-11-11)
+  rebuilt `7f2d5032` `_man` on madhouse: image `2aac016d` against XPS's `f515a383`, but code hash
+  (shared/tools R3) `bc49dce0...` on both, read in one call (`linux/image_xps_and_madhouse.json`).
+  The images compared here also differ in code, by the re-pins above.
+
+**Same standing verdict and the same figures** (madhouse | Windows)
+- **H** (emulated): PASS | PASS. 25 steps, 81 goldens passed, 0 failed, 23 without, 9 replays
+  identical, 0 invariant, fuzz and spec-expect failures, on both sides. madhouse alone records
+  `host_mode` local, from harness `4b86ad66`: H and B15host carry the host mode, and they ran in
+  local mode on madhouse.
+- **B15host** (emulated): PASS | PASS, 2 modes with pages. `host_mode` as for H.
+- **C2scan** (emulated): PASS | PASS, 4 of 4. Its runner was ported from PowerShell to Python in
+  `5e51f80d`.
+- **C1C7, C3:** NOT-RUN | NOT-RUN, their commands not yet in the suite.
+- **B1:** 20 of 20 refused and counted. **B4:** 6 of 6. **B11:** 6 arms, `tx_ok` agrees with every
+  INHIBIT span. **B13:** 8 arms, booking 8 of 8. **B14:** 5 mode checks, mode 0 at the end.
+  **B16:** 360 polls, 0 outages. All PASS on both sides, with the same figures.
+- **B17a, B17b, B18, B19page:** AS SPECIFIED on both sides. Only their identity figures differ (table above).
+- **B19present, B19absent:** PASS on both sides, every switch the same: four present on their
+  test builds, five absent on the prod stand-in.
+- **B20:** 28 of 28 (run C) | FAIL 27 of 28 in 575b (`rekey-long` INCONCLUSIVE, a judge
+  precondition not met; step 1d's entry), then 28 of 28 in a61f. The standing results are the same.
+- **B24:** 22 arms as specified, 1 RESPOND arm with no device frames, other 0 (0d8c) | the same
+  (575b).
+  - On madhouse, run C was VOID on B3's void arm; b840 was ERROR, with no input files (B2app not
+    selected); bdbe was VOID on another arm.
+  - Cause of those: the arm's count window. From harness `259b2066` it is placed from the POST's
+    own send (the reviewer's ruling on run C).
+- **B7:** 3 of 3 AS SPECIFIED on both sides. It is jammer-driven, like B5, B6 and B8:
+  - madhouse ran the jammer's ESP-IDF port, archive row `ea762c62044cb5c6` (the suite's jammer
+    route since `6e01cab2`);
+  - Windows ran the jammer image before that port;
+  - from `6e01cab2`, B7 re-opens the replay's PCAN after its bus-off (`4e81b9c2`).
+- **B8:** train 3 of 3 PASS, control INCONCLUSIVE (0d8c) | the same (575b, a61f).
+  - On madhouse, run C and b840 were VOID on the witness clock: the Kvaser on Linux is read
+    through SocketCAN (`466235e1`), and its stamp check was still pending when the baseline ended.
+  - Cause: the Linux driver, and harness `e42c5707`. From it, B8's baseline lasts until the
+    stamp check is settled (5-15 s).
+- **B10:** 3 of 3 judged arms as specified, 2 flood arms (0d8c) | the same (575b).
+  - On madhouse, run C was FAIL: A4 went live and was then aborted, and the judge read it as never
+    live. b840 was VOID on the bursts' timing.
+  - Cause: harness `9bc62714` (a live-then-aborted arm is as specified) and `e42c5707` (a run is
+    VOID on a burst only when it drew no witness error frame), both the reviewer's rulings on run C.
+  - The burst source differs: madhouse `canmain`, gs_usb over libusb (`8999d69d`, merged in
+    `466235e1`); Windows the Kvaser at 250 kbit/s.
+- **B2app, B2held, B3arms, B11arms, B11rawarms, B13arms, abortwin:** rc 0 on both sides.
+- **B27:** NOT-RUN on both sides, deferred by the user.
+
+**Different standing verdict**
+- **B6 (spec 7, trip 6 at the threshold):** PASS 10 of 10 (b840 and 0d8c; run C INCONCLUSIVE 9 of
+  10) | INCONCLUSIVE 9 of 10 in both 575b and a61f.
+  - Each INCONCLUSIVE arm had a short stimulus, "delivery was not one error frame per pulse": run
+    C `n10_lead1.5` arm 1; 575b `n10_lead5` arm 0; a61f `n9_lead5` arm 0.
+  - **Cause: not known.** What differed:
+    - the jammer image: madhouse the ESP-IDF port, row `ea762c62044cb5c6`. Its first bench run,
+      2026-11-16, gave B6 10 of 10 with no arm short (entry above);
+    - per-pulse poll stamps from `c81e28b9` (a poll is placed after a pulse only if it was sent
+      after it);
+    - the Kvaser witness on SocketCAN (`466235e1`).
+
+**Same standing verdict, different figures** (madhouse | Windows)
+- **B3:** PASS, 20 arms, stale 0, on both sides.
+  - First answer after the POST (madhouse b840 | 575b and a61f), in ms:
+
+    | Mode | madhouse (b840) | Windows (575b, a61f) |
+    |---|---|---|
+    | OFF | 149.8-150.9 | 150.9-151.0 |
+    | OBSERVE | 46.3-82.7 | 15.4-47.6 |
+    | PASSIVE | 20.6-29.4 | 4.5-28.8 |
+    | RESPOND | 40.3-60.4 | 12.8-30.2 |
+
+  - Run C was VOID on observe arm 3 (attribution: device `tx_ok` 1502 against the witness's 1500).
+  - **Cause: not known.** What differed:
+    - the e4 arm witness reads in a forked process (`cc8e41e6`, F1);
+    - the Kvaser is read through SocketCAN (`466235e1`);
+    - the host;
+    - firmware, possible cause: `config_server.c`, the device's HTTP server, changed in both
+      re-pins (`5e28d6d3` W12-W14, `a481019a` W7).
+- **B11raw:** PASS on both sides, judged differently. madhouse: 12 of 12 POSTs in the
+  request-to-reply window, windows 17.0-38.0 ms, margin up to 13.97 ms, 3 with nothing on the
+  witness. Windows: 3 PASS (0 on ACK), 3 not applicable, send to first byte 4.0-24.9 ms.
+  - **Cause:** spec 3 changed (`f7865461`, user 2026-11-19), with harness topic (E) (`86d65e2e`)
+    and `QUEUE_BOUND` 0 (`21753d42`).
+  - The Windows pass was judged under the old wording. Under the new wording the `e3d9437`
+    baseline re-judges VOID (entry "B11raw and B21 under the wording of 2026-11-19"). The
+    figures are not comparable one for one.
+- **B15:** PASS on both sides, 3 adapters on the segment. Frames read (madhouse | 575b, a61f):
+
+  | Adapter | madhouse | Windows |
+  |---|---|---|
+  | Kvaser | 19 | 21, 21 |
+  | PCAN | 21145 | 22102, 22114 |
+  | gs_usb | 23 | 15679, 15672 |
+
+  The non-ACK repeat id, recorded, not judged: `0x7F8` on madhouse; `0x7F3` and `0x7F3` on Windows.
+  - **Cause, gs_usb: the bench's adapters.** On Windows the gs_usb row was the bench's only
+    Innomaker, on the X2's CAN2, reading CAN1 through the X2's bridge (correction of 2026-11-18,
+    under spec 10). On madhouse it is `canmain`, CAN1's own Innomaker, ACKing.
+  - The other counts and the repeat id: not known.
+- **B21:** PASS on both sides, judged differently. madhouse: 20 of 20 multipart and 20 of 20 image
+  requests, each with the whole 403 and its reason at the client. Windows: 20 of 20 each with a
+  403, and RST 0.
+  - **Cause:** spec 9.3 changed (`f7865461`), with harness topic (E) (`86d65e2e`).
+  - The flash-route guard requires 404 for `/store_car_data` and `/upload/car_data.json` in every
+    mode from `743cf7cd` (b21-404). It was not in the Windows harness.
+  - Firmware, possible cause: `a481019a` W7 (those routes not registered) and `5e28d6d3` W12-W14
+    (the OTA upload). The Windows pass is under the old wording, as for B11raw.
+- **B25** (on B20's `rekey-long`): PASS, 0 rule-1 violations, on both sides. madhouse | Windows:
+  frames 18387 | 18396 and 18396; gate open 203.483 | 203.478 s; resumed 203.486 | 203.481 s.
+  - **Cause: not known.** What differed: the Kvaser witness on SocketCAN (`466235e1`).
+- **B2:** PASS, 6 arms, X2 frames 0, on both sides. Every count is the same except RESPOND probes
+  with `x2_app`: 2991 on madhouse, against 2965 and 2995 on Windows.
+  - **Cause: not known.** The value is inside the range the two Windows runs span.
+- **B9:** PASS on both sides (0d8c | 575b, a61f). 9 bursts, trip 6 latched, on both sides.
+
+  | | madhouse (0d8c) | Windows (575b, a61f) |
+  |---|---|---|
+  | witness error frames | 199 | 24102, 25668 |
+  | per burst | 7-61 | 2549-3290 |
+  | latched at | +1.40 s | +0.25, +0.22 s |
+  | TEC max | 0 | 8, 0 |
+
+  - Run C and b840 were VOID on the bursts' timing.
+  - **Cause: the error-frame source, and harness changes.**
+    - The source differs: madhouse `canmain`, gs_usb over libusb, at 250 kbit/s (`8999d69d`,
+      merged in `466235e1`, the reviewer's condition 5); Windows the Kvaser at 250 kbit/s.
+    - Bursts are measured on the PCAN's stamps from `12146b7a`.
+    - From `e42c5707` a run is VOID on a burst only when it drew no witness error frame.
+
+    How the source explains the counts is not established.
+- **NONODE:** PASS, 3 main arms, 0 answers stuck, on both sides. Latch at most 0.456 s on madhouse,
+  against 0.437 and 0.451 s on Windows.
+  - **Cause: not known.** What differed: the replayer, `canmain` over libusb on madhouse
+    (`8999d69d` in `466235e1`), the Kvaser on Windows. The PCAN witness is the same on both sides.
+- **B12** (`_rt`): PASS on both sides, 7 of 7 cycles, 0 error frames. Boot times (madhouse | Windows):
+  SW 2.339-2.357 s | 2.292-2.337 s; PANIC 0.601-0.609 s | 0.581-0.598 s.
+  - **Cause: not known.** What differed:
+    - B12's witness is a process witness (`e1d67472`, merged in `611cb84c`);
+    - the Kvaser is read through SocketCAN;
+    - the images differ by the re-pins.
+- **B23** (`_txabort`): PASS on both sides; retry 78 of 78 free and 0 on the wire on both.
+  madhouse | 575b, a61f:
+
+  | Figure | madhouse | Windows |
+  |---|---|---|
+  | contend aborted | 67 | 70, 68 |
+  | contend lost-then-aborted | 1 | 0, 0 |
+  | retry aborted | 68 | 70, 71 |
+  | first abort enough | 70 | 70, 71 |
+  | retry lost-then-aborted | 10 | 8, 7 |
+
+  - **Cause: not known.** The two Windows runs differ from each other by similar amounts.
+- **B26** (`_rxq`): PASS on both sides, 82464 dequeues per arm.
+
+  | Figure (idle a / idle b / loaded) | madhouse | Windows 575b | Windows a61f |
+  |---|---|---|---|
+  | max backlog | 3 / 4 / 8 | 5 / 4 / 10 | 4 / 2 / 9 |
+  | dequeues with a backlog >= 2 | 21 / 25 / 2559 | 34 / 17 / 15853 | 14 / 3 / 16786 |
+
+  - **Cause: not known.** What differed:
+    - the replay's PCAN is opened through `pcan.ko`'s chardev on madhouse, and through
+      PCAN-Basic on Windows;
+    - the Kvaser witness is read through SocketCAN in a forked process (`466235e1`, `cc8e41e6`),
+      against CANlib in the replay's process.
+  - B26 has no bound. Run 2 on madhouse read 1065 loaded.
+- **B5:** standing PASS on both sides. 200/s 3 of 3 on both. 500/s: 9 of 9 (0d8c) | 8 of 9 and 1
+  inconclusive (a61f; 575b 9 of 9).
+  - On madhouse, b840 was ERROR on one arm, "reset reason none".
+  - **Cause: not known.** What differed: the jammer image, as for B7.
+- **B22** (X2 `slcan`): standing PASS on both sides. Both arms: 8983 of ours, provenance clean,
+  0 `tx_fail`, 0 error frames, response mean 580 us. madhouse | Windows: response max
+  1260 / 1046 us | 996 / 1191 and 1193 / 1025 us; load at least 92.7 % | 92.5 %.
+  - On madhouse, run C and b840 were VOID: the adapter refused 6617-6677 replay frames an arm.
+    0d8c refused none.
+  - **Cause of the refusals and of the max: not known.** The X2 ran `slcan` in all three madhouse
+    runs. The only can-tools change between run C and 0d8c was `49eb777`'s read-only
+    `link_counters`.
+- **Run files:** `runs/step3_diff_743cf7cd_vs_1d/` (`pair.txt`, `README.md`). Each run's own files
+  are named in its entry.
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical
