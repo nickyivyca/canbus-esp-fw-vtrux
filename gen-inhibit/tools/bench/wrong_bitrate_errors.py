@@ -93,14 +93,15 @@ def window_max(times, span=10.0):
     return best
 
 
-def per_burst(burst_starts, errors, tail_s=0.5):
-    """Witness error frames attributed to each burst: from its start to the next
-    burst's start (the last: tail_s after it)."""
-    out = []
-    for k, t in enumerate(burst_starts):
-        end = burst_starts[k + 1] if k + 1 < len(burst_starts) else t + tail_s
-        out.append(sum(1 for e in errors if t <= e < end))
-    return out
+def per_burst(burst_starts, burst_closes, errors):
+    """Witness error frames attributed to each burst: over burst_measures.burst_window, from its
+    start to the next burst's start or its close + TAIL_S, whichever is first. Until 2026-11-20 the
+    last burst's window ran 0.5 s from its START, so with canmain's 1.2-1.5 s open inside the burst
+    it counted none (re-run b840: [16, 44, 7, 22, 21, 24, 107, 3, 0], its measure n 3), and B9's
+    judge, which needs every burst to draw error frames, would FAIL on that once its timing VOID
+    cleared (gen-inhibit reviewer's answer to the run (C) report, item 4(ii))."""
+    return [len(BM.in_window(errors, BM.burst_window(burst_starts, burst_closes, k)))
+            for k in range(len(burst_starts))]
 
 
 def pre_burst_window(series, errors, first_burst):
@@ -349,7 +350,7 @@ def main():
     # open_s: how long the Kvaser's open took, from the burst's start (2026-10-29)
     rec["bursts"] = [{"t": round(s - t_ref, 4), "ms": ms, "open_s": round(o, 4), "close_s": round(c - s, 4),
                       "witness_error_frames": n}
-                     for (s, ms, c), o, n in zip(starts, opens, per_burst(st, errs))]
+                     for (s, ms, c), o, n in zip(starts, opens, per_burst(st, [c_ for _s, _ms, c_ in starts], errs))]
     rec["witness_error_frames"] = len(errs)
     rec["pcan_status_end"] = pc_status
     rec["witness_window_max_10s"] = window_max(errs)
