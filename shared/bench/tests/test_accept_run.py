@@ -672,11 +672,80 @@ def test_declared_skips():
         "declared skip a/truck: the listed reason 'needs hands'" in text, (r.rc, text[-2000:])
 
 
+def test_suite_item_unreadable():
+    """A12a (the gen-inhibit tester's read, 2026-11-20): when the list
+    declares skips, a first run's record.json that is missing or malformed,
+    or a nested.json that cannot be read, makes the suite run's item FAIL
+    "cannot be read", naming the file, never the outer chain's verdict.
+    Without declared skips the outer verdict stands, as before A12a. The
+    first run's unmatched_known_fails make the item not pass, named."""
+    N[0] += 1
+    d = os.path.join(BASE, "unread%d" % N[0])
+    os.makedirs(d)
+    rec_p = os.path.join(d, "record.json")
+    chain = {"results": [{"group": "emu", "id": "emu/run", "check": "emu/run",
+                          "verdict": "PASS"}]}
+    sk = {"id": "emu", "declared_skips": [{"id": "a/truck", "reason": "needs the truck"}]}
+    plain = {"id": "emu"}
+    good = {"first": {"dir": d}, "catalogue_skips": {"a/truck": "needs the truck"}}
+
+    def item(r_, n, record=None, text=None, unreadable=None):
+        if os.path.exists(rec_p):
+            os.remove(rec_p)
+        if record is not None or text is not None:
+            with open(rec_p, "w", encoding="utf-8") as f:
+                f.write(text if text is not None else json.dumps(record))
+        it = RUN._suite_item(chain, r_, n, unreadable)
+        return it["got"], it["detail"]
+    ok_rec = {"results": [{"id": "a/x", "check": "a/x", "group": "a", "verdict": "PASS"},
+                          {"id": "a/truck", "check": "a/truck", "group": "a",
+                           "verdict": "NOT-RUN"}]}
+    assert item(sk, good, ok_rec)[0] == "PASS", item(sk, good, ok_rec)
+    for name, n, record, text in (("missing", good, None, None),
+                                  ("not JSON", good, None, "{not json"),
+                                  ("a list", good, [], None),
+                                  ("results null", good, {"results": None}, None)):
+        v, det = item(sk, n, record, text)
+        assert v == "FAIL" and det.startswith("cannot be read: ") and rec_p in det, \
+            (name, v, det)
+    v, det = item(sk, {"first": None}, ok_rec)
+    assert v == "FAIL" and "cannot be read: the first run's record.json" in det, (v, det)
+    v, det = item(sk, None, unreadable="/x/emu/run/nested.json: ValueError('bad')")
+    assert v == "FAIL" and "cannot be read: /x/emu/run/nested.json" in det, (v, det)
+    # no declared skips: the outer chain's verdict, as before A12a
+    assert item(plain, good)[0] == "PASS", item(plain, good)
+    assert item(plain, None, unreadable="/x/nested.json: bad")[0] == "PASS"
+    # the first run's unmatched_known_fails: not a pass, named
+    v, det = item(plain, good, dict(ok_rec, results=ok_rec["results"][:1],
+                                    unmatched_known_fails=["a/gone"]))
+    assert v == "FAIL" and "a/gone" in det, (v, det)
+
+
+def test_read_nested():
+    """A12a (the gen-inhibit tester's read, 2026-11-20): a malformed
+    nested.json (not JSON, or not an object) is one that cannot be read,
+    named with its path, never an exception that stops the run; a good one
+    is read; a missing one is in neither."""
+    N[0] += 1
+    d = os.path.join(BASE, "readn%d" % N[0])
+    runs = [{"id": i} for i in ("good", "text", "list", "none")]
+    for i, body in (("good", '{"first": {"dir": "x"}}'), ("text", "{not json"),
+                    ("list", "[]")):
+        os.makedirs(os.path.join(d, i, "run"))
+        with open(os.path.join(d, i, "run", "nested.json"), "w", encoding="utf-8") as f:
+            f.write(body)
+    nested, bad = RUN._read_nested({"_dir": d}, runs)
+    assert nested == {"good": {"first": {"dir": "x"}}}, nested
+    assert sorted(bad) == ["list", "text"] and all(
+        os.path.join(d, i, "run", "nested.json") in bad[i] for i in bad), bad
+
+
 TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premise_blocks,
          test_stopped, test_setup_failure_stops_run, test_dirty_runner_refused, test_dev_run,
          test_runner_identity, test_runner_stays_clean, test_check_every_result,
          test_suite_run_not_passed, test_nested_wrong_shape, test_images_from,
-         test_from_hold_passed, test_keep_lock_chain, test_declared_skips]
+         test_from_hold_passed, test_keep_lock_chain, test_declared_skips,
+         test_suite_item_unreadable, test_read_nested]
 
 MUTANTS = [
     ("adapter_from_commit", test_adapter_committed),
@@ -697,6 +766,8 @@ MUTANTS = [
     ("keep_not_last", test_keep_lock_chain),
     ("keep_bench_only", test_keep_lock_chain),
     ("suite_from_nested", test_declared_skips),
+    ("skips_unreadable", test_suite_item_unreadable),
+    ("nested_malformed", test_read_nested),
     ("_stray", test_runner_stays_clean),        # VTRUX_TEST_STRAY: a stray file
 ]
 

@@ -73,9 +73,12 @@ RULES = {k: True for k in (
     "full_commit", "list_sha256", "committed_only", "unknown_keys", "required",
     "committed_files", "shared_at_tree", "exact_commit", "refs", "adapter_names",
     "project", "selector_only", "empty_selector", "unique_ids", "canfail_form",
-    "set_judge", "images_once", "skips_form")}
+    "set_judge", "images_once", "skips_form", "skips_id_form")}
 
 HEX = re.compile(r"^[0-9a-fA-F]{7,40}$")
+# a declared skip's id: the engine's full check id, a group name and a check
+# id (each by run.model's ID_RE) joined by one "/" (ACCEPT-SPEC A12a)
+SKIP_ID = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
 STR, LIST, DICT, NUM, BOOL, DATE = "a string", "a list of strings", \
     "a table of strings", "a number", "true or false", "a date"
@@ -460,6 +463,11 @@ def load(repo, spec, adapter):
                 continue
             d = _fields(w, d, "declared_skip", errs)
             if isinstance(d.get("id"), str):
+                # the engine's full check id: one group, one check, no blanks
+                # (the gen-inhibit tester's read, 2026-11-20)
+                if RULES["skips_id_form"] and not SKIP_ID.fullmatch(d["id"]):
+                    errs.append("%s: id %s is not in \"<group>/<check>\" form"
+                                % (w, q(d["id"])))
                 if d["id"] in seen_s:
                     errs.append("%s: id %s is listed twice" % (w, q(d["id"])))
                 seen_s.add(d["id"])

@@ -332,6 +332,13 @@ def test_suite_run_skips():
     v, d, p = sv(ran + nested_res(("g/e", "ERROR")), cat, both)
     assert v == "ERROR" and "truck/i1" in d and "g/e ERROR" in d, (v, d, p)
     assert sv([], cat, both) == ("absent", "", [])
+    # the record's unmatched_known_fails (known-fail entries no selected
+    # case produced) made the nested run exit 1: not a pass, each named (the
+    # gen-inhibit tester's read, 2026-11-20)
+    v, d, p = sv(base, cat, both, ["g/gone", "g/renamed"])
+    assert v == "FAIL" and len(p) == 1 and "g/gone" in p[0] and "g/renamed" in p[0] \
+        and "g/gone" in d, (v, d, p)
+    assert sv(base, cat, both, []) == ("PASS", "", [])
 
 
 TESTS = [test_compare_identical, test_compare_same_verdicts, test_compare_within,
@@ -367,6 +374,7 @@ MUTANTS = [
     ("skip_missing", test_suite_run_skips),
     ("skip_catalogue", test_suite_run_skips),
     ("skip_reason", test_suite_run_skips),
+    ("skip_unmatched", test_suite_run_skips),
 ]
 
 

@@ -400,6 +400,11 @@ def test_declared_skips():
                     'reason = 3\n'), "reason must be", name="sk-type")
     refused(r, edit(GOOD, old, old + ok.replace("truck/i2", "truck/i1")), "truck/i1", "twice",
             name="sk-twice")
+    # the id is the engine's full check id, "<group>/<check>" (the gen-inhibit
+    # tester's read, 2026-11-20)
+    for n_, bad in enumerate(("i1", "truck/", "/i1", "truck/i1/x", "truck i/i1", "")):
+        refused(r, edit(GOOD, old, old + ok.replace('"truck/i1"', '"%s"' % bad)),
+                "declared_skips[0]", "<group>/<check>", name="sk-form%d" % n_)
 
 
 TESTS = [test_reads_committed, test_refuses_uncommitted, test_unknown_keys, test_required,
@@ -428,6 +433,7 @@ MUTANTS = [
     ("canfail_form", test_canfail_form),
     ("images_once", test_images_from),
     ("skips_form", test_declared_skips),
+    ("skips_id_form", test_declared_skips),
 ]
 
 

@@ -50,7 +50,10 @@ closed record (A7).
 nested.json's "catalogue_skips" ({"<group>/<check>": reason}) is the
 suite's catalogue of declared skips as loaded from its tree, every case
 with Check.skip, selected or not: the acceptance runner judges a list's
-declared_skips against it (ACCEPT-SPEC A12a; judge.suite_run_verdict).
+declared_skips against it (ACCEPT-SPEC A12a; judge.suite_run_verdict). A
+NOT-RUN of a case in it is never flagged, so a declared skip is never
+re-run, and one in a bench group never makes the re-run take the bench (the
+gen-inhibit tester's read, 2026-11-20).
 
 The first, whole run decides (A12 as written; the charge-interposer
 reviewer, 2026-11-01): this exits with the first run's exit code whatever
@@ -75,15 +78,21 @@ from ..run.model import SuiteError, Verdict
 RULES = {k: True for k in ("nested_masked", "rerun_new_record", "rerun_only_flagged",
                            "first_decides", "from_hold_bench", "from_hold_bench_only",
                            "keep_lock_passed", "keep_same_pid", "keep_for_rerun",
-                           "keep_only_bench_rerun", "rerun_from_hold")}
+                           "keep_only_bench_rerun", "rerun_from_hold", "rerun_not_skips")}
 
 OK = (Verdict.PASS, Verdict.KNOWN_FAIL, Verdict.NOT_APPLICABLE)
 
 
-def flagged(record):
-    """The full check ids ("<group>/<check>") of the cases the run flagged."""
+def flagged(record, skips=()):
+    """The full check ids ("<group>/<check>") of the cases the run flagged.
+    skips: the suite's declared skips (catalogue_skips' ids): their NOT-RUN
+    is never flagged, since a re-run would skip them again, and a declared
+    skip in a bench group must not make a re-run take the bench (the
+    gen-inhibit tester's read of A12a, 2026-11-20)."""
+    skips = set(skips) if RULES["rerun_not_skips"] else set()
     return sorted({r["check"] for r in record["results"]
-                   if r["verdict"] not in OK or r.get("known_fail_passed")})
+                   if (r["verdict"] not in OK or r.get("known_fail_passed"))
+                   and not (r["verdict"] == Verdict.NOT_RUN and r["check"] in skips)})
 
 
 def _worst(record, check):
@@ -109,6 +118,11 @@ def run(suite, settings, masked, run_id, groups=(), checks=(), rerun=False, out=
     if not RULES["keep_lock_passed"]:
         keep_lock = None
     rec_settings = masked if RULES["nested_masked"] else None
+    # the suite's catalogue of declared skips, as loaded from its tree:
+    # every case with Check.skip, whether selected or not, with its reason
+    # (ACCEPT-SPEC A12a; judge.suite_run_verdict)
+    cat_skips = {"%s/%s" % (g.name, c.id): c.skip
+                 for g in suite.groups for c in g.checks if c.skip}
     eng = Engine(suite, settings, run_id=run_id, groups=list(groups), checks=list(checks),
                  record_settings=rec_settings, out=out)
     given = (from_hold is not None and RULES["from_hold_bench"]
@@ -121,7 +135,7 @@ def run(suite, settings, masked, run_id, groups=(), checks=(), rerun=False, out=
             # hand the hold back only if the re-run will need the bench,
             # decided at the release, when every bench result is in
             def keep_if(results):
-                marked = flagged({"results": results})
+                marked = flagged({"results": results}, cat_skips)
                 if not marked:
                     return False
                 if not RULES["keep_only_bench_rerun"]:
@@ -139,12 +153,8 @@ def run(suite, settings, masked, run_id, groups=(), checks=(), rerun=False, out=
            "keep_lock": None if from_hold is None else {"pid": keep_lock,
                                                         "first": eng.handed_to,
                                                         "rerun": None},
-           # the suite's catalogue of declared skips, as loaded from its
-           # tree: every case with Check.skip, whether selected or not, with
-           # its reason (ACCEPT-SPEC A12a; judge.suite_run_verdict)
-           "catalogue_skips": {"%s/%s" % (g.name, c.id): c.skip
-                               for g in suite.groups for c in g.checks if c.skip}}
-    marked = flagged(first)
+           "catalogue_skips": cat_skips}
+    marked = flagged(first, cat_skips)
     if rerun and marked:
         sel = rerun_selection(marked, checks)
         rid = run_id + "-rerun" if RULES["rerun_new_record"] else None
