@@ -93,6 +93,18 @@ def measures(BM):
     check("breach line: empty with no breach, the prefix and every breach otherwise",
           BM.breach_line([c(10.0, 10.005, [])]) == "" and BM.breach_line([c(None, 1.0, []), b(1.0, 1.0, [])]).startswith(
               "burst timing VOID: close: no last") and "no witness error frame" in BM.breach_line([b(1.0, 1.0, [])]))
+    # a run's bursts (B9, B10): only one with no witness error frame VOIDs; spans and closes recorded, not judged
+    # (the gen-inhibit reviewer's ruling of 2026-11-20, item 4(ii))
+    over, short, late = b(1.0, 10.0, [10.0, 10.012]), b(20.0, 10.02, [10.0, 10.0025]), b(1.0, 10.0, [10.0, 10.03])
+    check("run void line: a span over, a span cut short (bus-off) and a late last frame are breaches, not void",
+          all(m["breaches"] and m["void"] == [] for m in (over, short, late))
+          and BM.run_void_line([over, short, late]) == "", [over["breaches"], short["breaches"], late["breaches"]])
+    none = b(5.0, 10.0, [])
+    check("run void line: a burst with no witness error frame is void, with the prefix the suite reads",
+          none["void"] == ["burst 5 ms: no witness error frame"]
+          and BM.run_void_line([over, none]) == "burst timing VOID: burst 5 ms: no witness error frame",
+          BM.run_void_line([over, none]))
+    check("run void line: none at all -> empty", BM.run_void_line([]) == "" and BM.run_void_line([m]) == "")
 
 
 # ------------------------------------------------------------------ judge(), on made-up messages
@@ -520,6 +532,11 @@ MUTANTS = [
     ("burst_measures.py", "a burst with no error frame passes",
      '        m["breaches"].append("burst %g ms: no witness error frame" % asked_ms)\n', ""),
     ("burst_measures.py", "the close edge is 10 ms", "CLOSE_EDGE_S = 0.005 ", "CLOSE_EDGE_S = 0.010 "),
+    # a run's void line (2026-11-20, item 4(ii))
+    ("burst_measures.py", "a run voids on every breach, as before the ruling",
+     '    vo = [v for m in measures for v in m["void"]]\n', '    vo = [v for m in measures for v in m["breaches"]]\n'),
+    ("burst_measures.py", "a burst with no error frame does not void a run",
+     '        m["void"].append("burst %g ms: no witness error frame" % asked_ms)\n', ""),
     ("burst_measures.py", "the span margin is 10 ms", "SPAN_OVER_S = 0.005 ", "SPAN_OVER_S = 0.010 "),
     ("burst_measures.py", "the lower bound from 1 ms", "SPAN_UNDER_FROM_S = 0.005 ", "SPAN_UNDER_FROM_S = 0.001 "),
     ("burst_measures.py", "the close tolerance is 4 ms", "CLOSE_TOL_S = 0.003 ", "CLOSE_TOL_S = 0.004 "),

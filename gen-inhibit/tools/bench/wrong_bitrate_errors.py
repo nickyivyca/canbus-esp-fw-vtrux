@@ -178,7 +178,64 @@ class Poller(threading.Thread):
             self.stop.wait(max(0.0, self.period - (time.perf_counter() - t0)))
 
 
-def burst(ms, inno):
+# THE SOURCE'S OWN STATE PER BURST (the gen-inhibit reviewer's ruling of 2026-11-20, item 4(ii)): a source
+# going bus-off is an acceptable burst end, so it is recorded. During the hold the source's own frames are read
+# (its error frames carry its controller's state, Linux can/error.h classes as gs_usb reports them) instead of
+# a plain sleep; each read waits at most SOURCE_READ_S, so the hold can run up to that much over.
+SOURCE_READ_S = 0.001
+CAN_ERR_CRTL, CAN_ERR_BUSOFF, CAN_ERR_RESTARTED = 0x004, 0x040, 0x100
+CRTL_STATES = {0x01: "rx_overflow", 0x02: "tx_overflow", 0x04: "rx_warning", 0x08: "tx_warning",
+               0x10: "rx_passive", 0x20: "tx_passive", 0x40: "active"}
+
+
+def hold_reading(src, until, perf=time.perf_counter):
+    """Read the source until `until` (perf clock): ([(t, can_id, data hex)] of its error frames, the number
+    of its other frames)."""
+    errs, other = [], 0
+    while True:
+        left = until - perf()
+        if left <= 0:
+            return errs, other
+        m = src.recv(timeout=min(left, SOURCE_READ_S))
+        if m is None:
+            continue
+        if m.is_error_frame:
+            errs.append((perf(), m.arbitration_id, bytes(m.data).hex()))
+        else:
+            other += 1
+
+
+def source_state(errs, other, t0):
+    """The source's own state over a burst from its error frames (hold_reading), times in ms from t0 (the
+    burst's start): bus_off (CAN_ERR_BUSOFF) and when first, restarts (CAN_ERR_RESTARTED), the controller
+    states seen (CAN_ERR_CRTL, data[1]), its error frames and other frames counted."""
+    off = [t for t, i, _d in errs if i & CAN_ERR_BUSOFF]
+    ctrl = set()
+    for _t, i, d in errs:
+        if i & CAN_ERR_CRTL and len(d) >= 4:
+            b = int(d[2:4], 16)
+            ctrl.update(n for bit, n in CRTL_STATES.items() if b & bit)
+    return {"error_frames": len(errs), "bus_off": bool(off),
+            "bus_off_at_ms": round((off[0] - t0) * 1000, 3) if off else None,
+            "restarts": sum(1 for _t, i, _d in errs if i & CAN_ERR_RESTARTED),
+            "ctrl_states": sorted(ctrl), "other_frames": other,
+            "read": "during the hold only (not the open, not after the close)"}
+
+
+def burst_detail_line(b, m):
+    """The line under a burst's: its measure on the witness, first to last error frame (recorded, not
+    judged), and the source's own state. m None: no measure (the clock fit VOID)."""
+    so = b.get("source") or {}
+    meas = ("not measured (the clock fit is VOID)" if m is None else
+            "span %s ms (first %s s, last %s s from its start; asked %g ms), last %s ms after the close, %d error "
+            "frames; recorded, not judged" % (m["span_ms"], m["first_s"], m["last_s"], m["asked_ms"],
+                                             m["last_after_close_ms"], m["n"]))
+    return "    measure: %s | source: bus_off %s (at %s ms), restarts %s, states %s, %s error frames" % (
+        meas, so.get("bus_off"), so.get("bus_off_at_ms"), so.get("restarts"), so.get("ctrl_states"),
+        so.get("error_frames"))
+
+
+def burst(ms, inno, read_source=False):
     """One burst: open canmain at 250 kbit on the held role (inno, kvaser_bus.innomaker_held),
     send one frame, and CLOSE the channel after ms, which takes its controller off the bus and
     ends the retransmission. Returns (start, seconds the open took, close): the close is taken
@@ -201,15 +258,21 @@ def burst(ms, inno):
     t = time.perf_counter()
     src = inno.open(bitrate=SOURCE_BITRATE)
     opened = time.perf_counter() - t
+    errs, other = [], 0
     try:
         src.send(can.Message(arbitration_id=SOURCE_ID, is_extended_id=False, data=bytes(8)),
                  timeout=0.05)
-        time.sleep(ms / 1000.0)
+        if read_source:
+            errs, other = hold_reading(src, time.perf_counter() + ms / 1000.0)
+        else:
+            time.sleep(ms / 1000.0)
     except can.CanError:
         pass
     finally:
         t_close = time.perf_counter()
         src.shutdown()
+    if read_source:
+        return t, opened, t_close, source_state(errs, other, t)
     return t, opened, t_close
 
 
@@ -250,7 +313,7 @@ def main():
            "plan": plan, "source": "%s (gs_usb over libusb, by its canctl role) at %d bit/s, id 0x%03X"
                                    % (SOURCE_ROLE, SOURCE_BITRATE, SOURCE_ID)}
     pc = player = wit = poll = None
-    starts, opens = [], []
+    starts, opens, sources = [], [], []
     import kvaser_bus as KB  # noqa: E402  the adapters by their canctl roles
     # the Kvaser down, read back: an up kvaser link ACKs with no socket open (condition 5)
     rec["kvaser_link_start"] = KB.link_down()
@@ -290,9 +353,10 @@ def main():
         for at, ms in plan:
             while time.perf_counter() < base + at:
                 time.sleep(0.001)
-            t_b, opened, t_c = burst(ms, inno)
+            t_b, opened, t_c, src_state = burst(ms, inno, read_source=True)
             starts.append((t_b, ms, t_c))
             opens.append(opened)
+            sources.append(src_state)
         time.sleep(a.tail_s)
     finally:
         if poll is not None:
@@ -338,7 +402,9 @@ def main():
         rec["burst_measures"] = [dict(m, first_s=None if m["first_s"] is None else round(m["first_s"] - s, 6),
                                       last_s=None if m["last_s"] is None else round(m["last_s"] - s, 6))
                                  for m, (s, _ms, _c) in zip(burst_measures(starts, errs), starts)]
-        burst_line = BM.breach_line(rec["burst_measures"])
+        # only a burst with no witness error frame VOIDs a run; spans and closes are recorded, not judged
+        # (the gen-inhibit reviewer's ruling of 2026-11-20, item 4(ii); BM.run_void_line)
+        burst_line = BM.run_void_line(rec["burst_measures"])
         if burst_line:
             rec["burst_timing_void"] = burst_line
             rec["verdict"] = "VOID: %s" % burst_line
@@ -349,8 +415,9 @@ def main():
     t_ref = st[0] if st else 0.0
     # open_s: how long the Kvaser's open took, from the burst's start (2026-10-29)
     rec["bursts"] = [{"t": round(s - t_ref, 4), "ms": ms, "open_s": round(o, 4), "close_s": round(c - s, 4),
-                      "witness_error_frames": n}
-                     for (s, ms, c), o, n in zip(starts, opens, per_burst(st, [c_ for _s, _ms, c_ in starts], errs))]
+                      "witness_error_frames": n, "source": so}
+                     for (s, ms, c), o, n, so in zip(starts, opens, per_burst(st, [c_ for _s, _ms, c_ in starts], errs),
+                                                     sources)]
     rec["witness_error_frames"] = len(errs)
     rec["pcan_status_end"] = pc_status
     rec["witness_window_max_10s"] = window_max(errs)
@@ -378,8 +445,9 @@ def main():
     if burst_line:
         # the suite's B9 judge reads this line too: VOID, never judged (condition 5)
         print(burst_line)
-    for b in rec["bursts"]:
+    for k, b in enumerate(rec["bursts"]):
         print("  burst at %.3f s, %g ms -> witness error frames %d" % (b["t"], b["ms"], b["witness_error_frames"]))
+        print(burst_detail_line(b, (rec.get("burst_measures") or [None] * len(rec["bursts"]))[k]))
     print("summary", rec["summary"], "witness total", rec["witness_error_frames"],
           "max in 10 s", rec["witness_window_max_10s"])
     w = rec["pre_burst_window"]

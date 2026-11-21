@@ -529,6 +529,166 @@ def witness_state_cases():
     w2 = C.witness_state_summary(st, 10.35, 10.5)
     out.append(("summary: a clean span is not bus_off", w2 and not w2["bus_off"] and not w2["error_passive"], w2))
     out.append(("summary: an unsampled span is None, not healthy", C.witness_state_summary(st, 11, 12) is None, ""))
+    out += link_state_cases()
+    out += baseline_cases()
+    return out
+
+
+def baseline_cases():
+    """B8's baseline (the gen-inhibit reviewer's ruling of 2026-11-20, item 4(iii)): at least 5 s, until the
+    stamp check has left pending with at least 20 data frames, at most 15 s, VOID past that."""
+    import inspect
+    import kvaser_bus as KB
+    out = []
+    hw = {"state": "hardware", "data_frames_judged": 20}
+    out.append(("gate: hardware with 20 judged opens; pending, 19, host_only with 25 judged as stated",
+                C.stamp_gate_open(hw) and not C.stamp_gate_open({"state": "pending", "data_frames_judged": 16})
+                and not C.stamp_gate_open({"state": "hardware", "data_frames_judged": 19})
+                and C.stamp_gate_open({"state": "host_only", "data_frames_judged": 25}), ""))
+    out.append(("gate: no stamp check (CANlib) opens", C.stamp_gate_open(None), ""))
+    out.append(("gate: still pending, whatever its count, stays shut",
+                not C.stamp_gate_open({"state": "pending", "data_frames_judged": 20}), ""))
+    out.append(("bounds: 5 s, 15 s, 20 frames", (C.BASELINE_MIN_S, C.BASELINE_MAX_S, C.STAMP_FRAMES) == (5.0, 15.0, 20), ""))
+
+    def run(states):
+        """wait_baseline on a fake clock; states: [(from_s, stamp_stats)]."""
+        clock = [100.0]
+        real = KB.stamp_stats
+
+        def st(_bus):
+            el = clock[0] - 100.0
+            return [s for t, s in states if el >= t][-1]
+        KB.stamp_stats = st
+        try:
+            return C.wait_baseline(object(), 100.0, clock=lambda: clock[0],
+                                   sleep=lambda d: clock.__setitem__(0, clock[0] + d))
+        finally:
+            KB.stamp_stats = real
+    pend = lambda n: {"state": "pending", "data_frames_judged": n, "frames_needed": 20, "error_frames_seen": 3}
+    ok, el, s = run([(0.0, pend(0)), (7.9, hw)])
+    out.append(("wait: the check decided at 7.9 s -> the baseline ends then (over 5 s)", ok and 7.9 <= el < 8.1, (ok, el)))
+    ok, el, s = run([(0.0, hw)])
+    out.append(("wait: already decided -> exactly the 5 s minimum", ok and 5.0 <= el < 5.15, (ok, el)))
+    ok, el, s = run([(0.0, pend(0)), (14.0, pend(16))])
+    out.append(("wait: still pending -> not ok at the 15 s bound, the check as last read", not ok and 15.0 <= el < 15.15
+                and s["data_frames_judged"] == 16, (ok, el, s)))
+    ok, el, s = run([(0.0, None)])
+    out.append(("wait: no stamp check -> 5 s", ok and 5.0 <= el < 5.15, (ok, el)))
+    note = C.baseline_void_note(pend(16), 15.04)
+    out.append(("void note: the pending counts, how long, the bound",
+                note == "B8 baseline: SOCKETCAN: stamp check pending (16 of 20 data frames, 3 error frames ignored) "
+                        "after 15.0 s, the 15 s bound".replace("SOCKETCAN", C.WC.SOCKETCAN), note))
+    out.append(("void note: a decided check short of 20 says its state and count",
+                "stamp check hardware (19 data frames)" in C.baseline_void_note({"state": "hardware",
+                                                                                "data_frames_judged": 19}, 15.0), ""))
+    src = inspect.getsource(C.arm_busoff)
+    i, j = src.find("ok, waited, st = wait_baseline(getattr(wit, \"bus\", None), time.time())"), src.find("ack = train(con")
+    r = src.find("raise WC.ReceiptClock(baseline_void_note(st, waited))")
+    out.append(("arm_busoff: the baseline waits on the stamp check before the train; past the bound the run is "
+                "VOID on its witness clock, no train", 0 < i < r < j and "time.sleep(5.0)" not in src, (i, r, j)))
+    return out
+
+
+def lc(state, bus_off=0, error_passive=0, bus_error=0, restarts=0, tx_packets=0):
+    """A kvaser_bus.link_counters() result."""
+    c = {"netdev": "kvaser", "state": state}
+    c.update({k: 0 for k in C.LINK_DELTAS})
+    c.update(bus_off=bus_off, error_passive=error_passive, bus_error=bus_error, restarts=restarts,
+             tx_packets=tx_packets)
+    return c
+
+
+def link_state_cases():
+    """The witness's state on SocketCAN from its link counters (the gen-inhibit reviewer's ruling of
+    2026-11-20, item 4(i)): CANlib's fields read "not available on socketcan", never 0."""
+    out = []
+    link = [(10.0, lc("ERROR-ACTIVE")), (10.25, lc("ERROR-PASSIVE", error_passive=1, bus_error=40)),
+            (10.5, lc("BUS-OFF", bus_off=1, error_passive=1, bus_error=300)),
+            (10.75, lc("BUS-OFF", bus_off=1, error_passive=1, bus_error=300)),
+            (11.0, lc("ERROR-ACTIVE", bus_off=1, error_passive=1, bus_error=300, restarts=1))]
+    w = C.witness_link_summary(link, 10.0, 10.8)
+    out.append(("link: bus_off from the first BUS-OFF sample to the last", w and w["bus_off"]
+                and w["bus_off_from"] == 10.5 and w["bus_off_last"] == 10.75, w))
+    out.append(("link: error_passive, the states seen, the counter deltas", w and w["error_passive"]
+                and w["states_seen"] == ["bus-off", "error-active", "error-passive"]
+                and w["counter_deltas"]["bus_error"] == 300 and w["counter_deltas"]["bus_off"] == 1
+                and w["samples"] == 4 and w["source"] == "socketcan link counters", w))
+    na = ("tec_max", "rec_max", "overrun_max", "overruns_stat_delta", "err_frames_stat_delta", "flags_seen")
+    out.append(("link: TEC, REC, overruns and flags read 'not available on socketcan', never 0",
+                w and all(w[k] == "not available on socketcan" for k in na), {k: w[k] for k in na} if w else w))
+    w2 = C.witness_link_summary(link, 10.9, 11.5)
+    out.append(("link: a clean span is not bus_off", w2 and not w2["bus_off"] and not w2["error_passive"]
+                and w2["counter_deltas"]["restarts"] == 0, w2))
+    missed = [(10.0, lc("ERROR-ACTIVE")), (10.25, lc("ERROR-ACTIVE", bus_off=1, restarts=1))]
+    w3 = C.witness_link_summary(missed, 10.0, 10.3)
+    out.append(("link: a bus-off between samples (its counter up, the state back) is bus_off",
+                w3 and w3["bus_off"] and w3["bus_off_from"] == 10.25 and w3["counter_deltas"]["restarts"] == 1, w3))
+    w4 = C.witness_link_summary([(10.0, lc("ERROR-ACTIVE", error_passive=2)),
+                                 (10.25, lc("ERROR-ACTIVE", error_passive=3))], 10.0, 10.3)
+    out.append(("link: an error-passive between samples (its counter up) is error_passive",
+                w4 and w4["error_passive"] and not w4["bus_off"], w4))
+    w5 = C.witness_link_summary([(10.0, lc("ERROR-ACTIVE", bus_off=4, error_passive=5)),
+                                 (10.25, lc("ERROR-ACTIVE", bus_off=4, error_passive=5))], 10.0, 10.3)
+    out.append(("link: counters already high at the span's start are not this span's",
+                w5 and not w5["bus_off"] and not w5["error_passive"], w5))
+    w6 = C.witness_link_summary([(10.0, lc("BUS-OFF", bus_off=1)), (10.25, lc("BUS-OFF", bus_off=1))], 10.0, 10.3)
+    out.append(("link: a span that starts bus-off (its counter flat) is bus_off, by the state",
+                w6 and w6["bus_off"] and w6["bus_off_from"] == 10.0 and w6["bus_off_last"] == 10.25, w6))
+    out.append(("link: an unsampled span is None, not healthy", C.witness_link_summary(link, 12, 13) is None, ""))
+    st = [(10.0, 0, 0, 0, 0x8, 0, 0)]
+    a, b = C.witness_states(True, st, link, (10.0, 10.8), (9.0, 12.0))
+    out.append(("witness_states: on SocketCAN from the link counters", a and a.get("source") and b["samples"] == 5,
+                (a, b)))
+    a, b = C.witness_states(False, st, link, (9.0, 10.8), (9.0, 12.0))
+    out.append(("witness_states: on CANlib from the status", a and "source" not in a and a["samples"] == 1, a))
+    out += link_sampler_cases()
+    lines = C.livetrain_lines(0, {"judge": {"verdict": "PASS"}, "jam": {"start": 10.0}, "wire": [],
+                                  "witness_state_after_jam": w}, {"jam_stop": 10.4})
+    out.append(("livetrain line: the SocketCAN state with its states and deltas, TEC/REC not available",
+                "bus_off True (from 0.5)" in lines[1] and "counter deltas" in lines[1]
+                and "tec/rec/flags not available on socketcan" in lines[1], lines[1]))
+    return out
+
+
+def link_sampler_cases():
+    """Witness._sample_link / _sample_status / run on a SocketCAN bus, with kvaser_bus.link_counters faked."""
+    import inspect
+    import threading
+    import kvaser_bus as KB
+    out = []
+    w = object.__new__(C.Witness)
+    w.lock, w.link_status, w.status, w.status_error, w.socketcan = threading.Lock(), [], [], None, True
+    real = getattr(KB, "link_counters", None)
+    calls = []
+    try:
+        KB.link_counters = lambda: calls.append(1) or lc("ERROR-ACTIVE")
+        w._sample_link()
+        w._sample_status()          # on SocketCAN: no CANlib call, nothing recorded, no error
+        out.append(("sampler: a link sample is kept with its time; the CANlib path is skipped",
+                    len(w.link_status) == 1 and w.link_status[0][1]["state"] == "ERROR-ACTIVE"
+                    and w.status == [] and w.status_error is None and calls == [1], (w.link_status, w.status_error)))
+
+        def boom():
+            raise KB.KvaserLinkError("link counters kvaser: lack info_xstats.bus_off")
+        KB.link_counters = boom
+        w._sample_link()
+        KB.link_counters = lambda: (_ for _ in ()).throw(OSError("second"))
+        w._sample_link()
+        out.append(("sampler: a failed sample is recorded, the first failure kept",
+                    len(w.link_status) == 1 and w.status_error is not None
+                    and w.status_error.startswith("KvaserLinkError: ") and "second" not in w.status_error,
+                    w.status_error))
+    finally:
+        if real is None:
+            del KB.link_counters
+        else:
+            KB.link_counters = real
+    src = inspect.getsource(C.Witness.run)
+    out.append(("sampler: run starts the link loop in its own thread on SocketCAN",
+                "if getattr(self, \"socketcan\", False):\n            threading.Thread(target=self._link_loop" in src, ""))
+    loop = inspect.getsource(C.Witness._link_loop)
+    out.append(("sampler: the loop samples every LINK_EVERY_S (0.25 s) until stopped",
+                "self.stop_flag.wait(LINK_EVERY_S)" in loop and C.LINK_EVERY_S == 0.25, ""))
     return out
 
 

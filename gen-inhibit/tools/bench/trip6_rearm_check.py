@@ -48,7 +48,10 @@ after A3's slice stopped, went live 0.139 s later and was aborted "0x617 went st
 The Player's host send times of 0x617 are kept (host_0x617_sent_s; the PCAN sends the slice and
 does not receive its own frames, so the witness has none) and each arm's gaps over 1.0 s printed.
 An expired arm that went live (a read live, a device 0x051 or tx_ok in mode 3) and was then
-aborted other than by trip 6 is UNCLEAR, which the suite's B10 reads as ERROR.
+aborted other than by trip 6 is as specified for B10, its abort and reason in the arm line's
+aborts: B10's property is that an expired arm goes live and trip 6 does not latch (the gen-inhibit
+reviewer's rulings on the run (C) fixes, 2026-11-20; it read UNCLEAR for a day). Live then trip 6
+stays NOT as specified, and never live is told apart from it.
 
     py -3.14 trip6_rearm_check.py --x2 held --power "..."
 Writes runs/trip6_rearm_check_<stamp>.json.
@@ -71,7 +74,6 @@ TRIP6 = "error-frame rate exceeded"
 RECENT_MAX_S = 8.0     # an A3 arm later than this after the burst is too near the 10 s edge
 
 
-UNCLEAR_PREFIX = "UNCLEAR: "   # the suite's B10 judge reads an arm verdict with it as ERROR
 ID_0x617 = 0x617
 # 0x617 older than this aborts a live arm; the gen-inhibit reviewer's figure for the gaps to find
 # (answer to the run (C) report, 2026-11-20: "every gap over 1.0 s")
@@ -94,19 +96,15 @@ def went_live(reads, device_0x051):
 def judge_expired(reads, errors_since_arm, device_0x051=0):
     """An arm whose last burst has expired: live, and never the trip 6 abort.
     A new error frame since arming would make a trip legitimate -> VOID. Live, then aborted by
-    something other than trip 6 is told apart from never live (the gen-inhibit reviewer, answer to
-    the run (C) report, 2026-11-20): whose the abort is (the stimulus's or the device's) is not
-    settled from the arm's reads, so it is UNCLEAR, never "as specified" and never "never live"."""
+    something other than trip 6 has shown B10's property (live, no trip 6 latch), so it is as
+    specified, its abort and reason in the arm line's aborts (the gen-inhibit reviewer, 2026-11-20);
+    went_live tells it apart from never live."""
     if errors_since_arm:
         return "VOID: %d witness error frames since arming" % errors_since_arm
     if any(r.get("abort") == TRIP6 for r in reads):
         return "NOT as specified: trip 6 on an expired burst"
     if not went_live(reads, device_0x051):
         return "NOT as specified: never live"
-    aborts = sorted({r["abort"] for r in reads if r.get("abort")})
-    if aborts:
-        return "%slive, then aborted (%s), not trip 6; whose the abort is is not settled here" % (
-            UNCLEAR_PREFIX, "; ".join(aborts))
     return "as specified"
 
 
@@ -405,10 +403,13 @@ def main():
         arm = poll_arm(name, 4.0)
         wit.sync()
         n_err = len(wit.errors)
-        tb, opened, tc = W.burst(a.burst_ms, inno)      # from the source's open since 2026-10-29 (recorded only)
+        # from the source's open since 2026-10-29 (recorded only); the source's own state read during the
+        # hold (bus-off, restarts: the gen-inhibit reviewer's ruling of 2026-11-20, item 4(ii))
+        tb, opened, tc, src_state = W.burst(a.burst_ms, inno, read_source=True)
         time.sleep(1.0)
         wit.sync()
         arm["_burst"] = (tb, a.burst_ms, tc)
+        arm["burst_source"] = src_state
         arm["burst_at"] = round(tb - t0, 3)
         arm["burst_open_s"] = round(opened, 4)
         arm["burst_close_s"] = round(tc - tb, 4)
@@ -494,7 +495,9 @@ def main():
     proc_void, void_line = PW.void_line(wit) if wit is not None else (None, None)
     if proc_void:
         rec["witness_proc_void"] = proc_void
-    burst_line = BM.breach_line([arm["burst_measure"] for arm in rec["arms"] if "burst_measure" in arm])
+    # only a burst with no witness error frame VOIDs the run; spans and closes are recorded, not judged
+    # (the gen-inhibit reviewer's ruling of 2026-11-20, item 4(ii); BM.run_void_line)
+    burst_line = BM.run_void_line([arm["burst_measure"] for arm in rec["arms"] if "burst_measure" in arm])
     if burst_line:
         rec["burst_timing_void"] = burst_line
     for arm in rec["arms"]:
@@ -525,6 +528,9 @@ def main():
                  (round(lives[0] - arm["armed_at"], 3) if lives else None), aborts, arm.get("verdict", "")))
         if "history_verdict" in arm:
             print("            history %s | prediction %s" % (arm["history_verdict"], arm["prediction_verdict"]))
+        if "burst_source" in arm:
+            import wrong_bitrate_errors as W  # noqa: E402  burst_detail_line (2026-11-20)
+            print("        " + W.burst_detail_line({"source": arm["burst_source"]}, arm.get("burst_measure")))
         h = arm["host_0x617"]
         print("            0x617 host sends: quiet before the arm %s s, last before the arm %s s, first after %s s, "
               "gaps over %g s %s" % (arm.get("slice_quiet_before_arm_s"), h["last_before_arm_s"],

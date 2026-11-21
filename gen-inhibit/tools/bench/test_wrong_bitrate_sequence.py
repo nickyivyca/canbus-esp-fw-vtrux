@@ -24,7 +24,10 @@ Now:
            once for the run (kvaser_bus.innomaker_held, entered before the PCAN opens and left
            after it is shut), with the Kvaser brought down and read back first; each burst's
            measures (burst_measures) recorded; a source that keeps erring 30 ms after its close
-           makes the run VOID with the "burst timing VOID" line, not a FAIL
+           made the run VOID with the "burst timing VOID" line until 2026-11-20, when the gen-inhibit
+           reviewer ruled a run's burst lengths and closes recorded, not judged (item 4(ii)): only a
+           burst with no witness error frame VOIDs (burst_measures.run_void_line); each burst's
+           source state, read during its hold, is recorded and printed
 
 main() runs against fakes put in sys.modules: can (PCAN, Kvaser), lowid_flood_skip_bench
 (the device: a log of POSTs and page reads) and skip_method_bench (the Player). About 10 s.
@@ -98,9 +101,10 @@ class Log:
         return next((i for i, e in enumerate(self.ev) if pred(e)), None)
 
 
-def fakes(log, running_after, stamps="device", late=False):
+def fakes(log, running_after, stamps="device", late=False, silent=False):
     """running_after: page reads after the mode 3 POST before the driver reports running
-    (None: never). late: the burst source's close leaves an error frame 30 ms after it."""
+    (None: never). late: the burst source's close leaves an error frame 30 ms after it.
+    silent: the burst source's open draws no error frame on the witness (2026-11-20)."""
     can = types.ModuleType("can")
 
     class CanError(Exception):
@@ -131,9 +135,10 @@ def fakes(log, running_after, stamps="device", late=False):
             if interface == "gs_usb":
                 # bus-on at the wrong rate: the witness sees an error frame while the open
                 # is still returning (step 1a's acceptance, 2026-10-29)
-                e = Message()
-                e.is_error_frame = True
-                wire.append(e)
+                if not silent:
+                    e = Message()
+                    e.is_error_frame = True
+                    wire.append(e)
                 time.sleep(0.02)
 
         def recv(self, timeout=None):
@@ -245,10 +250,10 @@ def fakes(log, running_after, stamps="device", late=False):
 OUT = {}       # the tool's stdout from the last run_main
 
 
-def run_main(W, running_after, stamps="device", late=False):
+def run_main(W, running_after, stamps="device", late=False, silent=False):
     log = Log()
     saved = {k: sys.modules.get(k) for k in ("can", "lowid_flood_skip_bench", "skip_method_bench", "kvaser_bus")}
-    sys.modules.update(fakes(log, running_after, stamps, late))
+    sys.modules.update(fakes(log, running_after, stamps, late, silent))
     runs = os.path.join(SCRATCH, "runs")
     gi_paths.remove_tree(runs)
     os.makedirs(runs)
@@ -370,15 +375,34 @@ def order_cases(W):
           "not judged" in rec.get("witness_clock_figures", ""), rec.get("witness_clock_figures"))
     check("main, stamps on the epoch clock: no burst measured on them", "burst_measures" not in rec, rec.get("burst_measures"))
 
-    # condition 5: an error frame 30 ms after the close -> VOID with the line the suite reads, not FAIL
+    # an error frame 30 ms after the close: until 2026-11-20 (condition 5) VOID; since the gen-inhibit reviewer's
+    # ruling of that day (item 4(ii)) a run's burst lengths and closes are recorded, not judged
     rc, log, rec = run_main(W, running_after=2, late=True)
     text = OUT.get("text", "")
     bm = rec.get("burst_measures") or [{}]
     check("main, the source errs 30 ms after its close: the breach recorded",
           any("after the close" in x for x in bm[0].get("breaches", [])), bm)
-    check("main, the source errs 30 ms after its close: VOID verdict and the burst timing VOID line",
-          str(rec.get("verdict", "")).startswith("VOID: burst timing VOID: ")
-          and "\nburst timing VOID: " in "\n" + text, (rec.get("verdict"), text[-300:]))
+    check("main, the source errs 30 ms after its close: recorded, not judged: no VOID, no burst timing VOID line",
+          not str(rec.get("verdict", "")).startswith("VOID") and "burst_timing_void" not in rec
+          and "burst timing VOID" not in text and bm[0].get("void") == [], (rec.get("verdict"), text[-300:]))
+    check("main: each burst's measure and its source's state printed under it, recorded not judged",
+          "    measure: span " in text and "recorded, not judged | source: bus_off False" in text, text[-600:])
+    so = ((rec.get("bursts") or [{}])[0]).get("source") or {}
+    check("main: each burst's source state recorded (read during the hold)",
+          so.get("error_frames") == 0 and so.get("bus_off") is False and so.get("restarts") == 0
+          and so.get("read", "").startswith("during the hold"), so)
+    import inspect
+    msrc = inspect.getsource(W.main)
+    check("main: the run VOIDs only on run_void_line (a burst with no witness error frame), not breach_line",
+          "burst_line = BM.run_void_line(rec[\"burst_measures\"])" in msrc and "BM.breach_line" not in msrc, "")
+    check("main: each burst read with its source", "burst(ms, inno, read_source=True)" in msrc, "")
+    # a burst that drew no witness error frame still VOIDs the run, with the line the suite reads
+    rc, log, rec = run_main(W, running_after=2, silent=True)
+    text = OUT.get("text", "")
+    check("main, a burst with no witness error frame: VOID verdict and the burst timing VOID line",
+          str(rec.get("verdict", "")).startswith("VOID: burst timing VOID: burst 1 ms: no witness error frame")
+          and "\nburst timing VOID: burst 1 ms: no witness error frame" in "\n" + text,
+          (rec.get("verdict"), text[-300:]))
     check("main, the source errs 30 ms after its close: canmain still left (held exit)",
           log.index(lambda e: e == ("held exit", "canmain")) is not None, log.ev[-5:])
 

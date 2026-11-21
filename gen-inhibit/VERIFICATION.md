@@ -2343,6 +2343,14 @@ reviewer's step-9 plan, approved 2026-10-08.
   - Per arm: 5 s baseline, then `TRAIN 20 200 3000` (a 20 us pulse every
     200 us for 3 s), then 15 s more. The page was polled at ~10 Hz and
     `0x7F1` captured off the wire.
+  - **2026-11-20, tester: B8's baseline from harness branch
+    gen-inhibit/tester/runc-rulings on.** At least 5 s, and until the Kvaser
+    witness's stamp check (SocketCAN, canbench's StampCheck) has left pending
+    with at least 20 data frames judged, at most 15 s; past 15 s the run is
+    VOID on its witness clock and no train is sent (the gen-inhibit
+    reviewer's ruling of 2026-11-20, item 4(iii); `x2_jam_cases.wait_baseline`,
+    the 15 s bound in the madhouse test plan, section 4b). The arms above,
+    and every B8 run before this, had the fixed 5 s.
 
 | Arm | Page states | Page vs `drv.state` | Reached bus-off | At first `bus_off` reading |
 |---|---|---|---|---|
@@ -8672,6 +8680,81 @@ queue-bound fixed run 2's harness findings. Run 2's nine passes on this code
   re-run 1 `runs/chain/gen-inhibit-bench_20261120T150438_b840/` (`man_app/{B3arms,B3,B24}`,
   `man_held/{B9,B10}`, `man_jammer/B5_B8`, `man_slcan/B22`); re-run 2
   `runs/chain/gen-inhibit-bench_20261120T155948_bdbe/` (`man_app/{B2app,B3arms,B24}`).
+- **2026-11-20:** B10, B9, B8, B22 and B24 PASS in the rulings re-run on the same code, entry
+  below.
+
+**The rulings re-run on `743cf7cd` -- tester, 2026-11-20 19:04-20:05, madhouse-debian,
+harness `e42c5707`. Result: PASS 10 (B2app, B3arms, B24, B9, B10, B5, B6, B7, B8, B22).** The
+gen-inhibit reviewer's rulings on run (C)'s harness fixes ordered it: B10, B9, B8, B22 and B24
+(with B2app) again on `743cf7cd` `_man`, from gen-inhibit/tester/runc-rulings (`69ebea39..e42c5707`).
+The harness changes it runs under: B10's expired arm that went live and was then aborted other
+than by trip 6 is as specified, its abort on the arm line; B24 places an arm's count window from
+its POST's own send; the Kvaser witness's status is sampled on SocketCAN, with the fields
+SocketCAN does not give recorded as not available; B9's and B10's runs are VOID on a burst only
+when it drew no witness error frame, each burst's span and close recorded, not judged, with the
+source's own state; B8's baseline lasts at least 5 s and until the stamp check leaves pending
+with at least 20 data frames judged, at most 15 s, VOID past it.
+- **Run:** `gen-inhibit-bench_20261120T190456_0d8c`, a subset run (B2app, B3arms, B24, B9, B10,
+  B5_B8, B22), from the chain runner holding the lock itself. Code `743cf7cd` (`gi_images` and
+  `gi_prod_dir` at `743cf7cd`, clean). Harness: `gi_tools` the detached worktree
+  `gen-inhibit-tester-run-e42c` at `e42c5707`, clean, with its pinned can-tools `49eb777` and
+  canre `ffbe029` installs. Settings, index and the paired emulated run as in run (C). Every
+  check ran in bench.slice (placement read back, CPUWeight 2000), with no other wall-clock test
+  on the host (`wallclock-others`).
+- **Boards.** The runner's identify read both boards before and after every group
+  (`progress.jsonl`).
+  - WiCAN `_man` `483bb940...` throughout, not flashed. The start hook PASS (found `wican_man`,
+    mode 0, latched False), the end hook PASS (mode 0, latched True). Power 12 V on OBD pin 16,
+    as bench-holder.md has recorded since 2026-10-09 (not re-read), and USB plugged at 1-3.1.
+    No WiCAN console capture.
+  - X2 (rule 6): found on the charge-interposer's `vport_bench`; `x2_app` `756d6714` (flashed
+    19:05:50) for man_app; held in ROM, not driving TX (19:31:43), for man_held; the jammer row
+    `ea762c62044cb5c6` under custody, verify-row PASS (19:34:47), for man_jammer; `slcan`
+    (`slcan:V0101:NF001`, flashed 19:59:26) for man_slcan, which it was left on.
+- **Triage:** no check failed, VOIDed or ran out of time, so none was needed.
+
+**Passes**
+- **B10 (12.4, "Trip 6 before going live, after a re-arm"; X2 held): PASS,** 3 of 3 judged arms
+  as specified (19:32:35-19:33:54). A1 (expired, armed 15.058 s after the burst) and A4 (expired,
+  16.362 s): history and prediction as specified, device `0x051` on the wire from 0.317 s and
+  0.378 s after the arm, 1190 and 1185 frames, no abort. A3 (recent, 2.574 s): as specified,
+  device `0x051` 0, abort "error-frame rate exceeded". A0 and A2 were the flood arms (trip
+  "error-frame rate exceeded"); their bursts drew 48 and 38 witness error frames. Recorded, not
+  judged: the bursts' spans, 16.333 ms (A0) and 2.494 ms (A2), each asked 5 ms; the host's
+  `0x617` quiet before A4's arm 1.507 s.
+- **B9 (12.4, "Error frames from an adapter at the wrong bit rate"; X2 held): PASS,** 9 bursts,
+  every one drew witness error frames (7-61; 199 in all), trip 6 latched at +1.40 s, TEC max 0
+  on the page (REC max 118), 19:31:45-19:32:35. Recorded, not judged, each burst's span on the
+  witness (first to last error frame): asked 1 ms, 6.994, 3.018 and 7.220 ms; asked 5 ms, 7.046,
+  0.268 and 6.984 ms; asked 20 ms, 18.298, 24.191 and 8.261 ms. The source's own state, read
+  during each hold: no frame of any kind read from `canmain` on any burst (bus_off False, 0
+  restarts, 0 error frames). Whether gs_usb over libusb passes `canmain`'s own error frames to
+  the host is not established on this bench, so that line shows nothing about the source's
+  state.
+- **B8 (11, `bus_on`, the bus-off half): PASS,** train 3 of 3 PASS: the page agrees with
+  `drv.state` on all 183, 174 and 173 readings, each arm's readings running then bus_off. The
+  control arm (no train) INCONCLUSIVE, "no sample read bus_off, so the bus-off half was not
+  exercised". Baselines 6.608, 5.006, 5.007 and 5.006 s, each ending with the stamp check
+  "hardware" on 20 data frames. Run (C) and its re-run were VOID with the stamp check pending.
+- **B5 (7, trip 6, arm (i), a steady jam): PASS,** 200/s 3 of 3, 500/s 9 of 9. **B6 (7, trip 6
+  at the threshold): PASS,** 10 of 10 arms over 5 runs. **B7 (7, a bus-off re-arm): PASS,** 3
+  of 3 arms AS SPECIFIED. B5_B8 ran 19:35:39-19:57:36.
+  - The Kvaser witness's status on SocketCAN, on every B5 livetrain arm (run (C)'s finding,
+    "NOT SAMPLED", gone): 15-17 samples after the jam and 28-31 over the arm; states seen
+    error-active, and error-passive in some arms; never bus-off; over each whole arm the
+    link's bus_error counter rose by 986-2353 and error_passive by 0-37. TEC, REC and overruns
+    read "not available on socketcan". No judge reads them.
+- **B22 (5.2, case 3 saturation, bench half; X2 `slcan`): PASS,** both arms provenance clean,
+  8983 of ours each, 0 `tx_fail`, 0 error frames, 0 counter faults; response mean 580 us in
+  both, max 1260 and 1046 us; load at least 92.7 % (20:00:04-20:04:07). Baseline: both arms
+  8983 of ours sent and seen, provenance double 0. Run (C) and its re-run were VOID.
+- **B24 (4.1, B0 held): PASS,** 22 arms as specified, and 1 RESPOND arm with no device frames
+  (B2's presence RESPOND arm, `x2_app`, device `0x051` 0), other 0 (19:30:22). Every command in
+  front was `0x08` ("consistent, not discriminating").
+- **B2app** (19:07:09-19:14:01) **and B3arms** (to 19:29:58), B24's inputs: PASS, rc 0.
+- **Run files:** `runs/chain/gen-inhibit-bench_20261120T190456_0d8c/` (`index.txt`,
+  `progress.jsonl`, `record.json`, `board_state.txt`, `man_app/{B2app,B3arms,B24}`,
+  `man_held/{B9,B10}`, `man_jammer/B5_B8`, `man_slcan/B22`).
 
 ## 13 Known not to be implemented
 
