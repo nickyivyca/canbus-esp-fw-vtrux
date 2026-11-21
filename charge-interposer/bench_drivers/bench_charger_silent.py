@@ -137,6 +137,21 @@ def crosscheck(can_vals, ser_vals, window_s=0.6):
     return n, bad
 
 
+def reader_void(ok, errors):
+    """The vehicle-side reader's errors leave the CAN cross-check (txf vs
+    0x7F6, silent vs 0x7F5) incomplete, so the run is not a PASS: until
+    2026-11-21 they were printed as "READER ERRORS: n -- the CAN
+    cross-check is incomplete" and the run still exited 0, which
+    script_judge read PASS (the reviewer's sweep after mcp-reset). ->
+    (ok, lines): a FAIL stays FAIL, anything else is VOID (None)."""
+    if not errors:
+        return ok, []
+    lines = ["READER ERROR: %s" % e for e in errors[:5]]
+    lines.append("VOID: %d reader error(s) on the vehicle side -- the CAN "
+                 "cross-check is incomplete" % len(errors))
+    return (False if ok is False else None), lines
+
+
 def held_seq_of(witnessed_b):
     """The frame the board was retrying when the charger came back: the
     last one the listen-only witness saw in phase B (device clock).
@@ -638,11 +653,6 @@ def run_bench(args):
     print("tagged frames the Kvaser did not accept: %d%s"
           % (len(tag_errors), (" (first %s)" % (tag_errors[0],))
              if tag_errors else ""))
-    for e in errors[:5]:
-        print("READER ERROR: %s" % e)
-    if errors:
-        print("READER ERRORS: %d -- the CAN cross-check is incomplete"
-              % len(errors))
     rc_pairs = [(h, s) for h, s, _d in received]
     ra_pairs = [(h, s) for h, s, _d in received_a]
     if sent:
@@ -674,6 +684,9 @@ def run_bench(args):
               % (name, n, len(bad), (" e.g. %s" % (bad[:3],)) if bad else ""))
         if bad:
             ok = False
+    ok, rlines = reader_void(ok, errors)
+    for ln in rlines:
+        print(ln)
     in_b = [s for t, s, _d in witnessed_b if b0 <= t <= b1]
     print("  listen-only witness in phase B: %d tagged frame(s) seen on the "
           "charger wire (not judged: what a listen-only receiver delivers of "
@@ -894,6 +907,23 @@ def self_test():
           "(1543), not the last one before the wrap -> %s" % held_seq_of(across))
     check(held_seq_of(across[:2]) == 1541 and held_seq_of([]) is None,
           "no wrap: the last frame by device stamp; none seen: None")
+    # 2026-11-21: reader errors are a VOID, not a PASS with a note
+    ok2, rl = reader_void(True, ["decode x"] * 7)
+    check(ok2 is None and len(rl) == 6
+          and re.match(r"^\s*VOID\b", rl[-1]) and "7 reader error" in rl[-1],
+          "7 reader errors on a passing run -> VOID, 5 shown and a VOID "
+          "line script_judge reads -> %s %s" % (ok2, rl[-1:]))
+    check(reader_void(False, ["x"])[0] is False,
+          "reader errors on a failing run: still FAIL")
+    check(reader_void(True, []) == (True, []),
+          "no reader error: the verdict unchanged, no line")
+    import inspect
+    src = inspect.getsource(run_bench)
+    at = src.find("ok, rlines = reader_void(ok, errors)")
+    check(0 <= at < src.find("print(\"2.2 single-adapter: %s\"")
+          and src.find("crosscheck(cv, sv)") < at,
+          "run_bench applies reader_void after the cross-check, before the "
+          "verdict line")
     print("\nbench_charger_silent self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -941,6 +971,16 @@ def main():
 
 # --can-fail (script_can_fail.py): each edit must make --self-test fail
 MUTANTS = [
+    # 2026-11-21, the reviewer's sweep: reader errors exited 0 (PASS)
+    ("reader errors: the verdict unchanged (PASS with a note)",
+     "    return (False if ok is False else None), lines\n",
+     "    return ok, lines\n"),
+    ("reader errors: no VOID line",
+     '    lines.append("VOID: %d reader error(s) on the vehicle side -- the CAN "',
+     '    lines.append("READER ERRORS: %d on the vehicle side -- the CAN "'),
+    ("reader errors: run_bench does not apply it",
+     "    ok, rlines = reader_void(ok, errors)\n    for ln in rlines:",
+     "    rlines = []\n    for ln in rlines:"),
     ("held_seq_of: the device stamps not unwrapped",
      "    dev = unwrap_us32([r[2] for r in witnessed_b])",
      "    dev = [r[2] for r in witnessed_b]"),

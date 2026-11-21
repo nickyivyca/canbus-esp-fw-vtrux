@@ -34,7 +34,11 @@
     also did, retired at port step 2a), and no .py puts the working folder
     ("." or os.getcwd()) on sys.path, which is how the reverse-it root's
     canre/ used to come in with the scripts run from it --
-    all five scans proven able to fail on a planted line.
+    all five scans proven able to fail on a planted line. The scans read
+    what is or can be committed: what git ignores (a build's
+    firmware/managed_components/, build/) is left out (git_ignored,
+    2026-11-21), shown on a planted repo, untracked files it does not
+    ignore still read.
 
 Fake trees are built in a throwaway folder beside this file and removed.
 
@@ -46,6 +50,8 @@ Run:  python charge-interposer/paths_test.py
         itself is never edited); every mutant must make it fail, and the
         unmutated text must pass. Committed 2026-11-01 (the pin move): at
         the cutover it was a scratch script that edited paths.py in place.
+        SCAN_MUTANTS mutate this file's own git_ignored filter, run as a
+        mutated copy with PATHS_TEST_HERE naming charge-interposer/.
 """
 
 import os
@@ -54,7 +60,10 @@ import shutil
 import subprocess
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# PATHS_TEST_HERE: --can-fail runs a mutated copy of this file from its
+# scratch folder (SCAN_MUTANTS) and points it back at charge-interposer/.
+HERE = (os.environ.get("PATHS_TEST_HERE")
+        or os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 import paths as PA                     # noqa: E402
 import canre_pin                       # noqa: E402
@@ -107,14 +116,53 @@ DIAG_OK = ("paths.py", "paths_test.py")
 CWD_RE = re.compile(r"sys\.path\.(insert|append)\([^)]*(['\"]\.['\"]|getcwd)")
 
 
-def scan(root, exts, pattern, code_only):
+def git_ignored(root):
+    """What git ignores under root, as `git ls-files --others --ignored
+    --exclude-standard --directory` lists it there: paths relative to root,
+    a folder ending in "/". None when git cannot list it (no git, not a work
+    tree): the scans then read every file. The scans read what is or can be
+    committed, so a build's output git ignores is not read: the
+    IDF component manager's firmware/managed_components/ (upstream READMEs
+    with example home-folder paths) failed the absolute-path scan once a build
+    ran in the worktree (harness run harness_fixes_1ce954e9, 2026-11-21)."""
+    try:
+        r = subprocess.run(["git", "-C", root, "ls-files", "--others",
+                            "--ignored", "--exclude-standard", "--directory"],
+                           capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return set(ln for ln in r.stdout.splitlines() if ln)
+
+
+def _is_ignored(rel, ignored):
+    """rel (relative to the scan's root) is listed, or lies in a listed
+    folder."""
+    if not ignored:
+        return False
+    rel = rel.replace(os.sep, "/")
+    if rel in ignored or rel + "/" in ignored:
+        return True
+    parts = rel.split("/")
+    return any("/".join(parts[:i]) + "/" in ignored
+               for i in range(1, len(parts)))
+
+
+def scan(root, exts, pattern, code_only, ignored=None):
+    """Hits of pattern in root's files with one of exts; ignored (from
+    git_ignored) leaves out what git ignores."""
     hits = []
     for d, dirs, files in os.walk(root):
-        dirs[:] = [x for x in dirs if x not in (".pio", "__pycache__", ".git")]
+        dirs[:] = [x for x in dirs if x not in (".pio", "__pycache__", ".git")
+                   and not _is_ignored(os.path.relpath(os.path.join(d, x),
+                                                       root), ignored)]
         for fn in files:
             if not fn.endswith(exts):
                 continue
             p = os.path.join(d, fn)
+            if _is_ignored(os.path.relpath(p, root), ignored):
+                continue
             with open(p, "r", encoding="utf-8", errors="replace") as f:
                 for i, line in enumerate(f, 1):
                     s = line.strip()
@@ -303,24 +351,53 @@ MUTANTS = [
 ]
 
 
+# (what, text in this file, its replacement): mutants of the scans' own
+# filter (git_ignored, 2026-11-21), run as a mutated copy of this file with
+# PATHS_TEST_HERE naming charge-interposer/; each must make it fail.
+SCAN_MUTANTS = [
+    ("the scans read what git ignores",
+     "    if not ignored:\n        return False\n",
+     "    return False\n"),
+    ("every untracked file left out, not only the ignored ones",
+     '"--others",\n                            "--ignored", "--exclude',
+     '"--others",\n                            "--exclude'),
+    ("the scans of charge-interposer/ not given git's list",
+     "        ign = git_ignored(HERE)\n", "        ign = None\n"),
+]
+
+
 def can_fail():
     with open(os.path.join(HERE, "paths.py"), encoding="utf-8") as f:
         src = f.read()
+    with open(os.path.abspath(__file__), encoding="utf-8") as f:
+        own = f.read()
+    jobs = ([("unmutated (must pass)", "paths", "", "")]
+            + [(w, "paths", o, n) for w, o, n in MUTANTS]
+            + [(w, "scan", o, n) for w, o, n in SCAN_MUTANTS])
     base = scratch_dir.make("paths-test-canfail")
     bad = 0
     try:
-        for i, (what, old, new) in enumerate([("unmutated (must pass)", "", "")]
-                                             + MUTANTS):
-            if old and src.count(old) != 1:
-                print("NOT EXERCISED  %s: its text is not in paths.py once" % what)
+        for i, (what, kind, old, new) in enumerate(jobs):
+            text = src if kind == "paths" else own
+            if old and text.count(old) != 1:
+                print("NOT EXERCISED  %s: its text is not in %s once"
+                      % (what, "paths.py" if kind == "paths" else
+                         "paths_test.py"))
                 bad += 1
                 continue
-            p = os.path.join(base, "paths_m%02d.py" % i)
+            if kind == "paths":
+                p = os.path.join(base, "paths_m%02d.py" % i)
+                run = [sys.executable, "-B", os.path.abspath(__file__)]
+                env = dict(os.environ, PATHS_UNDER_TEST=p)
+            else:
+                p = os.path.join(base, "paths_test_m%02d.py" % i)
+                run = [sys.executable, "-B", p]
+                env = dict(os.environ, PATHS_TEST_HERE=HERE)
+                env.pop("PATHS_UNDER_TEST", None)
             with open(p, "w", encoding="utf-8", newline="\n") as f:
-                f.write(src.replace(old, new) if old else src)
-            r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__)],
-                               env=dict(os.environ, PATHS_UNDER_TEST=p),
-                               capture_output=True, text=True, timeout=600)
+                f.write(text.replace(old, new) if old else text)
+            r = subprocess.run(run, env=env, capture_output=True, text=True,
+                               timeout=600)
             out = (r.stdout + r.stderr).splitlines()
             fails = [ln.strip() for ln in out if ln.strip().startswith("FAIL")]
             if not old:
@@ -335,7 +412,8 @@ def can_fail():
     finally:
         scratch_dir.remove(base)
     print("\npaths_test --can-fail: %s"
-          % ("all %d mutants caught, the unmutated text passes" % len(MUTANTS)
+          % ("all %d mutants caught, the unmutated text passes"
+             % (len(MUTANTS) + len(SCAN_MUTANTS))
              if not bad else "%d FAILED" % bad))
     return 1 if bad else 0
 
@@ -466,29 +544,32 @@ def main():
 
         # The scans, and that they can fail.
         exts = (".py", ".sh", ".cpp", ".h", ".ini", ".md", ".json", ".txt")
-        hits = [h for h in scan(HERE, exts, ABS_RE, False)
+        ign = git_ignored(HERE)
+        check(ign is not None, "git lists what it ignores under "
+              "charge-interposer/ (the scans read only what can be committed)")
+        hits = [h for h in scan(HERE, exts, ABS_RE, False, ign)
                 if not h.startswith(os.path.basename(tmp))]
         check(not hits, "no machine-absolute path under charge-interposer/ "
               "(%s)" % hits[:3])
         hits = [h for h in scan(HERE, (".py", ".sh", ".cpp", ".h"),
-                                CLIMB_RE, True)
+                                CLIMB_RE, True, ign)
                 if not h.startswith(os.path.basename(tmp))]
         check(not hits, "no .py / .sh / .cpp / .h climbs out of the repo to "
               "notes/ (%s)" % hits[:3])
         hits = [h for h in scan(HERE, (".py", ".sh", ".cpp", ".h"),
-                                RETIRED_RE, False)
+                                RETIRED_RE, False, ign)
                 if not h.startswith(os.path.basename(tmp))
                 and os.path.basename(h.split(":", 1)[0]) not in RETIRED_OK]
         check(not hits, "no .py / .sh / .cpp / .h but paths.py and this "
               "test names the retired variable (%s)" % hits[:3])
         hits = [h for h in scan(HERE, (".py", ".sh", ".cpp", ".h"),
-                                DIAG_RE, True)
+                                DIAG_RE, True, ign)
                 if not h.startswith(os.path.basename(tmp))
                 and os.path.basename(h.split(":", 1)[0]) not in DIAG_OK]
         check(not hits, "no code but paths.py names the "
               "diag DBC's file: every other reader uses diag_dbc() (%s)"
               % hits[:3])
-        hits = [h for h in scan(HERE, (".py",), CWD_RE, True)
+        hits = [h for h in scan(HERE, (".py",), CWD_RE, True, ign)
                 if not h.startswith(os.path.basename(tmp))
                 and os.path.basename(h.split(":", 1)[0]) != "paths_test.py"]
         check(not hits, "no .py puts the working folder on sys.path (%s)"
@@ -522,6 +603,29 @@ def main():
         check(len(scan(plant, (".py",), CWD_RE, True)) == 2,
               "the working-folder scan catches a planted '.' and getcwd(), "
               "and skips them in a comment")
+        # What git ignores is left out, and nothing else: a planted repo
+        # with an ignored folder (a nested file, as managed_components/
+        # holds) and an untracked file it does not ignore.
+        pg = os.path.join(tmp, "plant_git")
+        os.makedirs(os.path.join(pg, "ign", "deep"))
+        r = subprocess.run(["git", "init", "-q", pg], capture_output=True,
+                           text=True)
+        line = 'X = "/home/' + 'someone/thing"\n'
+        with open(os.path.join(pg, ".gitignore"), "w") as f:
+            f.write("ign/\n")
+        with open(os.path.join(pg, "ign", "deep", "x.py"), "w") as f:
+            f.write(line)
+        with open(os.path.join(pg, "y.py"), "w") as f:
+            f.write(line)
+        pig = git_ignored(pg)
+        hit_all = scan(pg, (".py",), ABS_RE, False)
+        hit_ign = scan(pg, (".py",), ABS_RE, False, pig)
+        check(r.returncode == 0 and len(hit_all) == 2
+              and [h.split(":", 1)[0] for h in hit_ign] == ["y.py"],
+              "the absolute-path scan leaves out a file in a folder git "
+              "ignores and still reads an untracked file it does not "
+              "(all %s; with git's list %s, from %s)"
+              % (hit_all, hit_ign, sorted(pig or [])))
     finally:
         scratch_dir.remove(tmp)  # the stand-in clone's objects are read-only
         for k, v in saved.items():

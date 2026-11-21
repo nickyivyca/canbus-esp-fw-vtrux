@@ -1155,6 +1155,15 @@ def bench(settings):
     import canx2_slcan
     b = _Build(settings)
     bpy = b.bpy
+    # built first: mcp-reset is given the bridge image's build id, which
+    # each boot's 0x7F7 must read (2026-11-21; it was fixed in the driver)
+    images = {
+        "bridge": _interposer_image("bridge", settings),
+        "witness": _interposer_image("witness", settings),
+        "truck": _interposer_image("truck", settings),
+        "c12_bench": _idf_image("c12_bench", settings),
+        "vport_bench": _idf_image("vport_bench", settings),
+    }
     board_args = ["--external-interposer", "--serial-port", "{serial_port}",
                   "--vehicle-transport", "kvaser", "--vehicle-channel",
                   "kvaser", "--charger-transport", "gs_usb",
@@ -1197,8 +1206,12 @@ def bench(settings):
             ["--port", "{serial_port}", "--out", "{outdir}"]),
         bpy("rx-order", "bench_rx_order.py",
             ["--port", "{serial_port}", "--bursts", "2000", "--out", "{outdir}"]),
+        # --build: the bridge image's build id (its ELF hash's first four
+        # bytes, identify's expect), which each boot's 0x7F7 must read; a
+        # boot that faults is a VOID line and exit 3 (2026-11-21)
         bpy("mcp-reset", "bench_mcp_reset.py",
-            ["run", "--port", "{serial_port}", "--out", "{outdir}"]),
+            ["run", "--port", "{serial_port}", "--build",
+             images["bridge"].expect, "--out", "{outdir}"]),
         bpy("mcp-reset-canfail", "bench_mcp_reset.py",
             ["canfail", "--port", "{serial_port}", "--out", "{outdir}"]),
         # moved from reverse-it's runs/step4_nohands_20261014T1730/; the
@@ -1358,13 +1371,6 @@ def bench(settings):
             "truck (spec 10 item 6)")),
     ])
 
-    images = {
-        "bridge": _interposer_image("bridge", settings),
-        "witness": _interposer_image("witness", settings),
-        "truck": _interposer_image("truck", settings),
-        "c12_bench": _idf_image("c12_bench", settings),
-        "vport_bench": _idf_image("vport_bench", settings),
-    }
     for name in X2_IDLE_UNSAFE:
         images[name].idle_safe = False
     # The WiCAN is a board of every bench group (bench_wican.py), so the
