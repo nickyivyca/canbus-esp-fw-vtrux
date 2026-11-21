@@ -18,9 +18,12 @@ entry). The arm is the last mode POST the arm sent: the last scheduled POST
 (`post_schedule`, e.g. --post-schedule 20:3), else the --arm-after POST, else the start
 of the replay (an arm armed before it). Each POST is placed on the wire by the replay
 frame the run was at when it started it (its `index`), on the provenance classifier's
-wire times, as quiesce_analysis places them; a frame the device sent once that POST was
-on its way counts, so a frame sent between the request and the reply counts on the new
-side. What the witness counts is what the device's tx_ok counts in the mode that POST
+wire times, as quiesce_analysis places them. The witness counts twice: from the POST's
+send (t_sent) and from its completion (t_complete, t_sent plus the POST's own
+send-to-completion time on the run's clock, its post_s), and the counts agree when the
+device's count lies between the two (the gen-inhibit reviewer's ruling, answer to the run
+(C) report, 2026-11-20): a frame sent between the request and the reply may fall on either
+side of the device's reset. What the witness counts is what the device's tx_ok counts in the mode that POST
 set: the 0x7F0 probes in RESPOND, the device's own 0x051 in INHIBIT, by the provenance
 classifier. OFF, OBSERVE and PASSIVE put nothing on the wire that tx_ok counts, so there
 is nothing to compare (a device 0x051 there is behaviour, judged as before). The old check
@@ -84,47 +87,77 @@ def arm_post(d, a):
     return "the start of the replay", None, d.get("mode")
 
 
+def post_elapsed(a):
+    """How long the arm's POST took, send to completion, from the run's record (its post_s,
+    [send, complete] on the run's clock), or None when the record has no completed POST."""
+    posts = [e for e in (a.get("post_schedule") or []) if e.get("index") is not None]
+    ps = posts[-1].get("post_s") if posts else a.get("post_s")   # the arm's POST, as arm_post picks it
+    if not (isinstance(ps, (list, tuple)) and len(ps) == 2
+            and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in ps) and ps[1] >= ps[0]):
+        return None
+    return ps[1] - ps[0]
+
+
 def window(d, a, rep_t):
-    """Where the device's counters last reset: {"from", "index", "start_s", "mode"}.
-    rep_t: the wire time of each replayed frame."""
+    """Where the device's counters last reset: {"from", "index", "start_s", "complete_s",
+    "mode"}. start_s is the POST's send on the wire (its replay frame's wire time); complete_s
+    is its completion, start_s plus the POST's own send-to-completion time (post_elapsed), or
+    None when the record has none. rep_t: the wire time of each replayed frame."""
     frm, idx, mode = arm_post(d, a)
     if idx is None:
-        return {"from": frm, "index": None, "start_s": None, "mode": mode}
+        return {"from": frm, "index": None, "start_s": None, "complete_s": None, "mode": mode}
     if not 0 <= idx < len(rep_t):
         raise ValueError("%s at replay frame %d, but the witness places %d replayed frames" % (frm, idx, len(rep_t)))
-    return {"from": frm, "index": idx, "start_s": rep_t[idx], "mode": mode}
+    el = post_elapsed(a)
+    return {"from": frm, "index": idx, "start_s": rep_t[idx],
+            "complete_s": None if el is None else rep_t[idx] + el, "mode": mode}
 
 
 def attribution(d, a, wire, device_times, rep_t):
     """The device's count against the witness's, from the arm on: a dict with "agree", or
     None when the device gave no count (tx_ok missing: its own reason, device silent).
     wire: the witness [(t, id, data)]; device_times: the provenance classifier's device
-    0x051 times; rep_t: its wire time of each replayed frame."""
+    0x051 times; rep_t: its wire time of each replayed frame.
+
+    The witness counts from the POST's send (t_sent: "witness") and from its completion
+    (t_complete: "witness_from_complete"), and the two agree when the device's count lies
+    between the two counts (the gen-inhibit reviewer's ruling, answer to the run (C) report,
+    2026-11-20); outside that the arm is void. With no completion on record the two counts are
+    the same, the count from the send."""
     tx_ok = (a.get("device") or {}).get("tx_ok")
     if not isinstance(tx_ok, int):
         return None
     w = window(d, a, rep_t)
-    t0 = w["start_s"]
-    after = (lambda t: True) if t0 is None else (lambda t: t >= t0)
+    t0, t1 = w["start_s"], w["complete_s"] if w["complete_s"] is not None else w["start_s"]
+
+    def count(times, frm):
+        return sum(1 for t in times if frm is None or t >= frm)
     if w["mode"] == "respond":
         counted_as = "probe 0x7F0"
-        n = sum(1 for t, i, _d in wire if i == PROBE_ID and after(t))
+        times = [t for t, i, _d in wire if i == PROBE_ID]
     elif w["mode"] == "inhibit":
         counted_as = "device 0x051 (provenance)"
-        n = sum(1 for t in device_times if after(t))
+        times = list(device_times)
     else:
         # OFF, OBSERVE and PASSIVE put nothing on the wire that tx_ok counts: nothing to
         # compare, and a device 0x051 there is judged as behaviour, not attribution
-        return dict(w, counted_as=None, witness=None, device_tx_ok=tx_ok, agree=None)
-    return dict(w, counted_as=counted_as, witness=n, device_tx_ok=tx_ok, agree=n == tx_ok)
+        return dict(w, counted_as=None, witness=None, witness_from_complete=None, device_tx_ok=tx_ok, agree=None)
+    n_sent, n_complete = count(times, t0), count(times, t1)
+    return dict(w, counted_as=counted_as, witness=n_sent, witness_from_complete=n_complete, device_tx_ok=tx_ok,
+                agree=n_complete <= tx_ok <= n_sent)
 
 
 def attribution_reason(att):
     """The void reason for a same-window disagreement, or None."""
     if att is None or att["agree"] is not False:
         return None
-    return "%sthe device reports tx_ok=%d, the witness counts %d %s from %s" % (
-        ATTRIBUTION, att["device_tx_ok"], att["witness"], att["counted_as"], att["from"])
+    n1 = att.get("witness_from_complete", att["witness"])
+    if att.get("complete_s") is not None:
+        counts = "%d %s from %s's send and %d from its completion" % (
+            att["witness"], att["counted_as"], att["from"], n1)
+    else:
+        counts = "%d %s from %s" % (att["witness"], att["counted_as"], att["from"])
+    return "%sthe device reports tx_ok=%d, the witness counts %s" % (ATTRIBUTION, att["device_tx_ok"], counts)
 
 
 def reasons(a, extra=(), recounted=False):

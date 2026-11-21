@@ -299,6 +299,18 @@ EDITS = [
                                        (r"^arm 1 train=True: PASS", "arm 1 train=True: FAIL")], None, "FAIL"),
     ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(A3 recent .*?)  as specified", r"\g<1>  NOT as specified", "FAIL"),
     ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(A4 expired .*\n +history )as specified", r"\g<1>NOT", "FAIL"),
+    # an expired arm live then aborted other than by trip 6: the tool's UNCLEAR -> ERROR, for the
+    # gen-inhibit reviewer (answer to the run (C) report, 2026-11-20); an arm NOT as specified stays FAIL,
+    # and it outranks an arm the tool VOIDs
+    ("B10", "bench", r"B10_trip6_rearm_check\.txt", r"^(A4 expired .*?)  as specified",
+     r"\g<1>  UNCLEAR: live, then aborted (0x617 went stale while live), not trip 6; whose the abort is is not settled here",
+     "ERROR"),
+    ("B10", "bench", r"B10_trip6_rearm_check\.txt",
+     [(r"^(A4 expired .*?)  as specified", r"\g<1>  UNCLEAR: live, then aborted (x), not trip 6"),
+      (r"^(A3 recent .*?)  as specified", r"\g<1>  NOT as specified")], None, "FAIL"),
+    ("B10", "bench", r"B10_trip6_rearm_check\.txt",
+     [(r"^(A4 expired .*?)  as specified", r"\g<1>  UNCLEAR: live, then aborted (x), not trip 6"),
+      (r"^(A1 expired .*?)  as specified", r"\g<1>  VOID: 2 witness error frames since arming")], None, "ERROR"),
     # A2 (a), 2026-11-11: the PCAN's clock outside the harness bounds -> the tool's VOID line;
     # an arm the tool VOIDs (its mapped gap against the receipt gap) -> VOID, unless another
     # arm is NOT as specified

@@ -40,6 +40,16 @@ SEQUENCE, one process:
               live with no trip (A3's latch cleared by the re-arm, burst expired).
 Each arm is polled at --poll-hz from the arm POST for --arm-s s.
 
+THE SLICE'S 0x617 ACROSS A RE-ARM (2026-11-20, the gen-inhibit reviewer's answer to the run (C)
+report). Every arm posts mode 3 at least REARM_QUIET_S after the slice last stopped, longer than
+the 1.0 s 0x617 goes stale in, so the gate can pass only on the new slice's 0x617 (first 0.143 s
+in, then every 0.25 s) and not on the last one of the slice before: run C's A4 was armed ~0.8 s
+after A3's slice stopped, went live 0.139 s later and was aborted "0x617 went stale while live".
+The Player's host send times of 0x617 are kept (host_0x617_sent_s; the PCAN sends the slice and
+does not receive its own frames, so the witness has none) and each arm's gaps over 1.0 s printed.
+An expired arm that went live (a read live, a device 0x051 or tx_ok in mode 3) and was then
+aborted other than by trip 6 is UNCLEAR, which the suite's B10 reads as ERROR.
+
     py -3.14 trip6_rearm_check.py --x2 held --power "..."
 Writes runs/trip6_rearm_check_<stamp>.json.
 """
@@ -61,16 +71,58 @@ TRIP6 = "error-frame rate exceeded"
 RECENT_MAX_S = 8.0     # an A3 arm later than this after the burst is too near the 10 s edge
 
 
-def judge_expired(reads, errors_since_arm):
+UNCLEAR_PREFIX = "UNCLEAR: "   # the suite's B10 judge reads an arm verdict with it as ERROR
+ID_0x617 = 0x617
+# 0x617 older than this aborts a live arm; the gen-inhibit reviewer's figure for the gaps to find
+# (answer to the run (C) report, 2026-11-20: "every gap over 1.0 s")
+STALE_0x617_S = 1.0
+# Every arm posts mode 3 at least this long after the slice last stopped, so the gate cannot pass
+# on the previous slice's last 0x617 and then go stale before the new slice's first (run C's A4:
+# armed ~0.8 s after A3's slice stopped, live 0.139 s later, aborted "0x617 went stale while live").
+REARM_QUIET_S = 1.5
+
+
+def went_live(reads, device_0x051):
+    """Whether the arm went live: a page read live, a device 0x051 on the witness since the arm,
+    or tx_ok above 0 on a read in mode 3 (tx_ok restarts at the arm; a read still in the old mode
+    can carry the last arm's count). A live spell shorter than the 5 Hz reads is seen by the last
+    two (run C's B10 A4: tx_ok 6, first 0x051 0.139 s after the arm, no read live)."""
+    return (any(r.get("live") for r in reads) or bool(device_0x051)
+            or any(r.get("mode") == 3 and isinstance(r.get("tx_ok"), int) and r["tx_ok"] > 0 for r in reads))
+
+
+def judge_expired(reads, errors_since_arm, device_0x051=0):
     """An arm whose last burst has expired: live, and never the trip 6 abort.
-    A new error frame since arming would make a trip legitimate -> VOID."""
+    A new error frame since arming would make a trip legitimate -> VOID. Live, then aborted by
+    something other than trip 6 is told apart from never live (the gen-inhibit reviewer, answer to
+    the run (C) report, 2026-11-20): whose the abort is (the stimulus's or the device's) is not
+    settled from the arm's reads, so it is UNCLEAR, never "as specified" and never "never live"."""
     if errors_since_arm:
         return "VOID: %d witness error frames since arming" % errors_since_arm
     if any(r.get("abort") == TRIP6 for r in reads):
         return "NOT as specified: trip 6 on an expired burst"
-    if not any(r.get("live") for r in reads):
+    if not went_live(reads, device_0x051):
         return "NOT as specified: never live"
+    aborts = sorted({r["abort"] for r in reads if r.get("abort")})
+    if aborts:
+        return "%slive, then aborted (%s), not trip 6; whose the abort is is not settled here" % (
+            UNCLEAR_PREFIX, "; ".join(aborts))
     return "as specified"
+
+
+def host_0x617_gaps(sent, armed_at, end_at, over=STALE_0x617_S):
+    """The slice's 0x617 around an arm, from the Player's host send times (not wire times; the
+    witness PCAN is the sender and does not receive its own frames): {"last_before_arm_s",
+    "first_after_arm_s" (each from the arm), "gaps_over_s": [[send, gap], ...]} for every gap over
+    `over` between consecutive sends from the last before the arm to the arm's end. All times on
+    the run's clock (s from t0)."""
+    sent = sorted(sent)
+    before = [t for t in sent if t < armed_at]
+    span = before[-1:] + [t for t in sent if armed_at <= t <= end_at]
+    after = [t for t in sent if armed_at <= t <= end_at]
+    return {"last_before_arm_s": round(before[-1] - armed_at, 4) if before else None,
+            "first_after_arm_s": round(after[0] - armed_at, 4) if after else None,
+            "gaps_over_s": [[round(p, 4), round(q - p, 4)] for p, q in zip(span, span[1:]) if q - p > over]}
 
 
 def judge_recent(reads, arm_after_last_error_s, device_0x051):
@@ -236,7 +288,7 @@ def judge_arms(arms, judged, wit, t0):
         if kind == "recent":
             arm["verdict"] = judge_recent(arm["reads"], gap, arm["device_0x051_since_arm"])
         else:
-            arm["verdict"] = judge_expired(arm["reads"], arm["errors_since_arm"])
+            arm["verdict"] = judge_expired(arm["reads"], arm["errors_since_arm"], arm["device_0x051_since_arm"])
         arm["history_verdict"] = judge_history(pre, hgap, kind == "recent")
     return fit
 
@@ -271,9 +323,9 @@ def main():
     import wrong_bitrate_errors as W
     stamp = time.strftime("%Y%m%dT%H%M%S")
     rec = {"when": stamp, "x2": a.x2, "power": a.power, "build": LF.build_id(),
-           "args": vars(a), "arms": []}
+           "args": vars(a), "arms": [], "host_0x617_sent_s": []}
     pc = wit = None
-    pl = {"p": None}
+    pl = {"p": None, "stopped": None}
     stim = LF.build_stimulus()
     t0 = time.perf_counter()
 
@@ -288,14 +340,16 @@ def main():
     # So: stop the slice while the WiCAN still ACKs, let the PCAN's queue drain, THEN
     # disarm; and on a re-arm, start the slice only once the driver reports running.
     def play():
-        pl["p"] = S.Player(pc, stim)
+        pl["p"] = S.Player(pc, stim, record_ids=(ID_0x617,))   # 0x617's host send times kept
         pl["p"].start()
 
     def silence():
         if pl["p"] is not None:
             pl["p"].stop_flag.set()
             pl["p"].join(15)
+            rec["host_0x617_sent_s"] += [round(t - t0, 4) for t in pl["p"].sent_at[ID_0x617]]
             pl["p"] = None
+            pl["stopped"] = time.perf_counter()
         time.sleep(0.15)
 
     def disarm():
@@ -304,7 +358,11 @@ def main():
 
     def poll_arm(name, seconds):
         """Arm (mode 3) on a quiet bus, start the slice once the driver runs, and poll;
-        returns the arm record (times from t0)."""
+        returns the arm record (times from t0). Posts no sooner than REARM_QUIET_S after the slice
+        last stopped (2026-11-20)."""
+        if pl["stopped"] is not None:
+            wait_until(pl["stopped"] + REARM_QUIET_S)
+        quiet = None if pl["stopped"] is None else round(time.perf_counter() - pl["stopped"], 3)
         wit.sync()
         n_err, n_051 = len(wit.errors), len(wit.dev051)
         pre = read(LF, t0)          # the trip 6 history the arm is about to act on
@@ -330,6 +388,7 @@ def main():
         # The since-arm witness figures here are on receipt time, for the live sequence;
         # judge_arms replaces them from the PCAN's mapped stamps after the run (A2 (a)).
         arm = {"arm": name, "armed_at": round(ta - t0, 3), "slice_at": round(slice_at - t0, 3),
+               "end_at": round(t_end - t0, 3), "slice_quiet_before_arm_s": quiet,
                "_ta": ta, "_t_end": t_end,
                "pre_arm_read": pre, "reads": reads, "error_kinds_since_arm": kinds,
                "device_bus_error_max": max([r.get("bus_error") or 0 for r in reads], default=None),
@@ -442,6 +501,8 @@ def main():
         arm.pop("_ta", None)
         arm.pop("_t_end", None)
         arm.pop("_burst", None)
+        # the slice's 0x617 around the arm, on the Player's host send times (recorded, not judged)
+        arm["host_0x617"] = host_0x617_gaps(rec["host_0x617_sent_s"], arm["armed_at"], arm["end_at"])
     path = os.path.join(RUNS, "trip6_rearm_check_%s.json" % stamp)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(rec, fh, indent=1)
@@ -464,6 +525,10 @@ def main():
                  (round(lives[0] - arm["armed_at"], 3) if lives else None), aborts, arm.get("verdict", "")))
         if "history_verdict" in arm:
             print("            history %s | prediction %s" % (arm["history_verdict"], arm["prediction_verdict"]))
+        h = arm["host_0x617"]
+        print("            0x617 host sends: quiet before the arm %s s, last before the arm %s s, first after %s s, "
+              "gaps over %g s %s" % (arm.get("slice_quiet_before_arm_s"), h["last_before_arm_s"],
+                                     h["first_after_arm_s"], STALE_0x617_S, h["gaps_over_s"]))
     print("build", rec["build"], "after", rec["after"].get("mode"), "wrote", path)
     return 0
 

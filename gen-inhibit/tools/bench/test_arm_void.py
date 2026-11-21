@@ -130,18 +130,34 @@ def window_cases():
     ps = [{"at_s": 10.0, "mode": 1, "index": 1}, {"at_s": 20.0, "mode": 3, "index": 3}]
     check("window: the last scheduled POST, at its replay frame's wire time, in the mode it set",
           AV.window(d, {"post_schedule": ps}, rep) == {"from": "scheduled POST 2 (at 20.0 s, mode 3)", "index": 3,
-                                                       "start_s": 1.5, "mode": "inhibit"},
+                                                       "start_s": 1.5, "complete_s": None, "mode": "inhibit"},
           AV.window(d, {"post_schedule": ps}, rep))
     check("window: a scheduled POST never sent (index None) is not the arm",
           AV.window(d, {"post_schedule": [ps[0], dict(ps[1], index=None)]}, rep)["index"] == 1)
     check("window: the --arm-after POST, in the run's mode, when nothing was scheduled",
           AV.window({"mode": "inhibit"}, {"post_schedule": [], "post_index": 2}, rep)
-          == {"from": "the --arm-after POST", "index": 2, "start_s": 1.0, "mode": "inhibit"})
+          == {"from": "the --arm-after POST", "index": 2, "start_s": 1.0, "complete_s": None, "mode": "inhibit"})
     check("window: neither -> from the start of the replay, in the run's mode",
           AV.window(d, {}, rep) == {"from": "the start of the replay", "index": None, "start_s": None,
-                                    "mode": "respond"})
+                                    "complete_s": None, "mode": "respond"})
     check("window: a POST past the replay frames the witness places -> ValueError",
           raises(lambda: AV.window(d, {"post_index": 9}, rep), ValueError))
+    # t_complete (the gen-inhibit reviewer's ruling, answer to the run (C) report, 2026-11-20): the
+    # POST's send on the wire plus its own send-to-completion time from the record's post_s
+    ps2 = [dict(ps[0], post_s=[10.0, 10.5]), dict(ps[1], post_s=[20.0071, 20.0462])]
+    w = AV.window(d, {"post_schedule": ps2}, rep)
+    check("window: complete_s is the last scheduled POST's send on the wire plus its post_s span (1.5 + 0.0391)",
+          lambda: abs(w["complete_s"] - 1.5391) < 1e-9 and w["start_s"] == 1.5, w)
+    w2 = AV.window({"mode": "inhibit"}, {"post_index": 2, "post_s": [5.0, 5.04]}, rep)
+    check("window: ... the --arm-after POST's post_s (1.0 + 0.04)", lambda: abs(w2["complete_s"] - 1.04) < 1e-9, w2)
+    w3 = AV.window({"mode": "inhibit"}, {"post_s": [5.0, 5.04]}, rep)
+    check("window: ... no POST, no completion (a stray post_s with no post_index is not the arm's)",
+          lambda: w3["complete_s"] is None and w3["index"] is None, w3)
+    for what, pst in (("no reply (None)", [20.0, None]), ("completion before the send", [20.05, 20.0]),
+                      ("one time", [20.0]), ("not numbers", ["20.0", "20.04"]), ("missing", None)):
+        check("window: post_s %s -> no completion, the count from the send alone" % what,
+              lambda pst=pst: (lambda w: w["complete_s"] is None and w["start_s"] == 1.5)(
+                  AV.window(d, {"post_schedule": [dict(ps[1], post_s=pst)]}, rep)))
 
 
 def raises(fn, exc):
@@ -178,6 +194,36 @@ def attribution_cases():
           AV.attribution({"mode": "inhibit"}, {"device": {}}, wire, [], rep) is None
           and AV.attribution({"mode": "inhibit"}, {"device": {"tx_ok": "5"}}, wire, [], rep) is None
           and AV.attribution({"mode": "inhibit"}, {}, wire, [], rep) is None)
+    # The ruling (the gen-inhibit reviewer, answer to the run (C) report, 2026-11-20): the witness
+    # counts from t_sent and from t_complete; the device's count between the two agrees, outside
+    # stays void. POST at replay frame 2 (wire 2.0), 0.04 s to complete (t_complete 2.04): device
+    # 0x051 at 1.9 | 2.0 2.01 2.03 | 2.1 2.9 -> 5 from the send, 2 from the completion.
+    dev = [1.9, 2.0, 2.01, 2.03, 2.1, 2.9]
+    for tx, want in ((1, False), (2, True), (3, True), (5, True), (6, False)):
+        a = {"post_schedule": [{"at_s": 20.0, "mode": 3, "index": 2, "post_s": [20.0, 20.04]}],
+             "device": {"tx_ok": tx}}
+        r = AV.attribution({"mode": "respond"}, a, wire, dev, rep)
+        check("attribution: counts 5 from t_sent, 2 from t_complete; tx_ok %d -> %s" % (
+            tx, "agree" if want else "void"),
+            lambda r=r, want=want: r["agree"] is want and r["witness"] == 5 and r["witness_from_complete"] == 2, r)
+    a = {"post_schedule": [{"at_s": 20.0, "mode": 2, "index": 2, "post_s": [20.0, 20.55]}], "device": {"tx_ok": 1}}
+    r = AV.attribution({"mode": "inhibit"}, a, wire, [], rep)
+    check("attribution: RESPOND's probes too: 2 from t_sent (2.0, 2.5), 0 from t_complete (2.55); tx_ok 1 agrees",
+          lambda: r["agree"] is True and r["witness"] == 2 and r["witness_from_complete"] == 0, r)
+    a = {"post_index": 2, "post_s": [5.0, 5.04], "device": {"tx_ok": 2}}
+    r2 = AV.attribution({"mode": "inhibit"}, a, wire, dev, rep)
+    check("attribution: the --arm-after POST's completion too: 5 from the send, 2 from the completion; tx_ok 2 agrees",
+          lambda: r2["agree"] is True and r2["witness"] == 5 and r2["witness_from_complete"] == 2, r2)
+    a = {"post_schedule": [{"at_s": 20.0, "mode": 3, "index": 2}], "device": {"tx_ok": 3}}
+    r3 = AV.attribution({"mode": "respond"}, a, wire, dev, rep)
+    check("attribution: no completion on record -> both counts from the send (5), tx_ok 3 void",
+          lambda: r3["agree"] is False and r3["witness"] == 5 and r3["witness_from_complete"] == 5, r3)
+    a = {"post_schedule": [{"at_s": 20.0, "mode": 3, "index": 2, "post_s": [20.0, 20.04]}], "device": {"tx_ok": 6}}
+    want = (AV.ATTRIBUTION + "the device reports tx_ok=6, the witness counts 5 device 0x051 (provenance) from "
+            "scheduled POST 1 (at 20.0 s, mode 3)'s send and 2 from its completion")
+    check("attribution_reason: with a completion it names the count from the send and from the completion",
+          lambda: (lambda s: s == want and AV.kind(s) == "attribution")(
+              AV.attribution_reason(AV.attribution({"mode": "respond"}, a, wire, dev, rep))))
 
 
 # ---------------------------------------------------------------- rejudge, end to end
@@ -293,10 +339,29 @@ MUTANTS = [
      '    (re.compile(r"the device did not answer at the end of the arm\\Z"), "device_silent"),\n', ""),
     ("arm_void.py", "the first scheduled POST taken as the arm", "        e = posts[-1]\n", "        e = posts[0]\n"),
     ("arm_void.py", "the --arm-after POST ignored", '    if a.get("post_index") is not None:\n', "    if False:\n"),
-    ("arm_void.py", "a frame at the arm not counted", "(lambda t: t >= t0)", "(lambda t: t > t0)"),
-    ("arm_void.py", "RESPOND counts the whole arm's probes", "if i == PROBE_ID and after(t))", "if i == PROBE_ID)"),
-    ("arm_void.py", "INHIBIT counts the whole arm's device frames", "n = sum(1 for t in device_times if after(t))",
-     "n = len(device_times)"),
+    ("arm_void.py", "a frame at the arm not counted", "frm is None or t >= frm)", "frm is None or t > frm)"),
+    ("arm_void.py", "the whole arm counted, not from the arm", "return sum(1 for t in times if frm is None or t >= frm)",
+     "return len(times)"),
+    ("arm_void.py", "RESPOND counts every frame, not the probes", "times = [t for t, i, _d in wire if i == PROBE_ID]",
+     "times = [t for t, i, _d in wire]"),
+    # the t_sent / t_complete ruling (the gen-inhibit reviewer, answer to the run (C) report, 2026-11-20)
+    ("arm_void.py", "agreement only on the count from the send (before the ruling)",
+     "agree=n_complete <= tx_ok <= n_sent)", "agree=tx_ok == n_sent)"),
+    ("arm_void.py", "agreement only on the count from the completion",
+     "agree=n_complete <= tx_ok <= n_sent)", "agree=tx_ok == n_complete)"),
+    ("arm_void.py", "anything at or below the count from the send agrees",
+     "agree=n_complete <= tx_ok <= n_sent)", "agree=tx_ok <= n_sent)"),
+    ("arm_void.py", "anything at or above the count from the completion agrees",
+     "agree=n_complete <= tx_ok <= n_sent)", "agree=n_complete <= tx_ok)"),
+    ("arm_void.py", "no completion ever placed",
+     '"complete_s": None if el is None else rep_t[idx] + el,', '"complete_s": None,'),
+    ("arm_void.py", "the completion from the first scheduled POST",
+     'ps = posts[-1].get("post_s") if posts', 'ps = posts[0].get("post_s") if posts'),
+    ("arm_void.py", "the --arm-after POST's post_s ignored",
+     'ps = posts[-1].get("post_s") if posts else a.get("post_s")', 'ps = posts[-1].get("post_s") if posts else None'),
+    ("arm_void.py", "a completion before the send accepted", " and ps[1] >= ps[0]):", "):"),
+    ("arm_void.py", "the reason names only the count from the send",
+     '    if att.get("complete_s") is not None:\n', "    if False:\n"),
     ("arm_void.py", "PASSIVE counted as INHIBIT", '    elif w["mode"] == "inhibit":\n', "    elif True:\n"),
     ("arm_void.py", "the old whole-arm reason kept",
      "           if not str(r).startswith(OLD_ATTRIBUTION) and", "           if True and"),

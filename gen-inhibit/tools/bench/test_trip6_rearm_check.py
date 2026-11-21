@@ -14,6 +14,37 @@ CLEAN = [{"live": False, "abort": ""}, {"live": True, "abort": ""}, {"live": Tru
 PHANTOM = [{"live": False, "abort": ""}, {"live": False, "abort": TRIP}, {"live": False, "abort": TRIP}]
 # live, then tripped: a trip on an expired burst after going live is still a failure
 LATE_TRIP = [{"live": True, "abort": ""}, {"live": False, "abort": TRIP}]
+# run C's B10 A4 (gen-inhibit-bench_20261120T122548_6846): live for less than a read's spacing,
+# so no read live; the next read aborted, tx_ok 6 in mode 3
+A4_RUNC = [{"live": False, "abort": "", "mode": 3, "tx_ok": 0, "block": "SoC not yet valid"},
+           {"live": False, "abort": "0x617 went stale while live", "mode": 3, "tx_ok": 6}]
+A4_NO_TX = [{"live": False, "abort": "", "mode": 3, "tx_ok": 0},
+            {"live": False, "abort": "0x617 went stale while live", "mode": 3, "tx_ok": 0}]
+
+
+def player_times():
+    """skip_method_bench.Player with record_ids=(0x617,) on a fake bus that refuses every third
+    0x617: a stamp for each 0x617 the bus took, none for a refused one or another id."""
+    import time
+    import skip_method_bench as S
+    took, n617 = [], [0]
+
+    class Bus:
+        def send(self, m):
+            if m.arbitration_id == 0x617:
+                n617[0] += 1
+                if n617[0] % 3 == 0:
+                    raise OSError("refused (test)")
+            took.append(m.arbitration_id)
+    stim = [(0.0, 0x100, b"\x00"), (0.002, 0x617, b"\x00"), (0.004, 0x200, b"\x00"), (0.006, 0x617, b"\x01")]
+    p = S.Player(Bus(), stim, record_ids=(0x617,))
+    p.start()
+    time.sleep(0.1)
+    p.stop_flag.set()
+    p.join(5)
+    ts = p.sent_at[0x617]
+    return (set(p.sent_at) == {0x617} and len(ts) == took.count(0x617) > 2 and ts == sorted(ts)
+            and p.fail == n617[0] // 3 and S.Player(Bus(), stim).sent_at == {})
 
 
 def main():
@@ -26,9 +57,28 @@ def main():
          T.judge_expired([{"live": False, "abort": ""}], 0).startswith("NOT")),
         ("expired arm: a new error frame since arming -> VOID, even if it tripped",
          T.judge_expired(PHANTOM, 1).startswith("VOID")),
-        ("expired arm: another abort (not trip 6) is not read as trip 6",
+        # Live, then aborted other than by trip 6: not trip 6, and told apart from never live
+        # (the gen-inhibit reviewer, answer to the run (C) report, 2026-11-20). Until then this case
+        # read "as specified".
+        ("expired arm: live then another abort (not trip 6) -> UNCLEAR, naming the abort",
          T.judge_expired([{"live": True, "abort": ""}, {"live": False, "abort": "transmit failed"}], 0)
-         == "as specified"),
+         .startswith(T.UNCLEAR_PREFIX + "live, then aborted (transmit failed)")),
+        # run C's B10 A4: no read live, but tx_ok 6 in mode 3 and device 0x051 since the arm
+        ("expired arm: the A4 shape (no read live; 0x051 seen; aborted 0x617 stale) -> UNCLEAR, not never live",
+         T.judge_expired(A4_RUNC, 0, 6).startswith(T.UNCLEAR_PREFIX + "live, then aborted (0x617 went stale")),
+        ("expired arm: ... live from tx_ok in mode 3 alone -> UNCLEAR",
+         T.judge_expired(A4_RUNC, 0, 0).startswith(T.UNCLEAR_PREFIX)),
+        ("expired arm: ... live from the witness's 0x051 alone -> UNCLEAR",
+         T.judge_expired(A4_NO_TX, 0, 3).startswith(T.UNCLEAR_PREFIX)),
+        ("expired arm: no read live, no 0x051, tx_ok only on a read in mode 0 (the last arm's) -> never live",
+         T.judge_expired(A4_NO_TX + [{"live": False, "abort": "", "mode": 0, "tx_ok": 40}], 0, 0)
+         == "NOT as specified: never live"),
+        ("expired arm: live (0x051) and no abort -> as specified",
+         T.judge_expired([{"live": False, "abort": "", "mode": 3, "tx_ok": 0}], 0, 2) == "as specified"),
+        ("expired arm: live then trip 6 is still NOT, whatever else aborted",
+         T.judge_expired(A4_RUNC + [{"live": False, "abort": TRIP, "mode": 3}], 0, 6).startswith("NOT")),
+        ("expired arm: a new error frame since arming still VOIDs a live-then-aborted arm",
+         T.judge_expired(A4_RUNC, 2, 6).startswith("VOID")),
         ("recent arm: trip 6 -> as specified", T.judge_recent(PHANTOM, 2.0, 0) == "as specified"),
         ("recent arm: live, no trip -> NOT", T.judge_recent(CLEAN, 2.0, 0).startswith("NOT")),
         ("recent arm: armed at the limit still judged", T.judge_recent(PHANTOM, T.RECENT_MAX_S, 0) == "as specified"),
@@ -77,6 +127,40 @@ def main():
          T.judge_prediction(rec, [{"live": False, "abort": "transmit failed"}]).startswith("NOT")),
         ("prediction: no err_burst -> UNRESOLVED", T.judge_prediction({"mode": 0}, PHANTOM).startswith("UNRESOLVED")),
     ]
+    # The slice's 0x617 around a re-arm (2026-11-20): host send times, run C's A3 -> A4 shape (A3's
+    # last 0x617 at 61.828, A4 armed 62.630, its slice's first 0x617 at 62.833, then every 0.25 s)
+    sent = [61.328, 61.578, 61.828] + [62.833 + 0.25 * k for k in range(4)]
+    g = T.host_0x617_gaps(sent, 62.630, 63.7)
+    checks += [
+        ("0x617: the gap across the re-arm (61.828 -> 62.833, 1.005 s) is over 1.0 s",
+         g["gaps_over_s"] == [[61.828, 1.005]] and g["last_before_arm_s"] == -0.802
+         and g["first_after_arm_s"] == 0.203),
+        ("0x617: without A3's last send the gap is from 61.578 (1.255 s)",
+         T.host_0x617_gaps([t for t in sent if t != 61.828], 62.630, 63.7)["gaps_over_s"] == [[61.578, 1.255]]),
+        ("0x617: a gap of exactly 1.0 s is not over it; 1.001 s is",
+         T.host_0x617_gaps([60.0, 61.0, 62.001], 60.5, 63.0)["gaps_over_s"] == [[61.0, 1.001]]),
+        ("0x617: gaps before the last send ahead of the arm, or after the arm's end, are not the arm's",
+         T.host_0x617_gaps([50.0, 60.0, 61.0, 61.2, 70.0], 61.1, 61.5)["gaps_over_s"] == []),
+        ("0x617: no send at all -> nothing before, nothing after, no gap",
+         T.host_0x617_gaps([], 1.0, 2.0) == {"last_before_arm_s": None, "first_after_arm_s": None,
+                                              "gaps_over_s": []}),
+        ("0x617: the re-arm quiet is longer than 0x617 takes to go stale",
+         T.REARM_QUIET_S > T.STALE_0x617_S),
+    ]
+    import inspect
+    src = inspect.getsource(T.main)
+    i = src.find("def poll_arm(")
+    body = src[i:src.find("post(3)", i)]
+    checks += [
+        ("re-arm: poll_arm waits REARM_QUIET_S after the slice stopped, before it posts mode 3",
+         'wait_until(pl["stopped"] + REARM_QUIET_S)' in body),
+        ("re-arm: silence records when the slice stopped, after the Player has joined",
+         src.find('pl["p"].join(15)') < src.find('pl["stopped"] = time.perf_counter()')
+         and src.find('pl["stopped"] = time.perf_counter()') > 0),
+        ("re-arm: the slice's Player times 0x617, and silence keeps them",
+         "record_ids=(ID_0x617,)" in src and 'rec["host_0x617_sent_s"] += ' in src),
+    ]
+    checks.append(("Player: record_ids times only those ids, one stamp per send the bus took", player_times()))
     fails = []
     for label, ok in checks:
         print("  %-4s %s" % ("ok" if ok else "FAIL", label))
