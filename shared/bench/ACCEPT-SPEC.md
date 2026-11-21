@@ -103,8 +103,9 @@ Requirements are numbered A1 to A18. The numbers are stable.
   of the cases its suite's catalogue skips by declaration, each with the
   catalogue's reason. A NOT-RUN of a listed id does not make the suite run
   fail; every other result is judged as before. A listed id that ran, that
-  the run did not produce, or that the catalogue does not declare as a skip
-  makes the suite run fail, naming it. The record lists each declared skip
+  the run did not produce, that the catalogue does not declare as a skip, or
+  whose listed reason is not the catalogue's makes the suite run fail,
+  naming it. The record lists each declared skip
   with its reason. The nested run's own exit rule is unchanged; the
   acceptance runner judges the suite run's item from the nested record.
 - **A17. A required suite's earlier run** (user, 2026-11-16, in the
