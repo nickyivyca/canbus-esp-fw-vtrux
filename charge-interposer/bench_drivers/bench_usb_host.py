@@ -706,8 +706,11 @@ def open_pcan(acks):
 
 def open_kvaser():
     """The Kvaser on kvaser_usb, role kvaser, its echoes kept for the
-    stall rule (kvaser_link; the link already up: main() sets it)."""
-    return kvaser_link.open_bus(receive_own_messages=True)
+    stall rule (kvaser_link; the link already up: main() sets it). No error
+    frames: the Injector's EchoWatch reads nothing but its echoes, and with
+    nothing acknowledging the error frames fill the receive queue, where an
+    echo is then lost (the charge-interposer reviewer's Q2, 2026-11-20)."""
+    return kvaser_link.open_bus(receive_own_messages=True, error_frames=False)
 
 
 def open_innomaker():
@@ -721,7 +724,10 @@ class Injector(object):
     kvaser_link.EchoWatch on the Kvaser (2026-11-13, the reviewer's D6: the
     stall rule, no timing change): its own echoes are read between sends,
     and a kvaser TX stall (ENOBUFS, or an echo later than 100 ms) stops the
-    injection and is kept in .stall, so the case is VOID, never judged."""
+    injection and is kept in .stall, so the case is VOID, never judged. A
+    refused send is counted and followed by a read too, and the Kvaser takes
+    no error frames (open_kvaser; the charge-interposer reviewer's Q2,
+    2026-11-20)."""
 
     def __init__(self, watch):
         self.watch, self.sent, self.errs = watch, [], 0
@@ -1614,10 +1620,11 @@ def self_test():
 
     class Watch(object):
         def __init__(self, stall_at):
-            self.n, self.stall_at, self.polls = 0, stall_at, 0
+            self.n, self.stall_at, self.polls, self.ev = 0, stall_at, 0, []
 
         def send(self, msg, timeout=None):
             self.n += 1
+            self.ev.append("send")
             if self.n == self.stall_at:
                 raise kvaser_link.Stall("kvaser TX stall: planted", time.perf_counter())
             if self.n == 2:
@@ -1625,6 +1632,7 @@ def self_test():
 
         def poll(self, timeout=0.0):
             self.polls += 1
+            self.ev.append("poll")
 
         def finish(self):
             pass
@@ -1637,6 +1645,18 @@ def self_test():
           % (len(inj.sent), inj.errs, inj.stall))
     check(inj.watch.polls >= 3, "injector: echoes read between sends (%d polls)"
           % inj.watch.polls)
+    # the charge-interposer reviewer's Q2 (2026-11-20): a refused send is
+    # followed by a read, and the Kvaser takes no error frames
+    check(inj.watch.ev[:4] == ["send", "poll", "send", "poll"],
+          "injector: the socket read after a refused send too -> %s" % inj.watch.ev[:4])
+    got_kw, saved_ob = {}, kvaser_link.open_bus
+    try:
+        kvaser_link.open_bus = lambda **kw: got_kw.update(kw) or "bus"
+        ob = open_kvaser()
+    finally:
+        kvaser_link.open_bus = saved_ob
+    check(ob == "bus" and got_kw == {"receive_own_messages": True, "error_frames": False},
+          "open_kvaser: the Kvaser with its echoes and no error frames -> %s" % got_kw)
     check(proc_rows({"rows": [(1.5, 2.5, 0x6A2, False, 8, "0001020304050607", True, False)]})
           == [(1.5, 2.5, 0x6A2, False, bytes(range(8)))],
           "rows from a reader process in the form the scorers read")
@@ -1734,6 +1754,21 @@ MUTANTS = [
     ("PCAN item 2: Rx reads unscreened",
      "        m = reader_death.screen(self.bus, self.bus.recv(timeout=0.05), self.death)",
      "        m = self.bus.recv(timeout=0.05)"),
+    # the charge-interposer reviewer's Q2, 2026-11-20
+    ("Q2: the injector's Kvaser takes error frames",
+     "    return kvaser_link.open_bus(receive_own_messages=True, error_frames=False)",
+     "    return kvaser_link.open_bus(receive_own_messages=True)"),
+    ("Q2: a refused send skips the injector's socket read",
+     "                except Exception:                      # noqa: BLE001\n"
+     "                    self.errs += 1\n"
+     "                seq += 1\n"
+     "                self.watch.poll(0.0)\n",
+     "                except Exception:                      # noqa: BLE001\n"
+     "                    self.errs += 1\n"
+     "                    seq += 1\n"
+     "                    continue\n"
+     "                seq += 1\n"
+     "                self.watch.poll(0.0)\n"),
 ]
 
 
