@@ -19,6 +19,15 @@ Each case names what it checks:
   2. set-up         an ACK check: the layer's link_up(kvaser, 500000)
                     (exactly that), once, its read-back on the line; with
                     no stand-in, the layer is adapter_roles.layer()'s
+  2b. restart-ms    (the reviewer's ruling Q1, 2026-11-20) set_link and
+                    recover pass the restart-ms asked to the layer's link_up
+                    and read it back themselves, on the line; a read-back not
+                    as asked is LinkError (recover: not ok); stall_lines'
+                    recovery asks it; none asked passes none
+  2c. counters      link_counters: the layer's read-only link_counters for
+                    role kvaser; its failure or a missing counter is
+                    LinkError, never a 0; counter_growth subtracts, and a
+                    counter gone back (the netdev made again) is LinkError
   2a. self-test     a process run with --self-test: set_link refuses both
                     ways and recover fails, stopping the bench, with the
                     layer never asked
@@ -41,7 +50,10 @@ Each case names what it checks:
                     Stall past 100 ms with that time; ENOBUFS on send:
                     Stall; another send error raised as itself; frames
                     that are not own echoes go to on_rx; finish() waits for
-                    a late echo and raises Stall for one that never comes
+                    a late echo and raises Stall for one that never comes;
+                    finish(forgive=n) returns up to n never echoed (the
+                    kernel's drops while bus-off) and empties pending, and
+                    one more is the Stall, saying how many were unaccounted
   7. kernel-lines   a planted kernel log: its usb 1-3.2*, kvaser_usb, pcan,
                     gs_usb and -71/EPROTO lines (and only those) on the
                     VOID line with their times, the window named; after
@@ -109,6 +121,12 @@ class FakeLayer:
 
     def __init__(self, bench, fail=None):
         self.b, self.fail = bench, dict(fail or {})
+        self.restart_ms = 0             # the netdev's restart-ms (0 after a usbreset)
+        self.restart_back = None        # set: the read-back's restart-ms, whatever was asked
+        self.counters = {"netdev": NETDEV, "state": "ERROR-ACTIVE", "bus_off": 2, "restarts": 2,
+                         "error_passive": 3, "error_warning": 3, "bus_error": 900,
+                         "arbitration_lost": 0, "tx_dropped": 40, "tx_aborted_errors": 0,
+                         "tx_errors": 0, "tx_packets": 5000}
 
     def _do(self, step, line, up):
         with open(self.b.log, "a", encoding="utf-8") as f:
@@ -117,13 +135,23 @@ class FakeLayer:
             raise LayerError(self.fail[step])
         flags = int(open(self.b.flags).read().strip(), 16)
         self.b.set_flags(flags | 1 if up else flags & ~1)
-        return {"up": up, "bitrate": 500000 if up else None}
+        return {"up": up, "bitrate": 500000 if up else None,
+                "restart_ms": self.restart_ms if self.restart_back is None else self.restart_back}
 
     def link_up(self, role, bitrate, restart_ms=None):
-        return self._do("link_up", "link_up %s %s" % (role, bitrate), True)
+        if restart_ms is not None and "link_up" not in self.fail:
+            self.restart_ms = restart_ms
+        return self._do("link_up", "link_up %s %s%s" % (
+            role, bitrate, " restart-ms %s" % restart_ms if restart_ms is not None else ""), True)
 
     def link_down(self, role):
         return self._do("link_down", "link_down %s" % role, False)
+
+    def link_counters(self, role):
+        assert role == "kvaser", role
+        if "link_counters" in self.fail:
+            raise LayerError(self.fail["link_counters"])
+        return dict(self.counters)
 
     def canctl(self, *args):
         assert args == ("usbreset", "kvaser"), args
@@ -237,6 +265,63 @@ def case_set_up(M, work):
         else:
             sys.modules["adapter_roles"] = saved
     assert b.calls()[-1] == "link_down kvaser", b.calls()
+
+
+def case_restart_ms(M, work):
+    """bench_vport's node (the reviewer's ruling Q1, 2026-11-20): the link
+    comes up with the restart-ms asked, passed to the layer and read back
+    here too, on the line; a read-back that is not what was asked is
+    LinkError even when the layer took it; recover's link_up asks it again
+    (a usbreset leaves 0); none asked passes none, as before."""
+    b = Bench(M, os.path.join(work, "a"), up=False)
+    line = M.set_link(True, b.net, "linux", restart_ms=100)
+    assert b.calls() == ["link_up kvaser 500000 restart-ms 100"], b.calls()
+    assert "read back UP at 500000 restart-ms 100" in line, line
+    b = Bench(M, os.path.join(work, "b"), up=False)
+    b.layer.restart_back = 0
+    e = _raises(M.LinkError, M.set_link, True, b.net, "linux", restart_ms=100)
+    assert "restart-ms read back 0, asked 100" in e, e
+    b = Bench(M, os.path.join(work, "c"), up=True)
+    ok, line = M.recover(b.net, {}, "linux", restart_ms=100)
+    assert ok and b.calls()[-1] == "link_up kvaser 500000 restart-ms 100", (line, b.calls())
+    assert "link_up 500000 restart-ms 100" in line, line
+    b = Bench(M, os.path.join(work, "d"), up=True)
+    b.layer.restart_back = 7
+    ok, line = M.recover(b.net, {}, "linux", restart_ms=100)
+    assert not ok and "restart-ms read back 7, asked 100" in line, line
+    b = Bench(M, os.path.join(work, "e"), up=True)
+    st = M.Stall("kvaser TX stall: planted", M.perf())
+    lines = M.stall_lines(st, M.wall() - 5, None, lambda s, u: "", b.net, {}, restart_ms=100)
+    assert b.calls()[-1] == "link_up kvaser 500000 restart-ms 100", b.calls()
+    b = Bench(M, os.path.join(work, "f"), up=False)
+    M.set_link(True, b.net, "linux")
+    assert b.calls() == ["link_up kvaser 500000"], b.calls()
+
+
+def case_counters(M, work):
+    """link_counters (the reviewer's ruling Q1, 2026-11-20): the layer's
+    read for role kvaser; its failure, or a counter missing, is LinkError,
+    never a 0; counter_growth gives each counter's growth, and LinkError
+    when one went back (the netdev made again)."""
+    b = Bench(M, work, up=True)
+    c0 = M.link_counters()
+    assert c0["bus_off"] == 2 and c0["tx_dropped"] == 40, c0
+    b.layer.counters.update(bus_off=3, restarts=3, tx_dropped=213, tx_aborted_errors=4)
+    g = M.counter_growth(c0, M.link_counters())
+    assert g == {"bus_off": 1, "restarts": 1, "tx_dropped": 173, "tx_aborted_errors": 4}, g
+    del b.layer.counters["tx_dropped"]
+    e = _raises(M.LinkError, M.link_counters)
+    assert "lacks tx_dropped" in e, e
+    b.layer.counters["tx_dropped"] = 0
+    e = _raises(M.LinkError, M.counter_growth, c0, M.link_counters())
+    assert "went back" in e and "tx_dropped 40 -> 0" in e, e
+    b.layer.fail["link_counters"] = "ip: no such device"
+    e = _raises(M.LinkError, M.link_counters)
+    assert "ip: no such device" in e, e
+    # the pinned can-tools layer has the read (pins.json, 49eb7777 on)
+    import adapter_roles
+    assert callable(getattr(adapter_roles._pinned_layer(), "link_counters", None)), \
+        "the pinned canbench.bench_layer has no link_counters"
 
 
 def case_self_test_guard(M, work):
@@ -414,6 +499,26 @@ def case_echo_watch(M, work):
     w.send(Msg(0x7A9, b"\x00"))
     _raises(M.Stall, w.finish)
     assert c() - 100.0 > 0.1, c()
+    # finish(forgive=n) (the reviewer's ruling Q1, 2026-11-20): frames the
+    # kernel dropped never echo; up to n left unechoed once the bound passes
+    # are returned and leave pending, not a Stall; one more is the Stall,
+    # saying how many were unaccounted; frames that do echo are waited for
+    c = Clock()
+    w = M.EchoWatch(FakeBus(c, delay=0.020, lose={1, 3}), clock=c)
+    for i in range(5):
+        w.send(Msg(0x7A9, bytes([i])))
+    gone = w.finish(forgive=2)
+    assert [g[1][2] for g in gone] == [b"\x01", b"\x03"] and w.echoed == 3, (gone, w.echoed)
+    assert not w.pending and c() - 100.0 > 0.1, (w.pending, c())
+    w.send(Msg(0x7A9, b"\x09"))
+    assert w.finish(forgive=2) == [] and w.echoed == 4, w.echoed
+    c = Clock()
+    w = M.EchoWatch(FakeBus(c, lose={0, 1, 2}), clock=c)
+    for i in range(3):
+        w.send(Msg(0x7A9, bytes([i])))
+    e = _raises(M.Stall, w.finish, forgive=2)
+    assert "3 sends unechoed" in e and "2 of them may be forgiven" in e and "1 unaccounted" in e, e
+    assert len(w.pending) == 3, w.pending
     # ENOBUFS on send is a stall; another send error is itself
     c = Clock()
     w = M.EchoWatch(FakeBus(c, send_exc=OSError(errno.ENOBUFS, "No buffer space available")),
@@ -757,7 +862,7 @@ def case_scan(M, work):
     assert [int(h.split(":")[1].split()[0]) for h in hits] == [2], hits
 
 
-CASES = [case_link_state, case_set_up, case_self_test_guard, case_set_down, case_not_taken, case_open_bus,
+CASES = [case_link_state, case_set_up, case_restart_ms, case_counters, case_self_test_guard, case_set_down, case_not_taken, case_open_bus,
          case_echo_watch, case_suspend, case_threads, case_watched_bus, case_kernel_lines, case_recover, case_stall_lines,
          case_scan]
 
@@ -767,8 +872,33 @@ MUTANTS = [
     ("the bound off by ten", "STALL_S = 0.100 ", "STALL_S = 1.000 "),
     ("ENOBUFS not a stall", "            if _enobufs(e):", "            if False:"),
     ("every send error a stall", "            if _enobufs(e):", "            if True:"),
-    ("finish() does not wait", "        while self.pending:\n            self.poll(0.005)",
-     "        return"),
+    ("finish() does not wait", "        while self.pending:\n            try:",
+     "        while False:\n            try:"),
+    # finish(forgive) (the reviewer's ruling Q1, 2026-11-20)
+    ("finish: nothing forgiven", "                    if forgive and n <= forgive:",
+     "                    if False:"),
+    ("finish: any number forgiven", "                    if forgive and n <= forgive:",
+     "                    if forgive:"),
+    ("finish: the forgiven left pending", "                        self.pending.clear()\n", ""),
+    # restart-ms (the reviewer's ruling Q1, 2026-11-20)
+    ("restart-ms not passed to the layer", "    got = L.link_up(ROLE, BITRATE, restart_ms=restart_ms)",
+     "    got = L.link_up(ROLE, BITRATE)"),
+    ("restart-ms not read back here", "    if restart_ms is not None and (not isinstance(got, dict)",
+     "    if False and (not isinstance(got, dict)"),
+    ("recover: restart-ms not asked", "            _recover_step(_layer(), step, restart_ms)",
+     "            _recover_step(_layer(), step)"),
+    ("link_counters: the layer's failure taken as zeros",
+     "        raise LinkError(\"bench_layer.link_counters %s failed: %s: %s\"\n"
+     "                        % (ROLE, type(e).__name__, e))",
+     "        got = dict((k, 0) for k in COUNTER_KEYS)"),
+    ("link_counters: a missing counter accepted", "    if lack:\n        raise LinkError(\"bench_layer.link_counters",
+     "    if False:\n        raise LinkError(\"bench_layer.link_counters"),
+    ("counter_growth: a counter gone back accepted", "    if back:\n        raise LinkError(",
+     "    if False:\n        raise LinkError("),
+    ("counter_growth: the wrong way round", "    return dict((k, c1[k] - c0[k]) for k in COUNTER_KEYS)",
+     "    return dict((k, c1[k]) for k in COUNTER_KEYS)"),
+    ("stall_lines: restart-ms not asked", "    ok, line = recover(root, environ, restart_ms=restart_ms)",
+     "    ok, line = recover(root, environ)"),
     ("an echo counted for any frame", "        if getattr(m, \"is_rx\", True) or",
      "        if False and getattr(m, \"is_rx\", True) or"),
     ("frames other than echoes not handed on",
@@ -796,10 +926,10 @@ MUTANTS = [
      "        raise LinkError(\"bench_layer.%s %s failed: %s: %s\" % (step, ROLE, type(e).__name__, e))",
      "        got = None"),
     ("set_link: down for up",
-     "        got = L.link_up(ROLE, BITRATE) if up else L.link_down(ROLE)",
+     "        got = _link_up(L, restart_ms) if up else L.link_down(ROLE)",
      "        got = L.link_down(ROLE)"),
     ("set_link: another bitrate",
-     "        got = L.link_up(ROLE, BITRATE) if up else L.link_down(ROLE)",
+     "        got = _link_up(L, restart_ms) if up else L.link_down(ROLE)",
      "        got = L.link_up(ROLE, 250000) if up else L.link_down(ROLE)"),
     ("set_link: from a self-test", "    why = self_test_refusal()\n    if why:\n        raise LinkError(why)\n",
      ""),
@@ -849,7 +979,7 @@ MUTANTS = [
     ("recover: the link not brought up again",
      "RECOVER_STEPS = (\"link_down\", \"usbreset\", \"link_up\")",
      "RECOVER_STEPS = (\"link_down\", \"usbreset\")"),
-    ("recover: up at another bitrate", "        return L.link_up(ROLE, BITRATE)",
+    ("recover: up at another bitrate", "        return _link_up(L, restart_ms)",
      "        return L.link_up(ROLE, 250000)"),
     ("recover: a failed step ignored",
      "            why = \"%s %s failed: %s: %s\" % (step, ROLE, type(e).__name__, e)\n",
