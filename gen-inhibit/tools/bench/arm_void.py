@@ -16,11 +16,14 @@ ATTRIBUTION, COUNTED OVER THE SAME WINDOW. The device's counters reset on every 
 count and the witness's count are compared from the arm on (spec 12.1's attribution
 entry). The arm is the last mode POST the arm sent: the last scheduled POST
 (`post_schedule`, e.g. --post-schedule 20:3), else the --arm-after POST, else the start
-of the replay (an arm armed before it). Each POST is placed on the wire by the replay
-frame the run was at when it started it (its `index`), on the provenance classifier's
-wire times, as quiesce_analysis places them. The witness counts twice: from the POST's
-send (t_sent) and from its completion (t_complete, t_sent plus the POST's own
-send-to-completion time on the run's clock, its post_s), and the counts agree when the
+of the replay (an arm armed before it). Since 2026-11-20 (the gen-inhibit reviewer's ruling,
+as AGENTS.md point 4 times windows from the request) the POST is placed at its own send,
+the run's base_epoch plus its post_s[0], on the witness's epoch clock; before, it was placed
+by the replay frame the run was at when it started it (its `index`, on the provenance
+classifier's wire times), which reached the wire ~25 ms after the send, so run C's B24 arms
+counted device 0x051 before it. A record with no POST send is still placed that way. The
+witness counts twice: from the POST's send (t_sent) and from its completion (t_complete,
+t_sent plus the POST's own send-to-completion time, its post_s span), and the counts agree when the
 device's count lies between the two (the gen-inhibit reviewer's ruling, answer to the run
 (C) report, 2026-11-20): a frame sent between the request and the reply may fall on either
 side of the device's reset. What the witness counts is what the device's tx_ok counts in the mode that POST
@@ -57,6 +60,10 @@ PATTERNS = (
     (re.compile(r"the witness holds \d+ of \d+ replayed frames in order"), "witness_log"),
     (re.compile(r"\d+ replay frames were refused by the adapter"), "replay_refused"),
     (re.compile(r"\d+ of \d+ commands \([\d.]+ %\) never reached the wire"), "stimulus_short"),
+    # e4_device_calibration.start_lag_reason (B22's replay start, 2026-11-20): the replay behind its
+    # own schedule from its first frame, or no frame sent, is a stimulus short of what the arm asked
+    (re.compile(r"the replay's first frame went out [\d.]+ ms behind its own schedule"), "stimulus_short"),
+    (re.compile(r"the replay sent no frame, so its start against its schedule is not known\Z"), "stimulus_short"),
     (re.compile(r"the device did not answer at the end of the arm\Z"), "device_silent"),
     (re.compile(re.escape(ATTRIBUTION)), "attribution"),
 )
@@ -87,30 +94,56 @@ def arm_post(d, a):
     return "the start of the replay", None, d.get("mode")
 
 
+def arm_post_s(a):
+    """The arm's POST's post_s ([send, complete] on the run's clock), as arm_post picks the POST."""
+    posts = [e for e in (a.get("post_schedule") or []) if e.get("index") is not None]
+    return posts[-1].get("post_s") if posts else a.get("post_s")
+
+
 def post_elapsed(a):
     """How long the arm's POST took, send to completion, from the run's record (its post_s,
     [send, complete] on the run's clock), or None when the record has no completed POST."""
-    posts = [e for e in (a.get("post_schedule") or []) if e.get("index") is not None]
-    ps = posts[-1].get("post_s") if posts else a.get("post_s")   # the arm's POST, as arm_post picks it
+    ps = arm_post_s(a)
     if not (isinstance(ps, (list, tuple)) and len(ps) == 2
             and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in ps) and ps[1] >= ps[0]):
         return None
     return ps[1] - ps[0]
 
 
+PLACED_POST = "the POST's own send (base_epoch + post_s[0])"
+PLACED_FRAME = "its replay frame's wire time (no POST send on record)"
+
+
+def post_sent(a):
+    """The arm's POST's own send on the witness's (epoch) clock: the run's base_epoch plus the
+    POST's post_s[0] (the run's clock, s from the replay's base), as mode_change_judge times
+    POSTs; None when the record has no base_epoch or no completed post_s."""
+    be = a.get("base_epoch")
+    if post_elapsed(a) is None or not isinstance(be, (int, float)) or isinstance(be, bool):
+        return None
+    return be + arm_post_s(a)[0]
+
+
 def window(d, a, rep_t):
     """Where the device's counters last reset: {"from", "index", "start_s", "complete_s",
-    "mode"}. start_s is the POST's send on the wire (its replay frame's wire time); complete_s
-    is its completion, start_s plus the POST's own send-to-completion time (post_elapsed), or
-    None when the record has none. rep_t: the wire time of each replayed frame."""
+    "placed_by", "mode"}. start_s is the POST's own send, mapped onto the witness clock
+    (post_sent; the gen-inhibit reviewer's ruling of 2026-11-20, as AGENTS.md point 4 times
+    windows from the request: placed by its replay frame's wire time instead, the run (C) arms'
+    device 0x051 reached the wire before it); complete_s is start_s plus the POST's own
+    send-to-completion time (post_elapsed). A record with no POST send on it is placed by the
+    replay frame, as before 2026-11-20, with no completion; placed_by says which. rep_t: the
+    wire time of each replayed frame."""
     frm, idx, mode = arm_post(d, a)
     if idx is None:
-        return {"from": frm, "index": None, "start_s": None, "complete_s": None, "mode": mode}
+        return {"from": frm, "index": None, "start_s": None, "complete_s": None, "placed_by": None, "mode": mode}
     if not 0 <= idx < len(rep_t):
         raise ValueError("%s at replay frame %d, but the witness places %d replayed frames" % (frm, idx, len(rep_t)))
-    el = post_elapsed(a)
-    return {"from": frm, "index": idx, "start_s": rep_t[idx],
-            "complete_s": None if el is None else rep_t[idx] + el, "mode": mode}
+    sent = post_sent(a)
+    if sent is None:
+        return {"from": frm, "index": idx, "start_s": rep_t[idx], "complete_s": None, "placed_by": PLACED_FRAME,
+                "mode": mode}
+    return {"from": frm, "index": idx, "start_s": sent, "complete_s": sent + post_elapsed(a),
+            "placed_by": PLACED_POST, "mode": mode}
 
 
 def attribution(d, a, wire, device_times, rep_t):
