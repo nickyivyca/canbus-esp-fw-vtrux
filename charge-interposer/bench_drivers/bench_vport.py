@@ -1003,6 +1003,43 @@ def pcan_state(word):
     return res
 
 
+# PCAN-Basic's status bits by name, for the PCAN's own status string
+PCAN_BIT_NAMES = ((0x1, "XMTFULL"), (PCAN_OVERRUN, "OVERRUN"),
+                  (PCAN_BUSLIGHT, "BUSLIGHT"), (PCAN_BUSHEAVY, "BUSHEAVY"),
+                  (PCAN_BUSOFF, "BUSOFF"), (PCAN_QRCVEMPTY, "QRCVEMPTY"),
+                  (PCAN_QOVERRUN, "QOVERRUN"), (0x80, "QXMTFULL"),
+                  (PCAN_BUSPASSIVE, "BUSPASSIVE"))
+
+
+def pcan_status_text(word):
+    """A PCAN-Basic GetStatus word -> its text, never empty: "OK", or the
+    word in hex with every set bit by name (any bit not in PCAN_BIT_NAMES
+    in hex) and, for state and overrun bits only, can-tools' reading
+    (pcan_state). python-can's status_string looks the word up whole and
+    returns None for a combination such as 0x40008 (passive and bus heavy),
+    so three of the hand take E3's four windows printed no status
+    (2026-11-20)."""
+    if word == PCAN_OK:
+        return "OK"
+    names = [n for b, n in PCAN_BIT_NAMES if word & b]
+    rest = word
+    for b, _n in PCAN_BIT_NAMES:
+        rest &= ~b
+    if rest:
+        names.append("other 0x%X" % rest)
+    txt = "0x%X %s" % (word, "+".join(names))
+    st = word & ~PCAN_QRCVEMPTY
+    if st and not st & ~PCAN_STATE_RESULT:
+        txt += " (%s)" % pcan_state(st)[1]
+    return txt
+
+
+def pcan_status_reader(bus):
+    """-> the witness reader's status callable for a python-can PcanBus:
+    its GetStatus word as pcan_status_text gives it."""
+    return lambda: pcan_status_text(bus.status())
+
+
 def classify_read(result):
     """One PCAN-Basic Read status -> "row", "empty", "state", "ignored" or
     "failure". Until 2026-11-20 a state other than BUSLIGHT / BUSHEAVY was a
@@ -1151,7 +1188,7 @@ def _open_witness_reader(acks, spec=None, mode="classic"):
                             pb.TPCANTimestamp())
     return _PcanReader(basic, bus.m_PcanHandle, wait,
                        bus._get_formatted_error, pc.boottimeEpoch,
-                       bus.shutdown, bus.status_string, mode)
+                       bus.shutdown, pcan_status_reader(bus), mode)
 
 
 def reader_stats(n, reads, t_read, t_wait, wall, lag_min, lag_max, lag_end,
@@ -5035,6 +5072,40 @@ def self_test():
                  "+3.000 s)"],
           "can-fail: state lines, most frequent first, times from the "
           "window's start -> %s" % sl)
+    # the PCAN's own status string (2026-11-20, E3): every word gives a
+    # text, a combination included, with each bit by name
+    stt = [(hex(w), pcan_status_text(w)) for w in (
+        0, PCAN_BUSPASSIVE | PCAN_BUSHEAVY, PCAN_BUSOFF,
+        PCAN_BUSPASSIVE | PCAN_QRCVEMPTY, PCAN_OVERRUN | PCAN_QOVERRUN,
+        0x1, 0x100 | PCAN_BUSLIGHT)]
+    check(stt == [("0x0", "OK"),
+                  ("0x40008", "0x40008 BUSHEAVY+BUSPASSIVE (passive)"),
+                  ("0x10", "0x10 BUSOFF (bus-off)"),
+                  ("0x40020", "0x40020 QRCVEMPTY+BUSPASSIVE (passive)"),
+                  ("0x42", "0x42 OVERRUN+QOVERRUN (frames lost)"),
+                  ("0x1", "0x1 XMTFULL"),
+                  ("0x104", "0x104 BUSLIGHT+other 0x100")],
+          "can-fail: the PCAN's status string, every bit by name and "
+          "can-tools' reading of its state bits -> %s" % stt)
+
+    class _StatusBus(object):
+        """python-can's PcanBus as far as the status goes: status() is
+        GetStatus; status_string() looks the word up whole, as python-can
+        4.6.1 does (PCAN_DICT_STATUS has single values only)."""
+        def __init__(self, word):
+            self.word = word
+
+        def status(self):
+            return self.word
+
+        def status_string(self):
+            return {0: "OK", PCAN_BUSPASSIVE: "BUSPASSIVE",
+                    PCAN_BUSHEAVY: "BUSWARNING"}.get(self.word)
+    srd = [pcan_status_reader(_StatusBus(w))() for w in (
+        PCAN_BUSPASSIVE | PCAN_BUSHEAVY, 0)]
+    check(srd == ["0x40008 BUSHEAVY+BUSPASSIVE (passive)", "OK"],
+          "can-fail: the witness reader's status for a combined word is "
+          "its text, not python-can's None -> %s" % srd)
     try:
         from can.interfaces.pcan import basic as pb
         from can.interfaces.pcan import pcan as pc
@@ -6143,6 +6214,19 @@ MUTANTS = [
     ("the bench process drops the reader's states",
      "                                      (r[8] if len(r) > 8 else {},",
      "                                      ({},"),
+    # the PCAN's own status string (2026-11-20, the hand take E3)
+    ("status: python-can's whole-word lookup (None for a combination)",
+     "    return lambda: pcan_status_text(bus.status())",
+     "    return bus.status_string"),
+    ("status: a bit outside the named ones dropped",
+     "    if rest:\n        names.append(\"other 0x%X\" % rest)",
+     "    if False:\n        names.append(\"other 0x%X\" % rest)"),
+    ("status: the state bits not read by can-tools",
+     "        txt += \" (%s)\" % pcan_state(st)[1]",
+     "        pass"),
+    ("status: an empty queue hides the state",
+     "    st = word & ~PCAN_QRCVEMPTY\n",
+     "    st = word\n"),
     ("reader: the TEST FAULT line without the failure's text",
      "                % (what, n, top or \"no failure text kept\"))",
      "                % (what, n, \"queue overflow\"))"),

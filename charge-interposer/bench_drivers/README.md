@@ -77,6 +77,10 @@ counted by its text per window and is no failure. Until then, on Linux,
 where PCAN-Basic returns status messages as Read results, each
 error-passive report faulted its window as a lost frame, and each status
 message the library returned as a message was written as a data frame.
+The PCAN's own status string, printed at each wrong-rate window's end, is
+its GetStatus word with every bit by name (`pcan_status_text`), not
+python-can's `status_string`, which gives nothing for a combination such
+as error passive with bus heavy.
 Each reader passes what it reads through `reader_death.screen`: a frame or
 a bus error (can-tools' classifier, `adapter_roles.bus_error`) is a row; a
 state row (an error frame that is no bus error) is not, and is counted; a
