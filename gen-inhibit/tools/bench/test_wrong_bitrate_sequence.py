@@ -386,10 +386,13 @@ def order_cases(W):
           not str(rec.get("verdict", "")).startswith("VOID") and "burst_timing_void" not in rec
           and "burst timing VOID" not in text and bm[0].get("void") == [], (rec.get("verdict"), text[-300:]))
     check("main: each burst's measure and its source's state printed under it, recorded not judged",
-          "    measure: span " in text and "recorded, not judged | source: bus_off False" in text, text[-600:])
+          "    measure: span " in text and "recorded, not judged | source: not shown (the hold read no frame"
+          in text and "source: bus_off False" not in text, text[-600:])
     so = ((rec.get("bursts") or [{}])[0]).get("source") or {}
-    check("main: each burst's source state recorded (read during the hold)",
-          so.get("error_frames") == 0 and so.get("bus_off") is False and so.get("restarts") == 0
+    check("main: each burst's source state recorded (read during the hold); a source that read nothing, as "
+          "the fake's, is 'not shown', never False or 0 (reviewer, 2026-11-20)",
+          so.get("error_frames") == "not shown" and so.get("bus_off") == "not shown"
+          and so.get("restarts") == "not shown" and so.get("not_shown")
           and so.get("read", "").startswith("during the hold"), so)
     import inspect
     msrc = inspect.getsource(W.main)

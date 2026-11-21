@@ -182,7 +182,14 @@ class Poller(threading.Thread):
 # going bus-off is an acceptable burst end, so it is recorded. During the hold the source's own frames are read
 # (its error frames carry its controller's state, Linux can/error.h classes as gs_usb reports them) instead of
 # a plain sleep; each read waits at most SOURCE_READ_S, so the hold can run up to that much over.
+# A hold that read no frame of any kind from the source shows nothing about its state: every state field then
+# reads NOT_SHOWN, never False or 0 (the gen-inhibit reviewer, 2026-11-20, on the rulings re-run 0d8c, where
+# all 11 bursts read nothing from canmain; whether gs_usb over libusb passes canmain's own error frames to the
+# host is not established).
 SOURCE_READ_S = 0.001
+NOT_SHOWN = "not shown"
+NOT_SHOWN_WHY = "the hold read no frame of any kind from the source"
+SOURCE_STATE_FIELDS = ("error_frames", "bus_off", "bus_off_at_ms", "restarts", "ctrl_states", "other_frames")
 CAN_ERR_CRTL, CAN_ERR_BUSOFF, CAN_ERR_RESTARTED = 0x004, 0x040, 0x100
 CRTL_STATES = {0x01: "rx_overflow", 0x02: "tx_overflow", 0x04: "rx_warning", 0x08: "tx_warning",
                0x10: "rx_passive", 0x20: "tx_passive", 0x40: "active"}
@@ -208,7 +215,11 @@ def hold_reading(src, until, perf=time.perf_counter):
 def source_state(errs, other, t0):
     """The source's own state over a burst from its error frames (hold_reading), times in ms from t0 (the
     burst's start): bus_off (CAN_ERR_BUSOFF) and when first, restarts (CAN_ERR_RESTARTED), the controller
-    states seen (CAN_ERR_CRTL, data[1]), its error frames and other frames counted."""
+    states seen (CAN_ERR_CRTL, data[1]), its error frames and other frames counted. A hold that read no frame
+    of any kind: every one of those fields NOT_SHOWN, with not_shown saying why (reviewer, 2026-11-20)."""
+    if not errs and not other:
+        return dict({k: NOT_SHOWN for k in SOURCE_STATE_FIELDS}, not_shown=NOT_SHOWN_WHY,
+                    read="during the hold only (not the open, not after the close)")
     off = [t for t, i, _d in errs if i & CAN_ERR_BUSOFF]
     ctrl = set()
     for _t, i, d in errs:
@@ -224,12 +235,15 @@ def source_state(errs, other, t0):
 
 def burst_detail_line(b, m):
     """The line under a burst's: its measure on the witness, first to last error frame (recorded, not
-    judged), and the source's own state. m None: no measure (the clock fit VOID)."""
+    judged), and the source's own state, or "not shown" and why when its hold read no frame at all. m None:
+    no measure (the clock fit VOID)."""
     so = b.get("source") or {}
     meas = ("not measured (the clock fit is VOID)" if m is None else
             "span %s ms (first %s s, last %s s from its start; asked %g ms), last %s ms after the close, %d error "
             "frames; recorded, not judged" % (m["span_ms"], m["first_s"], m["last_s"], m["asked_ms"],
                                              m["last_after_close_ms"], m["n"]))
+    if so.get("not_shown"):
+        return "    measure: %s | source: %s (%s)" % (meas, NOT_SHOWN, so["not_shown"])
     return "    measure: %s | source: bus_off %s (at %s ms), restarts %s, states %s, %s error frames" % (
         meas, so.get("bus_off"), so.get("bus_off_at_ms"), so.get("restarts"), so.get("ctrl_states"),
         so.get("error_frames"))

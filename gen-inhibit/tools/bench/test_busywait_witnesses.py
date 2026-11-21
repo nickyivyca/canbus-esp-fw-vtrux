@@ -486,7 +486,10 @@ def rate_cases():
          ['player.request(base + off, filler, "%s#%d" % (name, k))']),
         ("B1", B1, ["player = S.Player(pc, LF.build_stimulus())"], []),
         ("B9", B9, ["stim = LF.build_stimulus()", "player = S.Player(pc, stim)"], []),
-        ("B10", B10, ["stim = LF.build_stimulus()", 'pl["p"] = S.Player(pc, stim)'], []),
+        # record_ids only times 0x617's sends (Player._send appends perf_counter after a send): the slice as it
+        # is (runc-fixes aeab917d, 2026-11-20)
+        ("B10", B10, ["stim = LF.build_stimulus()",
+                      'pl["p"] = S.Player(pc, stim, record_ids=(ID_0x617,))   # 0x617\'s host send times kept'], []),
         ("B5-B8", XJ, ["stim = LF.build_stimulus()", "th = threading.Thread(target=LF.play, args=(tx, stim, seconds),"],
          []),
     ]
