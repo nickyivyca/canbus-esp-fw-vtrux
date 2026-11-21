@@ -47,6 +47,11 @@ or NOT-APPLICABLE, or a known FAIL that passed) run again as a new nested
 record, <id>-rerun, selecting only them: a re-run is never added to a
 closed record (A7).
 
+nested.json's "catalogue_skips" ({"<group>/<check>": reason}) is the
+suite's catalogue of declared skips as loaded from its tree, every case
+with Check.skip, selected or not: the acceptance runner judges a list's
+declared_skips against it (ACCEPT-SPEC A12a; judge.suite_run_verdict).
+
 The first, whole run decides (A12 as written; the charge-interposer
 reviewer, 2026-11-01): this exits with the first run's exit code whatever
 the re-run gives. The re-run is evidence, for the comparisons and for the
@@ -133,7 +138,12 @@ def run(suite, settings, masked, run_id, groups=(), checks=(), rerun=False, out=
                                                         "given": bool(given)},
            "keep_lock": None if from_hold is None else {"pid": keep_lock,
                                                         "first": eng.handed_to,
-                                                        "rerun": None}}
+                                                        "rerun": None},
+           # the suite's catalogue of declared skips, as loaded from its
+           # tree: every case with Check.skip, whether selected or not, with
+           # its reason (ACCEPT-SPEC A12a; judge.suite_run_verdict)
+           "catalogue_skips": {"%s/%s" % (g.name, c.id): c.skip
+                               for g in suite.groups for c in g.checks if c.skip}}
     marked = flagged(first)
     if rerun and marked:
         sel = rerun_selection(marked, checks)

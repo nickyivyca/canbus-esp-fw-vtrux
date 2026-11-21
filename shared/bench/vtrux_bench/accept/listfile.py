@@ -19,7 +19,11 @@ bytes.
                     entry picked, id <set>.<entry>
     [[suite_run]]   id, tree, suite (the adapter's), groups, checks, whole,
                     rerun_flagged, images_from (the builds whose images the
-                    suite flashes: settings.suite_images), after
+                    suite flashes: settings.suite_images), after,
+                    declared_skips (A12a: an array of {id, reason}, the
+                    "<group>/<check>" ids of the cases the suite's catalogue
+                    skips by declaration, each with the catalogue's reason;
+                    judged against the nested record in judge.py)
     [[reuse]]       id, tree, suite (the adapter's), record (an earlier
                     acceptance record's folder in the runs folder), run (its
                     [[suite_run]] id): that run stands as this acceptance's
@@ -69,12 +73,13 @@ RULES = {k: True for k in (
     "full_commit", "list_sha256", "committed_only", "unknown_keys", "required",
     "committed_files", "shared_at_tree", "exact_commit", "refs", "adapter_names",
     "project", "selector_only", "empty_selector", "unique_ids", "canfail_form",
-    "set_judge", "images_once")}
+    "set_judge", "images_once", "skips_form")}
 
 HEX = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 STR, LIST, DICT, NUM, BOOL, DATE = "a string", "a list of strings", \
     "a table of strings", "a number", "true or false", "a date"
+TABLES = "an array of tables"
 
 SCHEMA = {
     "step": {"id": (STR, True), "project": (STR, True), "ordered_by": (STR, True),
@@ -93,7 +98,9 @@ SCHEMA = {
     "suite_run": {"id": (STR, True), "tree": (STR, True), "suite": (STR, True),
                   "groups": (LIST, False), "checks": (LIST, False),
                   "whole": (BOOL, False), "rerun_flagged": (BOOL, False),
-                  "images_from": (LIST, False), "after": (LIST, False)},
+                  "images_from": (LIST, False), "after": (LIST, False),
+                  "declared_skips": (TABLES, False)},
+    "declared_skip": {"id": (STR, True), "reason": (STR, True)},
     "reuse": {"id": (STR, True), "tree": (STR, True), "suite": (STR, True),
               "record": (STR, True), "run": (STR, True)},
     "compare": {"id": (STR, True), "comparer": (STR, True), "a": (STR, True),
@@ -158,6 +165,8 @@ def _type_ok(v, want):
         return isinstance(v, bool)
     if want == DATE:
         return isinstance(v, (str, datetime.date))
+    if want == TABLES:
+        return isinstance(v, list)
     return isinstance(v, dict)
 
 
@@ -437,6 +446,25 @@ def load(repo, spec, adapter):
                 committed_file(where, tree, adapter.SUITES[r_["suite"]].rsplit(":", 1)[0])
         r_.setdefault("whole", True)
         r_.setdefault("rerun_flagged", False)
+        # A12a: each declared skip a table of id and reason, no other key,
+        # each id once
+        skips, seen_s = [], set()
+        listed = r_.get("declared_skips")
+        for n, d in enumerate(listed if isinstance(listed, list) else []):
+            w = "%s declared_skips[%d]" % (where, n)
+            if not RULES["skips_form"]:
+                skips.append(d)
+                continue
+            if not isinstance(d, dict):
+                errs.append("%s: must be a table of id and reason" % w)
+                continue
+            d = _fields(w, d, "declared_skip", errs)
+            if isinstance(d.get("id"), str):
+                if d["id"] in seen_s:
+                    errs.append("%s: id %s is listed twice" % (w, q(d["id"])))
+                seen_s.add(d["id"])
+            skips.append(dict(d))
+        r_["declared_skips"] = skips
         suite_runs.append(r_)
 
     # an earlier acceptance record's run of a required suite (A17; checked

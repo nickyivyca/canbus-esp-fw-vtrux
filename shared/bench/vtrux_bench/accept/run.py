@@ -48,7 +48,8 @@ In order:
   6. the can-fail mutants (A10), refused before anything runs if one cannot
      be applied
   7. the checks, suite runs and mutant runs as one chain run (A7)
-  8. every item judged (A10, A12), the cleanup and the close (A13, A14)
+  8. every item judged (A10, A12; a suite run from its nested record, with
+     its declared skips, A12a), the cleanup and the close (A13, A14)
 Every folder the run makes is held in one Made: removed before the close,
 and by the exit handler and the finally on any other way out. A run that
 stops before its close prints why and leaves the record open; it is never
@@ -97,7 +98,7 @@ RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip"
                            "not_passed_listed", "nested_not_passed", "nested_wrong_shape",
                            "images_not_started", "from_hold_passed", "keep_lock_chain",
                            "keep_not_last", "keep_bench_only", "hold_queued",
-                           "from_hold_no_queue", "hold_recorded")}
+                           "from_hold_no_queue", "hold_recorded", "suite_from_nested")}
 
 DEV_LINE = "DEV RUN, not evidence"
 
@@ -162,6 +163,32 @@ def _group_verdict(chain, group):
     vs = [r["verdict"] for r in chain["results"] if r["group"] == group]
     bad = [v for v in vs if v != "PASS"]
     return (bad[0] if bad else (vs[0] if vs else "absent")), ""
+
+
+def _suite_item(chain, r_, n):
+    """A suite run's item, judged from its nested record (ACCEPT-SPEC A12a,
+    judge.suite_run_verdict): the first, whole run's results, its list's
+    declared skips and the catalogue's (nested.json's catalogue_skips). With
+    no nested record, or one that cannot be read, the outer chain's verdict
+    for its group, as before A12a. The item lists each declared skip with
+    its reason ("declared_skips")."""
+    group = C.group_name(r_["id"])
+    declared = r_.get("declared_skips") or []
+    v = d = None
+    if n and RULES["suite_from_nested"]:
+        try:
+            with open(os.path.join(n["first"]["dir"], "record.json"), encoding="utf-8") as f:
+                results = json.load(f)["results"]
+            v, d, _p = J.suite_run_verdict(results, dict(n.get("catalogue_skips") or {}),
+                                           declared)
+        except (OSError, KeyError, ValueError, TypeError, AttributeError):
+            v = None
+    if v is None:
+        v, d = _group_verdict(chain, group)
+    it = J.item("suite_run", r_["id"], "PASS", v,
+                "; ".join(x for x in (d, "the first, whole run decides") if x))
+    it["declared_skips"] = [(s["id"], s["reason"]) for s in declared]
+    return it
 
 
 def _suite_not_passed(chain, group, n):
@@ -370,9 +397,7 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                  for b in alist.builds for br in [builds[b["id"]]]]
         items += [J.item("check", c["id"], c["expect"], *_group_verdict(
             chain, C.group_name(c["id"]))) for c in alist.checks]
-        items += [J.item("suite_run", r_["id"], "PASS",
-                         _group_verdict(chain, C.group_name(r_["id"]))[0],
-                         "the first, whole run decides") for r_ in alist.suite_runs]
+        items += [_suite_item(chain, r_, nested.get(r_["id"])) for r_ in alist.suite_runs]
         for u in reused:
             i = J.item("reuse", u["id"], "accepted", "accepted",
                        "record %s, run %s (A17)" % (u["record"], u["run"]))

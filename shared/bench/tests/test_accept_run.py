@@ -109,7 +109,7 @@ id = "emu"
 tree = "base"
 suite = "emulated"
 rerun_flagged = true
-
+{SKIPS}
 [[compare]]
 id = "same"
 comparer = "transcript"
@@ -152,7 +152,7 @@ class Run:
     def __init__(self, flaky_passes=True, mutant="sum", premise_later=False, extra="",
                  dirty_adapter=False, runner_dirty=False, dev=False, runner=None,
                  from_hold=None, machine=None,
-                 setup_fails=False):
+                 setup_fails=False, skip_case=False, skips=""):
         N[0] += 1
         self.dir = os.path.join(BASE, "r%d" % N[0])
         self.repo = os.path.join(self.dir, "repo")
@@ -164,6 +164,12 @@ class Run:
         for rel, text in FILES.items():
             write(self.repo, rel, text)
         write(self.repo, ".gitignore", "/scratch/\n")
+        if skip_case:                     # a case the suite's catalogue skips (A12a)
+            write(self.repo, "proj/suite.py", FILES["proj/suite.py"].replace(
+                "                Check('kf',",
+                "                Check('truck', ['-c', 'pass'], python=True,\n"
+                "                      skip='needs the truck'),\n"
+                "                Check('kf',"))
         if setup_fails:                   # the committed adapter names a setup that fails
             write(self.repo, "proj/accept_adapter.py", ADAPTER + (
                 "\n\ndef tree_setup(tree):\n    return [['proj/setup.py']]\n"))
@@ -174,7 +180,8 @@ class Run:
         git(self.repo, "checkout", "-q", c1, "--", "proj/check.py")
         c1b = self.commit("C1 product again")
         write(self.repo, "proj/acceptance/s1.toml", LIST.format(
-            C1=c1b, MUTANT=mutant, PREMISE=c2 if premise_later else c1, EXTRA=extra))
+            C1=c1b, MUTANT=mutant, PREMISE=c2 if premise_later else c1, EXTRA=extra,
+            SKIPS=skips))
         self.c3 = self.commit("list")
         if dirty_adapter:                  # an uncommitted adapter that would refuse the list
             write(self.repo, "proj/accept_adapter.py", ADAPTER.replace(
@@ -637,11 +644,39 @@ def test_keep_lock_chain():
             p.wait()
 
 
+def test_declared_skips():
+    """A12a (user, 2026-11-20), end to end: the suite's catalogue skips
+    a/truck ("needs the truck"). Listed with that reason, its NOT-RUN does
+    not fail the suite run: ACCEPTANCE PASS, though the nested run's own
+    exit code is not 0 (its exit rule is unchanged), and the record lists
+    the declared skip with its reason; nested.json holds the catalogue's
+    skips. Unlisted, the NOT-RUN fails the suite run as before. Listed with
+    another reason, the suite run fails, naming it."""
+    listed = '\n[[suite_run.declared_skips]]\nid = "a/truck"\nreason = "%s"\n'
+    r = Run(skip_case=True, skips=listed % "needs the truck")
+    text = r.read("README.md")
+    assert r.rc == 0 and "ACCEPTANCE PASS" in text, (r.rc, text[-2000:])
+    assert "- suite run emu: a/truck -- needs the truck" in text, text
+    found = [os.path.join(d, "nested.json") for d, _s, fs in os.walk(r.rec)
+             if "nested.json" in fs]
+    assert len(found) == 1, found
+    with open(found[0], encoding="utf-8") as f:
+        n = json.load(f)
+    assert n["catalogue_skips"] == {"a/truck": "needs the truck"} and n["first"]["exit"], n
+    r = Run(skip_case=True)
+    text = r.read("README.md")
+    assert r.rc == 1 and "| suite_run | emu | PASS | NOT-RUN |" in text, (r.rc, text[-2000:])
+    r = Run(skip_case=True, skips=listed % "needs hands")
+    text = r.read("README.md")
+    assert r.rc == 1 and "| suite_run | emu | PASS | FAIL |" in text and \
+        "declared skip a/truck: the listed reason 'needs hands'" in text, (r.rc, text[-2000:])
+
+
 TESTS = [test_pass, test_adapter_committed, test_rerun_never_passes, test_premise_blocks,
          test_stopped, test_setup_failure_stops_run, test_dirty_runner_refused, test_dev_run,
          test_runner_identity, test_runner_stays_clean, test_check_every_result,
          test_suite_run_not_passed, test_nested_wrong_shape, test_images_from,
-         test_from_hold_passed, test_keep_lock_chain]
+         test_from_hold_passed, test_keep_lock_chain, test_declared_skips]
 
 MUTANTS = [
     ("adapter_from_commit", test_adapter_committed),
@@ -661,6 +696,7 @@ MUTANTS = [
     ("keep_lock_chain", test_keep_lock_chain),
     ("keep_not_last", test_keep_lock_chain),
     ("keep_bench_only", test_keep_lock_chain),
+    ("suite_from_nested", test_declared_skips),
     ("_stray", test_runner_stays_clean),        # VTRUX_TEST_STRAY: a stray file
 ]
 

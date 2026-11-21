@@ -56,7 +56,21 @@ RULES = {k: True for k in (
     "readme_items", "readme_commits", "sums_all", "console_stops", "close_once",
     "scan_hits", "scan_absent", "cleanup_first", "leftovers_in", "late_outside", "row",
     "skeleton_reruns", "dev_marked", "scan_failure", "readme_not_passed", "not_passed_all",
-    "compare_all")}
+    "compare_all", "readme_skips")}
+
+
+def skip_lines(items):
+    """The README's section of declared skips (ACCEPT-SPEC A12a): each suite
+    run's, each with its reason, as its list gave them; none if no suite
+    run lists one."""
+    rows = [(i["id"], sid, why) for i in items if i.get("kind") == "suite_run"
+            for sid, why in i.get("declared_skips") or []]
+    if not rows or not RULES["readme_skips"]:
+        return []
+    return (["", "## Declared skips (A12a)", "",
+             "Cases each suite run's list declares skipped, with the catalogue's reason "
+             "as listed; a NOT-RUN of one does not fail the suite run.", ""]
+            + ["- suite run %s: %s -- %s" % r for r in rows])
 
 
 class CloseError(Exception):
@@ -155,6 +169,7 @@ def readme(rec, summary, hits, leftovers):
                 L.append("- %s %s: %s" % (i["kind"], i["id"],
                                           "%d" % len(i["not_passed"]) if got else "none"))
                 L += ["  - %s %s" % (rid, v) for rid, v in got]
+        L += skip_lines(s["verdict"]["items"])
         L += ["", "## Comparisons", ""]
         for c in s["compares"]:
             L.append("- compare %s (%s): %s" % (c["id"], c["expect"],
@@ -214,6 +229,10 @@ def skeleton(rec, summary):
         counts[i["status"]] = counts.get(i["status"], 0) + 1
     L.append("- items: %s" % ", ".join("%s %d" % kv for kv in sorted(counts.items())))
     L += ["- verdict:"] + ["    " + ln for ln in s["verdict"]["lines"]]
+    if RULES["readme_skips"]:
+        L += ["- suite run %s, declared skip %s: %s" % (i["id"], sid, why)
+              for i in s["verdict"]["items"] if i.get("kind") == "suite_run"
+              for sid, why in i.get("declared_skips") or []]
     if RULES["skeleton_reruns"]:
         for sr, rows in sorted((s.get("reruns") or {}).items()):
             for r in rows:

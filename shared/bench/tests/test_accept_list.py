@@ -374,9 +374,38 @@ def test_images_from():
             name="img-twice")
 
 
+def test_declared_skips():
+    """A12a (user, 2026-11-20): a suite run's declared_skips is an array of
+    tables, each an id and a reason (strings), with no other key and each id
+    once; it comes through as given. Without it a suite run lists none."""
+    r = Repo()
+    old = 'suite = "emulated"'
+    ok = ('\n[[suite_run.declared_skips]]\nid = "truck/i1"\nreason = "needs the truck"\n'
+          '\n[[suite_run.declared_skips]]\nid = "truck/i2"\nreason = "needs hands"\n')
+    spec, _c = r.list_at(edit(GOOD, old, old + ok), name="sk")
+    run = [x for x in L.load(r.path, spec, FA).suite_runs if x["id"] == "emu"][0]
+    assert run["declared_skips"] == [{"id": "truck/i1", "reason": "needs the truck"},
+                                     {"id": "truck/i2", "reason": "needs hands"}], run
+    spec, _c = r.list_at(GOOD, name="sk-none")
+    assert [x for x in L.load(r.path, spec, FA).suite_runs][0]["declared_skips"] == []
+    refused(r, edit(GOOD, old, old + '\ndeclared_skips = "truck/i1"'),
+            "declared_skips must be", name="sk-str")
+    refused(r, edit(GOOD, old, old + '\ndeclared_skips = ["truck/i1"]'),
+            "declared_skips[0]", "table", name="sk-bare")
+    refused(r, edit(GOOD, old, old + '\n[[suite_run.declared_skips]]\nid = "truck/i1"\n'),
+            "declared_skips[0]", "reason", name="sk-noreason")
+    refused(r, edit(GOOD, old, old + '\n[[suite_run.declared_skips]]\nid = "truck/i1"\n'
+                    'reason = "x"\nwhy = "y"\n'), "declared_skips[0]", "why", name="sk-key")
+    refused(r, edit(GOOD, old, old + '\n[[suite_run.declared_skips]]\nid = "truck/i1"\n'
+                    'reason = 3\n'), "reason must be", name="sk-type")
+    refused(r, edit(GOOD, old, old + ok.replace("truck/i2", "truck/i1")), "truck/i1", "twice",
+            name="sk-twice")
+
+
 TESTS = [test_reads_committed, test_refuses_uncommitted, test_unknown_keys, test_required,
          test_committed_command, test_exact_commits, test_references, test_adapter_names,
-         test_project, test_selection, test_canfail_form, test_ids, test_images_from]
+         test_project, test_selection, test_canfail_form, test_ids, test_images_from,
+         test_declared_skips]
 
 # Each mutant: one listfile.RULES entry switched off, and the test that must
 # then fail. Every rule has one.
@@ -398,6 +427,7 @@ MUTANTS = [
     ("unique_ids", test_ids),
     ("canfail_form", test_canfail_form),
     ("images_once", test_images_from),
+    ("skips_form", test_declared_skips),
 ]
 
 
