@@ -8369,15 +8369,127 @@ the charge-interposer tester (2026-11-19).
   call over the window from the journal, the bench log's holds, and the can-fail
   run at the fix with its canctl count).
 
+**The full bench run on `743cf7cd`, its nine clean passes: B15, B16, B17a,
+B18, B23, B26, B17b, B19absent and B19page -- tester, 2026-11-19 03:25-05:30,
+madhouse-debian, harness `549d8542`. Result: all nine PASS.** Spec 10 (B15),
+spec 11 (B16, and the prod page, B19page), and the 12.4 rows "the page names
+the binary" (B17a, B17b), "0x7F3 carries the build id", bench half (B18),
+"test-only features are inert in the build that will fly", absent half
+(B19absent), "abort behaviour of the C3 TWAI" and "the abort-and-recheck loop"
+(B23), and "receive backlog measured directly" (B26). The gen-inhibit reviewer
+ordered these entries from this run (2026-11-19). B19 here covers the absent
+half and the prod page only: B19present has no result from this run, so the
+present half stays open. The run's other results are not results about the
+device: the reviewer ruled them harness defects and witness-link limits
+(2026-11-19), which topic `gen-inhibit/tester/run2-fixes` fixes before a full
+re-run. B27 was NOT-RUN, deferred by the user, as in the baseline.
+- **Run:** `gen-inhibit-bench_20261119T032517_cb08`, the whole suite, from the
+  chain runner holding the lock itself. Overall: PASS 16, FAIL 14, VOID 3,
+  ERROR 7, NOT-RUN 1. Code `743cf7cd` (`gi_images` and `gi_prod_dir` at
+  `743cf7cd`, clean). Harness: `gi_tools` the detached worktree
+  `gen-inhibit-tester-run-549d` at `549d8542`, clean. Settings
+  `chain_settings_madhouse-debian.json`, against the `e3d9437` index. The run
+  is paired with the emulated run `gen-inhibit-emulated_20261118T122828_eed2`
+  on `743cf7cd`. Each of the nine ran in bench.slice, with no other wall-clock
+  test on the host (`wallclock-others`).
+- **Boards.** The runner's identify read both boards before and after every
+  group (`progress.jsonl`), and every OTA took at attempt 1.
+  - WiCAN, by group: `_man` `483bb940...` (man_app: B15, B16, B17a, B18);
+    `_txabort` `0c7b3268...` (B23; OTA 05:01:51); `_rxq` `d9e8ae62...` (B26,
+    B17b; OTA 05:09:14); the prod stand-in `483bb940...` (B19absent, B19page;
+    OTA 05:15:06).
+  - The run's start and end hooks PASS: found `wican_man`, mode 0, not
+    latched.
+  - Power: 12 V on OBD pin 16, as bench-holder.md has recorded since
+    2026-10-09 (not re-read), and USB plugged at 1-3.1. No WiCAN console
+    capture.
+  - X2 (rule 6): `x2_app` `756d6714` for all nine checks, read before and
+    after each of their groups.
+  - Adapters by `canctl` role: the Kvaser (`kvaser`) on SocketCAN with
+    hardware stamps; the PCAN (`pcanfd`); in B15 also `canmain`.
+- **B15 (spec 10, the diag frames on the segment): PASS,** "3 adapters on
+  the segment; non-ACK repeat on 0x7F9" (04:01:41-04:02:19). Each adapter
+  read the device's diag frames in mode 3:
+  - the Kvaser, ACKing: 20 frames;
+  - the PCAN, listen-only: 20857, all `0x7F9`;
+  - `canmain`, ACKing: 23.
+
+  The Kvaser's and `canmain`'s frames decoded with schema 8, and `0x7F3`'s
+  `diag_build_id` read `483bb940`. The PCAN's `0x7F9` repeat came before the
+  first schema page, so it was not decoded. All three rows are adapters on CAN1, opened by role. The
+  `gs_usb` row is `canmain`, CAN1's Innomaker, not the CAN2 Innomaker of the
+  2026-11-18 correction under step 1d's entry. Recorded, not judged: the
+  non-ACK repeat id `0x7F9` (baseline `0x7F9`; step 1d `0x7F3`).
+- **B16 (spec 11, uptime and reset reason; the idle page-only baseline):
+  PASS** (04:02:19-04:08:19). 360 polls, 0 unanswered, 0 wlan-down, 0
+  stalled, no outage. No reboot: uptime 2219730 -> 2578786 ms, reset_reason
+  SW. Baseline: 360 polls, 0 outages.
+- **B17a (12.4, the page names the binary): PASS,** AS SPECIFIED. The page's
+  `elf_sha256` is `_man`'s image hash `483bb940...`, and the other image is
+  `_rxq` `d9e8ae62...`.
+- **B18 ("0x7F3 carries the build id", bench half): PASS,** "MATCH, 7 rows
+  ok". `diag_build_id` on the wire is `483bb940`, the first four bytes of the
+  image hash and of the page's `elf_sha256`, which read the same before and
+  after. `diag_fw_ver16` 7, `diag_schema_ver_build` 8.
+- **B23 (12.4, abort behaviour of the C3 TWAI and the abort-and-recheck loop;
+  the `_txabort` image): PASS** (05:02:31-05:03:11).
+  - Contend: 72 aborted, 5 no effect, 1 lost-then-aborted.
+  - Retry: 78 of 78 trials reached a free buffer, and the frame was on the
+    wire on 0. The first abort was enough on 70.
+  - Each flood phase's witness saw 3809-3978 frames/s, the full bus.
+  - Baseline: contend 57 / 21 / 0; retry 78 of 78 free, 0 on the wire, the
+    first abort enough on 69.
+- **B26 (12.4, receive backlog measured directly; the `_rxq` image): PASS**
+  (05:09:54-05:12:36). Max backlog 4 / 3 / 7 (idle a, idle b, loaded),
+  against the baseline's 3 / 4 / 8. Dequeues with a backlog >= 2: 15 / 14 /
+  1065 (baseline 15 / 17 / 11543). 82464 dequeues per arm, the replay's
+  82464 frames.
+  - The judge reads only the device's own receive samples.
+  - The Kvaser witness saw 21387, 1550 and 5403 of the 82464 frames: the
+    witness loss in the replay's process that this run found, which
+    `run2-fixes` fixes. So the load on the wire is shown by the device's
+    dequeue count, not by the witness. In the loaded arm the device also
+    counted 3499 of the replay's 3500 `0x051` frames.
+  - **Figure flagged, recorded, not judged** (B26 has no bound):
+    `ge2_loaded` 1065. This is the first B26 with figures from madhouse-debian,
+    and its sender is the PCAN under Linux. Every earlier B26 ran on
+    NICKY-XPS and read 13186-16786 (`7bc9`, `c6a0`, `e25d`, `85e2`, `575b`,
+    `a61f`).
+  - In the loaded arm the device latched "engine turning while armed -- the
+    inhibit did not hold" with `tx_ok` 670, as in `575b` (the replay is
+    passive).
+- **B17b (12.4, the page names the binary; `_rxq`): PASS,** AS SPECIFIED.
+  The page's `elf_sha256` is `_rxq`'s image hash `d9e8ae62...`, and the other
+  image is `_man`.
+- **B19absent (12.4, test-only features inert in the build that will fly,
+  absent half): PASS,** "all five absent on prod" (05:15:46-05:21:31):
+  `RESTART_GUARD_TEST`, `GI_INSTRUMENT_ABORTWIN`, `OTA_HEALTH_FAULT_INJECT`,
+  `GI_INSTRUMENT_RXQ` and `TWAI_PORT_TXABORT_PROBE`, each absent with the
+  device still running.
+  - `GI_INSTRUMENT_RXQ` was undetermined on the first pass ("page_key:rxq
+    None"; the device had latched "error-frame rate exceeded"). It PASSed with
+    the 30 s gap, the same shape as the baseline, which was undetermined
+    twice.
+- **B19page (spec 11, the prod page): PASS,** AS SPECIFIED. The page's
+  `elf_sha256` is `483bb940`.
+- **Identity rows, labelled, not compared:** B17a `483bb940` (baseline
+  `25f50ac0`); B17b `d9e8ae62` (`f9de9de9`); B19page `483bb940`
+  (`f3957789`); B18 `diag_build_id` `483bb940` (baseline schema 7
+  `diag_git_hash` `0x2FE85674`).
+- **Run files:**
+  `runs/chain/gen-inhibit-bench_20261119T032517_cb08/` (`index.txt`,
+  `progress.jsonl`, `board_state.txt`). The checks: `man_app/{B15,B16,B17a,B18}/`,
+  `txabort/B23/`, `rxq/{B26,B17b}/` and `prod/B19absent/`.
+- **2026-11-20:** all nine passed again in run (C), entry below.
+
 **The full re-run (C) on `743cf7cd` -- tester, 2026-11-20 12:25-14:52, madhouse-debian,
 harness `21753d42`, with its triage re-runs to 16:26. Result: PASS 31, FAIL 1 (B10), VOID 5
 (B3, B24, B9, B8, B22), INCONCLUSIVE 1 (B6), NOT-RUN 1 (B27); after the triage re-runs, B3 and
 B6 PASS, B10's arm A4 repeated (the re-run VOID on the bursts' timing), B9, B8 and B22 VOID
 again, B5 ERROR on its re-run, B24 VOID again on another arm.** The gen-inhibit reviewer's answer to 78d24573
 ordered it, from `gen-inhibit/main` `21753d42`, after topics (B), (D), (E), the drain topic and
-queue-bound fixed run 2's harness findings. It replaces run 2's entry
-(`gen-inhibit-bench_20261119T032517_cb08`, nine passes on this code), whose nine checks all
-passed again here. It gives the first B11raw and B21 results under the wording of 2026-11-19
+queue-bound fixed run 2's harness findings. Run 2's nine passes on this code
+(`gen-inhibit-bench_20261119T032517_cb08`, entry above) all passed again here. It gives the first B11raw and B21 results under the wording of 2026-11-19
 (entry above).
 - **Run:** `gen-inhibit-bench_20261120T122548_6846`, the whole suite, from the chain runner
   holding the lock itself. Code `743cf7cd` (`gi_images` and `gi_prod_dir` at `743cf7cd`, clean).
@@ -8498,14 +8610,17 @@ passed again here. It gives the first B11raw and B21 results under the wording o
   same observation on arm A4.** In both runs A1 (expired) and A3 (recent) were as specified,
   and A0 and A2 were the flood arms (trip "error-frame rate exceeded").
   - Observed, arm A4 (expired; armed 15.064 s after the burst in run C, 15.086 s in re-run 1):
-    never live. Device `0x051` on the wire 6 frames in run C, 4 in re-run 1; the abort "0x617
-    went stale while live -- VCM fault flag lost". Run C's record: mode 3, blocked "no fresh
-    0x051", then "SoC not yet valid (contactors)", then from 62.943 s blocked and aborted on
-    "0x617 went stale while live"; `tx_ok` 6, the first `0x051` 0.139 s after the arm.
+    device `0x051` on the wire 6 frames in run C, 4 in re-run 1, then the abort "0x617 went
+    stale while live -- VCM fault flag lost". Run C's record: mode 3, blocked "no fresh 0x051",
+    then "SoC not yet valid (contactors)", then from 62.943 s blocked and aborted on "0x617
+    went stale while live"; `tx_ok` 6, the first `0x051` 0.139 s after the arm. So A4 went
+    live and was aborted.
   - Spec 7, "How the window moves" and "Checked before going live": A4, re-armed 15 s after
-    A2's last error frame, must go live, as A1 did in both runs. The judge's line for A4:
-    "NOT as specified: never live". A4's history and prediction were as specified in both
-    runs.
+    A2's last error frame, must go live, as A1 did in both runs. The judge's line for A4,
+    "NOT as specified: never live", misreads a live-then-aborted arm as never live (the
+    gen-inhibit reviewer, 2026-11-20). A4's history and prediction were as specified in both
+    runs. **B10 stays open with the reviewer** until the judge tells the two apart and the
+    witness settles whose the abort is (0x617 on the wire around it).
   - Re-run 1's VOID: "burst 5 ms: span 2.494 ms, under 3 ms". Run C's B9 has the same span,
     2.494 ms, on a 20 ms burst.
 - **B5 (7, trip 6, arm (i), a steady jam): PASS in run C; ERROR on re-run 1**
