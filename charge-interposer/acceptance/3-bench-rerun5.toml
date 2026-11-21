@@ -15,7 +15,12 @@
 # failure as now"), with a test, a can-fail and a hand take of
 # vport-bitrate and vport-listen-wrong-rate, "then re-make the list on that
 # commit", the vp compares "same-verdicts" as before, any difference left
-# listed one by one with its cause. This list is on that commit.
+# listed one by one with its cause. That fix is merged (bca27c02). Then the
+# reviewer, 2026-11-21: bus-off stays a receive failure, and "A window is
+# judged only when its witness stamps cover it ... before the run", with
+# the bounds from measured gaps, a test, a can-fail and a re-check of b467
+# and E5, "then re-make the list on that commit": this list is on it
+# (8b609320).
 #
 # Run 40e6 (runs/accept_3_20261118T143829_40e6, from 3-bench-rerun4.toml at
 # 179f6ad1, harness 8025a7c3, product as 0691f6f1, shared/bench 2026.11.18)
@@ -80,8 +85,9 @@
 #     read too late) at +37.753 s; resource-log over 23:19:50-23:20:05 is
 #     clean (bench.slice CPU pressure 0.2 %, no memory or IO pressure), so
 #     it counts as a true witness failure, not starvation. 1M flooding 7F4
-#     judged, not REFUSED, but on witness rows stamped 0.00-0.05 s of its
-#     60.10 s: the witness read nothing more, no row, state or failure,
+#     judged, not REFUSED (REFUSED from 8b609320, as not covered), but on
+#     witness rows stamped 0.00-0.05 s of its 60.10 s: the witness read
+#     nothing more, no row, state or failure,
 #     while the node's Kvaser logged about 330 error frames per second over
 #     the whole window. Its status at the window's end was not printed:
 #     python-can's status_string gives nothing for a combined status word
@@ -97,6 +103,9 @@
 #     BUSLIGHT+BUSHEAVY+BUSPASSIVE (passive), never bus-off.
 #   - Why E1's and E3's 1M flooding witness went quiet is not shown: E5's
 #     did not go quiet, and E1 and E3 have no status at that window's end.
+#     It went quiet in the earlier hand takes C4 (2 rows at +0.01 s) and D3
+#     (0.000-0.038 s) too: 4 of the 5 Linux bitrate runs with a 1M flooding
+#     window since C4.
 #   - Cosmetic, not a result: the per-window figures name a window by the
 #     command that opened it ("window", "FLOOD 7F4"), not its rate; they are
 #     in run order (the reviewer: fine as it is).
@@ -107,13 +116,15 @@
 #   1. A 250k flooding window VOID on a PCAN controller overrun (E3: one
 #      read status 0x2, its record clean). The witness's receive failed, so
 #      the window is a TEST FAULT (rule f), a VOID verdict against b467's
-#      PASS. Cause: the PCAN's controller read too late at ~42000 rows/s;
-#      E5's same window read ~28000 rows/s with no overrun.
-#   2. A 1M flooding window judged on a witness that stopped receiving
-#      after 0.05 s (E3) or REFUSED with fewer than 10 stamps (E1). Cause
-#      not shown (above). timing_ok asks for 10 stamps, not for stamps
-#      across the window, so E3's window was judged on 0.05 s of witness:
-#      this is the tester's question to the reviewer, not ruled here.
+#      PASS. Cause: the PCAN's own controller overrun (read status 0x2, the
+#      controller read too late); that window's reader read ~42000 rows/s,
+#      E5's same window ~28000 rows/s with no overrun.
+#   2. A 1M flooding window whose witness stopped receiving within its
+#      first 0.05 s (E1, E3; C4, D3 before them). From 8b609320 such a
+#      window is REFUSED, not covered (the reviewer, 2026-11-21), a VOID
+#      verdict against b467's PASS; before it, E3's was judged on 0.05 s
+#      of witness and E1's REFUSED with fewer than 10 stamps. Cause of the
+#      quiet witness not shown (above).
 #   3. vport-listen-wrong-rate in the bench suite VOID on the node's failed
 #      sends, as b467's: no difference (c-bench).
 #
@@ -149,19 +160,30 @@
 #     unechoed send from a wrong-rate span and prints each wrong-rate
 #     window's figures, and Q1's tx_dropped count still forgives sends from
 #     before the span (5dc29741, ruling (a)).
-#   - bench_vport's witness, on this list's topic, not yet merged
-#     (dcbe2f76, the reviewer's ruling on the first draft): a bus state the
+#   - bench_vport's witness (dcbe2f76, the reviewer's ruling on the first
+#     draft; merged as bca27c02): a bus state the
 #     PCAN returns as a Read result, or as a status message, is decoded with
 #     can-tools' errors.from_pcan_status, lost_frames and decode: frames lost
 #     or bus-off is a receive failure (TEST FAULT, as before), any other
 #     state (active, warning, passive, BUSLIGHT) is counted by its text and
 #     faults nothing; error passive was a receive failure, and a status
-#     message Read returned OK was written as a data row. Bus-off kept a
-#     failure is the tester's choice, put to the reviewer: a bus-off
-#     witness receives nothing, so its window would read the node's frames
-#     as never arrived. Each wrong-rate window prints its states and the
-#     PCAN's own status at its end, the GetStatus word with every bit by
-#     name (28ca5206; diagnostic, judges nothing).
+#     message Read returned OK was written as a data row. Bus-off stays a
+#     failure (the reviewer, 2026-11-21): a bus-off witness receives
+#     nothing, so its window would read the node's frames as never arrived.
+#     Each wrong-rate window prints its states and the PCAN's own status at
+#     its end, the GetStatus word with every bit by name (28ca5206;
+#     diagnostic, judges nothing).
+#   - bench_vport step 2 (wrong bit rate): a window is judged only when the
+#     witness's kept stamps cover it, the first within 0.25 s of its start,
+#     the last within 0.25 s of its end, no gap between stamps over 0.25 s;
+#     else REFUSED, a fault (8b609320, on this list's topic, not yet
+#     merged; the reviewer, 2026-11-21). Bounds from measured windows: the
+#     largest gap in every covered window of b467's vp1-vp3 and the hand
+#     takes E1, E3, E5, D3 and C4 is 21.4 ms (the node sends every 10 ms),
+#     the first stamp at most 0.03 s in, the last at most ~0.02 s from the
+#     end. Re-checked on the records: b467's 12 windows and E5's 4 are all
+#     still judged; E3's 1M flooding window (0.000-0.045 s of 60.100 s),
+#     which was judged, is REFUSED. Steps 1 and 3 are unchanged.
 #   - The 1 % frame-rate margin on sim-timing's comparison (b1eb6385; the
 #     user, 2026-11-19, with the 4 slots). This list has no sim-timing
 #     compare: its emulated suite is compared with 40e6's by verdict, and
@@ -204,7 +226,7 @@
 #     and skills (cb8dfade, 87245a46) and the file map.
 #
 # THE PRODUCT CHANGED since 40e6 and b467: tracker I (spec 9 core dumps,
-# the user 2026-11-18; 58b01c3f). git diff 8025a7c3 28ca5206 --
+# the user 2026-11-18; 58b01c3f). git diff 8025a7c3 8b609320 --
 # charge-interposer/firmware charge-interposer/machine.py touches
 # firmware/main/boot_partitions.c, main/CMakeLists.txt and sdkconfig,
 # besides README.md, shared_pins.json and vtrux_checks.json; machine.py is
@@ -244,11 +266,12 @@
 # tells the reviewer before any re-run (the reviewer, 2026-11-13).
 #
 # Trees:
-#   harness   28ca5206, charge-interposer/tester/vport-pcan-states: main
-#             5dc29741 (the vport-wrongrate-echo merge: ruling (a), Q2,
-#             shared/bench 2026.11.20) with dcbe2f76 and 28ca5206 (bench_vport's
-#             witness). Its can-tools pin 49eb7777. The commit before this
-#             list's own.
+#   harness   8b609320, charge-interposer/tester/vport-coverage: main
+#             bca27c02 (the vport-pcan-states merge, dcbe2f76 and 28ca5206,
+#             on 5dc29741: ruling (a), Q2, shared/bench 2026.11.20) with
+#             8b609320 (step 2's coverage). Its can-tools pin 49eb7777. This
+#             list's own commit follows the merge of its first form
+#             (006640fb) onto it.
 #   prod      the same commit, whose product files are 5dc29741's: the
 #             three bench builds come from it.
 
@@ -261,7 +284,7 @@ spec = ["2", "2.1", "2.2", "2.3", "2.4", "8", "8.2", "8.3", "9", "9.1", "10", "1
 verification = "the tester's VERIFICATION.md entries for port step 3's bench baseline"
 
 [trees.harness]
-project = "28ca5206433ec0402c995289741e393ec21a049c"
+project = "8b609320dc3fd637beb611ca8c0e42f1155b7124"
 
 # ---- the three variants the bench suite flashes ----------------------------
 [[build]]
@@ -407,10 +430,10 @@ differences = []
 # moves nothing here, as for c-emulated: no harness check builds or reads
 # boot_partitions.c, CMakeLists.txt or sdkconfig (its coredump_config_check
 # is run after the IDF builds, in no suite; vtrux_checks.json's two new
-# core-dump settings are checked by the builds). The bench_vport changes on
-# this list's topic change tests under the unchanged ids
-# l-harness/st.bench-vport and cf.bench-vport (the self-test 269 checks,
-# the can-fail 141 mutants).
+# core-dump settings are checked by the builds). The bench_vport changes
+# since 5dc29741 change tests under the unchanged ids
+# l-harness/st.bench-vport and cf.bench-vport (the self-test 272 checks,
+# the can-fail 149 mutants).
 [[compare]]
 id = "c-harness"
 comparer = "run-records"
@@ -467,11 +490,12 @@ differences = [
 
 # The three vport runs, each against the first and against b467's vp1: the
 # same verdicts, no TEST FAULT, no figure tolerance (vport-bitrate's node
-# frames count as sent on their own echo, D3). The hand take E5 on this
-# tree gave b467's verdicts; the differences E1 and E3 still showed (a 250k
+# frames count as sent on their own echo, D3). The hand take E5 (28ca5206)
+# gave b467's verdicts, and its 4 windows and b467's 12 stay judged under
+# 8b609320's coverage rule; the differences E1 and E3 still showed (a 250k
 # flooding window VOID on a PCAN controller overrun, a 1M flooding window
-# with a witness gone quiet) are listed one by one with their causes in the
-# header, "DIFFERENCES LEFT".
+# with a witness gone quiet, REFUSED from 8b609320) are listed one by one
+# with their causes in the header, "DIFFERENCES LEFT".
 [[compare]]
 id = "vp1-vp2"
 comparer = "vport-windows"
