@@ -98,6 +98,15 @@ Requirements are numbered A1 to A18. The numbers are stable.
 - **A12. The verdict.** ACCEPTANCE PASS only if every premise held, every
   check gave its expected verdict, every comparison held and every can-fail
   behaved as stated. Otherwise the runner lists each item that did not.
+- **A12a. Declared skips** (user, 2026-11-20, in the charge-interposer
+  reviewer's session). A `[[suite_run]]` may list `declared_skips`: the ids
+  of the cases its suite's catalogue skips by declaration, each with the
+  catalogue's reason. A NOT-RUN of a listed id does not make the suite run
+  fail; every other result is judged as before. A listed id that ran, that
+  the run did not produce, or that the catalogue does not declare as a skip
+  makes the suite run fail, naming it. The record lists each declared skip
+  with its reason. The nested run's own exit rule is unchanged; the
+  acceptance runner judges the suite run's item from the nested record.
 - **A17. A required suite's earlier run** (user, 2026-11-16, in the
   charge-interposer reviewer's session). When a suite run's suite requires
   another (`Suite.requires`: the bench suite requires a whole emulated run
