@@ -35,7 +35,10 @@ rate, gaps, DLC, drops and 0x7F4's cadence on its device clock. The basis
 up and read back first (an ACK check; VOID with the kernel's lines if
 not). A kvaser TX stall in the sender (ENOBUFS, or an echo later than
 100 ms) is VOID with the kernel's lines, and the Kvaser is recovered
-(sender_void). A PCAN that lost frames (a queue overrun, kernel lost-frame
+(sender_void). The sender takes no error frames and reads its socket after
+every send, a refused one too (kvaser_send; the charge-interposer
+reviewer's Q2, 2026-11-20), so its own echoes are not lost on a full
+receive queue. A PCAN that lost frames (a queue overrun, kernel lost-frame
 lines) voids the run whatever else it shows (judge's witness_void).
 bench_switch_loss keeps the PCAN as its sender (proc_identifier, D4).
 
@@ -860,6 +863,57 @@ def self_test():
           and "witness_void=wv" in src and "sender_void(" in src,
           "run_bench: the Kvaser's process sends, the PCAN (normal) witnesses in its own "
           "process, and both voids reach the verdict")
+
+    # the charge-interposer reviewer's Q2 (2026-11-20): the Kvaser sender
+    # reads its socket after every send, a refused one too, and takes no
+    # error frames
+    class _KW(object):
+        def __init__(self, refuse=None, stall_poll=False):
+            self.refuse, self.stall_poll, self.sends, self.polls = refuse, stall_poll, 0, 0
+
+        def send(self, msg, timeout=None):
+            self.sends += 1
+            if self.refuse is not None:
+                raise self.refuse
+
+        def poll(self, timeout=0.0):
+            self.polls += 1
+            if self.stall_poll:
+                raise kvaser_link.Stall("kvaser TX stall: no own echo 101 ms", 1.0)
+    st_k = []
+    kw = _KW()
+    kvaser_send(kw, None, st_k)
+    check((kw.sends, kw.polls, st_k) == (1, 1, []),
+          "kvaser_send: a send, then the echoes read -> %s" % ((kw.sends, kw.polls),))
+    kw = _KW(refuse=RuntimeError("Transmit buffer full"))
+    try:
+        kvaser_send(kw, None, st_k)
+        raised = False
+    except RuntimeError:
+        raised = True
+    check(raised and kw.polls == 1 and st_k == [],
+          "kvaser_send: a refused send (buffer full) still reads the socket, then is "
+          "raised to the pacer -> raised %s, polls %d" % (raised, kw.polls))
+    kw = _KW(refuse=kvaser_link.Stall("kvaser TX stall: ENOBUFS", 1.0))
+    kvaser_send(kw, None, st_k)
+    kw2 = _KW()
+    kvaser_send(kw2, None, st_k)
+    check(len(st_k) == 1 and kw2.sends == 0,
+          "kvaser_send: a stall kept, and no send after it -> %d stall(s), %d send(s)"
+          % (len(st_k), kw2.sends))
+    st_p = []
+    kw = _KW(refuse=RuntimeError("Transmit buffer full"), stall_poll=True)
+    try:
+        kvaser_send(kw, None, st_p)
+    except RuntimeError:
+        pass
+    check(len(st_p) == 1,
+          "kvaser_send: the read after a refused send finds the bound passed -> the stall "
+          "kept (%d)" % len(st_p))
+    check("kvaser_link.open_bus(receive_own_messages=True, error_frames=False)"
+          in inspect.getsource(proc_identifier_kvaser)
+          and "kvaser_send(watch, msg, stall)" in inspect.getsource(proc_identifier_kvaser),
+          "the Kvaser sender takes no error frames and sends through kvaser_send (Q2)")
     gate_self_test(check)
     sender_drain_self_test(check)
     print("\nbench_hold12 self-test: %s"
@@ -949,6 +1003,34 @@ def proc_identifier(go, done, out_path, seconds):
     done.set()
 
 
+def kvaser_send(watch, msg, stall):
+    """One identifier send on the Kvaser's EchoWatch (proc_identifier_kvaser),
+    then a read of the echoes waiting. A refused send that is not a stall
+    (python-can's "Transmit buffer full") is raised on to the pacer, which
+    counts it, but the socket is read first: a sender that skips its reads
+    while its sends are refused can find its receive queue full and lose its
+    own echoes, as bench_vport's node did in run 40e6 (the charge-interposer
+    reviewer's Q2, 2026-11-20). A kvaser TX stall is kept in `stall`, and no
+    send is made after one: the pacer runs out its time."""
+    if stall:
+        return
+
+    def read():
+        try:
+            watch.poll(0.0)
+        except kvaser_link.Stall as st:
+            stall.append(st)
+    try:
+        watch.send(msg, timeout=0.05)
+    except kvaser_link.Stall as st:
+        stall.append(st)
+        return
+    except Exception:                                      # noqa: BLE001
+        read()                       # a refused send still reads the socket
+        raise
+    read()
+
+
 def proc_identifier_kvaser(go, done, out_path, seconds):
     """The Kvaser sends the identifier, paced, when `go` is set (the
     reviewer's D1, 2026-11-13; bench_switch_loss keeps proc_identifier, the
@@ -962,7 +1044,10 @@ def proc_identifier_kvaser(go, done, out_path, seconds):
     import can
     import bench_pacer
     prio = above_normal()
-    bus = kvaser_link.open_bus(receive_own_messages=True)
+    # no error frames: nothing here reads them (the EchoWatch has no on_rx),
+    # and with nothing acknowledging they fill the receive queue, where an
+    # echo is then lost (the charge-interposer reviewer's Q2, 2026-11-20)
+    bus = kvaser_link.open_bus(receive_own_messages=True, error_frames=False)
     watch = kvaser_link.EchoWatch(bus)
     stall = []
     msg = can.Message(arbitration_id=ID, is_extended_id=True, data=bytearray(3))
@@ -971,13 +1056,7 @@ def proc_identifier_kvaser(go, done, out_path, seconds):
         msg.data = bytearray(((k >> 16) & 255, (k >> 8) & 255, k & 255))
 
     def send():
-        if stall:
-            return                   # stopped: the pacer runs out its time
-        try:
-            watch.send(msg, timeout=0.05)
-            watch.poll(0.0)
-        except kvaser_link.Stall as st:
-            stall.append(st)
+        kvaser_send(watch, msg, stall)
     go.wait()
     t0 = time.perf_counter()
     off = bench_pacer.offer(send, ID_RATE, seconds, seq_writer=seq_writer)
@@ -1339,6 +1418,17 @@ MUTANTS = [
     ("PCAN item 2: the sender's drain death not in the summary",
      "                   reader=death.void_line() if death.error else None),",
      "                   reader=None),"),
+    # the charge-interposer reviewer's Q2, 2026-11-20
+    ("Q2: a refused send skips the Kvaser sender's socket read",
+     "        read()                       # a refused send still reads the socket\n", ""),
+    ("Q2: the Kvaser sender takes error frames",
+     "    bus = kvaser_link.open_bus(receive_own_messages=True, error_frames=False)",
+     "    bus = kvaser_link.open_bus(receive_own_messages=True)"),
+    ("Q2: a stall in the read after a refused send lost",
+     "        try:\n            watch.poll(0.0)\n        except kvaser_link.Stall as st:\n"
+     "            stall.append(st)\n",
+     "        try:\n            watch.poll(0.0)\n        except kvaser_link.Stall as st:\n"
+     "            pass\n"),
 ]
 
 

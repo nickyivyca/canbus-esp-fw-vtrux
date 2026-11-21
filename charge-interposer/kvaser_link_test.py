@@ -53,7 +53,10 @@ Each case names what it checks:
                     a late echo and raises Stall for one that never comes;
                     finish(forgive=n) returns up to n never echoed (the
                     kernel's drops while bus-off) and empties pending, and
-                    one more is the Stall, saying how many were unaccounted
+                    one more is the Stall, saying how many were unaccounted;
+                    finish(excuse=f) returns every excused send never
+                    echoed, however many, counts only the others against n
+                    and waits for an excused send's late echo (ruling (a))
   7. kernel-lines   a planted kernel log: its usb 1-3.2*, kvaser_usb, pcan,
                     gs_usb and -71/EPROTO lines (and only those) on the
                     VOID line with their times, the window named; after
@@ -519,6 +522,31 @@ def case_echo_watch(M, work):
     e = _raises(M.Stall, w.finish, forgive=2)
     assert "3 sends unechoed" in e and "2 of them may be forgiven" in e and "1 unaccounted" in e, e
     assert len(w.pending) == 3, w.pending
+    # finish(excuse=f) (the reviewer's ruling (a), 2026-11-20): every
+    # excused send left unechoed is returned, however many; only the others
+    # count against forgive; an excused send that echoes is waited for
+    c = Clock()
+    w = M.EchoWatch(FakeBus(c, delay=0.020, lose={0, 1, 2, 3}), clock=c)
+    for i in range(6):
+        w.send(Msg(0x7A9, bytes([i])))
+    gone = w.finish(excuse=lambda k: k[2][0] < 5)
+    assert [g[1][2] for g in gone] == [bytes([i]) for i in range(4)] and w.echoed == 2, (
+        gone, w.echoed)
+    assert not w.pending, w.pending
+    c = Clock()
+    w = M.EchoWatch(FakeBus(c, lose={0, 1, 4, 5}), clock=c)
+    for i in range(6):
+        w.send(Msg(0x7A9, bytes([i])))
+    gone = w.finish(forgive=2, excuse=lambda k: k[2][0] < 4)
+    assert len(gone) == 4 and not w.pending, (gone, w.pending)
+    c = Clock()
+    w = M.EchoWatch(FakeBus(c, lose={0, 1, 4, 5}), clock=c)
+    for i in range(6):
+        w.send(Msg(0x7A9, bytes([i])))
+    e = _raises(M.Stall, w.finish, excuse=lambda k: k[2][0] < 4)
+    assert "2 of them excused" in e and "0 of them may be forgiven" in e \
+        and "2 unaccounted" in e, e
+    assert len(w.pending) == 4, w.pending
     # ENOBUFS on send is a stall; another send error is itself
     c = Clock()
     w = M.EchoWatch(FakeBus(c, send_exc=OSError(errno.ENOBUFS, "No buffer space available")),
@@ -875,11 +903,16 @@ MUTANTS = [
     ("finish() does not wait", "        while self.pending:\n            try:",
      "        while False:\n            try:"),
     # finish(forgive) (the reviewer's ruling Q1, 2026-11-20)
-    ("finish: nothing forgiven", "                    if forgive and n <= forgive:",
+    ("finish: nothing forgiven", "                    if n - k <= forgive:",
      "                    if False:"),
-    ("finish: any number forgiven", "                    if forgive and n <= forgive:",
-     "                    if forgive:"),
+    ("finish: any number forgiven", "                    if n - k <= forgive:",
+     "                    if forgive or k:"),
     ("finish: the forgiven left pending", "                        self.pending.clear()\n", ""),
+    # finish(excuse) (the reviewer's ruling (a), 2026-11-20)
+    ("finish: excused sends judged", "                            if excuse is not None and excuse(x[1]))",
+     "                            if False)"),
+    ("finish: every send excused", "                            if excuse is not None and excuse(x[1]))",
+     "                            if excuse is not None)"),
     # restart-ms (the reviewer's ruling Q1, 2026-11-20)
     ("restart-ms not passed to the layer", "    got = L.link_up(ROLE, BITRATE, restart_ms=restart_ms)",
      "    got = L.link_up(ROLE, BITRATE)"),

@@ -116,6 +116,20 @@ stall-16 item):
   still on its way (C3's stall 16, seq 5211). The rows kept out are named
   by seq on the window's line.
 
+The charge-interposer reviewer's ruling (a), 2026-11-20: sends from a
+wrong-rate span are the effect being measured, so the flush does not judge
+them. The node process is told of the span (Node.wrong_ev, set before its
+first send there), node_sender notes each send it makes there with no ACK
+expected, and at the flush EchoWatch.finish(excuse) excuses every one of
+them still unechoed, however many; tx_dropped's count (Q1) still forgives
+the others, and more of those is the stall, as before. The flush prints
+each wrong-rate window's figures (span_figures): its sends never echoed, by
+send-call time; tx_dropped's growth over it; and the first less the second,
+its sends neither echoed nor dropped, so its share figure can be read
+against them. The stall rule where the node's frames are expected to
+complete is unchanged, and so is the wrong-rate window's TEST FAULT when
+the node's sends failed.
+
     py -3.14 bench_vport.py --self-test                 # no hardware
     py -3.14 bench_vport.py --port COM7 --elf <vport_bench.elf>
 
@@ -1588,7 +1602,7 @@ class NodeStall(Exception):
     complete: the run is VOID (the reviewer's D3/D5, 2026-11-13)."""
 
 
-def node_sender(watch, msg_of, expect, now, put, forgive=lambda: 0):
+def node_sender(watch, msg_of, expect, now, put, forgive=lambda: 0, wrong=lambda: False):
     """The node's send(seq) for node_loop, on a kvaser_link.EchoWatch (the
     reviewer's rulings, 2026-11-13). expect() is True where the node's
     frames are expected to complete (an ACKer present, the board at 500k):
@@ -1601,7 +1615,13 @@ def node_sender(watch, msg_of, expect, now, put, forgive=lambda: 0):
     frames the kernel dropped while the node was bus-off in the wrong-rate
     windows since (tx_dropped's growth read in them; the charge-interposer
     reviewer's ruling Q1, 2026-11-20); up to that many never echoing are
-    forgiven (EchoWatch.finish), more is the Stall. Returns the seconds a
+    forgiven (EchoWatch.finish), more is the Stall. wrong() is True in a
+    wrong-rate span: a send made there with no ACK expected is the effect
+    being measured, so the flush does not judge it (the charge-interposer
+    reviewer's ruling (a), 2026-11-20): every such send still unechoed once
+    the bound passes is excused, however many, and forgive() counts only
+    the others. The flush's put is then ("expected", n pending, seconds,
+    n forgiven or excused, [their keys], n excused). Returns the seconds a
     flush held the node (node_loop shifts its schedule).
     The socket is read after every send, a refused one too (2026-11-20, the
     hand take for the reviewer's ruling (2)): with nothing acknowledging,
@@ -1610,6 +1630,7 @@ def node_sender(watch, msg_of, expect, now, put, forgive=lambda: 0):
     the held frames' echoes and VOIDed the flush (run 40e6's vport-listen,
     "28 sends unechoed, 552 echoed")."""
     st = {"exp": True}
+    span = set()                        # keys of the sends from a wrong-rate span
 
     def send(seq):
         pause = None
@@ -1621,13 +1642,18 @@ def node_sender(watch, msg_of, expect, now, put, forgive=lambda: 0):
                 watch.suspended = False
                 watch.rebase(t)
                 n = len(watch.pending)
-                gone = watch.finish(int(forgive()))
+                gone = watch.finish(int(forgive()), excuse=span.__contains__)
                 pause = now() - t
-                put(("expected", n, pause, len(gone), [g[1] for g in gone]))
+                put(("expected", n, pause, len(gone), [g[1] for g in gone],
+                     sum(1 for g in gone if g[1] in span)))
+                span.clear()
             else:
                 watch.suspended = True
+        msg = msg_of(seq)
+        if not exp and wrong():
+            span.add(kvaser_link._key(msg))
         try:
-            watch.send(msg_of(seq), timeout=0.05)
+            watch.send(msg, timeout=0.05)
         except kvaser_link.Stall as e:
             if exp:
                 raise
@@ -1694,25 +1720,28 @@ class _HeldBus(object):
         return self.rx.popleft() if self.rx else None
 
 
-def held_flush_cases(drop=0, forgive=0):
+def held_flush_cases(drop=0, forgive=0, wrong_from=None):
     """node_sender on a real kvaser_link.EchoWatch over _HeldBus: 4 s with
     nothing acknowledging (frames held, the rest refused, error frames
     arriving), then the ACK back and the flush. drop: held frames the
     kernel dropped, never echoing; forgive: what the node's flush is told
-    to forgive (ruling Q1, 2026-11-20). -> [(kind, the flush's put or
-    ("stall", text), why)] for a refused send by ENOBUFS and by
-    python-can's buffer-full timeout."""
+    to forgive (ruling Q1, 2026-11-20); wrong_from: the seq from which the
+    span is wrong-rate (ruling (a), 2026-11-20), None for none. -> [(kind,
+    the flush's put or ("stall", text), why)] for a refused send by ENOBUFS
+    and by python-can's buffer-full timeout."""
     out = []
     for kind in ("enobufs", "transmit buffer full"):
         clock, put = [0.0], []
         bus = _HeldBus(clock, refuse="enobufs" if kind == "enobufs" else "timeout")
         w = kvaser_link.EchoWatch(bus, clock=lambda: clock[0])
-        exp = [False]
+        exp, cur = [False], [0]
         snd = node_sender(w, lambda s: _HeldBus.M(NODE_ID, s.to_bytes(8, "little")),
                           lambda: exp[0], lambda: clock[0], put.append,
-                          forgive=lambda: forgive)
+                          forgive=lambda: forgive,
+                          wrong=lambda: wrong_from is not None and cur[0] >= wrong_from)
         res = None
         for seq in range(400):
+            cur[0] = seq
             clock[0] += NODE_PERIOD_S
             try:
                 snd(seq)
@@ -1733,7 +1762,7 @@ def held_flush_cases(drop=0, forgive=0):
     return out
 
 
-def _node_proc(q, stop_ev, ready_ev, expect_ev, forgive_v=None):
+def _node_proc(q, stop_ev, ready_ev, expect_ev, forgive_v=None, wrong_ev=None):
     """The node in its own process at ABOVE_NORMAL (reviewer, 2026-10-16,
     (i)): its pacing is no longer shared with the witness's GIL (the
     witness reader has its own process too since 2026-10-23, F2). Since
@@ -1757,7 +1786,8 @@ def _node_proc(q, stop_ev, ready_ev, expect_ev, forgive_v=None):
     inner = node_sender(watch, lambda seq: can.Message(
         arbitration_id=NODE_ID, is_extended_id=False, data=node_payload(seq)),
         expect_ev.is_set, time.perf_counter, q.put,
-        forgive=(lambda: forgive_v.value) if forgive_v is not None else (lambda: 0))
+        forgive=(lambda: forgive_v.value) if forgive_v is not None else (lambda: 0),
+        wrong=wrong_ev.is_set if wrong_ev is not None else (lambda: False))
 
     def send(seq):
         calls[seq] = time.perf_counter()
@@ -1805,9 +1835,10 @@ class Node(object):
         self.ready_ev = ctx.Event()
         self.expect_ev = ctx.Event()      # clear: no ACK expected yet
         self.forgive_v = ctx.Value("i", 0)  # read by the node's flush
+        self.wrong_ev = ctx.Event()       # set: the node's sends are from a wrong-rate span
         self.p = ctx.Process(target=_node_proc, args=(
-            self.q, self.stop_ev, self.ready_ev, self.expect_ev, self.forgive_v),
-            daemon=True)
+            self.q, self.stop_ev, self.ready_ev, self.expect_ev, self.forgive_v,
+            self.wrong_ev), daemon=True)
         self.sent, self.fails, self.log, self.echoes = [], 0, [], []
         self.windows = []                 # (label, t_w0, t_cut) of every window
         self.prio = None
@@ -1821,6 +1852,9 @@ class Node(object):
         self.link_start = None            # its link counters when it started
         self.unechoed = set()             # seqs sent (ok) and not yet echoed
         self.early = set()                # seqs echoed before their log entry came
+        self.call_t = {}                  # unechoed seq -> its send call's time
+        self.flush_gone = []              # [(seq, t_call)] the last flush excused or forgave
+        self.span_windows = []            # [(label, t0, t1, tx_dropped growth)] of the span
 
     def start(self):
         print("  node: %s" % kvaser_link.set_link(True, restart_ms=NODE_RESTART_MS))
@@ -1853,15 +1887,20 @@ class Node(object):
             if x[0] == "echo":
                 self.echoes.append(tuple(x[1:]))
                 self.sent.append(x[1])
+                self.call_t.pop(x[1], None)
                 if x[1] in self.unechoed:
                     self.unechoed.discard(x[1])
                 else:
                     self.early.add(x[1])        # its log entry is still on its way
             elif x[0] == "expected":
                 self.flushes.append(x)
-                # frames the flush forgave (dropped by the kernel) never echo
+                # frames the flush forgave (dropped by the kernel) or excused
+                # (from a wrong-rate span) never echo
+                self.flush_gone = []
                 for k in (x[4] if len(x) > 4 else ()):
-                    self.unechoed.discard(int.from_bytes(bytes(k[2][1:5]), "little"))
+                    s = int.from_bytes(bytes(k[2][1:5]), "little")
+                    self.unechoed.discard(s)
+                    self.flush_gone.append((s, self.call_t.pop(s, None)))
                 self.flushed_ev.set()
             elif x[0] == "stall":
                 self.stall = x
@@ -1874,6 +1913,7 @@ class Node(object):
                     self.early.discard(x[0])
                 else:
                     self.unechoed.add(x[0])
+                    self.call_t[x[0]] = x[3]    # its send call, for the span's figures
 
     def counters(self):
         """The node's link counters (kvaser_link.link_counters; ruling Q1)."""
@@ -1900,14 +1940,21 @@ class Node(object):
         bus-offs and the kernel's drops meanwhile; the reviewer's ruling Q1,
         2026-11-20). Turning it on hands the flush the drops to forgive and
         waits for the node's flush of the frames held since (NodeStall if
-        more than those did not echo within STALL_S of the ACK)."""
+        more than those did not echo within STALL_S of the ACK). The node's
+        sends while a wrong-rate span is marked (wrong_ev) are excused at
+        that flush, however many never echo (the reviewer's ruling (a),
+        2026-11-20), and the flush prints each wrong-rate window's figures
+        (span_figures)."""
         self.check_stall()
         if not on:
             if self.expect_ev.is_set():
                 self.forgive = 0
                 self.wrong_rate = wrong_rate
+                self.span_windows = []
             else:
                 self.wrong_rate = self.wrong_rate or wrong_rate
+            if self.wrong_rate:
+                self.wrong_ev.set()           # before the span's first send
             self.expect_ev.clear()
             return None
         if self.expect_ev.is_set():
@@ -1920,13 +1967,19 @@ class Node(object):
                              "the ACK returning" % wait_s, time.time()))
         self.check_stall()
         f = self.flushes[-1]
+        n_exc = f[5] if len(f) > 5 else 0
         print("  node: the ACK back, %d held frame(s) flushed in %.1f ms (kept out of "
               "the next window)%s" % (f[1] - f[3], f[2] * 1000, (
-                  "; %d never echoed, forgiven as dropped by the kernel while bus-off "
-                  "(tx_dropped grew %d in the wrong-rate windows)" % (f[3], self.forgive))
-                  if self.forgive else ""))
-        self.forgive, self.wrong_rate = 0, False
+                  "; %d never echoed: %d sent in the wrong-rate span, excused (ruling "
+                  "(a)), %d forgiven as dropped by the kernel while bus-off (tx_dropped "
+                  "grew %d in the wrong-rate windows)"
+                  % (f[3], n_exc, f[3] - n_exc, self.forgive)) if f[3] else ""))
+        if self.wrong_rate:
+            for ln in span_figures(self.flush_gone, self.span_windows):
+                print("    " + ln)
+        self.forgive, self.wrong_rate, self.span_windows = 0, False, []
         self.forgive_v.value = 0
+        self.wrong_ev.clear()
         return f
 
     def take_echoes(self):
@@ -2371,6 +2424,10 @@ def window(board, wit, node, seconds, command=None, label=None,
         ln, node.window_busoff_fault, add = judge_node_link(node.window_link, expecting,
                                                             wrong_rate)
         node.forgive += add
+        if wrong_rate and not expecting and hasattr(node, "span_windows"):
+            # its figures are printed at the span's flush (ruling (a))
+            node.span_windows.append((label or command or "window", t_w0, t_ncut,
+                                      node.window_link["tx_dropped"]))
         if ln:
             print("    " + ln)
     # read on, so rows stamped in the window but not yet read reach it;
@@ -2907,7 +2964,10 @@ def judge_node_link(g, expecting, wrong_rate):
       VOID (the fault, reported by node_fault);
     - a wrong-rate window: its bus-offs are reported with it, and the frames
       the kernel dropped meanwhile (tx_dropped's growth) are forgiven at the
-      flush when the ACK returns;
+      flush when the ACK returns; since the reviewer's ruling (a)
+      (2026-11-20) the node's own sends from the span are excused there
+      whatever their number, so the count forgives only earlier sends, and
+      the flush prints the window's figures (span_figures);
     - any other no-ACK window (the no-ack arm): reported, nothing forgiven.
     tx_aborted_errors is reported beside them (C1, 11-20: 32 of the frames
     the flush missed were not in tx_dropped)."""
@@ -2921,12 +2981,42 @@ def judge_node_link(g, expecting, wrong_rate):
             return "node's link in the window: " + nums, None, 0
         return None, None, 0
     if wrong_rate:
-        return ("node's link in this wrong-rate window: %s (the %d dropped forgiven at "
-                "the flush)" % (nums, g["tx_dropped"]), None, g["tx_dropped"])
+        return ("node's link in this wrong-rate window: %s (the node's sends from the "
+                "span never echoed are excused at the flush, ruling (a); the %d dropped "
+                "may forgive earlier sends there)" % (nums, g["tx_dropped"]), None,
+                g["tx_dropped"])
     if any(g.values()):
         return ("node's link in the window: %s (not a wrong-rate window: nothing "
                 "forgiven)" % nums, None, 0)
     return None, None, 0
+
+
+def span_figures(gone, windows):
+    """A wrong-rate span's figures, printed at its flush (the charge-
+    interposer reviewer's ruling (a), 2026-11-20: the flush does not judge
+    the span's sends, and each wrong-rate window still reports its
+    tx_dropped growth and its sends neither echoed nor dropped, so its
+    share figure can be read against them). gone: [(seq, t_call or None)]
+    the sends the flush excused or forgave, never echoed; windows: [(label,
+    t0, t1, tx_dropped growth)] the span's wrong-rate windows. -> lines: per
+    window, its sends never echoed (by send-call time), tx_dropped's growth
+    over it (the link counters read around it), and the first less the
+    second as its sends neither echoed nor dropped (0 when tx_dropped grew
+    more, which says the excess were frames sent outside it); then the
+    span's sends never echoed outside every window, and the totals."""
+    lines, left = [], list(gone)
+    for lb, a, b, dr in windows:
+        n = sum(1 for _s, tc in left if tc is not None and a <= tc <= b)
+        left = [(s, tc) for s, tc in left if not (tc is not None and a <= tc <= b)]
+        nd = ("%d" % (n - dr) if n >= dr else
+              "0 (tx_dropped grew %d more than its sends left unechoed: frames sent "
+              "outside it)" % (dr - n))
+        lines.append("wrong-rate window %s: %d of its sends never echoed, tx_dropped +%d "
+                     "over it, neither echoed nor dropped %s" % (lb, n, dr, nd))
+    lines.append("the span: %d sends never echoed, %d of them outside its %d wrong-rate "
+                 "window(s); tx_dropped +%d over those windows"
+                 % (len(gone), len(left), len(windows), sum(w[3] for w in windows)))
+    return lines
 
 
 def node_busoff_fault(node, what):
@@ -3761,6 +3851,11 @@ def self_test():
           "the node is the Kvaser on kvaser_usb, its link brought up first with "
           "restart-ms 100 (ruling Q1, 2026-11-20), its echoes kept (2026-11-13), no "
           "error frames taken (2026-11-20)")
+    check("wrong=wrong_ev.is_set if wrong_ev is not None" in inspect.getsource(_node_proc)
+          and "self.forgive_v,\n            self.wrong_ev), daemon=True)"
+          in inspect.getsource(Node),
+          "the node process is handed the wrong-rate mark, and its sender reads it "
+          "(ruling (a), 2026-11-20)")
 
     # 2026-11-13, the reviewer's D3/D5 and the (a)/(b) ruling: the node's
     # stall rule per window kind, a frame sent when its echo came back,
@@ -3782,7 +3877,7 @@ def self_test():
         def rebase(self, t):
             self.rebased.append(t)
 
-        def finish(self, forgive=0):
+        def finish(self, forgive=0, excuse=None):
             self.forgiven_asked = forgive
             if self.stall_on_finish:
                 raise kvaser_link.Stall("kvaser TX stall: no own echo 101 ms", 2.0)
@@ -3861,6 +3956,31 @@ def self_test():
                 "node: %s, %d dropped, %d forgiven -> the flush stalls%s -> %s"
                 % (kind, drop, fg, ", naming the unaccounted" if fg else "",
                    held_flush))
+    # ruling (a) (2026-11-20): the sends from a wrong-rate span are not
+    # judged at the flush, however many never echo; a no-ACK send before the
+    # span turned wrong-rate still is (with Q1's count)
+    for kind, held_flush, why in held_flush_cases(drop=20, forgive=0, wrong_from=0):
+        check(held_flush[0] == "expected" and held_flush[1] == _HeldBus.HOLD
+              and held_flush[3] == 20 and len(held_flush) > 5 and held_flush[5] == 20
+              and [int.from_bytes(bytes(k[2][:4]), "little") for k in held_flush[4]]
+              == list(range(20)),
+              "node: %s, 20 sends of a wrong-rate span never echo, nothing forgiven by "
+              "count -> the flush passes, the 20 excused and named -> %s"
+              % (kind, held_flush[:4] + held_flush[5:]))
+    for kind, held_flush, why in held_flush_cases(drop=5, forgive=0, wrong_from=10):
+        check(held_flush[0] == "stall" and "5 sends unechoed" in held_flush[1],
+              "node: %s, 5 no-ACK sends from before the span turned wrong-rate never "
+              "echo -> the flush stalls on them -> %s" % (kind, held_flush))
+    for kind, held_flush, why in held_flush_cases(drop=15, forgive=10, wrong_from=10):
+        check(held_flush[0] == "expected" and held_flush[3] == 15 and held_flush[5] == 5,
+              "node: %s, 10 sends before the span and 5 in it never echo, 10 forgiven "
+              "by count -> the flush passes, 5 excused -> %s"
+              % (kind, held_flush[:4] + held_flush[5:]))
+    for kind, held_flush, why in held_flush_cases(drop=15, forgive=5, wrong_from=10):
+        check(held_flush[0] == "stall" and "5 of them excused" in held_flush[1]
+              and "5 unaccounted" in held_flush[1],
+              "node: %s, 10 sends before the span and 5 in it never echo, 5 forgiven by "
+              "count -> the flush stalls on the other 5 -> %s" % (kind, held_flush))
     log = []
     stalls = [0]
 
@@ -4015,7 +4135,7 @@ def self_test():
         def __init__(self, grow, expecting, wrong_rate):
             _CutNode.__init__(self)
             self.grow, self.exp, self.wrong_rate, self.forgive = grow, expecting, wrong_rate, 0
-            self.reads = 0
+            self.reads, self.span_windows = 0, []
 
         def counters(self):
             self.reads += 1
@@ -4035,8 +4155,20 @@ def self_test():
     check(lw.forgive == 346 and node_fault(lw, "x") is None,
           "window(): each wrong-rate window's drops added to the node's forgiveness, no "
           "fault -> forgive %d" % lw.forgive)
+    check([(w[0], w[3]) for w in lw.span_windows] == [("window", 173), ("window", 173)]
+          and all(w[1] < w[2] for w in lw.span_windows),
+          "window(): each wrong-rate window kept for the span's figures, with its bounds "
+          "and tx_dropped's growth (ruling (a)) -> %s" % lw.span_windows)
     la = _LinkNode(_g(1, 1, 0, 0), True, False)
     window(None, _CutWit(la), la, 0.0)
+    check(la.span_windows == [],
+          "window(): a window expecting the node's frames is not a span window -> %s"
+          % la.span_windows)
+    ln_ = _LinkNode(_g(0, 0, 9, 0), False, False)
+    window(None, _CutWit(ln_), ln_, 0.0)
+    check(ln_.span_windows == [],
+          "window(): a no-ACK window that is not wrong-rate is not a span window -> %s"
+          % ln_.span_windows)
     nf_a = node_fault(la, "listen-only, idle")
     check(la.forgive == 0 and nf_a and nf_a.startswith("TEST FAULT: listen-only, idle: the "
                                                        "node went bus-off"),
@@ -4127,14 +4259,57 @@ def self_test():
         fn.take_msg(("expected", 80, 0.01, 6, []))
     tf = _th.Thread(target=_flush)
     tf.start()
-    wr = fn.wrong_rate
-    fn.expect_acks(True)
+    wr, we = fn.wrong_rate, fn.wrong_ev.is_set()
+    import contextlib as _cl
+    import io as _io
+    out_fn = _io.StringIO()
+    with _cl.redirect_stdout(out_fn):
+        fn.expect_acks(True)
     tf.join(2.0)
+    check("the span: 0 sends never echoed" in out_fn.getvalue(),
+          "Node.expect_acks: a wrong-rate span's flush prints its figures -> %r"
+          % out_fn.getvalue())
+    we_after = fn.wrong_ev.is_set()
     fn.expect_acks(False)
     check(wr and seen == [6] and fn.forgive == 0 and fn.forgive_v.value == 0
           and not fn.wrong_rate,
           "Node.expect_acks: a wrong-rate span's drops handed to the flush, then "
           "reset; a no-ACK span after is not wrong-rate -> %s" % seen)
+    check(we and not we_after and not fn.wrong_ev.is_set(),
+          "Node.expect_acks: the node process told of a wrong-rate span, untold after its "
+          "flush, and a plain no-ACK span is not one (ruling (a)) -> %s"
+          % ((we, we_after, fn.wrong_ev.is_set()),))
+    fn.expect_acks(False, wrong_rate=True)
+    check(fn.wrong_ev.is_set() and not fn.expect_ev.is_set(),
+          "Node.expect_acks: a no-ACK span that turns wrong-rate tells the node process")
+
+    # ruling (a): the flush's never-echoed sends traced to their windows by
+    # their send calls, and each wrong-rate window's figures
+    fa = Node()
+    for x in [(0, 0.0, 1, 1.00, 1.0), (1, 0.0, 1, 1.01, 1.01), (2, 0.0, 1, 2.00, 2.0),
+              (3, 0.0, 1, 2.01, 2.01), (4, 0.0, 1, 2.50, 2.5), (5, 0.0, 1, 3.00, 3.0),
+              ("echo", 1, 1.01, 1.01, 9.0)]:
+        fa.take_msg(x)
+    fa.take_msg(("expected", 5, 0.1, 5, [(NODE_ID, False, bytes(node_payload(s)))
+                                         for s in (0, 2, 3, 4, 5)], 5))
+    check(sorted(fa.flush_gone) == [(0, 1.0), (2, 2.0), (3, 2.01), (4, 2.5), (5, 3.0)]
+          and fa.call_t == {},
+          "Node: the flush's never-echoed sends kept with their send calls -> %s"
+          % fa.flush_gone)
+    sf = span_figures(fa.flush_gone, [("w1", 0.9, 1.1, 0), ("w2", 1.9, 2.1, 1),
+                                      ("w3", 2.9, 3.1, 4)])
+    check(len(sf) == 4
+          and sf[0] == ("wrong-rate window w1: 1 of its sends never echoed, tx_dropped +0 "
+                        "over it, neither echoed nor dropped 1")
+          and sf[1].startswith("wrong-rate window w2: 2 of its sends never echoed, "
+                               "tx_dropped +1 over it, neither echoed nor dropped 1")
+          and sf[2].startswith("wrong-rate window w3: 1 of its sends never echoed, "
+                               "tx_dropped +4 over it, neither echoed nor dropped 0 "
+                               "(tx_dropped grew 3 more")
+          and sf[3].startswith("the span: 5 sends never echoed, 1 of them outside its 3 "
+                               "wrong-rate window(s); tx_dropped +5"),
+          "span_figures: per window its sends never echoed, tx_dropped's growth and the "
+          "difference, then the span's -> %s" % sf)
 
     class _EN(object):
         """A node with echoes: one flushed frame read at the window's start."""
@@ -5828,7 +6003,8 @@ MUTANTS = [
     ("node: ENOBUFS where frames should complete refused",
      "            if exp:\n                raise\n", "            if False:\n                raise\n"),
     ("node: no flush when the ACK returns",
-     "                gone = watch.finish(int(forgive()))\n", "                gone = []\n"),
+     "                gone = watch.finish(int(forgive()), excuse=span.__contains__)\n",
+     "                gone = []\n"),
     ("node: the held frames' bound from their send, not the ACK",
      "                watch.rebase(t)\n", ""),
     ("node: no schedule shift after a flush", "            t0 += pause", "            pass"),
@@ -5923,7 +6099,7 @@ MUTANTS += [
      "                if not x[2]:\n                    self.fails += 1\n                    self.unechoed.add(x[0])\n"
      "                elif x[0] in self.early:"),
     ("the head: forgiven frames stay the head",
-     "                    self.unechoed.discard(int.from_bytes(bytes(k[2][1:5]), \"little\"))\n",
+     "                    self.unechoed.discard(s)\n",
      "                    pass\n"),
     # ruling Q1 (2026-11-20): restart-ms and the kernel's drops while bus-off
     ("the node's link up without restart-ms",
@@ -5933,8 +6109,8 @@ MUTANTS += [
      "    lines.append((recover or kvaser_link.recover)(restart_ms=NODE_RESTART_MS)[1])",
      "    lines.append((recover or kvaser_link.recover)()[1])"),
     ("the flush forgives nothing",
-     "                gone = watch.finish(int(forgive()))",
-     "                gone = watch.finish(0)"),
+     "                gone = watch.finish(int(forgive()), excuse",
+     "                gone = watch.finish(0, excuse"),
     ("the drops never handed to the node's flush",
      "        self.forgive_v.value = self.forgive\n",
      ""),
@@ -5942,8 +6118,8 @@ MUTANTS += [
      "        if g[\"bus_off\"]:\n            return (None, \"the node went bus-off",
      "        if False:\n            return (None, \"the node went bus-off"),
     ("a wrong-rate window's drops not forgiven",
-     "                \"the flush)\" % (nums, g[\"tx_dropped\"]), None, g[\"tx_dropped\"])",
-     "                \"the flush)\" % (nums, g[\"tx_dropped\"]), None, 0)"),
+     "                g[\"tx_dropped\"])\n    if any(g.values()):",
+     "                0)\n    if any(g.values()):"),
     ("every no-ACK window's drops forgiven",
      "    if wrong_rate:\n        return (\"node's link in this wrong-rate window",
      "    if True:\n        return (\"node's link in this wrong-rate window"),
@@ -5956,7 +6132,8 @@ MUTANTS += [
     ("stall_report without the node's link since its start",
      "    if since:\n        lines.append(since)\n", ""),
     ("the drops carried into the next span",
-     "        self.forgive, self.wrong_rate = 0, False\n        self.forgive_v.value = 0\n",
+     "        self.forgive, self.wrong_rate, self.span_windows = 0, False, []\n"
+     "        self.forgive_v.value = 0\n",
      ""),
     # D2 (2026-11-20): the counters read takes 0.67-0.77 s
     ("the link counters read inside the window",
@@ -5964,6 +6141,43 @@ MUTANTS += [
      "    t_w0 = time.perf_counter()\n"
      "    link0 = node.counters() if hasattr(node, \"counters\") else None\n"
      "    # the node's echoes (D3, 2026-11-13)"),
+    # ruling (a) (2026-11-20): the sends from a wrong-rate span not judged at
+    # the flush; each wrong-rate window's figures
+    ("the flush excuses nothing from a wrong-rate span",
+     "excuse=span.__contains__)", "excuse=None)"),
+    ("every no-ACK send excused",
+     "        if not exp and wrong():\n            span.add(",
+     "        if not exp:\n            span.add("),
+    ("the node process never told of a wrong-rate span",
+     "            if self.wrong_rate:\n                self.wrong_ev.set()           # before the span's first send\n",
+     ""),
+    ("the wrong-rate mark kept after the flush",
+     "        self.wrong_ev.clear()\n        return f", "        return f"),
+    ("the node process not handed the mark",
+     "        wrong=wrong_ev.is_set if wrong_ev is not None else (lambda: False))",
+     "        wrong=lambda: False)"),
+    ("the node process started without the mark",
+     "self.forgive_v,\n            self.wrong_ev), daemon=True)",
+     "self.forgive_v), daemon=True)"),
+    ("the span's windows not kept",
+     "        if wrong_rate and not expecting and hasattr(node, \"span_windows\"):",
+     "        if False:"),
+    ("every no-ACK window a span window",
+     "        if wrong_rate and not expecting and hasattr(node, \"span_windows\"):",
+     "        if not expecting and hasattr(node, \"span_windows\"):"),
+    ("the flush's sends without their send calls",
+     "                    self.call_t[x[0]] = x[3]    # its send call, for the span's figures\n",
+     ""),
+    ("neither echoed nor dropped without the drops",
+     "        nd = (\"%d\" % (n - dr) if n >= dr else",
+     "        nd = (\"%d\" % n if n >= dr else"),
+    ("a send counted in two windows",
+     "        left = [(s, tc) for s, tc in left if not (tc is not None and a <= tc <= b)]\n",
+     ""),
+    ("the span's figures not printed at its flush",
+     "            for ln in span_figures(self.flush_gone, self.span_windows):\n"
+     "                print(\"    \" + ln)\n",
+     "            pass\n"),
 ]
 
 

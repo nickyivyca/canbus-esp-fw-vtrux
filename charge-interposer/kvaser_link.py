@@ -51,7 +51,10 @@ to the layer's link_up and read back here too (a usbreset leaves 0, and with
 bench_vport's node does. EchoWatch.finish(forgive=n) forgives up to n sends
 that never echo once the bound passes (frames the kernel dropped while the
 link was bus-off: bench_vport counts them from tx_dropped), and returns them;
-more than n is the Stall.
+more than n is the Stall. EchoWatch.finish(excuse=f) also returns every send
+still unechoed whose key f excuses, however many, and counts only the others
+against n (bench_vport's node excuses its sends from a wrong-rate span: the
+charge-interposer reviewer's ruling (a), 2026-11-20).
 
 THE KERNEL'S LINES (the reviewer's addendum, 2026-11-13). Both bench USB
 hubs are bus-powered, and the GL850G holding the Kvaser, the PCAN and
@@ -448,29 +451,38 @@ class EchoWatch:
             m = self.bus.recv(0.0)
         self.check()
 
-    def finish(self, forgive=0):
+    def finish(self, forgive=0, excuse=None):
         """Read until every send is echoed; Stall once the bound passes.
         forgive: how many sends the kernel is known to have dropped
         (bench_vport's node: tx_dropped's growth while it was bus-off in
         wrong-rate windows; the charge-interposer reviewer's ruling Q1,
-        2026-11-20). Once the bound passes with no more than that many still
-        unechoed, they leave pending and are returned, not a Stall; more
-        than that is the Stall, its text saying how many were forgiven.
-        -> the forgiven entries ([t send returned, key]), [] when every send
-        echoed."""
+        2026-11-20). excuse(key) -> True for a send the caller does not
+        judge (bench_vport's node: its sends from a wrong-rate span, the
+        charge-interposer reviewer's ruling (a), 2026-11-20). Once the bound
+        passes, the excused sends still unechoed, however many, and up to
+        `forgive` of the others leave pending and are returned, not a Stall;
+        more of the others than that is the Stall, its text saying how many
+        were excused and forgiven. Echoes are waited for either way, so an
+        excused send that does echo is counted echoed.
+        -> the forgiven and excused entries ([t send returned, key]), []
+        when every send echoed."""
         while self.pending:
             try:
                 self.poll(0.005)
             except Stall as e:
                 with self._lock:
                     n = len(self.pending)
-                    if forgive and n <= forgive:
+                    k = sum(1 for x in self.pending
+                            if excuse is not None and excuse(x[1]))
+                    if n - k <= forgive:
                         gone = list(self.pending)
                         self.pending.clear()
                         return gone
-                if forgive:
-                    raise Stall("%s; %d of them may be forgiven as dropped by the "
-                                "kernel, %d unaccounted" % (e, forgive, n - forgive), e.t)
+                if forgive or k:
+                    raise Stall("%s; %s%d of them may be forgiven as dropped by the "
+                                "kernel, %d unaccounted"
+                                % (e, ("%d of them excused, " % k) if k else "", forgive,
+                                   n - k - forgive), e.t)
                 raise
         return []
 
