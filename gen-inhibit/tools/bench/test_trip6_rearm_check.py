@@ -1,11 +1,14 @@
 """Harness test for trip6_rearm_check: the expired-arm and recent-arm judges.
 
     py -3.14 gen-inhibit/tools/bench/test_trip6_rearm_check.py   (from the repo root)
+Mutants: test_trip6_rearm_check_mutants.py (TRIP6_DIR runs another copy of the tool).
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+if os.environ.get("TRIP6_DIR"):
+    sys.path.insert(0, os.environ["TRIP6_DIR"])
 import trip6_rearm_check as T                                      # noqa: E402
 
 TRIP = T.TRIP6
@@ -29,7 +32,7 @@ def player_times():
     import skip_method_bench as S
     took, n617 = [], [0]
 
-    class Bus:
+    class SendSpy:      # a fake with send() only: not a bus open (bench_scan, test_kvaser_bus)
         def send(self, m):
             if m.arbitration_id == 0x617:
                 n617[0] += 1
@@ -37,14 +40,25 @@ def player_times():
                     raise OSError("refused (test)")
             took.append(m.arbitration_id)
     stim = [(0.0, 0x100, b"\x00"), (0.002, 0x617, b"\x00"), (0.004, 0x200, b"\x00"), (0.006, 0x617, b"\x01")]
-    p = S.Player(Bus(), stim, record_ids=(0x617,))
+    p = S.Player(SendSpy(), stim, record_ids=(0x617,))
     p.start()
     time.sleep(0.1)
     p.stop_flag.set()
     p.join(5)
     ts = p.sent_at[0x617]
     return (set(p.sent_at) == {0x617} and len(ts) == took.count(0x617) > 2 and ts == sorted(ts)
-            and p.fail == n617[0] // 3 and S.Player(Bus(), stim).sent_at == {})
+            and p.fail == n617[0] // 3 and S.Player(SendSpy(), stim).sent_at == {})
+
+
+def arm_line_has_aborts():
+    """main prints each arm's aborts (their reasons) on its line, before its verdict: where a
+    live-then-aborted arm's abort is recorded (read from the source: main needs the bench)."""
+    import inspect
+    src = inspect.getsource(T.main)
+    i = src.find("aborts = sorted({r.get(\"abort\") for r in arm[\"reads\"] if r.get(\"abort\")})")
+    j = src.find("aborts %s  %s\"", i)
+    k = src.find("aborts, arm.get(\"verdict\", \"\")))", j)
+    return 0 < i < j < k
 
 
 def main():
@@ -57,19 +71,22 @@ def main():
          T.judge_expired([{"live": False, "abort": ""}], 0).startswith("NOT")),
         ("expired arm: a new error frame since arming -> VOID, even if it tripped",
          T.judge_expired(PHANTOM, 1).startswith("VOID")),
-        # Live, then aborted other than by trip 6: not trip 6, and told apart from never live
-        # (the gen-inhibit reviewer, answer to the run (C) report, 2026-11-20). Until then this case
-        # read "as specified".
-        ("expired arm: live then another abort (not trip 6) -> UNCLEAR, naming the abort",
+        # Live, then aborted other than by trip 6: B10's property shown (live, no trip 6 latch), so as
+        # specified, the abort in the arm line; told apart from never live (the gen-inhibit reviewer,
+        # 2026-11-20; for a day it read UNCLEAR)
+        ("expired arm: live then another abort (not trip 6) -> as specified",
          T.judge_expired([{"live": True, "abort": ""}, {"live": False, "abort": "transmit failed"}], 0)
-         .startswith(T.UNCLEAR_PREFIX + "live, then aborted (transmit failed)")),
+         == "as specified"),
         # run C's B10 A4: no read live, but tx_ok 6 in mode 3 and device 0x051 since the arm
-        ("expired arm: the A4 shape (no read live; 0x051 seen; aborted 0x617 stale) -> UNCLEAR, not never live",
-         T.judge_expired(A4_RUNC, 0, 6).startswith(T.UNCLEAR_PREFIX + "live, then aborted (0x617 went stale")),
-        ("expired arm: ... live from tx_ok in mode 3 alone -> UNCLEAR",
-         T.judge_expired(A4_RUNC, 0, 0).startswith(T.UNCLEAR_PREFIX)),
-        ("expired arm: ... live from the witness's 0x051 alone -> UNCLEAR",
-         T.judge_expired(A4_NO_TX, 0, 3).startswith(T.UNCLEAR_PREFIX)),
+        ("expired arm: the A4 shape (no read live; 0x051 seen; aborted 0x617 stale) -> as specified, not never live",
+         T.judge_expired(A4_RUNC, 0, 6) == "as specified"),
+        ("expired arm: ... live from tx_ok in mode 3 alone -> as specified",
+         T.judge_expired(A4_RUNC, 0, 0) == "as specified"),
+        ("expired arm: ... live from the witness's 0x051 alone -> as specified",
+         T.judge_expired(A4_NO_TX, 0, 3) == "as specified"),
+        ("expired arm: the A4 shape with no 0x051 and no tx_ok in mode 3 -> never live",
+         T.judge_expired(A4_NO_TX, 0, 0) == "NOT as specified: never live"),
+        ("the arm line prints the arm's aborts beside its verdict", arm_line_has_aborts()),
         ("expired arm: no read live, no 0x051, tx_ok only on a read in mode 0 (the last arm's) -> never live",
          T.judge_expired(A4_NO_TX + [{"live": False, "abort": "", "mode": 0, "tx_ok": 40}], 0, 0)
          == "NOT as specified: never live"),

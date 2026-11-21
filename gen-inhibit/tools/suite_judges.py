@@ -657,14 +657,9 @@ def b10(F):
         [h for h, _p in hist if h.startswith("VOID")]
     notspec = [v for *_, v in judged if v.startswith("NOT")] + [x for h, p in hist for x in (h, p)
                                                                   if x.startswith("NOT")]
-    # An expired arm that went live and was then aborted other than by trip 6 is the tool's UNCLEAR:
-    # whose the abort is is not settled from the record (the gen-inhibit reviewer, answer to the run
-    # (C) report, 2026-11-20), so the check is ERROR, for the reviewer, unless an arm is NOT as
-    # specified; it is never PASS, and never VOID either (arm_rulings: unclear -> ERROR).
-    unclear = ["%s: %s" % (a, v) for a, _k, v in judged if v.startswith("UNCLEAR")]
-    if unclear and not notspec:
-        return [result("B10", "ERROR", figs, "%d of %d judged arms as specified; %s"
-                       % (spec, len(judged), "; ".join(unclear)[:300]))]
+    # An expired arm live then aborted other than by trip 6 is the tool's "as specified", its abort in
+    # the arm line (the gen-inhibit reviewer, 2026-11-20; for a day the tool read it UNCLEAR, which
+    # this judge read as ERROR). Any other arm verdict is not "as specified", so it is FAIL below.
     if voided and not notspec:
         return [result("B10", "VOID", figs, "%d of %d judged arms as specified; VOID: %s"
                        % (spec, len(judged), "; ".join(v for _a, _k, v in judged if v.startswith("VOID"))[:300]))]

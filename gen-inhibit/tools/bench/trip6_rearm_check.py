@@ -48,7 +48,10 @@ after A3's slice stopped, went live 0.139 s later and was aborted "0x617 went st
 The Player's host send times of 0x617 are kept (host_0x617_sent_s; the PCAN sends the slice and
 does not receive its own frames, so the witness has none) and each arm's gaps over 1.0 s printed.
 An expired arm that went live (a read live, a device 0x051 or tx_ok in mode 3) and was then
-aborted other than by trip 6 is UNCLEAR, which the suite's B10 reads as ERROR.
+aborted other than by trip 6 is as specified for B10, its abort and reason in the arm line's
+aborts: B10's property is that an expired arm goes live and trip 6 does not latch (the gen-inhibit
+reviewer's rulings on the run (C) fixes, 2026-11-20; it read UNCLEAR for a day). Live then trip 6
+stays NOT as specified, and never live is told apart from it.
 
     py -3.14 trip6_rearm_check.py --x2 held --power "..."
 Writes runs/trip6_rearm_check_<stamp>.json.
@@ -71,7 +74,6 @@ TRIP6 = "error-frame rate exceeded"
 RECENT_MAX_S = 8.0     # an A3 arm later than this after the burst is too near the 10 s edge
 
 
-UNCLEAR_PREFIX = "UNCLEAR: "   # the suite's B10 judge reads an arm verdict with it as ERROR
 ID_0x617 = 0x617
 # 0x617 older than this aborts a live arm; the gen-inhibit reviewer's figure for the gaps to find
 # (answer to the run (C) report, 2026-11-20: "every gap over 1.0 s")
@@ -94,19 +96,15 @@ def went_live(reads, device_0x051):
 def judge_expired(reads, errors_since_arm, device_0x051=0):
     """An arm whose last burst has expired: live, and never the trip 6 abort.
     A new error frame since arming would make a trip legitimate -> VOID. Live, then aborted by
-    something other than trip 6 is told apart from never live (the gen-inhibit reviewer, answer to
-    the run (C) report, 2026-11-20): whose the abort is (the stimulus's or the device's) is not
-    settled from the arm's reads, so it is UNCLEAR, never "as specified" and never "never live"."""
+    something other than trip 6 has shown B10's property (live, no trip 6 latch), so it is as
+    specified, its abort and reason in the arm line's aborts (the gen-inhibit reviewer, 2026-11-20);
+    went_live tells it apart from never live."""
     if errors_since_arm:
         return "VOID: %d witness error frames since arming" % errors_since_arm
     if any(r.get("abort") == TRIP6 for r in reads):
         return "NOT as specified: trip 6 on an expired burst"
     if not went_live(reads, device_0x051):
         return "NOT as specified: never live"
-    aborts = sorted({r["abort"] for r in reads if r.get("abort")})
-    if aborts:
-        return "%slive, then aborted (%s), not trip 6; whose the abort is is not settled here" % (
-            UNCLEAR_PREFIX, "; ".join(aborts))
     return "as specified"
 
 

@@ -326,12 +326,9 @@ MUTANTS = [
      '        return [result("B10", "VOID", detail="the PCAN\'s clock: %s" % cv.group(1))]', '        pass'),
     ("B10: a VOID arm is FAIL, as before", "    if voided and not notspec:", "    if False:"),
     ("B10: a VOID arm hides a NOT as specified", "    if voided and not notspec:", "    if voided:"),
-    # the gen-inhibit reviewer's answer to the run (C) report, 2026-11-20: an UNCLEAR arm is ERROR
-    ("B10: an UNCLEAR arm read as FAIL (as before)", "    if unclear and not notspec:", "    if False:"),
-    ("B10: an UNCLEAR arm hides a NOT as specified", "    if unclear and not notspec:", "    if unclear:"),
-    ("B10: an UNCLEAR arm is looked for after the VOID ones",
-     '    if unclear and not notspec:\n        return [result("B10", "ERROR"',
-     '    if unclear and not notspec and not voided:\n        return [result("B10", "ERROR"'),
+    # 2026-11-20: an arm verdict other than "as specified" (the one-day tool's UNCLEAR) is not PASS
+    ("B10: an arm counts as specified by its start", '    spec = sum(1 for *_, v in judged if v == "as specified")',
+     '    spec = sum(1 for *_, v in judged if v[:2] in ("as", "UN"))'),
     # the host mode line, H and B15host (host_target.sh, 2026-11-12)
     ("host mode: any line is read, not only the first", '    first = t.split("\\n", 1)[0]  ',
      '    first = next((l for l in t.splitlines() if HOST_MODE_RX.fullmatch(l)), "")  '),
