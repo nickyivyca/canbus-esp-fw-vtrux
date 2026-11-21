@@ -237,19 +237,25 @@ def judge(rec):
     # a jam on a disarmed device as an (A) FAIL. Now: tx_ok falling, or the
     # mode leaving 3 before the harness posts mode 0, is a reset, and the
     # device must read live on the last answered sample before the jam.
+    # A tx_ok fall counts only between two answered readings both in mode 3 (or with no mode on
+    # record): tx_ok restarts at the arm's own POST, so a reading of the previous arm's count
+    # (still mode 0) followed by the new arm's (mode 3) is the arm starting, not a reset (the
+    # gen-inhibit reviewer, answer to the run (C) report, 2026-11-20; livetrain p2000 run3 arm 1).
     armed = [s for s in samples if s["pt"] >= ph["arm_posted"]
              and s["pt"] < ph.get("mode0_posted", float("inf"))]
-    resets, unanswered, last_tx = [], 0, None
+    resets, unanswered, last_tx, last_mode = [], 0, None, None
     for s in armed:
         sn = s["snap"]
         if sn is None:
             unanswered += 1
             continue
-        tx = sn.get("tx_ok")
-        if (last_tx is not None and tx is not None and tx < last_tx) or                 (sn.get("mode") not in (3, None) and s["pt"] > ph["arm_posted"] + 1.0):
+        tx, mode = sn.get("tx_ok"), sn.get("mode")
+        tx_fell = (last_tx is not None and tx is not None and tx < last_tx
+                   and mode in (3, None) and last_mode in (3, None))
+        if tx_fell or (mode not in (3, None) and s["pt"] > ph["arm_posted"] + 1.0):
             resets.append(round(s["pt"] - (j0 or s["pt"]), 3))
         if tx is not None:
-            last_tx = tx
+            last_tx, last_mode = tx, mode
     out["unanswered_samples_while_armed"] = unanswered
     out["device_reset_seen_rel_jam_s"] = resets[:5]
     # The reset rule (gen-inhibit reviewer, 2026-11-19; arm_rulings): a reset is a result, judged

@@ -139,6 +139,25 @@ def never_live(r):
         x["snap"]["inhibit_live"] = False
 
 
+def arm_own_tx_reset(r):
+    """The livetrain p2000 run3 arm 1 shape (the gen-inhibit reviewer, 2026-11-20): the reading at
+    the arm's own POST (3.0 s) still shows the previous arm, mode 0 with tx_ok 323; from the next
+    the new arm, mode 3, its tx_ok counting up from 1. The arm starting, not a reset."""
+    for x in r["samples"]:
+        if x["pt"] <= 3.0:
+            x["snap"].update(mode=0, tx_ok=323)
+        else:
+            x["snap"].update(mode=3, tx_ok=int((min(x["pt"], 10.1) - 3.0) * 100) + 1)
+
+
+def tx_fall_in_mode3(r):
+    """arm_own_tx_reset, then tx_ok falling to 0 at 7.0 s with the mode still 3: a reset."""
+    arm_own_tx_reset(r)
+    for x in r["samples"]:
+        if x["pt"] >= 7.0:
+            x["snap"]["tx_ok"] = int(max(min(x["pt"], 10.1) - 7.0, 0.0) * 100)
+
+
 # VCM duplicates (reviewer's ruling, 2026-10-12): a same-counter pair after the
 # latch, between base frames (12.00 carries counter 1, 12.01 counter 2), with tx_ok
 # on every page reading: rising while live, flat at 1100 from the latch.
@@ -195,6 +214,13 @@ CASES = [
     ("B: same B5, payloads differ: device frame", mut(dup_payload_differs), {"B": "FAIL"}),
     ("B: tx_ok rose across the pair: device frame", mut(dup_tx_moved), {"B": "FAIL"}),
     ("B: no tx_ok on the page: device frame", mut(dup_no_tx), {"B": "FAIL"}),
+    # The arm's own tx_ok restart at its POST is not a device reset (the gen-inhibit reviewer,
+    # 2026-11-20): judged as the clean arm is. Can-fail: tx_ok falling between two mode-3
+    # readings is still a reset.
+    ("reset: the arm's own tx_ok restart is not one", mut(arm_own_tx_reset),
+     {"A": "PASS", "B": "PASS", "device_reset_seen_rel_jam_s": "[]"}),
+    ("reset: tx_ok falls in mode 3: one", mut(tx_fall_in_mode3),
+     {"verdict": "INCONCLUSIVE", "A": "NOT EXERCISED", "device_reset_seen_rel_jam_s": "[-3.0"}),
 ]
 
 

@@ -650,6 +650,62 @@ class Hammer(threading.Thread):
                 self.stop.wait(max(0.0, self.period - (time.perf_counter() - t0)))
 
 
+# THE REPLAY'S OWN SCHEDULE, KEPT AND CHECKED (gen-inhibit reviewer's answer to the run (C)
+# report, item 4(iv), 2026-11-20). Run C's and its re-run's B22 arms took the replay's base
+# before the --flood-slcan filler was opened (python-can's slcan open sleeps 2 s, then 0.5 s
+# and the board's counter read), so the replay started ~3.37 s behind its own schedule and
+# sent ~8000 frames back to back; the Linux PCAN driver's 500-frame queue refused ~6600 of
+# them. The base is now taken after the filler is started, and the arm is void when its first
+# frame goes out more than START_LAG_MAX_S behind schedule. Each refusal's text, index and
+# time is kept (the first REFUSALS_KEPT; all are counted), which the record lacked.
+START_LAG_MAX_S = 0.005
+REFUSALS_KEPT = 50
+
+
+class ReplayLedger:
+    """How the replay kept its schedule and what the adapter refused, on the replay's clock
+    (s from its base). sent() is called after the frame's busy-wait, just before its send;
+    refuse() when the adapter raised on it. The worst lag is recorded, not judged."""
+
+    def __init__(self, keep=REFUSALS_KEPT):
+        self.keep = keep
+        self.first_lag_s = None
+        self.max_lag_s = None
+        self.refused = 0
+        self.refusals = []
+
+    def sent(self, due, now):
+        lag = now - due
+        if self.first_lag_s is None:
+            self.first_lag_s = lag
+        if self.max_lag_s is None or lag > self.max_lag_s:
+            self.max_lag_s = lag
+
+    def refuse(self, index, t_s, exc):
+        self.refused += 1
+        if len(self.refusals) < self.keep:
+            self.refusals.append({"index": index, "t_s": round(t_s, 6),
+                                  "error": "%s: %s" % (type(exc).__name__, exc)})
+
+    def fields(self):
+        return {"start_lag_s": None if self.first_lag_s is None else round(self.first_lag_s, 6),
+                "max_send_lag_s": None if self.max_lag_s is None else round(self.max_lag_s, 6),
+                "start_lag_max_s": START_LAG_MAX_S,
+                "refusals_kept": self.refusals}
+
+
+def start_lag_reason(first_lag_s, bound=START_LAG_MAX_S):
+    """The void reason when the replay's first frame went out late, else None. No frame
+    sent at all is a reason too: the replay's start is then unknown."""
+    if first_lag_s is None:
+        return "the replay sent no frame, so its start against its schedule is not known"
+    if first_lag_s > bound:
+        return ("the replay's first frame went out %.1f ms behind its own schedule (bound %.1f ms), "
+                "so the frames due meanwhile went to the adapter back to back"
+                % (first_lag_s * 1e3, bound * 1e3))
+    return None
+
+
 def arm_steps(arm_after_s, post_raw_timeout):
     """How run_arm arms: ("now" or "deferred", whether the pre-replay page read runs).
     The two are independent. 2026-10-16: the pre-read block had been inserted between
@@ -871,11 +927,8 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         ham.start()
 
     perf = time.perf_counter
-    base = perf()
-    # The replay's clock against the Kvaser's (epoch): placing a POST against the
-    # device's first frame on the wire needs both (reviewer, 2026-10-14).
-    base_epoch = time.time() - (perf() - base)
     fails = 0
+    ledger = ReplayLedger()
     #
     # THE FILLER, PACED BY WIRE TIME AND NOT BY send() RETURNING. See the module
     # note on FLOOD_ID: send() returns at QUEUEING, and filler queued ahead of a
@@ -921,6 +974,13 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
     sched = [{"at_s": t, "mode": m, "poster": ModePoster(m), "index": None}
              for t, m in POST_SCHEDULE]
     si = 0
+    # The replay's base, taken last, with the filler already started (2026-11-20; see
+    # START_LAG_MAX_S): taken before the slcan filler's ~3 s open, it put the replay behind
+    # its own schedule from its first frame.
+    base = perf()
+    # The replay's clock against the Kvaser's (epoch): placing a POST against the
+    # device's first frame on the wire needs both (reviewer, 2026-10-14).
+    base_epoch = time.time() - (perf() - base)
     for k in range(len(msgs)):
         due = base + offs[k]
         if schedule_due(sched, si, offs[k]):
@@ -949,10 +1009,12 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
                     next_flood = now + FLOOD_WIRE_S
         while perf() < due:
             pass
+        ledger.sent(due, perf())
         try:
             tx.send(msgs[k], timeout=0.5)
-        except can.CanError:
+        except can.CanError as e:
             fails += 1
+            ledger.refuse(k, perf() - base, e)
     elapsed = perf() - base
     for e in sched:
         if e["index"] is not None:
@@ -1204,6 +1266,7 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         "post_raw_timeout_s": POST_RAW_TIMEOUT,
         "post_chain": POST_CHAIN,
         "base_epoch": base_epoch,
+        **ledger.fields(),
         "pre": pre,
         **arm_post_fields(poster, post_index),
         "poll_hz": 0.0 if (ham is None or ham.period == 0) else round(1.0 / ham.period, 3),
@@ -1263,6 +1326,13 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         void_reasons.append(
             "%d replay frames were refused by the adapter, so the stimulus is "
             "incomplete" % fails)
+        print("  first refusals: %s" % "; ".join("#%d at %.3f s %s" % (r_["index"], r_["t_s"], r_["error"])
+                                                 for r_ in ledger.refusals[:3]))
+    print("  replay start lag %.3f ms, worst send lag %.3f ms (start bound %.1f ms)"
+          % ((ledger.first_lag_s or 0.0) * 1e3, (ledger.max_lag_s or 0.0) * 1e3, START_LAG_MAX_S * 1e3))
+    lag_why = start_lag_reason(ledger.first_lag_s)
+    if lag_why:
+        void_reasons.append(lag_why)
     print("  witness saw %d frames (%.1f/s), %d error frames"
           % (arm["witness_frames"], arm["witness_fps"], arm["error_frames"]))
     print("  0x051 on the wire %d = VCM %d + ours %d (%d of ours zero-torque)"

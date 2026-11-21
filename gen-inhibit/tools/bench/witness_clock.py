@@ -101,6 +101,15 @@ def raw_stamp(m):
     return m.hw_timestamp if hasattr(m, "hw_timestamp") else m.timestamp
 
 
+def pending_note(st):
+    """The note for a stamp check still pending at the end (SocketcanHwBus.stamp_stats()): the data
+    frames judged against those needed, and the error frames it ignored. Until 2026-11-20 it read
+    "stamp check pending ()", the check's empty reason (gen-inhibit reviewer's answer to the run (C)
+    report, item 4(iii))."""
+    return ("%s: stamp check pending (%s of %s data frames, %s error frames ignored)"
+            % (SOCKETCAN, st.get("data_frames_judged"), st.get("frames_needed"), st.get("error_frames_seen")))
+
+
 def kvaser_times(bus, frames, errs):
     """The Kvaser witness's times on SocketCAN (gen-inhibit reviewer, 2026-11-18): None for any
     other bus (the caller's CANlib rule applies). frames [(raw, rx, *rest)], errs [(raw, rx)],
@@ -121,6 +130,10 @@ def kvaser_times(bus, frames, errs):
         return rx_frames, rx_errs, "%s: no stamp check (%s)" % (SOCKETCAN, e)
     if not frames:
         return rx_frames, rx_errs, NONE if not errs else "%s: no data frame to fit" % SOCKETCAN
+    if st.get("state") == "pending":
+        # The check gives no reason while pending: the note gives its counts (2026-11-20, B8's
+        # "stamp check pending ()": 16 data frames before the train, 20 needed).
+        return rx_frames, rx_errs, pending_note(st)
     if st.get("state") != "hardware":
         return rx_frames, rx_errs, "%s: stamp check %s (%s)" % (SOCKETCAN, st.get("state"), st.get("reason"))
     after = st.get("after_check") or {}

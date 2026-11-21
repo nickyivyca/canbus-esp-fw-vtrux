@@ -174,7 +174,7 @@ class Witness(PW.ThreadWitness):
 class Player(threading.Thread):
     """Loops the interlock slice on the PCAN; performs requested events."""
 
-    def __init__(self, bus, stim):
+    def __init__(self, bus, stim, record_ids=()):
         super().__init__(daemon=True)
         self.bus, self.stim = bus, stim
         self.stop_flag = threading.Event()
@@ -182,6 +182,9 @@ class Player(threading.Thread):
         self.pending = []       # (perf_due, filler, tag)
         self.done = []          # dicts per performed event
         self.sent = self.fail = 0
+        # record_ids: the ids whose sends are timed, {id: [perf_counter after each send the adapter
+        # took]} (host send times, not wire times; trip6_rearm_check's 0x617, 2026-11-20)
+        self.sent_at = {i: [] for i in record_ids}
 
     def request(self, perf_due, filler, tag):
         with self.lock:
@@ -193,6 +196,9 @@ class Player(threading.Thread):
             self.bus.send(can.Message(arbitration_id=arb, data=data,
                                       is_extended_id=False))
             self.sent += 1
+            ts = self.sent_at.get(arb)
+            if ts is not None:
+                ts.append(time.perf_counter())
             return True
         except Exception:
             self.fail += 1

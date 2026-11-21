@@ -171,6 +171,15 @@ def witness_clock():
         return g
     g = refused("stamp check pending", SockBus(state="pending"), fr)
     check("kvaser_times: the note names the check's state", g and "pending" in g[2], g and g[2])
+    # B8's shape (2026-11-20, the gen-inhibit reviewer's answer to the run (C) report, item 4(iii)):
+    # pending at the end with 16 of 20 data frames judged, the check's reason empty
+    pb = SockBus(state="pending", reason="")
+    pb.st.update(data_frames_judged=16, frames_needed=20, error_frames_seen=910)
+    g = refused("stamp check pending, B8's counts", pb, fr)
+    want = "%s: stamp check pending (16 of 20 data frames, 910 error frames ignored)" % WC.SOCKETCAN
+    check("kvaser_times: a pending check's note gives its counts, not its empty reason", g and g[2] == want,
+          g and g[2])
+    refused("a stamp check with no state", SockBus(state=None), fr)
     g = refused("stamp check host_only", SockBus(state="host_only", reason="data frame 3 has no hardware stamp (0)"), fr)
     check("kvaser_times: the note carries the check's reason", g and "data frame 3" in g[2], g and g[2])
     refused("no stamp_stats on the bus", types.SimpleNamespace(vtrux_backend="socketcan"), fr)
@@ -513,6 +522,12 @@ MUTANTS = [
      "    return m.timestamp\n"),
     ("witness_clock.py", "    return t if t is not None else time.time()\n", "    return time.time()\n"),
     ("witness_clock.py", "    if st.get(\"state\") != \"hardware\":\n", "    if st.get(\"state\") == \"host_only\":\n"),
+    # a pending check's note (2026-11-20)
+    ("witness_clock.py", "    if st.get(\"state\") == \"pending\":\n", "    if False:\n"),
+    ("witness_clock.py", "% (SOCKETCAN, st.get(\"data_frames_judged\"), st.get(\"frames_needed\"), st.get(\"error_frames_seen\")))",
+     "% (SOCKETCAN, st.get(\"frames_needed\"), st.get(\"data_frames_judged\"), st.get(\"error_frames_seen\")))"),
+    ("witness_clock.py", "        return rx_frames, rx_errs, pending_note(st)\n",
+     "        return rx_frames, rx_errs, HW + \" \" + pending_note(st)\n"),
     ("witness_clock.py", "    if lost > 0 or after.get(\"hw_backward\"):\n", "    if after.get(\"hw_backward\"):\n"),
     ("witness_clock.py", "    if lost > 0 or after.get(\"hw_backward\"):\n", "    if lost > 0:\n"),
     ("witness_clock.py", "    lost = (after.get(\"hw_zero\") or 0) - (after.get(\"error_frames\") or 0)\n",
