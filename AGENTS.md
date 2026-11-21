@@ -616,17 +616,19 @@ bench runs. Emulated-time suites are not.
    timing, is judged against the machine's resource record over the failed
    check's window before it counts either way:
    - **Starved:** the record shows the run's slice short of CPU, memory or
-     disk (pressure, major faults or swap growth above the marks), or the
-     simulator's own lateness measure shows it was not scheduled. Not a
-     product result: re-run the check, and send the finding to the Local LLM
-     hosting session, which tunes the load controls.
+     disk (pressure, major faults or swap growth), or the simulator's own
+     lateness measure shows it was not scheduled. Not a product result:
+     re-run the check, and send the finding to the Local LLM hosting
+     session, which tunes the load controls.
    - **True error:** the record is clean over the window. It counts.
    - **Unclear:** re-run once. A repeat with a clean record is a true error.
 
-   Each project's tester sets its marks from measured quiet data, in its test
-   plan with the user's approval. **The record** is `resource-log`, a user
-   unit on `madhouse-debian` that every 5 s records each slice's and the
-   box's CPU use, pressure, faults and memory, and each disk's load. Run
+   There are no fixed marks for this (user, 2026-11-16, confirmed 2026-11-19
+   and 2026-11-21): the tester reads the record over the failed check's
+   window and judges each failure by hand. **The record** is
+   `resource-log`, a user unit on `madhouse-debian` that every 5 s records
+   each slice's and the box's CPU use, pressure, faults and memory, and
+   each disk's load. Run
    `resource-log window START END` over the failed check's window (times as
    epochs or anything `date -d` takes; `--rows` prints every interval). A gap
    over 10 s in its output means the logger itself was starved or down. It is
