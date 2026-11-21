@@ -96,7 +96,9 @@ stall-16 item):
   its windows never echo, and the flush when the ACK returns forgives that
   many (node_sender, EchoWatch.finish(forgive)) and no more. window() reads
   the node's link counters before and after (kvaser_link.link_counters,
-  can-tools' bench_layer.link_counters) and judge_node_link says what they
+  can-tools' bench_layer.link_counters; the first read before the window
+  starts, since one read takes 0.67-0.77 s on the bench and the node sends
+  meanwhile) and judge_node_link says what they
   mean: a wrong-rate window reports its bus-offs, restarts, tx_dropped and
   tx_aborted_errors and adds tx_dropped's growth to the forgiveness; a
   window expecting the node's frames to complete is VOID on a node bus-off
@@ -2317,6 +2319,13 @@ def window(board, wit, node, seconds, command=None, label=None,
     own rows, and its diagnostic line says so. wit.window_map is the map
     used. A witness with no map (the self-test's scripted ones) keeps the
     stamps as they are (offset 0, rate 1), the map before 2026-11-11."""
+    # the node's link counters, read before and after (ruling Q1): its
+    # bus-offs, restarts and the kernel's drops in the window. Read before
+    # the window starts: one read takes 0.67-0.77 s on the bench
+    # (2026-11-20, D2), and frames the node sent during it, after t_w0 but
+    # before its log is taken, would count as sent with their rows outside
+    # the window's stamps
+    link0 = node.counters() if hasattr(node, "counters") else None
     pre = wit.take()
     smap = getattr(wit, "stamp_map", None)
     fit = smap.frozen() if smap is not None else None
@@ -2337,9 +2346,6 @@ def window(board, wit, node, seconds, command=None, label=None,
     # retried through a window with nothing acknowledging (the reviewer's
     # ruling Q3, 2026-11-20)
     head = node.head() if hasattr(node, "head") else None
-    # the node's link counters, read before and after (ruling Q1): its
-    # bus-offs, restarts and the kernel's drops in the window
-    link0 = node.counters() if hasattr(node, "counters") else None
     expecting = node.expecting() if hasattr(node, "expecting") else True
     wrong_rate = bool(getattr(node, "wrong_rate", False))
     node.window_busoff_fault = None
@@ -3948,6 +3954,40 @@ def self_test():
           "the window's cut: a send called before the cut, its log entry not yet "
           "come, has its row kept (C3's stall 16, seq 5211) -> sent %s, %s"
           % (sent_c, lines_c))
+
+    class _SlowCountNode(_CutNode):
+        """D2 (2026-11-20): reading the link counters takes 0.67-0.77 s on
+        the bench, and the node sends meanwhile. Each read before the cut
+        here calls a send, seq 99 (the last such call is the one echoed),
+        with no log entry in the window and no row."""
+
+        def __init__(self):
+            _CutNode.__init__(self)
+            self.tc99 = None
+
+        def counters(self):
+            if self.ke < 2:
+                self.tc99 = time.perf_counter()
+                time.sleep(0.002)
+            return {"bus_off": 0, "restarts": 0, "tx_dropped": 0, "tx_aborted_errors": 0}
+
+        def expecting(self):
+            return True
+
+        def take_echoes(self):
+            e = _CutNode.take_echoes(self)
+            if self.ke == 2:
+                t = self.tc99
+                e = [(99, t, t + 1e-4, t + 2e-4)] + e
+            return e
+    sc = _SlowCountNode()
+    sc.forgive = 0
+    rows_sc, sent_sc = window(None, _CutWit(sc), sc, 0.0)
+    ok_sc, lines_sc = score_listen(rows_sc, sent_sc)
+    check(sent_sc == [1, 2] and ok_sc,
+          "window(): a frame sent while the link counters are read is not the window's "
+          "(D2's 67-69 frames 'never reached the witness') -> sent %s, %s"
+          % (sent_sc, lines_sc))
 
     # ruling Q1 (2026-11-20): the node's link counters per window
     def _g(bo=0, rs=0, dr=0, ab=0):
@@ -5918,6 +5958,12 @@ MUTANTS += [
     ("the drops carried into the next span",
      "        self.forgive, self.wrong_rate = 0, False\n        self.forgive_v.value = 0\n",
      ""),
+    # D2 (2026-11-20): the counters read takes 0.67-0.77 s
+    ("the link counters read inside the window",
+     "    t_w0 = time.perf_counter()\n    # the node's echoes (D3, 2026-11-13)",
+     "    t_w0 = time.perf_counter()\n"
+     "    link0 = node.counters() if hasattr(node, \"counters\") else None\n"
+     "    # the node's echoes (D3, 2026-11-13)"),
 ]
 
 
