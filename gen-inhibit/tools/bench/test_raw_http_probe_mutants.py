@@ -2,7 +2,14 @@
 """Mutants of raw_http_probe.py and of e4_device_calibration.py's raw-POST path:
 the matching test must fail on every one.
 
-    py -3.14 test_raw_http_probe_mutants.py <scratch dir> [target.py ...]
+    python3.13 -B test_raw_http_probe_mutants.py [<scratch dir>] [target.py ...]
+                                                  (py -3.14 -B on Windows)
+
+With no scratch folder (the first argument absent or a target .py) the copies go in this
+run's own gi_paths.scratch("raw_http_probe_mutants") folder, removed when the run ends,
+pass or fail (AGENTS.md "Removing scratch"); a folder given is the caller's and is left
+to it. Until 2026-11-20 the folder was required and the copies stayed there (found on
+the whole tools test set; test_optional_scratch.py checks the default).
 
 Each mutant is one source substitution. The target, its test and the files they
 import are copied into <scratch dir>/<target>_<n>/ with the mutation applied, and
@@ -109,8 +116,10 @@ SUITES = [
          "if run_after is None and all("),
         ("new build: live not required", "if run_after is not None and live_after is not None and dev_a:",
          "if run_after is not None:"),
-        ("bus_off precondition off", "    if boff is None:\n        out[\"verdict\"] = \"INCONCLUSIVE: the page never",
-         "    if False:\n        out[\"verdict\"] = \"INCONCLUSIVE: the page never"),
+        # re-aimed 2026-11-20: from 621f715d a comment stands between the test and the
+        # verdict, and the old pattern matched nothing (a BAD MUTANT, found on the whole set)
+        ("bus_off precondition off", "    if boff is None:\n        # the device's, unless no page read",
+         "    if False:\n        # the device's, unless no page read"),
         ("reading count unchecked", "elif len(noarm) < 20 or len(after) < 20:", "elif False:"),
         ("reboot unchecked", "    elif drop is not None:", "    elif False:"),
         ("400 not named", "    elif reply_status == 400:", "    elif False:"),
@@ -281,9 +290,14 @@ def run_suite(scratch, target, test, extra, muts):
 
 
 def main():
-    scratch = sys.argv[1]
+    args = sys.argv[1:]
+    if args and not args[0].endswith(".py"):
+        scratch, only = args[0], args[1:]       # the caller's folder, left to it
+    else:                                       # this run's own, removed when it ends
+        import gi_paths
+        scratch, only = gi_paths.scratch("raw_http_probe_mutants"), args
     killed, survived, total, bad_controls = 0, [], 0, []
-    only = sys.argv[2:]              # optional: run only these targets
+    # only, optional: run only these targets
     for target, test, extra, muts in SUITES:
         if only and target not in only:
             continue

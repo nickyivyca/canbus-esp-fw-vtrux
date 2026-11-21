@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """Tests reply_golive_report.py on a synthetic run, witness log and packet list.
 
-    py -3.14 test_reply_golive_report.py <scratch dir>     # exits 1 on any failure
+    python3.13 -B test_reply_golive_report.py [<scratch dir>]     # exits 1 on any failure
+                                                                   # (py -3.14 -B on Windows)
+
+With no argument it works in its own gi_paths.scratch("reply_golive_report") run folder,
+removed when it ends, pass or fail (AGENTS.md "Removing scratch"); a folder given as the
+argument is the caller's, as test_raw_http_probe_mutants.py gives each mutant copy one, and
+is left to it. Until 2026-11-20 the argument was required and nothing removed what the test
+wrote (found on the whole tools test set).
 
 Staged: VCM 0x051 every 10 ms; the device trailing each by 0.5 ms only from a
 known instant; a POST sent between two VCM frames. The report must place the
@@ -18,6 +25,7 @@ import os
 import sys
 from contextlib import redirect_stdout
 
+import gi_paths
 import reply_golive_report as R
 
 FAILS = []
@@ -41,7 +49,7 @@ def raw(t_sent, epoch_sent, port, chunks, ending="fin", failed=False):
 
 
 def main():
-    scratch = sys.argv[1]
+    scratch = sys.argv[1] if len(sys.argv) > 1 else gi_paths.scratch("reply_golive_report")
     os.makedirs(scratch, exist_ok=True)
     E0 = 1800000000.0                # witness epoch at replay base
     live_from = E0 + 20.0234         # device goes live: first trailing frame after this

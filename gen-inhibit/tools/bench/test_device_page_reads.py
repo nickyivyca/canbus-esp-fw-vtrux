@@ -16,10 +16,14 @@ it shows in the paths asked for, in what is printed and in the record.
   txabort main() up to its mode-0 refusal: the page read, the image printed, nothing else
           asked; device_id() keeps elf_sha256 only
   source  no string constant outside a docstring names /check_status in either file
+  provenance  both tools were loaded from DEVICE_READS_DIR's own files (2026-11-20), with a
+          can-fail: a module from another folder is not
 
-    py -3.14 -B gen-inhibit/tools/bench/test_device_page_reads.py
+    python3.13 -B gen-inhibit/tools/bench/test_device_page_reads.py    (py -3.14 -B on Windows)
 Mutants: test_device_page_reads_mutants.py. DEVICE_READS_DIR runs another copy of the two
-tools (the mutants use it). Gen-inhibit tester, 2026-10-25.
+tools (the mutants use it); each is loaded from that folder's file, not by the import path
+(2026-11-20: from 602206f3 e4_rig_calibration put this folder first on sys.path, so the
+txabort mutants ran on the unmutated tool and survived). Gen-inhibit tester, 2026-10-25.
 """
 import ast
 import contextlib
@@ -34,8 +38,28 @@ SRC = os.environ.get("DEVICE_READS_DIR") or HERE
 sys.path.insert(0, SRC)
 sys.path.insert(1, HERE)
 import gi_paths                    # noqa: E402
-import e4_device_calibration as E4  # noqa: E402
-import wican_txabort_bench as TX    # noqa: E402
+
+
+def load_tool(name):
+    """The tool `name` from SRC's own file, never by the import path: a module a tool imports
+    may put its folder first on sys.path (e4_rig_calibration does, from 602206f3), and an
+    import by name after it found this folder's unmutated wican_txabort_bench, not the copy
+    in SRC, so the mutants of it survived (the whole tools test set, 2026-11-20)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, os.path.join(SRC, name + ".py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def from_src(mod):
+    """True when the module was loaded from SRC's own file."""
+    return os.path.dirname(os.path.abspath(getattr(mod, "__file__", "") or "")) == os.path.abspath(SRC)
+
+
+E4 = load_tool("e4_device_calibration")
+TX = load_tool("wican_txabort_bench")
 
 FAILS = []
 MADE_UP = "made-up-value-not-a-credential"
@@ -175,8 +199,16 @@ def source():
     gi_paths.remove_tree(os.path.dirname(probe))
 
 
+def provenance():
+    for mod in (E4, TX):
+        check("provenance: %s is SRC's own file" % mod.__name__, from_src(mod), mod.__file__)
+    other = type(sys)("elsewhere")
+    other.__file__ = os.path.join(os.path.dirname(os.path.abspath(SRC)), "elsewhere", "wican_txabort_bench.py")
+    check("provenance can-fail: a module from another folder is not SRC's", not from_src(other), other.__file__)
+
+
 def main():
-    for part in (e4_identity, e4_main, tx_main, source):
+    for part in (provenance, e4_identity, e4_main, tx_main, source):
         try:
             part()
         except Exception as e:      # noqa: BLE001  a crash is this part's FAIL
