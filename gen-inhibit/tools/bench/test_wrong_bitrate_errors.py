@@ -79,12 +79,30 @@ def source_cases():
                 and s["ctrl_states"] == ["tx_passive", "tx_warning"] and s["error_frames"] == 4
                 and s["other_frames"] == 1, s))
     q = W.source_state([], 0, 1.0)
-    out.append(("source_state: nothing read -> not bus-off, no restart, no states",
-                not q["bus_off"] and q["bus_off_at_ms"] is None and q["restarts"] == 0 and q["ctrl_states"] == []
-                and q["error_frames"] == 0, q))
+    fields = ("error_frames", "bus_off", "bus_off_at_ms", "restarts", "ctrl_states", "other_frames")
+    out.append(("source_state: no frame of any kind read -> every state field 'not shown', never False or 0, "
+                "and why (reviewer, 2026-11-20)",
+                all(q.get(k) == "not shown" for k in fields) and q.get("not_shown")
+                and "no frame of any kind" in q["not_shown"]
+                and not any(v is False or v is None or v == 0 or v == [] for v in q.values()), q))
+    o = W.source_state([], 1, 1.0)
+    out.append(("source_state: only a non-error frame read -> shown: not bus-off, 0 error frames, 1 other",
+                o["bus_off"] is False and o["error_frames"] == 0 and o["other_frames"] == 1 and o["restarts"] == 0
+                and o["ctrl_states"] == [] and "not_shown" not in o, o))
+    e1 = W.source_state([(1.0, 0x088, "00" * 8)], 0, 1.0)
+    out.append(("source_state: one error frame and nothing else read -> shown", "not_shown" not in e1
+                and e1["error_frames"] == 1 and e1["bus_off"] is False, e1))
+    ql = W.burst_detail_line({"source": q}, {"span_ms": 7.0, "first_s": 1.2, "last_s": 1.207, "asked_ms": 1.0,
+                                             "last_after_close_ms": 0.9, "n": 17})
+    out.append(("burst_detail_line: a source that read nothing reads 'source: not shown' and why, "
+                "no bus_off False and no 0 error frames",
+                "source: not shown (the hold read no frame of any kind" in ql and "bus_off" not in ql
+                and "error frames; recorded" in ql and " 0 error frames" not in ql, ql))
+    out.append(("burst_detail_line: a source that read only a non-error frame shows its state",
+                "source: bus_off False" in W.burst_detail_line({"source": o}, None), ""))
     out.append(("source_state: a bus error (not BUSOFF/RESTARTED/CRTL) is counted only",
                 (lambda r: not r["bus_off"] and r["restarts"] == 0 and r["ctrl_states"] == [] and r["error_frames"] == 1)(
-                    W.source_state([(1.0, 0x088, "00" * 8)], 0, 1.0)), ""))
+                    e1), ""))
     clock2 = [5.0]
     e2, o2 = W.hold_reading(FakeSrc([], clock2), 5.0, perf=lambda: clock2[0])
     out.append(("hold_reading: a deadline already past reads nothing", e2 == [] and o2 == 0 and clock2[0] == 5.0, ""))

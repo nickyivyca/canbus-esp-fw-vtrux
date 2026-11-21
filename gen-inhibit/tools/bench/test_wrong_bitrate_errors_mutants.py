@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mutants of wrong_bitrate_errors.py's per-burst count (2026-11-20, gen-inhibit reviewer's answer
-to the run (C) report, item 4(ii): each burst counted over burst_measures.burst_window);
+to the run (C) report, item 4(ii): each burst counted over burst_measures.burst_window), and of
+its source state "not shown" when a hold read no frame at all (the reviewer, 2026-11-20);
 test_wrong_bitrate_errors.py must fail on each BY A CHECK. A crash is not a kill, and an edit that
 does not apply is an error. The unmutated copy runs first as the control.
 
@@ -39,6 +40,17 @@ MUTANTS = [
      "per_burst(st, [c_ for _s, _ms, c_ in starts], errs)", "per_burst(st, st, errs)"),
     ("the last burst dropped", "            for k in range(len(burst_starts))]\n",
      "            for k in range(len(burst_starts) - 1)] + [0] * bool(burst_starts)\n"),
+    # a source whose hold read no frame of any kind is "not shown", never False or 0 (the gen-inhibit
+    # reviewer, 2026-11-20)
+    ("a hold that read nothing is shown as before (bus_off False, 0 error frames)",
+     "    if not errs and not other:\n", "    if False:\n"),
+    ("a hold that read only non-error frames is not shown",
+     "    if not errs and not other:\n", "    if not errs:\n"),
+    ("the not-shown fields read False",
+     "{k: NOT_SHOWN for k in SOURCE_STATE_FIELDS}", "{k: False for k in SOURCE_STATE_FIELDS}"),
+    ("a not-shown source without its reason", "not_shown=NOT_SHOWN_WHY,", "not_shown=\"yes\","),
+    ("the line prints bus_off False for a not-shown source",
+     "    if so.get(\"not_shown\"):\n", "    if False:\n"),
 ]
 
 
