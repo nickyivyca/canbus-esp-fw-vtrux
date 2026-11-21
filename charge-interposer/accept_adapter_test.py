@@ -80,6 +80,10 @@ def test_catalogue(A, work):
         assert e["path"] == "charge-interposer/bench_drivers/%s.py" % s and e["args"] == ["--self-test"], e
     for s in BS.CAN_FAILS:
         assert by["cf." + s.replace("_", "-")]["args"] == ["--can-fail"]
+    # each can-fail's timeout the suite's (cf.bench-vport 7200 s, run 69d8)
+    tos = {s: by["cf." + s.replace("_", "-")]["timeout_s"] for s in BS.CAN_FAILS}
+    assert tos["bench_vport"] == 7200 and tos == {
+        s: BS.CAN_FAIL_TIMEOUTS.get(s, BS.CAN_FAIL_TIMEOUT_S) for s in BS.CAN_FAILS}, tos
     for t in BS.HARNESS_PY_TESTS + BS.LOGIC_PY_TESTS:
         assert by[t[:-3].replace("_", "-")]["path"] == "charge-interposer/" + t
     for t in BS.HARNESS_PY_CANFAILS:
@@ -1302,6 +1306,10 @@ MUTANTS = [
      "    for cid, argv in BS.HARNESS_LOCAL[1:]:\n"),
     ("a harness test's can-fail dropped", "    for t in BS.HARNESS_PY_CANFAILS:\n",
      "    for t in BS.HARNESS_PY_CANFAILS[:-1]:\n"),
+    ("the can-fails' timeouts not the suite's (cf.bench-vport 3600 s, run 69d8)",
+     '                          ["harness", "can-fail"],\n'
+     "                          BS.CAN_FAIL_TIMEOUTS.get(s, BS.CAN_FAIL_TIMEOUT_S)))",
+     '                          ["harness", "can-fail"]))'),
     ("INTERPOSER_CODE not the tree's", 'env = {"INTERPOSER_CODE": _code(tree)}',
      'env = {"INTERPOSER_CODE": HERE}'),
     ("no TWAI_FAKE_DIR", '        env["TWAI_FAKE_DIR"] = fake\n', "        pass\n"),

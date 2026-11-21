@@ -729,7 +729,8 @@ def catalogue(repo, commit):
     for s in BS.CAN_FAILS:
         out.append(_entry("cf." + s.replace("_", "-"),
                           "charge-interposer/bench_drivers/%s.py" % s, ["--can-fail"],
-                          ["harness", "can-fail"]))
+                          ["harness", "can-fail"],
+                          BS.CAN_FAIL_TIMEOUTS.get(s, BS.CAN_FAIL_TIMEOUT_S)))
     for cid, argv in BS.HARNESS_LOCAL:
         path = argv[0].replace("{interposer_code}/", "charge-interposer/")
         out.append(_entry(cid, path, argv[1:], ["harness", "harness-local"]))

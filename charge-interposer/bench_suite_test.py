@@ -810,7 +810,9 @@ def test_suites():
     # 314: st.reader-death, cf.reader-death, st.bench-rate-feasibility and
     #      cf.bench-rate-feasibility (a PCAN reader that dies is VOID, the
     #      reviewer's PCAN ruling 1, 2026-11-19)
-    assert len(seen) == 314, "checks across the suites: %d" % len(seen)
+    # 316: harness-names-test and harness-names-test-canfail (undefined and
+    #      rebound names, after run 69d8; the reviewer, 2026-11-21)
+    assert len(seen) == 316, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -2549,6 +2551,18 @@ def test_runner_stage():
                 scratch_dir.remove(x)
 
 
+def test_can_fail_timeouts():
+    """The harness suite gives cf.bench-vport 7200 s and every other
+    bench-driver can-fail 3600 s: bench_vport's ran past 3600 s in run 69d8
+    after 83 of its 149 mutants (the reviewer, 2026-11-21)."""
+    _s, su = _all()
+    tos = {c.id: c.timeout_s for g in su["harness"].groups for c in g.checks
+           if c.id.startswith("cf.")}
+    want = {"cf." + s.replace("_", "-"): 3600 for s in B.CAN_FAILS}
+    want["cf.bench-vport"] = 7200
+    assert tos == want, sorted(set(tos.items()) ^ set(want.items()))
+
+
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_switch_pending_judge,
          test_host_bridge_judge,
@@ -2564,7 +2578,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_x2_port_from_settings, test_reset_check_verdict, test_esptool_env,
          test_canchg_mode_hooks, test_canx2_slcan_hooks,
          test_x2_test_images_identify, test_slcan_spi_identity,
-         test_x2_test_image_flash_first]
+         test_x2_test_image_flash_first, test_can_fail_timeouts]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -3263,6 +3277,11 @@ def _wican_identify_off(s):
 
 
 MUTANTS = {
+    "test_can_fail_timeouts": [
+        ("CAN_FAIL_TIMEOUTS", {}, "cf.bench-vport back on 3600 s (run 69d8)"),
+        ("CAN_FAIL_TIMEOUTS", {"bench_vport": 7200, "bench_c12": 7200},
+         "another can-fail moved to 7200 s too"),
+        ("CAN_FAIL_TIMEOUT_S", 1800, "every other can-fail on 1800 s")],
     "test_esptool_env": [
         ("esptool_env", lambda settings: {}, "esptool.argv never passed on"),
         ("esptool_env", _esptool_unchecked, "a malformed esptool.argv passed on"),

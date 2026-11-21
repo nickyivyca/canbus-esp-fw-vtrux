@@ -2291,10 +2291,12 @@ def run_one(sc, args, outdir):
             tap.start()
             # the start reset (start_reset_path): the witness and the sims
             # start once the board has booted
-            started = tap.wait_started()
-            if started is not None:
+            # not `started`: that is run_one's helper, which the sim
+            # starters call (run 69d8's 29 board.* ERRORs, 2026-11-21)
+            booted = tap.wait_started()
+            if booted is not None:
                 print("   board start: esptool hard reset sent; %s"
-                      % ("the application's banner read" if started else
+                      % ("the application's banner read" if booted else
                          "no application banner within %.0f s" % START_BOOT_WAIT_S))
             if args.diag_witness:
                 import diag_cadence
