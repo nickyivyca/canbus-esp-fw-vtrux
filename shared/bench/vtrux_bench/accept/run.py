@@ -48,7 +48,8 @@ In order:
   6. the can-fail mutants (A10), refused before anything runs if one cannot
      be applied
   7. the checks, suite runs and mutant runs as one chain run (A7)
-  8. every item judged (A10, A12), the cleanup and the close (A13, A14)
+  8. every item judged (A10, A12; a suite run from its nested record, with
+     its declared skips, A12a), the cleanup and the close (A13, A14)
 Every folder the run makes is held in one Made: removed before the close,
 and by the exit handler and the finally on any other way out. A run that
 stops before its close prints why and leaves the record open; it is never
@@ -97,7 +98,8 @@ RULES = {k: True for k in ("record_first", "adapter_from_commit", "premise_skip"
                            "not_passed_listed", "nested_not_passed", "nested_wrong_shape",
                            "images_not_started", "from_hold_passed", "keep_lock_chain",
                            "keep_not_last", "keep_bench_only", "hold_queued",
-                           "from_hold_no_queue", "hold_recorded")}
+                           "from_hold_no_queue", "hold_recorded", "suite_from_nested",
+                           "skips_unreadable", "nested_malformed")}
 
 DEV_LINE = "DEV RUN, not evidence"
 
@@ -164,7 +166,73 @@ def _group_verdict(chain, group):
     return (bad[0] if bad else (vs[0] if vs else "absent")), ""
 
 
-def _suite_not_passed(chain, group, n):
+def _read_nested(chain, suite_runs):
+    """({suite run id: its nested.json}, {suite run id: why it cannot be
+    read}) from the chain's folder. A malformed nested.json (not JSON, or
+    not an object) is one that cannot be read, named with its path, not a
+    crash that stops the run (the gen-inhibit tester's read of A12a,
+    2026-11-20); a missing one is in neither."""
+    nested, bad = {}, {}
+    for r_ in suite_runs:
+        p = os.path.join(chain["_dir"], C.group_name(r_["id"]), "run", "nested.json")
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                got = json.load(f)
+            if RULES["nested_malformed"] and not isinstance(got, dict):
+                raise ValueError("not a JSON object")
+            nested[r_["id"]] = got
+        except (OSError, ValueError) as e:
+            if not RULES["nested_malformed"]:
+                raise
+            bad[r_["id"]] = "%s: %r" % (p, e)
+    return nested, bad
+
+
+def _suite_item(chain, r_, n, unreadable=None):
+    """A suite run's item, judged from its nested record (ACCEPT-SPEC A12a,
+    judge.suite_run_verdict): the first, whole run's results and its
+    unmatched_known_fails, its list's declared skips and the catalogue's
+    (nested.json's catalogue_skips). With no nested record, or one that
+    cannot be read, the outer chain's verdict for its group, as before
+    A12a, unless the list declares skips: then a nested.json or a first
+    run's record.json that cannot be read (unreadable: why nested.json
+    could not be) makes the item FAIL "cannot be read", naming the file
+    (the gen-inhibit tester's read, 2026-11-20). The item lists each
+    declared skip with its reason ("declared_skips")."""
+    group = C.group_name(r_["id"])
+    declared = r_.get("declared_skips") or []
+    strict = bool(declared) and RULES["skips_unreadable"]
+    v = d = None
+    if RULES["suite_from_nested"]:
+        if not n and unreadable and strict:
+            v, d = "FAIL", "cannot be read: %s" % unreadable
+        elif n:
+            path = None
+            try:
+                path = os.path.join(n["first"]["dir"], "record.json")
+                with open(path, encoding="utf-8") as f:
+                    rec = json.load(f)
+                if not isinstance(rec.get("results"), list):
+                    raise TypeError("its results are not a list")
+                v, d, _p = J.suite_run_verdict(
+                    rec["results"], dict(n.get("catalogue_skips") or {}), declared,
+                    list(rec.get("unmatched_known_fails") or []))
+            except (OSError, KeyError, ValueError, TypeError, AttributeError) as e:
+                v = None
+                if strict:
+                    v, d = "FAIL", "cannot be read: %s: %r" % (
+                        path or "the first run's record.json named in nested.json", e)
+    if v is None:
+        v, d = _group_verdict(chain, group)
+    it = J.item("suite_run", r_["id"], "PASS", v,
+                "; ".join(x for x in (d, "the first, whole run decides") if x))
+    it["declared_skips"] = [(s["id"], s["reason"]) for s in declared]
+    return it
+
+
+def _suite_not_passed(chain, group, n, unreadable=None):
     """A suite run's every result that is not a plain PASS: the outer
     chain's own for its group (the nested run's process), then, as
     nested/<id>, every one in the nested record of its first, whole run,
@@ -178,6 +246,8 @@ def _suite_not_passed(chain, group, n):
     out = J.not_passed(chain["results"], group)
     if not RULES["nested_not_passed"]:
         return out
+    if not n and unreadable:
+        return out + [("nested record", "UNREADABLE: %s" % unreadable)]
     if not n:
         return out + [("nested record", "MISSING: the suite run left no nested.json")]
     unreadable = (OSError, KeyError, ValueError) + (
@@ -360,19 +430,13 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                           newline="\n") as f:
                     json.dump(held, f, indent=1, sort_keys=True)
                     f.write("\n")
-        nested = {}
-        for r_ in alist.suite_runs:
-            p = os.path.join(chain["_dir"], C.group_name(r_["id"]), "run", "nested.json")
-            if os.path.exists(p):
-                with open(p, encoding="utf-8") as f:
-                    nested[r_["id"]] = json.load(f)
+        nested, nested_bad = _read_nested(chain, alist.suite_runs)
         items = [J.item("build", b["id"], "PASS", br["verdict"])
                  for b in alist.builds for br in [builds[b["id"]]]]
         items += [J.item("check", c["id"], c["expect"], *_group_verdict(
             chain, C.group_name(c["id"]))) for c in alist.checks]
-        items += [J.item("suite_run", r_["id"], "PASS",
-                         _group_verdict(chain, C.group_name(r_["id"]))[0],
-                         "the first, whole run decides") for r_ in alist.suite_runs]
+        items += [_suite_item(chain, r_, nested.get(r_["id"]), nested_bad.get(r_["id"]))
+                  for r_ in alist.suite_runs]
         for u in reused:
             i = J.item("reuse", u["id"], "accepted", "accepted",
                        "record %s, run %s (A17)" % (u["record"], u["run"]))
@@ -385,7 +449,8 @@ def run(repo, spec, adapter_rel, settings_path, earlier=None, out=None, dev=Fals
                 i["not_passed"] = J.not_passed(chain["results"], C.group_name(i["id"]))
             if i["kind"] == "suite_run" and RULES["not_passed_listed"]:
                 i["not_passed"] = _suite_not_passed(chain, C.group_name(i["id"]),
-                                                    nested.get(i["id"]))
+                                                    nested.get(i["id"]),
+                                                    nested_bad.get(i["id"]))
         compares = []
         for c in alist.compares:
             try:

@@ -103,7 +103,7 @@ def write(root, rel, text):
 class Fixture:
     """Runs the list's suite run to the end; holds what it made."""
 
-    def __init__(self, rerun=True, placement=None):
+    def __init__(self, rerun=True, placement=None, skip=False):
         N[0] += 1
         self.dir = os.path.join(BASE, "f%d" % N[0])
         self.repo = os.path.join(self.dir, "repo")
@@ -112,7 +112,11 @@ class Fixture:
         git(self.repo, "config", "user.name", "test")
         git(self.repo, "config", "user.email", "test@example.invalid")
         git(self.repo, "config", "core.autocrlf", "false")
-        write(self.repo, "proj/suite.py", SUITE)
+        write(self.repo, "proj/suite.py", SUITE.replace(
+            '                Check("tree", ["-c", TREE], python=True)])])',
+            '                Check("tree", ["-c", TREE], python=True)]),\n'
+            '    Group("b", [Check("truck", ["-c", "pass"], python=True,\n'
+            '                      skip="needs the truck")])])') if skip else SUITE)
         write(self.repo, "proj/check.py", "pass\n")
         write(self.repo, "shared/comp/tool.py", "pass\n")
         git(self.repo, "add", "-A")
@@ -217,6 +221,26 @@ def test_first_run_decides():
         log = fh.read()
     assert any("a/flaky" in ln and "first FAIL" in ln and "re-run PASS" in ln
                for ln in log.splitlines()), log[-800:]
+
+
+def test_declared_skip_not_flagged():
+    """A12a (the gen-inhibit tester's read, 2026-11-20): a NOT-RUN of a case
+    the suite's catalogue skips by declaration is never flagged, so it is
+    never re-run, and a declared skip in a bench group never makes the
+    re-run take the bench. Any other NOT-RUN is still flagged."""
+    res = [{"check": "a/x", "verdict": "PASS"}, {"check": "b/truck", "verdict": "NOT-RUN"},
+           {"check": "a/y", "verdict": "NOT-RUN"}, {"check": "a/f", "verdict": "FAIL"}]
+    assert NS.flagged({"results": res}, {"b/truck": "needs the truck"}) == ["a/f", "a/y"], \
+        NS.flagged({"results": res}, {"b/truck": "needs the truck"})
+    assert NS.flagged({"results": res}) == ["a/f", "a/y", "b/truck"]
+    f = Fixture(rerun=True, skip=True)
+    _t, first = f.record(f.rid)
+    v = {r["id"]: r["verdict"] for r in first["results"]}
+    assert v.get("b/truck") == "NOT-RUN", v
+    assert f.nested["catalogue_skips"] == {"b/truck": "needs the truck"}, f.nested
+    assert [x["check"] for x in f.nested["flagged"]] == ["a/flaky"], f.nested["flagged"]
+    _t2, second = f.record(f.rid + "-rerun")
+    assert second["subset_cases"] == ["a/flaky"], second["subset_cases"]
 
 
 def _user_bench_slice():
@@ -527,9 +551,10 @@ def test_nested_rerun_hold():
 
 TESTS = [test_nested_record, test_rerun_new_record, test_first_run_decides,
          test_nested_placement, test_nested_from_hold, test_nested_keep_lock,
-         test_nested_rerun_hold]
+         test_nested_rerun_hold, test_declared_skip_not_flagged]
 
 MUTANTS = [
+    (NS, "rerun_not_skips", test_declared_skip_not_flagged),
     (NS, "from_hold_bench", test_nested_from_hold),
     (NS, "from_hold_bench_only", test_nested_from_hold),
     (NS, "keep_lock_passed", test_nested_keep_lock),

@@ -38,6 +38,18 @@ VOID, NOT-RUN, INCONCLUSIVE, a known FAIL that passed, FAIL. So FAIL only
 when every result that is not a pass is a FAIL. Every result that is not a
 plain PASS is listed in the record, not only the first six (not_passed).
 
+A suite run's item is judged from its nested record (suite_run_verdict;
+ACCEPT-SPEC A12a, user 2026-11-20): the results of its first, whole run, by
+check_verdict's rule, with a NOT-RUN of a case the list declares skipped
+left out. A declared skip makes the suite run fail, naming it, when it
+ran, when the run did not produce it, when the suite's catalogue (nested
+.json's catalogue_skips) does not declare it a skip, or when its listed
+reason is not the catalogue's. A NOT-RUN of any other case counts as
+before, and so do the record's unmatched_known_fails, its known-fail
+entries no selected case produced: not a pass, each named (the gen-inhibit
+tester's read, 2026-11-20). The nested run's own exit code is not what is
+judged.
+
 RULES: each is switched off by a mutant in tests/test_accept_judge.py, which
 must then fail.
 """
@@ -55,7 +67,9 @@ RULES = {k: True for k in (
     "count_verdicts", "count_figures", "verdicts_only", "missing_new", "tolerance",
     "listed_exact", "listed_seen", "masks", "adapter_comparer", "premise_equal",
     "premise_same_as", "not_exercised", "all_items", "expected_verdict", "every_item",
-    "every_result", "ok_set", "known_passed", "listed_ok_set", "listed_known_passed")}
+    "every_result", "ok_set", "known_passed", "listed_ok_set", "listed_known_passed",
+    "skip_excused", "skip_unlisted", "skip_ran", "skip_missing", "skip_catalogue",
+    "skip_reason", "skip_unmatched")}
 
 VERDICT_KINDS = ("verdict", "missing", "new")
 
@@ -266,6 +280,55 @@ def not_passed(results, group=None):
             rid = rid[len(group) + 1:]
         out.append((rid, v))
     return out
+
+
+def suite_run_verdict(results, catalogue, declared, unmatched=()):
+    """(verdict, detail, problems) of a suite run from its nested record
+    (ACCEPT-SPEC A12a; see the module's text). results: the first, whole
+    run's record.json results; catalogue: nested.json's catalogue_skips
+    {"<group>/<check>": reason}; declared: the list's declared_skips
+    [{"id", "reason"}]; unmatched: the record's unmatched_known_fails, its
+    known-fail entries no selected case produced, which made the nested
+    run exit 1 and so are judged as before: not a pass, each named (the
+    gen-inhibit tester's read, 2026-11-20). problems: one line per declared
+    skip that makes the suite run fail, naming it, and one for the
+    unmatched entries. "absent" if the run has no result."""
+    if not results:
+        return "absent", "", []
+    listed = {d["id"]: d["reason"] for d in declared}
+
+    def case(r):
+        return r.get("check") or r["id"]
+    kept = [r for r in results
+            if not (RULES["skip_excused"] and r["verdict"] == "NOT-RUN"
+                    and (case(r) in listed or not RULES["skip_unlisted"]))]
+    problems = []
+    for i in sorted(listed):
+        mine = [r["verdict"] for r in results if case(r) == i]
+        ran = [v for v in mine if v != "NOT-RUN"]
+        if not mine and RULES["skip_missing"]:
+            problems.append("declared skip %s: the run did not produce it" % i)
+        if ran and RULES["skip_ran"]:
+            problems.append("declared skip %s: it ran (%s)" % (i, ", ".join(ran)))
+        if i not in catalogue:
+            if RULES["skip_catalogue"]:
+                problems.append("declared skip %s: the suite's catalogue does not declare "
+                                "it a skip" % i)
+        elif catalogue[i] != listed[i] and RULES["skip_reason"]:
+            problems.append("declared skip %s: the listed reason %r is not the "
+                            "catalogue's %r" % (i, listed[i], catalogue[i]))
+    if unmatched and RULES["skip_unmatched"]:
+        problems.append("known-fail entries no selected case produced: %s"
+                        % ", ".join(unmatched))
+    if kept:
+        v, detail = check_verdict([dict(r, group="*", id="*/" + r["id"]) for r in kept], "*")
+    else:
+        v, detail = "PASS", ""
+    if problems:
+        if v in ("PASS", "FAIL"):
+            v = "FAIL"
+        detail = "; ".join(problems + ([detail] if detail else []))
+    return v, detail, problems
 
 
 def item(kind, item_id, expected, got, detail=""):

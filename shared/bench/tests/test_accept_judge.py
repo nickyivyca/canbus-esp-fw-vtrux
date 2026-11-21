@@ -281,9 +281,70 @@ def test_not_passed():
         J.not_passed(rs)
 
 
+def nested_res(*pairs):
+    """A nested suite run's record.json results: (<group>/<check>, verdict)."""
+    return [{"id": c, "check": c, "group": c.split("/")[0], "verdict": v,
+             "detail": "skipped: x" if v == "NOT-RUN" else ""} for c, v in pairs]
+
+
+def test_suite_run_skips():
+    """A12a (user, 2026-11-20): a suite run judged from its nested record. A
+    NOT-RUN of a listed declared skip does not make it fail, and every other
+    result is judged as before (an unlisted NOT-RUN, a FAIL, an ERROR). A
+    listed id that ran, that the run did not produce, that the catalogue
+    does not declare as a skip, or whose listed reason is not the
+    catalogue's makes it fail, naming the id."""
+    sv = J.suite_run_verdict
+    cat = {"truck/i1": "needs the truck", "truck/i2": "needs the truck",
+           "truck/i3": "needs hands"}
+    both = [{"id": "truck/i1", "reason": "needs the truck"},
+            {"id": "truck/i2", "reason": "needs the truck"}]
+    base = nested_res(("g/a", "PASS"), ("truck/i1", "NOT-RUN"), ("truck/i2", "NOT-RUN"),
+                      ("g/k", "KNOWN-FAIL"))
+    # the pass: both skips listed with the catalogue's reason
+    assert sv(base, cat, both) == ("PASS", "", []), sv(base, cat, both)
+    # an unlisted NOT-RUN counts as before
+    v, d, p = sv(base, cat, both[:1])
+    assert v == "NOT-RUN" and p == [] and "truck/i2 NOT-RUN" in d, (v, d, p)
+    # with nothing listed, the run is judged as check_verdict judges it
+    assert sv(base, cat, [])[0] == "NOT-RUN", sv(base, cat, [])
+    # a listed id that ran
+    ran = nested_res(("g/a", "PASS"), ("truck/i1", "PASS"), ("truck/i2", "NOT-RUN"))
+    v, d, p = sv(ran, cat, both)
+    assert v == "FAIL" and len(p) == 1 and "truck/i1" in p[0] and "ran (PASS)" in p[0], \
+        (v, d, p)
+    # a listed id the run did not produce (it is in the catalogue)
+    v, d, p = sv(base, cat, both + [{"id": "truck/i3", "reason": "needs hands"}])
+    assert v == "FAIL" and len(p) == 1 and "truck/i3" in p[0] and "did not produce" in p[0], \
+        (v, d, p)
+    # a listed id the catalogue does not declare a skip (it did NOT-RUN)
+    off = base + nested_res(("g/b", "NOT-RUN"))
+    v, d, p = sv(off, cat, both + [{"id": "g/b", "reason": "needs the truck"}])
+    assert v == "FAIL" and len(p) == 1 and "g/b" in p[0] and "catalogue" in p[0], (v, d, p)
+    # a listed reason that is not the catalogue's
+    v, d, p = sv(base, cat, [{"id": "truck/i1", "reason": "needs hands"}, both[1]])
+    assert v == "FAIL" and len(p) == 1 and "truck/i1" in p[0] and "needs hands" in p[0], \
+        (v, d, p)
+    assert "truck/i1" in d, d
+    # a FAIL elsewhere is still a FAIL; an ERROR outranks a skip's problem
+    v, d, p = sv(base + nested_res(("g/f", "FAIL")), cat, both)
+    assert (v, p) == ("FAIL", []) and "g/f FAIL" in d, (v, d, p)
+    v, d, p = sv(ran + nested_res(("g/e", "ERROR")), cat, both)
+    assert v == "ERROR" and "truck/i1" in d and "g/e ERROR" in d, (v, d, p)
+    assert sv([], cat, both) == ("absent", "", [])
+    # the record's unmatched_known_fails (known-fail entries no selected
+    # case produced) made the nested run exit 1: not a pass, each named (the
+    # gen-inhibit tester's read, 2026-11-20)
+    v, d, p = sv(base, cat, both, ["g/gone", "g/renamed"])
+    assert v == "FAIL" and len(p) == 1 and "g/gone" in p[0] and "g/renamed" in p[0] \
+        and "g/gone" in d, (v, d, p)
+    assert sv(base, cat, both, []) == ("PASS", "", [])
+
+
 TESTS = [test_compare_identical, test_compare_same_verdicts, test_compare_within,
          test_compare_listed, test_transcript, test_adapter_comparer, test_premise_digest,
-         test_not_exercised, test_verdict, test_check_verdict, test_not_passed]
+         test_not_exercised, test_verdict, test_check_verdict, test_not_passed,
+         test_suite_run_skips]
 
 MUTANTS = [
     ("count_verdicts", test_compare_identical),
@@ -306,6 +367,14 @@ MUTANTS = [
     ("known_passed", test_check_verdict),
     ("listed_ok_set", test_not_passed),
     ("listed_known_passed", test_not_passed),
+    # A12a: the excuse itself, then one per failing case
+    ("skip_excused", test_suite_run_skips),
+    ("skip_unlisted", test_suite_run_skips),
+    ("skip_ran", test_suite_run_skips),
+    ("skip_missing", test_suite_run_skips),
+    ("skip_catalogue", test_suite_run_skips),
+    ("skip_reason", test_suite_run_skips),
+    ("skip_unmatched", test_suite_run_skips),
 ]
 
 

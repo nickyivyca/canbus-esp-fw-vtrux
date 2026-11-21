@@ -291,9 +291,32 @@ def test_readme_compare_all():
                      "  - seen, not counted: " + fig], sec
 
 
+def test_declared_skips():
+    """A12a (user, 2026-11-20): the record lists each declared skip with its
+    reason, in the README and the skeleton; a record with none has no such
+    section."""
+    rec, _said = opened()
+    s = summary(rec)
+    for i in s["verdict"]["items"]:
+        if i["kind"] == "suite_run":
+            i["declared_skips"] = [("truck/i1", "needs the truck"), ("truck/i2", "needs hands")]
+    CL.close(rec, s, S.Made(), Adapter())
+    text = read(rec, "README.md")
+    sec = text.split("## Declared skips (A12a)", 1)[1].split("\n## ", 1)[0]
+    lines = [ln for ln in sec.splitlines() if ln.startswith("- ")]
+    assert lines == ["- suite run emu: truck/i1 -- needs the truck",
+                     "- suite run emu: truck/i2 -- needs hands"], sec
+    sk = read(rec, "verification_skeleton.md")
+    assert "- suite run emu, declared skip truck/i2: needs hands" in sk, sk
+    rec2, _s = opened()
+    CL.close(rec2, summary(rec2), S.Made(), Adapter())
+    assert "Declared skips" not in read(rec2, "README.md")
+
+
 TESTS = [test_readme, test_sha256sums, test_closed_once, test_identifiers_reported,
          test_cleanup_first, test_late_failure, test_artifacts_row, test_skeleton,
-         test_dev_skeleton, test_readme_not_passed, test_readme_compare_all]
+         test_dev_skeleton, test_readme_not_passed, test_readme_compare_all,
+         test_declared_skips]
 
 MUTANTS = [
     ("readme_items", test_readme),
@@ -313,6 +336,7 @@ MUTANTS = [
     ("skeleton_reruns", test_skeleton),
     ("dev_marked", test_dev_skeleton),
     ("compare_all", test_readme_compare_all),
+    ("readme_skips", test_declared_skips),
 ]
 
 
