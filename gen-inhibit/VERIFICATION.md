@@ -8810,6 +8810,17 @@ reviewer: run C on `743cf7cd` with its triage re-runs and the rulings re-run, an
   rebuilt `7f2d5032` `_man` on madhouse: image `2aac016d` against XPS's `f515a383`, but code hash
   (shared/tools R3) `bc49dce0...` on both, read in one call (`linux/image_xps_and_madhouse.json`).
   The images compared here also differ in code, by the re-pins above.
+- **The host's path to the WiCAN's hotspot differs.**
+  - madhouse-debian joins through the phone over adb: the settings in every madhouse run's
+    `record.json` (6846, b840, bdbe, 0d8c) have `ota.wifi` `adb`, and the harness's joins and
+    page reads go through that block (`gen-inhibit/tools/README.md`, the `suite_gen_inhibit.py`
+    row).
+  - NICKY-XPS used its own Wi-Fi adapter: the settings in 575b's and a61f's `record.json` have
+    no `ota` block, and the laptop's WLAN-AutoConfig log over both runs
+    (`runs/step1d_7f2d503_suite/wlan_events_1d.txt`) records its own WLAN connecting 9 times.
+
+  This is a difference in how the checks ran, not a claimed cause. It bears on the rows timed
+  over HTTP (the gen-inhibit reviewer, 2026-11-21): B3, B11raw, B21 and B14.
 
 **Same standing verdict and the same figures** (madhouse | Windows)
 - **H** (emulated): PASS | PASS. 25 steps, 81 goldens passed, 0 failed, 23 without, 9 replays
@@ -8822,7 +8833,8 @@ reviewer: run C on `743cf7cd` with its triage re-runs and the rulings re-run, an
 - **C1C7, C3:** NOT-RUN | NOT-RUN, their commands not yet in the suite.
 - **B1:** 20 of 20 refused and counted. **B4:** 6 of 6. **B11:** 6 arms, `tx_ok` agrees with every
   INHIBIT span. **B13:** 8 arms, booking 8 of 8. **B14:** 5 mode checks, mode 0 at the end.
-  **B16:** 360 polls, 0 outages. All PASS on both sides, with the same figures.
+  **B16:** 360 polls, 0 outages. All PASS on both sides, with the same figures. B14 ran over
+  each host's own path to the hotspot (above).
 - **B17a, B17b, B18, B19page:** AS SPECIFIED on both sides. Only their identity figures differ (table above).
 - **B19present, B19absent:** PASS on both sides, every switch the same: four present on their
   test builds, five absent on the prod stand-in.
@@ -8881,7 +8893,8 @@ reviewer: run C on `743cf7cd` with its triage re-runs and the rulings re-run, an
   - **Cause: not known.** What differed:
     - the e4 arm witness reads in a forked process (`cc8e41e6`, F1);
     - the Kvaser is read through SocketCAN (`466235e1`);
-    - the host;
+    - the host, and its path to the hotspot: the phone over adb on madhouse, the laptop's own
+      Wi-Fi adapter on Windows (above);
     - firmware, possible cause: `config_server.c`, the device's HTTP server, changed in both
       re-pins (`5e28d6d3` W12-W14, `a481019a` W7).
 - **B11raw:** PASS on both sides, judged differently. madhouse: 12 of 12 POSTs in the
@@ -8892,6 +8905,7 @@ reviewer: run C on `743cf7cd` with its triage re-runs and the rulings re-run, an
   - The Windows pass was judged under the old wording. Under the new wording the `e3d9437`
     baseline re-judges VOID (entry "B11raw and B21 under the wording of 2026-11-19"). The
     figures are not comparable one for one.
+  - The host's path to the hotspot also differed (above).
 - **B15:** PASS on both sides, 3 adapters on the segment. Frames read (madhouse | 575b, a61f):
 
   | Adapter | madhouse | Windows |
@@ -8913,6 +8927,7 @@ reviewer: run C on `743cf7cd` with its triage re-runs and the rulings re-run, an
     mode from `743cf7cd` (b21-404). It was not in the Windows harness.
   - Firmware, possible cause: `a481019a` W7 (those routes not registered) and `5e28d6d3` W12-W14
     (the OTA upload). The Windows pass is under the old wording, as for B11raw.
+  - The host's path to the hotspot also differed (above).
 - **B25** (on B20's `rekey-long`): PASS, 0 rule-1 violations, on both sides. madhouse | Windows:
   frames 18387 | 18396 and 18396; gate open 203.483 | 203.478 s; resumed 203.486 | 203.481 s.
   - **Cause: not known.** What differed: the Kvaser witness on SocketCAN (`466235e1`).
@@ -8973,16 +8988,30 @@ reviewer: run C on `743cf7cd` with its triage re-runs and the rulings re-run, an
   - B26 has no bound. Run 2 on madhouse read 1065 loaded.
 - **B5:** standing PASS on both sides. 200/s 3 of 3 on both. 500/s: 9 of 9 (0d8c) | 8 of 9 and 1
   inconclusive (a61f; 575b 9 of 9).
-  - On madhouse, b840 was ERROR on one arm, "reset reason none".
-  - **Cause: not known.** What differed: the jammer image, as for B7.
+  - On madhouse, b840 was ERROR on one arm (`B5_livetrain_p2000_run3` arm 1), "reset reason
+    none". **Cause: the judge, fixed in `aeab917d`** (in 0d8c's harness `e42c5707`, not in
+    b840's `21753d42`). The reading at the arm's own POST could still show the previous arm's
+    `tx_ok` count in mode 0, so the count's fall when the arm's own count restarted was read
+    as a device reset. From `aeab917d`, a fall counts as a reset only between two answered
+    readings that are both in mode 3.
+  - **500/s, 9 of 9 against 8 of 9: cause not known.** What differed: the jammer image, as for
+    B7.
 - **B22** (X2 `slcan`): standing PASS on both sides. Both arms: 8983 of ours, provenance clean,
   0 `tx_fail`, 0 error frames, response mean 580 us. madhouse | Windows: response max
   1260 / 1046 us | 996 / 1191 and 1193 / 1025 us; load at least 92.7 % | 92.5 %.
   - On madhouse, run C and b840 were VOID: the adapter refused 6617-6677 replay frames an arm.
     0d8c refused none.
-  - **Cause of the refusals and of the max: not known.** The X2 ran `slcan` in all three madhouse
-    runs. The only can-tools change between run C and 0d8c was `49eb777`'s read-only
-    `link_counters`.
+  - **Cause of the refusals: the harness, fixed in `204d48ec`** (in 0d8c's harness `e42c5707`,
+    not in run C's and b840's `21753d42`).
+    - `e4_device_calibration` took the replay's base before the `--flood-slcan` filler's ~3 s
+      open. So each arm's replay started ~3.37 s behind its schedule, and about 8000 frames went
+      to the PCAN back to back.
+    - `pcan.ko`'s transmit queue holds 500 frames (`/sys/module/pcan/parameters/txqsize`).
+    - From `204d48ec` the base is taken after the filler is open and started. An arm whose
+      first frame goes out more than `START_LAG_MAX_S` (5 ms) late is VOID.
+  - **The response max: not known.** What differed: the replay's PCAN, opened through
+    `pcan.ko`'s chardev on madhouse and through PCAN-Basic on Windows; the Kvaser witness on
+    SocketCAN (`466235e1`).
 - **Run files:** `runs/step3_diff_743cf7cd_vs_1d/` (`pair.txt`, `README.md`). Each run's own files
   are named in its entry.
 
