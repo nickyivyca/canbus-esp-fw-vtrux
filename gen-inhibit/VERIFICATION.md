@@ -9015,6 +9015,177 @@ reviewer: run C on `743cf7cd` with its triage re-runs and the rulings re-run, an
 - **Run files:** `runs/step3_diff_743cf7cd_vs_1d/` (`pair.txt`, `README.md`). Each run's own files
   are named in its entry.
 
+**Hypotheses for the not-known rows -- tester, 2026-11-21. Hypotheses the user has seen
+(2026-11-21), not causes.** The user accepted port step 3 for gen-inhibit on this difference list
+on 2026-11-21 (option 1, relayed by the gen-inhibit reviewer), with these hypotheses recorded
+beside the not-known rows.
+- **How they were made.** From the records and the harness code only: no bench run, no new
+  measurement, no code change, no product source.
+- **Re-making them.** The scripts that make the figures are in `runs/step3_diff_743cf7cd_vs_1d/`
+  (`B3.py`, `B3_connect.py`, `B3_off.py`, `B5.py`, `B6.py`, `B9.py`, `B12.py`, `B15.py`,
+  `B15_table.py`, `B25.py`, `B26.py`), and its `README.md` says how to run them. B2's and B22's
+  figures are read straight from those runs' records, which the README names.
+- **Format.** Figures are madhouse | Windows. Certainty: **H**, the records show it; **M**,
+  consistent but not shown; **L**, plausible only.
+- **Summary.** The phone-over-adb path to the hotspot is the common thread. No row points at the
+  CAN drivers changing the device's behaviour.
+
+- **B6.**
+  1. The short pulse never reached the wire, and the device missed it as well as the witness.
+     **(H)**
+     - In each short arm the device's `bus_error` did not rise across the gap:
+       - 575b `n10_lead5` arm 0: a miss at +5.95 s, with 6 errors over +5.09 to +6.82 s;
+       - a61f `n9_lead5` arm 0: +3.25 s, with 3 over +2.78 to +4.33 s;
+       - run C `n10_lead1.5` arm 1: +7.96 s, with 8 over +7.08 to +8.97 s.
+     - The jammer still printed `PULSE k=` on time, and `DONE ... pulses=N end=complete`.
+     - Neither jammer image checks that a pulse was sent before printing it:
+       `tools/x2_jammer/src/main.cpp:236-241`, and the port's `jam_engine.c:263-267` on
+       `shared/main`.
+     - This rules out the SocketCAN witness and the `c81e28b9` poll stamps.
+     - It is like the Windows desk points of 2026-10-20 (section 7 above). Two of the three
+       undelivered pulses there were missing on both the witness and the device; the third was a
+       witness miss.
+     - To confirm why a pulse is dropped needs a per-pulse confirmation (the RMT done notice, or a
+       scope on TXD). None is on file. (`B6.py`)
+  2. The verdict difference is within run-to-run spread. **(M)**
+     - madhouse went 9 of 10 in run C, then 10 of 10 in b840 at the same harness, then 10 of 10 in
+       0d8c.
+     - Short arms: 1 in 40 on the jammer's ESP-IDF port, against 10 in about 110 on the old jammer
+       on Windows (Fisher p 0.29).
+- **B5 (500/s).** The same judge defect on both sides. **(H)**
+  - a61f's inconclusive arm (`B5_livetrain_p2000_run1` arm 0, "device reset seen at -3.114 s") has
+    the shape of b840's ERROR arm:
+    - `uptime_ms` unbroken;
+    - `tx_ok` 323 in mode 0, the previous arm's count, then 1 in mode 3.
+  - `aeab917d` fixed it. It is in neither `bb09b5f6` nor `21753d42`.
+  - Spread: run C 9 of 9, b840 8 of 9 + 1, 0d8c 9 of 9 | 575b 9 of 9, a61f 8 of 9 + 1. (`B5.py`)
+- **B9 (how the source explains the counts).**
+  1. The device itself counted about 9x fewer errors on madhouse: `bus_error` delta 2588 | 22500
+     and 23148. **(H)**
+     - Per burst, madhouse follows the asked length: 1 ms 112-271, 5 ms 129-234, 20 ms 375-595.
+       `canmain`'s hold, close minus open, was 6-26 ms.
+     - Windows counted 2409-2790 per burst, whatever the length.
+     - Inferred **(M)**: the old Kvaser `burst()` (`bb09b5f6`, `wrong_bitrate_errors.py:140-164`)
+       sends with a 0.05 s timeout on a frame that never completes, so it stayed on the bus well
+       past `--burst-ms`.
+     - The Windows records keep no per-error times, so the span is not on file.
+  2. madhouse's PCAN witness undercounts: 3-15 % of the device's count | 105-120 %. **(M)**
+     - 0d8c's `pcan_states` shows error passive at every burst.
+     - By the ruling of 2026-11-13 recorded in `x2_jammer.py`, the PCAN in normal mode under
+       `pcan.ko` stops reporting bus errors once it is error passive.
+  3. The +1.40 s latch is `canmain`'s libusb open inside the burst (`open_s` 1.239 s). The latch
+     came 0.17 s after the errors began. **(H)**
+  4. TEC max 0 | 8, 0 is within run-to-run spread. (`B9.py`)
+- **B25.**
+  1. The replay sat 5.8 ms later against t0 on madhouse, and the key edge, `gate_open` and
+     `resumed` all move with it. **(H)**
+     - Candidates for the constant **(M)**: `device_fit` maps SocketCAN stamps to the median
+       receipt time (`witness_clock.py:259`), while the CANlib stamps were 6.2 ms ahead of
+       receipt; or the replay started later.
+  2. All 9 missing frames are at the start of span 1. **(H)**
+     - The device's first `0x051` came 93 ms later: 0.168 | 0.075 s.
+     - The rekey-long arm's POST took 75 ms | 26 and 39 ms, and the device went live after the
+       second `0x592` rather than the first.
+     - In the other 27 B20 cases the first device `0x051` is the same on both sides.
+     - Inferred **(M)**: the slower POST over the phone path was applied after the first
+       `0x592`, and the device went live on the next one. The case reboots the WiCAN into mode 0
+       first, so the device receives nothing until the arm's POST is applied. Going live on the
+       first `0x592` it received is spec 7 as written (the gen-inhibit reviewer, 2026-11-21).
+       (`B25.py`)
+- **NONODE.** Within run-to-run spread. **(H)**
+  - The figure is the first latched page read's return minus the last VCM send
+    (`nonode_bench.py:251`).
+  - That read was sent at 0.400-0.425 | 0.399-0.434 s.
+  - Page round trips have a median of 25-28 | 17-21 ms: the phone path adds about 8 ms.
+  - The brackets overlap: 0.349-0.456 | 0.348-0.451 s.
+- **B3.** The figure runs from replay frame k's wire time to the first device answer, both on the
+  Kvaser's clock (`mode_entry_analysis.py:98-124`, `e4_device_calibration.py:982-993`). So it holds
+  the POST's trip, any replay lateness, and the wait for the next VCM command, about 10 ms.
+  1. The HTTP path, the phone over adb. **(H that it adds latency; M that it is the whole cause)**
+     - POST duration medians: OFF 43-60 | 19-29 ms; OBSERVE 68-108 | 47-52; PASSIVE 51-64 |
+       23-29; RESPOND 62-69 | 19-34.
+     - TCP connect, from B11rawarms (12 per run): median 34.9 ms (run C) | 7.2 (575b) and 5.9
+       (a61f). It is network-side, before any handler runs.
+     - In RESPOND the device's answer after the command is the same, 0.34-1.02 | 0.34-1.36 ms. But
+       the first answered command was scheduled 33-59 | 14.5-20.5 ms after frame k.
+     - So the device went live later. It did not answer more slowly. (`B3.py`, `B3_connect.py`)
+  2. A replay stall in OBSERVE. **(H for the effect, L for the mechanism)**
+     - The answered command was 44-47 ms behind schedule in 4 of 5 b840 OBSERVE arms | 19-25 ms in
+       the Windows arms that stalled.
+     - `resource-log` over b840's B3 window is clean: bench cpu pressure at most 0.4 %.
+     - Candidate mechanisms: the POST thread competing for the GIL with the busy-wait replay, or
+       `pcan.ko`'s send path.
+     - PASSIVE, and run C's OBSERVE, are within madhouse's own spread and overlap Windows.
+  3. OFF's 1 ms is frame k's own wire timing. **(H)**
+     - Against the schedule: +0.33 to +0.61 ms in 9 of 10 madhouse arms | -0.32 to -0.44 ms in all
+       10 Windows arms.
+     - Frame k is the first frame after `poster.start()`. (`B3_off.py`)
+  4. The forked witness and the SocketCAN Kvaser: against it. **(L)** Both ends are on one clock,
+     with a slope of about 53 ppm.
+  5. The `config_server.c` re-pins. **(L)** They cannot be separated from the path without one
+     image run over both paths, which is not on file.
+- **B12.** The figure runs from host time before the restart POST to the median, over the page
+  reads, of host time after the response minus uptime (`restart_error_frames.py:314-317,386-394`).
+  No witness is involved.
+  - The HTTP path, at both ends. **(M)**
+    - SW median 2.340 | 2.320 s, partly within run-to-run spread: a61f alone spans 2.292-2.337 s.
+    - PANIC median 0.607 | 0.582 s, with every madhouse cycle above every Windows one.
+    - The +20 to 25 ms fits the ~29 ms longer connect.
+    - Only run C ran B12 on madhouse.
+    - To confirm needs per-read durations (only the first and last are kept), or the old `_rt`
+      image run on madhouse. (`B12.py`)
+  - The images, through the re-pins. **(L)**
+- **B2.** Within run-to-run spread. **(H)**
+  - The x2_app RESPOND count is 2999 minus the device's `tx_fail`: run C 8, bdbe 6, 0d8c 7 | 575b
+    34, a61f 4.
+  - A small excess on madhouse, 6-8 against 4-5, is **(L)** and would need more runs.
+- **B22 (response max).** Within run-to-run spread. **(H)**
+  - It is the device's own measurement: 913-1260 us over run C, b840 and 0d8c | 996-1193 us.
+  - Responses over 800 us: 7-13 | 7-11 per arm.
+  - Not asked, but on file **(H)**: the 92.7 | 92.5 % load difference is the X2's `slcan` filler.
+    - Accepted: 176083 | about 161600, with queue full 56k | 66k.
+    - The witness saw 397.3k | 382.8k frames, a gap matching the filler's.
+    - Why Linux got more frames into the X2 is **(M)**: how it writes the serial port.
+  - The device's `drv.arb_lost` was 124-184k | 46-50k per arm, with the response mean the same,
+    580 us. Not judged.
+- **B15.** The census opens each adapter alone for 6 s (`bench_census.py:83-128`). Once the Kvaser
+  closes nothing ACKs, and the WiCAN repeats its one pending frame through the PCAN window.
+  1. The PCAN count is set by which frame repeats, through its stuff bits. **(H)**
+     - `0x7F8` and `0x7F9` are 140 bit times, `0x7F1` and `0x7F3` 133. Predicted ratio 0.950,
+       observed 0.957.
+     - Over 18 records the count groups by id: `0x7F8` Windows 20926-20994, run C 21145; `0x7F9`
+       Windows 20910-20978, madhouse `cb08` 20857; `0x7F3` Windows 22074-22230.
+     - A residual of about 1 % within an id has no consistent host sign. **(L)** (`B15.py`,
+       `B15_table.py`)
+  2. The repeat id is within run-to-run spread. **(H that it varies; M for the mechanism)**
+     - Windows over 15 runs: `0x7F9` four times, `0x7F8` four, `0x7F3` four, `0x7F1` twice, `0x7F2`
+       once.
+     - Mechanism: the repeat id is the first page after the Kvaser stops ACKing, so it depends on
+       where the close lands in the page cycle.
+  3. The Kvaser count looks systematic: 21 in all 15 Windows runs, against 20 (`cb08`) and 19 (run
+     C). `canmain` read 23 in its own 6 s window.
+     - **(M)** that it is the Kvaser's SocketCAN open, which brings the link up inside the open
+       (`kvaser_bus.py:540-582`). **(L)** for the mechanism, a late first frame.
+     - Not on file: `bench_census.py` computes the first and last frame times (lines 99, 125) but
+       does not write them.
+- **B23.** Within run-to-run spread. **(H)**
+  - Windows ranges over 15 runs, with run C in brackets: contend aborted 60-72 (67); contend
+    lost-then-aborted 0-4 (1); retry aborted 69-74 (68); first abort enough 70-74 (70); retry
+    lost-then-aborted 4-9 (10).
+  - Run C's two figures just outside are one trial, since retry aborted plus retry
+    lost-then-aborted is 78. `cb08` is inside every range.
+  - Recorded, not shown to matter: the PCAN flood was 3942-3967/s | 3978/s, and `pcan.ko` refused
+    340k | about 74k frames (its 500-frame queue).
+- **B26.**
+  1. The loaded arm's backlog follows the Wi-Fi load, which the host's path to the hotspot sets.
+     **(H)**
+     - The Hammer reads `/gen_inhibit` back to back (`e4_device_calibration.py:622-648`).
+     - Requests in 35 s: `cb08` 114, run C 267 | 1248-1540.
+     - Dequeues with a backlog of 2 or more: 1065, 2559 | 10667-16786. That is about 9.3-9.6 per
+       request | 8.5-11.8, the same ratio over 16 runs. (`B26.py`)
+  2. The idle arms and the loaded max backlog are within run-to-run spread. **(H)**
+  3. `pcan.ko` against PCAN-Basic, and the forked Kvaser: no effect shown. **(L)**
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical
