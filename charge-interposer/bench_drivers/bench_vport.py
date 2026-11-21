@@ -961,27 +961,105 @@ PCAN_BUSHEAVY = 0x8
 PCAN_QRCVEMPTY = 0x20
 PCAN_QOVERRUN = 0x40        # the receive queue was read too late
 PCAN_ILLDATA = 0x20000
+PCAN_BUSOFF = 0x10
+PCAN_BUSPASSIVE = 0x40000
 PCAN_MSG_ERRFRAME = 0x40
+PCAN_MSG_STATUS = 0x80      # a status message: a state change, not a frame
+# the bits of a Read result that, alone (with or without QRCVEMPTY), make
+# it a bus state or an overrun returned in place of a message: can-tools'
+# CanbenchPcanBus test (canbench/live/pcan_bus.py, _STATE_RESULT)
+PCAN_STATE_RESULT = (PCAN_BUSLIGHT | PCAN_BUSHEAVY | PCAN_BUSOFF
+                     | PCAN_BUSPASSIVE | PCAN_OVERRUN | PCAN_QOVERRUN)
 WITNESS_POLL_ROWS = 256     # rows read between two looks at the command pipe
+_STATE_OF = {}              # status word -> pcan_state's answer
+
+
+def pcan_state(word):
+    """A PCAN status word -- a bus state Read returned, or a status
+    message's 4 data bytes, MSB first -> ("state", name) or ("failure",
+    name), by can-tools' own decoding (canbench.errors.from_pcan_status,
+    lost_frames, decode; the charge-interposer reviewer, 2026-11-20).
+    PCAN-Basic for Linux hands status messages up as Read results (CAN
+    replay, from the 9.3.3 source), so a state is not a lost frame:
+    - frames lost (an overrun bit, errors.lost_frames) -> "failure", as
+      before;
+    - bus-off -> "failure", as before: a bus-off witness receives nothing,
+      so its window would read the node's frames as never arrived;
+    - any other state -> "state", named as can-tools names it (active,
+      warning, passive; "light" for BUSLIGHT alone, which it leaves
+      state-less)."""
+    res = _STATE_OF.get(word)
+    if res is None:
+        E = adapter_roles.errors()
+        em = E.from_pcan_status(word)
+        st = E.decode(em).state
+        if E.lost_frames(em):
+            res = ("failure", "frames lost" + (" (%s)" % st if st else ""))
+        elif st == "busoff":
+            res = ("failure", "bus-off")
+        else:
+            res = ("state", st or "light")
+        _STATE_OF[word] = res
+    return res
+
+
+# PCAN-Basic's status bits by name, for the PCAN's own status string
+PCAN_BIT_NAMES = ((0x1, "XMTFULL"), (PCAN_OVERRUN, "OVERRUN"),
+                  (PCAN_BUSLIGHT, "BUSLIGHT"), (PCAN_BUSHEAVY, "BUSHEAVY"),
+                  (PCAN_BUSOFF, "BUSOFF"), (PCAN_QRCVEMPTY, "QRCVEMPTY"),
+                  (PCAN_QOVERRUN, "QOVERRUN"), (0x80, "QXMTFULL"),
+                  (PCAN_BUSPASSIVE, "BUSPASSIVE"))
+
+
+def pcan_status_text(word):
+    """A PCAN-Basic GetStatus word -> its text, never empty: "OK", or the
+    word in hex with every set bit by name (any bit not in PCAN_BIT_NAMES
+    in hex) and, for state and overrun bits only, can-tools' reading
+    (pcan_state). python-can's status_string looks the word up whole and
+    returns None for a combination such as 0x40008 (passive and bus heavy),
+    so three of the hand take E3's four windows printed no status
+    (2026-11-20)."""
+    if word == PCAN_OK:
+        return "OK"
+    names = [n for b, n in PCAN_BIT_NAMES if word & b]
+    rest = word
+    for b, _n in PCAN_BIT_NAMES:
+        rest &= ~b
+    if rest:
+        names.append("other 0x%X" % rest)
+    txt = "0x%X %s" % (word, "+".join(names))
+    st = word & ~PCAN_QRCVEMPTY
+    if st and not st & ~PCAN_STATE_RESULT:
+        txt += " (%s)" % pcan_state(st)[1]
+    return txt
+
+
+def pcan_status_reader(bus):
+    """-> the witness reader's status callable for a python-can PcanBus:
+    its GetStatus word as pcan_status_text gives it."""
+    return lambda: pcan_status_text(bus.status())
 
 
 def classify_read(result):
-    """One PCAN-Basic Read status -> "row", "empty", "warning", "ignored" or
-    "failure". python-can 4.6.1's _recv_internal order, with one change
-    (2026-10-25): an overrun bit (OVERRUN, QOVERRUN) is a failure whatever
-    else is set. python-can tests BUSLIGHT / BUSHEAVY first, so a queue
-    overrun reported with a bus-heavy bit was only logged as a warning and
-    its message dropped: rows lost with nothing counted."""
+    """One PCAN-Basic Read status -> "row", "empty", "state", "ignored" or
+    "failure". Until 2026-11-20 a state other than BUSLIGHT / BUSHEAVY was a
+    failure, so on Linux, where PCAN-Basic returns status messages as Read
+    results, each error-passive report was counted as a lost frame and
+    faulted the window. Now a result of state and overrun bits only (with
+    or without QRCVEMPTY) is decoded by pcan_state: an overrun or bus-off
+    is a failure, any other state a "state". An overrun bit is a failure
+    whatever else is set (2026-10-25: python-can 4.6.1 tests BUSLIGHT /
+    BUSHEAVY first, so it took a queue overrun with a bus-heavy bit for a
+    warning and dropped the message)."""
     if result == PCAN_OK:
         return "row"
-    if result & (PCAN_OVERRUN | PCAN_QOVERRUN):
-        return "failure"
     if result == PCAN_QRCVEMPTY:
         return "empty"
-    if result & (PCAN_BUSLIGHT | PCAN_BUSHEAVY):
-        return "warning"
     if result == PCAN_ILLDATA:
         return "ignored"
+    word = result & ~PCAN_QRCVEMPTY
+    if word & PCAN_STATE_RESULT and not word & ~PCAN_STATE_RESULT:
+        return pcan_state(word)[0]
     return "failure"
 
 
@@ -1002,9 +1080,13 @@ class _PcanReader(object):
         self.t_read = self.t_wait = 0.0   # time in Read and in the wait
 
     def read(self, timeout):
-        """-> (kind, row) for a row, (kind, text) for a warning or a
-        failure, (kind, None) otherwise; on an empty queue it waits up to
-        timeout s for the receive event."""
+        """-> (kind, row) for a row, (kind, text) for a state or a
+        failure, (kind, None) otherwise; on an empty queue (a state
+        returned with QRCVEMPTY included) it waits up to timeout s for the
+        receive event. A status message (Read OK, MSGTYPE STATUS) is a
+        state or a failure by its word (pcan_state), never a row: before
+        2026-11-20 each one was written as a data frame whose id was the
+        driver's state number."""
         c0 = time.perf_counter()
         result, msg, ts = self.basic.Read(self.handle)
         c1 = time.perf_counter()
@@ -1012,6 +1094,12 @@ class _PcanReader(object):
         r = int(result)
         kind = classify_read(r)
         if kind == "row":
+            if msg.MSGTYPE & PCAN_MSG_STATUS:
+                word = int.from_bytes(bytes(msg.DATA)[:4], "big")
+                kind, name = pcan_state(word)
+                return kind, "PCAN %s %s: status message 0x%05X (id %d)" % (
+                    "bus state" if kind == "state" else "receive failure,",
+                    name, word, msg.ID)
             t = self.epoch + (
                 (ts.micros + 1000 * ts.millis
                  + 0x100000000 * 1000 * ts.millis_overflow)
@@ -1029,6 +1117,12 @@ class _PcanReader(object):
             return kind, None
         if kind == "ignored":
             return kind, None
+        if kind == "state":
+            if r & PCAN_QRCVEMPTY:
+                self.wait(timeout)
+                self.t_wait += time.perf_counter() - c1
+            return kind, "PCAN bus state %s: read status 0x%X" % (
+                pcan_state(r & ~PCAN_QRCVEMPTY)[1], r)
         return kind, "PCAN read status 0x%X: %s" % (
             r, " / ".join(str(self.text(r)).splitlines()))
 
@@ -1094,7 +1188,7 @@ def _open_witness_reader(acks, spec=None, mode="classic"):
                             pb.TPCANTimestamp())
     return _PcanReader(basic, bus.m_PcanHandle, wait,
                        bus._get_formatted_error, pc.boottimeEpoch,
-                       bus.shutdown, bus.status_string, mode)
+                       bus.shutdown, pcan_status_reader(bus), mode)
 
 
 def reader_stats(n, reads, t_read, t_wait, wall, lag_min, lag_max, lag_end,
@@ -1145,11 +1239,13 @@ def _witness_proc(acks, spec, folder, conn, mode="classic"):
     reviewer 2026-10-23): it only drains the PCAN and writes compact rows
     to one file per window, so the bench process's work (the last window's
     rows, scoring, SeaDrive writes) shares no GIL or heap with it. Each
-    receive failure is kept by its text (F1); the PCAN's bus-state warnings
-    are counted here, where the PCAN is, and forwarded (2026-10-25: since F2
-    the bench process's logging handler saw none). Commands on conn:
-    ("cut",) closes this window's file and answers ("cut", k, rows, kinds,
-    failures, warnings, last warning, reader_stats); ("status",) answers
+    receive failure is kept by its text (F1); the PCAN's bus states (Read
+    results and status messages, pcan_state) are counted here by their
+    text, where the PCAN is, and forwarded (2026-10-25: since F2 the bench
+    process's logging handler saw none; by text since 2026-11-20). Commands
+    on conn: ("cut",) closes this window's file and answers ("cut", k,
+    rows, kinds, failures, states, last state, reader_stats, {state text:
+    [n, first, last]}); ("status",) answers
     the PCAN's status string; ("stop",). mode: _open_witness_reader's; the
     fast mode also looks at the command pipe only every WITNESS_POLL_ROWS
     rows or on an empty queue, where the classic one looks before every
@@ -1162,6 +1258,7 @@ def _witness_proc(acks, spec, folder, conn, mode="classic"):
         return
     conn.send(("ready", os.getpid(), prio))
     k, n, kinds, fails, warns, wlast = 0, 0, {}, 0, 0, ""
+    states = {}     # state text -> [n, first, last host s]
     f = open(os.path.join(folder, "w%06d.bin" % k), "wb", 1 << 20)
     since = 0
     fast = mode == "fast"
@@ -1181,9 +1278,11 @@ def _witness_proc(acks, spec, folder, conn, mode="classic"):
                         st = reader_stats(n, reads, reader.t_read,
                                           reader.t_wait, now() - w0, lag_min,
                                           lag_max, lag, _bins_out(bins))
-                        conn.send(("cut", k, n, kinds, fails, warns, wlast, st))
+                        conn.send(("cut", k, n, kinds, fails, warns, wlast, st,
+                                   states))
                         k, n, kinds, fails, warns, wlast = (k + 1, 0, {}, 0,
                                                             0, "")
+                        states = {}
                         w0, reads, lag_min, lag_max, lag = (now(), 0, None,
                                                             None, None)
                         bins, cur_b, cur = {}, None, None
@@ -1218,8 +1317,12 @@ def _witness_proc(acks, spec, folder, conn, mode="classic"):
                 note_failure(kinds, v, time.perf_counter())
                 fails += 1
                 since = WITNESS_POLL_ROWS
-            elif kind == "warning":
+            elif kind == "state":
+                # counted like a row towards the next look at the pipe: a
+                # PCAN returning only states must still answer the cut
+                note_failure(states, v, time.perf_counter())
                 warns, wlast = warns + 1, v
+                since += 1
             else:
                 since = WITNESS_POLL_ROWS
     finally:
@@ -1263,19 +1366,24 @@ _FAKE_TEXT = {PCAN_OVERRUN: "The CAN controller was read too late",
               PCAN_BUSHEAVY: "Bus error: an error counter reached the "
                              "'heavy' limit",
               PCAN_QOVERRUN: "The receive queue was read too late",
+              PCAN_BUSOFF: "Bus error: the CAN controller is bus-off",
               0x40000: "Bus error: the CAN controller is error passive"}
 
 
 class _FakeBasic(object):
     """The self-test's PCAN-Basic: Read gives node rows seq 1..n at up to
     rate per second; at each index in statuses ((index, status), ...) that
-    status instead of a row (the frame is lost, as python-can loses it); at
-    die_at the process exits (os._exit(3))."""
+    status instead of a row (the row is not given; a status that is a
+    tuple (id, msgtype, data) is a message Read returns OK, such as a
+    status message); at die_at the process exits (os._exit(3)); after the
+    n rows, Read returns tail for ever if given (a PCAN returning only
+    states), else QRCVEMPTY."""
 
     def __init__(self, n, statuses=(), die_at=None, rate=0.0, clock=False,
-                 delay=0.0, skew=0.0, scale=0.0, step=None):
+                 delay=0.0, skew=0.0, scale=0.0, step=None, tail=None):
         self.n, self.statuses = n, dict(statuses)
         self.die_at, self.rate = die_at, rate
+        self.tail = tail
         # clock: row k is stamped when it "arrived", t0 + k / rate, on this
         # clock (plus skew, and running scale faster: an epoch clock off
         # rate); step (k, s): rows after k stamped s later; delay: each Read
@@ -1289,6 +1397,8 @@ class _FakeBasic(object):
             end = time.perf_counter() + self.delay
             while time.perf_counter() < end:
                 pass
+        if self.k >= self.n and self.tail is not None:
+            return self.tail, None, None
         if self.k >= self.n or (self.rate and time.perf_counter() - self.t0
                                 < self.k / self.rate):
             return PCAN_QRCVEMPTY, None, None
@@ -1296,7 +1406,11 @@ class _FakeBasic(object):
         if self.die_at == self.k:
             os._exit(3)
         if self.k in self.statuses:
-            return self.statuses[self.k], None, None
+            s = self.statuses[self.k]
+            if isinstance(s, tuple):
+                return (PCAN_OK, _FakePcanMsg(s[0], s[1], s[2]),
+                        _FakePcanTs(float(self.k)))
+            return s, None, None
         t = (self.t0 + self.k / self.rate * (1.0 + self.scale) + self.skew
              + (self.step[1] if self.step and self.k > self.step[0] else 0.0)
              if self.clock else float(self.k))
@@ -1343,7 +1457,8 @@ class Witness(object):
         self.lock = threading.Lock()
         self.overflows = 0          # receive failures since the last take
         self.fail_kinds = {}        # text -> [n, first, last host s]
-        self.warns, self.warn_last = 0, ""   # PCAN bus-state warnings
+        self.warns, self.warn_last = 0, ""   # PCAN bus states: n, last
+        self.state_kinds = {}       # state text -> [n, first, last host s]
         self.k, self.dead = 0, None
         if not self.conn.poll(30):
             raise RuntimeError("the witness process did not start")
@@ -1390,13 +1505,17 @@ class Witness(object):
                     self.warns += warns
                     if warns:
                         self.warn_last = wlast
-                    for text, (c, first, last) in kinds.items():
-                        a = self.fail_kinds.get(text)
-                        if a is None:
-                            self.fail_kinds[text] = [c, first, last]
-                        else:
-                            a[0] += c
-                            a[1], a[2] = min(a[1], first), max(a[2], last)
+                    for got, into in ((kinds, self.fail_kinds),
+                                      (r[8] if len(r) > 8 else {},
+                                       self.state_kinds)):
+                        for text, (c, first, last) in got.items():
+                            a = into.get(text)
+                            if a is None:
+                                into[text] = [c, first, last]
+                            else:
+                                a[0] += c
+                                a[1], a[2] = (min(a[1], first),
+                                              max(a[2], last))
                 if len(rows) != n:
                     self._gone("wrote %d of the %d rows it read" % (
                         len(rows), n))
@@ -1445,12 +1564,19 @@ class Witness(object):
         return k
 
     def take_warnings(self):
-        """-> (n, last text) of the PCAN's bus-state warnings since the
-        last call, counted by the reader process."""
+        """-> (n, last text) of the PCAN's bus states (pcan_state: Read
+        results and status messages that are neither a frame lost nor
+        bus-off) since the last call, counted by the reader process."""
         with self.lock:
             n, last = self.warns, self.warn_last
             self.warns, self.warn_last = 0, ""
         return n, last
+
+    def take_states(self):
+        """-> {state text: [n, first, last host s]} since the last call."""
+        with self.lock:
+            k, self.state_kinds = self.state_kinds, {}
+        return k
 
     def close(self):
         try:
@@ -2144,6 +2270,29 @@ def failure_lines(kinds, t0):
     return out
 
 
+def witness_status(wit):
+    """The PCAN's own status string from the witness's reader, or "" for
+    a witness that has none (the self-test's stand-ins)."""
+    if not hasattr(wit, "status_string"):
+        return ""
+    try:
+        return wit.status_string()
+    except Exception as e:                                 # noqa: BLE001
+        return "status unreadable (%s)" % e
+
+
+def state_lines(kinds, t0):
+    """-> one line per PCAN bus-state text (pcan_state), most frequent
+    first, its times from the window's start t0 (host s): what the PCAN
+    reported, never a receive failure (2026-11-20)."""
+    out = []
+    for text, (n, first, last) in sorted(kinds.items(),
+                                         key=lambda kv: -kv[1][0]):
+        out.append("the PCAN's bus state x%d: %s (first +%.3f s, last "
+                   "+%.3f s)" % (n, text, first - t0, last - t0))
+    return out
+
+
 BITRATE_RATES = ("250k", "1M")
 
 
@@ -2387,6 +2536,8 @@ def window(board, wit, node, seconds, command=None, label=None,
         wit.take_failures()
     if hasattr(wit, "take_warnings"):
         wit.take_warnings()
+    if hasattr(wit, "take_states"):
+        wit.take_states()
     t_w0 = time.perf_counter()
     # the node's echoes (D3, 2026-11-13): a frame is sent when its own echo
     # came back, and it belongs to the window of its SEND CALL; echoes read
@@ -2477,7 +2628,9 @@ def window(board, wit, node, seconds, command=None, label=None,
                            if kinds else "")
     wit.window_warnings = (wit.take_warnings()
                            if hasattr(wit, "take_warnings") else (0, ""))
-    wit.window_host = (host_summary(HOST.samples, t_w0, t_w1)
+    wit.window_states = state_lines(wit.take_states() if hasattr(
+        wit, "take_states") else {}, t_w0)
+    wit.window_host =(host_summary(HOST.samples, t_w0, t_w1)
                        if HOST is not None else "")
     wit.window_saved = save_rows(rows, label or command, rows_dir)
     print("    diagnostic, witness: " + stamp_line(wit.window_stamp) + "; "
@@ -3114,7 +3267,7 @@ def m1_trial_line(n, arm, flood_rows, saved, idle, wf, fails, warns,
     return ("m1 trial %d %s: flood %d rows, file %s, %s; 1M idle %d "
             "rows (%.0f/s), first 1.25 s %.0f rows/s, largest gap %.1f "
             "ms at +%.2f s, %d low 0.5 s bin(s); %s; %d PCAN "
-            "warning(s)%s"
+            "bus state(s)%s"
             % (n, arm, flood_rows,
                ("%.1f MB written in %.2f s" % (saved[1] / 1e6, saved[2]))
                if saved else "not saved",
@@ -3455,17 +3608,14 @@ def run_bench(args):
                 rows, _s = window(board, wit, node, secs,
                                   "discrim " + label.split(" (")[0])
                 pw, pwlast = wit.window_warnings
-                try:
-                    pst = wit.status_string()
-                except Exception as e:                     # noqa: BLE001
-                    pst = "status unreadable (%s)" % e
+                pst = witness_status(wit)
                 st = board.cmd("STATUS")
                 wf = witness_fault(wit, label)
                 errs = sum(1 for x in rows if x[2])
                 others = sum(1 for x in rows if not x[2])
                 print("  listen-only %s: %d error frame(s), %d other row(s) "
-                      "on the witness%s; the PCAN's own status: %d bus-state "
-                      "warning(s)%s, at the end '%s'; board STATUS bus_err=%s "
+                      "on the witness%s; the PCAN's own status: %d bus "
+                      "state(s)%s, at the end '%s'; board STATUS bus_err=%s "
                       "rx_frames=%s mode=%s bitrate=%s"
                       % (label, errs, others, (" -- " + wf) if wf else "",
                          pw, (" (last: %s)" % pwlast) if pw else "", pst,
@@ -3529,7 +3679,7 @@ def run_bench(args):
                                       "shown (%s)" % (st or "no STATUS"))
                     pair.append((rate, state, errs, faults))
                     print("  %s: %d error frame(s), %d node frame(s) seen "
-                          "of %d sent, %d PCAN bus-state warning(s)%s"
+                          "of %d sent, %d PCAN bus state(s)%s"
                           % (label, errs, seen, len(sent), pw,
                              "".join(" -- " + f for f in faults)))
                     if state == "off":
@@ -3564,13 +3714,16 @@ def run_bench(args):
                                                    "FLOOD 7F4")):
                     rows, sent = window(board, wit, node, args.bitrate_seconds,
                                         cmd)
+                    # the PCAN's own status as the window ends (2026-11-20:
+                    # with its bus states, why a window has few rows)
+                    pst = witness_status(wit)
                     board.cmd("STOP")
                     board.cmd("STATUS")
-                    pw, pwlast = getattr(wit, "window_warnings", (0, ""))
                     for ln in (getattr(wit, "window_failures", []) +
                                [getattr(wit, "window_host", "")] +
-                               ["the PCAN's bus-state warnings: %d (last: %s)"
-                                % (pw, pwlast) if pw else ""]):
+                               getattr(wit, "window_states", []) +
+                               ["the PCAN's own status at the window's end: "
+                                "'%s'" % pst if pst else ""]):
                         if ln:
                             print("  %s %s, diagnostic: %s" % (r, name, ln))
                     tsw = ([x[0] for x in rows if x[2]] or
@@ -4703,21 +4856,30 @@ def self_test():
     check(witness_fault(w, "x") is None, "a complete window is not")
 
     # (f2) failures kept by text (diagnostic, reviewer 2026-10-23)
-    q_, e_ = PCAN_QOVERRUN, 0x40000
-    w = Witness(spec=(6, ((2, q_), (3, e_), (4, q_), (5, q_))))
+    # (2026-11-20: bus-off is the second kind; error passive is a state,
+    # counted apart and no failure)
+    q_, e_ = PCAN_QOVERRUN, PCAN_BUSOFF
+    w = Witness(spec=(7, ((2, q_), (3, e_), (4, q_), (5, q_),
+                          (6, PCAN_BUSPASSIVE))))
     time.sleep(0.6)
     w.take()
     kinds, inc = w.take_failures(), w.take_incomplete()
+    sk = w.take_states()
     w.close()
     qo = kinds.get("PCAN read status 0x40: The receive queue was read too "
                    "late")
-    bp = kinds.get("PCAN read status 0x40000: Bus error: the CAN controller "
-                   "is error passive")
+    bp = kinds.get("PCAN read status 0x10: Bus error: the CAN controller "
+                   "is bus-off")
     check(inc == 4 and qo is not None and bp is not None and qo[0] == 3
-          and bp[0] == 1,
+          and bp[0] == 1 and len(kinds) == 2,
           "can-fail: receive failures are counted by their text (3 queue, "
-          "1 error-passive; got %s)" % sorted((k, v[0]) for k, v in
-                                              kinds.items()))
+          "1 bus-off; got %s)" % sorted((k, v[0]) for k, v in
+                                        kinds.items()))
+    check(sorted((k, v[0]) for k, v in sk.items())
+          == [("PCAN bus state passive: read status 0x40000", 1)],
+          "can-fail: error passive returned by Read is a bus state, counted "
+          "by its text apart from the failures -> %s"
+          % sorted((k, v[0]) for k, v in sk.items()))
     check(qo is not None and qo[1] < qo[2],
           "can-fail: a failure text keeps its first and last time")
     kk = {}
@@ -4854,14 +5016,96 @@ def self_test():
              (QB, "failure"), (PCAN_QOVERRUN | PCAN_BUSLIGHT, "failure"),
              (PCAN_OVERRUN | PCAN_BUSHEAVY, "failure"),
              (PCAN_QOVERRUN | PCAN_QRCVEMPTY, "failure"),
-             (PCAN_BUSHEAVY, "warning"), (PCAN_BUSLIGHT, "warning"),
-             (PCAN_QRCVEMPTY | PCAN_BUSHEAVY, "warning"),
-             (PCAN_ILLDATA, "ignored"), (0x40000, "failure"),
-             (0x10, "failure")]
+             (PCAN_BUSHEAVY, "state"), (PCAN_BUSLIGHT, "state"),
+             (PCAN_QRCVEMPTY | PCAN_BUSHEAVY, "state"),
+             (PCAN_ILLDATA, "ignored"),
+             # 2026-11-20: error passive is a state (it was a failure); an
+             # overrun with it, bus-off, or a bit outside the state and
+             # overrun bits is still a failure
+             (PCAN_BUSPASSIVE, "state"),
+             (PCAN_BUSPASSIVE | PCAN_QRCVEMPTY, "state"),
+             (PCAN_BUSPASSIVE | PCAN_BUSHEAVY, "state"),
+             (PCAN_BUSPASSIVE | PCAN_QOVERRUN, "failure"),
+             (PCAN_BUSPASSIVE | PCAN_ILLDATA, "failure"),
+             (PCAN_BUSOFF, "failure"), (PCAN_BUSOFF | PCAN_QRCVEMPTY, "failure"),
+             (PCAN_BUSOFF | PCAN_BUSPASSIVE, "failure"),
+             (0x1, "failure"), (0x80, "failure")]
     got = [(hex(c), classify_read(c)) for c, _k in table]
     check(got == [(hex(c), k) for c, k in table],
           "can-fail: the reader's classification, an overrun with a bus-heavy "
-          "bit a failure -> %s" % got)
+          "bit a failure, error passive a state, bus-off a failure -> %s"
+          % got)
+    names = [(hex(w), pcan_state(w)) for w in (
+        PCAN_BUSPASSIVE, PCAN_BUSHEAVY, PCAN_BUSLIGHT, 0, PCAN_BUSOFF,
+        PCAN_QOVERRUN, PCAN_OVERRUN | PCAN_BUSPASSIVE)]
+    check(names == [("0x40000", ("state", "passive")),
+                    ("0x8", ("state", "warning")),
+                    ("0x4", ("state", "light")),
+                    ("0x0", ("state", "active")),
+                    ("0x10", ("failure", "bus-off")),
+                    ("0x40", ("failure", "frames lost")),
+                    ("0x40002", ("failure", "frames lost (passive)"))],
+          "can-fail: a status word's state, by can-tools' decoding: passive, "
+          "warning, light, active; bus-off and frames lost failures -> %s"
+          % names)
+    class _CodeRead(object):
+        def __init__(self, code):
+            self.code = code
+
+        def Read(self, _h):
+            return self.code, None, None
+    waits = []
+    for code in (PCAN_BUSPASSIVE | PCAN_QRCVEMPTY, PCAN_BUSPASSIVE,
+                 PCAN_QRCVEMPTY):
+        calls = []
+        rd = _PcanReader(_CodeRead(code), 0, calls.append, lambda c: "",
+                         0.0, None, None)
+        rd.read(0.02)
+        waits.append(len(calls))
+    check(waits == [1, 0, 1],
+          "can-fail: a state returned with an empty queue waits for the "
+          "receive event, one without does not (the next entry is read at "
+          "once) -> %s" % waits)
+    sl = state_lines({"b": [2, 10.5, 12.0], "a": [5, 10.0, 11.0]}, 9.0)
+    check(sl == ["the PCAN's bus state x5: a (first +1.000 s, last +2.000 "
+                 "s)", "the PCAN's bus state x2: b (first +1.500 s, last "
+                 "+3.000 s)"],
+          "can-fail: state lines, most frequent first, times from the "
+          "window's start -> %s" % sl)
+    # the PCAN's own status string (2026-11-20, E3): every word gives a
+    # text, a combination included, with each bit by name
+    stt = [(hex(w), pcan_status_text(w)) for w in (
+        0, PCAN_BUSPASSIVE | PCAN_BUSHEAVY, PCAN_BUSOFF,
+        PCAN_BUSPASSIVE | PCAN_QRCVEMPTY, PCAN_OVERRUN | PCAN_QOVERRUN,
+        0x1, 0x100 | PCAN_BUSLIGHT)]
+    check(stt == [("0x0", "OK"),
+                  ("0x40008", "0x40008 BUSHEAVY+BUSPASSIVE (passive)"),
+                  ("0x10", "0x10 BUSOFF (bus-off)"),
+                  ("0x40020", "0x40020 QRCVEMPTY+BUSPASSIVE (passive)"),
+                  ("0x42", "0x42 OVERRUN+QOVERRUN (frames lost)"),
+                  ("0x1", "0x1 XMTFULL"),
+                  ("0x104", "0x104 BUSLIGHT+other 0x100")],
+          "can-fail: the PCAN's status string, every bit by name and "
+          "can-tools' reading of its state bits -> %s" % stt)
+
+    class _StatusBus(object):
+        """python-can's PcanBus as far as the status goes: status() is
+        GetStatus; status_string() looks the word up whole, as python-can
+        4.6.1 does (PCAN_DICT_STATUS has single values only)."""
+        def __init__(self, word):
+            self.word = word
+
+        def status(self):
+            return self.word
+
+        def status_string(self):
+            return {0: "OK", PCAN_BUSPASSIVE: "BUSPASSIVE",
+                    PCAN_BUSHEAVY: "BUSWARNING"}.get(self.word)
+    srd = [pcan_status_reader(_StatusBus(w))() for w in (
+        PCAN_BUSPASSIVE | PCAN_BUSHEAVY, 0)]
+    check(srd == ["0x40008 BUSHEAVY+BUSPASSIVE (passive)", "OK"],
+          "can-fail: the witness reader's status for a combined word is "
+          "its text, not python-can's None -> %s" % srd)
     try:
         from can.interfaces.pcan import basic as pb
         from can.interfaces.pcan import pcan as pc
@@ -4926,16 +5170,26 @@ def self_test():
                                bytes(m.data)[:8])
             return ("warning" if seen else "nothing"), None
 
-        same = []
+        same, passive = [], []
         for c, _k in table:
             if c & (PCAN_OVERRUN | PCAN_QOVERRUN):
                 continue
             mine = classify_read(c)
-            same.append((hex(c), mine, pcan_says(_OneRead(c))[0]))
-        check(all(t == {"empty": "nothing", "ignored": "nothing"}.get(m, m)
-                  for _c, m, t in same),
-              "can-fail: without an overrun bit the classification is "
-              "python-can's own -> %s" % same)
+            row = (hex(c), mine, pcan_says(_OneRead(c))[0])
+            # python-can raises on error passive unless a light / heavy
+            # bit is set; the reader counts a state (2026-11-20)
+            (passive if mine == "state" and c & PCAN_BUSPASSIVE and not c & (
+                PCAN_BUSLIGHT | PCAN_BUSHEAVY) else same).append(row)
+        check(all(t == {"empty": "nothing", "ignored": "nothing",
+                        "state": "warning"}.get(m, m) for _c, m, t in same),
+              "can-fail: without an overrun bit or error passive alone the "
+              "classification is python-can's own (its warning the "
+              "reader's state) -> %s" % same)
+        check(len(passive) == 2 and all(t == "failure"
+                                        for _c, _m, t in passive),
+              "python-can 4.6.1 raises on error passive returned by Read, "
+              "with or without QRCVEMPTY; the reader counts a state -> %s"
+              % passive)
         check(pcan_says(_OneRead(QB))[0] == "warning"
               and classify_read(QB) == "failure",
               "python-can 4.6.1 takes an overrun with BUSHEAVY for a warning "
@@ -4989,6 +5243,70 @@ def self_test():
               "can-fail: the fast reader's rows (CAN_Read on kept structs) are "
               "python-can's, field for field -> %s" % fast_same)
 
+        # 2026-11-20: the reader's states agree with can-tools' own PCAN
+        # class (CanbenchPcanBus, bus_states="report") on the same Reads:
+        # its frame lost or bus-off is the reader's failure, its state the
+        # reader's state of that name, its frame the reader's row
+        import collections as _co
+        adapter_roles.errors()          # the pinned canbench on sys.path
+        from canbench.live import pcan_bus as _pbus
+        E_ = adapter_roles.errors()
+
+        def tools_say(fake):
+            bus = object.__new__(_pbus.CanbenchPcanBus)
+            bus.m_objPCANBasic, bus.m_PcanHandle = fake, 0x51
+            bus._can_protocol = _can.CanProtocol.CAN_20
+            bus.channel_info, bus._recv_event = "fake", None
+            bus._pending = _co.deque()
+            bus._last_type, bus._last_raw = 0, (0, b"")
+            bus._synth_status, bus._last_ts = None, 0.0
+            bus.busoff_reset, bus.busoff_reset_interval = False, 0.0
+            bus.busoff_resets, bus._last_reset = 0, float("-inf")
+            bus._filters = None
+            bus._wrap_read("Read")
+            saved = pc.HAS_EVENTS
+            pc.HAS_EVENTS = False
+            try:
+                m, _f = bus._recv_internal(0)
+            finally:
+                pc.HAS_EVENTS = saved
+            if m is None:
+                return "nothing", None
+            if not m.is_error_frame:
+                return "row", None
+            st = E_.decode(m).state
+            if E_.lost_frames(m) or st == "busoff":
+                return "failure", None
+            return "state", st or "light"
+
+        agree = []
+        for code, ident, mtype, data in (
+                (PCAN_BUSPASSIVE, 0, 0, b""),
+                (PCAN_BUSPASSIVE | PCAN_QRCVEMPTY, 0, 0, b""),
+                (PCAN_BUSHEAVY, 0, 0, b""), (PCAN_BUSLIGHT, 0, 0, b""),
+                (PCAN_QOVERRUN | PCAN_BUSHEAVY, 0, 0, b""),
+                (PCAN_BUSOFF, 0, 0, b""),
+                (PCAN_OK, 2, PCAN_MSG_STATUS, b"\x00\x00\x00\x00"),
+                (PCAN_OK, 3, PCAN_MSG_STATUS, b"\x00\x04\x00\x00"),
+                (PCAN_OK, 0, PCAN_MSG_STATUS, b"\x00\x00\x00\x08"),
+                (PCAN_OK, 0, PCAN_MSG_STATUS, b"\x00\x00\x00\x02"),
+                (PCAN_OK, 4, PCAN_MSG_STATUS, b"\x00\x00\x00\x10"),
+                (PCAN_OK, 0x100, 0, b"\x01\x02")):
+            theirs = tools_say(_OneRead(code, ident, mtype, data))
+            rd = _PcanReader(_OneRead(code, ident, mtype, data), 0,
+                             lambda _t: None, lambda c: "text %X" % c,
+                             0.0, None, None, "fast")
+            kind, v = rd.read(0)
+            mt = re.search(r"bus state (\S+):", v) if kind == "state" else None
+            agree.append((hex(code), mtype, theirs,
+                          (kind, mt.group(1) if mt else None)))
+        check(all(t == m for _c, _t, t, m in agree)
+              and [m[0] for _c, _t, _x, m in agree] == [
+                  "state", "state", "state", "state", "failure", "failure",
+                  "state", "state", "state", "failure", "failure", "row"],
+              "can-fail: Read states and status messages classified as "
+              "can-tools' CanbenchPcanBus decodes them -> %s" % agree)
+
     # an overrun with a bus-heavy bit, through the reader process: counted,
     # its text kept, the window a TEST FAULT that names it
     w = Witness(spec=(6, ((3, QB),)))
@@ -5016,6 +5334,51 @@ def self_test():
           "can-fail: the PCAN's bus-state warnings reach the bench process, "
           "per window (%d, last %r), and are no receive failure (%d)"
           % (pw, pwlast, inc))
+    # 2026-11-20, Linux: error passive returned by Read, and status
+    # messages (Read OK, MSGTYPE STATUS), through the reader process: state
+    # rows counted by text, never a data row or a receive failure; a status
+    # message saying frames were lost is a failure
+    w = Witness(spec=(9, ((2, PCAN_BUSPASSIVE), (3, PCAN_BUSHEAVY),
+                          (4, PCAN_BUSPASSIVE),
+                          (5, (2, PCAN_MSG_STATUS, b"\x00\x00\x00\x00")),
+                          (6, (3, PCAN_MSG_STATUS, b"\x00\x04\x00\x00")),
+                          (8, (0, PCAN_MSG_STATUS, b"\x00\x00\x00\x02")))))
+    time.sleep(0.6)
+    rows_, inc = w.take(), w.take_incomplete()
+    sk, fk = w.take_states(), w.take_failures()
+    pw = w.take_warnings()[0]
+    w.close()
+    want = [("PCAN bus state active: status message 0x00000 (id 2)", 1),
+            ("PCAN bus state passive: read status 0x40000", 2),
+            ("PCAN bus state passive: status message 0x40000 (id 3)", 1),
+            ("PCAN bus state warning: read status 0x8", 1)]
+    check(sorted((k, v[0]) for k, v in sk.items()) == want and pw == 5
+          and [node_seq(r) for r in rows_] == [1, 7, 9]
+          and inc == 1 and list(fk) == [
+              "PCAN receive failure, frames lost: status message 0x00002 "
+              "(id 0)"],
+          "can-fail: Read states and status messages are state rows by "
+          "their text (%s, %d), not data rows (seqs %s), and only the "
+          "status message of an overrun is a failure (%d: %s)"
+          % (sorted((k, v[0]) for k, v in sk.items()), pw,
+             [node_seq(r) for r in rows_], inc, list(fk)))
+    # a PCAN returning only states (each one a queue entry, read at once)
+    # still answers the cut, its rows and states counted
+    w = Witness(spec=(5, (), None, 0.0, False, 0.0, 0.0, 0.0, None,
+                      PCAN_BUSPASSIVE))
+    time.sleep(0.6)
+    t0_ = time.perf_counter()
+    rows_, inc = w.take(), w.take_incomplete()
+    dt_ = time.perf_counter() - t0_
+    sk = w.take_states()
+    dead = w.dead
+    w.close()
+    ns = sum(v[0] for v in sk.values())
+    check(len(rows_) == 5 and inc == 0 and dead is None and dt_ < 2.0
+          and ns > WITNESS_POLL_ROWS,
+          "can-fail: a reader given only states after its rows answers the "
+          "cut (%d rows, %d states, %.2f s, %s, %d failure(s))"
+          % (len(rows_), ns, dt_, dead, inc))
 
     # (e) reply pairing
     class _Ser(object):
@@ -5329,7 +5692,7 @@ def self_test():
                         "50.5 MB written in 1.25 s, flood window complete; 1M "
                         "idle 600 rows")
           and "WITNESS FAULT: TEST FAULT: x" in ln and ln.endswith(
-              "2 PCAN warning(s); 1M idle, diagnostic: y"),
+              "2 PCAN bus state(s); 1M idle, diagnostic: y"),
           "m1 trial line: flood size, the idle window's figures, the fault")
     check("witness complete" in m1_trial_line(1, "a", 0, None, mm, "", [], 0),
           "m1 trial line: no fault reads complete")
@@ -5800,8 +6163,8 @@ MUTANTS = [
      "                n += 1\n                since += 1",
      "                n += 1\n                since += 1\n                if n % 97 == 0:\n                    f.seek(-_ROW.size, 1)"),
     ("F2: a failure not forwarded",
-     "conn.send((\"cut\", k, n, kinds, fails, warns, wlast, st))",
-     "conn.send((\"cut\", k, n, {}, 0, warns, wlast, st))"),
+     "conn.send((\"cut\", k, n, kinds, fails, warns, wlast, st,\n",
+     "conn.send((\"cut\", k, n, {}, 0, warns, wlast, st,\n"),
     ("F2: rows leak across a window boundary",
      "                                 \"wb\", 1 << 20)\n                    elif",
      "                                 \"wb\", 1 << 20)\n                        f.write(open(os.path.join(folder, \"w%06d.bin\" % (k - 1)), \"rb\").read())\n                    elif"),
@@ -5810,17 +6173,60 @@ MUTANTS = [
      "        self.proc = threading.Thread(target=_witness_proc, args=("),
     # the reader's own classification and decode (2026-10-25)
     ("reader: python-can's order (an overrun with BUSHEAVY a warning)",
-     "    if result & (PCAN_OVERRUN | PCAN_QOVERRUN):\n        return \"failure\"\n    if result == PCAN_QRCVEMPTY:\n        return \"empty\"\n    if result & (PCAN_BUSLIGHT | PCAN_BUSHEAVY):\n        return \"warning\"",
-     "    if result == PCAN_QRCVEMPTY:\n        return \"empty\"\n    if result & (PCAN_BUSLIGHT | PCAN_BUSHEAVY):\n        return \"warning\"\n    if result & (PCAN_OVERRUN | PCAN_QOVERRUN):\n        return \"failure\""),
-    ("reader: a queue overrun only a warning",
-     "    if result & (PCAN_OVERRUN | PCAN_QOVERRUN):\n        return \"failure\"",
-     "    if result & (PCAN_OVERRUN | PCAN_QOVERRUN):\n        return \"warning\""),
+     "    word = result & ~PCAN_QRCVEMPTY\n",
+     "    if result & (PCAN_BUSLIGHT | PCAN_BUSHEAVY):\n        return \"state\"\n"
+     "    word = result & ~PCAN_QRCVEMPTY\n"),
+    ("reader: frames lost only a state",
+     "        if E.lost_frames(em):",
+     "        if False:"),
     ("reader: the controller's overrun not checked",
-     "    if result & (PCAN_OVERRUN | PCAN_QOVERRUN):",
-     "    if result & PCAN_QOVERRUN:"),
+     "        if E.lost_frames(em):",
+     "        if word & PCAN_QOVERRUN:"),
     ("reader: warnings not forwarded",
-     "conn.send((\"cut\", k, n, kinds, fails, warns, wlast, st))",
-     "conn.send((\"cut\", k, n, kinds, fails, 0, \"\", st))"),
+     "conn.send((\"cut\", k, n, kinds, fails, warns, wlast, st,\n",
+     "conn.send((\"cut\", k, n, kinds, fails, 0, \"\", st,\n"),
+    # the reader's bus states by can-tools' decoding (the charge-interposer
+    # reviewer, 2026-11-20)
+    ("reader: error passive a failure (the rule before 2026-11-20)",
+     "        return pcan_state(word)[0]\n    return \"failure\"",
+     "        return (\"failure\" if word & PCAN_BUSPASSIVE\n"
+     "                else pcan_state(word)[0])\n    return \"failure\""),
+    ("reader: bus-off a state",
+     "        elif st == \"busoff\":",
+     "        elif False:"),
+    ("reader: a status message written as a data row",
+     "            if msg.MSGTYPE & PCAN_MSG_STATUS:\n",
+     "            if False:\n"),
+    ("reader: a status message's word taken from its id",
+     "                word = int.from_bytes(bytes(msg.DATA)[:4], \"big\")",
+     "                word = msg.ID"),
+    ("reader: a state never brings the next look at the pipe",
+     "                warns, wlast = warns + 1, v\n                since += 1\n",
+     "                warns, wlast = warns + 1, v\n"),
+    ("reader: a state returned with an empty queue not waited",
+     "            if r & PCAN_QRCVEMPTY:\n                self.wait(timeout)",
+     "            if False:\n                self.wait(timeout)"),
+    ("reader: states not forwarded by text",
+     "                        conn.send((\"cut\", k, n, kinds, fails, warns, wlast, st,\n"
+     "                                   states))",
+     "                        conn.send((\"cut\", k, n, kinds, fails, warns, wlast, st,\n"
+     "                                   {}))"),
+    ("the bench process drops the reader's states",
+     "                                      (r[8] if len(r) > 8 else {},",
+     "                                      ({},"),
+    # the PCAN's own status string (2026-11-20, the hand take E3)
+    ("status: python-can's whole-word lookup (None for a combination)",
+     "    return lambda: pcan_status_text(bus.status())",
+     "    return bus.status_string"),
+    ("status: a bit outside the named ones dropped",
+     "    if rest:\n        names.append(\"other 0x%X\" % rest)",
+     "    if False:\n        names.append(\"other 0x%X\" % rest)"),
+    ("status: the state bits not read by can-tools",
+     "        txt += \" (%s)\" % pcan_state(st)[1]",
+     "        pass"),
+    ("status: an empty queue hides the state",
+     "    st = word & ~PCAN_QRCVEMPTY\n",
+     "    st = word\n"),
     ("reader: the TEST FAULT line without the failure's text",
      "                % (what, n, top or \"no failure text kept\"))",
      "                % (what, n, \"queue overflow\"))"),
