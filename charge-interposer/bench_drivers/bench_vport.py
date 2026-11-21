@@ -258,6 +258,55 @@ def timing_ok(ts, need_ms, back_tol_ms=0.0):
         if n else "")
 
 
+# Step 2's windows are judged only when the witness's kept stamps cover
+# them (the charge-interposer reviewer, 2026-11-21): the first stamp within
+# COVER_EDGE_S of the window's start, the last within COVER_EDGE_S of its
+# end, no gap between stamps over COVER_GAP_S. Basis, every step-2 window
+# judged with full coverage in b467's vp1-vp3 (12 windows, Windows) and the
+# Linux hand takes E5 (4), E1, E3, D3 (3 each), C4 and B1 (250k flood):
+# largest gap 21.4 ms (E3 250k flood; the node sends every 10 ms), first
+# stamp at most 0.03 s after the start, last at most ~0.02 s before the end
+# (the 0.01 s figures of the runs' diagnostic lines). The bounds are over 10
+# times those. The 1M flooding windows of C4, D3, E1 and E3 cover 0 to 0.05
+# s of 60 s: E3's was judged on them.
+COVER_EDGE_S = 0.25
+COVER_GAP_S = 0.25
+
+
+def coverage_ok(ts, lo, hi, edge_s=COVER_EDGE_S, gap_s=COVER_GAP_S):
+    """-> (ok, why): the window [lo, hi] (witness-stamp time) covered by the
+    stamps ts, its first within edge_s of lo, its last within edge_s of hi,
+    no gap between two over gap_s. No bounds or no stamps: not covered."""
+    if lo is None or hi is None:
+        return False, "the window's bounds in witness-stamp time are unknown"
+    ts = sorted(ts)
+    if not ts:
+        return False, "no witness stamps in the window"
+    head, tail = ts[0] - lo, hi - ts[-1]
+    gap, at = max(((b - a, a - lo) for a, b in zip(ts, ts[1:])),
+                  default=(0.0, 0.0))
+    why = ("witness stamps %.3f..%.3f s of the window's %.3f s, largest gap "
+           "%.3f s at +%.3f s (bounds: %.2f s at each end, %.2f s between "
+           "stamps)" % (head, ts[-1] - lo, hi - lo, gap, at, edge_s, gap_s))
+    if head > edge_s or tail > edge_s or gap > gap_s:
+        return False, "the witness's stamps do not cover the window: " + why
+    return True, why
+
+
+def bitrate_judgeable(rows, bounds):
+    """Step 2: may this window be judged? -> (ok, why, cover line). Its
+    stamps (the error frames', or every row's with none) must resolve 1 ms
+    (timing_ok), and every kept row's stamps must cover the window, bounds
+    = (lo, hi) in witness-stamp time (coverage_ok, 2026-11-21); why is the
+    first refusal's reason."""
+    tsw = [x[0] for x in rows if x[2]] or [x[0] for x in rows]
+    t_ok, why = timing_ok(tsw, 1.0, back_tol_ms=BACK_TOL_MS)
+    c_ok, cwhy = coverage_ok([x[0] for x in rows], *(bounds or (None, None)))
+    if t_ok and not c_ok:
+        t_ok, why = c_ok, cwhy
+    return t_ok, why, cwhy
+
+
 # --- scorers (pure) --------------------------------------------------------
 
 def score_listen(rows, node_sent):
@@ -3726,9 +3775,9 @@ def run_bench(args):
                                 "'%s'" % pst if pst else ""]):
                         if ln:
                             print("  %s %s, diagnostic: %s" % (r, name, ln))
-                    tsw = ([x[0] for x in rows if x[2]] or
-                           [x[0] for x in rows])
-                    t_ok, why = timing_ok(tsw, 1.0, back_tol_ms=BACK_TOL_MS)
+                    t_ok, why, cwhy = bitrate_judgeable(
+                        rows, getattr(wit, "window_bounds", None))
+                    print("  %s %s, diagnostic: %s" % (r, name, cwhy))
                     if not t_ok:
                         v, ln = refused_arm(why)
                         print("  %s %s: %s" % (r, name, ln))
@@ -4622,6 +4671,53 @@ def self_test():
     check(not ok and "backwards" in why,
           "can-fail: timing: step 3 stays strict, a 1.5 ms backward step is "
           "refused")
+    # coverage (the reviewer, 2026-11-21): a 60.2 s window at stamp 100.0
+    lo, hi = 100.0, 160.2
+    full = [lo + 0.01 + 0.01 * k for k in range(6018)]   # every 10 ms
+    one_gap = [t for t in full if not 130.0 < t < 130.2]  # a 0.2 s gap
+    cases = [
+        ("full, 10 ms apart", full, (lo, hi), True),
+        ("a 0.2 s gap inside", one_gap, (lo, hi), True),
+        ("E3's 1M flood: 0.045 s of 60.1 s",
+         [lo + 0.0004 * k for k in range(110)], (lo, lo + 60.1), False),
+        ("a 0.3 s gap inside", [t for t in full if not 130.0 < t < 130.3],
+         (lo, hi), False),
+        ("first stamp 0.3 s after the start", [t for t in full
+                                               if t > lo + 0.3], (lo, hi),
+         False),
+        ("last stamp 0.3 s before the end", [t for t in full
+                                             if t < hi - 0.3], (lo, hi),
+         False),
+        ("no stamps", [], (lo, hi), False),
+        ("no bounds", full, (None, None), False),
+    ]
+    got = [(n, coverage_ok(ts, *b)[0]) for n, ts, b, _w in cases]
+    check(got == [(n, w) for n, _ts, _b, w in cases],
+          "can-fail: coverage: judged only when the stamps cover the window "
+          "(0.25 s at each end, 0.25 s between stamps) -> %s" % got)
+    ok, why = coverage_ok([lo + 0.0004 * k for k in range(110)], lo,
+                          lo + 60.1)
+    check(not ok and "do not cover" in why
+          and "0.000..0.044 s of the window's 60.100 s" in why,
+          "can-fail: coverage: the refusal names the stamps' span -> %s" % why)
+    # step 2's gate: E3's 1M flood (10 ms error frames over 0.045 s) passes
+    # timing_ok and is refused on coverage; b467's kind of window is judged
+    e3 = [(lo + 0.0004 * k, 0, True, b"") for k in range(110)]
+    b4 = [(t, 0, True, b"") for t in full]
+    gates = [(bitrate_judgeable(e3, (lo, lo + 60.1))[0],
+              timing_ok([x[0] for x in e3], 1.0, back_tol_ms=BACK_TOL_MS)[0]),
+             (bitrate_judgeable(b4, (lo, hi))[0],
+              timing_ok([x[0] for x in b4], 1.0, back_tol_ms=BACK_TOL_MS)[0]),
+             bitrate_judgeable(e3[:5], (lo, lo + 60.1))[1],
+             bitrate_judgeable([(t, 0x100, t > lo + 9.0, b"")
+                                for t in full], (lo, hi))[0]]
+    check(gates == [(False, True), (True, True),
+                    "fewer than 10 witness timestamps", True],
+          "can-fail: step 2's gate: E3's 1M flood refused on coverage though "
+          "timing_ok passes it; a covered window judged; timing_ok's own "
+          "refusal kept first; a 250k idle window with node frames only for "
+          "its first 9 s (b467, E5) covered by every row's stamps -> %s"
+          % (gates,))
     # gaps near the 10 ms burst threshold, and the flag
     nerr = [(t, 0, True, b"") for t in (1.0, 1.0005, 1.0100, 1.0300, 1.0405)]
     m, ln = score_bitrate(nerr, [], 60.0)
@@ -6214,6 +6310,31 @@ MUTANTS = [
     ("the bench process drops the reader's states",
      "                                      (r[8] if len(r) > 8 else {},",
      "                                      ({},"),
+    # step 2's windows judged only when the witness's stamps cover them
+    # (the charge-interposer reviewer, 2026-11-21)
+    ("coverage: the step-2 gate ignores it (E3's 1M flood judged)",
+     "    if t_ok and not c_ok:\n        t_ok, why = c_ok, cwhy\n",
+     "    if False:\n        t_ok, why = c_ok, cwhy\n"),
+    ("coverage: the window's end unchecked",
+     "    if head > edge_s or tail > edge_s or gap > gap_s:",
+     "    if head > edge_s or gap > gap_s:"),
+    ("coverage: the window's start unchecked",
+     "    if head > edge_s or tail > edge_s or gap > gap_s:",
+     "    if tail > edge_s or gap > gap_s:"),
+    ("coverage: gaps between stamps unchecked",
+     "    if head > edge_s or tail > edge_s or gap > gap_s:",
+     "    if head > edge_s or tail > edge_s:"),
+    ("coverage: unknown bounds taken as covered",
+     "        return False, \"the window's bounds in witness-stamp time are unknown\"",
+     "        return True, \"the window's bounds in witness-stamp time are unknown\""),
+    ("coverage: no stamps taken as covered",
+     "        return False, \"no witness stamps in the window\"",
+     "        return True, \"no witness stamps in the window\""),
+    ("coverage: over the error frames' stamps only",
+     "    c_ok, cwhy = coverage_ok([x[0] for x in rows], *(bounds or (None, None)))",
+     "    c_ok, cwhy = coverage_ok(tsw, *(bounds or (None, None)))"),
+    ("coverage: the gap bound 1 s",
+     "COVER_GAP_S = 0.25\n", "COVER_GAP_S = 1.0\n"),
     # the PCAN's own status string (2026-11-20, the hand take E3)
     ("status: python-can's whole-word lookup (None for a combination)",
      "    return lambda: pcan_status_text(bus.status())",
