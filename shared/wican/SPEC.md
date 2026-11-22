@@ -7,7 +7,8 @@ rehearsal's fault hook, and 2026-10-30, for its symbol; W1 amended
 2026-10-30, for `debug_logs`'s link cycle; W3 amended 2026-10-31, for
 port step 1b's `can_port`; W7 amended and W12 to W14 added 2026-11-07,
 for gen-inhibit's stage (b): the AutoPID upload endpoints and the OTA
-handler's failure paths. As
+handler's failure paths; W15 added 2026-11-21, for gen-inhibit's stage
+(b): the firmware version string. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
 and the other project's reviewer reads it before it merges into
@@ -129,3 +130,9 @@ Requirements are numbered W1 to W14. The numbers are stable.
   ESP-IDF's sequential-write mode (`OTA_WITH_SEQUENTIAL_WRITES`), which
   erases each block as the write reaches it, not with `OTA_SIZE_UNKNOWN`,
   which erases the whole slot before the first byte of the body is read.
+- **W15. The firmware version shown is the build's commit.** The status
+  page's `fw_version` and the mDNS `fw_version` entry show the app
+  descriptor's version string as it is: the commit that shared/tools R4
+  puts there. Nothing is parsed out of it. The stock `v<major>.<minor>`
+  parse is removed, so the page no longer shows `0.00`, nor mDNS an empty
+  version.
