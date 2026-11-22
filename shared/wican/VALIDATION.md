@@ -241,3 +241,19 @@ The readings for W12 to W14 are of `shared/main` `2ab5be6d`,
   which erases the whole OTA slot before the handler reads the first byte
   of the body.
 - **Status:** validated.
+
+### W15. The firmware version shown is the build's commit
+- **Basis:** user, 2026-11-21, in the gen-inhibit reviewer's session
+  (option 1 of three: the commit, a hand-kept number, or leave it): show
+  the commit, with no hand-kept number, in line with the user's ruling of
+  2026-10-25 to drop the hand-kept diag revision. Held since 2026-10-17 on
+  gen-inhibit's list. Wording approved by the user, 2026-11-21.
+- **Reading** (`shared/main` `9ad1f514`): the status page and the mDNS
+  record parse the app descriptor's version with
+  `sscanf(running_app_info.version, "v%ld.%ld", ...)`
+  (`config_server.c:891`, `wican.c:717`). Under shared/tools R4 that
+  string is the commit, so the parse fails: the page prints the unset
+  numbers as `0.00` (`"%ld.%02ld"`), and mDNS gets the empty
+  `firmware_version` (`wican.c:97`, passed to `wc_mdns_init` at `:753`).
+  `firmware_version` is 10 bytes, shorter than a full commit.
+- **Status:** validated.
