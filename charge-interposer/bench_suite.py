@@ -202,6 +202,8 @@ HARNESS_PY_TESTS = [
     "hw_mechanics_test.py", "serial_open_test.py", "adapter_roles_test.py",
     "wican_pin_test.py", "canchg_mode_test.py", "canx2_slcan_test.py",
     "kvaser_link_test.py", "bus_alloc_test.py",
+    # 2026-11-21, after run 69d8: undefined and rebound names
+    "harness_names_test.py",
 ]
 # The ones of those also run with --can-fail, as <name>-canfail. One list
 # for the harness suite and accept_adapter's catalogue, so they can't drift.
@@ -211,6 +213,7 @@ HARNESS_PY_CANFAILS = [
     "scratch_run_test.py", "hw_mechanics_test.py", "serial_open_test.py",
     "adapter_roles_test.py", "wican_pin_test.py", "canchg_mode_test.py",
     "canx2_slcan_test.py", "kvaser_link_test.py", "bus_alloc_test.py",
+    "harness_names_test.py",
 ]
 MADHOUSE_PIO_PATH = "{madhouse_pio_dir}:/usr/local/bin:/usr/bin:/bin"
 # settings m_lanes_host: where the m-* groups run (module docstring)
@@ -288,6 +291,12 @@ CAN_FAILS = [
     # reader that dies is VOID, never judged on its rows
     "reader_death", "bench_rate_feasibility",
 ]
+# A can-fail's timeout when it is not CAN_FAIL_TIMEOUT_S. bench_vport's ran
+# past 3600 s in run 69d8 (2026-11-21) after 83 of its 149 mutants: about
+# 25 s a self-test, 62 min for the whole run on 8b609320 (40e6's took
+# 1,675 s); 7200 s is about twice that (the reviewer, 2026-11-21).
+CAN_FAIL_TIMEOUT_S = 3600
+CAN_FAIL_TIMEOUTS = {"bench_vport": 7200}
 
 # bench_boot_reset (tracker I): chip resets per image, and the line the
 # bridge and witness print at boot (spec 8.3's banner). 50 resets: the
@@ -1146,6 +1155,15 @@ def bench(settings):
     import canx2_slcan
     b = _Build(settings)
     bpy = b.bpy
+    # built first: mcp-reset is given the bridge image's build id, which
+    # each boot's 0x7F7 must read (2026-11-21; it was fixed in the driver)
+    images = {
+        "bridge": _interposer_image("bridge", settings),
+        "witness": _interposer_image("witness", settings),
+        "truck": _interposer_image("truck", settings),
+        "c12_bench": _idf_image("c12_bench", settings),
+        "vport_bench": _idf_image("vport_bench", settings),
+    }
     board_args = ["--external-interposer", "--serial-port", "{serial_port}",
                   "--vehicle-transport", "kvaser", "--vehicle-channel",
                   "kvaser", "--charger-transport", "gs_usb",
@@ -1188,8 +1206,12 @@ def bench(settings):
             ["--port", "{serial_port}", "--out", "{outdir}"]),
         bpy("rx-order", "bench_rx_order.py",
             ["--port", "{serial_port}", "--bursts", "2000", "--out", "{outdir}"]),
+        # --build: the bridge image's build id (its ELF hash's first four
+        # bytes, identify's expect), which each boot's 0x7F7 must read; a
+        # boot that faults is a VOID line and exit 3 (2026-11-21)
         bpy("mcp-reset", "bench_mcp_reset.py",
-            ["run", "--port", "{serial_port}", "--out", "{outdir}"]),
+            ["run", "--port", "{serial_port}", "--build",
+             images["bridge"].expect, "--out", "{outdir}"]),
         bpy("mcp-reset-canfail", "bench_mcp_reset.py",
             ["canfail", "--port", "{serial_port}", "--out", "{outdir}"]),
         # moved from reverse-it's runs/step4_nohands_20261014T1730/; the
@@ -1349,13 +1371,6 @@ def bench(settings):
             "truck (spec 10 item 6)")),
     ])
 
-    images = {
-        "bridge": _interposer_image("bridge", settings),
-        "witness": _interposer_image("witness", settings),
-        "truck": _interposer_image("truck", settings),
-        "c12_bench": _idf_image("c12_bench", settings),
-        "vport_bench": _idf_image("vport_bench", settings),
-    }
     for name in X2_IDLE_UNSAFE:
         images[name].idle_safe = False
     # The WiCAN is a board of every bench group (bench_wican.py), so the
@@ -1441,7 +1456,7 @@ def harness(settings):
         for s in SELF_TESTS] + [
         b.lpy("cf." + s.replace("_", "-"),
               ["{interposer_code}/bench_drivers/%s.py" % s, "--can-fail"],
-              timeout_s=3600)
+              timeout_s=CAN_FAIL_TIMEOUTS.get(s, CAN_FAIL_TIMEOUT_S))
         for s in CAN_FAILS] + [b.lpy(cid, argv, timeout_s=3600)
                                 for cid, argv in HARNESS_LOCAL] + [
         b.lpy("sb.%s%s" % (t[:-3].replace("_", "-"), sfx),

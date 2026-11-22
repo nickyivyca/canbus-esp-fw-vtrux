@@ -564,9 +564,10 @@ ALLOWED = [
     ("kvaser_link.py", "bus-open", "'socketcan'", 1,
      "the Kvaser's one opener, open_bus: python-can socketcan on role kvaser's netdev, after "
      "IFF_UP reads up (kvaser_link_test checks it)"),
-    ("bench_drivers/bench_vport.py", "adapter-class", "PcanBus", 1,
-     "its self-test's object.__new__(PcanBus) on a fake PCAN-Basic, to run python-can's own "
-     "PCAN reader on made-up rows: never opened"),
+    ("bench_drivers/bench_vport.py", "adapter-class", "PcanBus", 2,
+     "its self-test's object.__new__(PcanBus) and object.__new__(CanbenchPcanBus) on a fake "
+     "PCAN-Basic, to run python-can's and can-tools' own PCAN readers on made-up rows: never "
+     "opened (the second since 2026-11-20, the PCAN states)"),
     ("bench_drivers/keepalive_probe.py", "pcan-channel", "PCAN_USB" "BUS", 2,
      "its self-test's refusal cases: --pcan-channel " "PCAN_USB" "BUS1 must be refused"),
     ("<tests>", "pcan-channel", "PCAN_USB" "BUS", None,

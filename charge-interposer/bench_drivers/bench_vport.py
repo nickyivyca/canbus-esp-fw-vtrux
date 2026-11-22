@@ -293,14 +293,18 @@ def coverage_ok(ts, lo, hi, edge_s=COVER_EDGE_S, gap_s=COVER_GAP_S):
     return True, why
 
 
+def bitrate_stamps(rows):
+    """Step 2's timing stamps: the error frames', or every row's with
+    none."""
+    return [x[0] for x in rows if x[2]] or [x[0] for x in rows]
+
+
 def bitrate_judgeable(rows, bounds):
     """Step 2: may this window be judged? -> (ok, why, cover line). Its
-    stamps (the error frames', or every row's with none) must resolve 1 ms
-    (timing_ok), and every kept row's stamps must cover the window, bounds
-    = (lo, hi) in witness-stamp time (coverage_ok, 2026-11-21); why is the
-    first refusal's reason."""
-    tsw = [x[0] for x in rows if x[2]] or [x[0] for x in rows]
-    t_ok, why = timing_ok(tsw, 1.0, back_tol_ms=BACK_TOL_MS)
+    stamps (bitrate_stamps) must resolve 1 ms (timing_ok), and every kept
+    row's stamps must cover the window, bounds = (lo, hi) in witness-stamp
+    time (coverage_ok, 2026-11-21); why is the first refusal's reason."""
+    t_ok, why = timing_ok(bitrate_stamps(rows), 1.0, back_tol_ms=BACK_TOL_MS)
     c_ok, cwhy = coverage_ok([x[0] for x in rows], *(bounds or (None, None)))
     if t_ok and not c_ok:
         t_ok, why = c_ok, cwhy
@@ -3423,6 +3427,46 @@ def _m1_trials(args, board, wit, node, verdicts, arms, local):
     verdicts.append(("m1/diagnostic", "summary"))
 
 
+def judge_bitrate_window(r, name, rows, sent, wit, node, window_s, pst):
+    """Step 2, one wrong-rate window after it ends -> (verdict or None,
+    lines to print). pst: the PCAN's own status at the window's end. Out of
+    run_bench since run 69d8 (2026-11-21), whose vp1-vp3 stopped here on a
+    name the coverage change had moved, so the self-test drives every path
+    of it to its end."""
+    out = []
+    for ln in (getattr(wit, "window_failures", []) +
+               [getattr(wit, "window_host", "")] +
+               getattr(wit, "window_states", []) +
+               ["the PCAN's own status at the window's end: "
+                "'%s'" % pst if pst else ""]):
+        if ln:
+            out.append("  %s %s, diagnostic: %s" % (r, name, ln))
+    t_ok, why, cwhy = bitrate_judgeable(rows,
+                                        getattr(wit, "window_bounds", None))
+    out.append("  %s %s, diagnostic: %s" % (r, name, cwhy))
+    arm = "bitrate/%s/%s" % (r, name)
+    if not t_ok:
+        v, ln = refused_arm(why)
+        out.append("  %s %s: %s" % (r, name, ln))
+        return (arm, v), out
+    # (g) here the node failing to complete IS the effect (the board at a
+    # wrong rate wrecks traffic): reported, never a fault. Only an
+    # incomplete witness faults it.
+    wf = witness_fault(wit, "%s %s" % (r, name))
+    if wf:
+        out.append("  %s, %s: %s" % (r, name, wf))
+        return (arm, FAULT), out
+    m2, lines = score_bitrate(rows, sent, window_s,
+                              node_fails=getattr(node, "window_fails", 0))
+    out.append("  %s, %s: %s" % (r, name, lines[0]))
+    out.append("    %s; %s" % (lines[1], why))
+    flag = bitrate_flag(back_steps(bitrate_stamps(rows))[0],
+                        m2["near_threshold"])
+    if flag:
+        out.append("    " + flag)
+    return None, out
+
+
 def run_bench(args):
     print("run at %s; vehicle port only, MCP2515 path: NO" %
           datetime.datetime.now().isoformat())
@@ -3768,39 +3812,13 @@ def run_bench(args):
                     pst = witness_status(wit)
                     board.cmd("STOP")
                     board.cmd("STATUS")
-                    for ln in (getattr(wit, "window_failures", []) +
-                               [getattr(wit, "window_host", "")] +
-                               getattr(wit, "window_states", []) +
-                               ["the PCAN's own status at the window's end: "
-                                "'%s'" % pst if pst else ""]):
-                        if ln:
-                            print("  %s %s, diagnostic: %s" % (r, name, ln))
-                    t_ok, why, cwhy = bitrate_judgeable(
-                        rows, getattr(wit, "window_bounds", None))
-                    print("  %s %s, diagnostic: %s" % (r, name, cwhy))
-                    if not t_ok:
-                        v, ln = refused_arm(why)
-                        print("  %s %s: %s" % (r, name, ln))
-                        verdicts.append(("bitrate/%s/%s" % (r, name), v))
-                        continue
-                    # (g) here the node failing to complete IS the effect
-                    # (the board at a wrong rate wrecks traffic): reported,
-                    # never a fault. Only an incomplete witness faults it.
-                    wf = witness_fault(wit, "%s %s" % (r, name))
-                    if wf:
-                        print("  %s, %s: %s" % (r, name, wf))
-                        verdicts.append(("bitrate/%s/%s" % (r, name), FAULT))
-                        continue
-                    nfails = getattr(node, "window_fails", 0)
-                    m2, lines = score_bitrate(rows, sent,
-                                              args.bitrate_seconds,
-                                              node_fails=nfails)
-                    print("  %s, %s: %s" % (r, name, lines[0]))
-                    print("    %s; %s" % (lines[1], why))
-                    flag = bitrate_flag(back_steps(tsw)[0],
-                                        m2["near_threshold"])
-                    if flag:
-                        print("    " + flag)
+                    v, lines = judge_bitrate_window(
+                        r, name, rows, sent, wit, node,
+                        args.bitrate_seconds, pst)
+                    for ln in lines:
+                        print(ln)
+                    if v:
+                        verdicts.append(v)
             board.cmd("BITRATE 500k")
             board.cmd("MODE listen")
             node.expect_acks(True)
@@ -4718,6 +4736,62 @@ def self_test():
           "refusal kept first; a 250k idle window with node frames only for "
           "its first 9 s (b467, E5) covered by every row's stamps -> %s"
           % (gates,))
+    # step 2's window judgement, each path to its end (run 69d8: vp1-vp3
+    # stopped on a NameError after a judged 250k idle window)
+
+    class _W:
+        window_failures, window_host = [], "host line"
+        window_states = ["the PCAN's bus state x2: passive"]
+        window_bounds = (lo, hi)
+        window_incomplete, window_stamp_fault = 0, ""
+
+    class _N:
+        window_fails = 3
+
+    def jw(rows, **kw):
+        w = _W()
+        for k, val in kw.items():
+            setattr(w, k, val)
+        try:
+            return judge_bitrate_window("250k", "idle", rows, [1, 2], w,
+                                        _N(), 60.0, "0x4 BUSLIGHT (light)")
+        except Exception as e:                          # noqa: BLE001
+            return "raised %s: %s" % (type(e).__name__, e), []
+    v, out = jw(b4 + [_pframe(lo + 1.0, 1)])
+    check(v is None and len(out) == 6
+          and out[0] == "  250k idle, diagnostic: host line"
+          and out[1] == ("  250k idle, diagnostic: the PCAN's bus state x2: "
+                         "passive")
+          and out[2] == ("  250k idle, diagnostic: the PCAN's own status at "
+                         "the window's end: '0x4 BUSLIGHT (light)'")
+          and "witness stamps" in out[3]
+          and out[4].startswith("  250k, idle: 6018 error frame(s)")
+          and "of the 5 it tried" in out[4]
+          and out[5].startswith("    error-frame gaps within 2 ms")
+          and not any("FLAG" in x for x in out),
+          "can-fail: step 2's window judgement: a covered window is scored "
+          "to its end (diagnostics, the cover line, the score and its gaps "
+          "line), no verdict, no FLAG -> %s %s" % (v, out))
+    back = list(b4)
+    back[3000] = (back[2999][0] - 0.001,) + back[3000][1:]
+    v, out = jw(back)
+    check(v is None and out and out[-1].startswith("    FLAG: 1 backward "
+                                                    "stamp step(s)"),
+          "can-fail: step 2's window judgement: a tolerated backward step "
+          "with gaps near the burst threshold ends in the FLAG line -> %s %s"
+          % (v, out[-2:]))
+    v, out = jw(e3)
+    check(v == ("bitrate/250k/idle", FAULT) and out
+          and "REFUSED, not judged" in out[-1]
+          and "do not cover" in out[-1],
+          "can-fail: step 2's window judgement: an uncovered window is "
+          "REFUSED, a FAULT on its arm -> %s %s" % (v, out[-1:]))
+    v, out = jw(b4, window_incomplete=2, window_fail_top="read too late")
+    check(v == ("bitrate/250k/idle", FAULT) and out
+          and out[-1].startswith("  250k, idle: TEST FAULT: 250k idle: the "
+                                 "witness's receive failed 2 time(s)"),
+          "can-fail: step 2's window judgement: a witness receive failure "
+          "is a TEST FAULT on its arm, not scored -> %s %s" % (v, out[-1:]))
     # gaps near the 10 ms burst threshold, and the flag
     nerr = [(t, 0, True, b"") for t in (1.0, 1.0005, 1.0100, 1.0300, 1.0405)]
     m, ln = score_bitrate(nerr, [], 60.0)
@@ -5035,13 +5109,13 @@ def self_test():
 
     # start refusals end VOID, never FAIL (reviewer, 2026-10-23)
     import re as _re
-    _ok, sl = score_silence("@SENT id=7F0", "@STATUS tec=0 rec=0")
+    _ok, sil = score_silence("@SENT id=7F0", "@STATUS tec=0 rec=0")
     for why, lines in (("the board's ELF sha256 a is not --elf's b", ()),
                        ("the image reports pins other than TX 7 / RX 6", ()),
-                       ("the witness is not shown silent", sl)):
+                       ("the witness is not shown silent", sil)):
         out = start_refused(why, lines)
         judged = [ln for ln in out if _re.match(r"^\s*(FAIL|VOID)\b", ln)]
-        check(bool(sl) and not _ok and judged == [out[-1]]
+        check(bool(sil) and not _ok and judged == [out[-1]]
               and out[-1].startswith("VOID: REFUSED") and why in out[-1]
               and len(out) == len(lines) + 1,
               "can-fail: a start refusal (%s) ends on one VOID line and "
@@ -5162,12 +5236,12 @@ def self_test():
           "can-fail: a state returned with an empty queue waits for the "
           "receive event, one without does not (the next entry is read at "
           "once) -> %s" % waits)
-    sl = state_lines({"b": [2, 10.5, 12.0], "a": [5, 10.0, 11.0]}, 9.0)
-    check(sl == ["the PCAN's bus state x5: a (first +1.000 s, last +2.000 "
-                 "s)", "the PCAN's bus state x2: b (first +1.500 s, last "
-                 "+3.000 s)"],
+    stl = state_lines({"b": [2, 10.5, 12.0], "a": [5, 10.0, 11.0]}, 9.0)
+    check(stl == ["the PCAN's bus state x5: a (first +1.000 s, last +2.000 "
+                  "s)", "the PCAN's bus state x2: b (first +1.500 s, last "
+                  "+3.000 s)"],
           "can-fail: state lines, most frequent first, times from the "
-          "window's start -> %s" % sl)
+          "window's start -> %s" % stl)
     # the PCAN's own status string (2026-11-20, E3): every word gives a
     # text, a combination included, with each bit by name
     stt = [(hex(w), pcan_status_text(w)) for w in (
@@ -5344,7 +5418,8 @@ def self_test():
         # its frame lost or bus-off is the reader's failure, its state the
         # reader's state of that name, its frame the reader's row
         import collections as _co
-        adapter_roles.errors()          # the pinned canbench on sys.path
+        import can_tools_pin            # the pinned canbench, by file
+        can_tools_pin.use()
         from canbench.live import pcan_bus as _pbus
         E_ = adapter_roles.errors()
 
@@ -6332,9 +6407,28 @@ MUTANTS = [
      "        return True, \"no witness stamps in the window\""),
     ("coverage: over the error frames' stamps only",
      "    c_ok, cwhy = coverage_ok([x[0] for x in rows], *(bounds or (None, None)))",
-     "    c_ok, cwhy = coverage_ok(tsw, *(bounds or (None, None)))"),
+     "    c_ok, cwhy = coverage_ok(bitrate_stamps(rows), *(bounds or (None, None)))"),
     ("coverage: the gap bound 1 s",
      "COVER_GAP_S = 0.25\n", "COVER_GAP_S = 1.0\n"),
+    # step 2's window judgement out of run_bench (run 69d8, 2026-11-21)
+    ("window judgement: the flag reads a name nothing binds (69d8's NameError)",
+     "    flag = bitrate_flag(back_steps(bitrate_stamps(rows))[0],",
+     "    flag = bitrate_flag(back_steps(tsw)[0],"),
+    ("window judgement: a refused window scored anyway",
+     "        out.append(\"  %s %s: %s\" % (r, name, ln))\n        return (arm, v), out\n",
+     "        out.append(\"  %s %s: %s\" % (r, name, ln))\n"),
+    ("window judgement: a witness receive failure scored anyway",
+     "        out.append(\"  %s, %s: %s\" % (r, name, wf))\n        return (arm, FAULT), out\n",
+     "        out.append(\"  %s, %s: %s\" % (r, name, wf))\n"),
+    ("window judgement: the FLAG line dropped",
+     "    if flag:\n        out.append(\"    \" + flag)\n",
+     "    if False:\n        out.append(\"    \" + flag)\n"),
+    ("window judgement: the PCAN's diagnostics dropped",
+     "               \"'%s'\" % pst if pst else \"\"]):\n        if ln:",
+     "               \"'%s'\" % pst if pst else \"\"]):\n        if False:"),
+    ("window judgement: the node's refused sends not counted",
+     "                              node_fails=getattr(node, \"window_fails\", 0))",
+     "                              node_fails=0)"),
     # the PCAN's own status string (2026-11-20, the hand take E3)
     ("status: python-can's whole-word lookup (None for a combination)",
      "    return lambda: pcan_status_text(bus.status())",

@@ -240,6 +240,22 @@ class Drain(object):
         self.total = 0
 
 
+def open_void_lines(failed):
+    """An adapter that did not open leaves the topology unresolved over the
+    whole bench: a VOID line, which script_judge reads (2026-11-21, the
+    reviewer's sweep after mcp-reset: it printed only "FAILED  <adapter>",
+    which is not a FAIL line, and RESOLVED still exited 0)."""
+    if not failed:
+        return []
+    return ["VOID: %d adapter(s) did not open (%s): the topology is not "
+            "resolved over the whole bench" % (len(failed), ", ".join(failed))]
+
+
+def open_rc(failed):
+    """RESOLVED's exit code: 3 (VOID) when an adapter did not open."""
+    return 3 if failed else 0
+
+
 def topology_link(link):
     """-> (ok, line): the Kvaser's link up and read back; not ok is a VOID
     line with the kernel's USB/CAN lines."""
@@ -433,6 +449,19 @@ def self_test():
     import inspect
     check(inspect.getsource(main).count("if void_in(drains):\n") == 3,
           "main: each phase's counts are taken only if no drain died or lost frames")
+    # 2026-11-21: an adapter that did not open is a VOID, not RESOLVED rc 0
+    vl = open_void_lines(["canchg"])
+    check(len(vl) == 1 and vl[0].startswith("VOID: 1 adapter(s) did not open "
+                                            "(canchg)"),
+          "an adapter that did not open -> a VOID line script_judge reads -> %s" % vl)
+    check(open_void_lines([]) == [] and open_rc([]) == 0 and open_rc(["x"]) == 3,
+          "all opened: no line, RESOLVED exits 0; one not: exits 3")
+    msrc = inspect.getsource(main)
+    check("failed.append(name)" in msrc and "for ln in open_void_lines(failed):" in msrc
+          and "return open_rc(failed)" in msrc
+          and msrc.find("for ln in open_void_lines(failed):") < msrc.find("if len(buses) < 2:"),
+          "main: each failed open is collected, its VOID line printed before "
+          "any exit, and RESOLVED exits by open_rc")
     print("\nbench_topology self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -465,12 +494,16 @@ def main():
     if not ok:
         return 2
     buses, drains = {}, {}
+    failed = []
     for name, opener in OPENERS.items():
         try:
             buses[name] = opener()
             print("opened  %-10s" % name)
         except Exception as exc:
             print("FAILED  %-10s %s" % (name, exc))
+            failed.append(name)
+    for ln in open_void_lines(failed):
+        print(ln)
 
     if len(buses) < 2:
         print("\nTEST FAULT: %d adapter(s) opened. A topology claim needs at "
@@ -644,7 +677,7 @@ def main():
         if len(quiet) != len(charger):
             un = [n for n in quiet if n not in charger]
             print("  unplaced        : %s" % ", ".join(un))
-        return 0
+        return open_rc(failed)
     except kvaser_link.Stall as st:
         # not a topology result: VOID with the kernel's lines, the Kvaser
         # recovered (its socket closed first) before the next case
@@ -666,6 +699,15 @@ def main():
 
 # --can-fail (script_can_fail.py): each edit must make --self-test fail
 MUTANTS = [
+    # 2026-11-21, the reviewer's sweep: a failed open exited 0 on RESOLVED
+    ("failed open: RESOLVED exits 0", "    return 3 if failed else 0\n",
+     "    return 0\n"),
+    ("failed open: no VOID line", '    return ["VOID: %d adapter(s) did not open',
+     '    return ["FAILED: %d adapter(s) did not open'),
+    ("failed open: not collected", "            failed.append(name)\n",
+     "            pass\n"),
+    ("failed open: RESOLVED returns 0 in main",
+     "        return open_rc(failed)\n", "        return 0\n"),
     # 2026-11-20, the reviewer's PCAN item 2
     ("PCAN item 2: a lost-frames row counted as a state row",
      "            why = adapter_roles.missed(m)\n            if why:\n",

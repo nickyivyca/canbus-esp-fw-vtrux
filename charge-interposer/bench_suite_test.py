@@ -810,7 +810,9 @@ def test_suites():
     # 314: st.reader-death, cf.reader-death, st.bench-rate-feasibility and
     #      cf.bench-rate-feasibility (a PCAN reader that dies is VOID, the
     #      reviewer's PCAN ruling 1, 2026-11-19)
-    assert len(seen) == 314, "checks across the suites: %d" % len(seen)
+    # 316: harness-names-test and harness-names-test-canfail (undefined and
+    #      rebound names, after run 69d8; the reviewer, 2026-11-21)
+    assert len(seen) == 316, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -2549,6 +2551,60 @@ def test_runner_stage():
                 scratch_dir.remove(x)
 
 
+def test_can_fail_timeouts():
+    """The harness suite gives cf.bench-vport 7200 s and every other
+    bench-driver can-fail 3600 s: bench_vport's ran past 3600 s in run 69d8
+    after 83 of its 149 mutants (the reviewer, 2026-11-21)."""
+    _s, su = _all()
+    tos = {c.id: c.timeout_s for g in su["harness"].groups for c in g.checks
+           if c.id.startswith("cf.")}
+    want = {"cf." + s.replace("_", "-"): 3600 for s in B.CAN_FAILS}
+    want["cf.bench-vport"] = 7200
+    assert tos == want, sorted(set(tos.items()) ^ set(want.items()))
+
+
+def test_mcp_reset_build():
+    """mcp-reset is given the bridge image's build id as --build, the
+    build each boot's 0x7F7 must read (it was fixed in the driver at
+    0x756D6714, so every reset was a TEST FAULT on the build), and its run
+    output with faulted boots, VOID lines and exit 3, reads VOID through
+    script_judge, not PASS (40e6 and 69d8 printed TEST FAULT 8 and exited
+    0: PASS; the charge-interposer reviewer, 2026-11-21)."""
+    s, su = _all()
+    mr = [c for g in su["bench"].groups for c in g.checks if c.id == "mcp-reset"]
+    assert len(mr) == 1, [c.id for c in mr]
+    argv = [str(a) for a in mr[0].argv]
+    want = B._interposer_image("bridge", s).expect
+    assert argv.count("--build") == 1 and argv[argv.index("--build") + 1] == want, \
+        (argv, want)
+    assert mr[0].judge is B.script_judge, mr[0].judge
+    out = ("hold 1: TEST FAULT [esptool hold rc 0, release rc 0]\n"
+           "RESULT: TEST FAULT 1; ...\n"
+           "VOID  hold 1: bridging stopped +0.3 s from the request and never "
+           "resumed: the board did not come back\n")
+    assert _v(mr[0].judge(_run(out, 3, "mcp-reset"))) == [Verdict.VOID]
+    ok = "hold 1: ACKED WITH THE ESP DOWN\nRESULT: ACKED WITH THE ESP DOWN 1\n"
+    assert _v(mr[0].judge(_run(ok, 0, "mcp-reset"))) == [Verdict.PASS]
+
+
+def test_mutants_restorable():
+    """Every attribute a mutant replaces has its original saved in _ORIG,
+    and the saved value is the one in place, so the can-fail puts each one
+    back: test_can_fail_timeouts' two had none, and the can-fail stopped
+    with a KeyError at its first mutant, leaving every mutant after it
+    unrun (bench-suite-test-canfail, harness run harness_432ea45e)."""
+    missing = sorted({a for ms in MUTANTS.values() for a, _r, _w in ms
+                      if a not in _ORIG})
+    assert not missing, missing
+    stale = []
+    for ms in MUTANTS.values():
+        for a, _r, _w in ms:
+            mod, name = _target(a)
+            if getattr(mod, name) is not _ORIG[a]:
+                stale.append(a)
+    assert not stale, sorted(set(stale))
+
+
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_switch_pending_judge,
          test_host_bridge_judge,
@@ -2564,7 +2620,8 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_x2_port_from_settings, test_reset_check_verdict, test_esptool_env,
          test_canchg_mode_hooks, test_canx2_slcan_hooks,
          test_x2_test_images_identify, test_slcan_spi_identity,
-         test_x2_test_image_flash_first]
+         test_x2_test_image_flash_first, test_can_fail_timeouts,
+         test_mcp_reset_build, test_mutants_restorable]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -2955,6 +3012,22 @@ def _env_dropped_from(group, key):
     return fn
 
 
+# test_mcp_reset_build's mutants
+def _mcp_build_dropped(s):
+    c = _check(s, "mcp-reset")
+    i = c.argv.index("--build")
+    del c.argv[i:i + 2]
+
+
+def _mcp_build_fixed(s):
+    c = _check(s, "mcp-reset")
+    c.argv[c.argv.index("--build") + 1] = "756d6714"
+
+
+def _mcp_recorded(s):
+    _check(s, "mcp-reset").judge = B.recorded_judge
+
+
 # test_adapters_by_role's mutants: an adapter named by its identity again
 def _keepalive_pcan_channel(s):
     _check(s, "keepalive-probe").argv += ["--pcan-channel", "{pcan_channel}"]
@@ -3046,6 +3119,8 @@ _ORIG["INTERPOSER_IDF"] = B.INTERPOSER_IDF
 _ORIG["BOOT_RESETS"] = B.BOOT_RESETS
 _ORIG["_md5"] = B._md5
 _ORIG["_sha256"] = B._sha256
+_ORIG["CAN_FAIL_TIMEOUTS"] = B.CAN_FAIL_TIMEOUTS
+_ORIG["CAN_FAIL_TIMEOUT_S"] = B.CAN_FAIL_TIMEOUT_S
 
 
 def _ct_unchecked():
@@ -3263,6 +3338,18 @@ def _wican_identify_off(s):
 
 
 MUTANTS = {
+    "test_mcp_reset_build": [
+        ("bench", _wrap_suite("bench", _mcp_build_dropped),
+         "mcp-reset given no --build"),
+        ("bench", _wrap_suite("bench", _mcp_build_fixed),
+         "mcp-reset's --build fixed at 756d6714 again"),
+        ("bench", _wrap_suite("bench", _mcp_recorded),
+         "mcp-reset judged as a recording (its VOID read PASS)")],
+    "test_can_fail_timeouts": [
+        ("CAN_FAIL_TIMEOUTS", {}, "cf.bench-vport back on 3600 s (run 69d8)"),
+        ("CAN_FAIL_TIMEOUTS", {"bench_vport": 7200, "bench_c12": 7200},
+         "another can-fail moved to 7200 s too"),
+        ("CAN_FAIL_TIMEOUT_S", 1800, "every other can-fail on 1800 s")],
     "test_esptool_env": [
         ("esptool_env", lambda settings: {}, "esptool.argv never passed on"),
         ("esptool_env", _esptool_unchecked, "a malformed esptool.argv passed on"),
@@ -3619,6 +3706,16 @@ MUTANTS = {
             ""),
          "parse_args's inner parse_known_args ends the probe (extras unchecked)")],
 }
+_ORIG["self.MUTANTS"] = MUTANTS
+_ORIG["self._ORIG"] = _ORIG
+MUTANTS["test_mutants_restorable"] = [
+    ("self.MUTANTS", {"test_x": [("NOT_SAVED", None, "x")]},
+     "a mutant whose attribute has no saved original"),
+    ("self._ORIG", {k: v for k, v in _ORIG.items()
+                    if k != "CAN_FAIL_TIMEOUTS"},
+     "CAN_FAIL_TIMEOUTS not saved (the 1ce954e9 can-fail KeyError)"),
+    ("self._ORIG", dict(_ORIG, CAN_FAIL_TIMEOUTS={}),
+     "a saved original that is not the value in place")]
 
 
 def main():

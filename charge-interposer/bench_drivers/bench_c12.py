@@ -189,6 +189,7 @@ class Handler(object):
         self.n_inject = 0
         self.replies = []
         self.tag_counts = []      # (host count, tags sent) per TAGS reply
+        self.withhold = []        # each CANWITHHOLD answer, in order
 
     def answer(self, req):
         f = req.split()
@@ -215,6 +216,7 @@ class Handler(object):
                 return r
         elif cmd == "CANWITHHOLD":
             r = "@YES" if (self.alone and self.a.listen_only_ok) else "@NO"
+            self.withhold.append(r)
         elif cmd == "ACK" and len(f) == 2:
             self.a.set_ack(f[1] == "1")
             r = "@OK"
@@ -356,6 +358,19 @@ def host_count_line(tag_counts):
         for i, (n, s) in enumerate(tag_counts))
 
 
+def c9_void(step, withhold):
+    """--step C9 (the suite's c9-noack) measures what the board does with
+    nothing acknowledging, which needs the Innomaker to withhold its ACK:
+    told "@NO" (no listen-only, or the segment not confirmed alone), the
+    firmware skips C9 and still ends ok. -> a VOID line, or None. Until
+    2026-11-21 such a run exited 0 and was recorded as if C9 ran (the
+    reviewer's sweep after mcp-reset)."""
+    if step != "C9" or "@YES" in withhold:
+        return None
+    return ("VOID: C9 did not run: the board was told it cannot withhold "
+            "ACK (CANWITHHOLD answered %s)" % (", ".join(withhold) or "never"))
+
+
 def report(hello, body, status, h, elf_sha, step):
     rc = 0
     sha = hello_sha(hello)
@@ -385,6 +400,10 @@ def report(hello, body, status, h, elf_sha, step):
         print("  %-24s %-24s fake %-10s silicon %-10s %s%s"
               % (s, k, fv, sv, st, "  <-- a DATASHEET line" if
                  st == "DATASHEET" else ""))
+    v9 = c9_void(step, h.withhold)
+    if v9:
+        print(v9)
+        rc = rc or 3
     return rc
 
 
@@ -552,6 +571,39 @@ def self_test():
     check(parse_transcript(out[i:i + 3]) == parse_transcript(c9[1:]),
           "...and it is not a transcript line (the diff skips it)")
 
+    # 2026-11-21, the reviewer's sweep: C9 skipped (CANWITHHOLD @NO) exited
+    # 0 and was recorded as if it ran
+    print("a C9 run the board could not withhold ACK in is VOID")
+    import re as _re
+    hn = Handler(Adapter(fb, None, False), True, lambda s: None)
+    hn.answer("CANWITHHOLD")
+    check(hn.withhold == ["@NO"], "the handler keeps each CANWITHHOLD answer")
+    for step, wh, want in (("C9", ["@NO"], True), ("C9", [], True),
+                           ("C9", ["@YES"], False), ("C12", ["@NO"], False),
+                           ("all", ["@NO"], False)):
+        v = c9_void(step, wh)
+        check(bool(v) == want and (not v or _re.match(r"^\s*VOID\b", v)),
+              "c9_void(%s, %s) -> %s" % (step, wh, v))
+    buf = io.StringIO()
+    sys.stdout = buf
+    try:
+        rc9 = report(hello, c9, "@END C9 ok", hn, None, "C9")
+    finally:
+        sys.stdout = old
+    check(rc9 == 3 and "VOID: C9 did not run" in buf.getvalue(),
+          "report: --step C9 with CANWITHHOLD @NO and @END ok -> VOID line, "
+          "exit 3 -> rc %s" % rc9)
+    hy = Handler(a, True, lambda s: None)
+    hy.answer("CANWITHHOLD")
+    buf = io.StringIO()
+    sys.stdout = buf
+    try:
+        rcy = report(hello, c9, "@END C9 ok", hy, None, "C9")
+    finally:
+        sys.stdout = old
+    check(rcy == 0 and "VOID" not in buf.getvalue(),
+          "report: --step C9 told @YES -> exit 0, no VOID -> rc %s" % rcy)
+
     print("\nbench_c12 self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -559,6 +611,14 @@ def self_test():
 
 # --can-fail (script_can_fail.py): each edit must make --self-test fail
 MUTANTS = [
+    # 2026-11-21, the reviewer's sweep: C9 skipped exited 0
+    ("C9 skipped: no VOID", '    if step != "C9" or "@YES" in withhold:\n        return None\n',
+     "    return None\n"),
+    ("C9 skipped: VOID but exit 0", "        print(v9)\n        rc = rc or 3\n",
+     "        print(v9)\n"),
+    ("C9 skipped: the answers not kept", "            self.withhold.append(r)\n", ""),
+    ("C9 skipped: a C12 run voided too", '    if step != "C9" or "@YES" in withhold:',
+     '    if "@YES" in withhold:'),
     ("TAGS reply not capped",
      "        if len(r) + len(piece) > limit:\n            break\n",
      ""),

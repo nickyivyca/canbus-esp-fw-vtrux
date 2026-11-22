@@ -22,7 +22,10 @@ THE ESP-DOWN WINDOW IS TAKEN FROM CAN1, NOT FROM THE RESET MARK: from the
 last bridged frame before the reset to the first power-up-round frame after
 it. A reset that did not happen leaves no such window and is a TEST FAULT
 rather than a pass. Each boot's 0x7F7 (cantools, the diag DBC)
-must read build 0x756D6714.
+must read the build --build gives (the image the run loaded; it was fixed
+at 0x756D6714 until 2026-11-21). A boot with a TEST FAULT measured nothing:
+run prints a VOID line for each and exits 3 (until 2026-11-21 it exited 0,
+so the suite recorded PASS on 40e6's and 69d8's TEST FAULT 8).
 
 Per boot: >= MIN_ACKED echoes inside the window -> ACKED WITH THE ESP DOWN;
 0 echoes and one gap spanning it -> NOT ACKED WITH THE ESP DOWN; otherwise
@@ -36,7 +39,8 @@ esptool USB-Serial-JTAG hard reset (RTS 0.2 s; the port re-enumerates, so
 this is a reset pulse, not a held EN); `--holds M --hold-s S` the ROM
 download hold (esptool read_mem with --after no_reset, as gen-inhibit
 x2_hold.py does: the app is not running for S s), then a hard reset into
-the app.
+the app (RELEASE: --before default_reset --after hard_reset; with --before
+no_reset the chip stayed in the loader, 2026-11-21).
 
 SCOPE: an internal USB-JTAG chip reset drives no pin, so this covers resets
 that leave the MCP2515's own reset line alone (software restart, panic,
@@ -62,7 +66,7 @@ judged: run's ESP-down windows come from the PCAN's rows, so a dead
 reader's short list would read as no reset seen, or a window cut short.
 
     py -3.14 bench_mcp_reset.py --self-test
-    py -3.14 bench_mcp_reset.py run --port COM3 --resets 5 --holds 3 --out X
+    py -3.14 bench_mcp_reset.py run --port COM3 --build c4a553bb --resets 5 --holds 3 --out X
     py -3.14 bench_mcp_reset.py canfail --out Y
     py -3.14 bench_mcp_reset.py normal --port COM3 --out Z
 
@@ -94,7 +98,12 @@ MIN_WINDOW_S = 0.050
 MIN_ACKED = 5
 GAP_MIN_S = 0.010
 ROUND_IDS = (0x7F4, 0x7F5, 0x7F6, 0x7F7)
-BUILD_EXPECT = 0x756D6714
+# The build each boot's 0x7F7 must read is the image the run loaded, given
+# as --build (the bench suite passes the bridge image's first four ELF
+# hash bytes, as identify reads them). It was fixed at 0x756D6714, so from
+# the port every reset was a TEST FAULT on the build, unseen while run
+# exited 0 (2026-11-21, below).
+SAMPLE_BUILD = 0x756D6714          # the self-test's 0x7F7 sample decodes to it
 BASELINE_S = 3.0
 SETTLE_S = 4.0
 CANFAIL_S = 2.0
@@ -112,6 +121,18 @@ ESPTOOL = os.path.join(os.path.expanduser("~"), ".platformio", "packages",
 # invalid choice, gen-inhibit tester 2026-11-11) and esptool v5 (a
 # deprecated alias there) accept
 READ_MEM = "read_mem"
+# The ROM hold and its release, as esptool's (--before, --after). The
+# release was ("no_reset", "hard_reset"): it printed "Hard resetting via
+# RTS pin..." and exited 0, but over USB-Serial/JTAG the chip stayed in the
+# serial loader, app down, until the next default_reset-style reset: in
+# 40e6, 69d8 and the 1ce954e9 hand take, CAN1 went silent ~0.3 s into hold
+# 1 and never came back, and reset-check after it waited 200 s for an
+# uptime that never came (bench hand take, 2026-11-21: a sync with no reset
+# either side still answered; --before default_reset --after hard_reset
+# brought the app back at once). Why no_reset + hard_reset does not leave
+# the loader there is not shown.
+HOLD = ("default_reset", "no_reset")
+RELEASE = ("default_reset", "hard_reset")
 # 756d6714 prints chg(rx= tx= err= off= ring=a/b); the first version of
 # this pattern wanted peak= (the veh field's form), matched nothing and
 # read every block as clean (bench 2026-10-16 01:31)
@@ -172,8 +193,15 @@ def boot_timeline(echo_t, sends, can1, mark, thr, release=None):
     bg = [(x, y) for x, y in zip(br, br[1:])
           if y - x > MIN_WINDOW_S and x >= mark - 0.1]
     if not bg:
-        tl["faults"].append("no gap in the bridged frames on CAN1 after the "
-                            "reset request: no reset seen on CAN1")
+        if br and mark - 0.1 <= br[-1] <= mark + 3.0:
+            # bridging stopped at the request and never came back: the
+            # board was left down (69d8's holds: the serial loader)
+            tl["faults"].append("bridging stopped %+.1f s from the request "
+                                "and never resumed: the board did not come "
+                                "back" % (br[-1] - mark))
+        else:
+            tl["faults"].append("no gap in the bridged frames on CAN1 after "
+                                "the reset request: no reset seen on CAN1")
         return tl
     t_last, t_res = bg[0]
     tl["t_last"], tl["t_resume"] = t_last, t_res
@@ -221,13 +249,21 @@ def build_of(f7):
     return db.get_message_by_frame_id(0x7F7).decode(bytes(f7))["intp_build_id"]
 
 
-def judge_boot(tl, build=None):
-    """-> (verdict, lines)."""
+def parse_build(text):
+    """--build: the image's build id, 8 hex digits (its ELF hash's first
+    four bytes) -> int; ValueError otherwise."""
+    if not re.fullmatch(r"(0x)?[0-9A-Fa-f]{8}", text or ""):
+        raise ValueError("--build %r is not 8 hex digits" % (text,))
+    return int(text[-8:], 16)
+
+
+def judge_boot(tl, build=None, expect=None):
+    """-> (verdict, lines). expect: the build the 0x7F7 must read."""
     lines = []
     rel = lambda t: "%+.1f ms" % ((t - tl["mark"]) * 1000.0)   # noqa: E731
-    if build is not None and build != BUILD_EXPECT:
+    if build is not None and expect is not None and build != expect:
         tl["faults"].append("0x7F7 build 0x%08X, not 0x%08X"
-                            % (build, BUILD_EXPECT))
+                            % (build, expect))
     if tl["faults"]:
         return "TEST FAULT", ["TEST FAULT: " + f for f in tl["faults"]]
     w0, w1 = tl["w"]
@@ -439,15 +475,33 @@ def pcan_void(pc):
     return None
 
 
+def void_lines(faults):
+    """faults [(name, text)]: a boot whose premise failed (no reset seen,
+    no boot round, the board not back, the wrong build, a reset not sent)
+    measured nothing, so each is a VOID line, which script_judge reads.
+    Until 2026-11-21 they were "TEST FAULT" lines and run exited 0, so the
+    suite recorded PASS on runs where every boot faulted (40e6, 69d8)."""
+    return ["VOID  %s: %s" % (n, f) for n, f in faults]
+
+
+def run_exit(faults):
+    """run's exit code: 3 (VOID) when any boot faulted, else 0 (the
+    measured verdicts are recorded, not judged)."""
+    return 3 if faults else 0
+
+
 def run_bench(a):
     import bench_usb_host as U
     import run_scenario as R
     base = os.path.splitext(a.out)[0]
-    print("run at %s; board image expected 0x%08X; stream 0x%08X at %.0f fps "
-          "on the charger segment (Innomaker), PCAN acknowledging on CAN1; "
-          "resets %d, holds %d x %.1f s"
-          % (datetime.datetime.now().isoformat(), BUILD_EXPECT, STREAM_ID,
-             RATE, a.resets, a.holds, a.hold_s))
+    expect = parse_build(a.build)
+    print("run at %s; board image expected 0x%08X (--build); stream 0x%08X "
+          "at %.0f fps on the charger segment (Innomaker), PCAN acknowledging "
+          "on CAN1; resets %d, holds %d x %.1f s (hold --before %s --after %s, "
+          "release --before %s --after %s)"
+          % ((datetime.datetime.now().isoformat(), expect, STREAM_ID,
+              RATE, a.resets, a.holds, a.hold_s) + HOLD + RELEASE))
+    faults = []
     argv0 = None
     if a.holds:
         try:
@@ -479,7 +533,7 @@ def run_bench(a):
             while tap.reset_host_t == prev and time.perf_counter() < end:
                 time.sleep(0.01)
             if tap.reset_host_t == prev:
-                print("TEST FAULT: reset %d was not sent" % (i + 1))
+                faults.append(("reset %d" % (i + 1), "it was not sent"))
                 continue
             marks.append(("reset %d" % (i + 1), tap.reset_host_t, None, ""))
             time.sleep(SETTLE_S)
@@ -487,11 +541,11 @@ def run_bench(a):
         time.sleep(SETTLE_S)            # a COM3 close can reset the board
         for j in range(a.holds):
             m = time.perf_counter()
-            rc, txt = esptool(argv0, a.port, "default_reset", "no_reset",
+            rc, txt = esptool(argv0, a.port, HOLD[0], HOLD[1],
                               READ_MEM, "0x6000403C")
             time.sleep(a.hold_s)
             rel = time.perf_counter()
-            rc2, txt2 = esptool(argv0, a.port, "no_reset", "hard_reset",
+            rc2, txt2 = esptool(argv0, a.port, RELEASE[0], RELEASE[1],
                                 READ_MEM, "0x6000403C")
             note = "esptool hold rc %d, release rc %d" % (rc, rc2)
             if rc or rc2:
@@ -516,9 +570,9 @@ def run_bench(a):
     dev = unwrap_us([r[1] for r in ech.rows])
     f = dev_mapper([(r[0], d) for r, d in zip(ech.rows, dev)])
     if f is None:
-        print("TEST FAULT: too few echoes to map the Innomaker's clock (%d)"
-              % len(ech.rows))
-        return 2
+        print("\n".join(void_lines([("run", "too few echoes to map the "
+                                     "Innomaker's clock (%d)" % len(ech.rows))])))
+        return 3
     echo_t = sorted(f(d) for d in dev)
     sends = [(t, ok) for t, _s, ok in snd.log]
     can1 = [(r[1], r[2], r[3], r[4]) for r in rows]
@@ -549,8 +603,8 @@ def run_bench(a):
              "%.1f ms" % (thr * 1000) if thr else "NONE", snd.max_lag * 1000,
              ech.err, ech.other))
     if thr is None:
-        print("TEST FAULT: no baseline echoes")
-        return 2
+        print("\n".join(void_lines([("run", "no baseline echoes")])))
+        return 3
     tally = {}
     noack_seen = False
     for name, m, rel, note in marks:
@@ -560,7 +614,9 @@ def run_bench(a):
         except Exception as e:                             # noqa: BLE001
             build = None
             tl["faults"].append("0x7F7 not decoded (%s)" % e)
-        v, lines = judge_boot(tl, build)
+        v, lines = judge_boot(tl, build, expect)
+        if v == "TEST FAULT":
+            faults.extend((name, f) for f in tl["faults"])
         tally[v] = tally.get(v, 0) + 1
         noack_seen = noack_seen or any(g["fails"] for g in tl.get("gaps", []))
         print("\n%s: %s%s%s" % (name, v, (" (0x7F7 build 0x%08X)" % build)
@@ -573,7 +629,9 @@ def run_bench(a):
                                         sorted(tally.items())),
                               "WAS SHOWN" if noack_seen else
                               "was NOT shown -- run canfail"))
-    return 0
+    for ln in void_lines(faults):
+        print(ln)
+    return run_exit(faults)
 
 
 def first_fail(log):
@@ -707,19 +765,19 @@ def self_test():
 
     e, s, c, m = scene()
     tl = boot_timeline(e, s, c, m, 0.010)
-    v, ln = judge_boot(tl, BUILD_EXPECT)
+    v, ln = judge_boot(tl, SAMPLE_BUILD, SAMPLE_BUILD)
     check(v == "ACKED WITH THE ESP DOWN", "echoes all through the ESP-down "
           "window -> ACKED -> %s" % v)
     e, s, c, m = scene(echo_stop=0.003, echo_resume=0.45)
     tl = boot_timeline(e, s, c, m, 0.010)
-    v, ln = judge_boot(tl, BUILD_EXPECT)
+    v, ln = judge_boot(tl, SAMPLE_BUILD, SAMPLE_BUILD)
     check(v == "NOT ACKED WITH THE ESP DOWN" and
           any("NO-ACK SHOWN" in x for x in ln),
           "can-fail: echoes stop at the reset until after the round -> NOT "
           "ACKED, the gap shown with failed sends -> %s" % v)
     e, s, c, m = scene(begin_gap=(0.30, 0.32))
     tl = boot_timeline(e, s, c, m, 0.010)
-    v, ln = judge_boot(tl, BUILD_EXPECT)
+    v, ln = judge_boot(tl, SAMPLE_BUILD, SAMPLE_BUILD)
     check(v == "ACKED WITH THE ESP DOWN" and
           any("NO-ACK SHOWN" in x and "+300" in x for x in ln),
           "a 20 ms no-ACK gap at begin() inside the window: ACKED, and the "
@@ -727,41 +785,81 @@ def self_test():
     e, s, c, m = scene(begin_gap=(0.30, 0.32), fail_in_gap=True)
     s2 = [(t, ok) for t, ok in s if not (m + 0.30 <= t < m + 0.32)]
     tl = boot_timeline(e, s2, c, m, 0.010)
-    v, ln = judge_boot(tl, BUILD_EXPECT)
+    v, ln = judge_boot(tl, SAMPLE_BUILD, SAMPLE_BUILD)
     check(any("not evidence" in x for x in ln),
           "an echo gap with no send attempt (the sender paused) is not "
           "evidence")
     e, s, c, m = scene(bridge_stop=None)
     tl = boot_timeline(e, s, c, m, 0.010)
-    v, ln = judge_boot(tl, BUILD_EXPECT)
+    v, ln = judge_boot(tl, SAMPLE_BUILD, SAMPLE_BUILD)
     check(v == "TEST FAULT", "can-fail: bridging never stopped (no reset "
           "seen on CAN1) -> TEST FAULT -> %s" % v)
     e, s, c, m = scene(bridge_stop=0.6, round_at=6.7,
                        periodic=(-0.8, 0.2, 7.7))
     tl = boot_timeline(e, s, c, m, 0.010)
-    v, ln = judge_boot(tl, BUILD_EXPECT)
+    v, ln = judge_boot(tl, SAMPLE_BUILD, SAMPLE_BUILD)
     check(v == "ACKED WITH THE ESP DOWN" and abs(tl["t_round"] - m - 6.7)
           < 0.01, "can-fail of the 01:26 run's defect: a periodic status "
           "frame between the hold request and the ESP going down is not "
           "taken for the boot round -> %s" % v)
     e, s, c, m = scene(round_at=None)
     tl = boot_timeline(e, s, c, m, 0.010)
-    v, ln = judge_boot(tl, BUILD_EXPECT)
-    check(v == "TEST FAULT", "no power-up round after the reset -> TEST "
-          "FAULT")
+    v, ln = judge_boot(tl, SAMPLE_BUILD, SAMPLE_BUILD)
+    check(v == "TEST FAULT" and any("never resumed" in x and "did not come "
+                                    "back" in x for x in ln),
+          "can-fail of 69d8's holds: bridging stops at the request and never "
+          "resumes, no power-up round -> TEST FAULT naming the board not "
+          "back -> %s %s" % (v, ln))
+    e, s, c, m = scene(round_at=0.40)
+    tl = boot_timeline(e, s, c, m, 0.010)
+    v, ln = judge_boot(tl, SAMPLE_BUILD, SAMPLE_BUILD)
+    check(not any("never resumed" in x for x in ln),
+          "a board that comes back is not 'never resumed'")
     e, s, c, m = scene()
     tl = boot_timeline(e, s, c, m, 0.010)
-    v, ln = judge_boot(tl, 0x12345678)
-    check(v == "TEST FAULT", "a wrong 0x7F7 build -> TEST FAULT")
+    v, ln = judge_boot(tl, 0x12345678, SAMPLE_BUILD)
+    check(v == "TEST FAULT" and any("0x12345678, not 0x756D6714" in x
+                                    for x in ln),
+          "a 0x7F7 build that is not --build's -> TEST FAULT -> %s" % ln)
+    e, s, c, m = scene()
+    tl = boot_timeline(e, s, c, m, 0.010)
+    v, ln = judge_boot(tl, 0xC4A553BB, 0xC4A553BB)
+    check(v == "ACKED WITH THE ESP DOWN",
+          "the build is --build's, not a fixed one: 0xC4A553BB read and "
+          "expected -> %s" % v)
+    check(parse_build("c4a553bb") == 0xC4A553BB
+          and parse_build("0xC4A553BB") == 0xC4A553BB,
+          "--build c4a553bb (identify's form) and 0xC4A553BB -> 0xC4A553BB")
+    for bad in (None, "", "c4a553b", "c4a553bbb", "zzzzzzzz"):
+        try:
+            parse_build(bad)
+            refused = False
+        except ValueError:
+            refused = True
+        check(refused, "--build %r is refused" % (bad,))
+    # 2026-11-21: a faulted boot is a VOID line script_judge reads, and run
+    # exits 3 (40e6 and 69d8 printed TEST FAULT 8, exited 0: PASS)
+    vl = void_lines([("hold 1", "bridging stopped"), ("reset 2", "x")])
+    check(len(vl) == 2 and all(re.match(r"^\s*(FAIL|VOID)\b", x) for x in vl)
+          and vl[0].startswith("VOID  hold 1: bridging stopped"),
+          "each faulted boot -> a VOID line in script_judge's form -> %s" % vl)
+    check(run_exit([]) == 0 and run_exit([("hold 1", "x")]) == 3,
+          "run exits 0 with no faulted boot, 3 (VOID) with one")
+    # the hold's release leaves the loader (2026-11-21 hand take)
+    check(HOLD == ("default_reset", "no_reset")
+          and RELEASE == ("default_reset", "hard_reset"),
+          "the hold stays in the loader (--after no_reset); the release "
+          "resets into it again before the hard reset (--before "
+          "default_reset): no_reset + hard_reset left the app down")
     e, s, c, m = scene(echo_stop=0.003, echo_resume=0.2)
     tl = boot_timeline(e, s, c, m, 0.010)
-    v, ln = judge_boot(tl, BUILD_EXPECT)
+    v, ln = judge_boot(tl, SAMPLE_BUILD, SAMPLE_BUILD)
     check(v in ("ACKED WITH THE ESP DOWN", "UNCLEAR"),
           "echoes return part-way through the window -> not NOT ACKED -> %s"
           % v)
     try:
         b = build_of(bytes.fromhex("14676d7509000400"))
-        check(b == BUILD_EXPECT, "0x7F7 14676d7509000400 decodes (cantools) "
+        check(b == SAMPLE_BUILD, "0x7F7 14676d7509000400 decodes (cantools) "
               "to 0x756D6714")
     except Exception as ex:                                # noqa: BLE001
         check(False, "0x7F7 decode: %s" % ex)
@@ -823,6 +921,20 @@ def self_test():
           and "read-mem" not in src,
           "the hold and its release call esptool's read_mem, the name "
           "esptool v4.13 accepts (it refuses read-mem)")
+    check("esptool(argv0, a.port, HOLD[0], HOLD[1]," in src
+          and "esptool(argv0, a.port, RELEASE[0], RELEASE[1]," in src
+          and '"no_reset", "hard_reset"' not in src,
+          "run's hold and release use HOLD and RELEASE")
+    check("judge_boot(tl, build, expect)" in src
+          and "expect = parse_build(a.build)" in src,
+          "run judges each boot's build against --build")
+    check(src.rstrip().endswith("return run_exit(faults)")
+          and "faults.extend((name, f) for f in tl[\"faults\"])" in src
+          and "for ln in void_lines(faults):" in src,
+          "run prints the faulted boots' VOID lines and exits by run_exit")
+    check(src.count("return 2") == 2 and "TEST FAULT:" not in src,
+          "run: no bare TEST FAULT line left (a fault before the boots is a "
+          "VOID line and exit 3; the two REFUSED exits stay 2)")
     # which esptool (the reviewer, 2026-11-11): the settings' argv, as the
     # core flasher; the PlatformIO default on Windows only
     want = ["/opt/idf/python", "-m", "esptool"]
@@ -917,6 +1029,35 @@ MUTANTS = [
      "    inno.shutdown()\n    void = pcan_void(pc)\n    if void:\n        print(void)\n"
      "        return 3\n",
      "    inno.shutdown()\n"),
+    # 2026-11-21, after the 1ce954e9 hand take (the reviewer: fix all four)
+    ("faulted boots: run exits 0 (40e6, 69d8: TEST FAULT 8 recorded PASS)",
+     "    return 3 if faults else 0\n", "    return 0\n"),
+    ("faulted boots: no VOID line",
+     '    return ["VOID  %s: %s" % (n, f) for n, f in faults]\n',
+     '    return ["TEST FAULT: %s: %s" % (n, f) for n, f in faults]\n'),
+    ("faulted boots: run ends on return 0",
+     "        print(ln)\n    return run_exit(faults)\n",
+     "        print(ln)\n    return 0\n"),
+    ("faulted boots: not collected",
+     "            faults.extend((name, f) for f in tl[\"faults\"])\n",
+     "            pass\n"),
+    ("the build: --build ignored",
+     "    if build is not None and expect is not None and build != expect:",
+     "    if False:"),
+    ("the build: fixed again",
+     "    return int(text[-8:], 16)\n", "    return SAMPLE_BUILD\n"),
+    ("the build: --build not checked",
+     '    if not re.fullmatch(r"(0x)?[0-9A-Fa-f]{8}", text or ""):',
+     "    if text is None:"),
+    ("the release: no_reset before the hard reset (the loader kept)",
+     'RELEASE = ("default_reset", "hard_reset")',
+     'RELEASE = ("no_reset", "hard_reset")'),
+    ("the release: the run's call not RELEASE",
+     "esptool(argv0, a.port, RELEASE[0], RELEASE[1],\n                    ",
+     'esptool(argv0, a.port, "no_reset", "hard_reset",\n                    '),
+    ("a board left down: read as no reset seen",
+     "        if br and mark - 0.1 <= br[-1] <= mark + 3.0:",
+     "        if False:"),
 ]
 
 
@@ -929,6 +1070,9 @@ def main():
     ap.add_argument("--holds", type=int, default=3)
     ap.add_argument("--hold-s", type=float, default=5.0)
     ap.add_argument("--bitrate", type=int, default=250000)
+    ap.add_argument("--build", default=None,
+                    help="run: the loaded image's build id, 8 hex digits, "
+                         "which each boot's 0x7F7 must read")
     ap.add_argument("--out", default=None)
     ap.add_argument("--can-fail", action="store_true",
                     help="run the self-test under each of MUTANTS")
@@ -940,6 +1084,11 @@ def main():
         return script_can_fail.run(__file__, MUTANTS)
     if not a.cmd or not a.out:
         ap.error("a command and --out are required for a bench run")
+    if a.cmd == "run":
+        try:
+            parse_build(a.build)
+        except ValueError as e:
+            ap.error("run needs --build, the loaded image's build id: %s" % e)
     import bench_charger_witness as bcw
     tee = bcw.Tee(a.out)
     sys.stdout = tee

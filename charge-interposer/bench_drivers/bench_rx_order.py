@@ -301,6 +301,29 @@ def run_variant(tx, vname, vno, bursts, gap_s, serial_lines, reader=None, journa
                 echo_span_us_max=spans[-1] if spans else None)
 
 
+def variant_verdict(premise, short, judged_ok):
+    """One variant's verdict lines and exit code. Each verdict line starts
+    with VOID or FAIL, the words script_judge reads: until 2026-11-21 a
+    failed variant printed "ORDER/COMPLETENESS FAILED", which is not a FAIL
+    line, so a VOID line from another variant made script_judge read the
+    run VOID and hid the failure; and a short offer, "not a firmware
+    result", was a FAIL (the reviewer's sweep after mcp-reset). -> (lines,
+    rc): rc 2 a VOID premise, 1 a short offer (with its VOID line) or a
+    FAIL, 0 a pass."""
+    if premise == "VOID":
+        return (["   VOID: no keep-alive reached the vehicle side, so the "
+                 "vehicle port never left listen-only (or the witness is not "
+                 "on that segment); no bursts were offered, and this is not "
+                 "a firmware result"], 2)
+    if short:
+        return (["   VOID: SHORT OFFER: not every frame was sent -- the "
+                 "result is not a firmware result"], 1)
+    if not judged_ok or premise == "LOST":
+        return (["   FAIL  ORDER/COMPLETENESS vs spec 2%s"
+                 % (" (keep-alives lost too)" if premise == "LOST" else "")], 1)
+    return (["   every burst arrived complete and in order"], 0)
+
+
 def witness_link(link):
     """The vehicle witness must acknowledge (an ACK check; 2026-11-13, the
     reviewer's A): the Kvaser's link up and read back. -> (ok, line); not
@@ -371,24 +394,15 @@ def run_bench(args):
             print("   spec 2.3 keep-alive 0x%X: %d sent, %d seen on the vehicle "
                   "side -> %s" % (KEEPALIVE_ID, r["ka_sent"], r["ka_seen"],
                                   r["premise"]))
-            if r["premise"] == "VOID":
-                print("   VOID: no keep-alive reached the vehicle side, so the "
-                      "vehicle port never left listen-only (or the witness is "
-                      "not on that segment); no bursts were offered, and this "
-                      "is not a firmware result")
+            short = (r["offered"] != args.bursts or
+                     r["sent"] != j["bursts"] * len(VARIANTS[vname][0]))
+            vlines, vrc = variant_verdict(r["premise"], short, j["ok"])
+            for ln in vlines:
+                print(ln)
+            if vrc == 2:
                 rc = rc or 2
-            elif r["offered"] != args.bursts or \
-                    r["sent"] != j["bursts"] * len(VARIANTS[vname][0]):
-                print("   SHORT OFFER: not every frame was sent -- the "
-                      "result is not a firmware result")
+            elif vrc == 1:
                 rc = 1
-            elif not j["ok"] or r["premise"] == "LOST":
-                print("   ORDER/COMPLETENESS FAILED vs spec 2%s"
-                      % (" (keep-alives lost too)" if r["premise"] == "LOST"
-                         else ""))
-                rc = 1
-            else:
-                print("   every burst arrived complete and in order")
     finally:
         tx.shutdown()
         if ser is not None:
@@ -584,6 +598,32 @@ def self_test():
     Link.fail = "the kvaser link reads down in sysfs, and this check needs it up"
     ok, ln = witness_link(Link)
     check(not ok and ln.startswith("VOID: kvaser link:"), "a link that does not come up: VOID")
+    # 2026-11-21, the reviewer's sweep: a variant's FAIL hidden by another
+    # variant's VOID line; a short offer read FAIL
+    fl, frc = variant_verdict("OK", False, False)
+    vl, vrc = variant_verdict("VOID", False, True)
+    both = vl + fl
+    check(frc == 1 and any(re.match(r"^\s*FAIL\b", x) for x in fl),
+          "a variant out of order -> a FAIL line script_judge reads, rc 1 -> %s" % fl)
+    check(any(re.match(r"^\s*VOID\b", x) for x in both)
+          and any(re.match(r"^\s*FAIL\b", x) for x in both),
+          "a VOID variant beside a failed one: the FAIL line is there, so "
+          "script_judge reads FAIL, not VOID")
+    check(variant_verdict("LOST", False, True)[1] == 1
+          and "keep-alives lost" in variant_verdict("LOST", False, True)[0][0]
+          and re.match(r"^\s*FAIL\b", variant_verdict("LOST", False, True)[0][0]),
+          "keep-alives lost: FAIL")
+    sl, src_ = variant_verdict("OK", True, True)
+    check(src_ == 1 and re.match(r"^\s*VOID\b", sl[0]) and "SHORT OFFER" in sl[0],
+          "a short offer -> a VOID line (not a firmware result), rc 1 -> %s" % sl)
+    check(variant_verdict("OK", False, True) == (
+        ["   every burst arrived complete and in order"], 0), "a pass: rc 0")
+    check(vrc == 2, "a VOID premise: rc 2")
+    import inspect
+    rsrc = inspect.getsource(run_bench)
+    check("vlines, vrc = variant_verdict(r[\"premise\"], short, j[\"ok\"])" in rsrc
+          and "ORDER/COMPLETENESS FAILED" not in rsrc,
+          "run_bench prints each variant's verdict through variant_verdict")
     print("\nbench_rx_order self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -630,6 +670,18 @@ def main():
 
 # --can-fail (script_can_fail.py): each edit must make --self-test fail
 MUTANTS = [
+    # 2026-11-21, the reviewer's sweep
+    ("verdict: the failure line without its leading FAIL (the old form)",
+     '        return (["   FAIL  ORDER/COMPLETENESS vs spec 2%s"',
+     '        return (["   ORDER/COMPLETENESS FAILED vs spec 2%s"'),
+    ("verdict: a short offer a FAIL again",
+     '        return (["   VOID: SHORT OFFER: not every frame was sent -- the "',
+     '        return (["   SHORT OFFER: not every frame was sent -- the "'),
+    ("verdict: a failed variant exits 0",
+     "                 % (\" (keep-alives lost too)\" if premise == \"LOST\" else \"\")], 1)",
+     "                 % (\" (keep-alives lost too)\" if premise == \"LOST\" else \"\")], 0)"),
+    ("verdict: lost keep-alives pass",
+     '    if not judged_ok or premise == "LOST":', "    if not judged_ok:"),
     ("echo_spans: the device stamps not unwrapped",
      "    dev = unwrap_us32([s for _b, s in rows])",
      "    dev = [s for _b, s in rows]"),
