@@ -1392,9 +1392,8 @@ would have mattered: a flash write with the instruction cache off.
 The image must leave enough headroom in its OTA slot that adding to the
 inhibitor never forces a choice between a feature and the ability to flash.
 
-BLE is not used by this device. Its removal is held until
-after the shared-code port, and until then the build keeps
-`CONFIG_BT_ENABLED=y`.
+BLE is not used by this device. Bluetooth is off: `CONFIG_BT_ENABLED` unset
+(user, 2026-10-17, held until after the port).
 
 **Any strip is followed by the full regression set** before it is kept: a clean
 boot, the health gate reaching its decision, the inhibitor bench, and an
@@ -1813,7 +1812,7 @@ parts:
    `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`; secure boot and flash
    encryption unset; `CONFIG_EFUSE_VIRTUAL` off; `CONFIG_TWAI_ISR_IN_IRAM`
    unset; watchdog settings as section 9.1 records; the console on the
-   USB-Serial/JTAG, as stock, with no secondary console; Bluetooth on until its held removal (9.4);
+   USB-Serial/JTAG, as stock, with no secondary console; Bluetooth off, `CONFIG_BT_ENABLED` unset (9.4);
    `CONFIG_FREERTOS_HZ` 1000, a 1 ms tick, which this spec's timings and their bench evidence
    assume (each project sets its own, shared/tools R27);
    log levels as shared/tools R28 sets them for every release build (ESP-IDF
