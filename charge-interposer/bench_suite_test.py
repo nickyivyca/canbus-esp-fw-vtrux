@@ -2587,6 +2587,24 @@ def test_mcp_reset_build():
     assert _v(mr[0].judge(_run(ok, 0, "mcp-reset"))) == [Verdict.PASS]
 
 
+def test_mutants_restorable():
+    """Every attribute a mutant replaces has its original saved in _ORIG,
+    and the saved value is the one in place, so the can-fail puts each one
+    back: test_can_fail_timeouts' two had none, and the can-fail stopped
+    with a KeyError at its first mutant, leaving every mutant after it
+    unrun (bench-suite-test-canfail, harness run harness_432ea45e)."""
+    missing = sorted({a for ms in MUTANTS.values() for a, _r, _w in ms
+                      if a not in _ORIG})
+    assert not missing, missing
+    stale = []
+    for ms in MUTANTS.values():
+        for a, _r, _w in ms:
+            mod, name = _target(a)
+            if getattr(mod, name) is not _ORIG[a]:
+                stale.append(a)
+    assert not stale, sorted(set(stale))
+
+
 TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_corrupt_pin_judge, test_c12_judge, test_switch_pending_judge,
          test_host_bridge_judge,
@@ -2603,7 +2621,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_canchg_mode_hooks, test_canx2_slcan_hooks,
          test_x2_test_images_identify, test_slcan_spi_identity,
          test_x2_test_image_flash_first, test_can_fail_timeouts,
-         test_mcp_reset_build]
+         test_mcp_reset_build, test_mutants_restorable]
 
 
 # ---- can-fail -----------------------------------------------------------
@@ -3101,6 +3119,8 @@ _ORIG["INTERPOSER_IDF"] = B.INTERPOSER_IDF
 _ORIG["BOOT_RESETS"] = B.BOOT_RESETS
 _ORIG["_md5"] = B._md5
 _ORIG["_sha256"] = B._sha256
+_ORIG["CAN_FAIL_TIMEOUTS"] = B.CAN_FAIL_TIMEOUTS
+_ORIG["CAN_FAIL_TIMEOUT_S"] = B.CAN_FAIL_TIMEOUT_S
 
 
 def _ct_unchecked():
@@ -3686,6 +3706,16 @@ MUTANTS = {
             ""),
          "parse_args's inner parse_known_args ends the probe (extras unchecked)")],
 }
+_ORIG["self.MUTANTS"] = MUTANTS
+_ORIG["self._ORIG"] = _ORIG
+MUTANTS["test_mutants_restorable"] = [
+    ("self.MUTANTS", {"test_x": [("NOT_SAVED", None, "x")]},
+     "a mutant whose attribute has no saved original"),
+    ("self._ORIG", {k: v for k, v in _ORIG.items()
+                    if k != "CAN_FAIL_TIMEOUTS"},
+     "CAN_FAIL_TIMEOUTS not saved (the 1ce954e9 can-fail KeyError)"),
+    ("self._ORIG", dict(_ORIG, CAN_FAIL_TIMEOUTS={}),
+     "a saved original that is not the value in place")]
 
 
 def main():
