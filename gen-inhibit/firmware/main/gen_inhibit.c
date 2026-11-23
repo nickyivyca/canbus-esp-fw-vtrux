@@ -38,7 +38,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"      /* esp_reset_reason(), spec 11 */
-#include "esp_app_desc.h"    /* the build's name, spec 10 0x7F3 */
+#include "esp_app_desc.h"    /* the image hash, spec 11 */
+#include "diag_build_id.h"   /* shared/diag D2: 0x7F3's build id, spec 10 */
 #include "driver/twai.h"
 
 #include "can.h"
@@ -90,79 +91,13 @@ _Static_assert(GEN_INHIBIT_PROBE_ID == GI_PROBE_ID, "id drift");
 #define GEN_INHIBIT_AUTOARM_OFFSET_US   500
 #endif
 
-/* Bump per meaningful firmware rev and add a row to the table in
+/*
+ * DIAG_FW_VERSION, the hand-bumped behaviour revision that 0x7F1 B1 and 0x7F3
+ * B4-B5 carried, is retired at diag schema 9 (stage (b) of the shared-code
+ * port, user 2026-11-23); those bytes are reserved and sent as 0. Revs 1 to 7
+ * and what each changed are in the rev table of
  * gen-inhibit/diag/wican_diag_schema.md.
- *
- * 2 is the first build in which a latched section 6 release clears
- * inhibit_live, which is visible on the wire as diag_flags byte3 0x27 -> 0x07.
- * A bench log that cannot tell rev 1 from rev 2 cannot tell whether it is
- * looking at the bug or the fix, and the 0x7F3 hash alone puts that behind a
- * lookup.
- *
- * 3 is the first build with the spec 7.1 key-state rules: transmission gated
- * on 0x592 B0 bit4, a key-on clearing every latch, and a section 7 abort
- * latching in place rather than dropping the mode to OFF. On the wire that is
- * diag_schema_ver 2 -> 3 and two new diag_flags bits. It matters for log
- * reading because a rev 2 device latches GI_ABORT_INVERTER_LOST at the end of
- * every drive and then goes silent, where a rev 3 device stays armed and says
- * so.
- *
- * 5 is the bus_on change (spec 11, 2026-10-06): diag_flags bit1 and the status
- * page's bus_on report the CONTROLLER running rather than the driver being
- * installed. No field moves, which is exactly why this rev exists -- a rev 4
- * log and a rev 5 log are byte-identical in layout, so a reader holding the
- * old meaning would read the bit correctly and interpret it wrongly.
- *
- * On the wire the bit reads 1 under both meanings in practice, since a
- * controller that is not running sends no pages; the difference shows on the
- * status page, where the old meaning read true through 42.1 s of bus-off on
- * 2026-10-06. (Corrected 2026-10-07: this comment previously said a reader
- * would take a bus-off device for one on the bus, which cannot happen in a CAN
- * log -- the witness counted 0 WiCAN diag frames across that bus-off.)
- *
- * 6 is spec 7's recency rule for trip 6 (user, 2026-10-08). Another rev with
- * no layout change, and for the same reason as 5: WHEN the error-frame rate
- * trip fires has changed, so diag_abort_reason 6 means something different
- * across the boundary and two captures of the same bus can disagree.
- *
- * A rev 5 device trips on any burst of 10 error frames within 10 s of each
- * other that has occurred since the last key-on, at every later live check,
- * which makes trip 6 a latch until key-on -- measured: a re-arm re-latched
- * 50 ms later with no new error frames, and a burst 32 s stale still blocked
- * going live. A rev 6 device additionally requires the burst's newest error
- * frame to be no more than 10 s before the check, so an expired burst causes
- * no trip and a re-arm can go live once the bus has been quiet for 10 s.
- *
- * Note 477171a reports 5 while implementing the burst test without the
- * recency test, so it is neither a rev 5 device nor a rev 6 one. It was never
- * flashed or released; the schema doc's rev table records it.
- *
- * The accompanying diag_schema_ver 5 -> 6 guards decoders; this guards the
- * human.
- *
- * A REV 7 DEVICE (the 2026-10-10 go-live batch, user) differs in three ways a
- * log reader has to know about, and none of them moves a field.
- *
- * It will not go live while its receive queue still holds a frame, and says
- * so as diag_arm_block 15 (spec 7 condition 9). A rev 7 log can therefore
- * show a gap between the gate's conditions being satisfied and the inhibit
- * going live where a rev 6 log shows none.
- *
- * It evaluates trip 6 at the moment the gate passes rather than after the
- * first answer (spec 7, "Checked before going live"). A rev 6 log of a re-arm
- * into a recent burst carries exactly one inhibit frame before the latch; a
- * rev 7 log of the same bus carries none. Reason 6 still means what it meant.
- *
- * A mode change wakes its worker (spec 3), so the up-to-50 ms window on an
- * arm from OFF and the up-to-100 ms window on a re-arm from OBSERVE, in which
- * earlier revs went live behind a queue that was already filling, are gone.
- * This is the change that makes the two above rarely visible in practice,
- * which is the reason all three are in one rev rather than three.
- *
- * diag_schema_ver goes 6 -> 7 with this rev, for arm_block 15. */
-#ifndef DIAG_FW_VERSION
-#define DIAG_FW_VERSION              7
-#endif
+ */
 /*
  * THE COMMIT ENTERS THE IMAGE ONCE, in esp_app_desc.version (spec 12.3 item 3,
  * shared/tools R4): ESP-IDF's default, the `git describe` it runs at configure.
@@ -2428,23 +2363,6 @@ static void elf_sha256_hex(char out[GI_ELF_SHA256_HEX_LEN + 1])
     out[GI_ELF_SHA256_HEX_LEN] = '\0';
 }
 
-/*
- * SPEC 10, "0x7F3 NAMES THE BINARY" (port step 0c; user, 2026-10-19 and
- * 2026-10-25): diag_build_id, the first four bytes of the same hash, packed as
- * the charge interposer's 0x7F7 build id -- hash byte 0 most significant. The
- * encoder sends the u32 little-endian, so B0..B3 on the wire are hash bytes
- * 3, 2, 1, 0, and the DBC's unsigned value printed as eight hex digits reads
- * as the hash's first four bytes in order. Read through a volatile pointer for
- * elf_sha256_hex()'s reason.
- */
-static uint32_t build_id(void)
-{
-    const volatile uint8_t *b = esp_app_get_description()->app_elf_sha256;
-
-    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
-           ((uint32_t)b[2] << 8)  |  (uint32_t)b[3];
-}
-
 static int hist_json(const gi_hist_t *h, const char *name, char *buf, int buflen)
 {
     int n = snprintf(buf, buflen,
@@ -2969,8 +2887,11 @@ void gen_inhibit_init(uint8_t bitrate, uint8_t silent)
 
     gi_config_t cfg;
     gi_config_defaults(&cfg);
-    cfg.fw_version = DIAG_FW_VERSION;
-    cfg.build_id   = build_id();     /* spec 10, 0x7F3 */
+    /*
+     * Spec 10, "0x7F3 names the binary": shared/diag D2's build id, the
+     * image hash's first four bytes, byte 0 most significant.
+     */
+    cfg.build_id   = diag_build_id();
     cfg.autoarm_configured = (GEN_INHIBIT_AUTOARM_MODE != GEN_INHIBIT_OFF);
 
     gi_init(&s_core, &cfg);

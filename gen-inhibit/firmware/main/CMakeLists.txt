@@ -4,10 +4,12 @@
 # on port 0, backed by vtrux/twai_port (spec 3.3, port step 1b; can.c
 # retired). Every software restart takes port 0 off the bus first through
 # vtrux/restart_guard (spec 3, port step 1c), which sets its own link-time
-# wrap. Those, vtrux/debug_logs and the board all come from main's
+# wrap. The diag frames are packed by vtrux/diag (shared/diag, stage (b))
+# from gi_diag_table.c, generated from gen-inhibit/diag/vtrux-wican-diag.dbc.
+# Those, vtrux/debug_logs and the board all come from main's
 # idf_component.yml; a managed dependency of main is one of its requirements
 # without being listed below.
-set(srcs "main.c" "gen_inhibit.c" "gen_inhibit_core.c" "gi_sched.c" "gi_wican.c")
+set(srcs "main.c" "gen_inhibit.c" "gen_inhibit_core.c" "gi_diag_table.c" "gi_sched.c" "gi_wican.c")
 # hal and soc: the restart step's register reads are twai_port's now (T12),
 # and the abort command with them (T8), which E3 confines to its one site;
 # they stay listed so this component's graph is as it was.

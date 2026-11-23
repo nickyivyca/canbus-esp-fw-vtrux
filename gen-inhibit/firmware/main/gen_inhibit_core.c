@@ -12,6 +12,7 @@
  * refactor would be the expensive part.
  */
 #include "gen_inhibit_core.h"
+#include "gi_diag_table.h"      /* generated from the DBC (shared/diag D3) */
 
 #include <string.h>
 
@@ -85,7 +86,6 @@ void gi_config_defaults(gi_config_t *c)
      */
     c->max_rx_errors = 20;
 
-    c->fw_version = 1;
     c->build_id   = 0;
     c->autoarm_configured = false;
 }
@@ -1230,11 +1230,86 @@ static void err_history_tick(gi_state_t *st, int64_t now, const gi_bus_t *bus)
 
 /* ------------------------------------------------------------------ diag -- */
 
+/*
+ * THE FRAMES ARE PACKED THROUGH shared/diag (port step 4, stage (b)): the
+ * layout is gi_diag_table.c, generated from gen-inhibit/diag/vtrux-wican-diag.dbc,
+ * and nothing here knows a byte position. Each builder fills one raw value
+ * per signal and hands them to diag_pack_message().
+ *
+ * NO VALUE CAN OVERFLOW ITS SIGNAL (spec 10). Every field goes in through one
+ * of the GI_PUT macros below, each of which is checked at compile time
+ * against the table's width for that signal:
+ *   GI_PUT       the expression's type fits: unsigned, and no wider than the
+ *                signal;
+ *   GI_PUT_CAP   the core caps it at the signal's maximum;
+ *   GI_PUT_ENUM  an enum whose last value, named at the call, fits;
+ *   GI_PUT_CONST a constant that fits.
+ * The packer's misfit report is the tests' (spec 12.3 item 2): the device does
+ * nothing with it, and a field that did not fit would go out as 0.
+ *
+ * Every gen-inhibit diag signal is unsigned, and each macro checks that too.
+ */
+#define GI_SIG(M, S)        gi_dbc_##M##__##S
+#define GI_SIG_BITS(M, S)   gi_dbc_##M##__##S##__BITS
+#define GI_SIG_MAX(M, S)    (GI_SIG_BITS(M, S) >= 63 ? INT64_MAX \
+                             : (int64_t)((UINT64_C(1) << GI_SIG_BITS(M, S)) - 1))
+#define GI_IS_UNSIGNED(e)   ((__typeof__(e))-1 > 0)
+#define GI_SIG_UNSIGNED(M, S) \
+    _Static_assert(!gi_dbc_##M##__##S##__SIGNED, #M "." #S " is signed: the GI_PUT macros take unsigned signals")
+
+#define GI_PUT(v, M, S, e) do {                                                \
+        GI_SIG_UNSIGNED(M, S);                                                 \
+        _Static_assert(GI_IS_UNSIGNED(e) && sizeof(e) * 8 <= GI_SIG_BITS(M, S),\
+                       #M "." #S ": the type of " #e " could exceed the signal "\
+                       "-- cap it (spec 10)");                                 \
+        (v)[GI_SIG(M, S)] = (int64_t)(e);                                      \
+    } while (0)
+
+#define GI_PUT_CAP(v, M, S, e) do {                                            \
+        GI_SIG_UNSIGNED(M, S);                                                 \
+        _Static_assert(GI_IS_UNSIGNED(e), #M "." #S ": " #e " is signed");     \
+        (v)[GI_SIG(M, S)] = (uint64_t)(e) > (uint64_t)GI_SIG_MAX(M, S)         \
+                          ? GI_SIG_MAX(M, S) : (int64_t)(e);                   \
+    } while (0)
+
+#define GI_PUT_ENUM(v, M, S, e, last) do {                                     \
+        GI_SIG_UNSIGNED(M, S);                                                 \
+        _Static_assert((last) >= 0 && (last) <= GI_SIG_MAX(M, S),              \
+                       #M "." #S ": " #last " exceeds the signal");            \
+        (v)[GI_SIG(M, S)] = (int64_t)(e);                                      \
+    } while (0)
+
+#define GI_PUT_CONST(v, M, S, c) do {                                          \
+        GI_SIG_UNSIGNED(M, S);                                                 \
+        _Static_assert((c) >= 0 && (c) <= GI_SIG_MAX(M, S),                    \
+                       #M "." #S ": " #c " exceeds the signal");               \
+        (v)[GI_SIG(M, S)] = (int64_t)(c);                                      \
+    } while (0)
+
+/* The table's ids are the ones the rest of the firmware names. */
+_Static_assert(gi_dbc_WICAN_Probe__ID         == GI_PROBE_ID,         "0x7F0 drift");
+_Static_assert(gi_dbc_WICAN_Diag_Status__ID   == GI_DIAG_ID_STATUS,   "0x7F1 drift");
+_Static_assert(gi_dbc_WICAN_Diag_Counters__ID == GI_DIAG_ID_COUNTERS, "0x7F2 drift");
+_Static_assert(gi_dbc_WICAN_Diag_Build__ID    == GI_DIAG_ID_BUILD,    "0x7F3 drift");
+_Static_assert(gi_dbc_WICAN_Diag_Status2__ID  == GI_DIAG_ID_STATUS2,  "0x7F8 drift");
+_Static_assert(gi_dbc_WICAN_Diag_Skips__ID    == GI_DIAG_ID_SKIPS,    "0x7F9 drift");
+/* The schema byte the frames carry is the DBC's DiagSchemaVersion. */
+_Static_assert(gi_dbc_SCHEMA_VERSION == GI_DIAG_SCHEMA_VER,
+               "GI_DIAG_SCHEMA_VER and the DBC's DiagSchemaVersion differ");
+
+/* Fills f's id, DLC and data from message `m` of the table. */
+static void pack_frame(int m, const int64_t *raw, gi_frame_t *f)
+{
+    const diag_message_t *msg = &gi_dbc_messages[m];
+    f->id = msg->id;
+    f->dlc = msg->dlc;
+    (void)diag_pack_message(msg, raw, f->data, NULL);   /* the report is the tests' */
+}
+
 static void build_diag(const gi_state_t *st, const gi_bus_t *bus, int64_t now,
                        uint8_t which, gi_frame_t *f)
 {
     memset(f, 0, sizeof(*f));
-    f->dlc = 8;
     f->kind = GI_TX_DIAG;
 
     if (which == 0)     /* STATUS -> 0x7F1 */
@@ -1276,36 +1351,42 @@ static void build_diag(const gi_state_t *st, const gi_bus_t *bus, int64_t now,
               */
              | (st->abort_latched            ? 0x80 : 0));
 
-        f->id = GI_DIAG_ID_STATUS;
-        f->data[0] = GI_DIAG_SCHEMA_VER;
-        f->data[1] = (uint8_t)st->cfg.fw_version;
-        f->data[2] = (uint8_t)st->mode;
-        f->data[3] = flags;
-        f->data[4] = (uint8_t)st->disable_code;
-        f->data[5] = st->last_shift_pos;
-        f->data[6] = (uint8_t)st->soc_raw;          /* soc_x100, LE */
-        f->data[7] = (uint8_t)(st->soc_raw >> 8);
+        int64_t v[gi_dbc_WICAN_Diag_Status__N] = { 0 };
+        GI_PUT_CONST(v, WICAN_Diag_Status, diag_schema_ver, GI_DIAG_SCHEMA_VER);
+        /* Schema 9: B1 was diag_fw_ver, retired in stage (b); sent as 0. */
+        GI_PUT_CONST(v, WICAN_Diag_Status, diag_reserved_b1, 0);
+        GI_PUT_ENUM(v, WICAN_Diag_Status, diag_mode, st->mode, GI_PASSIVE);
+        GI_PUT(v, WICAN_Diag_Status, diag_flags, flags);
+        GI_PUT_ENUM(v, WICAN_Diag_Status, diag_disable_reason, st->disable_code,
+                    GI_DISABLE_LOW_SOC);
+        GI_PUT(v, WICAN_Diag_Status, diag_shift_pos, st->last_shift_pos);
+        /* A 16-bit wire field held in a u32: the cap never acts. */
+        GI_PUT_CAP(v, WICAN_Diag_Status, diag_soc_x100, st->soc_raw);
+        pack_frame(gi_dbc_WICAN_Diag_Status, v, f);
     }
     else if (which == 3)    /* STATUS2 -> 0x7F8 (schema 4) */
     {
-        f->id = GI_DIAG_ID_STATUS2;
+        int64_t v[gi_dbc_WICAN_Diag_Status2__N] = { 0 };
         /*
          * Spec 10: the abort reason on the wire. diag_flags bit7 says THAT a
          * section 7 trip latched; with the trips now numbering eight, a log
          * has to say WHICH, and the PASSIVE dry run depends on it -- a dry run
          * that reports "something tripped" is not a dry run of anything.
          */
-        f->data[0] = (uint8_t)st->abort_reason;
+        GI_PUT_ENUM(v, WICAN_Diag_Status2, diag_abort_reason, st->abort_reason,
+                    GI_ABORT_SKIPS);
         /*
          * Spec 6.2's SoC-valid marker, so a log shows when SoC started
          * counting, plus the arm block so a reader can see WHY it was not
          * live rather than only that it was not.
          */
-        f->data[1] = (uint8_t)((st->soc_valid       ? 0x01 : 0)
-                             | (st->soc_since_valid ? 0x02 : 0)
-                             | (st->tx_pending      ? 0x04 : 0)
-                             | (st->emit_refused    ? 0x08 : 0));
-        f->data[2] = (uint8_t)st->arm_block;
+        const uint8_t flags2 = (uint8_t)((st->soc_valid       ? 0x01 : 0)
+                                       | (st->soc_since_valid ? 0x02 : 0)
+                                       | (st->tx_pending      ? 0x04 : 0)
+                                       | (st->emit_refused    ? 0x08 : 0));
+        GI_PUT(v, WICAN_Diag_Status2, diag_flags2, flags2);
+        GI_PUT_ENUM(v, WICAN_Diag_Status2, diag_arm_block, st->arm_block,
+                    GI_BLOCK_RX_NOT_DRAINED);
         /*
          * The would-transmit count (spec 3.1), as its OWN field rather than
          * tx_ok reinterpreted by mode. Spec 10 allowed either; a separate
@@ -1315,13 +1396,10 @@ static void build_diag(const gi_state_t *st, const gi_bus_t *bus, int64_t now,
          * that is a property worth being able to CHECK rather than one a
          * reader has to apply.
          */
-        f->data[3] = (uint8_t)st->would_tx;
-        f->data[4] = (uint8_t)(st->would_tx >> 8);
-        f->data[5] = (uint8_t)(st->would_tx >> 16);
-        f->data[6] = (uint8_t)(st->would_tx >> 24);
+        GI_PUT(v, WICAN_Diag_Status2, diag_would_tx, st->would_tx);
         /* Spec 5's hazard, saturating: any non-zero value is the point. */
-        f->data[7] = (uint8_t)(st->tx_queued_behind > 255 ? 255
-                                                          : st->tx_queued_behind);
+        GI_PUT_CAP(v, WICAN_Diag_Status2, diag_tx_queued_behind, st->tx_queued_behind);
+        pack_frame(gi_dbc_WICAN_Diag_Status2, v, f);
     }
     else if (which == 4)    /* SKIPS -> 0x7F9 (schema 5) */
     {
@@ -1335,41 +1413,28 @@ static void build_diag(const gi_state_t *st, const gi_bus_t *bus, int64_t now,
          * different things to a reader deciding whether the inverter ever saw
          * our frame, which a total would destroy.
          */
-        uint32_t w = st->skips_withdrawn;
-        uint32_t l = st->skips_late;
-        f->id = GI_DIAG_ID_SKIPS;
-        f->data[0] = (uint8_t)w;
-        f->data[1] = (uint8_t)(w >> 8);
-        f->data[2] = (uint8_t)(w >> 16);
-        f->data[3] = (uint8_t)(w >> 24);
-        f->data[4] = (uint8_t)l;
-        f->data[5] = (uint8_t)(l >> 8);
-        f->data[6] = (uint8_t)(l >> 16);
-        f->data[7] = (uint8_t)(l >> 24);
+        int64_t v[gi_dbc_WICAN_Diag_Skips__N] = { 0 };
+        GI_PUT(v, WICAN_Diag_Skips, diag_skips_withdrawn, st->skips_withdrawn);
+        GI_PUT(v, WICAN_Diag_Skips, diag_skips_late, st->skips_late);
+        pack_frame(gi_dbc_WICAN_Diag_Skips, v, f);
     }
     else if (which == 1)    /* COUNTERS -> 0x7F2 */
     {
-        uint32_t v = st->tx_ok;
-        f->id = GI_DIAG_ID_COUNTERS;
-        f->data[0] = (uint8_t)v;
-        f->data[1] = (uint8_t)(v >> 8);
-        f->data[2] = (uint8_t)(v >> 16);
-        f->data[3] = (uint8_t)(v >> 24);
-        f->data[4] = st->tx_fail       > 255 ? 255 : (uint8_t)st->tx_fail;
-        f->data[5] = st->ctr_steps_bad > 255 ? 255 : (uint8_t)st->ctr_steps_bad;
-        f->data[6] = st->rx_errors     > 255 ? 255 : (uint8_t)st->rx_errors;
+        int64_t v[gi_dbc_WICAN_Diag_Counters__N] = { 0 };
+        GI_PUT(v, WICAN_Diag_Counters, diag_tx_ok, st->tx_ok);
+        GI_PUT_CAP(v, WICAN_Diag_Counters, diag_tx_fail, st->tx_fail);
+        GI_PUT_CAP(v, WICAN_Diag_Counters, diag_ctr_bad, st->ctr_steps_bad);
+        GI_PUT_CAP(v, WICAN_Diag_Counters, diag_rx_errors, st->rx_errors);
+        pack_frame(gi_dbc_WICAN_Diag_Counters, v, f);
     }
     else                    /* BUILD -> 0x7F3 */
     {
-        uint32_t h = st->cfg.build_id;
-        f->id = GI_DIAG_ID_BUILD;
-        f->data[0] = (uint8_t)h;
-        f->data[1] = (uint8_t)(h >> 8);
-        f->data[2] = (uint8_t)(h >> 16);
-        f->data[3] = (uint8_t)(h >> 24);
-        f->data[4] = (uint8_t)(st->cfg.fw_version);
-        f->data[5] = (uint8_t)(st->cfg.fw_version >> 8);
-        f->data[6] = GI_DIAG_SCHEMA_VER;
+        int64_t v[gi_dbc_WICAN_Diag_Build__N] = { 0 };
+        GI_PUT(v, WICAN_Diag_Build, diag_build_id, st->cfg.build_id);
+        /* Schema 9: B4-B5 were diag_fw_ver16, retired in stage (b); sent as 0. */
+        GI_PUT_CONST(v, WICAN_Diag_Build, diag_reserved16, 0);
+        GI_PUT_CONST(v, WICAN_Diag_Build, diag_schema_ver_build, GI_DIAG_SCHEMA_VER);
+        pack_frame(gi_dbc_WICAN_Diag_Build, v, f);
     }
 }
 
@@ -2045,20 +2110,20 @@ static void interlock_monitor(gi_state_t *st, uint32_t id, uint8_t dlc,
 static void build_probe(const gi_state_t *st, int64_t t_rx, gi_frame_t *f)
 {
     memset(f, 0, sizeof(*f));
-    f->id = GI_PROBE_ID;
-    f->dlc = 8;
     f->kind = GI_TX_PROBE;
 
-    /* Echo the RX timestamp so a capture can be aligned without guessing. */
-    uint32_t lo = (uint32_t)t_rx;
-    f->data[0] = (uint8_t)(lo);
-    f->data[1] = (uint8_t)(lo >> 8);
-    f->data[2] = (uint8_t)(lo >> 16);
-    f->data[3] = (uint8_t)(lo >> 24);
-    f->data[4] = (uint8_t)(st->offset_us);
-    f->data[5] = (uint8_t)(st->offset_us >> 8);
-    f->data[6] = st->last_ctr;
-    f->data[7] = 0x5A;
+    /*
+     * Echo the RX timestamp so a capture can be aligned without guessing: its
+     * low 32 bits, by the DBC's definition of probe_rx_time_us.
+     */
+    const uint32_t lo = (uint32_t)t_rx;
+    int64_t v[gi_dbc_WICAN_Probe__N] = { 0 };
+    GI_PUT(v, WICAN_Probe, probe_rx_time_us, lo);
+    /* The mode request refuses an offset over 4000 us: the cap never acts. */
+    GI_PUT_CAP(v, WICAN_Probe, probe_offset_us, st->offset_us);
+    GI_PUT(v, WICAN_Probe, probe_vcm_ctr, st->last_ctr);
+    GI_PUT_CONST(v, WICAN_Probe, probe_marker, 0x5A);
+    pack_frame(gi_dbc_WICAN_Probe, v, f);
 
     f->have_due = true;
     f->due_us   = t_rx + (int64_t)st->offset_us;
