@@ -1130,6 +1130,98 @@ static esp_err_t upload_post_handler(httpd_req_t *req)
     return r;
 }
 
+/*
+ * SPEC W16: the multipart start of an upload, read within what was received.
+ *
+ * Both upload handlers found the start on their first chunk with
+ * memchr(start, '\n', 200), used unchecked, then scanned for "Type:" byte by
+ * byte with no bound, then memchr'd 200 bytes again: a malformed start read
+ * past the bytes received. A first recv can also be short of the whole start,
+ * since httpd_req_recv() returns what the socket holds.
+ *
+ * This reads into buf[0, cap) until it holds the first boundary line, the
+ * part's "Type:" header line and the blank line after it, the buffer is full
+ * or the body ends. The layout is stock's: the boundary line ends at the
+ * first '\n'; the header is the first "Type:" after it, and its line ends at
+ * the next '\n'; the blank line is the "\r\n" that follows; the data starts
+ * after that.
+ *
+ * MP_START_OK: *filled bytes are in buf, the part's data starts at
+ * buf + *data_off, and *trailer is stock's allowance for the closing boundary
+ * (the boundary line's length + 4). *timeouts counts receive timeouts in a
+ * row, as the OTA handler's loop does (SPEC W13); max_timeouts 0 retries
+ * timeouts for ever, as the car_data handler always has.
+ */
+typedef enum {
+    MP_START_OK = 0,
+    MP_START_MALFORMED,     /* reply 400, nothing written */
+    MP_START_RECV_FAILED,   /* reply 500 */
+    MP_START_STALLED,       /* max_timeouts in a row (SPEC W13) */
+} mp_start_t;
+
+static const char *mp_find(const char *from, const char *end, const char *pat, size_t n)
+{
+    for (const char *p = from; end - p >= (ptrdiff_t)n; p++)
+    {
+        if (memcmp(p, pat, n) == 0)
+        {
+            return p;
+        }
+    }
+    return NULL;
+}
+
+static mp_start_t multipart_start_read(httpd_req_t *req, char *buf, size_t cap,
+                                       int max_timeouts, int *timeouts,
+                                       size_t *filled, size_t *data_off,
+                                       size_t *trailer)
+{
+    const size_t body = req->content_len;
+    size_t have = 0;
+
+    for (;;)
+    {
+        /* Look for the start in the bytes received so far. */
+        const char *end = buf + have;
+        const char *nl1 = memchr(buf, '\n', have);
+        const char *type = nl1 ? mp_find(nl1, end, "Type:", 5) : NULL;
+        const char *nl2 = type ? memchr(type, '\n', end - type) : NULL;
+        if (nl2 && end - nl2 >= 3)
+        {
+            if (nl2[1] != '\r' || nl2[2] != '\n')
+            {
+                return MP_START_MALFORMED;  /* no blank line after the header */
+            }
+            *filled = have;
+            *data_off = (nl2 + 3) - buf;
+            *trailer = (nl1 + 1 - buf) + 4;
+            return MP_START_OK;
+        }
+
+        if (have >= cap || have >= body)
+        {
+            return MP_START_MALFORMED;      /* buffer full, or the body ended */
+        }
+
+        const size_t want = MIN(body - have, cap - have);
+        const int got = httpd_req_recv(req, buf + have, want);
+        if (got <= 0)
+        {
+            if (got == HTTPD_SOCK_ERR_TIMEOUT)
+            {
+                if (max_timeouts > 0 && ++*timeouts >= max_timeouts)
+                {
+                    return MP_START_STALLED;
+                }
+                continue;
+            }
+            return MP_START_RECV_FAILED;
+        }
+        *timeouts = 0;
+        have += got;
+    }
+}
+
 static esp_err_t upload_post_body(httpd_req_t *req, bool *succeeded)
 {
     char filepath[FILE_PATH_MAX];
@@ -1214,12 +1306,49 @@ static esp_err_t upload_post_body(httpd_req_t *req, bool *succeeded)
         return ESP_FAIL;
     }
 
-	char *ret = 0;
-	char *boundary_start = 0;
-	char *boundary_end = 0;
 	uint8_t count = 0;
 	char *scratch = buf;      /* fixed recv target; `buf` is the write offset */
 	int timeouts = 0;
+
+    /*
+     * SPEC W16: the multipart start is read within what was received, before
+     * the loop. A malformed one is refused with 400, nothing written, and is
+     * a failed exit under W12; a stall here is W13's, as in the loop.
+     */
+    size_t filled = 0, data_off = 0, trailer = 0;
+    switch (multipart_start_read(req, scratch, SCRATCH_BUFSIZE, OTA_RECV_MAX_TIMEOUTS,
+                                 &timeouts, &filled, &data_off, &trailer))
+    {
+    case MP_START_OK:
+        break;
+    case MP_START_MALFORMED:
+        ESP_LOGE(TAG, "OTA refused: malformed multipart start");
+        esp_ota_abort(update_handle);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "malformed multipart start");
+        return ESP_FAIL;
+    case MP_START_STALLED:
+        ESP_LOGE(TAG, "OTA aborted: %d consecutive recv timeouts", timeouts);
+        esp_ota_abort(update_handle);
+        httpd_resp_send_err(req, HTTPD_408_REQ_TIMEOUT, "upload stalled");
+        return ESP_FAIL;
+    default:
+        ESP_LOGE(TAG, "File reception failed!");
+        esp_ota_abort(update_handle);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to receive file");
+        return ESP_FAIL;
+    }
+    remaining -= (int)(trailer + data_off); /* stock's arithmetic: ignore boundary at end of file */
+    ESP_LOGI(TAG, "Real Remaining size : %d", remaining);
+    received = (int)(filled - data_off);    /* the data that came with the start */
+    total_size += received;
+    if (received && (ESP_OK != esp_ota_write(update_handle, (const void *)(scratch + data_off), received)))
+    {
+        ESP_LOGE(TAG, "File write failed!");
+        esp_ota_abort(update_handle);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to write file to storage");
+        return ESP_FAIL;
+    }
+    remaining -= received;
 
     while (remaining > 0)
     {
@@ -1281,34 +1410,12 @@ static esp_err_t upload_post_body(httpd_req_t *req, bool *succeeded)
          * completion and esp_ota_end() rejected the result, which is the good
          * outcome: a corrupt image refused rather than booted.
          *
-         * Only the first chunk carries a preamble, so only the first chunk
-         * moves `buf` off `scratch`.
+         * Only the first chunk carries a preamble. Since SPEC W16 the start
+         * is read before this loop, which writes from `scratch` itself; the
+         * reset stays as the guard.
          */
         buf = scratch;
 
-        if(boundary_start == 0)
-        {
-        	boundary_start = buf;
-        	ret = memchr(boundary_start, '\n', 200);
-        	boundary_end = ret + 1;
-        	remaining -= ((boundary_end - boundary_start) + 1 + 2 + 1);//ignore boundary at end of file
-        	//TODO: Better way to do this ??
-        	while(1)
-        	{
-        		if(((ret[0] == 'T') && (ret[1] == 'y') && (ret[2] == 'p') && (ret[3] == 'e') &&
-        		        			(ret[4] == ':')))
-        		{
-        			break;
-        		}
-        		ret++;
-        	}
-    		ret = memchr(ret, '\n', 200);
-    		buf = ret + 3;
-    		remaining -= (buf - boundary_start);
-    		ESP_LOGI(TAG, "Real Remaining size : %d", remaining);
-    		
-    		received -= (buf - boundary_start);
-        }
         total_size += received;
         /* Write buffer content to file on storage */
         if (received && (ESP_OK != esp_ota_write( update_handle, (const void *)buf, received)))
@@ -1427,11 +1534,35 @@ static esp_err_t upload_car_data_handler(httpd_req_t *req)
     /* Content length of the request gives
      * the size of the file being uploaded */
     int remaining = req->content_len;
-	char *ret = 0;
-	char *boundary_start = 0;
-	char *boundary_end = 0;
 	uint8_t count = 0;
 
+    /*
+     * SPEC W16: the multipart start is read within what was received, before
+     * the file is opened, so a malformed one is refused with 400 and the file
+     * is not touched. A receive failure here removes the file, as stock's
+     * first-chunk failure did. Timeouts are retried, as stock's loop does.
+     * `buf` itself never moves, so the loop's later reads stay inside it.
+     */
+    int timeouts = 0;
+    size_t filled = 0, data_off = 0, trailer = 0;
+    switch (multipart_start_read(req, buf, SCRATCH_BUFSIZE, 0, &timeouts,
+                                 &filled, &data_off, &trailer))
+    {
+    case MP_START_OK:
+        break;
+    case MP_START_MALFORMED:
+        ESP_LOGE(TAG, "Upload refused: malformed multipart start");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "malformed multipart start");
+        return ESP_FAIL;
+    default:
+        ESP_LOGE(TAG, "File reception failed!");
+        unlink(filepath);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to receive file");
+        return ESP_FAIL;
+    }
+    remaining -= (int)(trailer + data_off); /* stock's arithmetic: ignore boundary at end of file */
+    ESP_LOGI(TAG, "Real Remaining size : %d", remaining);
+    received = (int)(filled - data_off);    /* the data that came with the start */
 
 	FILE *fd = fopen(filepath, "w");
     if (fd == NULL)
@@ -1440,6 +1571,16 @@ static esp_err_t upload_car_data_handler(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to create file");
         return ESP_FAIL;
     }
+    total_size += received;
+    if (received > 0 && fwrite(buf + data_off, 1, received, fd) != received)
+    {
+        ESP_LOGE(TAG, "File write failed!");
+        fclose(fd);
+        unlink(filepath);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to write file to storage");
+        return ESP_FAIL;
+    }
+    remaining -= received;
 	// remaining
     while (remaining > 0)
     {
@@ -1461,29 +1602,6 @@ static esp_err_t upload_car_data_handler(httpd_req_t *req)
             return ESP_FAIL;
         }
 
-        if(boundary_start == 0)
-        {
-        	boundary_start = buf;
-        	ret = memchr(boundary_start, '\n', 200);
-        	boundary_end = ret + 1;
-        	remaining -= ((boundary_end - boundary_start) + 1 + 2 + 1);//ignore boundary at end of file
-        	//TODO: Better way to do this ??
-        	while(1)
-        	{
-        		if(((ret[0] == 'T') && (ret[1] == 'y') && (ret[2] == 'p') && (ret[3] == 'e') &&
-        		        			(ret[4] == ':')))
-        		{
-        			break;
-        		}
-        		ret++;
-        	}
-    		ret = memchr(ret, '\n', 200);
-    		buf = ret + 3;
-    		remaining -= (buf - boundary_start);
-    		ESP_LOGI(TAG, "Real Remaining size : %d", remaining);
-    		
-    		received -= (buf - boundary_start);
-        }
         total_size += received;
         /* Write buffer content to file on storage */
         if (received > 0)
