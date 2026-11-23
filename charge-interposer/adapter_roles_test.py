@@ -724,9 +724,9 @@ OPENERS = [
     ("bench_drivers/bench_charger_witness.py", "open_gs_usb", "canchg"),
     ("bench_drivers/bench_topology.py", "open_gs_usb", "canchg"),
     ("bench_drivers/bench_topology.py", "<module>", "pcanfd"),
-    ("bench_drivers/bench_rate_feasibility.py", "open_gs_usb", "canchg"),
-    ("bench_drivers/bench_rate_feasibility.py", "<module>", "pcanfd"),
-    ("bench_drivers/bench_rate_feasibility.py", "open_witness", "kvaser"),
+    # bench_rate_feasibility's three (open_gs_usb canchg, its PCAN opener
+    # pcanfd, open_witness kvaser) went with it on 2026-11-23 (the reviewer's
+    # pace ruling: retired with bench_pacer)
     ("bench_drivers/bench_hold12.py", "proc_identifier", "pcanfd"),
     ("bench_drivers/bench_powerup_round.py", "__init__", "pcanfd"),
     ("bench_drivers/bench_vport.py", "_open_witness_reader", "pcanfd"),
@@ -750,7 +750,7 @@ REPORT_READERS = [
     ("diag_cadence.py", "start"),
     ("bench_drivers/bench_usb_host.py", "open_pcan"),       # Rx, and rx_proc's ProcReader
     ("bench_drivers/bench_powerup_round.py", "__init__"),   # Witness
-    ("bench_drivers/bench_rate_feasibility.py", "<module>"),
+    # bench_rate_feasibility's PCAN opener went with it on 2026-11-23
     ("bench_drivers/keepalive_probe.py", "open_all"),
     ("bench_drivers/reset_check.py", "open_all"),
     # the reviewer's ruling (4), 2026-11-20, after run 40e6

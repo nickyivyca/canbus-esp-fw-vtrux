@@ -178,6 +178,22 @@ def self_test():
     Link.fail, Link.calls = None, []
     for ok, what in reader_death_checks(Link):
         check(ok, what)
+    # 2026-11-23: the Innomaker by bench_charger_witness's opener (with
+    # bench_rate_feasibility retired), and the reviewer's sweep ruling on
+    # premise failures: the port or the Innomaker not opening is a VOID line
+    import inspect
+    pl = premise_line("the Innomaker (role canchg)", OSError("no device"))
+    check(pl == "VOID: the Innomaker (role canchg) did not open (OSError: no device): "
+          "no phase run", "premise_line: a VOID line -> %s" % pl)
+    src = inspect.getsource(run_bench)
+    i_hp = src.find("        hp = U.HostPort(")
+    i_gs = src.find("        gs = bcw.open_gs_usb()\n    except Exception as e:")
+    check(0 < i_hp < i_gs and src.count("log(premise_line(") == 2
+          and src.find("return 3", i_hp) < i_gs
+          and src.find("hp.close()", i_gs) < src.find("return 3", i_gs),
+          "run_bench: the X2's port and the Innomaker (bench_charger_witness's "
+          "opener) each a VOID line and exit 3 when they do not open, the port "
+          "closed after an Innomaker that did not")
     print("\nbench_switch_pending self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -322,6 +338,15 @@ def phase(name, hp, ack, log, gs):
     return un, d
 
 
+def premise_line(what, e):
+    """A premise not met (the board's port or the Innomaker that did not
+    open) as a VOID line in the out file, which switch_pending_judge reads
+    as VOID, exit 3 (2026-11-23, the reviewer's sweep ruling: a premise
+    failure prints a VOID line rather than a bare non-zero exit; before, a
+    traceback and no out file)."""
+    return "VOID: %s did not open (%s: %s): no phase run" % (what, type(e).__name__, e)
+
+
 def run_bench(a):
     import bench_usb_host as U
     out = open(a.out, "w", encoding="utf-8")
@@ -334,11 +359,24 @@ def run_bench(a):
         "2 s fallback; NOACK (the Kvaser's link DOWN, PCAN passive) then ACK "
         "(the Kvaser's link UP)" % (datetime.datetime.now().isoformat(), H.FILLER,
                                     RATE, ON_S))
-    import bench_rate_feasibility as RF
-    hp = U.HostPort(a.port, os.path.splitext(a.out)[0] + "_serial.txt")
+    import bench_charger_witness as bcw
+    try:
+        hp = U.HostPort(a.port, os.path.splitext(a.out)[0] + "_serial.txt")
+    except Exception as e:                                 # noqa: BLE001
+        log(premise_line("the X2's port %s" % a.port, e))
+        out.close()
+        return 3
     # one Innomaker handle for both phases: an in-process gs_usb reopen
-    # fails on this host (the first run's ACK phase died on it)
-    gs = RF.open_gs_usb()
+    # fails on this host (the first run's ACK phase died on it). Role canchg,
+    # bench_charger_witness's opener (bench_rate_feasibility's, the same,
+    # until 2026-11-23)
+    try:
+        gs = bcw.open_gs_usb()
+    except Exception as e:                                 # noqa: BLE001
+        log(premise_line("the Innomaker (role canchg)", e))
+        hp.close()
+        out.close()
+        return 3
     un = None
     try:
         un = run_phases(hp, gs, log)
@@ -389,6 +427,19 @@ MUTANTS = [
     ("reader death: the phases go on after it",
      "        if u is None:\n            log(\"phase %s not judged: its PCAN reader died\" % name)\n"
      "            return None\n", ""),
+    # 2026-11-23, the reviewer's sweep ruling on premise failures
+    ("premise: the X2's port not opening a traceback again",
+     "    try:\n        hp = U.HostPort(a.port, os.path.splitext(a.out)[0] + \"_serial.txt\")\n"
+     "    except Exception as e:                                 # noqa: BLE001\n",
+     "    hp = U.HostPort(a.port, os.path.splitext(a.out)[0] + \"_serial.txt\")\n"
+     "    if False:\n"),
+    ("premise: the Innomaker not opening a traceback again",
+     "    try:\n        gs = bcw.open_gs_usb()\n"
+     "    except Exception as e:                                 # noqa: BLE001\n",
+     "    gs = bcw.open_gs_usb()\n    if False:\n"),
+    ("premise: the port left open after the Innomaker's failure",
+     "        log(premise_line(\"the Innomaker (role canchg)\", e))\n        hp.close()\n",
+     "        log(premise_line(\"the Innomaker (role canchg)\", e))\n"),
 ]
 
 

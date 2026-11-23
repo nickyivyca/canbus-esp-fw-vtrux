@@ -668,6 +668,53 @@ def sender_drain_self_test(check):
                 check(s.get("reader") is None and s["sent"] > 0 and got == [{"auto_reset": True}],
                       "the PCAN sender (pcanfd_report, auto_reset) with a state row and a "
                       "frame: no VOID line, %d sent" % s["sent"])
+                g = s["sender_gaps"]
+                check(0.3 <= s["t1"] - s["t0"] < 0.31 and g.get("n") == s["sent"] - 1
+                      and abs(g.get("median_ms", 0.0) - NOMINAL_GAP_MS) <= 0.05 * NOMINAL_GAP_MS
+                      and s["errs"] == 0 and s["first_err"] is None,
+                      "the PCAN sender on bench_offer for 0.3 s: its window %.4f s, "
+                      "its sender gaps (%s, median %.3f ms) the offer's"
+                      % (s["t1"] - s["t0"], g.get("n"), g.get("median_ms", 0.0)))
+        # a sender running late (each send 2 ms, at 0.5 ms a frame): the
+        # offer still ends at its time, so t1, the judged window's end,
+        # does not move out to the schedule's last frame (the reviewer's
+        # pace ruling, 2026-11-23)
+
+        def late_opener(*a, **k):
+            b = reader_death.report_bus([R["frame"]])
+
+            def send(*a2, **k2):
+                t = time.perf_counter() + 0.002
+                while time.perf_counter() < t:
+                    pass
+            b.send = send
+            buses.append(b)
+            return b
+        adapter_roles.pcanfd_report = late_opener
+        go, done = Go(), threading.Event()
+        p = os.path.join(d, "sent_late.json")
+        proc_identifier(go, done, p, 0.3)
+        s = json.load(open(p))
+        check(s["t1"] - s["t0"] < 0.306 and s["sent"] < 200,
+              "a PCAN sender running late (2 ms a send): its window ends at the "
+              "offer's time, %.4f s, %d sent of the schedule's 600"
+              % (s["t1"] - s["t0"], s["sent"]))
+        import inspect
+        for f in (proc_identifier, proc_identifier_kvaser):
+            fs = inspect.getsource(f)
+            check("off = bench_offer.offer(send, ID_RATE, seconds, seq_writer=seq_writer)"
+                  "\n    t1 = time.perf_counter()" in fs
+                  and "sender_gaps=gap_stats(off.sender_gaps_ms, NOMINAL_GAP_MS)" in fs
+                  and 0 < fs.find("    bench_offer.rp()") < fs.find("    go.wait()"),
+                  "%s: canbench loaded before go; the identifier offered by "
+                  "bench_offer, t1 at its end, its sender gaps the offer's" % f.__name__)
+        fs = inspect.getsource(proc_filler)
+        check("bus = bcw.open_gs_usb()" in fs and
+              "bench_offer.offer(send, FILLER_RATE, seconds, burst=FILLER_BURST)" in fs
+              and 0 < fs.find("    bench_offer.rp()") < fs.find("    ready.set()"),
+              "proc_filler: the Innomaker by bench_charger_witness's opener, canbench "
+              "loaded before ready, the filler offered by bench_offer in bursts of %d"
+              % FILLER_BURST)
     finally:
         adapter_roles.pcanfd_report = saved
         scratch_dir.remove(d)
@@ -863,6 +910,18 @@ def self_test():
           and "witness_void=wv" in src and "sender_void(" in src,
           "run_bench: the Kvaser's process sends, the PCAN (normal) witnesses in its own "
           "process, and both voids reach the verdict")
+    # 2026-11-23, the reviewer's sweep ruling on premise failures
+    pl = premise_line("the X2's port COM9 did not open (OSError: no port)")
+    check(pl.startswith("VOID: the X2's port COM9") and pl.endswith("not run"),
+          "premise_line: a VOID line -> %s" % pl)
+    i_hp = src.find("        hp = U.HostPort(a.port, base + \"_serial.txt\")\n"
+                    "    except Exception as e:")
+    i_fr = src.find("    if not fready.wait(30):")
+    check(i_hp > 0 and i_fr > 0 and src.count("log(premise_line(") == 2
+          and src.find("log(premise_line(", i_fr) > i_fr
+          and src.find("return 1", i_fr) < src.find("time.sleep(1.0)", i_fr),
+          "run_bench: the X2's port not opening, and the filler's process not ready "
+          "(its Innomaker), each a VOID line and not run")
 
     # the charge-interposer reviewer's Q2 (2026-11-20): the Kvaser sender
     # reads its socket after every send, a refused one too, and takes no
@@ -970,10 +1029,13 @@ def proc_identifier(go, done, out_path, seconds):
     the caller's run is VOID (bench_switch_loss). Since 2026-11-23 (the
     reviewer's reader_guard ruling) the drain is can-tools'
     canbench.reader_guard.read_loop (that guard and screen), drain=False:
-    it stops at the first read after stop, as before."""
+    it stops at the first read after stop, as before. The offer is
+    bench_offer's (can-tools' pace, ended by time at t0 + seconds, since
+    2026-11-23: the reviewer's pace ruling), so t1, the judged run window's
+    end, is where it was with bench_pacer however late the sends run."""
     import can
     import adapter_roles
-    import bench_pacer
+    import bench_offer
     import reader_death
     prio = above_normal()
     # role pcanfd (shared/bench SPEC section 8, 2026-11-18)
@@ -995,15 +1057,16 @@ def proc_identifier(go, done, out_path, seconds):
         RG.read_loop(bus, death, stop, lambda m: None, read_s=0.05, drain=False)
     th = threading.Thread(target=drain, daemon=True)
     th.start()
+    bench_offer.rp()                 # canbench loaded before go, not in the offer
     go.wait()
     t0 = time.perf_counter()
-    off = bench_pacer.offer(send, ID_RATE, seconds, seq_writer=seq_writer)
+    off = bench_offer.offer(send, ID_RATE, seconds, seq_writer=seq_writer)
     t1 = time.perf_counter()
     stop.set()
     th.join(timeout=1.0)
     json.dump(dict(sent=off.sent, errs=off.errs, first_err=off.first_err,
                    t0=t0, t1=t1, max_lag_ms=off.max_lag_ms, priority=prio,
-                   sender_gaps=gap_stats(off._sender_gaps_ms, NOMINAL_GAP_MS),
+                   sender_gaps=gap_stats(off.sender_gaps_ms, NOMINAL_GAP_MS),
                    reader=death.void_line() if death.error else None),
               open(out_path, "w"))
     bus.shutdown()
@@ -1047,9 +1110,10 @@ def proc_identifier_kvaser(go, done, out_path, seconds):
     (ENOBUFS, or an echo later than 100 ms) stops the offer and is written
     to the summary: the run is VOID. M4, the basis (2026-11-13 run 2): 60 s
     at 2,000 fps from this host, 120,001 of 120,001 echoed and witnessed,
-    echo after the send call 0.865 ms median, 1.55 ms max."""
+    echo after the send call 0.865 ms median, 1.55 ms max. The offer is
+    bench_offer's, ended by time (2026-11-23, the reviewer's pace ruling)."""
     import can
-    import bench_pacer
+    import bench_offer
     prio = above_normal()
     # no error frames: nothing here reads them (the EchoWatch has no on_rx),
     # and with nothing acknowledging they fill the receive queue, where an
@@ -1064,9 +1128,10 @@ def proc_identifier_kvaser(go, done, out_path, seconds):
 
     def send():
         kvaser_send(watch, msg, stall)
+    bench_offer.rp()                 # canbench loaded before go, not in the offer
     go.wait()
     t0 = time.perf_counter()
-    off = bench_pacer.offer(send, ID_RATE, seconds, seq_writer=seq_writer)
+    off = bench_offer.offer(send, ID_RATE, seconds, seq_writer=seq_writer)
     t1 = time.perf_counter()
     if not stall:
         try:
@@ -1079,10 +1144,18 @@ def proc_identifier_kvaser(go, done, out_path, seconds):
                    max_lag_ms=off.max_lag_ms, priority=prio,
                    stall=str(st) if st else None,
                    stall_epoch=kvaser_link.epoch_of(st.t) if st else None,
-                   sender_gaps=gap_stats(off._sender_gaps_ms, NOMINAL_GAP_MS)),
+                   sender_gaps=gap_stats(off.sender_gaps_ms, NOMINAL_GAP_MS)),
               open(out_path, "w"))
     bus.shutdown()
     done.set()
+
+
+def premise_line(why):
+    """A premise of the run not met (the X2's port, or the filler's process
+    with its Innomaker, not ready) as a VOID line, which script_judge reads
+    (2026-11-23, the reviewer's sweep ruling: a premise failure prints a
+    VOID line rather than a bare non-zero exit; before, a traceback)."""
+    return "VOID: %s: spec 12 entry 2 not run" % why
 
 
 def sender_void(sent, t0, t1, journal=None):
@@ -1103,12 +1176,14 @@ def sender_void(sent, t0, t1, journal=None):
 def proc_filler(fgo, ready, rows_path, seconds):
     """The Innomaker sends the filler and logs everything it receives on
     the same handle: its echoes (the filler's wire witness) and the
-    forwarded identifier."""
-    import bench_pacer
-    import bench_rate_feasibility as RF
+    forwarded identifier. The Innomaker is opened by bench_charger_witness's
+    open_gs_usb (role canchg; bench_rate_feasibility's, the same opener,
+    until 2026-11-23), and the offer is bench_offer's, ended by time."""
+    import bench_charger_witness as bcw
+    import bench_offer
     import can
     prio = above_normal()
-    bus = RF.open_gs_usb()
+    bus = bcw.open_gs_usb()
     rows = []
     lock = threading.Lock()
     halt = threading.Event()
@@ -1130,9 +1205,12 @@ def proc_filler(fgo, ready, rows_path, seconds):
 
     def send():
         bus.send(msg, timeout=0.05)
+    # canbench loaded before ready (its first load takes about 0.2 s), so the
+    # filler starts at fgo, as with bench_pacer
+    bench_offer.rp()
     ready.set()
     fgo.wait()
-    off = bench_pacer.offer(send, FILLER_RATE, seconds, burst=FILLER_BURST)
+    off = bench_offer.offer(send, FILLER_RATE, seconds, burst=FILLER_BURST)
     time.sleep(0.5)
     halt.set()
     th.join(timeout=2.0)
@@ -1230,7 +1308,14 @@ def run_bench(a):
         % (datetime.datetime.now().isoformat(),
            "FLIGHT (truck)" if a.flight else "WITNESS", ID, ID_RATE, PRE_S,
            FILLER, FILLER_BURST, FILLER_RATE, LEAD_S, ID_SECONDS))
-    hp = U.HostPort(a.port, base + "_serial.txt")
+    try:
+        hp = U.HostPort(a.port, base + "_serial.txt")
+    except Exception as e:                                 # noqa: BLE001
+        log(premise_line("the X2's port %s did not open (%s: %s)"
+                         % (a.port, type(e).__name__, e)))
+        log("12 entry 2 (%s): VOID" % ("flight image" if a.flight else "witness build"))
+        out.close()
+        return 1
     if not a.flight:
         port = {"hp": hp, "i": 0}
 
@@ -1307,7 +1392,20 @@ def run_bench(a):
         PRE_S + LEAD_S + ID_SECONDS))
     pf.start()
     pv.start()
-    fready.wait(30)
+    if not fready.wait(30):
+        # the filler's process never reached its offer: its Innomaker did
+        # not open, or it died starting (a premise, not a result)
+        log(premise_line("the filler's process was not ready within 30 s (its "
+                         "Innomaker, role canchg, did not open, or it died "
+                         "starting; exit code %s)" % pf.exitcode))
+        for p in (pf, pv):
+            p.terminate()
+            p.join(10)
+        pcr.finish()
+        hp.close()
+        log("12 entry 2 (%s): VOID" % ("flight image" if a.flight else "witness build"))
+        out.close()
+        return 1
     time.sleep(1.0)
     if not a.flight:
         # W before the identifier (reviewer, 2026-10-16; diag1's placement):
@@ -1442,6 +1540,44 @@ MUTANTS = [
      "            stall.append(st)\n",
      "        try:\n            watch.poll(0.0)\n        except kvaser_link.Stall as st:\n"
      "            pass\n"),
+    # 2026-11-23, the reviewer's pace ruling: bench_offer (can-tools' pace,
+    # ended by time) in place of bench_pacer
+    ("pace: the identifier's offer by schedule alone (until_s), not by time",
+     "    go.wait()\n    t0 = time.perf_counter()\n"
+     "    off = bench_offer.offer(send, ID_RATE, seconds, seq_writer=seq_writer)\n"
+     "    t1 = time.perf_counter()\n    stop.set()\n",
+     "    go.wait()\n    t0 = time.perf_counter()\n"
+     "    off = bench_offer.Offered(bench_offer.rp().pace(\n"
+     "        ((k / ID_RATE, k) for k in range(int(ID_RATE * seconds))),\n"
+     "        lambda k: (seq_writer(k), send()), until_s=seconds),\n"
+     "        int(ID_RATE * seconds), 0, None, [], ID_RATE, 1, seconds)\n"
+     "    t1 = time.perf_counter()\n    stop.set()\n"),
+    ("pace: the PCAN sender's gaps not the offer's",
+     "                   sender_gaps=gap_stats(off.sender_gaps_ms, NOMINAL_GAP_MS),\n"
+     "                   reader=",
+     "                   sender_gaps={},\n                   reader="),
+    ("pace: the Kvaser sender's gaps not recorded",
+     "                   sender_gaps=gap_stats(off.sender_gaps_ms, NOMINAL_GAP_MS)),",
+     "                   sender_gaps={}),"),
+    ("pace: the filler offered one frame at a time",
+     "    off = bench_offer.offer(send, FILLER_RATE, seconds, burst=FILLER_BURST)",
+     "    off = bench_offer.offer(send, FILLER_RATE, seconds)"),
+    ("pace: canbench loaded after fgo, the filler starting late",
+     "    bench_offer.rp()\n    ready.set()\n    fgo.wait()\n",
+     "    ready.set()\n    fgo.wait()\n    bench_offer.rp()\n"),
+    ("pace: canbench loaded after go in the Kvaser sender",
+     "        kvaser_send(watch, msg, stall)\n"
+     "    bench_offer.rp()                 # canbench loaded before go, not in the offer\n"
+     "    go.wait()\n",
+     "        kvaser_send(watch, msg, stall)\n    go.wait()\n"),
+    # 2026-11-23, the reviewer's sweep ruling on premise failures
+    ("premise: the X2's port not opening a traceback again",
+     "    try:\n        hp = U.HostPort(a.port, base + \"_serial.txt\")\n"
+     "    except Exception as e:                                 # noqa: BLE001\n",
+     "    hp = U.HostPort(a.port, base + \"_serial.txt\")\n    if False:\n"),
+    ("premise: the filler's process not ready, the run goes on",
+     "    if not fready.wait(30):\n        # the filler's process never reached its offer",
+     "    if fready.wait(30) and False:\n        # the filler's process never reached its offer"),
 ]
 
 

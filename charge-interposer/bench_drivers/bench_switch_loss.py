@@ -342,6 +342,14 @@ def _synth(lost_at_normal=(), lost_at_listen=(), lost_bg=(), first_not=()):
     return veh, chg, serial, starts, stops, phases, dumps
 
 
+def premise_line(why):
+    """A premise of the run not met (the X2's port, or the filler's process
+    with its Innomaker, not ready) as a VOID line, exit 3 (2026-11-23, the
+    reviewer's sweep ruling: a premise failure prints a VOID line rather
+    than a bare non-zero exit; before, a traceback)."""
+    return "VOID: %s: the switch-loss run not run" % why
+
+
 def sender_void(sent):
     """The PCAN sender's summary (bench_hold12.proc_identifier) -> the VOID
     line of its drain when that died or read a row reporting frames lost
@@ -447,6 +455,45 @@ def self_test():
     check("    sv = sender_void(sent)\n    if sv:\n        rc, verdict = 3, verdict + [sv]\n"
           in src,
           "the run: a sender drain VOID line makes the run VOID (rc 3)")
+    # 2026-11-23, the reviewer's pace ruling: each on window ended by time
+    # (bench_offer over can-tools' pace), so a cycle's stop stays at its
+    # start + on_s when the sends run late
+    for cost, what in ((0.0, "on time"), (0.002, "late, 2 ms a send")):
+        sent, seqs = [0], []
+
+        def send():
+            t = time.perf_counter() + cost
+            while time.perf_counter() < t:
+                pass
+            sent[0] += 1
+        starts, stops, c0, c1 = filler_cycles(send, seqs.append, 2, 0.1, 0.05, 0.1)
+        spans = [b - a for a, b in zip(starts, stops)] + [c1 - c0]
+        check(len(starts) == len(stops) == 2 and all(0.1 <= x < 0.13 for x in spans)
+              and all(starts[i + 1] - stops[i] >= 0.05 for i in range(1))
+              and stops[-1] + 0.05 <= c0,
+              "filler_cycles, %s: each on window and the control end at their "
+              "time (%s s), the off gaps kept" % (what, ["%.3f" % x for x in spans]))
+        check(sent[0] % H.FILLER_BURST == 0 and len(seqs) == sent[0]
+              and seqs.count(0) == 3 and (cost or sent[0] == 3 * 104),
+              "... in whole bursts of %d, seq_writer called before each send (%d "
+              "frames)" % (H.FILLER_BURST, sent[0]))
+    fs = inspect.getsource(proc_filler_sched)
+    check("bus = bcw.open_gs_usb()" in fs
+          and "filler_cycles(send, seq_writer, cycles, on_s, off_s," in fs
+          and 0 < fs.find("    bench_offer.rp()") < fs.find("    ready.set()"),
+          "proc_filler_sched: the Innomaker by bench_charger_witness's opener, "
+          "canbench loaded before ready, the schedule filler_cycles'")
+    # 2026-11-23, the reviewer's sweep ruling on premise failures
+    pl = premise_line("the X2's port COM9 did not open (OSError: no port)")
+    check(pl.startswith("VOID: the X2's port COM9"), "premise_line: a VOID line -> %s" % pl)
+    i_hp = src.find("        hp = U.HostPort(a.port, base + \"_serial.txt\")\n"
+                    "    except Exception as e:")
+    i_fr = src.find("    if not fready.wait(30):")
+    check(i_hp > 0 and i_fr > 0 and src.count("log(premise_line(") == 2
+          and src.find("log(premise_line(", i_fr) > i_fr
+          and src.find("return 3", i_fr) < src.find("time.sleep(1.0)", i_fr),
+          "run_bench: the X2's port not opening, and the filler's process not ready "
+          "(its Innomaker), each a VOID line, exit 3, not run")
     print("\nbench_switch_loss self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -454,13 +501,43 @@ def self_test():
 
 # --- the bench ------------------------------------------------------------------
 
+def filler_cycles(send, seq_writer, cycles, on_s, off_s, control_s):
+    """The filler's schedule: `cycles` times on for on_s (bursts of 8 at
+    1,000 fps), off for off_s, then on for control_s -> (starts, stops, c0,
+    c1), host perf times, which analyse() takes as each switch's start and
+    stop. Each on window is bench_offer's (can-tools' pace, since
+    2026-11-23: the reviewer's pace ruling), ended by time, so a cycle's
+    stop is at its start + on_s however late the sends run, as with
+    bench_pacer, never after every frame of its schedule. canbench is
+    loaded first: its first load in a process takes about 0.2 s, which
+    between a start and its offer would move the first switch's frames 0.2 s
+    after the start recorded for them."""
+    import bench_offer
+    bench_offer.rp()
+    starts, stops = [], []
+    for _c in range(cycles):
+        starts.append(time.perf_counter())
+        bench_offer.offer(send, H.FILLER_RATE, on_s, burst=H.FILLER_BURST,
+                          seq_writer=seq_writer)
+        stops.append(time.perf_counter())
+        time.sleep(off_s)
+    c0 = time.perf_counter()
+    bench_offer.offer(send, H.FILLER_RATE, control_s, burst=H.FILLER_BURST,
+                      seq_writer=seq_writer)
+    c1 = time.perf_counter()
+    return starts, stops, c0, c1
+
+
 def proc_filler_sched(fgo, ready, rows_path, cycles, on_s, off_s, control_s,
                       fstop=None):
-    import bench_pacer
-    import bench_rate_feasibility as RF
+    """The Innomaker (bench_charger_witness's open_gs_usb, role canchg;
+    bench_rate_feasibility's, the same opener, until 2026-11-23) sends the
+    filler on filler_cycles' schedule and logs what it receives."""
+    import bench_charger_witness as bcw
+    import bench_offer
     import can
     prio = H.above_normal()
-    bus = RF.open_gs_usb()
+    bus = bcw.open_gs_usb()
     rows, lock, halt = [], threading.Lock(), threading.Event()
 
     def rx():
@@ -487,19 +564,11 @@ def proc_filler_sched(fgo, ready, rows_path, cycles, on_s, off_s, control_s,
     def send():
         bus.send(msg, timeout=0.05)
         cnt[0] += 1
+    bench_offer.rp()                 # canbench loaded before ready: starts at fgo
     ready.set()
     fgo.wait()
-    starts, stops = [], []
-    for _c in range(cycles):
-        starts.append(time.perf_counter())
-        bench_pacer.offer(send, H.FILLER_RATE, on_s, burst=H.FILLER_BURST,
-                          seq_writer=seq_writer)
-        stops.append(time.perf_counter())
-        time.sleep(off_s)
-    c0 = time.perf_counter()
-    bench_pacer.offer(send, H.FILLER_RATE, control_s, burst=H.FILLER_BURST,
-                      seq_writer=seq_writer)
-    c1 = time.perf_counter()
+    starts, stops, c0, c1 = filler_cycles(send, seq_writer, cycles, on_s, off_s,
+                                          control_s)
     # keep receiving the forwarded identifier until it has ended (the first
     # bench run stopped here and lost the charger side of its last ~1.4 s)
     if fstop is not None:
@@ -544,7 +613,13 @@ def run_bench(a):
         log(kvaser_link.link_void(e, t_ep0, time.time()))
         out.close()
         return 3
-    hp = U.HostPort(a.port, base + "_serial.txt")
+    try:
+        hp = U.HostPort(a.port, base + "_serial.txt")
+    except Exception as e:                                 # noqa: BLE001
+        log(premise_line("the X2's port %s did not open (%s: %s)"
+                         % (a.port, type(e).__name__, e)))
+        out.close()
+        return 3
     kv = rx_proc.ProcReader("bench_switch_loss", "open_kvaser_rx", {}, name="kvaser")
     kv.wait_ready()
     ctx = mp.get_context("spawn")
@@ -557,7 +632,19 @@ def run_bench(a):
         go, done, base + "_identifier_sent.json", total))
     pf.start()
     pv.start()
-    fready.wait(30)
+    if not fready.wait(30):
+        # the filler's process never reached its schedule: its Innomaker did
+        # not open, or it died starting (a premise, not a result)
+        log(premise_line("the filler's process was not ready within 30 s (its "
+                         "Innomaker, role canchg, did not open, or it died "
+                         "starting; exit code %s)" % pf.exitcode))
+        for p in (pf, pv):
+            p.terminate()
+            p.join(10)
+        kv.finish()
+        hp.close()
+        out.close()
+        return 3
     time.sleep(1.0)
     dumps = {}
 
@@ -704,6 +791,38 @@ MUTANTS = [
     ("the quantisation line not recorded", "    figs.append(QUANT_LINE)\n", ""),
     ("veh_rows: error frames kept", "    return [tuple(r[:6]) for r in res[\"rows\"] if not r[7]]",
      "    return [tuple(r[:6]) for r in res[\"rows\"]]"),
+    # 2026-11-23, the reviewer's pace ruling
+    ("pace: an on window by schedule alone (until_s), not by time",
+     "        bench_offer.offer(send, H.FILLER_RATE, on_s, burst=H.FILLER_BURST,\n"
+     "                          seq_writer=seq_writer)\n",
+     "        bench_offer.rp().pace(((k // H.FILLER_BURST * H.FILLER_BURST / H.FILLER_RATE, k)\n"
+     "                               for k in range(int(H.FILLER_RATE * on_s))),\n"
+     "                              lambda k: (seq_writer(k), send()), until_s=on_s)\n"),
+    ("pace: the control by schedule alone (until_s), not by time",
+     "    bench_offer.offer(send, H.FILLER_RATE, control_s, burst=H.FILLER_BURST,\n"
+     "                      seq_writer=seq_writer)\n",
+     "    bench_offer.rp().pace(((k // H.FILLER_BURST * H.FILLER_BURST / H.FILLER_RATE, k)\n"
+     "                           for k in range(int(H.FILLER_RATE * control_s))),\n"
+     "                          lambda k: (seq_writer(k), send()), until_s=control_s)\n"),
+    ("pace: the filler one frame at a time",
+     "        bench_offer.offer(send, H.FILLER_RATE, on_s, burst=H.FILLER_BURST,",
+     "        bench_offer.offer(send, H.FILLER_RATE, on_s,"),
+    ("pace: the stop taken before the offer",
+     "        stops.append(time.perf_counter())\n        time.sleep(off_s)",
+     "        stops.append(starts[-1])\n        time.sleep(off_s)"),
+    # 2026-11-23, the reviewer's sweep ruling on premise failures
+    ("premise: the X2's port not opening a traceback again",
+     "    try:\n        hp = U.HostPort(a.port, base + \"_serial.txt\")\n"
+     "    except Exception as e:                                 # noqa: BLE001\n",
+     "    hp = U.HostPort(a.port, base + \"_serial.txt\")\n    if False:\n"),
+    ("premise: the filler's process not ready, the run goes on",
+     "    if not fready.wait(30):\n        # the filler's process never reached its schedule",
+     "    if fready.wait(30) and False:\n        # the filler's process never reached its schedule"),
+    ("pace: canbench loaded inside the first cycle",
+     "    import bench_offer\n    bench_offer.rp()\n    starts, stops = [], []\n",
+     "    import bench_offer\n    starts, stops = [], []\n"),
+    ("pace: canbench loaded after fgo",
+     "    bench_offer.rp()                 # canbench loaded before ready: starts at fgo\n", ""),
 ]
 
 

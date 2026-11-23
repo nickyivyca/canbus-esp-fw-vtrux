@@ -823,7 +823,12 @@ def test_suites():
     #      rebound names, after run 69d8; the reviewer, 2026-11-21)
     # 317: diag-cadence-test-canfail (a new boot starts the state changes
     #      afresh, after run e599; the reviewer, 2026-11-23)
-    assert len(seen) == 317, "checks across the suites: %d" % len(seen)
+    # 320: st.bench-rate-feasibility and cf.bench-rate-feasibility gone
+    #      (retired with bench_pacer); st.bench-offer, cf.bench-offer,
+    #      st.bench-charger-witness, cf.bench-charger-witness and
+    #      cf.bench-innomaker-clock (the offer on can-tools' pace, ended by
+    #      time; the reviewer's pace ruling, 2026-11-23)
+    assert len(seen) == 320, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in

@@ -1031,10 +1031,11 @@ def _named(node, attr, mod):
             and f.value.id == mod)
 
 
-# the one file that may still open CANlib's "kvaser" interface: a hand-run
-# measurement, CANlib-only and refused on Linux (the reviewer's E,
-# 2026-11-13; bench_drivers/README.md)
-CANLIB_ONLY = {"bench_rate_feasibility.py"}
+# the files that may still open CANlib's "kvaser" interface: none since
+# 2026-11-23, when bench_rate_feasibility.py, a hand-run measurement,
+# CANlib-only and refused on Linux (the reviewer's E, 2026-11-13), was
+# retired with bench_pacer.py (the reviewer's pace ruling)
+CANLIB_ONLY = set()
 
 
 def scan(paths):
@@ -1076,6 +1077,8 @@ def harness_files():
             continue
         if base.endswith("_test.py") or base.startswith("test_"):
             continue
+        if not os.path.exists(os.path.join(HERE, rel)):
+            continue                 # deleted in the work tree, not yet in the index
         out.append(os.path.join(HERE, rel))
     if os.path.join(HERE, "kvaser_link.py") not in out:
         out.append(os.path.join(HERE, "kvaser_link.py"))   # before its first commit
@@ -1100,13 +1103,14 @@ def case_scan(M, work):
     hits, n = scan([planted])
     lines = sorted(int(h.split(":")[1].split()[0]) for h in hits)
     assert lines == [2, 3, 4, 5] and n == 1, (hits, n)
-    # the CANlib-only file may open "kvaser", and nothing else may
+    # the CANlib-only file (until 2026-11-23) has no exemption left: its
+    # name opening "kvaser" is caught like any other
     only = os.path.join(work, "bench_rate_feasibility.py")
     with open(only, "w", encoding="utf-8") as f:
         f.write("a = adapter_fixes.bus(interface='kvaser', channel=0)\n"
                 "b = can.Bus(interface='socketcan', channel='kvaser')\n")
     hits, n = scan([only])
-    assert [int(h.split(":")[1].split()[0]) for h in hits] == [2], hits
+    assert [int(h.split(":")[1].split()[0]) for h in hits] == [1, 2], hits
 
 
 CASES = [case_link_state, case_set_up, case_restart_ms, case_counters, case_self_test_guard, case_set_down, case_not_taken, case_open_bus,
