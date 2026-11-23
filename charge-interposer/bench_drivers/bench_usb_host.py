@@ -159,6 +159,27 @@ def verdict_rc(oks):
     return 0
 
 
+def result_line(oks, unit):
+    """The case's RESULT line: how many of its items (boots, or the one
+    bridging run) PASSED, FAILED or were VOID, a reader death counted apart,
+    and the exit code. The reviewer's sweep ruling 1 (2026-11-21): the case
+    keeps verdict_rc's rule (a VOID boot among passes still exits 0, the a25e
+    rule), so its result names the VOID boot count."""
+    oks = list(oks)
+    died = sum(1 for o in oks if o == reader_death.DIED)
+    return ("RESULT: %d %s(s): %d PASS, %d FAIL, %d VOID, %d reader died "
+            "-> exit %d" % (len(oks), unit, sum(1 for o in oks if o is True),
+                            sum(1 for o in oks if o is False),
+                            sum(1 for o in oks if o is None), died,
+                            verdict_rc(oks)))
+
+
+def case_result(oks, lines, unit="boot"):
+    """A case's (exit code, lines), its RESULT line last."""
+    oks = list(oks)
+    return verdict_rc(oks), lines + [result_line(oks, unit)]
+
+
 class _RxMsg(object):
     """A received frame for the self-test's Rx."""
 
@@ -182,6 +203,13 @@ def baseline_boots_rc(vals):
     powerup-round-noack. a25e's usb-host-baseline-noack printed three
     False verdicts and exited 0."""
     return verdict_rc(v["ok_2p3"] for v in vals)
+
+
+def baseline_boots_result(vals, lines):
+    """baseline-boots' (exit code, lines): baseline_boots_rc's code, and the
+    RESULT line over the same 2.3 verdicts."""
+    return baseline_boots_rc(vals), lines + [result_line(
+        [v["ok_2p3"] for v in vals], "boot")]
 
 
 def baseline_dir(a, out):
@@ -819,7 +847,7 @@ def case_baseline_boots(a, out):
     lines.append("baseline %s: MODE boot= %s us (boot line %s)"
                  % (mode, rec["baseline_us"],
                     [v["bl_boot_us"] for v in vals]))
-    return baseline_boots_rc(vals), lines
+    return baseline_boots_result(vals, lines)
 
 
 def _baseline(out, mode):
@@ -859,7 +887,7 @@ def case_noread_boots(a, out):
         ef = sum(1 for r in rows if r[3])
         lines.append("  PCAN: %d status frame(s), %d error row(s)" % (sf, ef))
         oks.append(ok)
-    return verdict_rc(oks), lines
+    return case_result(oks, lines)
 
 
 def close_reset_path(platform=None):
@@ -923,7 +951,7 @@ def case_close_boots(a, out):
             if "LOSS" in x or "at boot" in x:
                 lines.append("  serial> " + x)
         oks.append(ok)
-    return verdict_rc(oks), lines
+    return case_result(oks, lines)
 
 
 def case_acks(a):
@@ -998,12 +1026,13 @@ def case_bridge(a, out):
     if inj.stall is not None:
         lines = kvaser_link.stall_lines(inj.stall, t_ep0, close=kv.shutdown)
         lines.insert(0, "%s: injector %d sent, stopped by a kvaser TX stall" % (tag, len(inj.sent)))
-        return verdict_rc([None]), lines
+        return case_result([None], lines, "run")
     kv.shutdown()
     voids = [v for v in (rx_proc.witness_void("pcan", pres, t_ep0, time.time()),
                          rx_proc.witness_void("innomaker", ires, t_ep0, time.time())) if v]
     if voids:
-        return verdict_rc([None]), ["%s: injector %d sent" % (tag, len(inj.sent))] + voids
+        return case_result([None], ["%s: injector %d sent" % (tag, len(inj.sent))] + voids,
+                           "run")
     write_rows(os.path.join(out, "vehicle_%s.txt" % tag), vrows,
                "PCAN normal, device stamp")
     write_rows(os.path.join(out, "charger_%s.txt" % tag), crows,
@@ -1017,7 +1046,31 @@ def case_bridge(a, out):
                                 reads, gap_end, bridge_baseline_path(a, out))
     lines.insert(0, "%s: injector %d sent, %d send error(s)"
                  % (tag, len(offered), inj.errs))
-    return verdict_rc([v]), lines
+    return case_result([v], lines, "run")
+
+
+def stops_verdict(v, mets):
+    """bridge-cycles' stops, each met (judged: the board showed a host that
+    was not taking data) or VOID. The reviewer's sweep ruling 2 (2026-11-21):
+    the case keeps its PASS only with a named minimum of judged stops, else
+    any VOID stop makes it VOID. No minimum is named, so every stop must be
+    judged (before: one judged stop of five was enough). A FAIL stays FAIL.
+    A run with 0 judged stops, or no stop at all, is VOID, not PASS (the
+    reviewer, 2026-11-23).
+    -> (v, lines), the count of judged and VOID stops in the lines."""
+    mets = list(mets)
+    n_met = sum(1 for m in mets if m)
+    lines = ["  stops judged: %d of %d, %d VOID (every stop must be judged: "
+             "no minimum named)" % (n_met, len(mets), len(mets) - n_met)]
+    if v is True and not mets:
+        v = None
+        lines.append("VOID: the run had no stop")
+    elif v is True and n_met < len(mets):
+        v = None
+        lines.append("VOID: %d of %d stop(s) did not meet the premise -- "
+                     "those stops never showed the board a host that was not "
+                     "taking data" % (len(mets) - n_met, len(mets)))
+    return v, lines
 
 
 def score_bridge_run(com3, vrows, crows, offered, stamped, stops, reads,
@@ -1050,20 +1103,18 @@ def score_bridge_run(com3, vrows, crows, offered, stamped, stops, reads,
     off = board_offset(stamped)
     pts = [t for _, t in status_ts([x for _, x in stamped])]
     per = own_period(pts)
-    n_met = 0
+    mets = []
     for k, hs, he in stops:
         met, fill, why = (stop_premise(pts, per, hs - off, he - off)
                           if off is not None else (False, None, "VOID"))
-        n_met += 1 if met else 0
+        mets.append(met)
         ex_k = [e for s, e in gap_excess(veh, chg)
                 if s in chg_host and hs <= chg_host[s] <= he]
         lines.append("  stop %d: %s; fill %s s; largest excess in it %.3f ms"
                      % (k, why, "%.0f" % fill if fill is not None else "-",
                         max(ex_k) * 1000 if ex_k else float("nan")))
-    if n_met == 0 and v is True:
-        v = None
-        lines.append("VOID: no stop met its premise -- the run never showed "
-                     "the board a host that was not taking data")
+    v, ln = stops_verdict(v, mets)
+    lines += ln
     v2 = [int(m.group(1)) for _, x in stamped
           for m in [V2C_RE.search(x)] if m]
     if len(v2) >= 2:
@@ -1415,6 +1466,49 @@ def self_test():
     check(verdict_rc([D, False]) == 1, "rc: a FAIL elsewhere still FAILS")
     check(baseline_boots_rc([{"ok_2p3": True}, {"ok_2p3": D}]) == 3,
           "baseline-boots: a boot whose witness died makes the case VOID")
+
+    # 2026-11-23, the reviewer's sweep ruling 1: the RESULT line names the
+    # VOID boot count (a VOID boot among passes still exits 0)
+    rc, ln = case_result([True, None, True], ["x"])
+    check(rc == 0 and ln[0] == "x" and ln[-1] ==
+          "RESULT: 3 boot(s): 2 PASS, 0 FAIL, 1 VOID, 0 reader died -> exit 0",
+          "CAN-FAIL result: a VOID boot among passes is named in the RESULT "
+          "line (%s)" % ln[-1])
+    rc, ln = case_result([True, D, False], [])
+    check(rc == 1 and ln == ["RESULT: 3 boot(s): 1 PASS, 1 FAIL, 0 VOID, "
+                             "1 reader died -> exit 1"],
+          "result: a reader death is counted apart from VOID (%s)" % ln)
+    rc, ln = baseline_boots_result([{"ok_2p3": True}, {"ok_2p3": None}], [])
+    check(rc == 0 and ln == ["RESULT: 2 boot(s): 1 PASS, 0 FAIL, 1 VOID, "
+                             "0 reader died -> exit 0"],
+          "CAN-FAIL result: baseline-boots names its VOID boot (%s)" % ln)
+    rc, ln = case_result([None], [], "run")
+    check(rc == 3 and ln[-1].startswith("RESULT: 1 run(s): 0 PASS, 0 FAIL, "
+                                        "1 VOID"),
+          "result: the bridging run's unit is the run (%s)" % ln)
+
+    # 2026-11-23, the reviewer's sweep ruling 2: every bridge-cycles stop
+    # must be judged (no minimum named), else the run is VOID
+    v, ln = stops_verdict(True, [True] * 5)
+    check(v is True and ln == ["  stops judged: 5 of 5, 0 VOID (every stop "
+                               "must be judged: no minimum named)"],
+          "stops: five judged stops keep the PASS (%s)" % ln)
+    v, ln = stops_verdict(True, [True, True, False, True, True])
+    check(v is None and "stops judged: 4 of 5, 1 VOID" in ln[0] and
+          ln[1].startswith("VOID: 1 of 5 stop(s)"),
+          "CAN-FAIL stops: one VOID stop among four judged makes the run "
+          "VOID (before: one judged stop was enough) (%s)" % ln)
+    v, ln = stops_verdict(True, [False] * 5)
+    check(v is None and "stops judged: 0 of 5, 5 VOID" in ln[0] and
+          ln[1].startswith("VOID: 5 of 5"),
+          "CAN-FAIL stops: a run with 0 judged stops is VOID, not PASS "
+          "(the reviewer, 2026-11-23) (%s)" % ln)
+    v, ln = stops_verdict(True, [])
+    check(v is None and ln[1] == "VOID: the run had no stop",
+          "CAN-FAIL stops: a run with no stop is VOID (%s)" % ln)
+    v, ln = stops_verdict(False, [True, False])
+    check(v is False and len(ln) == 1,
+          "stops: a FAIL stays FAIL with a VOID stop (%s)" % ln)
     rx = Rx(reader_death.RaisingBus(
         [_RxMsg(0x7F4), _RxMsg(0x7F5, is_rx=False), _RxMsg(0x7F6)]), "pcan")
     rx.t.join(2.0)
@@ -1467,6 +1561,26 @@ def self_test():
             "rx=wit, tag=tag", "wit, tag"),
               "%s: its verdict goes through void_if_dead with its PCAN reader"
               % fn.__name__)
+    # 2026-11-23, sweep rulings 1 and 2: every case returns through its
+    # RESULT line, and the bridging run's verdict is the stops' verdict
+    import ast as _ast
+    import textwrap as _tw
+    for fn, via in ((case_noread_boots, "case_result"),
+                    (case_close_boots, "case_result"),
+                    (case_bridge, "case_result"),
+                    (case_baseline_boots, "baseline_boots_result")):
+        rets = [n for n in _ast.walk(_ast.parse(_tw.dedent(_in.getsource(fn))))
+                if isinstance(n, _ast.Return)]
+        check(rets and all(isinstance(r.value, _ast.Call) and
+                           getattr(r.value.func, "id", None) == via for r in rets),
+              "CAN-FAIL result: every return of %s goes through %s (its RESULT "
+              "line)" % (fn.__name__, via))
+    sv = [n for n in _ast.walk(_ast.parse(_tw.dedent(_in.getsource(score_bridge_run))))
+          if isinstance(n, _ast.Assign) and isinstance(n.value, _ast.Call) and
+          getattr(n.value.func, "id", None) == "stops_verdict"]
+    check(len(sv) == 1 and isinstance(sv[0].targets[0], _ast.Tuple) and
+          getattr(sv[0].targets[0].elts[0], "id", None) == "v",
+          "CAN-FAIL stops: score_bridge_run's verdict v is stops_verdict's")
     import types as _ty
     tdir = scratch_dir.make("usbhost-selftest")
     try:
@@ -1769,6 +1883,26 @@ MUTANTS = [
      "                    continue\n"
      "                seq += 1\n"
      "                self.watch.poll(0.0)\n"),
+    # 2026-11-23, the reviewer's sweep rulings 1 and 2
+    ("result: VOID boots not counted",
+     "                            sum(1 for o in oks if o is None), died,",
+     "                            0, died,"),
+    ("result: noread-boots prints no RESULT line",
+     "        oks.append(ok)\n    return case_result(oks, lines)\n\n\ndef close_reset_path",
+     "        oks.append(ok)\n    return verdict_rc(oks), lines\n\n\ndef close_reset_path"),
+    ("result: baseline-boots prints no RESULT line",
+     "    return baseline_boots_rc(vals), lines + [result_line(",
+     "    return baseline_boots_rc(vals), lines + 0 * [result_line("),
+    ("stops: one judged stop is enough again",
+     "    elif v is True and n_met < len(mets):",
+     "    elif v is True and n_met == 0:"),
+    ("stops: a run with 0 judged stops keeps its PASS",
+     "    elif v is True and n_met < len(mets):",
+     "    elif v is True and 0 < n_met < len(mets):"),
+    ("stops: a run with no stop keeps its PASS",
+     "    if v is True and not mets:", "    if False:"),
+    ("stops: the bridging run ignores the stop verdict",
+     "    v, ln = stops_verdict(v, mets)\n", "    _, ln = stops_verdict(v, mets)\n"),
 ]
 
 

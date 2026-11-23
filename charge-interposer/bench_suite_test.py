@@ -178,6 +178,15 @@ def test_script_judge():
         "bench_usb_host's rc 3 for an all-VOID case is VOID"
     assert _v(j(_run(noread + "  PASS noread_ack_03: boot window 12209 us\n",
                      0))) == [Verdict.PASS], "a VOID beside a PASS stays PASS"
+    # the reviewer's sweep ruling 1 (2026-11-21): the PASS names the VOID
+    # boot count, from bench_usb_host's RESULT line (the last one printed)
+    r = j(_run(noread + "  PASS noread_ack_03: boot window 12209 us\n"
+               "RESULT: 3 boot(s): 1 PASS, 0 FAIL, 2 VOID, 0 reader died "
+               "-> exit 0\nend 2026-11-23 rc=0\n", 0))
+    assert r.verdict == Verdict.PASS and r.detail == (
+        "rc=0; RESULT: 3 boot(s): 1 PASS, 0 FAIL, 2 VOID, 0 reader died "
+        "-> exit 0"), r.detail
+    assert j(_run("all ok\n", 0)).detail == "rc=0", "no RESULT line: rc=0"
     # bench_vport's TEST FAULT rule (reviewer, 2026-10-23, c40b): a run whose
     # only bad arm faulted ends on a VOID line, and that arm's scorer lines
     # are marked "not judged", so the suite reads it VOID; a valid FAIL
@@ -3169,6 +3178,15 @@ def _rc0_pass(run):
     return _ORIG["script_judge"](run)
 
 
+def _no_result_detail(run):
+    """A PASS's detail without the script's RESULT line (before the
+    reviewer's sweep ruling 1, 2026-11-21)."""
+    r = _ORIG["script_judge"](run)
+    if r.verdict == Verdict.PASS:
+        r.detail = "rc=0"
+    return r
+
+
 def _any_fail_text(run):
     """A FAIL anywhere in the log beats a VOID line, as if a faulted arm's
     scorer lines were read (bench_vport before its "not judged" marking)."""
@@ -3440,7 +3458,10 @@ MUTANTS = {
         ("script_judge", _rc0_pass,
          "rc 0 is PASS whatever it printed (a25e noread-boots)"),
         ("script_judge", _any_fail_text,
-         "any FAIL text beats a VOID line (bench_vport's TEST FAULT, c40b)")],
+         "any FAIL text beats a VOID line (bench_vport's TEST FAULT, c40b)"),
+        ("script_judge", _no_result_detail,
+         "a PASS's detail without the RESULT line (usb-host's VOID boot "
+         "count, sweep ruling 1)")],
     "test_usb_baselines": [
         ("bench", _wrap_suite("bench", _drop_baseline_dir("usb-host-close-ack")),
          "close-ack without --baseline-dir (a25e)"),

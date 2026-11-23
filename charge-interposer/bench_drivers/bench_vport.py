@@ -395,11 +395,36 @@ def score_noack(rows):
 # FAILs on a valid measurement, which keeps it FAIL; a fault arm never
 # PASSes. combine() is the rule.
 FAULT = object()
+# A declared STOP outcome (recstart's SOMETHING ELSE and NEITHER): VOID as a
+# fault is, under its own name (the reviewer's sweep ruling 3, 2026-11-21).
+STOP_OUTCOME = object()
 
 
 def verdict_word(ok):
     return ("VOID (TEST FAULT)" if ok is FAULT else
+            "VOID (declared STOP)" if ok is STOP_OUTCOME else
             "PASS" if ok else "FAIL")
+
+
+# Why step 4's no-ACKer variant is not run without --no-acker-ready
+NO_ACKER_WHY = ("needs --no-acker-ready (the WiCAN off or passive; the node "
+                "is closed)")
+
+
+def verdict_lines(verdicts, not_run=()):
+    """The '== verdicts' section: one line per arm, then, when a variant was
+    not run, one line for it with why and a RESULT line naming it (the
+    suite puts a PASS's RESULT line in its detail). The reviewer's sweep
+    ruling 4 (2026-11-21): vport-stall stays, with the reason its no-ACKer
+    variant is not run in the verdict line. The RESULT line names no arm
+    verdict, so accept_adapter's vport-windows reading of a report (its
+    arms, its final line, every TEST FAULT line) is unchanged."""
+    out = ["  %-28s %s" % (n, verdict_word(ok)) for n, ok in verdicts]
+    out += ["  %-28s NOT RUN: %s" % (n, why) for n, why in not_run]
+    if not_run:
+        out.append("RESULT: %d arm(s) run; NOT RUN: %s" % (len(verdicts), "; ".join(
+            "%s (%s)" % (n, why) for n, why in not_run)))
+    return out
 
 
 def combine(verdicts):
@@ -407,16 +432,23 @@ def combine(verdicts):
     rc 1 and a FAIL line; else any FAULT -> rc 1 and a VOID line (the
     suite's script_judge reads a VOID line with no FAIL line as VOID);
     else rc 0. The lines start in column 0 so the suite's judge finds
-    them."""
+    them. A declared STOP outcome (STOP_OUTCOME) counts as a fault does,
+    named apart (sweep ruling 3, 2026-11-21)."""
     faults = [n for n, ok in verdicts if ok is FAULT]
+    stops = [n for n, ok in verdicts if ok is STOP_OUTCOME]
     fails = [n for n, ok in verdicts if ok is not FAULT and not ok]
+    nots = (["TEST FAULT, not measured: %s" % ", ".join(faults)] if faults
+            else []) + (["declared STOP, not judged: %s" % ", ".join(stops)]
+                        if stops else [])
     if fails:
-        return 1, "FAIL: %s%s" % (", ".join(fails), (
-            "; TEST FAULT, not measured: %s" % ", ".join(faults))
-            if faults else "")
-    if faults:
-        return 1, ("VOID: TEST FAULT on %s, and no arm FAILs on a valid "
-                   "measurement" % ", ".join(faults))
+        return 1, "FAIL: %s%s" % (", ".join(fails),
+                                  "".join("; " + x for x in nots))
+    if faults or stops:
+        return 1, ("VOID: %s, and no arm FAILs on a valid measurement"
+                   % "; ".join((["TEST FAULT on %s" % ", ".join(faults)]
+                                if faults else []) +
+                               (["declared STOP on %s" % ", ".join(stops)]
+                                if stops else [])))
     return 0, None
 
 
@@ -496,7 +528,9 @@ def judge_recstart(can_a, starts, node_reads, can_b, quiet_rows):
         anything else (e.g. 0 at once) -> SOMETHING ELSE: stop;
       every start reads 0 -> THE WRITE NEVER TAKES on this silicon;
       anything else -> NEITHER: stop.
-    -> (judged, verdict, lines)."""
+    -> (judged, verdict, lines): judged True for a declared result,
+    STOP_OUTCOME for a STOP (stop_outcome), FAULT for NOT JUDGED
+    (not_judged); both of the last end their lines on a VOID line."""
     lines = []
 
     def regs(st):
@@ -512,14 +546,15 @@ def judge_recstart(can_a, starts, node_reads, can_b, quiet_rows):
                  "tec_reg=%s tec=%s" % (rb, b_api, tb, tb_api))
     if None in (ra, a_api, ta, ta_api) or ta != ta_api or ra != a_api \
             or ta_api < 128:
-        return False, "NOT JUDGED (wiring check A: the registers do not match " \
-                      "the API in normal mode, or no TEC to compare)", lines
+        return not_judged("NOT JUDGED (wiring check A: the registers do not "
+                          "match the API in normal mode, or no TEC to "
+                          "compare)", lines)
     if None in (rb, b_api) or b_api == 0 or rb != b_api:
-        return False, "NOT JUDGED (wiring check B: no REC in normal mode, or " \
-                      "rec_reg differs from the API's rec)", lines
+        return not_judged("NOT JUDGED (wiring check B: no REC in normal mode, "
+                          "or rec_reg differs from the API's rec)", lines)
     if quiet_rows:
-        return False, "NOT JUDGED (CAN1 was not quiet: %d row(s) on the " \
-                      "witness during the starts)" % len(quiet_rows), lines
+        return not_judged("NOT JUDGED (CAN1 was not quiet: %d row(s) on the "
+                          "witness during the starts)" % len(quiet_rows), lines)
     sv = []
     for k, st_list in enumerate(starts):
         vals = []
@@ -532,20 +567,20 @@ def judge_recstart(can_a, starts, node_reads, can_b, quiet_rows):
                                                 hello_field(st, "mode")))
             if r is None or hello_field(st, "mode") != "listen" or \
                     hello_field(st, "installed") != "1":
-                return False, ("NOT JUDGED (start %d, %s: no rec_reg, or "
-                               "not installed listen-only)" % (k + 1, label)
-                               ), lines
+                return not_judged("NOT JUDGED (start %d, %s: no rec_reg, or "
+                                  "not installed listen-only)" % (k + 1, label),
+                                  lines)
             vals.append(r)
         sv.append(vals)
     if not sv or not all(sv):
-        return False, "NOT JUDGED (no reads after a start)", lines
+        return not_judged("NOT JUDGED (no reads after a start)", lines)
     nv = []
     for label, st in node_reads:
         r = status_field(st, "rec_reg")
         lines.append("node traffic, %-20s rec_reg=%s rx_frames=%s"
                      % (label, r, status_field(st, "rx_frames")))
         if r is None or hello_field(st, "mode") != "listen":
-            return False, "NOT JUDGED (node read %s)" % label, lines
+            return not_judged("NOT JUDGED (node read %s)" % label, lines)
         nv.append(r)
     flat = [v for vals in sv for v in vals]
     if all(v == 128 for v in flat):
@@ -556,12 +591,32 @@ def judge_recstart(can_a, starts, node_reads, can_b, quiet_rows):
                 all(y <= x for x, y in zip(nv, nv[1:])):
             return True, ("THE WRITE TAKES (128 at every start); NOT FROZEN: "
                           "walked down under node traffic %s" % nv), lines
-        return True, ("THE WRITE TAKES (128 at every start); SOMETHING ELSE "
-                      "under node traffic %s -- STOP" % nv), lines
+        return stop_outcome("THE WRITE TAKES (128 at every start); SOMETHING "
+                            "ELSE under node traffic %s -- STOP" % nv, lines)
     if all(v == 0 for v in flat):
         return True, ("THE WRITE NEVER TAKES on this silicon (rec_reg 0 at "
                       "every read after %d starts)" % len(sv)), lines
-    return True, "NEITHER: rec_reg after the starts %s -- STOP" % sv, lines
+    return stop_outcome("NEITHER: rec_reg after the starts %s -- STOP" % sv,
+                        lines)
+
+
+def stop_outcome(text, lines):
+    """A declared STOP outcome of recstart (SOMETHING ELSE, NEITHER) ->
+    (STOP_OUTCOME, its verdict, its lines with a VOID line carrying the
+    text). The reviewer's sweep ruling 3 (2026-11-21): it is VOID with its
+    text, not exit 0."""
+    return STOP_OUTCOME, "VOID (declared STOP): " + text, lines + [
+        "VOID: recstart's declared STOP outcome, not judged: " + text]
+
+
+def not_judged(text, lines):
+    """recstart's premise not met (a wiring check, CAN1 not quiet, a read
+    missing) -> (FAULT, its verdict, its lines with a VOID line carrying the
+    text). The reviewer's sweep, lower priority (2026-11-21), at this
+    driver's next change: a premise failure prints a VOID line; before, it
+    was a FAIL."""
+    return FAULT, "VOID (TEST FAULT): " + text, lines + [
+        "VOID: recstart's premise not met: " + text]
 
 
 def bursts_of(err_ts, gap=BURST_GAP_S):
@@ -3521,6 +3576,7 @@ def run_bench(args):
         steps = [s for s in args.steps.split(",") if s]
         secs = args.seconds
         verdicts = []
+        not_run = []      # (name, why): a variant not run, named in the verdicts
 
         # step 0 always runs, before the node opens: every later step that
         # judges an ACK depends on the witness not giving one
@@ -3916,8 +3972,8 @@ def run_bench(args):
                 node = Node(args.kvaser_channel).start()
                 node.expect_acks(True)       # the board acknowledging
             else:
-                print("    no-ACKer variant NOT RUN: needs --no-acker-ready "
-                      "(the WiCAN off or passive; the node is closed)")
+                not_run.append(("stall/no-acker", NO_ACKER_WHY))
+                print("    no-ACKer variant NOT RUN: " + NO_ACKER_WHY)
             board.cmd("MODE listen")
 
         if "dominant" in steps:
@@ -3959,8 +4015,8 @@ def run_bench(args):
                 print("    " + ln)
 
         print("\n== verdicts")
-        for name, ok in verdicts:
-            print("  %-28s %s" % (name, verdict_word(ok)))
+        for ln in verdict_lines(verdicts, not_run):
+            print(ln)
         rc, final = combine(verdicts)
         if final:
             print(final)
@@ -5617,43 +5673,100 @@ def self_test():
     check(ok and "NOT FROZEN" in v, "recstart: 128, then walked down -> not "
           "frozen -> %s" % v)
     ok, v, _l = judge_recstart(can_a, _starts(128), _node([0] * 6), can_b, [])
-    check(ok and "SOMETHING ELSE" in v and "STOP" in v, "recstart: 128, then "
-          "0 at once -> something else, stop")
+    check(ok is STOP_OUTCOME and v.startswith("VOID (declared STOP): THE "
+                                              "WRITE TAKES") and
+          "SOMETHING ELSE" in v and "STOP" in v and
+          _l[-1].startswith("VOID: recstart's declared STOP outcome, not "
+                            "judged: THE WRITE TAKES") and
+          "SOMETHING ELSE" in _l[-1],
+          "CAN-FAIL recstart: 128, then 0 at once -> something else, stop: "
+          "VOID with its text (sweep ruling 3) -> %s / %s" % (v, _l[-1]))
     ok, v, _l = judge_recstart(can_a, _starts(0), _node([0] * 6), can_b, [])
     check(ok and "NEVER TAKES" in v, "recstart: 0 at every start -> the "
           "write never takes")
     st = _starts(128)
     st[1][5] = ("r5", _st(0))
     ok, v, _l = judge_recstart(can_a, st, _node([128] * 6), can_b, [])
-    check(ok and v.startswith("NEITHER"), "recstart: 128 then 0 within the "
-          "quiet 2 s -> neither, stop")
+    check(ok is STOP_OUTCOME and v == "VOID (declared STOP): NEITHER: rec_reg "
+          "after the starts %s -- STOP" % [[128] * 6, [128] * 5 + [0], [128] * 6]
+          and _l[-1] == "VOID: recstart's declared STOP outcome, not judged: "
+          + v[len("VOID (declared STOP): "):],
+          "CAN-FAIL recstart: 128 then 0 within the quiet 2 s -> neither, "
+          "stop: VOID with its text (sweep ruling 3) -> %s" % v)
+    nj = "VOID: recstart's premise not met: NOT JUDGED ("
     ok, v, _l = judge_recstart(_st(0, "normal", rec=0, tec=128, tec_reg=0),
                                _starts(0), _node([0] * 6), can_b, [])
-    check(not ok and "wiring check A" in v, "can-fail: tec_reg != tec in normal "
-          "mode -> not judged")
+    check(ok is FAULT and "wiring check A" in v and _l[-1].startswith(nj),
+          "can-fail: tec_reg != tec in normal mode -> not judged: VOID "
+          "(premise, 2026-11-23)")
     ok, v, _l = judge_recstart(can_a, _starts(0), _node([0] * 6),
                                _st(0, "normal", rec=130), [])
-    check(not ok and "wiring check B" in v, "can-fail: rec_reg 0 while the API "
+    check(ok is FAULT and "wiring check B" in v and _l[-1].startswith(nj),
+          "can-fail: rec_reg 0 while the API "
           "reads 130 in normal mode -> not judged (a register read that "
           "always says 0 is caught)")
     ok, v, _l = judge_recstart(can_a, _starts(0), _node([0] * 6),
                                _st(0, "normal", rec=0), [])
-    check(not ok and "wiring check B" in v, "can-fail: no REC at all in the "
-          "normal-mode window -> not judged")
+    check(ok is FAULT and "wiring check B" in v and _l[-1].startswith(nj),
+          "can-fail: no REC at all in the normal-mode window -> not judged")
     ok, v, _l = judge_recstart(can_a, _starts(0), _node([0] * 6), can_b,
                                [(1.0, 0x123, False, b"")])
-    check(not ok and "not quiet" in v, "can-fail: a frame on CAN1 during "
-          "the starts -> not judged")
+    check(ok is FAULT and "not quiet" in v and _l[-1].startswith(nj),
+          "can-fail: a frame on CAN1 during the starts -> not judged")
     st = _starts(0)
     st[0][0] = ("r0", "@STATUS installed=1 rec=0 mode=listen")
     ok, v, _l = judge_recstart(can_a, st, _node([0] * 6), can_b, [])
-    check(not ok and "NOT JUDGED" in v, "can-fail: a STATUS without rec_reg "
-          "(the old image) -> not judged")
+    check(ok is FAULT and "NOT JUDGED" in v and _l[-1].startswith(nj),
+          "can-fail: a STATUS without rec_reg (the old image) -> not judged")
     st = _starts(0)
     st[2][0] = ("r0", None)
     ok, v, _l = judge_recstart(can_a, st, _node([0] * 6), can_b, [])
-    check(not ok and "NOT JUDGED" in v, "can-fail: a failed MODE (STATUS "
-          "dropped) -> not judged")
+    check(ok is FAULT and "NOT JUDGED" in v and _l[-1].startswith(nj),
+          "can-fail: a failed MODE (STATUS dropped) -> not judged")
+    ok, v, _l = judge_recstart(can_a, _starts(128), [("n0", None)], can_b, [])
+    check(ok is FAULT and "node read n0" in v and _l[-1].startswith(nj),
+          "can-fail: a node read without rec_reg -> not judged: VOID")
+    rc, final = combine([("recstart (judged)", FAULT)])
+    check(rc == 1 and final.startswith("VOID: TEST FAULT on recstart"),
+          "CAN-FAIL recstart's NOT JUDGED is VOID, not FAIL (premise, "
+          "2026-11-23) -> %s" % final)
+    # sweep ruling 3: a declared STOP is VOID, named apart from a fault
+    rc, final = combine([("recstart (judged)", STOP_OUTCOME)])
+    check(rc == 1 and final == "VOID: declared STOP on recstart (judged), and "
+          "no arm FAILs on a valid measurement",
+          "CAN-FAIL combine: a declared STOP alone is VOID, rc 1 -> %s" % final)
+    rc, final = combine([("a", STOP_OUTCOME), ("b", FAULT), ("c", True)])
+    check(rc == 1 and final == "VOID: TEST FAULT on b; declared STOP on a, "
+          "and no arm FAILs on a valid measurement",
+          "combine: a fault and a STOP both named -> %s" % final)
+    rc, final = combine([("a", STOP_OUTCOME), ("d", False)])
+    check(rc == 1 and final == "FAIL: d; declared STOP, not judged: a",
+          "CAN-FAIL combine: a valid FAIL beside a STOP stays FAIL -> %s" % final)
+    rc, final = combine([("a", STOP_OUTCOME), ("b", FAULT), ("d", False)])
+    check(rc == 1 and final == "FAIL: d; TEST FAULT, not measured: b; "
+          "declared STOP, not judged: a",
+          "CAN-FAIL combine: a FAIL names both the fault and the STOP beside "
+          "it -> %s" % final)
+    check(verdict_word(STOP_OUTCOME) == "VOID (declared STOP)",
+          "the STOP's verdict word")
+    # sweep ruling 4: the no-ACKer variant's reason in the verdict lines
+    vl = verdict_lines([("stall/acked", True)],
+                       [("stall/no-acker", NO_ACKER_WHY)])
+    check(vl == ["  %-28s PASS" % "stall/acked",
+                 "  %-28s NOT RUN: %s" % ("stall/no-acker", NO_ACKER_WHY),
+                 "RESULT: 1 arm(s) run; NOT RUN: stall/no-acker (%s)"
+                 % NO_ACKER_WHY],
+          "CAN-FAIL verdicts: the no-ACKer variant not run is named with "
+          "why, in the verdicts and the RESULT line -> %s" % vl)
+    check(verdict_lines([("bitrate/1M/idle", FAULT)]) ==
+          ["  %-28s VOID (TEST FAULT)" % "bitrate/1M/idle"],
+          "verdicts: nothing not run -> no RESULT line (vport-windows' "
+          "reading of a report unchanged)")
+    stall_src = step_blocks(inspect.getsource(run_bench))["stall"]
+    check("not_run.append((\"stall/no-acker\", NO_ACKER_WHY))" in stall_src
+          and "verdict_lines(verdicts, not_run)" in inspect.getsource(run_bench),
+          "CAN-FAIL stall: the no-ACKer variant not run is kept for the "
+          "verdicts, and the verdicts printed with it")
 
     check(all(reply_tag(c) == t for c, t in (("STOP", "@STOPPED"),
                                               ("FLOOD 7F4", "@FLOODING"),
@@ -6799,6 +6912,31 @@ MUTANTS += [
      "            for ln in span_figures(self.flush_gone, self.span_windows):\n"
      "                print(\"    \" + ln)\n",
      "            pass\n"),
+    # 2026-11-23, the reviewer's sweep rulings 3 and 4, and the premise rule
+    ("recstart: a declared STOP passes again",
+     "    return STOP_OUTCOME, \"VOID (declared STOP): \" + text, lines + [",
+     "    return True, \"VOID (declared STOP): \" + text, lines + ["),
+    ("recstart: a declared STOP without its VOID line",
+     "        \"VOID: recstart's declared STOP outcome, not judged: \" + text]",
+     "        ]"),
+    ("recstart: NOT JUDGED is a FAIL again",
+     "    return FAULT, \"VOID (TEST FAULT): \" + text, lines + [",
+     "    return False, \"VOID (TEST FAULT): \" + text, lines + ["),
+    ("recstart: NOT JUDGED without its VOID line",
+     "        \"VOID: recstart's premise not met: \" + text]", "        ]"),
+    ("combine: a STOP alone exits 0",
+     "    if faults or stops:\n", "    if faults:\n"),
+    ("combine: a STOP beside a FAIL not named",
+     "                                  \"\".join(\"; \" + x for x in nots))",
+     "                                  \"\".join(\"; \" + x for x in nots[:1]))"),
+    ("stall: the no-ACKer variant's reason not kept",
+     "                not_run.append((\"stall/no-acker\", NO_ACKER_WHY))\n", ""),
+    ("verdicts: a variant not run left out",
+     "    out += [\"  %-28s NOT RUN: %s\" % (n, why) for n, why in not_run]\n", ""),
+    ("verdicts: no RESULT line",
+     "    if not_run:\n        out.append(", "    if False:\n        out.append("),
+    ("verdicts: a RESULT line on every report",
+     "    if not_run:\n        out.append(", "    if True:\n        out.append("),
 ]
 
 
