@@ -138,7 +138,9 @@ class Generator(unittest.TestCase):
         hdr = G.c_header("t_dbc", "x.dbc", v, h, msgs)
         src = G.c_source("t_dbc", "t.h", "x.dbc", v, h, msgs)
         for want in ("#define t_dbc_SCHEMA_VERSION 7", "t_dbc_T1 = 0,", "t_dbc_T1__e = 4,",
-                     "t_dbc_T1__N = 5", "#define t_dbc_Ext__ID 0x18FFD7E1u", "t_dbc_MESSAGE_COUNT = 3"):
+                     "t_dbc_T1__N = 5", "#define t_dbc_Ext__ID 0x18FFD7E1u", "t_dbc_MESSAGE_COUNT = 3",
+                     "#define t_dbc_T1__e__BITS 9\n", "#define t_dbc_T1__e__SIGNED 1\n",
+                     "#define t_dbc_T1__a__SIGNED 0\n"):
             self.assertIn(want, hdr)
         self.assertIn('{ "e", 51, 9, true, true, DIAG_MUX_NONE },', src)
         self.assertIn('{ "sel", 0, 8, false, false, DIAG_MUX_SELECTOR },', src)

@@ -30,6 +30,9 @@ In the C header, for PREFIX p and a message M with a signal s:
     p_M__ID                            M's frame id
     p_M__s                             s's index in M's signals
     p_M__N                             M's signal count
+    p_M__s__BITS, p_M__s__SIGNED       s's length and signedness, as
+                                       constants, for a project's
+                                       compile-time checks
     p_MESSAGE_COUNT, p_messages[]
 The Python module has SCHEMA_VERSION, SCHEMA_HASH and MESSAGES.
 
@@ -163,7 +166,12 @@ def c_header(prefix, dbc_name, version, schema_hash, msgs):
         out.append("enum {\n")
         for j, s in enumerate(m["signals"]):
             out.append("    %s_%s__%s = %d,\n" % (prefix, m["name"], s["name"], j))
-        out.append("    %s_%s__N = %d\n};\n\n" % (prefix, m["name"], len(m["signals"])))
+        out.append("    %s_%s__N = %d\n};\n" % (prefix, m["name"], len(m["signals"])))
+        for s in m["signals"]:
+            out.append("#define %s_%s__%s__BITS %d\n" % (prefix, m["name"], s["name"], s["length"]))
+            out.append("#define %s_%s__%s__SIGNED %d\n" % (prefix, m["name"], s["name"],
+                                                         1 if s["is_signed"] else 0))
+        out.append("\n")
     out.append("extern const diag_message_t %s_messages[%s_MESSAGE_COUNT];\n\n" % (prefix, prefix))
     out.append("#ifdef __cplusplus\n}\n#endif\n\n#endif\n")
     return "".join(out)
