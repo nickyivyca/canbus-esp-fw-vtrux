@@ -27,6 +27,10 @@ that nothing implemented:
        RX_DEPTH equal to it (spec 5.1 item 1)
     12 esp_wifi_set_storage(WIFI_STORAGE_RAM) genuinely called (spec 5.1 item 3)
 
+Added 2026-11-23, stage (b) batch 1 (spec 12.3 item 3, setting 7, and 9.4):
+
+    13 Bluetooth off, CONFIG_BT_ENABLED unset (an sdkconfig row, beside 1-5)
+
 BEYOND ROW 22, this file also REFUSES images that are not shipping builds,
 because two configurations of one commit share a filename and an embedded
 version and so defeat every provenance row above -- only content separates
@@ -214,6 +218,16 @@ def check_config(cfg, trusted, why):
         "CONFIG_ESP_TASK_WDT_PANIC=%s -- section 9.1 records it unset, so a "
         "timeout warns and continues"
         % ("y -- CHANGED" if wdt_panic else "not set"))
+
+    # 12.3 item 3, setting 7, and 9.4: Bluetooth off, CONFIG_BT_ENABLED unset
+    # (user, 2026-10-17, held until after the port; written 2026-11-21). Unset
+    # is absent from the sdkconfig text ("# ... is not set") and false in the
+    # build's sdkconfig.json. Any other value fails: an "n" in a hand-edited
+    # sdkconfig is one Kconfig would not write, so it is not taken as off. Added 2026-11-23,
+    # stage (b) batch 1; tested by test_bt_row.py.
+    bt = cfg.get("BT_ENABLED")
+    crow("Bluetooth off", bt is None or bt is False,
+        "CONFIG_BT_ENABLED=%s" % ("not set" if bt is None or bt is False else "%r -- ON" % (bt,)))
 
 
 # ------------------------------------------------------------------- the image --

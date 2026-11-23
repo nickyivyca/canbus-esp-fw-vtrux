@@ -88,7 +88,20 @@ def hook(ev, args):
         p = args[1]
     if p is None or isinstance(p, int):
         return
-    seen.append((ev, os.path.abspath(os.fsdecode(p))))
+    p = os.fsdecode(p)
+    # A name relative to a dir_fd (rmtree on Linux removes by fd) is resolved against
+    # that folder, not the working directory (2026-11-23: on madhouse every rmtree
+    # under scratch/ read as a write beside the test).
+    fd = args[-1] if ev in ("os.mkdir", "os.remove", "os.rmdir") else None
+    if isinstance(fd, int) and fd >= 0 and not os.path.isabs(p):
+        busy[0] = True
+        try:
+            p = os.path.join(os.readlink("/proc/self/fd/%d" % fd), p)
+        except OSError:
+            pass
+        finally:
+            busy[0] = False
+    seen.append((ev, os.path.abspath(p)))
 sys.addaudithook(hook)
 sys.argv = [target]
 sys.path.insert(0, os.path.dirname(target))
