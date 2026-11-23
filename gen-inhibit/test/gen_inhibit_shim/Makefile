@@ -31,12 +31,21 @@ endif
 SHAREDDIR = $(WICANDIR)/..
 FAKEDIR   = $(SHAREDDIR)/twai_port/test
 
+# THE DIAG FRAMES ARE PACKED BY vtrux/diag (spec 10; stage (b) batch 2): the
+# core packs every page from firmware/main/gi_diag_table.c with shared/diag's
+# diag_pack.c, and gen_inhibit.c takes the build id from its diag_build_id.c,
+# which reads mock/esp_app_desc.h here. All three compiled as shipped, from the
+# same pinned checkout (wican_ref.py checks that vtrux/diag is pinned at
+# vtrux/wican's tag). DIAGDIR overrides it, as WICANDIR does.
+DIAGDIR  ?= $(SHAREDDIR)/diag
+
 # The include order is the fake's wiring (its README.md): the shim's own
 # stand-ins first, then the fake's ESP-IDF TWAI headers, then its minimal host
 # stand-ins for whatever the shim has none of.
 CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
            -I. -Imock -I$(COREDIR) -I$(WICANDIR) \
            -I$(SHAREDDIR)/can_port/include -I$(SHAREDDIR)/twai_port/include \
+           -I$(DIAGDIR)/include \
            -I$(FAKEDIR) -I$(FAKEDIR)/include -I$(FAKEDIR)/host
 # --wrap: shim_harness.c sees each install at the call, for the thread that made
 # it (spec 3), which the fake's install log does not record.
@@ -60,7 +69,8 @@ LDFLAGS ?= -pthread -Wl,--wrap=twai_driver_install
 SRC := shim_test.c shim_harness.c fake_can.c fake_port.c \
        $(FAKEDIR)/twai_fake.c \
        $(COREDIR)/gen_inhibit.c $(COREDIR)/gen_inhibit_core.c \
-       $(COREDIR)/gi_sched.c \
+       $(COREDIR)/gi_sched.c $(COREDIR)/gi_diag_table.c \
+       $(DIAGDIR)/diag_pack.c $(DIAGDIR)/diag_build_id.c \
        $(SHAREDDIR)/can_port/can_port.c $(SHAREDDIR)/can_port/can_stock.c \
        $(SHAREDDIR)/twai_port/twai_port.c $(SHAREDDIR)/twai_port/twai_port_ll_esp32c3.c
 

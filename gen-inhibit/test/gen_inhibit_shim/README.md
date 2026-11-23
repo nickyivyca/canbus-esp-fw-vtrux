@@ -38,7 +38,13 @@ the shim (see below), and `fake_port.c` holds the port's one link stub, the
 tick count. The shim compiles against the version gen-inhibit pins: the
 read-only checkout `../shared-<tag>/` beside the worktree root, which
 `wican_ref.py` finds from `firmware/main/idf_component.yml`, and names with
-the command that creates it when it is missing. Where the checkout is
+the command that creates it when it is missing. Since stage (b) batch 2 the
+diag frames are packed through `vtrux/diag` (spec 10), so the shim also
+compiles, as shipped, the generated table `../../firmware/main/gi_diag_table.c`
+and shared/diag's `diag_pack.c` and `diag_build_id.c` (the latter reading
+`mock/esp_app_desc.h`), from the same checkout; `wican_ref.py` refuses unless
+`vtrux/diag` is pinned at `vtrux/wican`'s tag, and `DIAGDIR=<folder>`
+overrides the folder. Where the checkout is
 elsewhere, such as in the copy of the project folder `mutate.py` works in, or
 on another machine, give `WICANDIR=<its shared/wican folder>` to `make` or in
 the environment.

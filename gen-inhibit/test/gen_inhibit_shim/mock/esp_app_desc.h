@@ -1,6 +1,7 @@
 /*
  * Mock esp_app_desc.h. gen_inhibit.c reads app_elf_sha256 for the page's
- * elf_sha256 (spec 11) and for 0x7F3's build id (spec 10, case 59). version is
+ * elf_sha256 (spec 11), and shared/diag's diag_build_id.c, compiled as shipped,
+ * for 0x7F3's build id (spec 10, case 59). version is
  * not read by the shim build; "unknown" stays as a plain placeholder. Only the
  * fields read are mocked; their sizes are the real ones (ESP-IDF v5.4.1
  * esp_app_desc.h).
