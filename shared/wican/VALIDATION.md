@@ -257,3 +257,24 @@ The readings for W12 to W14 are of `shared/main` `2ab5be6d`,
   `firmware_version` (`wican.c:97`, passed to `wc_mdns_init` at `:753`).
   `firmware_version` is 10 bytes, shorter than a full commit.
 - **Status:** validated.
+
+### W16. An upload's multipart start is read within what was received
+- **Basis:** user, 2026-11-23, in the gen-inhibit reviewer's session: fix
+  it in gen-inhibit's stage (b) batch 2 (held since 2026-11-07, when the
+  user ruled it could wait because our own clients, `curl -F` and the web
+  UI form, send well-formed bodies). Wording approved by the user,
+  2026-11-23, and revised the same day on the charge-interposer reviewer's
+  read: `httpd_req_recv()` returns whatever the socket holds, so a first
+  read can be short of the whole start, and refusing then would turn a good
+  upload into a failed one. The handler reads on until the start is found,
+  its buffer is full or the body ends (revision approved by the user,
+  2026-11-23).
+- **Reading** (`shared/main` `8e16cd74`): on the first chunk, both handlers
+  find the end of the boundary line with `memchr(boundary_start, '\n', 200)`
+  and use the result with no NULL check (`config_server.c:1292` in the OTA
+  handler, `:1467` in `/upload/car_data.json`'s), then scan forward for
+  `Type:` byte by byte with no bound, then call `memchr(ret, '\n', 200)`
+  again unchecked (`:1305`, `:1480`). A body with a malformed start reads
+  past the bytes received, and probably panics: a reboot, not stranding
+  (reviewer's read of `2ab5be6d`, 2026-11-07).
+- **Status:** validated.

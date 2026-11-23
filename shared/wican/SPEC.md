@@ -8,7 +8,8 @@ rehearsal's fault hook, and 2026-10-30, for its symbol; W1 amended
 port step 1b's `can_port`; W7 amended and W12 to W14 added 2026-11-07,
 for gen-inhibit's stage (b): the AutoPID upload endpoints and the OTA
 handler's failure paths; W15 added 2026-11-21, for gen-inhibit's stage
-(b): the firmware version string. As
+(b): the firmware version string; W16 added 2026-11-23, for gen-inhibit's
+stage (b): the upload handlers' multipart start. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
 and the other project's reviewer reads it before it merges into
@@ -23,7 +24,7 @@ and the other project's reviewer reads it before it merges into
   (goal 18, and "Stock WiCAN code" under Layer 4 of "The split"), and
   `shared/boards/SPEC.md`.
 
-Requirements are numbered W1 to W15. The numbers are stable.
+Requirements are numbered W1 to W16. The numbers are stable.
 
 - **W1. One component.** `shared/wican/` is one ESP-IDF component,
   `vtrux/wican`, which a project takes at a pinned tag through the
@@ -137,3 +138,11 @@ Requirements are numbered W1 to W15. The numbers are stable.
   puts there. Nothing is parsed out of it. The stock `v<major>.<minor>`
   parse is removed, so the page no longer shows `0.00`, nor mDNS an empty
   version.
+- **W16. An upload's multipart start is read within what was received.**
+  Both multipart upload handlers, the OTA upload and
+  `/upload/car_data.json`, look for the first boundary line, the part's
+  `Content-Type` header and the blank line after it only within the bytes
+  received so far. The handler keeps reading into its buffer until it finds
+  them, the buffer is full or the body ends, and only then refuses a body
+  whose start lacks any of them, with 400; nothing is written. For the OTA
+  upload that is a failed exit under W12.
