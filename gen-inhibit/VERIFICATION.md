@@ -2260,6 +2260,137 @@ resolves. `console_liveness.json` and `console_liveness_dtr.json` show zero
 console lines after boot. The user ruled this a bench nuisance, not a truck
 risk (2026-10-05). The after-update check is bring-up row 1.5b.
 
+## 9.2 The OTA upload path
+
+**Items 4-6 (shared/wican W12-W14): tester, 2026-11-23, on `0a740ce6`
+`_man`, whose shared/wican is tag `2026.11.23` (`8e16cd74`). Result: AS
+SPECIFIED. All three pass on the host, and W13 and W14 also pass on the
+bench. W12's bench cases and the trailing-boundary stall are recorded, not
+judged.** This is stage (b) batch 1 (the gen-inhibit reviewer's batch, the
+user's go 2026-11-23). Run files are in `runs/stage_b1_0a740ce6/`, listed in
+its `README.md`.
+- **Image:** built by the tester from a clean worktree at `0a740ce6`
+  (`host/build_man_0a740ce6.txt`): 1,013,776 bytes, version `0a740ce6`,
+  elf_sha256 `e1975c09...`, md5 `04b26838116089f7d0c388639ea7cfc9`.
+- **X2:** `c4a553bb`, as the interposer tester read it off the wire at the
+  bench release before this one. It was not touched, and no CAN traffic is
+  part of these tests.
+- **Harness:** `gen-inhibit/tester/stage-b1` at `9f315a13`.
+  `test_ota_failpaths_bench.py` is at `d5ed88c4`, which fixes a fault in
+  that test's own server.
+- **On the host** (`gen-inhibit/test/wican_ota_host/run_ota_host.py`):
+  - **How it works:** the upload handler, the one function in the pinned
+    `config_server.c` that calls `esp_ota_begin()`, is compiled against a
+    fake ESP-IDF with ASan and UBSan. The fake's `httpd_req_recv` is
+    scripted. The harness runs 17 cases, each in its own process.
+  - **Disclosure:** the fake was plumbed from a reading of the handler's
+    source, as told to the reviewer. The cases come from the spec's
+    wording.
+  - **Why W12 is judged here:** a leaked update session is about a 40-byte
+    heap entry, which no client can see.
+  - Results (`host/ota_host_2026.11.23.txt`): 36 rows, 0 failing, 1
+    recorded.
+    - **W14:** `esp_ota_begin` gets `OTA_WITH_SEQUENTIAL_WRITES` in all 17
+      cases.
+    - **W12:** no session is open at return on any exit except the restart.
+      That covers 13 failing cases: reset, close or an invalid socket
+      mid-body, first read or trailer; write, end or set-boot refusing;
+      stalls; and begin refused.
+    - **W13:** a mid-body stall and a first-read stall each return after 4
+      timeouts in a row (4 in all). Spaced timeouts (3 in a row; 3 in a row
+      four times over; 2 in a row twice) complete with the image written
+      exactly.
+    - **Recorded, not judged** (reviewer's ruling, 2026-11-23): the stall at
+      the trailing boundary drops after 1 timeout with a 500, and no session
+      is left open.
+  - **Can-fail** (`host/ota_host_2026.11.04_canfail.txt`): the same harness
+    on the code before the fix (tag `2026.11.04`) FAILs W12, W13 and W14,
+    24 rows. Its begin size is `OTA_SIZE_UNKNOWN`. It leaves 5 sessions open
+    (receive failures). It drops a stall only after 21 timeouts in a row.
+  - The harness's own test (`host/test_run_ota_host.txt`) passes (47
+    checks). Of its 8 source mutants, 7 each fail only their own
+    requirement. The eighth, a parked write pointer (item 2), is VOID by
+    the control. 5 judge mutants each change a verdict.
+- **On the bench** (`gen-inhibit/tools/bench/ota_failpaths_bench.py`,
+  `bench_20261123T181229/`):
+  - **Setup:** a plain client POST over the phone's route to the hotspot.
+    TCP_INFO is sampled during the upload: bytes acknowledged, the window
+    the device offers, and the time since the last ACK.
+  - **Limits:** the W13 band is 18-23 s and the W14 limit is 2 s. Both are
+    the tester's, accepted by the reviewer 2026-11-23.
+
+  | Kind | W13 | W14: longest ACK stall with bytes outstanding | After |
+  |---|---|---|---|
+  | `stall` (stops mid-body) | PASS: dropped 20.22 s after the last chunk was ACKed, by `408` | 0.161 s | same image, uptime continuous, mode 0, worker idle |
+  | `restart` (3 gaps of 2 timeouts, a chunk after each, then a stall) | PASS: no end in the gaps; then dropped 19.80 s after the last chunk, by `408` | 0.262 s | the same |
+  | `fin` (client closes mid-body) | -- | 0.161 s | the same; W12 recorded: the device replied `500` |
+  | `rst` (client resets mid-body) | -- | 0.121 s | the same; W12 recorded |
+  | `full` (the whole image) | -- | 0.182 s | `303`, restarted on the same image (uptime 7,462 ms) |
+
+  - Every kind saw the device offer a zero window at some point. This is
+    recorded, not judged: W14 is judged on ACK stalls.
+  - W12's consequence on the bench: after the `fin` and `rst` uploads
+    failed, the `full` upload of the whole image took.
+  - The probe's own test (`host/test_ota_failpaths_bench.txt`, at
+    `d5ed88c4`) runs on loopback with time scaled. Each kind passes on a
+    server that behaves as the spec says and fails where it should. 7 of 7
+    mutants are killed.
+  - **The fault fixed by `d5ed88c4`:** that test's server missed a
+    multipart trailer split across two reads, so its `full` case failed now
+    and then. The files from before the fix are kept in `host/`. The test
+    with the old matching fails the new split-trailer check, which is the
+    can-fail.
+
+## 9.4 Image budget
+
+**The regression set after the Bluetooth strip: tester, 2026-11-23, on
+`0a740ce6` `_man`. Result: the clean boot, the health gate reaching its
+decision and the end-to-end OTA PASS. The inhibitor bench is NOT RUN; it
+runs with batch 2's full run (user, 2026-11-23).** The strip counts as kept
+only once that run passes (reviewer, 2026-11-23). This is stage (b) batch 1.
+The image, the X2's state and the harness are as in the 9.2 entry above.
+Bluetooth off in the build is in 12.3, "Bluetooth off". Run files are in
+`runs/stage_b1_0a740ce6/bench_20261123T181229/`, from
+`gen-inhibit/tools/bench/stage_b1_bench.py`, whose own test passes with 5 of
+5 mutants killed.
+- **End-to-end OTA: PASS, twice.**
+  - **First, `gi_ota.py` from `2aac016d`** (`load.txt`, `load.json`): the
+    image took, and the device ran it after a software restart. Verdict
+    `(a2+c) NO STATUS, RESTARTED + TOOK`.
+    - **Observed:** curl sent the whole body (1,014,004 bytes) and got no
+      HTTP status. It timed out after 180 s. The device had booted the image
+      (reset SW) 14.2 s after the request started; a whole upload takes
+      about 15 s (`full` below).
+    - In the run files, every earlier real load by this flasher got its
+      status (`(c) TOOK`).
+    - Spec 9.2 makes a plain curl POST the interface and asks for no
+      particular reply, so this is recorded, not judged.
+    - The resource record over the load (`resource-log window 1795457550
+      1795457745`) is clean: bench.slice at 0.4 cores, no pressure.
+  - **Second, `ota_failpaths_bench.py --kind full`, a plain client:**
+    `303 See Other`, then restarted on the same image.
+- **Clean boot: PASS.** The page answered in 0.07 s after the load: the
+  image, mode 0, worker idle, reset SW. This was the image's first boot
+  after the OTA, by `load.json`'s boot list.
+- **The health gate reaching its decision: PASS.** Spec 9.1 requires a
+  decision within the gate's 60 s timeout. It is shown from the client with
+  no console:
+  - **No rollback restart:** the device was on the image at uptime 171,593
+    ms, past 75 s, in its first boot after the OTA (`gate_reads.json`). A
+    rollback would have restarted it into `2aac016d`.
+  - **Marked valid:** `wican_reboot.py --want` (`gate_reboot.json`). After a
+    software restart (uptime 7,047 ms, reset SW) it is still on the image,
+    mode 0, nothing latched or disabled. An image left `PENDING_VERIFY`
+    would have rolled back at that boot.
+  - **Only one read:** the gate's watch got a single read, because the
+    load's 180 s curl wait used up the time before 75 s. Uptime is
+    continuous from the boot to that read, so no restart happened in
+    between.
+- **The inhibitor bench: NOT RUN.** It runs with batch 2's full run (user,
+  2026-11-23; reviewer's ruling, 2026-11-23). The chain runner's bench
+  suite needs an emulated run on the same clean code first, which batch 1
+  does not have.
+
 ## 10 Diagnostics
 
 **Tester, 2026-10-08, on `a71b90a` `_man`** (image md5
@@ -2586,6 +2717,27 @@ requires both.
 **Run files.** `runs/wican_reboot_manual_release_20261020T091530.json` and `.txt`. The
 script and its test against a fake device: `wican_reboot.py`, `test_wican_reboot.py`
 (37 ok; 17 of 17 mutants killed by a check, `runs/test_wican_reboot_mutants_20261020.txt`).
+
+### shared/wican W15: the image's version in mDNS (tester, 2026-11-23, `0a740ce6` `_man`)
+
+**Result: the mDNS half PASSES. The status-page half is NOT RUN:** it reads
+`fw_version` from `/check_status`, which has been barred since 2026-10-20
+until the factory reset or the user's ruling (asked 2026-11-23; the
+reviewer will say). This is stage (b) batch 1. The image, the X2's state
+and the harness are as in the 9.2 entry.
+- **Check:** `gen-inhibit/tools/bench/wican_fw_version_check.py`. It sends a
+  legacy unicast DNS-SD query to UDP 5353 at the hotspot (RFC 6762 6.7) and
+  reads the TXT entry under the stock key `fimrware`; the typo is upstream's,
+  named in shared/main `8e16cd74`. It judges that entry against the version
+  in the image's app descriptor, and it must be the whole string. Its own
+  test runs against a local responder; a truncated version fails it. 5 of 5
+  mutants are killed.
+- **Observed** (`runs/stage_b1_0a740ce6/bench_20261123T181229/w15.json`):
+  - 2 replies, 1 instance, `WiCAN-WebServer._http._tcp.local`;
+  - TXT `path=/`, `hardware=WiCAN-OBD`, `fimrware=0a740ce6`;
+  - the descriptor's version is `0a740ce6`.
+- **Recorded, not judged:** `/gen_inhibit`'s `git_version` is null on this
+  image. Only its `elf_sha256` and `git_version` fields are read.
 
 ## 12.1 Reading the result
 
@@ -3818,6 +3970,43 @@ test running.
   `build_checks2/`, `verification/`, `verification_r8x/`.
   `runs/step1d_7f2d503_repro_off/` (`README.md`; `SHA256SUMS`
   `74264a65...f5fb`): the `repro_off` rerun.
+
+**Bluetooth off (item 3, setting 7; spec 9.4): tester, 2026-11-23, on
+`0a740ce6` `_man`. Result: AS SPECIFIED in the build. shared/tools' options
+check (R18) on `0a740ce6`'s own release profile FAILs on this option alone,
+because that profile still says Bluetooth on. The release profile on
+`gen-inhibit/tester/stage-b1` (`603835b3`) passes.** This is stage (b) batch
+1. The image is as in the 9.2 entry. Run files are in
+`runs/stage_b1_0a740ce6/host/`.
+- **`build_output.py`'s new row "Bluetooth off"** (`603835b3`): it passes
+  when `CONFIG_BT_ENABLED` is absent or false in the build's
+  `config/sdkconfig.json`, and fails otherwise, naming the value.
+  - On the image: `ok  Bluetooth off  CONFIG_BT_ENABLED=not set`
+    (`build_output_0a740ce6_man.txt`). 46 rows ok.
+  - Two rows are not ok, and neither is about Bluetooth:
+    - The switch row FAILs because the build's CMake record could not be
+      used from the stage-b1 worktree, where the check ran. Run with
+      `--repo` on the image's own tree, `build_switches.py` gives unlisted
+      0, stale 0, malformed 0 (`build_switches_0a740ce6.txt`).
+    - The prod-build record is NO REF: this is not a prod build.
+  - The row's test (`test_bt_row.txt`) covers absent, false, `y`, `n`,
+    a config not shown to apply to the image (NO REF, not a pass), and the
+    sdkconfig text forms. It also covers the
+    release profile's entry and the committed `sdkconfig`. 4 of 4 mutants
+    are killed.
+- **The release profile** (`gen-inhibit/firmware/vtrux_checks.json`, the
+  tester's): `CONFIG_BT_ENABLED` changed from `true` to `"unset"` in
+  `603835b3`, citing 12.3 item 3 setting 7 and section 9.4.
+- **shared/tools `2026.11.16.3` `vtrux_checks`:**
+  - On the image, with `0a740ce6`'s profile
+    (`shared_tools_options_0a740ce6.txt`): R18 FAILs, with "build-tester-man:
+    CONFIG_BT_ENABLED is false, the profile says true", and nothing else.
+    R26-R29 PASS.
+  - On a build of the same firmware with stage-b1's profile
+    (`shared_tools_options_stage_b1_profile.txt`): R18 PASSes.
+  - On the image (`shared_tools_scopes_0a740ce6.txt`): R17, R20, R21 and R30
+    each PASS. R17 accepts `dependencies.lock` naming the annotated tag
+    object `b5f8a292`, which it resolves to commit `8e16cd74`.
 
 ## 12.4 Required tests
 
