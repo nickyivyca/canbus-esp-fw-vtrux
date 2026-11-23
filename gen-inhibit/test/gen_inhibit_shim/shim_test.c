@@ -5869,7 +5869,8 @@ static void case_leaving_armed_withdraws(void)
  * most significant, as the interposer's 0x7F7, and it goes out little-endian,
  * so B0..B3 are ff f0 0f 00. A big-endian send, a reversed pack, a dropped
  * leading zero or bytes from the wrong end of the hash each give other bytes.
- * B4-B5 are diag_fw_ver16 (7), B6 the schema (8), B7 reserved.
+ * B4-B5 are diag_reserved16 (0; diag_fw_ver16 until schema 9 retired it),
+ * B6 the schema (9), B7 reserved.
  */
 static void case_build_page_carries_the_build_id(void)
 {
@@ -5885,7 +5886,7 @@ static void case_build_page_carries_the_build_id(void)
         feed(0x592, KEY, 8, 20000);
     }
 
-    static const uint8_t want[8] = { 0xff, 0xf0, 0x0f, 0x00, 0x07, 0x00, 0x08, 0x00 };
+    static const uint8_t want[8] = { 0xff, 0xf0, 0x0f, 0x00, 0x00, 0x00, 0x09, 0x00 };
     const ft_frame_t *page = NULL;
     for (int i = 0; i < ft_wire_count() && !page; i++)
     {
@@ -5897,8 +5898,8 @@ static void case_build_page_carries_the_build_id(void)
     {
         CHECK(page->dlc == 8 && memcmp(page->data, want, 8) == 0,
               "0x7F3 is dlc %u, %02x %02x %02x %02x %02x %02x %02x %02x; want "
-              "ff f0 0f 00 07 00 08 00 (build id 0x000FF0FF little-endian, "
-              "fw_ver 7, schema 8)", page->dlc,
+              "ff f0 0f 00 00 00 09 00 (build id 0x000FF0FF little-endian, "
+              "reserved 0, schema 9)", page->dlc,
               page->data[0], page->data[1], page->data[2], page->data[3],
               page->data[4], page->data[5], page->data[6], page->data[7]);
     }
