@@ -13,9 +13,10 @@ Cases (the interposer reviewer asked for the whole string, so only exact equalit
   TXT only by its own query           PASS (not only from the additional section)
   no responder                        NO ANSWER, never a pass
   main() end to end, --no-page        exit 0 on exact, 1 on a prefix, 2 on a non-image
+  a multicast or broadcast host       refused before a socket is made; main exits 2
 --mutants: copies with the judge taking a prefix, taking any key containing "firmware" or
-"version", taking NO ANSWER as a pass, reading only the first instance, and dropping
-compression; each must fail a case.
+"version", taking NO ANSWER as a pass, reading only the first instance, dropping
+compression, and not refusing a multicast host; each must fail a case.
 
     python3.13 -B test_wican_fw_version_check.py [--mutants]
 """
@@ -135,7 +136,7 @@ def image(version):
 
 
 def cases():
-    inst = "wican_000000000000"
+    inst = "wican_instance"
     for label, txts, want, why in [
         ("exact", ["fimrware=" + VERSION, "hw=WiCAN"], "PASS", None),
         ("prefix", ["fimrware=" + VERSION[:4]], "FAIL", "prefix"),
@@ -169,6 +170,19 @@ def cases():
     check("no responder: NO ANSWER", v == "NO ANSWER", (v, d))
     check("judge(None): NO ANSWER", W.judge(VERSION, None)[0] == "NO ANSWER")
 
+    # unicast only: a group or broadcast destination is refused before any socket is made
+    for dest in ("224.0.0.251", "239.0.2.1", "255.255.255.255"):
+        made = []
+        try:
+            W.ask(dest, W.SERVICES, W.T_PTR, wait=0.1, sock_factory=lambda: made.append(1) or None)
+            refused = False
+        except W.Refused:
+            refused = True
+        except Exception:            # noqa: BLE001  a socket call on None: it got past the guard
+            refused = False
+        check("ask(%s): refused, no socket made" % dest, refused and not made, (refused, made))
+    check("ask(127.0.0.1) is not refused", W.unicast_only("127.0.0.1") == "127.0.0.1")
+
     # main(), end to end, with a synthetic image
     work = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "scratch", "w15-test",
                         str(os.getpid()))
@@ -189,6 +203,9 @@ def cases():
         with open(bad, "wb") as fh:
             fh.write(b"\0" * 300)
         check("main on a non-image: exit 2", W.main(["--image", bad, "--no-page"]) == 2)
+        p = os.path.join(work, "img.bin")
+        check("main --host 224.0.0.251: exit 2",
+              W.main(["--image", p, "--host", "224.0.0.251", "--no-page"]) == 2)
     finally:
         shutil.rmtree(work)
 
@@ -200,6 +217,8 @@ MUTANTS = [
      '        return "PASS", "no mDNS reply to a unicast query"'),
     ("first instance only", "    for inst in sorted(instances):", "    for inst in sorted(instances)[:1]:"),
     ("no compression", "        if n & 0xC0 == 0xC0:", "        if False:"),
+    ("multicast not refused", '    if ip.is_multicast or ip == ipaddress.ip_address("255.255.255.255"):',
+     '    if ip == ipaddress.ip_address("255.255.255.255"):'),
 ]
 
 

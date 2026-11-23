@@ -14,7 +14,8 @@ a truncation, "0.00", an empty string or a missing entry each FAIL.
               to the device. It asks for the DNS-SD service list, each type's instances, and
               each instance's TXT record, and takes every TXT entry whose key is `fimrware`.
               Exactly one value, equal to the descriptor's version: PASS. No answer at all is
-              NO ANSWER, never a pass.
+              NO ANSWER, never a pass. The socket joins no group, so a multicast or
+              broadcast --host is refused before it is made (exit 2).
   page half   NOT RUN: the status page is /check_status, which also returns stored
               passwords and has been barred since 2026-10-20 until the WiCAN's factory reset
               (asked of the gen-inhibit reviewer, 2026-11-23). Nothing here requests it.
@@ -28,6 +29,7 @@ Exit 0 PASS, 1 FAIL or NO ANSWER, 2 refused. Prints and writes no other field of
 Tested by test_wican_fw_version_check.py (a local responder; no device).
 """
 import argparse
+import ipaddress
 import json
 import os
 import random
@@ -141,8 +143,23 @@ def txt_entries(data):
 
 # ------------------------------------------------------------------ querying --
 
+def unicast_only(host):
+    """Refuses a destination that is not one host: a multicast group (mDNS's own
+    224.0.0.251 among them) or a broadcast. This probe's socket joins no group, so it
+    must never send to one (gen-inhibit tools/test_gi_vbus.py part 6, the gen-inhibit
+    reviewer's ruling of 2026-11-12)."""
+    try:
+        ip = ipaddress.ip_address(socket.gethostbyname(host))
+    except (OSError, ValueError) as e:
+        raise Refused("the host %r: %s" % (host, e))
+    if ip.is_multicast or ip == ipaddress.ip_address("255.255.255.255"):
+        raise Refused("the host %s is a multicast or broadcast address; this probe sends unicast only" % ip)
+    return str(ip)
+
+
 def ask(host, name, qtype, port=MDNS_PORT, wait=1.5, sock_factory=None):
     """Every record in every reply to one unicast query, within `wait` s."""
+    host = unicast_only(host)
     s = (sock_factory or (lambda: socket.socket(socket.AF_INET, socket.SOCK_DGRAM)))()
     try:
         s.bind(("0.0.0.0", 0))
@@ -261,7 +278,11 @@ def main(argv=None):
                   % (str(pg.get("elf_sha256"))[:8], desc["elf_sha256"][:8]))
             return 2
     t0 = time.time()
-    found = discover(a.host, a.port)
+    try:
+        found = discover(a.host, a.port)
+    except Refused as e:
+        print("REFUSED: %s" % e)
+        return 2
     rec.update(epoch_query=t0, mdns=found)
     verdict, detail = judge(desc["version"], found)
     rec.update(verdict=verdict, detail=detail)
