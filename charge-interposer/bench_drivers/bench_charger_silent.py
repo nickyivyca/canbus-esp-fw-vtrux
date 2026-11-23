@@ -35,9 +35,16 @@ start: it is counted, not judged, and if no frame after the reopen was seen
 the check is VOID; a PCAN that did not open, raised recv errors, or with
 kernel lost-frame lines voids it too (rx_proc.witness_void). The Kvaser,
 on kvaser_usb, is brought up and read back first and keeps the stall rule
-(kvaser_link.WatchedBus): a kvaser TX stall makes the check VOID with the
-kernel's lines, and the Kvaser is recovered. Until 2026-11-13 the start
-was when the Kvaser accepted the send.
+(kvaser_link.WatchedBus until 2026-11-23; since then kvaser_link.EchoWatch
+over can-tools' canbench.echo_watch with read_after_send=False, the
+reviewer's echo_watch ruling: the tagger and the burst send through it,
+and vehicle_reader, the one thread reading the Kvaser, hands each frame to
+watch.saw() and calls watch.check() after every read): a kvaser TX stall
+makes the check VOID with the kernel's lines, and the Kvaser is recovered.
+Until 2026-11-13 the start was when the Kvaser accepted the send. The
+Kvaser, the X2's port or the Innomaker not opening is a VOID line
+(premise_line, 2026-11-23, the reviewer's sweep ruling on premise
+failures; before, a traceback).
 The Innomaker's USB path is still inside every age, which can only make a
 frame look OLDER, never younger: a pass is conservative, and a fail can be
 FALSE. So phase A's tagged frames measure the path's own latency, and any
@@ -150,6 +157,39 @@ def reader_void(ok, errors):
     lines.append("VOID: %d reader error(s) on the vehicle side -- the CAN "
                  "cross-check is incomplete" % len(errors))
     return (False if ok is False else None), lines
+
+
+def vehicle_reader(bus, watch, stop, on_frame, stall):
+    """The vehicle side's reader thread (vehicle_rx): reads the Kvaser's
+    bus until stop. Since 2026-11-23 (the reviewer's echo_watch ruling) the
+    stall rule is kvaser_link.EchoWatch over can-tools' echo_watch with
+    read_after_send=False, since the tagger and the page-00 burst send on
+    other threads while this one reads: each frame read goes to
+    watch.saw() first, and an own echo (True) is the stall rule's, never a
+    frame heard; watch.check() after every read judges the 100 ms bound
+    here, as the old WatchedBus's recv() did. A kvaser TX stall is kept in
+    `stall` and ends the reader; every other frame read (is_rx) goes to
+    on_frame(m)."""
+    while not stop.is_set():
+        try:
+            m = bus.recv(timeout=0.1)
+            if m is not None and watch.saw(m):
+                m = None                 # an own echo: the stall rule's, not heard
+            watch.check()
+        except kvaser_link.Stall as st:
+            stall.append(st)
+            return
+        if m is None or not m.is_rx:
+            continue
+        on_frame(m)
+
+
+def premise_line(what, e):
+    """A premise not met (an adapter or the board's port that did not open)
+    as a VOID line, which script_judge reads (2026-11-23, the reviewer's
+    sweep ruling: a premise failure prints a VOID line rather than a bare
+    non-zero exit; before, a traceback, read FAIL)."""
+    return "VOID: %s did not open (%s: %s): spec 2.2 not run" % (what, type(e).__name__, e)
 
 
 def held_seq_of(witnessed_b):
@@ -396,7 +436,19 @@ def run_bench(args):
     acker = rx_proc.ProcReader("bench_usb_host", "open_pcan", {"acks": True},
                                name="pcan")
     acker.wait_ready()
-    veh = kvaser_link.WatchedBus(kvaser_link.open_bus(receive_own_messages=True))
+    # the Kvaser's bus, read by vehicle_rx alone; the tagger and the burst
+    # send through the watch, which reads nothing (read_after_send=False:
+    # the reviewer's echo_watch ruling, 2026-11-23; until then a WatchedBus)
+    veh = None
+    try:
+        veh = kvaser_link.open_bus(receive_own_messages=True)
+        watch = kvaser_link.EchoWatch(veh, read_after_send=False)
+    except Exception as e:                                 # noqa: BLE001
+        print(premise_line("the Kvaser (role kvaser)", e))
+        if veh is not None:
+            veh.shutdown()
+        acker.finish()
+        return 1
     stall = []
     sent, received, counters, flags = {}, [], [], []
     received_a, witnessed_b, errors, tag_errors = [], [], [], []
@@ -407,7 +459,13 @@ def run_bench(args):
     # lines held low: closing the port then does not reset the X2 (8.3 bench
     # facts, 2026-10-14)
     import serial_open
-    ser = serial_open.open_quiet(args.port, 115200, 0.2)
+    try:
+        ser = serial_open.open_quiet(args.port, 115200, 0.2)
+    except Exception as e:                                 # noqa: BLE001
+        print(premise_line("the X2's port %s" % args.port, e))
+        veh.shutdown()
+        acker.finish()
+        return 1
 
     def serial_rx():
         buf = b""
@@ -429,34 +487,29 @@ def run_bench(args):
                     ser_counters.append((h, d["txf"]))
                     ser_flags.append((h, d["silent"]))
 
+    def on_vehicle_frame(m):
+        h = time.perf_counter()
+        try:
+            if m.arbitration_id == 0x7F6:
+                counters.append((h, diag_value(db, 0x7F6, m.data,
+                                               "intp_tx_fail_expected")))
+            elif m.arbitration_id == 0x7F5:
+                flags.append((h, diag_value(db, 0x7F5, m.data,
+                                            "intp_chg_silent_expected")))
+        except Exception as exc:                           # noqa: BLE001
+            # never die silently: a dead reader reads as "no frames"
+            errors.append("vehicle_rx: %r on 0x%X %s"
+                          % (exc, m.arbitration_id, bytes(m.data).hex()))
+
     def vehicle_rx():
-        while not stop.is_set():
-            try:
-                m = veh.recv(timeout=0.1)
-            except kvaser_link.Stall as st:
-                stall.append(st)
-                return
-            if m is None or not m.is_rx:
-                continue
-            h = time.perf_counter()
-            try:
-                if m.arbitration_id == 0x7F6:
-                    counters.append((h, diag_value(db, 0x7F6, m.data,
-                                                   "intp_tx_fail_expected")))
-                elif m.arbitration_id == 0x7F5:
-                    flags.append((h, diag_value(db, 0x7F5, m.data,
-                                                "intp_chg_silent_expected")))
-            except Exception as exc:                       # noqa: BLE001
-                # never die silently: a dead reader reads as "no frames"
-                errors.append("vehicle_rx: %r on 0x%X %s"
-                              % (exc, m.arbitration_id, bytes(m.data).hex()))
+        vehicle_reader(veh, watch, stop, on_vehicle_frame, stall)
 
     def tagger():
         seq = 0
         nxt = time.perf_counter()
         while not stop.is_set():
             try:
-                veh.send(can.Message(arbitration_id=TAG_ID,
+                watch.send(can.Message(arbitration_id=TAG_ID,
                                      is_extended_id=True,
                                      data=tag_payload(seq)), timeout=0.1)
                 # when send() returned: recorded, no longer the age's start
@@ -535,14 +588,22 @@ def run_bench(args):
     threads = [threading.Thread(target=f, daemon=True)
                for f in (serial_rx, vehicle_rx, tagger, charger, charger_rx)]
     try:
+        chg0 = bcw.open_gs_usb()
+    except Exception as e:                                 # noqa: BLE001
+        print(premise_line("the Innomaker (role canchg)", e))
+        ser.close()
+        veh.shutdown()
+        acker.finish()
+        return 1
+    try:
         with lock:
-            state["chg"] = bcw.open_gs_usb()
+            state["chg"] = chg0
         for t in threads:
             t.start()
         for _i in range(20):          # the VCU's page-00 burst, flow 1
             try:
-                veh.send(can.Message(arbitration_id=P.CMD_ID, is_extended_id=True,
-                                     data=P.enc_master(1, P.MODE_CHARGER)))
+                watch.send(can.Message(arbitration_id=P.CMD_ID, is_extended_id=True,
+                                       data=P.enc_master(1, P.MODE_CHARGER)))
             except kvaser_link.Stall as st:
                 stall.append(st)
                 break
@@ -703,6 +764,87 @@ def run_bench(args):
 
 
 # --- self-test --------------------------------------------------------------
+
+class _Frame(object):
+    """A stand-in python-can message (saw() reads is_error_frame)."""
+
+    def __init__(self, aid, data, is_rx=True, err=False):
+        self.arbitration_id, self.data, self.is_rx = aid, bytes(data), is_rx
+        self.is_extended_id, self.is_error_frame = True, err
+
+
+class _KvaserBus(object):
+    """A stand-in Kvaser socket with its echoes kept: each send echoes at
+    once (is_rx False) unless `lose`; offer() queues a received frame."""
+
+    def __init__(self, lose=False):
+        import collections
+        self.q, self.lose, self.lock = collections.deque(), lose, threading.Lock()
+
+    def send(self, msg, timeout=None):
+        if not self.lose:
+            with self.lock:
+                self.q.append(_Frame(msg.arbitration_id, msg.data, is_rx=False))
+
+    def offer(self, m):
+        with self.lock:
+            self.q.append(m)
+
+    def recv(self, timeout=None):
+        with self.lock:
+            if self.q:
+                return self.q.popleft()
+        time.sleep(min(timeout or 0.0, 0.005))
+        return None
+
+
+def _reader_run(bus, sends, linger_s):
+    """vehicle_reader on a real kvaser_link.EchoWatch (read_after_send=False)
+    over `bus` on its own thread, `sends` tagged frames sent from this one
+    as the tagger does, then linger_s for the reader. -> (watch, frames
+    handed on, stalls, reader still alive)."""
+    import can
+    watch = kvaser_link.EchoWatch(bus, read_after_send=False)
+    got, stall, stop = [], [], threading.Event()
+    t = threading.Thread(target=vehicle_reader,
+                         args=(bus, watch, stop, lambda m: got.append(m.arbitration_id), stall),
+                         daemon=True)
+    t.start()
+    bus.offer(_Frame(0x7F6, bytes(8)))
+    for seq in range(sends):
+        watch.send(can.Message(arbitration_id=TAG_ID, is_extended_id=True,
+                               data=tag_payload(seq)), timeout=0.1)
+        time.sleep(0.01)
+    time.sleep(linger_s)
+    alive = t.is_alive()
+    stop.set()
+    t.join(2.0)
+    return watch, got, stall, alive
+
+
+def echo_watch_cases(check):
+    """The reviewer's echo_watch ruling (2026-11-23): vehicle_reader hands
+    each frame to watch.saw() and calls watch.check() itself."""
+    watch, got, stall, alive = _reader_run(_KvaserBus(), 5, 0.3)
+    check(type(watch.w).__module__.endswith("echo_watch") and watch.w.read_after_send is False,
+          "the stall rule is canbench's echo_watch, read_after_send=False")
+    check(watch.echoed == 5 and not watch.pending and not stall and alive and got == [0x7F6],
+          "CAN-FAIL saw: five tagged frames sent while the reader reads: each own echo "
+          "taken by saw() (echoed %d, pending %d), none handed on (%s), no stall %s 300 ms "
+          "on" % (watch.echoed, len(watch.pending), ["0x%X" % a for a in got], stall))
+    watch, got, stall, alive = _reader_run(_KvaserBus(lose=True), 1, 0.4)
+    check(len(stall) == 1 and str(stall[0]).startswith("kvaser TX stall: no own echo")
+          and not alive,
+          "CAN-FAIL check: an echo that never comes is a kvaser TX stall from the reader's "
+          "check(), which ends the reader -> %s" % stall)
+    import inspect
+    src = inspect.getsource(run_bench)
+    check("watch = kvaser_link.EchoWatch(veh, read_after_send=False)" in src
+          and "veh.send(" not in src and src.count("watch.send(") == 2
+          and "vehicle_reader(veh, watch, stop, on_vehicle_frame, stall)" in src,
+          "run_bench: the watch reads nothing, the tagger and the burst send through it, "
+          "and vehicle_rx is vehicle_reader on the same bus and watch")
+
 
 def self_test():
     fails = []
@@ -924,6 +1066,14 @@ def self_test():
           and src.find("crosscheck(cv, sv)") < at,
           "run_bench applies reader_void after the cross-check, before the "
           "verdict line")
+    echo_watch_cases(check)
+    # 2026-11-23, premise failures as VOID lines
+    pl = premise_line("the Innomaker (role canchg)", OSError("no device"))
+    check(pl.startswith("VOID: the Innomaker (role canchg) did not open (OSError: no device)"),
+          "an adapter that does not open -> a VOID line script_judge reads -> %s" % pl)
+    check(src.count("premise_line(") == 3,
+          "run_bench: the Kvaser, the X2's port and the Innomaker each print a VOID "
+          "line when they do not open (%d)" % src.count("premise_line("))
     print("\nbench_charger_silent self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -971,6 +1121,29 @@ def main():
 
 # --can-fail (script_can_fail.py): each edit must make --self-test fail
 MUTANTS = [
+    # 2026-11-23, the reviewer's echo_watch ruling
+    ("echo_watch: the saw() call dropped",
+     "            if m is not None and watch.saw(m):\n", "            if False:\n"),
+    ("echo_watch: the check() dropped",
+     "            watch.check()\n        except kvaser_link.Stall as st:\n",
+     "            pass\n        except kvaser_link.Stall as st:\n"),
+    ("echo_watch: a stall in the reader not kept",
+     "        except kvaser_link.Stall as st:\n            stall.append(st)\n            return\n"
+     "        if m is None or not m.is_rx:",
+     "        except kvaser_link.Stall as st:\n            return\n"
+     "        if m is None or not m.is_rx:"),
+    ("echo_watch: the watch reads after each send (two readers)",
+     "    watch = kvaser_link.EchoWatch(veh, read_after_send=False)",
+     "    watch = kvaser_link.EchoWatch(veh)"),
+    ("echo_watch: the tagger sends past the watch",
+     "                watch.send(can.Message(arbitration_id=TAG_ID,",
+     "                veh.send(can.Message(arbitration_id=TAG_ID,"),
+    # 2026-11-23, premise failures as VOID lines
+    ("premise: not a VOID line", "    return \"VOID: %s did not open (%s: %s): spec 2.2 not run\"",
+     "    return \"FAILED: %s did not open (%s: %s): spec 2.2 not run\""),
+    ("premise: the Innomaker's open unguarded",
+     "        print(premise_line(\"the Innomaker (role canchg)\", e))\n",
+     "        raise\n"),
     # 2026-11-21, the reviewer's sweep: reader errors exited 0 (PASS)
     ("reader errors: the verdict unchanged (PASS with a note)",
      "    return (False if ok is False else None), lines\n",

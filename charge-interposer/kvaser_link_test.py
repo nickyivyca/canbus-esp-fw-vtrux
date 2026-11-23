@@ -57,6 +57,26 @@ Each case names what it checks:
                     finish(excuse=f) returns every excused send never
                     echoed, however many, counts only the others against n
                     and waits for an excused send's late echo (ruling (a))
+  6a. canbench      (the reviewer's echo_watch ruling, 2026-11-23) the
+                    watch underneath is the pinned canbench.echo_watch's,
+                    with the bound STALL_S, on_rx, on_echo and
+                    read_after_send passed; WatchedBus's is its
+                    EchoWatchedBus, .inner the bus; each of SendRefused
+                    (send) and EchoMissing (check, poll, finish, WatchedBus.
+                    recv) is a Stall with "kvaser TX stall: " and canbench's
+                    text, at its .t, and its stall_lines VOID line matches
+                    run_scenario's KVASER_VOID (read from run_scenario.py),
+                    so vehicle_sim's stall is still a case's NOT EXERCISED;
+                    finish's forgiven/excused Stall in the old wording
+                    (finish_text), any other text kept; _key is canbench's
+                    key_of
+  6b. no-read       read_after_send=False (bench_charger_silent's and
+                    bench_topology's reader threads): send() never reads
+                    the bus; saw() is True for an own echo (matched, the
+                    pending send gone), False for a frame and an error
+                    frame; check() is Stall past the bound and nothing at
+                    99 ms; finish() waits for a reader thread's saw() calls
+                    and is Stall for an echo no reader hands it
   7. kernel-lines   a planted kernel log: its usb 1-3.2*, kvaser_usb, pcan,
                     gs_usb and -71/EPROTO lines (and only those) on the
                     VOID line with their times, the window named; after
@@ -86,7 +106,10 @@ Each case names what it checks:
 control, which must pass), then on edited copies, one edit each; every edit
 must make a case fail. The edits include a stall taken for a result (the
 bound never checked), the read-back dropped, and the kernel lines left off
-the VOID line.
+the VOID line. Since 2026-11-23 the echo bookkeeping is can-tools' (tested
+in can-tools), so the edits of the stall rule are edits of how kvaser_link
+hands it to canbench and maps what canbench raises; two old edits went with
+the code they edited (see MUTANTS).
 
 Charge-interposer tester, 2026-11-13 (the charge-interposer reviewer's
 rulings A, the stall rule, D and D5, and the kernel-log addendum).
@@ -218,6 +241,15 @@ def _raises(exc, fn, *a, **kw):
         got = fn(*a, **kw)
     except exc as e:
         return str(e)
+    raise AssertionError("%s not raised (got %r)" % (exc.__name__, got))
+
+
+def _exc(exc, fn, *a, **kw):
+    """_raises, returning the exception itself."""
+    try:
+        got = fn(*a, **kw)
+    except exc as e:
+        return e
     raise AssertionError("%s not raised (got %r)" % (exc.__name__, got))
 
 
@@ -627,26 +659,47 @@ def case_threads(M, work):
     """One thread sends while another polls (bench_topology's drain): no
     error from a deque changed while it is searched, every echo matched;
     and an echo read before send() has returned is still matched."""
-    import threading
     for bus, n in ((SyncBus(), 200), (ThreadBus(), 20000)):
         _threads(M, bus, n)
+    # read_after_send=False (2026-11-23): the reader hands each frame to
+    # saw() and checks the bound, as bench_charger_silent's and
+    # bench_topology's reader threads do
+    for bus, n in ((SyncBus(), 200), (ThreadBus(), 20000)):
+        _threads(M, bus, n, read_after_send=False)
 
 
-def _threads(M, bus, n):
+def _threads(M, bus, n, read_after_send=True):
     import threading
-    w = M.EchoWatch(bus, stall_s=5.0)
+    w = M.EchoWatch(bus, stall_s=5.0, read_after_send=read_after_send)
     errs, stop = [], threading.Event()
 
     def reader():
         try:
             while not stop.is_set():
-                w.poll(0.0005)
+                if read_after_send:
+                    w.poll(0.0005)
+                    continue
+                m = bus.recv(0.0005)
+                if m is not None and not w.saw(m):
+                    errs.append("a frame not taken for an own echo: %r" % (m,))
+                if m is None:
+                    # once the queue is read out, as poll() checks (check()
+                    # walks every pending send: after each of 20,000 frames
+                    # it would starve this reader)
+                    w.check()
         except Exception as e:                          # noqa: BLE001
             errs.append(repr(e))
     t = threading.Thread(target=reader)
     t.start()
     for i in range(n):
         w.send(Msg(0x7A9, i.to_bytes(3, "big")))
+    if not read_after_send:
+        # the watch reads nothing: finish() waits for the reader's saw()
+        # calls, so it runs while the reader still reads
+        try:
+            w.finish()
+        except M.Stall as e:
+            errs.append(repr(e))
     stop.set()
     t.join(10)
     try:
@@ -678,12 +731,178 @@ def case_watched_bus(M, work):
     c = Clock()
     fb = FakeBus(c, lose={3})
     w = M.WatchedBus(fb, clock=c)
-    w._rx.append(Msg(0x410, b"\x00"))
+    w._wb._rx.append(Msg(0x410, b"\x00"))
     w.send(Msg(0x7A9, b"\x03"))
     c.t += 0.2
     _raises(M.Stall, w.recv, 0.0)
     v = M.link_void("planted", 1794590000.0, 1794590001.0, lambda s, u: PLANTED)
     assert v.startswith("VOID: kvaser link: planted; kernel USB/CAN lines 7"), v
+
+
+def kvaser_void_re():
+    """run_scenario.py's KVASER_VOID, read from its source (its re.compile
+    argument), without importing run_scenario."""
+    import re
+    path = os.path.join(HERE, "run_scenario.py")
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read(), path)
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "KVASER_VOID"
+                                                for t in node.targets):
+            return re.compile(node.value.args[0].value)
+    raise AssertionError("no KVASER_VOID in run_scenario.py")
+
+
+def case_canbench(M, work):
+    """The reviewer's echo_watch ruling (2026-11-23): canbench's watch does
+    the bookkeeping, kvaser_link keeps Stall and its text."""
+    import can_tools_pin
+    can_tools_pin.use()
+    from canbench import echo_watch as EW
+    c = Clock()
+    rx, ech = [], []
+    w = M.EchoWatch(FakeBus(c), on_rx=lambda m, t: rx.append(m), clock=c,
+                    on_echo=lambda *a: ech.append(a))
+    assert type(w.w) is EW.EchoWatch and w.w.bound_s == M.STALL_S == w.stall_s, w.w
+    assert w.w.read_after_send is True and w.w.clock is c, "the defaults not passed"
+    assert M.EchoWatch(FakeBus(c), read_after_send=False).w.read_after_send is False, \
+        "read_after_send=False not passed"
+    msg = Msg(0x7A9, b"\x01")
+    assert M._key(msg) == EW.key_of(msg), "_key is not canbench's key_of"
+    w.send(msg)
+    assert w.pending[0][1] == M._key(msg), (w.pending, M._key(msg))
+    w.suspended = True
+    assert w.w.suspended is True and w.suspended, "suspended not handed to canbench's watch"
+    w.suspended = False
+    t_back = c() + 1.0
+    w.rebase(t_back)
+    assert w.w.pending[0][0] == t_back, "rebase not handed to canbench's watch"
+    c.t = t_back + 0.002
+    w.poll(0.0)
+    assert w.echoed == 1 and len(ech) == 1, "on_echo not passed: %r" % ech
+    fb = FakeBus(c)
+    w = M.EchoWatch(fb, on_rx=lambda m, t: rx.append(m.arbitration_id), clock=c)
+    fb.offer(Msg(0x410, b"\x09"), c())
+    w.poll(0.0)
+    assert rx == [0x410], "on_rx not passed: %r" % rx
+    wb = M.WatchedBus(FakeBus(c), clock=c)
+    assert type(wb._wb) is EW.EchoWatchedBus and wb._wb.watch.bound_s == M.STALL_S, wb._wb
+    assert wb._wb.watch.read_after_send is True and wb.watch.w is wb._wb.watch, wb.watch
+    assert M.WatchedBus(FakeBus(c), read_after_send=False)._wb.watch.read_after_send is False
+    # each canbench error a Stall, its text kept after "kvaser TX stall: ",
+    # its time kept, and the VOID line vehicle_sim logs matched by KVASER_VOID
+    rx_void = kvaser_void_re()
+    stalls = []
+    c = Clock()
+    e = _exc(M.Stall, M.EchoWatch(FakeBus(c, send_exc=OSError(
+        errno.ENOBUFS, "No buffer space available")), clock=c).send, Msg(0x7A9, b"\x00"))
+    stalls.append(("send", e, "kvaser TX stall: send refused with ENOBUFS ("))
+    for how in ("check", "poll", "finish", "recv"):
+        c = Clock()
+        fb = FakeBus(c, lose={0})
+        if how == "recv":
+            wb = M.WatchedBus(fb, clock=c)
+            wb.send(Msg(0x7A9, b"\x00"))
+            c.t += 0.2
+            e = _exc(M.Stall, wb.recv, 0.0)
+        else:
+            w = M.EchoWatch(fb, clock=c)
+            w.send(Msg(0x7A9, b"\x00"))
+            if how == "finish":
+                e = _exc(M.Stall, w.finish)
+            else:
+                c.t += 0.2
+                e = _exc(M.Stall, getattr(w, how), *(() if how == "check" else (0.0,)))
+        stalls.append((how, e, "kvaser TX stall: no own echo "))
+    for how, e, head in stalls:
+        assert isinstance(e.__cause__, EW.EchoWatchError), (how, e.__cause__)
+        assert str(e) == "kvaser TX stall: %s" % e.__cause__ and str(e).startswith(head), \
+            (how, str(e))
+        assert e.t == e.__cause__.t and e.t >= 100.0, (how, e.t)
+        b = Bench(M, os.path.join(work, how), up=True)
+        lines = M.stall_lines(e, M.wall() - 5, None, lambda s, u: "", b.net, {})
+        m = rx_void.search("12:00:00 veh " + lines[0])
+        assert m and m.group(0).startswith("VOID: kvaser TX stall: "), (how, lines[0])
+    assert "(bound 100 ms; 1 sends unechoed, 0 echoed)" in str(stalls[1][1]), str(stalls[1][1])
+    # finish's old wording; other texts kept as they are
+    c = Clock()
+    w = M.EchoWatch(FakeBus(c, lose={0, 1, 2}), clock=c)
+    for i in range(3):
+        w.send(Msg(0x7A9, bytes([i])))
+    e = _exc(M.Stall, w.finish, forgive=1, excuse=lambda k: k[2][0] == 0)
+    assert str(e) ==("kvaser TX stall: %s; 1 of them excused, 1 of them may be forgiven as "
+                      "dropped by the kernel, 1 unaccounted" % e.__cause__.__cause__), str(e)
+    plain = EW.EchoMissing(1.0, 1, 0, "no own echo 101 ms; 1 of them excused, up to 0 "
+                                      "forgiven, 1 unaccounted")
+    assert M.finish_text(plain) == str(plain), "a text without its cause rewritten"
+
+
+class CountingBus(FakeBus):
+    """A FakeBus that counts its recv() calls."""
+
+    def __init__(self, clock, **kw):
+        FakeBus.__init__(self, clock, **kw)
+        self.recvs = 0
+
+    def recv(self, timeout=None):
+        self.recvs += 1
+        return FakeBus.recv(self, timeout)
+
+
+def case_no_read(M, work):
+    """read_after_send=False (the reviewer's echo_watch ruling, 2026-11-23):
+    the caller's reader reads; saw() and check() are its calls."""
+    c = Clock()
+    fb = CountingBus(c, lose={2})
+    w = M.EchoWatch(fb, clock=c, read_after_send=False)
+    for i in range(3):
+        w.send(Msg(0x7A9, bytes([i])))
+    assert fb.recvs == 0, "send() read the bus (%d recv calls)" % fb.recvs
+    t_ret = c()
+    c.t += 0.002
+    seen = [fb.recv(0.0) for _ in range(3)]
+    assert [w.saw(m) for m in seen if m is not None] == [True, True], seen
+    assert w.echoed == 2 and len(w.pending) == 1, (w.echoed, w.pending)
+    assert w.saw(Msg(0x410, b"\x00")) is False, "a frame taken for an own echo"
+    assert w.saw(Msg(0x20000004, bytes(8), is_rx=False, err=True)) is False, \
+        "an error frame taken for an own echo"
+    assert w.echoed == 2 and w.stray == 0, (w.echoed, w.stray)
+    c.t = t_ret + 0.099
+    w.check()
+    c.t = t_ret + 0.1005
+    e = _raises(M.Stall, w.check)
+    assert "no own echo 100 ms" in e or "no own echo 101 ms" in e, e
+    # finish waits for a reader's saw() calls, reading nothing itself
+    import threading
+    c = Clock()
+    fb = CountingBus(c, delay=0.0)
+    w = M.EchoWatch(fb, clock=lambda: c(), read_after_send=False)
+    stop = threading.Event()
+
+    def reader():
+        while not stop.is_set():
+            m = fb.recv(0.0)
+            if m is not None:
+                w.saw(m)
+            else:
+                import time
+                time.sleep(0.001)
+    w.send(Msg(0x7A9, b"\x05"))
+    t = threading.Thread(target=reader)
+    t.start()
+    try:
+        assert w.finish() == [] and w.echoed == 1, (w.echoed, w.pending)
+    finally:
+        stop.set()
+        t.join(5)
+    c = Clock()
+    fb = CountingBus(c, delay=0.0)
+    w = M.EchoWatch(fb, clock=c, read_after_send=False)
+    w.w.sleep = lambda s: setattr(c, "t", c.t + s)
+    w.send(Msg(0x7A9, b"\x06"))
+    n0 = fb.recvs
+    _raises(M.Stall, w.finish)
+    assert fb.recvs == n0, "finish() read the bus with read_after_send=False"
 
 
 PLANTED = """\
@@ -891,28 +1110,68 @@ def case_scan(M, work):
 
 
 CASES = [case_link_state, case_set_up, case_restart_ms, case_counters, case_self_test_guard, case_set_down, case_not_taken, case_open_bus,
-         case_echo_watch, case_suspend, case_threads, case_watched_bus, case_kernel_lines, case_recover, case_stall_lines,
-         case_scan]
+         case_echo_watch, case_suspend, case_threads, case_watched_bus, case_canbench, case_no_read,
+         case_kernel_lines, case_recover, case_stall_lines, case_scan]
 
+# The stall rule's edits, since 2026-11-23 (the reviewer's echo_watch
+# ruling: the bookkeeping is canbench.echo_watch's, tested in can-tools):
+# each old edit of this module's own EchoWatch is now the edit of how it
+# hands that part to canbench or maps what canbench raises, named as
+# before where one exists. Two went with the code they edited, having no
+# counterpart here: "finish: the forgiven left pending" (canbench clears
+# its pending) and "a send noted only after it returned (its echo may come
+# first)" (canbench notes it before bus.send).
 MUTANTS = [
     ("a stall taken for a result: the bound never checked",
-     "            if age > self.stall_s:", "            if False:"),
+     "            self.w.check()\n", "            pass\n"),
+    ("a stall taken for a result: poll's missing echo not a Stall",
+     "            self.w.poll(timeout)\n        except ew().EchoMissing as e:\n"
+     "            raise as_stall(e) from e\n",
+     "            self.w.poll(timeout)\n        except ew().EchoMissing:\n            pass\n"),
     ("the bound off by ten", "STALL_S = 0.100 ", "STALL_S = 1.000 "),
-    ("ENOBUFS not a stall", "            if _enobufs(e):", "            if False:"),
-    ("every send error a stall", "            if _enobufs(e):", "            if True:"),
-    ("finish() does not wait", "        while self.pending:\n            try:",
-     "        while False:\n            try:"),
+    ("the bound not handed to canbench's watch",
+     "            _watch = ew().EchoWatch(bus, stall_s,", "            _watch = ew().EchoWatch(bus, 1.0,"),
+    ("WatchedBus: the bound not handed to canbench's bus",
+     "        self._wb = ew().EchoWatchedBus(bus, stall_s,",
+     "        self._wb = ew().EchoWatchedBus(bus, 1.0,"),
+    ("ENOBUFS not a stall",
+     "        except ew().SendRefused as e:\n            raise as_stall(e) from e\n",
+     "        except ew().SendRefused:\n            raise\n"),
+    ("every send error a stall", "        except ew().SendRefused as e:\n            raise as_stall(e)",
+     "        except Exception as e:\n            raise Stall(\"kvaser TX stall: %s\" % e, 0.0)"),
+    ("a stall's text without 'kvaser TX stall'",
+     "    return Stall(\"kvaser TX stall: %s\" % e, e.t)", "    return Stall(str(e), e.t)"),
+    ("a stall's time lost", "    return Stall(\"kvaser TX stall: %s\" % e, e.t)",
+     "    return Stall(\"kvaser TX stall: %s\" % e, 0.0)"),
+    ("finish() does not wait", "            return self.w.finish(forgive, excuse)",
+     "            return []"),
     # finish(forgive) (the reviewer's ruling Q1, 2026-11-20)
-    ("finish: nothing forgiven", "                    if n - k <= forgive:",
-     "                    if False:"),
-    ("finish: any number forgiven", "                    if n - k <= forgive:",
-     "                    if forgive or k:"),
-    ("finish: the forgiven left pending", "                        self.pending.clear()\n", ""),
+    ("finish: nothing forgiven", "            return self.w.finish(forgive, excuse)",
+     "            return self.w.finish(0, excuse)"),
+    ("finish: any number forgiven", "            return self.w.finish(forgive, excuse)",
+     "            return self.w.finish(10 ** 9, excuse)"),
+    ("finish: canbench's wording on the Stall",
+     "            raise Stall(\"kvaser TX stall: %s\" % finish_text(e), e.t) from e",
+     "            raise Stall(\"kvaser TX stall: %s\" % e, e.t) from e"),
+    ("finish_text: a text that is not its cause's plus the tail rewritten",
+     "    if cause is None or m is None or text != str(cause) + m.group(0):",
+     "    if m is None:"),
     # finish(excuse) (the reviewer's ruling (a), 2026-11-20)
-    ("finish: excused sends judged", "                            if excuse is not None and excuse(x[1]))",
-     "                            if False)"),
-    ("finish: every send excused", "                            if excuse is not None and excuse(x[1]))",
-     "                            if excuse is not None)"),
+    ("finish: excused sends judged", "            return self.w.finish(forgive, excuse)",
+     "            return self.w.finish(forgive, None)"),
+    ("finish: every send excused", "            return self.w.finish(forgive, excuse)",
+     "            return self.w.finish(forgive, lambda k: True)"),
+    # read_after_send (2026-11-23)
+    ("read_after_send not handed to canbench's watch",
+     "clock=clock or perf, read_after_send=read_after_send)",
+     "clock=clock or perf, read_after_send=True)"),
+    ("WatchedBus: read_after_send not handed to canbench's bus",
+     "                                       read_after_send=read_after_send)",
+     "                                       read_after_send=True)"),
+    ("an echo counted for any frame (saw)", "        return self.w.saw(m)\n",
+     "        self.w.saw(m)\n        return True\n"),
+    ("the key not canbench's", "    return ew().key_of(m)",
+     "    return (m.arbitration_id, bytes(m.data))"),
     # restart-ms (the reviewer's ruling Q1, 2026-11-20)
     ("restart-ms not passed to the layer", "    got = L.link_up(ROLE, BITRATE, restart_ms=restart_ms)",
      "    got = L.link_up(ROLE, BITRATE)"),
@@ -932,11 +1191,9 @@ MUTANTS = [
      "    return dict((k, c1[k]) for k in COUNTER_KEYS)"),
     ("stall_lines: restart-ms not asked", "    ok, line = recover(root, environ, restart_ms=restart_ms)",
      "    ok, line = recover(root, environ)"),
-    ("an echo counted for any frame", "        if getattr(m, \"is_rx\", True) or",
-     "        if False and getattr(m, \"is_rx\", True) or"),
     ("frames other than echoes not handed on",
-     "            if self.on_rx is not None:\n                self.on_rx(m, self.clock())",
-     "            pass"),
+     "            _watch = ew().EchoWatch(bus, stall_s, on_rx=on_rx,",
+     "            _watch = ew().EchoWatch(bus, stall_s, on_rx=None,"),
     ("IFF_UP ignored: any flags read up", "    return \"up\" if flags & IFF_UP else \"down\"",
      "    return \"up\""),
     ("an unreadable state read as down",
@@ -1024,26 +1281,20 @@ MUTANTS = [
     ("recover: from a self-test",
      "    why = self_test_refusal()\n    if why:\n        return False,",
      "    why = None\n    if why:\n        return False,"),
-    # (no mutant for the lock itself: a race without it shows only now and
-    # then, 5 strays in 20,000 sends when it was found, so a mutant of it
-    # would pass or fail by chance; the ordering below is deterministic)
-    ("a send noted only after it returned (its echo may come first)",
-     "        with self._lock:\n            self.pending.append(entry)\n        try:\n"
-     "            self.bus.send(msg, timeout=timeout)\n",
-     "        try:\n            self.bus.send(msg, timeout=timeout)\n"
-     "            with self._lock:\n                self.pending.append(entry)\n"),
     ("a self-test never refused", "    if \"--self-test\" in (argv0 if argv0 is not None else sys.argv):",
      "    if False:"),
-    ("suspended ignored", "        if self.suspended:\n            return\n", ""),
-    ("rebase does nothing", "                if e[0] is not None and e[0] < t:\n                    e[0] = t",
-     "                pass"),
-    ("on_echo never called", "        if hit is not None and self.on_echo is not None:",
-     "        if False:"),
+    ("suspended ignored", "        self.w.suspended = v\n", "        pass\n"),
+    ("rebase does nothing", "        self.w.rebase(t)\n", "        pass\n"),
+    ("on_echo never called", " on_echo=on_echo,\n", " on_echo=None,\n"),
     ("WatchedBus: the bus underneath not named", "        self.inner = bus\n", ""),
     ("WatchedBus: send not watched", "        self.watch.send(msg, timeout=0.05 if timeout is None else timeout)",
      "        self.bus.send(msg)"),
-    ("WatchedBus: a buffered frame skips the bound", "        else:\n            self.watch.check()\n",
-     "        else:\n            pass\n"),
+    ("WatchedBus: recv's missing echo not a Stall",
+     "            return self._wb.recv(timeout)\n        except ew().EchoMissing as e:\n"
+     "            raise as_stall(e) from e\n",
+     "            return self._wb.recv(timeout)\n        except ew().EchoMissing:\n            raise\n"),
+    ("WatchedBus: its watch not canbench's bus's", "        self.watch = EchoWatch(bus, _watch=self._wb.watch)",
+     "        self.watch = EchoWatch(bus)"),
     ("link_void: not a VOID line", "    return void_line(\"kvaser link: %s\" % err, t0, t1, journal)",
      "    return \"kvaser link: %s\" % err"),
     ("stall_lines: recovery with the socket open",

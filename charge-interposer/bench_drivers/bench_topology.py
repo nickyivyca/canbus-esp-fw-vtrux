@@ -42,12 +42,18 @@ THE KVASER ON KVASER_USB (tester, 2026-11-13; the charge-interposer
 reviewer's A, D6 and the kernel-log addendum). The adapters acknowledge, so
 the Kvaser's link is brought up and read back before anything opens
 (topology_link; VOID with the kernel's lines if it does not come up). It is
-netdev kvaser, opened as a kvaser_link.WatchedBus: its own echoes are
-consumed by the stall rule and never counted as frames heard. A kvaser TX
-stall, on a send or in its drain, ends the run VOID with the kernel's
-lines, never a topology answer, and the Kvaser is recovered. The sends here
-are slow (10 per second, 40 probes 10 ms apart), so the drains stay
-threads.
+netdev kvaser, opened with its echoes kept (a kvaser_link.WatchedBus until
+2026-11-23; since then Kvaser: the bus and a kvaser_link.EchoWatch over
+can-tools' canbench.echo_watch with read_after_send=False, the reviewer's
+echo_watch ruling): the sends go through the watch, which reads nothing,
+and the Kvaser's drain, the one thread reading it, hands each frame to
+watch.saw() first, so its own echoes are consumed by the stall rule and
+never counted as frames heard, and calls watch.check() after every read,
+so the 100 ms bound is judged there as WatchedBus.recv() judged it. A
+kvaser TX stall, on a send or in its drain, ends the run VOID with the
+kernel's lines, never a topology answer, and the Kvaser is recovered. The
+sends here are slow (10 per second, 40 probes 10 ms apart), so the drains
+stay threads; nothing waits out the last echoes (no finish()), as before.
 
 THE PCAN (the reviewer's PCAN item 2, 2026-11-20): opened with bus states
 reported (adapter_roles.pcanfd_report). Each drain reads under
@@ -60,7 +66,9 @@ VOID with its line (void_in), never a topology answer. Since 2026-11-23
 canbench.reader_guard.guard and a missed-frames row raises its
 MissedFrames (the VOID line's text reads "MissedFrames: ...", it read
 "LostFrames: ..."); the screen stays the drain's own step, since
-reader_guard.screen does not classify a WatchedBus on its .inner.
+reader_guard.screen does not classify a WatchedBus on its .inner (the
+Kvaser's drain reads the bus itself since 2026-11-23, but its frames pass
+saw() first, so its screen stays the drain's too).
 
     py -3.14 charge-interposer/bench_drivers/bench_topology.py
     py -3.14 .../bench_topology.py --self-test | --can-fail
@@ -140,6 +148,26 @@ def open_gs_usb():
     return adapter_roles.canchg(BITRATE)
 
 
+class Kvaser(object):
+    """Role kvaser's bus (its echoes kept) with the stall rule: .watch, a
+    kvaser_link.EchoWatch over can-tools' echo_watch with
+    read_after_send=False (the reviewer's echo_watch ruling, 2026-11-23),
+    since the Kvaser's drain thread reads the bus while sends come from the
+    main thread. send() goes through the watch; the drain reads .bus and
+    hands each frame to watch.saw() and calls watch.check() (Drain, by
+    drain_of)."""
+
+    def __init__(self, bus):
+        self.bus = bus
+        self.watch = kvaser_link.EchoWatch(bus, read_after_send=False)
+
+    def send(self, msg, timeout=None):
+        self.watch.send(msg, timeout=0.05 if timeout is None else timeout)
+
+    def shutdown(self):
+        self.bus.shutdown()
+
+
 OPENERS = {
     # auto_reset on the PCAN is not optional: phase 2 transmits, and a
     # python-can PCAN bus without it latches BUS-OFF silently, turning a
@@ -148,8 +176,9 @@ OPENERS = {
     # 2026-11-20): its states come up as error frames, never raised
     "pcan": lambda: adapter_roles.pcanfd_report(BITRATE, auto_reset=True),
     # the Kvaser on kvaser_usb, role kvaser (2026-11-13): its echoes kept
-    # and consumed by the stall rule, never counted as heard (WatchedBus)
-    "kvaser": lambda: kvaser_link.WatchedBus(kvaser_link.open_bus(receive_own_messages=True)),
+    # and consumed by the stall rule, never counted as heard (Kvaser; a
+    # WatchedBus until 2026-11-23)
+    "kvaser": lambda: Kvaser(kvaser_link.open_bus(receive_own_messages=True)),
     "innomaker": open_gs_usb,
 }
 
@@ -185,9 +214,13 @@ class Drain(object):
     this bench already.
     """
 
-    def __init__(self, name, bus):
+    def __init__(self, name, bus, watch=None):
         self.name = name
         self.bus = bus
+        # the Kvaser's stall rule (drain_of; the reviewer's echo_watch
+        # ruling, 2026-11-23): every frame read goes to watch.saw() first,
+        # and watch.check() follows every read
+        self.watch = watch
         self.ids = collections.Counter()
         # error frames counted as bus errors by can-tools' classifier
         # (adapter_roles.bus_error; the reviewer's bench-layer item,
@@ -215,6 +248,10 @@ class Drain(object):
     def _step(self):
         try:
             m = self.bus.recv(timeout=0.05)
+            if self.watch is not None:
+                if m is not None and self.watch.saw(m):
+                    m = None             # an own echo: the stall rule's, never heard
+                self.watch.check()
         except Exception as e:
             self.exc = e
             raise
@@ -246,6 +283,15 @@ class Drain(object):
         self.errors = 0
         self.not_bus = 0
         self.total = 0
+
+
+def drain_of(name, b):
+    """The Drain for an opened adapter: a Kvaser's reads its bus with its
+    watch (saw() and check() in the drain's own loop), any other's reads
+    the bus as it is."""
+    if isinstance(b, Kvaser):
+        return Drain(name, b.bus, b.watch)
+    return Drain(name, b)
 
 
 def open_void_lines(failed):
@@ -333,6 +379,78 @@ def talk_as_charger(x, buses, drains, seconds):
     print("  %-10s sent %d charger frame(s), %d send error(s)"
           % (x, sent, errs))
     return {"sent": sent, "heard": heard, "control": control}
+
+
+class _Frame(object):
+    """A stand-in python-can message (saw() reads is_error_frame)."""
+
+    def __init__(self, aid, data, is_rx=True):
+        self.arbitration_id, self.data, self.is_rx = aid, bytes(data), is_rx
+        self.is_extended_id, self.is_error_frame = False, False
+
+
+class _KvaserBus(object):
+    """A stand-in Kvaser socket with its echoes kept: each send echoes at
+    once (is_rx False) unless `lose`; offer() queues a received frame."""
+
+    def __init__(self, lose=False):
+        self.q, self.lose, self.lock = collections.deque(), lose, threading.Lock()
+
+    def send(self, msg, timeout=None):
+        if not self.lose:
+            with self.lock:
+                self.q.append(_Frame(msg.arbitration_id, msg.data, is_rx=False))
+
+    def offer(self, m):
+        with self.lock:
+            self.q.append(m)
+
+    def recv(self, timeout=None):
+        with self.lock:
+            if self.q:
+                return self.q.popleft()
+        time.sleep(min(timeout or 0.0, 0.005))
+        return None
+
+    def shutdown(self):
+        pass
+
+
+def _kvaser_drain(lose, sends, linger_s):
+    """A Kvaser over the stand-in, drained by drain_of as main() does, with
+    `sends` probe frames sent from this thread as phase 2 does, then
+    linger_s. -> (kvaser, drain, drain still running)."""
+    k = Kvaser(_KvaserBus(lose))
+    d = drain_of("kvaser", k).start()
+    k.bus.offer(_Frame(0x7F4, bytes(8)))
+    msg = can.Message(arbitration_id=PROBE_ID, is_extended_id=False, data=bytes([0xA5] * 8))
+    for _ in range(sends):
+        k.send(msg, timeout=0.2)
+        time.sleep(0.01)
+    time.sleep(linger_s)
+    alive = d._t.is_alive()
+    d.stop()
+    return k, d, alive
+
+
+def echo_watch_cases(check):
+    """The reviewer's echo_watch ruling (2026-11-23): the Kvaser's drain
+    hands each frame to watch.saw() and calls watch.check() itself."""
+    k, d, alive = _kvaser_drain(False, 5, 0.3)
+    check(type(k.watch.w).__module__.endswith("echo_watch") and k.watch.w.read_after_send is False,
+          "the Kvaser's stall rule is canbench's echo_watch, read_after_send=False")
+    check(alive and d.exc is None and k.watch.echoed == 5 and not k.watch.pending
+          and d.total == 1 and dict(d.ids) == {0x7F4: 1},
+          "CAN-FAIL saw: five probes sent while the Kvaser's drain reads: each own echo "
+          "taken by saw() (echoed %d, pending %d), none counted as heard (%d frame(s), "
+          "ids %s), no stall 300 ms on (%r)" % (k.watch.echoed, len(k.watch.pending), d.total,
+                                                sorted("0x%X" % i for i in d.ids), d.exc))
+    k, d, alive = _kvaser_drain(True, 1, 0.4)
+    st = stall_in({"kvaser": d})
+    check(not alive and st is d.exc and str(st).startswith("kvaser TX stall: no own echo")
+          and void_in({"kvaser": d}) is None,
+          "CAN-FAIL check: an echo that never comes is a kvaser TX stall from the drain's "
+          "check(), which ends the drain, and the stall's, not void_in's -> %r" % d.exc)
 
 
 def self_test():
@@ -433,7 +551,7 @@ def self_test():
     class Data(object):
         is_error_frame, is_rx, arbitration_id = False, True, 0x512
 
-    def drained(bus):
+    def drained(bus, wrap=None):
         frames = [Err(0x004), Err(0x008 | 0x080), Data()]
 
         class B(object):
@@ -445,7 +563,9 @@ def self_test():
         b = B()
         if bus is not None:
             b = bus(b)
-        d = Drain("x", b).start()
+        if wrap is not None:
+            b = wrap(b)
+        d = drain_of("x", b).start()
         t_end = time.monotonic() + 5
         while frames and time.monotonic() < t_end:
             time.sleep(0.01)
@@ -460,9 +580,9 @@ def self_test():
         return b
     got = drained(socketcan)
     check(got == (1, 1, 1), "SocketCAN: 1 bus error, 1 not, 1 data frame: %s" % (got,))
-    got = drained(lambda b: kvaser_link.WatchedBus(socketcan(b)))
-    check(got[:2] == (1, 1), "a WatchedBus classified on the SocketCAN bus underneath: %s"
-          % (got,))
+    got = drained(socketcan, Kvaser)
+    check(got == (1, 1, 1), "the Kvaser's drain classified on its SocketCAN bus, its frames "
+          "past saw(): %s" % (got,))
     got = drained(None)
     check(got == (2, 0, 1), "not SocketCAN: both error frames counted: %s" % (got,))
     # the reviewer's PCAN item 2 (2026-11-20): the PCAN opened with bus states
@@ -492,9 +612,12 @@ def self_test():
     d3._t.join(2.0)
     check(stall_in({"kvaser": d3}) is d3.exc and void_in({"kvaser": d3}) is None,
           "a kvaser TX stall in a drain is still the stall's, not void_in's")
+    echo_watch_cases(check)
     import inspect
     check(inspect.getsource(main).count("if void_in(drains):\n") == 3,
           "main: each phase's counts are taken only if no drain died or lost frames")
+    check("drains[n] = drain_of(n, b).start()" in inspect.getsource(main),
+          "main: each adapter drained by drain_of (the Kvaser's with its watch)")
     # 2026-11-21: an adapter that did not open is a VOID, not RESOLVED rc 0
     vl = open_void_lines(["canchg"])
     check(len(vl) == 1 and vl[0].startswith("VOID: 1 adapter(s) did not open "
@@ -589,7 +712,7 @@ def main():
 
     try:
         for n, b in buses.items():
-            drains[n] = Drain(n, b).start()
+            drains[n] = drain_of(n, b).start()
 
         # --- SETTLE AND DRAIN BEFORE COUNTING ANYTHING -------------------
         #
@@ -775,6 +898,21 @@ def main():
 
 # --can-fail (script_can_fail.py): each edit must make --self-test fail
 MUTANTS = [
+    # 2026-11-23, the reviewer's echo_watch ruling
+    ("echo_watch: the saw() call dropped",
+     "                if m is not None and self.watch.saw(m):\n", "                if False:\n"),
+    ("echo_watch: the check() dropped", "                self.watch.check()\n",
+     "                pass\n"),
+    ("echo_watch: an own echo counted as heard",
+     "                    m = None             # an own echo: the stall rule's, never heard\n",
+     "                    pass\n"),
+    ("echo_watch: the Kvaser's watch reads after each send (two readers)",
+     "        self.watch = kvaser_link.EchoWatch(bus, read_after_send=False)",
+     "        self.watch = kvaser_link.EchoWatch(bus)"),
+    ("echo_watch: the Kvaser drained without its watch",
+     "        return Drain(name, b.bus, b.watch)", "        return Drain(name, b.bus)"),
+    ("echo_watch: main drains without drain_of", "            drains[n] = drain_of(n, b).start()",
+     "            drains[n] = Drain(n, getattr(b, \"bus\", b)).start()"),
     # 2026-11-21, the reviewer's sweep: a failed open exited 0 on RESOLVED
     ("failed open: RESOLVED exits 0", "    return 3 if failed else 0\n",
      "    return 0\n"),

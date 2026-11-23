@@ -32,9 +32,10 @@ each half can fail:
   - the Kvaser (transport kvaser or socketcan; 2026-11-13, the
     charge-interposer reviewer's A, D and D6) is role kvaser: bus.open_kvaser
     brings its link up (kvaser_link.set_link) BEFORE it opens the role with
-    its echoes kept, and returns a kvaser_link.WatchedBus (the stall rule);
-    echoes asked for, another bit rate, or a link that does not come up is
-    refused with nothing opened;
+    its echoes kept, and returns a kvaser_link.WatchedBus (the stall rule;
+    a stand-in here since 2026-11-23, when the real one moved onto can-tools'
+    canbench.echo_watch); echoes asked for, another bit rate, or a link that
+    does not come up is refused with nothing opened;
   - none of it imports canbench's detection, or canbench at all with the
     stand-ins in place.
 
@@ -337,9 +338,17 @@ def _run(real):
     import kvaser_link
     calls = []
 
+    class Watched:
+        """kvaser_link.WatchedBus's stand-in: since 2026-11-23 the real one
+        is over can-tools' canbench.echo_watch (kvaser_link_test tests it),
+        and nothing here imports canbench."""
+
+        def __init__(self, bus):
+            self.inner = bus
+
     class Link:
         ROLE, BITRATE = kvaser_link.ROLE, kvaser_link.BITRATE
-        LinkError, WatchedBus = kvaser_link.LinkError, kvaser_link.WatchedBus
+        LinkError, WatchedBus = kvaser_link.LinkError, Watched
         check_channel = staticmethod(kvaser_link.check_channel)
         fail = None
 
@@ -369,8 +378,9 @@ def _run(real):
         check(err is None and calls == [("set_link", True), ("open_bus", "kvaser", True)],
               "kvaser: the link brought up, then role kvaser opened with its echoes kept "
               "-> %s %s" % (err, calls))
-        check(isinstance(b, kvaser_link.WatchedBus),
-              "... and the bus returned keeps the stall rule (WatchedBus) -> %r" % (b,))
+        check(isinstance(b, Watched) and isinstance(b.inner, FakePcan),
+              "... and the bus returned keeps the stall rule (link.WatchedBus over the bus "
+              "opened) -> %r" % (b,))
         b, err = kv("socketcan")
         check(err is None and calls[-1] == ("open_bus", "kvaser", True),
               "socketcan, channel kvaser: the same opener -> %s %s" % (err, calls))
