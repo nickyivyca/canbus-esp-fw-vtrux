@@ -5,9 +5,15 @@ synthetic witness and serial rows; the host mapping shown to absorb a
 drifting adapter clock; and the real diag DBC's intp_state decoded.
 
 Run: python diag_cadence_test.py   (exit 0 = all checks passed)
+
+--can-fail runs the new-boot cases (boot_cases, after run e599) on the
+unedited diag_cadence.py first (the control, which must pass), then on
+edited copies loaded in memory, one edit each, the first putting back the
+comparison across a reset; every edit must make a case fail.
 """
 
 import sys
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -152,7 +158,156 @@ def reset_cases():
           "-> %s" % why)
 
 
-def main():
+# run e599's board.restart-after-standby (2026-11-22), its stamped serial
+# lines after the start reset: the previous boot's last lines, read by the
+# tap after the reset and before the ROM banner, then the new boot
+E599_PREV = [
+    "[909851] SAFE         vehicle port mode (a=1 normal, a=0 listen-only) "
+    "a=0 b=2002 c=0",
+    "diag st=SAFE trip=10 flags=0xdf ilim=- vmax=3380 chgmax=30000 "
+    "soc=82.0 evap=1 chg=1ESP-ROM:esp32s3-20210327",
+]
+E599_BOOT = [
+    "rst:0x15 (USB_UART_CHIP_RESET),boot:0x28 (SPI_FAST_FLASH_BOOT)",
+    "Vtrux charge interposer",
+    "diag st=PASSTHROUGH trip=0 flags=0xc0 ilim=- vmax=0 chgmax=0 soc=0.0 "
+    "evap=0 chg=0 mod=0 synth=0 ovf=0 txf=0 silent=0 fw=9 schema=4",
+]
+E599_FIRST = ("[4013] PASSTHROUGH  vehicle port mode (a=1 normal, "
+              "a=0 listen-only) a=1 b=419419328 c=0")
+SAFE_LOW = "[100] SAFE         TRIP a=10 b=0 c=0"      # a counter below 4013
+
+
+def boot_cases(M):
+    """A new boot starts afresh (the reviewer, 2026-11-23, after run e599):
+    a previous boot's last event line is never compared with the new
+    boot's, whose first event line is its initial state. Run on module M
+    (diag_cadence, or an edited copy) -> the names of the cases that
+    failed. The witness carries PASSTHROUGH throughout, with no 0x7F4 near
+    the new boot's first event line (the nearest burst 496 ms before), so any
+    change read there FAILS 8.2."""
+    rows = witness(state_at=lambda t: 0)
+
+    def score(serial):
+        return M.score(rows, serial, db=FakeDb(), names=set(NAMES.values()))
+
+    def lines(*parts):
+        # host times 112.000 s on, 1 ms apart; the new boot's first event
+        # line at 115.5 s
+        out, h = [], 112.0
+        for p in parts:
+            if p is E599_FIRST:
+                h = 115.5
+            out.append((h, p))
+            h += 0.001
+        return out
+
+    cases = [
+        ("e599-flushed-safe",
+         lines("# START RESET SENT host=111.990 (esptool HardReset)",
+               *(E599_PREV + E599_BOOT + [E599_FIRST])),
+         lambda ok, why: ok and "0 state change(s)" in why,
+         "e599's lines (the flushed [909851] SAFE, the ROM banner, the new "
+         "boot's [4013] PASSTHROUGH): no change, PASS"),
+        ("uptime-drops",
+         lines(E599_PREV[0], E599_FIRST),
+         lambda ok, why: ok and "0 state change(s)" in why,
+         "no boot line, the event lines' uptime dropping 909851 -> 4013: a "
+         "new boot, no change, PASS"),
+        ("esp-rom-after-cut-line",
+         lines(SAFE_LOW, E599_PREV[1], E599_FIRST),
+         lambda ok, why: ok and "0 state change(s)" in why,
+         "uptime rising 100 -> 4013, ESP-ROM after a line the reset cut: a "
+         "new boot, no change, PASS"),
+        ("app-banner",
+         lines(SAFE_LOW, "Vtrux charge interposer", E599_FIRST),
+         lambda ok, why: ok and "0 state change(s)" in why,
+         "uptime rising, the application's banner alone between: a new "
+         "boot, no change, PASS"),
+        ("same-boot-change",
+         lines(SAFE_LOW, E599_FIRST),
+         lambda ok, why: (not ok and "SAFE -> PASSTHROUGH" in why
+                          and "-496.0 ms" in why),
+         "the same boot (uptime rising, no boot line): SAFE -> PASSTHROUGH "
+         "is a change, no 0x7F4 in 50 ms: FAILS"),
+        ("tap-comment-not-a-boot",
+         lines(SAFE_LOW, "# SERIAL BACK after 0.2 s (waiting for "
+               "'Vtrux charge interposer' or ESP-ROM:)", E599_FIRST),
+         lambda ok, why: not ok and "SAFE -> PASSTHROUGH" in why,
+         "the tap's own '#' line naming the banner and ESP-ROM is not the "
+         "board's boot: the change is judged, FAILS"),
+        ("change-after-boot",
+         lines("# START RESET SENT host=111.990 (esptool HardReset)",
+               *(E599_PREV + E599_BOOT + [E599_FIRST]))
+         + [(120.5, "[9013] MONITOR      LOW_POWER overridden a=1 b=2 c=3")],
+         lambda ok, why: (not ok and "1 of 1 state change(s)" in why
+                          and "PASSTHROUGH -> MONITOR" in why),
+         "after e599's boot, a change in the new boot (PASSTHROUGH -> "
+         "MONITOR, no 0x7F4 carrying it) is still judged: FAILS"),
+    ]
+    bad = []
+    for name, serial, want, what in cases:
+        ok, why = score(serial)
+        good = want(ok, why)
+        print("  %s  %s: %s -> %s" % ("ok  " if good else "FAIL", name, what,
+                                      why[-170:]))
+        if not good:
+            bad.append(name)
+    return bad
+
+
+# --can-fail: each edit of diag_cadence.py must make a boot case fail
+BOOT_MUTANTS = [
+    ("cross-reset comparison put back", [
+        ("            prev, prev_t = None, None\n            continue\n",
+         "            continue\n"),
+        ("            if prev_t is not None and t < prev_t:\n"
+         "                prev = None\n",
+         "            pass\n")]),
+    ("no boot line starts a boot", [
+        ('        if not line.startswith("#") and BOOT_SERIAL.search(line):',
+         "        if False:")]),
+    ("no uptime drop starts a boot", [
+        ("            if prev_t is not None and t < prev_t:",
+         "            if False:")]),
+    ("the tap's '#' lines read as the board's", [
+        ('        if not line.startswith("#") and BOOT_SERIAL.search(line):',
+         "        if BOOT_SERIAL.search(line):")]),
+]
+
+
+def can_fail():
+    print("-- control: the unedited diag_cadence.py")
+    if boot_cases(D):
+        print("\nREFUSED: the control fails")
+        return 1
+    src = Path(D.__file__).read_text(encoding="utf-8")
+    caught = 0
+    for n, (name, edits) in enumerate(BOOT_MUTANTS, 1):
+        msrc = src
+        miss = [old for old, _new in edits if msrc.count(old) != 1]
+        if miss:
+            print("FAIL  m%d %s: NOT APPLIED (an edit matched %s times)"
+                  % (n, name, [msrc.count(o) for o in miss]))
+            continue
+        for old, new in edits:
+            msrc = msrc.replace(old, new)
+        mod = types.ModuleType("diag_cadence_m%d" % n)
+        mod.__file__ = D.__file__
+        exec(compile(msrc, "diag_cadence.py (m%d)" % n, "exec"), mod.__dict__)
+        print("-- m%d %s" % (n, name))
+        bad = boot_cases(mod)
+        caught += bool(bad)
+        print("%s  m%d %s: %s" % ("ok  " if bad else "FAIL", n, name,
+                                  ("fails " + ", ".join(bad)) if bad
+                                  else "STILL PASSES -- nothing checks it"))
+    print("\n%d of %d mutants caught" % (caught, len(BOOT_MUTANTS)))
+    return 0 if caught == len(BOOT_MUTANTS) else 1
+
+
+def main(argv=()):
+    if "--can-fail" in argv:
+        return can_fail()
     print("cadence and burst shape")
     ok, why = run(witness(), [])
     check(ok and "19 bursts" not in why and "20 bursts" in why,
@@ -407,10 +562,13 @@ def main():
     print("a board reset mid-capture (2026-10-14)")
     reset_cases()
 
+    print("a new boot starts afresh (2026-11-23, after run e599)")
+    FAILS.extend(boot_cases(D))
+
     print("\ndiag_cadence_test: %s" % ("all checks OK" if not FAILS else
                                       "%d FAILED" % len(FAILS)))
     return 1 if FAILS else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

@@ -130,7 +130,12 @@ class ModeWindows(object):
 # the board's 8.3 event line, "[t] STATE event a= b= c=", and
 # interposer_sim's "HH:MM:SS intp [STATE] event" (the same events)
 BOARD_EVENT = re.compile(r"^\[\s*\d+(?:\.\d+)?\]\s+([A-Z_]+)\s+(\S.*)$")
+BOARD_EVENT_T = re.compile(r"^\[\s*(\d+(?:\.\d+)?)\]")
 SIM_EVENT = re.compile(r"\[([A-Z_]+)\]\s+(\S.*)$")
+# a new boot on the board's serial line: the ROM's lines (ESP-ROM can follow
+# a line the reset cut, so it is matched anywhere) or the application's
+# banner. The SerialTap's own "# ..." lines are not the board's.
+BOOT_SERIAL = re.compile(r"ESP-ROM:|^rst:0x|Vtrux charge interposer")
 
 
 def load_state_names():
@@ -320,14 +325,32 @@ def host_map(rows):
 
 def state_changes(serial_rows, names):
     """-> [(host, old, new, line)] for each event line whose STATE differs
-    from the previous event line's. Lines whose STATE token is not a
-    state name are not event lines."""
-    out, prev = [], None
+    from the previous event line's in the same boot. Lines whose STATE
+    token is not a state name are not event lines.
+
+    A new boot starts afresh: a boot line (BOOT_SERIAL), or an event line
+    whose [t] is below the previous one's (the board's uptime restarted).
+    The new boot's first event line is its initial state, not a change, so
+    a previous boot's last line is never compared with it (the reviewer,
+    2026-11-23, after run e599: the start reset's previous-boot line
+    `[909851] SAFE ...`, read by the tap after the reset and before the ROM
+    banner, against the new boot's `[4013] PASSTHROUGH ...` read as a SAFE
+    -> PASSTHROUGH change and failed 8.2)."""
+    out, prev, prev_t = [], None, None
     for h, line in serial_rows:
+        if not line.startswith("#") and BOOT_SERIAL.search(line):
+            prev, prev_t = None, None
+            continue
         m = BOARD_EVENT.search(line) or SIM_EVENT.search(line)
         if not m or m.group(1) not in names:
             continue
         st = m.group(1)
+        mt = BOARD_EVENT_T.match(line)
+        if mt:
+            t = float(mt.group(1))
+            if prev_t is not None and t < prev_t:
+                prev = None
+            prev_t = t
         if prev is not None and st != prev:
             out.append((h, prev, st, line))
         prev = st

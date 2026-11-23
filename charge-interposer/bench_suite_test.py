@@ -812,7 +812,9 @@ def test_suites():
     #      reviewer's PCAN ruling 1, 2026-11-19)
     # 316: harness-names-test and harness-names-test-canfail (undefined and
     #      rebound names, after run 69d8; the reviewer, 2026-11-21)
-    assert len(seen) == 316, "checks across the suites: %d" % len(seen)
+    # 317: diag-cadence-test-canfail (a new boot starts the state changes
+    #      afresh, after run e599; the reviewer, 2026-11-23)
+    assert len(seen) == 317, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
