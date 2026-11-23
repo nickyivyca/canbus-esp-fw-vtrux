@@ -140,8 +140,9 @@ Requirements are numbered W1 to W16. The numbers are stable.
   version.
 - **W16. An upload's multipart start is read within what was received.**
   Both multipart upload handlers, the OTA upload and
-  `/upload/car_data.json`, find the first boundary line, the part's
+  `/upload/car_data.json`, look for the first boundary line, the part's
   `Content-Type` header and the blank line after it only within the bytes
-  the first read returned. A body whose start lacks any of them is refused
-  with 400, and nothing is written. For the OTA upload that is a failed exit
-  under W12.
+  received so far. The handler keeps reading into its buffer until it finds
+  them, the buffer is full or the body ends, and only then refuses a body
+  whose start lacks any of them, with 400; nothing is written. For the OTA
+  upload that is a failed exit under W12.
