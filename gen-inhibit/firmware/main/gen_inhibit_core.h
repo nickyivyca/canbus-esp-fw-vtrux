@@ -227,11 +227,18 @@ extern "C" {
  * the first four bytes of the image hash, where they carried diag_git_hash, an
  * FNV-1a hash of the build's name (spec 10). No byte moves; what they mean does.
  *
- * wican_diag_schema.md's Version 8 entry and the DBC's VERSION line and
+ * 8 -> 9 in stage (b) of the shared-code port (user, 2026-11-23): diag_fw_ver
+ * (0x7F1 B1) and diag_fw_ver16 (0x7F3 B4-B5) are retired with DIAG_FW_VERSION
+ * and become reserved, sent as 0 (the DBC's diag_reserved_b1 and
+ * diag_reserved16). No byte moves. The frames are packed through shared/diag
+ * from here on, from a table generated from the DBC.
+ *
+ * wican_diag_schema.md's entry for each version and the DBC's VERSION line and
  * DiagSchemaVersion carry the same number; they move together or a log becomes
- * unreadable.
+ * unreadable. gen_inhibit_core.c checks this number against the generated
+ * table's DiagSchemaVersion at compile time.
  */
-#define GI_DIAG_SCHEMA_VER  8
+#define GI_DIAG_SCHEMA_VER  9
 
 /*
  * Slots in the trip 6 error-frame history. It only ever has to hold
@@ -335,7 +342,6 @@ typedef struct
                                  * 1.2 s / GI_DIAG_PAGES and both move
                                  * together when a page is added */
     uint32_t max_rx_errors;     /* consecutive hard RX errors -> self-disarm */
-    uint16_t fw_version;        /* reported in diag */
     uint32_t build_id;          /* reported in diag, 0x7F3 B0-B3; the image
                                  * hash's first four bytes, byte 0 most
                                  * significant (spec 10) */
