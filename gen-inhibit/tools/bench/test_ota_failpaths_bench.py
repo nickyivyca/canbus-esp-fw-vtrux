@@ -13,6 +13,8 @@ spec's server and failing where it should:
   restart  PASS on a restarting count; FAIL on a count that never restarts (ends in a gap)
   full     W14 PASS with a 0.3 s pause; FAIL with a 3 s one; OTA row on the 303
   fin, rst the device's end recorded (REC), not judged
+The test's own server answers a trailer split across two reads (it matched one read's end
+until 2026-11-23, so `full` failed now and then: a fault in this test, not in the probe).
 And the judges alone: longest_ack_stall on planted samples (idle time with nothing
 outstanding never counts), judge_after on planted pages (same image, uptime continuous,
 mode 0, in time; after `full`, restarted on the same image).
@@ -95,9 +97,12 @@ def dropper(max_timeouts, restart=True, tmo=0.5):
 
 
 def pauser(pause, after=20480):
+    trailer = ("--%s--\r\n" % F.BOUNDARY).encode()
+
     def h(c):
         got = 0
         paused = False
+        tail = b""
         c.settimeout(10)
         while True:
             b = c.recv(1024)
@@ -107,7 +112,9 @@ def pauser(pause, after=20480):
             if got >= after and not paused:
                 paused = True
                 time.sleep(pause)
-            if b.endswith(("--%s--\r\n" % F.BOUNDARY).encode()):
+            # the trailer can arrive split across two reads: match on the bytes so far
+            tail = (tail + b)[-len(trailer):]
+            if tail == trailer:
                 c.sendall(b"HTTP/1.1 303 See Other\r\nLocation: /\r\nContent-Length: 0\r\n\r\n")
                 return
     return h
@@ -165,6 +172,24 @@ def cases():
     check("fin: the 500 recorded, not judged", row(rows, "W12")[0][1] is None and "500" in row(rows, "W12")[0][2], rows)
     rec, rows = run("rst", dropper(100), cut=30000)
     check("rst: recorded, not judged", row(rows, "W12")[0][1] is None and rec["end"] == "client_rst", rows)
+
+    # the test's own server: a trailer split across two reads still gets its 303
+    a, b = socket.socketpair()
+    t = threading.Thread(target=pauser(0, after=10 ** 9), args=(b,), daemon=True)
+    t.start()
+    trailer = ("--%s--\r\n" % F.BOUNDARY).encode()
+    a.sendall(b"x" * 100 + trailer[:5])
+    time.sleep(0.3)
+    a.sendall(trailer[5:])
+    a.settimeout(5)
+    try:
+        reply = a.recv(100)
+    except OSError as e:
+        reply = repr(e).encode()
+    a.close()
+    t.join(12)
+    b.close()
+    check("test server: a trailer split across two reads gets the 303", reply.startswith(b"HTTP/1.1 303"), reply[:40])
 
     # the judges alone
     S = lambda t, sent, acked: {"t": t, "sent": sent, "bytes_acked": acked, "snd_wnd": 1000}
