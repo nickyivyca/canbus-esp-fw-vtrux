@@ -6798,15 +6798,11 @@ MUTANTS += [
      "            node.expect_acks(True)           # the witness and the board ACK\n"
      "            board.cmd(\"MODE normal\")\n"),
     # 2026-11-20, the hand take for ruling (2): the node's own echoes lost
-    # on a full receive queue
-    ("a refused send (ENOBUFS) skips the node's socket read",
-     "            watch.poll(0.0)             # a refused send still reads the socket\n",
-     ""),
-    ("a buffer-full refusal skips the node's socket read",
-     "        except Exception:                                  # noqa: BLE001\n"
-     "            watch.poll(0.0)\n"
-     "            raise\n",
-     ""),
+    # on a full receive queue. Its two mutants (the node's poll(0.0) after
+    # a refused send dropped) retired 2026-11-23: canbench's EchoWatch
+    # reads after every send, refused ones too (read_after_send, default
+    # True, passed by kvaser_link and checked in kvaser_link_test), so the
+    # read is can-tools' code now and held_flush_cases pass without it.
     ("the node takes error frames",
      "    bus = kvaser_link.open_bus(receive_own_messages=True, error_frames=False)",
      "    bus = kvaser_link.open_bus(receive_own_messages=True)"),
