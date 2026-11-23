@@ -94,7 +94,8 @@ static uint8_t derived_mac_addr[6] = {0};
 static uint8_t uid[16];
 static uint8_t ble_uid[33];
 static char hardware_version[16];
-static char firmware_version[10];
+/* The app descriptor's whole version string (shared/wican W15). */
+static char firmware_version[sizeof(((esp_app_desc_t *)0)->version)];
 // Wrapper so we can provide a function pointer for network readiness
 static bool dbg_net_ready(void) { return wifi_network_is_connected(); }
 
@@ -706,23 +707,16 @@ void wican_start(void)
 
     const esp_partition_t *running = esp_ota_get_running_partition();
     esp_app_desc_t running_app_info;
-	uint32_t firmware_ver_minor, firmware_ver_major;
     ESP_LOGI(TAG, "Running partition type %d subtype %d (offset 0x%08lx)",
              running->type, running->subtype, running->address);
+	/* mDNS shows the app descriptor's version string as it is, the commit
+	 * shared/tools R4 puts there; nothing is parsed out of it (W15). */
+	snprintf(firmware_version, sizeof(firmware_version), "%s", esp_app_get_description()->version);
     if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK)
     {
         ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
         ESP_LOGI(TAG, "Project Name: %s", running_app_info.project_name);
 
-		if (sscanf(running_app_info.version, "v%ld.%ld", &firmware_ver_major, &firmware_ver_minor) == 2) 
-		{
-			sprintf(firmware_version, "%ld.%ld", firmware_ver_major, firmware_ver_minor);
-			ESP_LOGI(TAG, "Firmware version: %s", firmware_version);
-		} 
-		else 
-		{
-			ESP_LOGI(TAG, "Failed to extract firmware version");
-		}
 		snprintf(hardware_version, sizeof(hardware_version), "WiCAN-%s", board_hw_name());
 		ESP_LOGI(TAG, "Hardware version: %s", hardware_version);
 

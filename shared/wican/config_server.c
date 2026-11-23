@@ -874,26 +874,11 @@ static esp_err_t check_status_handler(httpd_req_t *req)
 	char ip_str[20] = {0};
 	config_server_get_sta_ip(ip_str);
 	cJSON *root = cJSON_CreateObject();
-	static char fver[16];
 	static char hver[32];
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    static esp_app_desc_t running_app_info;
-	uint32_t firmware_ver_minor = 0, firmware_ver_major = 0;
+	/* The app descriptor's version string as it is, the commit shared/tools
+	 * R4 puts there; nothing is parsed out of it (shared/wican W15). */
+	const char *fver = esp_app_get_description()->version;
 
-    if (esp_ota_get_partition_description(running, &running_app_info) != ESP_OK)
-    {
-    	running_app_info.version[0] = '1';
-        ESP_LOGE(TAG, "Error getting partition_description");
-
-    }
-
-
-	if (sscanf(running_app_info.version, "v%ld.%ld", &firmware_ver_major, &firmware_ver_minor) == 2) 
-	{
-		ESP_LOGI(TAG, "Firmware version: %ld.%ld", firmware_ver_major, firmware_ver_minor);
-	} 
-
-    sprintf(fver, "%ld.%02ld", firmware_ver_major, firmware_ver_minor);
     snprintf(hver, sizeof(hver), "WiCAN-%s", board_hw_name());
 
 	cJSON_AddStringToObject(root, "wifi_mode", device_config.wifi_mode);
