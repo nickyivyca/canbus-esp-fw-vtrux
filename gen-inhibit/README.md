@@ -155,10 +155,12 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   `gen-inhibit/test/gen_inhibit_shim/` fakes and add their own fault
   behaviour on top, never by editing those fakes (reviewer, 2026-10-20: a
   test that judges product code is not written by the implementor).
-- `gen-inhibit/test/wican_ota_host/` and `gen-inhibit/test/wican_status_host/`:
-  host tests of `shared/wican`'s OTA upload handler (W12-W14) and status
-  page handler (W15), each compiled from the pinned `config_server.c`
-  against a fake ESP-IDF; tester-owned (reviewer, 2026-11-23).
+- `gen-inhibit/test/wican_ota_host/`, `gen-inhibit/test/wican_status_host/`
+  and `gen-inhibit/test/wican_upload_host/`: host tests of `shared/wican`'s
+  OTA upload handler (W12-W14), status page handler (W15) and both
+  multipart upload handlers' start (W16), each compiled from the pinned
+  `config_server.c` against a fake ESP-IDF; tester-owned (reviewer,
+  2026-11-23).
 - In reverse-it, `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/`:
   what stays out of git, as `gen-inhibit/tools/bench/README.md` lists it (run
   folders and fixtures, the jammer's builds and their `manifest.json`, the X2
