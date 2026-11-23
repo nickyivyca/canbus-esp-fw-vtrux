@@ -47,5 +47,12 @@ Why each requirement of `SPEC.md` is written as it is. Readings are of
   `DiagSchemaVersion`, `DiagSchemaHash` from shared/bench's `layout_hash`,
   and `RenamedFrom` in both DBCs). Gen-inhibit's schema doc already counts a
   byte whose meaning changes as a layout change (schema 8, 2026-10-25).
-  Wording approved by the user, 2026-11-23.
+  Wording approved by the user, 2026-11-23, and revised the same day on the
+  charge-interposer reviewer's read: `DiagSchemaHash` is computed, not
+  bumped. `layout_hash` hashes `canonical_text` (shared/bench
+  `vtrux_bench/decode.py`): each message's id, name, length and extended
+  flag, and each signal's name, start, length, byte order,
+  signedness/float, scale, offset, mux and choices. So it moves with every
+  layout change and not with a change of meaning alone, which only
+  `DiagSchemaVersion` records (revision approved by the user, 2026-11-23).
 - **Status:** validated.

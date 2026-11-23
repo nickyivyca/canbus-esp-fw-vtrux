@@ -41,6 +41,9 @@ Requirements are numbered D1 to D5. The numbers are stable.
   packers give the same bytes for the same table and values.
 - **D5. The schema convention.** Each project's frames carry a schema byte
   at fixed positions its spec names. Its DBC carries `DiagSchemaVersion`,
-  `DiagSchemaHash` (shared/bench's `layout_hash`) and `RenamedFrom` on a
-  renamed signal. Any change to a signal's name, position, length or value
-  table, or to what a byte means, bumps the schema version and the hash.
+  `DiagSchemaHash` and `RenamedFrom` on a renamed signal. Any change to a
+  signal's name, start, length, byte order, signedness, scale, offset or
+  value table, or to what a byte means, bumps `DiagSchemaVersion`.
+  `DiagSchemaHash` is always the DBC's `layout_hash` (shared/bench's
+  `decode.py`), so it changes with every layout change, but not with a
+  change of meaning alone.
