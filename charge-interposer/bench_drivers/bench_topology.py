@@ -256,6 +256,38 @@ def open_rc(failed):
     return 3 if failed else 0
 
 
+# Every adapter OPENERS opens, by its canctl role: each is a bench role, so
+# one left unplaced voids RESOLVED (the reviewer's sweep ruling 5,
+# 2026-11-21; a device that is not a bench role would stay reported only,
+# and this script opens none).
+ADAPTER_ROLE = {"pcan": "pcanfd", "kvaser": "kvaser", "innomaker": "canchg"}
+
+
+def unplaced_lines(quiet, charger):
+    """RESOLVED's adapters that heard neither the diagnostics nor the probe
+    -> (lines, rc): the unplaced line, and for any bench role a VOID line
+    with exit 3; a non-role device only the line, exit 0."""
+    un = [n for n in quiet if n not in charger]
+    if not un:
+        return [], 0
+    lines = ["  unplaced        : %s" % ", ".join(un)]
+    roles = [n for n in un if n in ADAPTER_ROLE]
+    if not roles:
+        return lines, 0
+    return lines + ["VOID: %d bench-role adapter(s) unplaced (%s): the "
+                    "topology is not resolved over the whole bench"
+                    % (len(roles), ", ".join("%s, role %s" % (n, ADAPTER_ROLE[n])
+                                             for n in roles))], 3
+
+
+def fault_line(text):
+    """A TEST FAULT (the check's premise not met: too few adapters opened,
+    nothing sent, the port not falling back) as a VOID line, which
+    script_judge reads as VOID (the reviewer's sweep, lower priority,
+    2026-11-21, at this driver's next change: before, a bare exit 2)."""
+    return "VOID: TEST FAULT: " + text
+
+
 def topology_link(link):
     """-> (ok, line): the Kvaser's link up and read back; not ok is a VOID
     line with the kernel's USB/CAN lines."""
@@ -458,10 +490,37 @@ def self_test():
           "all opened: no line, RESOLVED exits 0; one not: exits 3")
     msrc = inspect.getsource(main)
     check("failed.append(name)" in msrc and "for ln in open_void_lines(failed):" in msrc
-          and "return open_rc(failed)" in msrc
+          and "return max(open_rc(failed), urc)" in msrc
           and msrc.find("for ln in open_void_lines(failed):") < msrc.find("if len(buses) < 2:"),
           "main: each failed open is collected, its VOID line printed before "
           "any exit, and RESOLVED exits by open_rc")
+    # 2026-11-23, the reviewer's sweep ruling 5: a bench-role adapter left
+    # unplaced voids RESOLVED; a non-role device is only reported
+    ul, urc = unplaced_lines(["innomaker", "kvaser"], ["kvaser"])
+    check(urc == 3 and ul == ["  unplaced        : innomaker",
+                              "VOID: 1 bench-role adapter(s) unplaced "
+                              "(innomaker, role canchg): the topology is not "
+                              "resolved over the whole bench"],
+          "CAN-FAIL unplaced: a bench-role adapter unplaced -> a VOID line, "
+          "exit 3 -> %s" % ul)
+    ul, urc = unplaced_lines(["innomaker"], ["innomaker"])
+    check(urc == 0 and ul == [], "unplaced: every quiet adapter placed -> "
+                                 "nothing, exit 0")
+    ul, urc = unplaced_lines(["other"], [])
+    check(urc == 0 and ul == ["  unplaced        : other"],
+          "unplaced: a device that is no bench role is reported, not VOID")
+    check(sorted(ADAPTER_ROLE) == sorted(OPENERS),
+          "CAN-FAIL unplaced: every adapter opened has its bench role named")
+    check("ul, urc = unplaced_lines(quiet, charger)" in msrc and
+          "for ln in ul:\n            print(ln)" in msrc,
+          "main: RESOLVED prints the unplaced lines and exits by them")
+    # premise failures (sweep, lower priority, 2026-11-23): VOID lines
+    check(fault_line("x") == "VOID: TEST FAULT: x",
+          "a TEST FAULT is a VOID line script_judge reads")
+    check(msrc.count("fault_line(") == 3 and "TEST FAULT:" not in msrc.replace(
+              "(the TEST FAULT \"\n", ""),
+          "CAN-FAIL main: each of its three TEST FAULT exits prints a VOID "
+          "line, none a bare TEST FAULT line")
     print("\nbench_topology self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -506,9 +565,10 @@ def main():
         print(ln)
 
     if len(buses) < 2:
-        print("\nTEST FAULT: %d adapter(s) opened. A topology claim needs at "
-              "least two, because with one the answer is always 'that one' "
-              "and the check cannot fail." % len(buses))
+        print("\n" + fault_line(
+            "%d adapter(s) opened. A topology claim needs at "
+            "least two, because with one the answer is always 'that one' "
+            "and the check cannot fail." % len(buses)))
         for b in buses.values():
             b.shutdown()
         return 2
@@ -601,7 +661,8 @@ def main():
             for ln in lines:
                 print(ln)
             if verdict == "TEST FAULT":
-                print("Not a topology result.")
+                print(fault_line("not a topology result (the TEST FAULT "
+                                 "line above)"))
                 return 2
             if verdict == "UNRESOLVED":
                 return 1
@@ -643,8 +704,9 @@ def main():
 
         print("  offered %d, send errors %d" % (sent, errs))
         if sent == 0:
-            print("\nTEST FAULT: nothing was transmitted, so a silent "
-                  "adapter below proves nothing about where it is.")
+            print("\n" + fault_line("nothing was transmitted, so a silent "
+                                    "adapter below proves nothing about where "
+                                    "it is."))
             return 2
 
         charger = []
@@ -674,10 +736,10 @@ def main():
         print("  vehicle segment : %s   (all four diag pages)" % ", ".join(vehicle))
         print("  charger segment : %s   (no diag pages, but received a probe "
               "the board forwarded)" % ", ".join(charger))
-        if len(quiet) != len(charger):
-            un = [n for n in quiet if n not in charger]
-            print("  unplaced        : %s" % ", ".join(un))
-        return open_rc(failed)
+        ul, urc = unplaced_lines(quiet, charger)
+        for ln in ul:
+            print(ln)
+        return max(open_rc(failed), urc)
     except kvaser_link.Stall as st:
         # not a topology result: VOID with the kernel's lines, the Kvaser
         # recovered (its socket closed first) before the next case
@@ -707,7 +769,22 @@ MUTANTS = [
     ("failed open: not collected", "            failed.append(name)\n",
      "            pass\n"),
     ("failed open: RESOLVED returns 0 in main",
-     "        return open_rc(failed)\n", "        return 0\n"),
+     "        return max(open_rc(failed), urc)\n", "        return urc\n"),
+    # 2026-11-23, the reviewer's sweep ruling 5 and the premise rule
+    ("unplaced: a bench role only reported",
+     "    if not roles:\n        return lines, 0", "    if True:\n        return lines, 0"),
+    ("unplaced: RESOLVED exits 0 with one unplaced",
+     "        return max(open_rc(failed), urc)\n", "        return open_rc(failed)\n"),
+    ("unplaced: the VOID line not printed",
+     "        for ln in ul:\n            print(ln)\n", "        print(ul[:1])\n"),
+    ("unplaced: an adapter without its role",
+     "ADAPTER_ROLE = {\"pcan\": \"pcanfd\", \"kvaser\": \"kvaser\", \"innomaker\": \"canchg\"}",
+     "ADAPTER_ROLE = {\"pcan\": \"pcanfd\", \"kvaser\": \"kvaser\"}"),
+    ("premise: a TEST FAULT a bare line again",
+     "    return \"VOID: TEST FAULT: \" + text", "    return \"TEST FAULT: \" + text"),
+    ("premise: one TEST FAULT exit without its VOID line",
+     "            print(\"\\n\" + fault_line(\"nothing was transmitted",
+     "            print(\"\\n\" + (\"nothing was transmitted"),
     # 2026-11-20, the reviewer's PCAN item 2
     ("PCAN item 2: a lost-frames row counted as a state row",
      "            why = adapter_roles.missed(m)\n            if why:\n",

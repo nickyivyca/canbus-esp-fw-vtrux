@@ -438,7 +438,9 @@ def script_judge(run):
     PASS one: then nothing was tested, and it is VOID (a25e: noread-boots
     printed three VOID boots and exited 0). Otherwise VOID if the script
     printed a VOID verdict (its premise was not met), else FAIL. FAIL /
-    VOID lines go in the detail."""
+    VOID lines go in the detail. A PASS's detail carries the script's last
+    RESULT line, if it printed one (the reviewer's sweep ruling 1,
+    2026-11-21: usb-host's result names its VOID boot count)."""
     if run.rc is None:
         return Result(Verdict.ERROR, detail="no exit code (killed)")
     fails = _lines(run, r"^\s*(FAIL|VOID)\b")
@@ -447,7 +449,8 @@ def script_judge(run):
         if voids and not _lines(run, r"^\s*PASS\b"):
             return Result(Verdict.VOID, detail="rc=0 but every verdict "
                           "VOID: %s" % "; ".join(voids[:3]))
-        return Result(Verdict.PASS, detail="rc=0")
+        res = _lines(run, r"^\s*RESULT:")
+        return Result(Verdict.PASS, detail="rc=0" + ("; " + res[-1] if res else ""))
     if any(ln.startswith("VOID") for ln in fails) and \
             not any(ln.startswith("FAIL") for ln in fails):
         return Result(Verdict.VOID, detail="; ".join(fails[:3]))
