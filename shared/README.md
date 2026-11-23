@@ -25,6 +25,7 @@ charge interposer.
 | `bench/` | The shared bench toolkit (`vtrux_bench`). See `bench/README.md`. |
 | `boards/` | The board layer: one ESP-IDF component per board, to `boards/SPEC.md`. See `boards/README.md`. |
 | `can_port/` | The CAN port interface both projects use: a backend per port index, and the stock code's CAN calls on port 0, to `can_port/SPEC.md`. See `can_port/README.md`. |
+| `diag/` | The diag frames' shared parts: the build-id read, a frame packer from each project's DBC, and the schema convention, to `diag/SPEC.md`. See `diag/README.md`. |
 | `debug_logs/` | Stock WiCAN's UDP debug log, as its own ESP-IDF component, used by `wican/`. See `debug_logs/README.md`. |
 | `restart_guard/` | Takes the CAN ports off the bus at every software restart, through each port's driver and the board's standby, to `restart_guard/SPEC.md`. See `restart_guard/README.md`. |
 | `tools/` | The shared build tooling (`vtrux_build`): the image library, the release build and its record, to `tools/SPEC.md`. See `tools/README.md`. |
