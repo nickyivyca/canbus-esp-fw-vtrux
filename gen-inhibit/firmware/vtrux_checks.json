@@ -41,8 +41,8 @@
       "spec": "gen-inhibit spec 12.3 item 3, setting 6: with no secondary console (shared/boards wican_v3, a required choice)"
     },
     "CONFIG_BT_ENABLED": {
-      "value": true,
-      "spec": "gen-inhibit spec 12.3 item 3, setting 7: Bluetooth on until its held removal; section 9.4: its removal is held, CONFIG_BT_ENABLED=y (user, 2026-10-17 and 2026-10-26)"
+      "value": "unset",
+      "spec": "gen-inhibit spec 12.3 item 3, setting 7: Bluetooth off, CONFIG_BT_ENABLED unset; section 9.4: Bluetooth is off (user, 2026-10-17, held until after the port; written 2026-11-21)"
     },
     "CONFIG_FREERTOS_HZ": {
       "value": 1000,
