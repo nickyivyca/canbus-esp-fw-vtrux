@@ -2718,13 +2718,60 @@ requires both.
 script and its test against a fake device: `wican_reboot.py`, `test_wican_reboot.py`
 (37 ok; 17 of 17 mutants killed by a check, `runs/test_wican_reboot_mutants_20261020.txt`).
 
-### shared/wican W15: the image's version in mDNS (tester, 2026-11-23, `0a740ce6` `_man`)
+### shared/wican W15: the image's version in mDNS and on the status page (tester, 2026-11-23, `0a740ce6` `_man`)
 
-**Result: the mDNS half PASSES. The status-page half is NOT RUN:** it reads
-`fw_version` from `/check_status`, which has been barred since 2026-10-20
-until the factory reset or the user's ruling (asked 2026-11-23; the
-reviewer will say). This is stage (b) batch 1. The image, the X2's state
-and the harness are as in the 9.2 entry.
+**Result: W15 is AS SPECIFIED. The mDNS half PASSES on the device; the
+status-page half PASSES on the host.** This is stage (b) batch 1. The image,
+the X2's state and the harness are as in the 9.2 entry. The page half was
+first NOT RUN because it reads `fw_version` from `/check_status`, which has
+been barred since 2026-10-20 until the factory reset or the user's ruling.
+The bar stands. On the reviewer's instruction (2026-11-23), the page half is
+tested on the host instead, as W12-W14 were, and `/check_status` is never
+read from the device.
+
+**The status page, on the host**
+(`gen-inhibit/test/wican_status_host/run_status_host.py`, harness at
+`e89b9fad`, on the pinned shared/wican `2026.11.23`, `8e16cd74`):
+- **How it works:** the handler is the one the pinned `config_server.c`
+  registers for the URI `/check_status`, here `check_status_handler()`. It
+  is compiled against a fake ESP-IDF with ASan and UBSan. The JSON comes
+  from ESP-IDF v5.4.2's own cJSON. Each case writes a known version string
+  into the app descriptor and runs the handler once. The body must parse as
+  one JSON object with one `fw_version` key, and that key must hold the
+  whole string. A prefix, `0.00`, an empty value, a missing key or a second
+  key fails.
+- **Disclosure:** the fake was plumbed from a reading of the handler's
+  source. The cases come from the spec's wording and from the forms
+  shared/tools R4's `git describe --always --tags --dirty` can put in the
+  32-byte field.
+- **Results** (`host/status_host_2026.11.23.txt`): 4 of 4 cases PASS.
+  `fw_version` was the descriptor's version, the whole string, in each:
+  - `0a740ce6`, the abbreviated commit, as on the bench image;
+  - `0a740ce6-dirty`;
+  - `v4.20-1234-g0a740ce6ab-dirty`, a describe from a stock-style tag. The
+    stock parse read 4.20 from this form;
+  - `0a740ce6ab12cd34ef56ab78cd90ef1`, 31 characters, the most the field
+    holds.
+- **Recorded, not judged:** `git_version` was the same string in each case.
+  The content type was `application/json`, with one send, returning
+  `ESP_OK`.
+- **Can-fail** (`host/status_host_2026.11.04_canfail.txt`): shared/main
+  `2026.11.04`, from before W15, FAILS. `fw_version` is `0.00` on the
+  commit, `-dirty` and 31-character cases. Its stock-tag case is VOID, not a
+  pass: on a 64-bit host the stock parse's `%ld` writes 8 bytes into a
+  `uint32_t`, and ASan stops it. This crash happens only on the host.
+- **The harness's test** (`host/test_run_status_host.txt`, 32 checks ok):
+  - the pinned code passes and the 2026.11.04 code fails as above;
+  - six planted defects in the pinned handler each fail exactly the cases
+    they show in: a renamed key, an empty value, a value cut to 8
+    characters, a leading `v` dropped, the stock parse put back, and a
+    second `fw_version` key;
+  - five mutants of the judge each change a verdict;
+  - the extraction is not misled by a registration in a comment, a
+    commented-out `.handler`, or another URI. No registration, or two, is
+    refused.
+
+**mDNS, on the device**
 - **Check:** `gen-inhibit/tools/bench/wican_fw_version_check.py`. It sends a
   legacy unicast DNS-SD query to UDP 5353 at the hotspot (RFC 6762 6.7) and
   reads the TXT entry under the stock key `fimrware`; the typo is upstream's,
