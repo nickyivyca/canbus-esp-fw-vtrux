@@ -1,0 +1,349 @@
+# Port step 3's bench baseline on madhouse-debian, seventh re-run (shared/bench
+# ACCEPT-SPEC A2, A12a, A13; owned by the charge-interposer reviewer).
+# Drafted by the tester for the reviewer's approval: after run e599 the
+# reviewer's plan (2026-11-23) was the 8.2 fix first, on its own range, then
+# A (the sweep rulings) and B (can-tools f19d04b5: reader_guard, echo_watch,
+# replay.pace), each with its own gate, then "draft rerun7 naming e599". On
+# B's bench scope: "rerun7's whole bench phase covers the rest"; every bench
+# check is changed in this list (B's import closure reaches all 69 runnable
+# bench checks: kvaser_link under vehicle_sim and run_scenario, diag_cadence
+# under every board.* check, reader_guard under the readers), so nothing
+# stands on e599's bench phase. The vp runs, the two board checks and the
+# emulated suite whole stay as ruled. The 1M-flood witness stays an open
+# observation (quiet in 5 of 9 runs at e599; 6 of 10 with B's gate run).
+# A re-run of 3-bench-rerun6.toml, on the same product: everything its
+# header and those it cites say (the hand takes, DIFFERENCES LEFT, the
+# judgement changes since b467, the settings, the declared skips, placement
+# and the lock) stands, and this header names only what changed since.
+#
+# Run e599 (runs/accept_3_20261121T191433_e599, from 3-bench-rerun6.toml at
+# 180a3e22, harness 9cdffa19, product 5dc29741's with tracker I, digest
+# fee522d4ea6f, shared/bench 2026.11.20) started 2026-11-21 19:14:33 and
+# closed ACCEPTANCE FAIL on 2026-11-23 at 01:17. Its builds, emulated suite
+# (c-emulated held), harness suite (181 PASS, c-harness held), vp1 and vp2
+# (PASS, held against b467) are results, and so is its bench phase but for
+# two checks (the tester's VERIFICATION.md entry, accepted by the reviewer
+# 2026-11-23): bench 65 PASS (mcp-reset's first real result among them),
+# switch-loss KNOWN-FAIL (spec 12's 2.3 entry), vport-listen-wrong-rate VOID
+# as b467; board.restart-after-standby and board.hvil-before-flow-drop FAILed
+# on spec 8.2 only, a harness defect (diag_cadence compared the previous
+# boot's flushed event line with the new boot's first); vp3 VOID on the 1M
+# flooding window, the witness quiet (the open observation's fifth). This
+# list's record names e599 (A13: the runner's --earlier
+# accept_3_20261121T191433_e599).
+#
+# HARNESS CHANGES since e599's harness 9cdffa19, all merged into
+# charge-interposer/main:
+#   - 5231f25a (merged 77476f5d), the 8.2 fix: diag_cadence.state_changes
+#     starts afresh at a new boot (a boot line or an uptime drop), so a
+#     previous boot's last event line is never compared with the new boot's;
+#     diag_cadence_test's new-boot cases and its can-fail (new id
+#     m-harness/diag-cadence-test-canfail). A JUDGEMENT CHANGE for every
+#     board.* check's 8.2 line: e599's two FAILs are expected to PASS.
+#   - c12dce6f (merged eda2d9cc), sweep rulings A1-A5, each a JUDGEMENT
+#     CHANGE: usb-host's RESULT line names its VOID boot count;
+#     bridge-cycles VOID unless every stop is judged (0 judged is VOID);
+#     vport-recstart's SOMETHING ELSE / NEITHER a VOID with its text;
+#     vport-stall's verdicts say why the no-ACKer variant is not run;
+#     topology's unplaced bench-role adapter a VOID (UNRESOLVED stays a
+#     FAIL); premise VOID lines at these drivers and bench_suite.script_judge
+#     (a traceback read as FAIL before).
+#   - B, merged 223e334e (c12dce6f..1c9f6ccd): can-tools pin 49eb7777 ->
+#     f19d04b5; every bench reader on canbench's reader_guard.read_loop with
+#     drain=False; kvaser_link's EchoWatch / WatchedBus over canbench's
+#     echo_watch, Stall and its "kvaser TX stall: " line kept (run_scenario's
+#     KVASER_VOID still matches); charger-silent and topology send without
+#     reading (read_after_send=False), their reader threads judge the 100 ms
+#     bound; bench_offer (new) over replay.pace, cut by a stop Event at
+#     t0+seconds; bench_rate_feasibility.py and bench_pacer.py retired;
+#     premise VOID lines at powerup_round, keepalive_probe, reset_check,
+#     charger_silent, hold12, switch_loss, switch_errors, switch_pending,
+#     innomaker_clock, charger_witness. The reviewer accepted these
+#     judgement moves (2026-11-23): DiagWitness's own row-handling error is
+#     recorded (NOT EXERCISED); single-reader sends do canbench's
+#     non-blocking read after each send (usb-host's injector stamp includes
+#     it); EchoWatch.finish() while suspended raises EchoWatchError;
+#     bench_offer's catchup is pace's count, in passes.
+#   - C: no VERIFICATION.md entry cites a bench_pacer catchup figure, so
+#     nothing was corrected.
+#   - Pins: can-tools f19d04b5 (moved); shared/bench 2026.11.20, shared/tools
+#     and twai_port as e599. A17 reuse of e599's emulated suite cannot apply:
+#     the can-tools pin's pins.json is in the emulated harness digest, so the
+#     emulated suite runs whole again.
+#
+# THE GATES. Records in reverse-it
+# projects/vtrux/notes/artifacts/interposer-firmware/runs/:
+#   - 8.2 fix, on 5231f25a: harness_5231f25a, the whole harness suite, 182
+#     PASS with the 9 declared skips; ht_gate_5231f25a, both board checks
+#     end to end, PASS 2, each 8.2 line PASS.
+#   - A, on c12dce6f: harness3_c12dce6f, 182 PASS with the 9 declared skips;
+#     ht_gate2_c12dce6f PASS 10 (usb-host x7, topology, vport-stall,
+#     vport-recstart).
+#   - B, on 332f8d5a and 1c9f6ccd: harness_332f8d5a, PASS 184, FAIL 1
+#     (cf.bench-vport 163 of 165: two mutants whose read is can-tools' code
+#     since B2, retired by 1c9f6ccd), the 9 declared skips; harness_vport_B5
+#     (1c9f6ccd) st/cf.bench-vport PASS 2 (163 of 163 caught);
+#     ht_gate_332f8d5a, the 30 and board.normal-full: PASS 27, switch-loss KNOWN-FAIL,
+#     vport-listen-wrong-rate VOID (as e599), vport-bitrate VOID on its 1M
+#     flooding window (the open observation below), the declared skip
+#     innomaker-rate-runs-reopen NOT-RUN.
+#
+# OPEN OBSERVATION, the 1M flooding witness (the reviewer, 2026-11-21 and
+# 2026-11-23): in vport-bitrate's 1M flooding window the PCAN witness went
+# quiet within the window's first 0.05 s in 6 of the 10 Linux runs with that
+# window (C4, D3, E1, E3, e599's vp3 at 0.015-0.043 s, B's gate run
+# ht_gate_332f8d5a at 0.003-0.005 s with a clean resource record; E5, F1,
+# e599's vp1 and vp2 heard it). Its cause is not shown. A quiet window is
+# REFUSED, not covered (8b609320), so vp1-vp3 may each read VOID there against e599's
+# vp1 PASS, judged line by line at the close. 3-bench-rerun5.toml's
+# DIFFERENCES LEFT items 1 and 3 stand as written.
+#
+# Trees:
+#   harness   1151afc1, charge-interposer/main: the file map's
+#             bench_drivers/ row on the merge 223e334e of sweep-pin's B
+#             range, on eda2d9cc (A's merge), on 77476f5d (the 8.2 fix's).
+#             Its tree differs from B5's 1c9f6ccd in
+#             charge-interposer/README.md only. Its can-tools pin f19d04b5.
+#             This list's own commit follows on
+#             charge-interposer/tester/rerun7, from it.
+#   prod      the same commit, whose product files are 5dc29741's (as 69d8
+#             and e599; no product file changed since 180a3e22): the three
+#             bench builds come from it.
+
+[step]
+id = "3"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-23"
+spec = ["2", "2.1", "2.2", "2.3", "2.4", "8", "8.2", "8.3", "9", "9.1", "10", "12"]
+verification = "the tester's VERIFICATION.md entries for port step 3's bench baseline"
+
+[trees.harness]
+project = "1151afc12eb29ee9a772ab76675f5e91a78c7f08"
+
+# ---- the three variants the bench suite flashes ----------------------------
+[[build]]
+id = "bridge"
+tree = "harness"
+target = "idf-build"
+options = { variant = "bridge" }
+
+[[build]]
+id = "witness"
+tree = "harness"
+target = "idf-build"
+options = { variant = "witness" }
+
+[[build]]
+id = "truck"
+tree = "harness"
+target = "idf-build"
+options = { variant = "truck" }
+
+# ---- the emulated suite, whole (the bench suite's requires) ---------------
+# Whole again: the bench suite requires a whole emulated run on the same
+# code in the same record (Suite.requires, requires_whole); A17 reuse of
+# e599's cannot apply, since the can-tools pin moved and with it the
+# harness digest.
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+declared_skips = [
+  { id = "m-build/build-check", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "m-build/manifest-test", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "m-build/manifest-offline-test", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+]
+
+# ---- the harness suite, whole ----------------------------------------------
+[[suite_run]]
+id = "harness"
+tree = "harness"
+suite = "harness"
+after = ["emulated"]
+declared_skips = [
+  { id = "m-harness/build-check-links-test", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "m-harness/build-check-manifest-test", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "m-harness/build-check-schema-test", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "m-harness/build-check-schema-test-canfail", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "m-harness/build-check-in-clone-test", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "m-harness/build-check-in-clone-test-canfail", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "m-harness/digest-recheck-check", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "m-harness/digest-recheck-check-canfail", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "l-harness/cutover-verify-test", reason = "historical: the one-time 2026-10-08 cutover, verified then (reviewer 2026-10-18); cutover_verify_test.py and its --guard-test retired, nothing left to guard (reviewer 2026-10-31)" },
+]
+
+# ---- vport-bitrate judged three times, then the bench suite, whole ----------
+[[suite_run]]
+id = "vp1"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["harness"]
+
+[[suite_run]]
+id = "vp2"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["vp1"]
+
+[[suite_run]]
+id = "vp3"
+tree = "harness"
+suite = "bench"
+checks = ["b-vport/vport-bitrate"]
+images_from = ["bridge", "witness", "truck"]
+after = ["vp2"]
+
+# this run's flashes and identifies are the board evidence: each X2 image is
+# the list's own build, read back by its build id; the WiCAN's is the pinned
+# gen-inhibit image (wican_pin.json), read back from its boot slot
+[[suite_run]]
+id = "bench"
+tree = "harness"
+suite = "bench"
+images_from = ["bridge", "witness", "truck"]
+after = ["vp3"]
+declared_skips = [
+  { id = "b-bridge/charger-silent-unplugged", reason = "spec 2.2, the form with the Innomaker physically unplugged: needs hands (no-hands sheet, DEFERRED until the user is back)" },
+  { id = "b-bridge/brownout-cold-boot", reason = "spec 10 hardware mechanics, 'reset and brownout': a power cycle or brownout needs hands (no-hands sheet, DEFERRED)" },
+  { id = "b-bridge/board.evap-bypass", reason = "not runnable on a board as written (plan Step 4 run sheet, item 4: the scenario disables or bypasses the core in the sim)" },
+  { id = "b-bridge/board.hard-ceiling-failsafe", reason = "not runnable on a board as written (plan Step 4 run sheet, item 4: the scenario disables or bypasses the core in the sim)" },
+  { id = "b-witness/innomaker-rate-runs-reopen", reason = "plan Step 4 no-hands sheet item 1 (2026-10-14): reopening the Innomaker in the same process fails with libusb 'Access denied', a harness defect, not fixed (a25e and 4cdb failed the same way); reviewer 2026-10-22: a skip until it reopens in a fresh process" },
+  { id = "b-witness/innomaker-replug", reason = "plan Step 4 no-hands sheet item 1: the Innomaker replug remedy needs hands (DEFERRED)" },
+  { id = "b-witness/sameid-arm-12e2", reason = "spec 12 entry 2, the same-identifier arm: BLOCKED (reviewer 2026-10-14: F items 27, 28, 30 with the user, and the published deferral count)" },
+  { id = "truck-only/spec10-item1", reason = "spec 10 item 1: only the truck can answer" },
+  { id = "truck-only/spec10-item2", reason = "spec 10 item 2: only the truck can answer" },
+  { id = "truck-only/spec10-item3", reason = "spec 10 item 3: only the truck can answer" },
+  { id = "truck-only/spec10-item4", reason = "spec 10 item 4: only the truck can answer" },
+  { id = "truck-only/spec10-item5", reason = "spec 10 item 5: only the truck can answer" },
+  { id = "truck-only/spec10-item6", reason = "spec 10 item 6: only the truck can answer" },
+  { id = "truck-only/spec10-item7", reason = "spec 10 item 7: only the truck can answer" },
+  { id = "truck-only/spec10-item8", reason = "spec 10 item 8: only the truck can answer" },
+  { id = "truck-only/spec10-item9", reason = "spec 10 item 9: only the truck can answer" },
+  { id = "truck-only/spec2.1-offline-board", reason = "spec 2.1: what the truck does with the board offline needs the truck (spec 10 item 6)" },
+]
+
+# ---- the baselines -----------------------------------------------------------
+# All from e599 (the reviewer, 2026-11-23: "every baseline from e599, vp1
+# included: accepted"), the first madhouse run whose bench phase gave
+# results, in place of b467's bench and vp1: its
+# emulated suite (83 PASS, 2 KNOWN-FAIL, 3 NOT-RUN skips), harness suite
+# (181 PASS, 9 NOT-RUN skips), bench suite (65 PASS, 2 FAIL, 1 KNOWN-FAIL,
+# 1 VOID, 17 NOT-RUN skips) and vp1 (PASS, held against b467), all on the
+# same product files as this list.
+[baseline]
+emulated = "accept_3_20261121T191433_e599/runs/accept_3_20261121T191433_e599-emulated"
+harness = "accept_3_20261121T191433_e599/runs/accept_3_20261121T191433_e599-harness"
+bench = "accept_3_20261121T191433_e599/runs/accept_3_20261121T191433_e599-bench"
+vp1 = "accept_3_20261121T191433_e599/runs/accept_3_20261121T191433_e599-vp1"
+
+# The emulated suite against e599's: no difference. The same 40 checks (88
+# results: 83 PASS, 2 KNOWN-FAIL, 3 NOT-RUN) and Python reference; the two
+# host_bridge KNOWN-FAILs are KNOWN-FAIL on both sides; any other FAIL, or a
+# NOT-RUN that is not a declared skip, is a difference. The product files
+# are e599's (digest fee522d4ea6f); the harness changes above are expected
+# to move no verdict here.
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = []
+
+# The harness suite against e599's (181 PASS, 9 declared skips: 190 ids):
+# 194 ids at this tree, 6 new, each expected to pass, and 2 gone; every
+# other id keeping its verdict is expected. The 8.2 fix adds
+# diag-cadence-test-canfail; B retires bench_rate_feasibility's self-test
+# and can-fail and adds bench_offer's and bench_charger_witness's, and
+# innomaker_clock's can-fail. The other changes since 9cdffa19 change tests
+# under their unchanged ids. The gate runs harness_332f8d5a and
+# harness_vport_B5 gave these lines against e599's record.
+[[compare]]
+id = "c-harness"
+comparer = "run-records"
+a = "baseline:harness"
+b = "harness"
+expect = "listed"
+differences = [
+  "MISSING in b: l-harness/cf.bench-rate-feasibility (was PASS)",
+  "MISSING in b: l-harness/st.bench-rate-feasibility (was PASS)",
+  "NEW in b: l-harness/cf.bench-charger-witness PASS",
+  "NEW in b: l-harness/cf.bench-innomaker-clock PASS",
+  "NEW in b: l-harness/cf.bench-offer PASS",
+  "NEW in b: l-harness/st.bench-charger-witness PASS",
+  "NEW in b: l-harness/st.bench-offer PASS",
+  "NEW in b: m-harness/diag-cadence-test-canfail PASS",
+]
+
+# The bench suite against e599's: the same 86 checks and 17 declared skips.
+# Every check is changed since e599 (B reaches every bench check's code), so
+# the same verdict is expected on a changed judgement, with these listed:
+# board.restart-after-standby and board.hvil-before-flow-drop, e599's two
+# 8.2 FAILs, are expected to PASS on the 8.2 fix (both PASS in its gate).
+# b-witness/switch-loss stays KNOWN-FAIL (spec 12's 2.3 entry) and
+# vport-listen-wrong-rate VOID (TEST FAULT, as e599 and b467). A verdict
+# that moves otherwise is a difference to judge line by line in the
+# tester's entry, the judgement changes above and Linux-side causes
+# included. A VOID "kvaser TX stall" or "kvaser link" is a difference too,
+# with the kernel lines its detail carries.
+[[compare]]
+id = "c-bench"
+comparer = "run-records"
+a = "baseline:bench"
+b = "bench"
+expect = "listed"
+differences = [
+  "VERDICT b-bridge/board.hvil-before-flow-drop: FAIL -> PASS",
+  "VERDICT b-bridge/board.restart-after-standby: FAIL -> PASS",
+]
+
+# The three vport runs, each against the first and against e599's vp1 (PASS,
+# held against b467): the same verdicts, no TEST FAULT, no figure tolerance
+# (vport-bitrate's node frames count as sent on their own echo, D3). A 1M
+# flooding window with the witness gone quiet (the open observation above)
+# and 3-bench-rerun5.toml's DIFFERENCES LEFT items are judged one by one
+# with their causes.
+[[compare]]
+id = "vp1-vp2"
+comparer = "vport-windows"
+a = "vp1"
+b = "vp2"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp1-vp3"
+comparer = "vport-windows"
+a = "vp1"
+b = "vp3"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp1-e599"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp1"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp2-e599"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp2"
+expect = "same-verdicts"
+
+[[compare]]
+id = "vp3-e599"
+comparer = "vport-windows"
+a = "baseline:vp1"
+b = "vp3"
+expect = "same-verdicts"
+
+# ---- spec 8.3: no ESP-IDF line before setup() -----------------------------
+# In the bench suite run, as in 2b and 3-bench.toml: the truck by
+# b-truck/flight-silence; bridge and witness by b-bridge/idf-log and
+# b-witness/idf-log.
