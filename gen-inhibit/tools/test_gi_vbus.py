@@ -95,7 +95,11 @@ wrong way and must see 5 fail every time.
      fail on a planted send-only socket in a made-up tree. An AF_UNIX
      socketpair's SOCK_DGRAM is local and not counted (the gen-inhibit
      reviewer, 2026-11-20); an AF_INET SOCK_DGRAM beside one, and an AF_INET
-     socketpair, are shown still found.
+     socketpair, are shown still found. Also allowed, as sending to no group
+     (2026-11-23): bench/wican_fw_version_check.py, a unicast DNS query to the
+     device that refuses a multicast or broadcast host before its socket is
+     made, and its test, whose responder and queries stay on 127.0.0.1 (both
+     shown in test_wican_fw_version_check.py, with a mutant).
 
 --can-fail runs the network checks where they must fail, and passes only if
 they do:
@@ -766,6 +770,8 @@ RAW_UDP = ("SOCK_DGRAM", "sendto(", "IP_MULTICAST", "IP_ADD_MEMBERSHIP")
 RAW_UDP_ALLOWED = {
     "tools/gi_vbus.py": "sets and reads back the TTL on python-can's own socket",
     "tools/test_gi_vbus.py": "the deliberate TTL-1 control, and this scan",
+    "tools/bench/wican_fw_version_check.py": "unicast to the device only; refuses a group or broadcast host",
+    "tools/bench/test_wican_fw_version_check.py": "a responder and queries on 127.0.0.1 only",
 }
 # A local socket pair (AF_UNIX) never reaches a network, so its SOCK_DGRAM is taken out
 # before the scan; any other SOCK_DGRAM in the same file is still found (the gen-inhibit
