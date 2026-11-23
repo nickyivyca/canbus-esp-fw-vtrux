@@ -3,8 +3,9 @@
 W12, W13, W14). Gen-inhibit tester, 2026-11-23, stage (b) batch 1.
 
 It takes the OTA handler, the one function of vtrux/wican's config_server.c that calls
-esp_ota_begin(), out of the component's file as it is, with the file-scope #defines and
-the struct it uses, and compiles it on the host against fake_idf.c, a fake of the
+esp_ota_begin(), out of the component's file as it is, with the file-scope items it uses
+(#defines, the struct, helper functions, enums and typedefs, followed through: closure()),
+and compiles it on the host against fake_idf.c, a fake of the
 ESP-IDF calls it makes, under ASan and UBSan. ota_cases.c drives it through a complete
 upload and each kind of failed one, and this script judges each case's record against
 the spec's words:
@@ -186,24 +187,110 @@ def find_struct(text):
     return None
 
 
+_FN_HEAD = re.compile(r"(\w+)\s*\(([^()]*)\)\s*$")
+_ENUM_CONST = re.compile(r"(?:^|,)\s*([A-Za-z_]\w*)\s*(?==|,|$)")
+
+
+def faked_names(header_paths):
+    """Function names the fake's headers declare (or define as macros): a file-scope
+    definition of one of them in config_server.c is not taken; the fake's stands."""
+    names = set()
+    for p in header_paths:
+        with open(p, encoding="utf-8") as f:
+            t = strip_c(f.read())
+        names |= set(re.findall(r"\b([A-Za-z_]\w*)\s*\(", t))
+        names |= {m.group(1) for m in re.finditer(r"#\s*define\s+([A-Za-z_]\w*)", t)}
+    return names
+
+
+def file_items(text):
+    """[(start, kind, names, item text)] for the file-scope items a handler may need:
+    object-like #defines of one line, struct/enum/union definitions and typedefs of
+    them, and function definitions. names are what using the item takes: a define's or
+    function's name, a struct's tag, a typedef's name and an enum's constants."""
+    clean = blank_preprocessor(strip_c(text))
+    items = []
+    for m in _DEFINE.finditer(text):
+        if not m.group(2).rstrip().endswith("\\") and not strip_c(text[m.start():m.end()]).strip() == "":
+            items.append((m.start(), "define", {m.group(1)}, m.group(0).strip()))
+    for head_start, op, cl in top_blocks(clean):
+        head = clean[head_start:op].strip()
+        if not head:
+            continue
+        start = head_start + clean[head_start:op].index(head)
+        agg = re.search(r"\b(struct|enum|union)\b\s*(\w*)\s*$", head)
+        if agg and "=" not in head and "(" not in head:
+            semi = clean.index(";", cl)
+            names = set()
+            if agg.group(2):
+                names.add(agg.group(2))
+            if head.startswith("typedef"):
+                names |= set(re.findall(r"\b[A-Za-z_]\w*\b", clean[cl + 1:semi]))
+            if agg.group(1) == "enum":
+                body = re.sub(r"=[^,]*", "", clean[op + 1:cl])
+                names |= {n.strip() for n in body.split(",") if re.fullmatch(r"\s*[A-Za-z_]\w*\s*", n)}
+            items.append((start, agg.group(1), names, text[start:semi + 1]))
+            continue
+        if "=" in head:
+            continue                                # an initialised object, not taken
+        fm = _FN_HEAD.search(head)
+        if fm and fm.group(1) not in ("if", "while", "for", "switch"):
+            items.append((start, "function", {fm.group(1)}, text[start:cl + 1]))
+    return items
+
+
+def closure(text, defn, skip=(), faked=()):
+    """The file-scope items the definition defn needs, followed through what they need
+    in turn: [(start, kind, names, item text)] in file order. Functions named in skip
+    (the handler itself) or declared by the fake (faked) are not taken."""
+    items = [it for it in file_items(text)
+             if not (it[1] == "function" and (it[2] & set(skip) or it[2] & set(faked)))]
+    by_name = {}
+    for it in items:
+        for n in it[2]:
+            by_name.setdefault(n, it)
+    taken = []
+    seen = set()
+    todo = [defn]
+    while todo:
+        for w in sorted(set(re.findall(r"\b[A-Za-z_]\w*\b", strip_c(todo.pop())))):
+            it = by_name.get(w)
+            if it is not None and id(it) not in seen:
+                seen.add(id(it))
+                taken.append(it)
+                todo.append(it[3])
+    return sorted(taken, key=lambda it: it[0])
+
+
+def assemble(items):
+    """C text for closure()'s items: defines, then the types, then a prototype of each
+    function, then the functions, each in file order, so a helper defined after its
+    caller in the file still builds. Every function is made static."""
+    def static(t):
+        return t if t.lstrip().startswith("static") else "static " + t
+    out = [it[3] for it in items if it[1] == "define"] + [""]
+    out += [it[3] + "\n" for it in items if it[1] in ("struct", "enum", "union")]
+    fns = [it for it in items if it[1] == "function"]
+    for it in fns:
+        clean = blank_preprocessor(strip_c(it[3]))
+        out.append(static(it[3][:clean.index("{")].rstrip()) + ";")
+    out.append("")
+    out += [static(it[3]) + "\n" for it in fns]
+    return "\n".join(out)
+
+
+FAKE_HEADERS = [os.path.join(HERE, "fake_idf.h"), os.path.join(HERE, "fake_engine.h")]
+
+
 def handler_source(text):
-    """The C file the host build compiles: the fake's header, the #defines the handler
-    (and the struct, and those defines) name, the struct, the handler, and an entry."""
+    """The C file the host build compiles: the fake's header, the file-scope items the
+    handler needs (#defines, types, the struct, helper functions, followed through what
+    they need), the handler, and an entry."""
     name, params, defn = find_handler(text)
     struct = find_struct(text)
     if "struct %s" % _STRUCT in defn and not struct:
         raise Refused("the handler uses struct %s, which config_server.c does not define at file scope" % _STRUCT)
-    defs = file_defines(text)
-    want = []
-    seen = set()
-    todo = [defn] + ([struct] if struct else [])
-    while todo:
-        words = set(re.findall(r"\b[A-Za-z_]\w*\b", strip_c(todo.pop())))
-        for w in sorted(words):
-            if w in defs and w not in seen:
-                seen.add(w)
-                want.append(w)
-                todo.append(defs[w])
+    items = closure(text, defn, skip=(name,), faked=faked_names(FAKE_HEADERS))
     nparams = len([p for p in params.split(",") if p.strip() and p.strip() != "void"])
     if nparams == 2:
         call = "bool ok = false;\n    return %s(r, &ok);" % name
@@ -211,13 +298,16 @@ def handler_source(text):
         call = "return %s(r);" % name
     else:
         raise Refused("the handler %s takes %d parameters; the harness knows 1 or 2" % (name, nparams))
-    parts = ['#include "fake_idf.h"', "#include \"fake_engine.h\"", ""]
-    parts += [defs[w] for w in want]
-    parts += ["", struct or "", "", "static " + defn if not defn.lstrip().startswith("static") else defn, ""]
+    parts = ['#include "fake_idf.h"', "#include \"fake_engine.h\"", "", assemble(items), ""]
+    if struct and not any(it[1] == "struct" and _STRUCT in it[2] for it in items):
+        parts += [struct, ""]
+    parts += ["static " + defn if not defn.lstrip().startswith("static") else defn, ""]
     parts += ["int ota_entry(httpd_req_t *r)", "{",
               "    static struct %s server_data;" % _STRUCT if struct else "    static char server_data[8192];",
               "    memset(&server_data, 0, sizeof server_data);",
               "    r->user_ctx = &server_data;",
+              ("    fake_set_scratch(server_data.scratch, sizeof server_data.scratch);"
+               if struct and re.search(r"\bscratch\s*\[", struct) else "    fake_set_scratch(NULL, 0);"),
               "    " + call, "}", ""]
     return name, "\n".join(parts)
 
@@ -334,7 +424,7 @@ def build_and_run(src_text, work, sanitize=True):
         lines = [ln for ln in r.stdout.splitlines() if ln.startswith("{")]
         if r.returncode != 0 or len(lines) != 1:
             records.append({"case": cname, "crashed": True, "returncode": r.returncode,
-                            "stderr": r.stderr[-2000:]})
+                            "kind": crash_kind(r.stderr), "stderr": r.stderr[-2000:]})
             continue
         records.append(json.loads(lines[0]))
     return records
@@ -361,10 +451,22 @@ def run(wican, sanitize=True, work=None, src_override=None):
     good = [r for r in records if not r.get("crashed")]
     rows, void = judge(good) if not crashed else ([], None)
     if crashed:
-        void = "cases crashed: %s" % "; ".join("%s (exit %s) %s" % (r["case"], r["returncode"],
-                                                                     r["stderr"].strip().splitlines()[-1:] )
+        void = "cases crashed: %s" % "; ".join("%s (exit %s) %s" % (r["case"], r["returncode"], r["kind"])
                                                 for r in crashed)
     return name, records, rows, void
+
+
+def crash_kind(stderr):
+    """A crash in one line. ASan's use-after-poison here is a read of the receive buffer
+    past the bytes the last receive delivered (fake_set_scratch); its frames are named,
+    no paths."""
+    frames = " < ".join(re.findall(r"#\d+ 0x[0-9a-f]+ in (\w+)", stderr)[:4])
+    if "use-after-poison" in stderr:
+        return "read past the received bytes (ASan use-after-poison, in %s)" % frames
+    m = re.search(r"ERROR: AddressSanitizer: ([\w-]+)", stderr) or re.search(r"runtime error: ([^\n]{0,120})", stderr)
+    if m:
+        return "%s (in %s)" % (m.group(1), frames)
+    return str(stderr.strip().splitlines()[-1:])
 
 
 def main(argv=None):

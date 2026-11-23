@@ -5,11 +5,20 @@ by the gen-inhibit tester. Written 2026-11-23 for stage (b) batch 1.
 
 `run_ota_host.py` takes the OTA handler out of vtrux/wican's `config_server.c` as it
 is. The handler is the one function that calls `esp_ota_begin()`, and the script
-takes the file-scope `#define`s and the struct that function uses with it. It
-compiles them on the host against a fake of the ESP-IDF calls the handler makes,
-under ASan and UBSan. Then it runs the handler through a complete upload and
-through each kind of failed one, and judges each case's record against the
-spec's words.
+takes with it the file-scope items it needs: the `#define`s, the struct, and since
+2026-11-23 (W16's `multipart_start_read()`) the helper functions, enums and typedefs
+it uses, each followed through what it uses in turn (`closure()`). A function the
+fake's headers declare is the fake's, not taken. The helpers get prototypes, so one
+defined after the handler builds. It compiles them on the host against a fake of the
+ESP-IDF calls the handler makes, under ASan and UBSan. Then it runs the handler
+through a complete upload and through each kind of failed one, and judges each case's
+record against the spec's words.
+
+Since 2026-11-23 the fake also poisons the handler's receive buffer (the struct's
+`scratch`) past the bytes each receive delivered, so a read of a byte not received
+stops the case. Such a crash is named "read past the received bytes", with its frames;
+here it is VOID, never a pass. `../wican_upload_host/` (W16) uses the same fake, with
+its other bodies and its split receives.
 
 By default it reads the checkout of the tag `firmware/main/idf_component.yml`
 pins (`../gen_inhibit_shim/wican_ref.py`); `--wican DIR` reads another. The
@@ -20,7 +29,7 @@ cases come from the spec.
 |---|---|
 | `run_ota_host.py` | Extracts, builds in `scratch/wican-ota-host/<pid>/` (removed afterwards), runs each case in its own process, and judges. See the rows below. Exit 0 pass, 1 fail or VOID, 2 refused. `--json` writes the records and rows. |
 | `fake_idf.h` | The ESP-IDF names, types and constants the handler uses. The constants are v5.4.2's own: `OTA_SIZE_UNKNOWN`, `OTA_WITH_SEQUENTIAL_WRITES`, and the `HTTPD_SOCK_ERR_*` returns. |
-| `fake_engine.h`, `fake_idf.c` | The fake's behaviour and each case's record. The client is a `curl -F ota_file=@...` multipart body, sent in chunks of at most 1436 bytes. At set body offsets it can inject receive timeouts (a count, or forever), a reset, an invalid socket or a close. A failed `esp_ota_begin`, `_write`, `_end` or `_set_boot_partition` can be injected too. The record covers each `esp_ota_begin` size, the sessions begun, ended and still open at return, the timeouts (in a row and in all), the restart timer, the reply, and whether the written image equals the image sent. |
+| `fake_engine.h`, `fake_idf.c` | The fake's behaviour and each case's record. The client is a `curl -F ota_file=@...` multipart body, sent in chunks of at most 1436 bytes. At set body offsets it can inject receive timeouts (a count, or forever), a reset, an invalid socket or a close. A failed `esp_ota_begin`, `_write`, `_end` or `_set_boot_partition` can be injected too. For `../wican_upload_host/`: other bodies (`fake_body_t`: no line break, no `Content-Type`, no blank line, a start longer than the buffer, a body that ends in the start), a receive split at an offset (`INJ_SPLIT`) or limited to a few bytes (`trickle`), and the buffer's poisoning (`fake_set_scratch`). A write of more than the whole image (a negative length) is refused and never copied. The record covers each `esp_ota_begin` size, the sessions begun, ended and still open at return, the timeouts (in a row and in all), the restart timer, the reply, and whether the written image equals the image sent. |
 | `ota_cases.c` | The 17 cases. |
 | `test_run_ota_host.py` | The harness's own test. See below. |
 
@@ -54,12 +63,20 @@ cases come from the spec.
   - W13 on a stall, which took 21 timeouts;
   - W14 on every case;
 - eight planted one-line defects in the pinned handler each fail their own
-  requirement and no other. One of them is the parked write pointer of spec
-  9.2 item 2, which the control turns VOID;
+  requirement and no other. One of them puts the write pointer off the receive
+  target (spec 9.2 item 2's kind of defect), which is VOID by the control or by its
+  read past the received bytes. Until 2026-11-23 that mutant dropped the loop's
+  `buf = scratch;`; since W16 (`2026.11.23.2`) `buf` never moves, so that was
+  equivalent there, and it now sets `buf = scratch + 1;`;
 - five mutants of the judge each change a verdict;
 - the extraction is not misled by braces or by the word `esp_ota_begin` in
   comments, strings, chars or `#define`s;
+- a helper defined after the handler, the enum it returns and the helper it calls
+  are taken, and the result builds; a function the fake declares, or one nothing
+  calls, is not;
 - no handler, or two, is refused.
+
+Run against both the pinned tag and `2026.11.23.2` (2026-11-23): PASS each.
 
 ```
 PYTHONDONTWRITEBYTECODE=1 python3.13 -B run_ota_host.py [--wican DIR] [--json OUT]

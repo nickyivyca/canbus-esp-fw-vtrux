@@ -23,13 +23,44 @@
 
 #include <stdarg.h>
 #include <stdlib.h>
+#include <sanitizer/asan_interface.h>   /* the poison macros; no-ops in a build without ASan */
 
 TimerHandle_t xrestartTimer = (TimerHandle_t)0x1;
 
 static const esp_partition_t PART_RUNNING = {0, 0x10, 0x10000};
 static const esp_partition_t PART_NEXT = {0, 0x11, 0x1C0000};
 
-static fake_state_t S;
+fake_state_t fake_S;
+#define S fake_S
+
+void fake_set_scratch(char *buf, size_t len)
+{
+    S.scratch = buf;
+    S.scratch_len = len;
+}
+
+/* Called around each receive: before, the buffer from buf to its end is made writable;
+ * after, everything past the n bytes delivered is poisoned (W16: the handler reads only
+ * within what was received). Only for a receive into the buffer the entry named. */
+static bool in_scratch(const char *buf)
+{
+    return S.scratch && buf >= S.scratch && buf < S.scratch + S.scratch_len;
+}
+
+static void recv_open(char *buf)
+{
+    if (in_scratch(buf)) ASAN_UNPOISON_MEMORY_REGION(buf, (size_t)(S.scratch + S.scratch_len - buf));
+}
+
+static int recv_close(char *buf, int n)
+{
+    if (in_scratch(buf)) {
+        char *from = buf + (n > 0 ? n : 0);
+        char *end = S.scratch + S.scratch_len;
+        if (from < end) ASAN_POISON_MEMORY_REGION(from, (size_t)(end - from));
+    }
+    return n;
+}
 
 void fake_log(const char *tag, const char *fmt, ...)
 {
@@ -63,7 +94,15 @@ static const fake_inj_t *pending(void)
     return NULL;
 }
 
+static int recv_body(httpd_req_t *r, char *buf, size_t len);
+
 int httpd_req_recv(httpd_req_t *r, char *buf, size_t len)
+{
+    recv_open(buf);
+    return recv_close(buf, recv_body(r, buf, len));
+}
+
+static int recv_body(httpd_req_t *r, char *buf, size_t len)
 {
     (void)r;
     if (++S.recv_calls > RECV_CALL_CAP) {
@@ -71,8 +110,14 @@ int httpd_req_recv(httpd_req_t *r, char *buf, size_t len)
         return HTTPD_SOCK_ERR_FAIL;
     }
     const fake_inj_t *in = pending();
+    while (in && in->kind == INJ_SPLIT && in->at <= S.delivered) {
+        S.next_inj++;                         /* the split happened: go on from here */
+        in = pending();
+    }
     if (in && in->at <= S.delivered) {
         switch (in->kind) {
+        case INJ_SPLIT:
+            break;                            /* not reached: taken above */
         case INJ_TIMEOUT:
             S.timeouts_total++;
             S.consec++;
@@ -102,6 +147,7 @@ int httpd_req_recv(httpd_req_t *r, char *buf, size_t len)
     }
     long n = (long)len;
     if (n > CHUNK) n = CHUNK;
+    if (S.c->trickle > 0 && S.delivered < S.c->trickle_until && n > S.c->trickle) n = S.c->trickle;
     if (n > left) n = left;
     if (in && in->at > S.delivered && in->at - S.delivered < n) n = in->at - S.delivered;
     memcpy(buf, S.body + S.delivered, (size_t)n);
@@ -191,6 +237,12 @@ esp_err_t esp_ota_write(esp_ota_handle_t h, const void *data, size_t size)
     }
     S.writes++;
     if (S.c->write_fail_at > 0 && S.writes == S.c->write_fail_at) return ESP_FAIL;
+    if (size > (size_t)S.img_len) {
+        /* More than the whole image in one write: a negative length cast to size_t.
+         * Refused, as the flash would refuse it, and recorded: never copied. */
+        S.write_overrun = true;
+        return ESP_FAIL;
+    }
     if (S.written + (long)size > S.img_len) {
         S.write_overrun = true;
         size = (size_t)(S.img_len - S.written);
@@ -253,15 +305,49 @@ void vTaskDelay(int ticks) { (void)ticks; }
 /* ---------------------------------------------------------------- driver -- */
 
 static const char BOUNDARY[] = "------------------------fakeota0123456789";
+#define LONG_NAME 6000
+
+/* The start of the body, up to where the image begins, into out (NULL to measure). */
+static long write_start(char *out, fake_body_t body)
+{
+    char tmp[LONG_NAME + 512];
+    char *p = out ? out : tmp;
+    long o = 0;
+    o += sprintf(p + o, "--%s\r\n", BOUNDARY);
+    if (body == BODY_LONG_START) {
+        o += sprintf(p + o, "Content-Disposition: form-data; name=\"ota_file\"; filename=\"");
+        memset(p + o, 'a', LONG_NAME);
+        o += LONG_NAME;
+        o += sprintf(p + o, ".bin\"\r\n");
+    } else {
+        o += sprintf(p + o, "Content-Disposition: form-data; name=\"ota_file\"; filename=\"ota.bin\"\r\n");
+    }
+    if (body == BODY_ENDS_EARLY) return o;
+    if (body != BODY_NO_TYPE) o += sprintf(p + o, "Content-Type: application/octet-stream\r\n");
+    if (body != BODY_NO_BLANK) o += sprintf(p + o, "\r\n");
+    return o;
+}
+
+long fake_preamble_len_of(fake_body_t body)
+{
+    return body == BODY_NO_LINE ? 0 : write_start(NULL, body);
+}
+
+long fake_offset_in_start(const char *needle)
+{
+    char tmp[LONG_NAME + 512];
+    long n = write_start(tmp, BODY_GOOD);
+    tmp[n] = '\0';
+    const char *p = strstr(tmp, needle);
+    return p ? (long)(p - tmp) : -1;
+}
 
 long fake_preamble_len(void)
 {
-    return (long)(2 + strlen(BOUNDARY) + 2
-                  + strlen("Content-Disposition: form-data; name=\"ota_file\"; filename=\"ota.bin\"\r\n")
-                  + strlen("Content-Type: application/octet-stream\r\n\r\n"));
+    return fake_preamble_len_of(BODY_GOOD);
 }
 
-static void build_body(long img_len)
+static void build_body(long img_len, fake_body_t body)
 {
     S.img_len = img_len;
     S.img = malloc((size_t)img_len);
@@ -273,14 +359,20 @@ static void build_body(long img_len)
         x ^= x << 5;
         S.img[i] = (char)(x & 0xff);
     }
-    S.body = malloc((size_t)(img_len + 512));
+    if (body == BODY_NO_BLANK && S.img[0] == '\r') S.img[0] = 'X';   /* no blank line by chance */
+    S.body = malloc((size_t)(img_len + LONG_NAME + 512));
     long o = 0;
-    o += sprintf(S.body + o, "--%s\r\n", BOUNDARY);
-    o += sprintf(S.body + o, "Content-Disposition: form-data; name=\"ota_file\"; filename=\"ota.bin\"\r\n");
-    o += sprintf(S.body + o, "Content-Type: application/octet-stream\r\n\r\n");
-    memcpy(S.body + o, S.img, (size_t)img_len);
-    o += img_len;
-    o += sprintf(S.body + o, "\r\n--%s--\r\n", BOUNDARY);
+    if (body == BODY_NO_LINE) {
+        memset(S.body, 'A', 100);
+        S.body_len = 100;
+        return;
+    }
+    o = write_start(S.body, body);
+    if (body != BODY_ENDS_EARLY) {
+        memcpy(S.body + o, S.img, (size_t)img_len);
+        o += img_len;
+        o += sprintf(S.body + o, "\r\n--%s--\r\n", BOUNDARY);
+    }
     S.body_len = o;
 }
 
@@ -298,24 +390,35 @@ static void json_case(const char *name, int ret)
     for (int i = 0; i < S.nreplies && i < MAX_REPLIES; i++) printf("%s\"%s\"", i ? ", " : "", S.replies[i]);
     printf("], \"timeouts_total\": %d, \"consec_at_return\": %d, \"consec_max\": %d, "
            "\"recv_past_end\": %d, \"runaway\": %s, \"delivered\": %ld, \"body_len\": %ld, "
-           "\"written\": %ld, \"img_len\": %ld, \"written_ok\": %s}\n",
+           "\"written\": %ld, \"writes\": %d, \"img_len\": %ld, \"written_ok\": %s, ",
            S.timeouts_total, S.consec, S.consec_max, S.recv_past_end, S.runaway ? "true" : "false",
-           S.delivered, S.body_len, S.written, S.img_len,
+           S.delivered, S.body_len, S.written, S.writes, S.img_len,
            (!S.write_overrun && S.written == S.img_len && memcmp(S.written_img, S.img, (size_t)S.img_len) == 0)
                ? "true" : "false");
+    printf("\"body\": %d, \"fopens\": %d, \"fwrites\": %d, \"unlinks\": %d, \"file_open_at_return\": %s, "
+           "\"file_len\": %ld, \"file_ok\": %s}\n",
+           (int)S.c->body, S.fopens, S.fwrites, S.unlinks, S.file_open ? "true" : "false", S.file_len,
+           (S.file && S.file_len == S.img_len && memcmp(S.file, S.img, (size_t)S.img_len) == 0) ? "true" : "false");
     fflush(stdout);
 }
 
-void fake_run(const fake_case_t *c, long img_len, int (*entry)(httpd_req_t *))
+void fake_run_uri(const fake_case_t *c, long img_len, int (*entry)(httpd_req_t *), const char *uri)
 {
     memset(&S, 0, sizeof S);
     S.c = c;
     for (int i = 0; i < c->ninj; i++) S.inj_left[i] = c->inj[i].n;
-    build_body(img_len);
-    httpd_req_t req = {"/upload/ota.bin", (size_t)S.body_len, NULL};   /* the entry sets user_ctx */
+    build_body(img_len, c->body);
+    httpd_req_t req = {uri, (size_t)S.body_len, NULL};   /* the entry sets user_ctx */
     int ret = entry(&req);
+    if (S.scratch) ASAN_UNPOISON_MEMORY_REGION(S.scratch, S.scratch_len);
     json_case(c->name, ret);
     free(S.img);
     free(S.written_img);
     free(S.body);
+    free(S.file);
+}
+
+void fake_run(const fake_case_t *c, long img_len, int (*entry)(httpd_req_t *))
+{
+    fake_run_uri(c, img_len, entry, "/upload/ota.bin");
 }
