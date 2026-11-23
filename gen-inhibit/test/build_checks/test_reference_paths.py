@@ -48,7 +48,9 @@ FAILS = []
 DBC, DOC = "gen-inhibit/diag/vtrux-wican-diag.dbc", "gen-inhibit/diag/wican_diag_schema.md"
 ROWS = ("diag references from git", "DBC defines every diag page", "emitted diag frames decode",
         "abort reasons are all in the DBC", "schema doc version matches",
-        "DIAG_FW_VERSION is the schema doc's latest rev")
+        # spec 12.3 item 3's table and hash rows (stage (b) batch 2), which replaced the
+        # DIAG_FW_VERSION row schema 9 retired
+        "diag table regenerated from the DBC byte for byte", "DBC's DiagSchemaHash is its layout hash")
 
 PROBE = r"""
 import json, os, sys
@@ -74,7 +76,7 @@ del B.rows[:]
 dbc, doc = B.refs_from_git(sys.argv[2])
 B.check_diag(dbc)
 B.check_schema_doc(doc)
-B.check_fw_version(doc)
+B.check_diag_table(dbc)
 B.check_abort_reason_parity(dbc)
 extra = []
 if len(sys.argv) > 3:

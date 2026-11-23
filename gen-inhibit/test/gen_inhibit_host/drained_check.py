@@ -190,12 +190,35 @@ def selftest():
     return 1 if fails else 0
 
 
+def _diag_host():
+    import importlib.util
+    p = os.path.join(os.path.dirname(HERE), "diag_host", "diag_host.py")
+    spec = importlib.util.spec_from_file_location("gi_diag_host", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def build_control(coredir):
-    """host_runner without rx_waiting, against another core. Returns its path."""
+    """host_runner without rx_waiting, against another core. Returns its path.
+
+    Since stage (b) batch 2 host_runner links ../diag_host/misfit_wrap.c (spec 12.3
+    item 2). A core with gi_diag_table.c beside it (db1bfeae on) is built as the
+    Makefile builds it, the table and the pinned packer included; an older core,
+    which packs its own frames, gets only the wrapper and the packer it calls
+    through, and -DGI_CORE_BEFORE_SHARED_DIAG, since nothing calls the packer."""
+    dh = _diag_host()
     out = os.path.join(HERE, "host_runner_ctl")
+    table = os.path.join(coredir, "gi_diag_table.c")
+    if os.path.isfile(table):
+        extra = dh.args(wrap=True, table_c=table)
+    else:
+        d = dh.diag_dir()
+        extra = ["-DGI_CORE_BEFORE_SHARED_DIAG", dh.WRAP_C, os.path.join(d, "diag_pack.c"),
+                 "-I" + os.path.join(d, "include"), "-I" + dh.HERE, dh.WRAP_LD]
     cmd = [os.environ.get("CC", "gcc"), "-std=c11", "-O2", "-DGI_NO_RX_WAITING",
            "-I" + coredir, "-o", out, os.path.join(HERE, "host_runner.c"),
-           os.path.join(coredir, "gen_inhibit_core.c")]
+           os.path.join(coredir, "gen_inhibit_core.c")] + extra
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         sys.stdout.write(r.stderr)

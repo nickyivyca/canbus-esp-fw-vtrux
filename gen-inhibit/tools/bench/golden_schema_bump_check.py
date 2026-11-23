@@ -27,6 +27,13 @@ without the option every 0x7F3 would differ. With it, a golden whose 0x7F3 kept
 B0-B3 (0 in every golden: the scenarios never set the build id) passes, and one
 whose value moved is still a difference. Only the pairs named are mapped.
 
+--now-zero SIGNAL (stage (b) batch 2, 2026-11-23): the signal, by its current name, is
+not compared by value, and in the NEW trace it must read 0. Schema 9 retires the
+hand-kept revision (spec 10): 0x7F1 B1 and 0x7F3 B4-B5, diag_fw_ver and diag_fw_ver16
+through 8, are diag_reserved_b1 and diag_reserved16 (RenamedFrom) and sent 0, so the
+8->9 re-bless passes --now-zero diag_reserved_b1 --now-zero diag_reserved16. Only the
+signals named are let through.
+
 Phase 2 reports every 0x7F1 in the NEW goldens whose bus_on (diag_flags bit1,
 by name) is clear: under schema 6 that bit means "controller running", so a
 scenario that models a stopped or bus-off controller would show it clear.
@@ -88,15 +95,43 @@ def same_value(lines, same):
     return out
 
 
-def pair_problems(old, new, old_ver, new_ver, schemas, same=None):
+def now_zero(lines, names):
+    """(lines with each signal in `names` given the value '*', [lines where one of them is not 0]).
+    For --now-zero: the old value is not compared, and the new one must be 0."""
+    if not names:
+        return lines, []
+    out, nonzero = [], []
+    for ln in lines:
+        m = BODY_RE.match(ln)
+        if not m or not m.group("body"):
+            out.append(ln)
+            continue
+        sigs = []
+        for k, v in (kv.split("=", 1) for kv in m.group("body").split(" ")):
+            if k in names:
+                if v != "0":
+                    nonzero.append(ln)
+                v = "*"
+            sigs.append((k, v))
+        out.append(m.group("head") + " ".join("%s=%s" % kv for kv in sigs) + m.group("tail"))
+    return out, nonzero
+
+
+def pair_problems(old, new, old_ver, new_ver, schemas, same=None, zero=()):
     """[] if `old` -> `new` moves only the schema, else the reasons. `same`: {old signal:
-    new signal}, compared by value under the new name (--same-value)."""
+    new signal}, compared by value under the new name (--same-value). `zero`: signals, by
+    their current names, whose old value is not compared and whose new value must be 0
+    (--now-zero)."""
     probs = []
     try:
         _eq, a, b = gi_diag.compare_traces(old, new, schemas)
     except gi_diag.DiagError as e:
         return ["refused: %s" % e]
     a = same_value(a, same)
+    a, _old_nonzero = now_zero(a, zero)
+    b, new_nonzero = now_zero(b, zero)
+    if new_nonzero:
+        probs.append("%d new line(s) with a --now-zero signal not 0, first: %r" % (len(new_nonzero), new_nonzero[0]))
     eq = a == b
     if not eq:
         first = next((k for k, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
@@ -111,7 +146,7 @@ def pair_problems(old, new, old_ver, new_ver, schemas, same=None):
     return probs
 
 
-def check_sets(old_files, new_files, old_ver, new_ver, schemas, same=None):
+def check_sets(old_files, new_files, old_ver, new_ver, schemas, same=None, zero=()):
     """old_files, new_files: {name: text}. -> (pairs checked, [(name, reason)])."""
     problems = []
     for n in sorted(set(old_files) ^ set(new_files)):
@@ -120,7 +155,7 @@ def check_sets(old_files, new_files, old_ver, new_ver, schemas, same=None):
     for n in sorted(set(old_files) & set(new_files)):
         if old_files[n] == new_files[n]:
             continue
-        p = pair_problems(old_files[n], new_files[n], old_ver, new_ver, schemas, same)
+        p = pair_problems(old_files[n], new_files[n], old_ver, new_ver, schemas, same, zero)
         problems.extend((n, why) for why in p)
         n_ok += 1
     return n_ok, problems
@@ -172,6 +207,27 @@ def self_test(repo=None):
           check_sets({"a.trace": old}, {"a.trace": good.replace("data=0000000001000800", "data=0100000001000800")},
                      7, 8, real, pair)[1] != [],
           check_sets({"a.trace": old}, {"a.trace": good}, 7, 8, real, {"diag_fw_ver16": "diag_build_id"})[1] != []]
+    # --now-zero, on the real schemas 8 and 9 from git (stage (b) batch 2, 2026-11-23): 0x7F1 B1
+    # and 0x7F3 B4-B5 were diag_fw_ver and diag_fw_ver16 through 8 and are diag_reserved_b1 and
+    # diag_reserved16, sent 0, from 9 (RenamedFrom), so the value moves from the revision to 0.
+    if 9 in real.entries:
+        o8 = ("0 TX DIAG id=7F1 dlc=8 data=0801030600FF0000 ok=1\n"
+              "400000 TX DIAG id=7F2 dlc=8 data=0500000000000000 ok=1\n"
+              "800000 TX DIAG id=7F3 dlc=8 data=0000000001000800 ok=1\n")
+        g9 = o8.replace("data=0801", "data=0900").replace("data=0000000001000800", "data=0000000000000900")
+        z = ("diag_reserved_b1", "diag_reserved16")
+        r += [check_sets({"a.trace": o8}, {"a.trace": g9}, 8, 9, real, zero=z)[1] == [],
+              check_sets({"a.trace": o8}, {"a.trace": g9}, 8, 9, real)[1] != [],
+              # a reserved byte still carrying the revision
+              check_sets({"a.trace": o8}, {"a.trace": g9.replace("data=0900", "data=0901")}, 8, 9, real, zero=z)[1] != [],
+              check_sets({"a.trace": o8}, {"a.trace": g9.replace("data=0000000000000900", "data=0000000001000900")},
+                         8, 9, real, zero=z)[1] != [],
+              # another field moving is still a difference
+              check_sets({"a.trace": o8}, {"a.trace": g9.replace("data=0500", "data=0600")}, 8, 9, real, zero=z)[1] != [],
+              # only the signals named are let through
+              check_sets({"a.trace": o8}, {"a.trace": g9}, 8, 9, real, zero=("diag_reserved_b1",))[1] != []]
+    else:
+        r.append(False)     # the real set has no schema 9: the --now-zero cases cannot run
     return all(r), r
 
 
@@ -215,13 +271,19 @@ def main():
     ap.add_argument("--new-ver", type=int, default=6)
     ap.add_argument("--same-value", action="append", default=[], metavar="OLD=NEW",
                     help="in the old trace, compare signal OLD as NEW, its value unchanged (repeatable)")
+    ap.add_argument("--now-zero", action="append", default=[], metavar="SIGNAL",
+                    help="by its current name: the old value is not compared, the new one must be 0 "
+                         "(repeatable; schema 9's retired revision bytes)")
     a = ap.parse_args()
     same = dict(kv.split("=", 1) for kv in a.same_value)
+    zero = tuple(a.now_zero)
 
     st_ok, st = self_test(a.repo)
     print("self-test (good bump accepted; flag change, counter change, wrong new version, old already new, extra line, unknown "
           "schema, added golden rejected; bus_on clear counted; --same-value: the real 7->8 bump passes with the pair, not without "
-          "it, nor with a moved value or another pair): %s %s" % ("PASS" if st_ok else "FAIL", st))
+          "it, nor with a moved value or another pair; --now-zero: the real 8->9 bump passes with both reserved signals, "
+          "not without them, nor with a reserved byte not 0, another field moved, or one signal named): %s %s"
+          % ("PASS" if st_ok else "FAIL", st))
     if not st_ok:
         return 2
 
@@ -244,7 +306,9 @@ def main():
         print("  test/ files changed outside %s: %s" % (a.path, outside or "none"))
     if same:
         print("same value: %s" % ", ".join("%s (old) = %s (new)" % kv for kv in sorted(same.items())))
-    n, problems = check_sets(old, new, a.old_ver, a.new_ver, schemas, same)
+    if zero:
+        print("now zero: %s (the old value not compared, the new one must be 0)" % ", ".join(zero))
+    n, problems = check_sets(old, new, a.old_ver, a.new_ver, schemas, same, zero)
     changed = sum(1 for k in set(old) & set(new) if old[k] != new[k])
     print("\nphase 1: %s, %d golden files changed, %d compared decoded" % (where, changed, n))
     per = {}

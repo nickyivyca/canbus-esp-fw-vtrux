@@ -33,6 +33,10 @@ REVERSE_IT_DIR they see:
      ~/gi_host holds a file the repo no longer has in each place the sync ships, and files
      the remote generates. The stale files are gone, the generated ones stay, the shipped
      ones are there; and into an empty HOME, as a first sync, the shipped ones are there.
+  9. Stage (b) batch 2 (2026-11-23): the sync ships the pinned shared/diag (its fake here
+     read-only, as a checkout is), the generated table and test/diag_host/; a second
+     sync over the first exits 0 with the shipped files there, which it did not while
+     tar carried the checkout's read-only mode across.
 
 The sync is the real one, from this project folder, into the fake ssh; the export goes
 to the worktree's scratch/gi-host-export, which every gi_host_run.sh run replaces.
@@ -83,11 +87,14 @@ def setup(base):
                                    'mkdir -p "$d.in"; cat > "$d.in/$n"; exit 0\n')
     # LOCAL_PY: wican_ref.py answers the fake shared checkout; anything else is the gi_diag export
     script(os.path.join(b, "fakepy"), 'case "${@: -1}" in wican_ref.py) printf "%s\\n" "$FAKE_WICAN" ;; '
-                                      '*) mkdir -p "${@: -1}" ;; esac\n')
+                                      'dir) printf "%s\\n" "$FAKE_DIAG" ;; *) mkdir -p "${@: -1}" ;; esac\n')
     script(os.path.join(b, "make"), 'echo "make $*" >> "$FAKE_LOG"\n')
-    for comp in ("wican", "can_port", "twai_port"):
+    for comp in ("wican", "can_port", "twai_port", "diag"):
         os.makedirs(os.path.join(base, "sharedco", "shared", comp))
         open(os.path.join(base, "sharedco", "shared", comp, "README.md"), "w").close()
+    # shared/diag read-only, as a pinned checkout is (AGENTS.md): item 9 (stage (b) batch 2)
+    os.chmod(os.path.join(base, "sharedco", "shared", "diag", "README.md"), 0o444)
+    os.chmod(os.path.join(base, "sharedco", "shared", "diag"), 0o555)
     # $PY: write down REVERSE_IT_DIR and its first argument, log its command line, and
     # fail when FAKE_PY_FAIL is set
     script(os.path.join(b, "sigpy"), 'printf "%s|%s" "${REVERSE_IT_DIR-UNSET}" "$1" > "$FAKE_SEEN"\n'
@@ -106,7 +113,8 @@ def env_for(base, bindir, extra):
     # on madhouse-debian is the local mode (host_target.sh, 2026-11-12) and would write the real ~/gi_host
     e.update(PATH=fwd(bindir) + os.pathsep + os.environ.get("PATH", ""), MSYS_NO_PATHCONV="1",
              REMOTE="nowhere.invalid", LOCAL_PY="fakepy", PY="sigpy", FW=fwd(gi_paths.project_root()),
-             FAKE_WICAN=fwd(os.path.join(base, "sharedco", "shared", "wican")))
+             FAKE_WICAN=fwd(os.path.join(base, "sharedco", "shared", "wican")),
+             FAKE_DIAG=fwd(os.path.join(base, "sharedco", "shared", "diag")))
     e.update(extra)
     return e
 
@@ -151,13 +159,16 @@ STALE = ["test/gen_inhibit_shim/mock/driver/twai.h", "test/gen_inhibit_shim/fake
          "firmware/main/can.h", "firmware/main/can.c",
          "test/gen_inhibit_host/stale_check.py", "test/gen_inhibit_host/golden/stale.golden",
          "test/gen_inhibit_sched/stale.c", "test/build_checks/stale_check.py", "tools/bench/stale.py",
-         "shared/wican/stale.h", "diag_schemas/stale.dbc"]
+         "shared/wican/stale.h", "diag_schemas/stale.dbc",
+         "shared/diag/stale.h", "test/diag_host/stale.py"]
 KEPT = ["test/gen_inhibit_shim/scenarios/replay-longarm-300s-all.scn", "test/gen_inhibit_host/scenarios/keep.scn",
         "test/gen_inhibit_host/host_runner", "scratch/canre/keep"]
 SHIPPED = ["test/gen_inhibit_shim/Makefile", "test/gen_inhibit_shim/mock/freertos/FreeRTOS.h",
            "firmware/main/gen_inhibit.c", "firmware/main/gi_sched.h", "tools/bench/gi_paths.py",
            "test/gen_inhibit_host/run_tests.py", "test/gen_inhibit_sched/Makefile", "test/build_checks/config_vs_spec.py",
-           "shared/twai_port/README.md"]
+           "shared/twai_port/README.md",
+           # stage (b) batch 2: the pinned shared/diag, the generated table, the host helper
+           "shared/diag/README.md", "firmware/main/gi_diag_table.c", "test/diag_host/diag_host.py"]
 
 
 def msys(p):
@@ -240,9 +251,30 @@ def checks():
         check("8 the shipped files are there", [p for p in SHIPPED if p not in got] == [],
               [p for p in SHIPPED if p not in got])
         rc, got = unpack(base, "rhome8b", cmds[0] if cmds else "false", archive, [])
+        # 9. A second sync over the first (2026-11-23): shared/diag comes from a read-only
+        # checkout, and with its mode carried across the second sync's rm -rf of
+        # ~/gi_host/shared failed halfway, after its STALE step had removed firmware/.
+        if cmds:
+            home9 = os.path.join(base, "rhome8b")
+            e = {k: v for k, v in os.environ.items() if k != "HOME"}
+            e.update(HOME=msys(home9), MSYS_NO_PATHCONV="1",
+                     PATH=fwd(os.path.dirname(BASH)) + os.pathsep + os.environ.get("PATH", ""))
+            with open(archive, "rb") as fh:
+                r9 = subprocess.run([BASH, "-c", cmds[0]], stdin=fh, capture_output=True, env=e, timeout=120)
+            root9 = os.path.join(home9, "gi_host")
+            got9 = {fwd(os.path.relpath(os.path.join(d, f), root9)) for d, _, fs in os.walk(root9) for f in fs}
+            check("9 a second sync over the first (shared/diag from a read-only checkout): exit 0, the shipped "
+                  "files there", r9.returncode == 0 and [p for p in SHIPPED if p not in got9] == [],
+                  (r9.returncode, r9.stderr[-200:], [p for p in SHIPPED if p not in got9]))
         check("8 the first sync, into an empty remote: exit 0, the shipped files there",
               rc == 0 and [p for p in SHIPPED if p not in got] == [], (rc, [p for p in SHIPPED if p not in got]))
     finally:
+        for p in (os.path.join(base, "sharedco", "shared", "diag"),
+                  os.path.join(base, "sharedco", "shared", "diag", "README.md")):
+            if os.path.exists(p):
+                os.chmod(p, 0o755 if os.path.isdir(p) else 0o644)
+        for d, _sub, fs in os.walk(base):       # a copy a mutant shipped read-only
+            os.chmod(d, 0o755)
         gi_paths.remove_tree(base)
     return FAILS
 
@@ -267,7 +299,10 @@ MUTANTS = [
     ("--canre checks instead of installing", '    on_host "$PY -B ~/$DEST/tools/bench/canre_pin.py install"\n',
      '    on_host "$PY -B ~/$DEST/tools/bench/canre_pin.py check"\n'),
     ("the sync keeps what the repo dropped", "mkdir -p ~/$DEST && $STALE && rm -rf", "mkdir -p ~/$DEST && rm -rf"),
-    ("the goldens not replaced", " ~/$DEST/test/build_checks ~/$DEST/test/gen_inhibit_host/golden\"", " ~/$DEST/test/build_checks\""),
+    ("the goldens not replaced", " ~/$DEST/test/diag_host ~/$DEST/test/gen_inhibit_host/golden\"", " ~/$DEST/test/diag_host\""),
+    ("the host helper not replaced", " ~/$DEST/test/build_checks ~/$DEST/test/diag_host ", " ~/$DEST/test/build_checks "),
+    ("shared/diag not shipped", '    -C "$DIAG_ROOT" shared/diag \\\n', ""),
+    ("the checkout's read-only mode carried across", "tar --mode=u+w -C", "tar -C"),
     ("the shim's scenarios/ dropped too", "-maxdepth 1 ! -name scenarios -exec rm -rf", "-maxdepth 1 -exec rm -rf"),
     ("the host folder's sources kept", 'STALE="$STALE && find ~/$DEST/test/gen_inhibit_host',
      ': "$STALE && find ~/$DEST/test/gen_inhibit_host'),

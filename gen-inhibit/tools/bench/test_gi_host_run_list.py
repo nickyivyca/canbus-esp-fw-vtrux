@@ -6,7 +6,7 @@ imports it fails on the remote, or runs on a stale copy left by hand. project_di
 outside it until 2026-10-26, so from_capture.py and replay_stimulus_delta.py could not
 run there and its replay files went stale.
 
-  1. The list (the `tar -C "$FW" -czf -` block) is found and names more than 20 paths.
+  1. The list (the `tar --mode=u+w -C "$FW" -czf -` block) is found and names more than 20 paths.
   2. Every path it names exists in this tree.
   3. No shipped .py imports a module of its own folder that is not shipped (imports
      anywhere in the file, inside functions too), nor one of a folder it puts on
@@ -26,6 +26,9 @@ run there and its replay files went stale.
      shim's Makefile compiles from $(SHAREDDIR)/<x> (can_port and twai_port since 1b,
      when they replaced main/can.c), and each is in the pinned checkout wican_ref.py
      finds. The list in 1-5 is the $FW part only; it ends at the first other -C.
+  7. Stage (b) batch 2 (2026-11-23): the sync ships the pinned shared/diag
+     (`-C "$DIAG_ROOT" shared/diag`), firmware/main/gi_diag_table.c and test/diag_host/,
+     which every host build of the core now compiles.
 
     py -3.14 -B gen-inhibit/tools/bench/test_gi_host_run_list.py
     py -3.14 -B gen-inhibit/tools/bench/test_gi_host_run_list.py --mutants
@@ -44,7 +47,8 @@ import gi_paths  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = gi_paths.project_root()      # the list is relative to $FW, the project folder (port step 0d)
 SCRIPT = os.environ.get("GI_HOST_RUN_SH") or os.path.join(HERE, "gi_host_run.sh")
-START = 'tar -C "$FW" -czf - \\'
+START = 'tar --mode=u+w -C "$FW" -czf - \\'   # --mode=u+w since 2026-11-23 (test_gi_host_run_env.py 9)
+DIAG_SECTION = '-C "$DIAG_ROOT" shared/diag \\'
 END = '-C "$EXPORT_PARENT"'
 SHARED_START = '-C "$SHARED_ROOT"'
 FAILS = []
@@ -198,6 +202,14 @@ def checks():
     proot = pinned_shared_root()
     check("6 each is in the pinned shared checkout", proot is not None
           and all(os.path.isdir(os.path.join(proot, p)) for p in shared), (proot, shared))
+    # 7. Stage (b) batch 2: every host build of the core takes the pinned shared/diag
+    # (test/diag_host/diag_host.py), the generated table, and the helper itself.
+    listed_set = set(listed)
+    check("7 the sync ships shared/diag from diag_host.py's checkout",
+          any(l.strip() == DIAG_SECTION for l in text.splitlines()), DIAG_SECTION)
+    check("7 the sync ships firmware/main/gi_diag_table.c and test/diag_host",
+          {"firmware/main/gi_diag_table.c", "test/diag_host"} <= listed_set,
+          sorted({"firmware/main/gi_diag_table.c", "test/diag_host"} - listed_set))
     base = gi_paths.scratch("test_gi_host_run_list")
     try:
         os.makedirs(os.path.join(base, "t"))
@@ -243,6 +255,9 @@ MUTANTS = [
      "    firmware/main/gen_inhibit.c \\\n    firmware/main/can.c \\\n"),
     ("twai_port not shipped", ' shared/can_port shared/twai_port \\\n', ' shared/can_port \\\n'),
     ("no shared section", '    -C "$SHARED_ROOT" shared/wican shared/can_port shared/twai_port \\\n', ""),
+    ("shared/diag not shipped", '    -C "$DIAG_ROOT" shared/diag \\\n', ""),
+    ("the generated table not shipped", "    firmware/main/gi_diag_table.c \\\n", ""),
+    ("test/diag_host not shipped", "    test/diag_host \\\n", ""),
 ]
 
 

@@ -40,12 +40,13 @@ def check(label, ok, detail=""):
         failures.append(label)
 
 
-def payload(first4, schema, spec_order=True):
+def payload(first4, schema, spec_order=True, b45=3):
     """B0-B3 the build id: per spec 10, the u32 whose most significant byte is the hash's first
     byte, sent little-endian, so B0 is the hash's fourth byte. spec_order=False sends the
-    hash's bytes in order instead (the wrong packing). B4-B5 fw_ver 3, B6 the schema, B7 0."""
+    hash's bytes in order instead (the wrong packing). B4-B5 fw_ver 3 (through schema 8; from
+    schema 9 reserved, sent 0: pass b45=0), B6 the schema, B7 0."""
     b03 = bytes(reversed(first4)) if spec_order else bytes(first4)
-    return b03 + bytes([3, 0, schema, 0])
+    return b03 + bytes([b45, 0, schema, 0])
 
 
 def decode(data, schema):
@@ -57,7 +58,13 @@ def main():
     first4 = bytes.fromhex(h[:8])
     other = hashlib.sha256(b"another image").hexdigest()
     check("the 0x7F3 schema is %d" % BUILD_ID_SCHEMA, BUILD_ID_SCHEMA == 8)
-    check("the DBC set from git has schema 8 at its head", SCHEMAS.head().version == 8, repr(SCHEMAS.head().version))
+    # Schema 9 (stage (b) batch 2, 2026-11-23) moves no field: 0x7F3 B0-B3 stay diag_build_id.
+    check("the DBC set from git has schema 9 at its head", SCHEMAS.head().version == 9, repr(SCHEMAS.head().version))
+    h9 = decode(payload(first4, 9, b45=0), 9)
+    check("schema 9 decodes B0-B3 as diag_build_id, the same value as schema 8",
+          isinstance(h9.get("diag_build_id"), int) and "%08x" % h9["diag_build_id"] == h[:8], repr(h9))
+    check("schema 9 names B4-B5 diag_reserved16", "diag_reserved16" in h9 and "diag_fw_ver16" not in h9,
+          ", ".join(sorted(h9)))
 
     good = decode(payload(first4, 8), 8)
     bid = good.get("diag_build_id")

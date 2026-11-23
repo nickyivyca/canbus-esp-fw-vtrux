@@ -49,16 +49,21 @@ FLAGS_GOOD = 0x66
 FLAGS_ABORTED = FLAGS_GOOD | 0x80
 
 
-def frames(flags=FLAGS_GOOD, abort=0, arm_block=0, build_id=0x5A4AEA1, schema=None):
+def frames(flags=FLAGS_GOOD, abort=0, arm_block=0, build_id=0x5A4AEA1, schema=None,
+           b1=None, b45=None):
     """Encode with HEAD's DBC (or `schema`'s), then decode through gi_diag in page order,
     so the rules see what the bench would hand them. 0x7F3 B0-B3 are diag_build_id from
-    schema 8 (port step 0c) and diag_git_hash before."""
+    schema 8 (port step 0c) and diag_git_hash before. 0x7F1 B1 and 0x7F3 B4-B5 are
+    diag_fw_ver and diag_fw_ver16 (3 here) through schema 8, and diag_reserved_b1 and
+    diag_reserved16 (0) from schema 9 (spec 10); b1 and b45 set them."""
     schema = schema or DBC_SCHEMA
     sdb = SCHEMAS.get(schema).db
-    st = {"diag_schema_ver": schema, "diag_fw_ver": 3, "diag_mode": 3,
+    n1, n45 = ("diag_reserved_b1", "diag_reserved16") if schema >= 9 else ("diag_fw_ver", "diag_fw_ver16")
+    d1 = 0 if schema >= 9 else 3
+    st = {"diag_schema_ver": schema, n1: d1 if b1 is None else b1, "diag_mode": 3,
           "diag_flags": flags, "diag_disable_reason": 0,
           "diag_shift_pos": 0, "diag_soc_x100": 77.0}
-    bd = {"diag_build_id" if schema >= 8 else "diag_git_hash": build_id, "diag_fw_ver16": 3,
+    bd = {"diag_build_id" if schema >= 8 else "diag_git_hash": build_id, n45: d1 if b45 is None else b45,
           "diag_schema_ver_build": schema}
     s2 = {"diag_abort_reason": abort, "diag_flags2": 0,
           "diag_arm_block": arm_block, "diag_would_tx": 0,
@@ -86,7 +91,16 @@ SCENARIOS = [
     ("build_id_zero", dict(build_id=0), {"0x7F3 build id nonzero"}),
     ("schema7_page", dict(schema=7), set()),
     ("schema7_git_hash_zero", dict(schema=7, build_id=0), {"0x7F3 build id nonzero"}),
+    # Schema 9 (spec 10, 2026-11-23): the retired revision's bytes are reserved and sent 0.
+    # A schema 8 page still carries the revision there, and has no reserved rows.
+    ("schema8_page", dict(schema=8), set()),
+    ("schema8_page_revision_1", dict(schema=8, b1=1, b45=1), set()),
+    ("schema9_b1_not_zero", dict(schema=9, b1=7), {"0x7F1 B1 reserved, 0 (schema 9)"}),
+    ("schema9_b45_not_zero", dict(schema=9, b45=7), {"0x7F3 B4-B5 reserved, 0 (schema 9)"}),
 ]
+
+# The rows a page of each schema must give: the reserved rows from schema 9 only.
+RESERVED_ROWS = {"0x7F1 B1 reserved, 0 (schema 9)", "0x7F3 B4-B5 reserved, 0 (schema 9)"}
 
 
 def main():
@@ -148,6 +162,28 @@ def main():
               "It has been written as 'both are zero', which would call a "
               "correct abort a packing bug.")
         bad += 1
+
+    # The schema rows, by schema. The reserved rows are present from schema 9 only, so
+    # an older page cannot pass them by having nothing there; "schema_ver >= 3" (the
+    # row that replaced "fw_ver >= 3", spec 10) fails a page that states schema 2,
+    # which no DBC in git describes, so its decoded pages are made by hand from a
+    # good set with only the schema byte changed.
+    print()
+    for schema in sorted(SCHEMAS.entries):
+        st, bd, s2, sk = frames(schema=schema)
+        rows = set(build_checks(st, bd, s2, sk, schema))
+        want = RESERVED_ROWS if schema >= 9 else set()
+        ok = (rows & RESERVED_ROWS) == want
+        print("  %-5s schema %d page: reserved rows %s" % ("ok" if ok else "WRONG", schema,
+                                                          sorted(rows & RESERVED_ROWS) or "none"))
+        bad += not ok
+    st, bd, s2, sk = frames()
+    st = dict(st, diag_schema_ver=2)
+    got = {k for k, v in build_checks(st, bd, s2, sk, 2).items() if not v}
+    want = {"schema_ver >= 3 (spec 7.1)"}
+    ok = got == want
+    print("  %-5s a schema 2 page fails exactly %s (got %s)" % ("ok" if ok else "WRONG", sorted(want), sorted(got)))
+    bad += not ok
 
     print()
     if bad:

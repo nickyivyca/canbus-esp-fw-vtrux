@@ -17,7 +17,10 @@ WHAT ROW 22 ASKS FOR, and each is a separate check below:
     7  image size against the 1,781,760-byte slot
     8  (retired at port step 0c: no `-dirty`)
     9  (retired at port step 0c: GIT_SHA embedded)
-    10 DIAG_FW_VERSION, the schema doc and the DBC consistent
+    10 the schema doc and the DBC consistent; since 2026-11-23 (schema 9, which retired
+       DIAG_FW_VERSION and its row) the committed diag tables regenerated from the DBC
+       byte for byte, its DiagSchemaHash its layout hash, and the retired revision
+       bytes 0 in the emitted frames (spec 10, 12.3 item 3)
 
 Added 2026-09-26 from review, as the source-check half of two spec 12.4 rows
 that nothing implemented:
@@ -577,6 +580,11 @@ def check_diag(dbc_path):
     _decode_emitted(dbc_path)
 
 
+# Spec 10 (schema 9, stage (b) batch 2): the hand-kept revision's bytes are reserved, sent 0.
+RESERVED_SIGNALS = {0x7F1: "diag_reserved_b1", 0x7F3: "diag_reserved16"}
+RESERVED_ROW = "retired revision bytes sent 0"
+
+
 def _decode_emitted(dbc_path):
     """Decode every diag frame in the host goldens, each trace in order through one
     gi_diag.Decoder: by its schema byte, from the DBC's git history (toolkit item 10).
@@ -597,6 +605,7 @@ def _decode_emitted(dbc_path):
     seen = 0
     errs = []
     ids_seen = set()
+    reserved_n, reserved_bad = 0, []
     for fn in sorted(os.listdir(gold)):
         if not fn.endswith(".trace"):
             continue
@@ -629,6 +638,13 @@ def _decode_emitted(dbc_path):
                     errs.append("%s: 0x%03X %s -- undecodable: %s" % (fn, ident, data.hex().upper(), d.reason))
                     continue
                 seen += 1
+                # Spec 10, schema 9: 0x7F1 B1 and 0x7F3 B4-B5 reserved, sent 0.
+                rname = RESERVED_SIGNALS.get(ident)
+                if rname and dec.version is not None and dec.version >= 9:
+                    reserved_n += 1
+                    if rname not in d or int(getattr(d[rname], "value", d[rname])) != 0:
+                        reserved_bad.append("%s: 0x%03X %s -- %s = %r"
+                                            % (fn, ident, data.hex().upper(), rname, d.get(rname)))
 
     if seen == 0 and not errs:
         row("emitted diag frames decode", None,
@@ -640,6 +656,11 @@ def _decode_emitted(dbc_path):
         "%d frames on %s decoded clean%s"
         % (seen, ", ".join("0x%03X" % i for i in sorted(ids_seen)),
            "" if not errs else "; %d problem(s): %s" % (len(errs), errs[0])))
+    if reserved_n == 0:
+        row(RESERVED_ROW, None, "no 0x7F1 or 0x7F3 of schema 9 or later in the goldens", ref_missing=True)
+    else:
+        row(RESERVED_ROW, not reserved_bad, "%d pages judged, %d not 0%s"
+            % (reserved_n, len(reserved_bad), "" if not reserved_bad else ", first: %s" % reserved_bad[0]))
 
 
 def check_no_instrument(path):
@@ -1768,63 +1789,116 @@ def check_schema_doc(doc_path):
         "doc says %d, GI_DIAG_SCHEMA_VER is %s" % (doc_ver, ver))
 
 
-def source_fw_version(path=None):
-    """DIAG_FW_VERSION as main/gen_inhibit.c defines it, or None."""
-    path = path or os.path.join(REPO, "main", "gen_inhibit.c")
-    if not os.path.exists(path):
-        return None
-    m = re.search(r"#define\s+DIAG_FW_VERSION\s+(\d+)", open(path, encoding="utf-8").read())
-    return int(m.group(1)) if m else None
+# THE DIAG_FW_VERSION ROW IS RETIRED (stage (b) batch 2, 2026-11-23). From 2026-10-09 it
+# compared main/gen_inhibit.c's DIAG_FW_VERSION with the schema doc's rev table. Schema 9
+# retires the hand-kept revision (spec 10): the define is gone, the rev table is history,
+# and 0x7F1 B1 and 0x7F3 B4-B5 are reserved and sent 0, which _decode_emitted() now
+# checks in the frames the host build emitted. In its place, spec 12.3 item 3's other
+# diag rows: the committed tables regenerated from the DBC byte for byte, and the DBC's
+# DiagSchemaHash its own layout hash.
+
+TABLE_ROW = "diag table regenerated from the DBC byte for byte"
+HASH_ROW = "DBC's DiagSchemaHash is its layout hash"
+# The prefix and file names the committed tables were generated with: the implementor's
+# regenerate command (batch 2 message, 2026-11-23), "diag_table_gen.py <the DBC> --prefix
+# gi_dbc --c-header firmware/main/gi_diag_table.h --c-source firmware/main/gi_diag_table.c
+# --python tools/gi_diag_table.py", the file map's paths (reviewer, 2026-11-23).
+TABLE_PREFIX = "gi_dbc"
 
 
-def doc_latest_fw_rev(text):
-    """The highest diag_fw_ver in the schema doc's rev table, or None.
+def committed_tables():
+    """{generated file name: the committed copy's path}, the file map's three."""
+    return {"gi_diag_table.h": os.path.join(REPO, "main", "gi_diag_table.h"),
+            "gi_diag_table.c": os.path.join(REPO, "main", "gi_diag_table.c"),
+            "gi_diag_table.py": os.path.join(PROJECT, "tools", "gi_diag_table.py")}
 
-    The table is the one whose header row starts "| diag_fw_ver | git rev |";
-    its rows run until the first line that is not a table line. The highest
-    number is taken rather than the last row, so the row order cannot matter.
-    """
-    lines = text.splitlines()
+
+def _diag_host():
+    import importlib.util
+    p = os.path.join(PROJECT, "test", "diag_host", "diag_host.py")
+    spec = importlib.util.spec_from_file_location("gi_diag_host", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _first_diff(a, b):
+    al, bl = a.splitlines(), b.splitlines()
+    for k, (x, y) in enumerate(zip(al, bl)):
+        if x != y:
+            return "line %d: committed %r, regenerated %r" % (k + 1, x[:80], y[:80])
+    return "lengths differ: committed %d lines, regenerated %d" % (len(al), len(bl))
+
+
+def check_diag_table(dbc_path, committed=None, gen=None):
+    """Spec 12.3 item 3: the committed C and Python tables regenerated from the DBC byte
+    for byte (shared/diag D3, D4), with the generator of the shared/diag tag gen-inhibit
+    pins, and the DBC's DiagSchemaHash its own layout hash (D5). `committed` and `gen`
+    are for the row's own test: {name: path} and a generator script."""
+    committed = committed or committed_tables()
+    if not dbc_path or not os.path.exists(dbc_path):
+        for n in (TABLE_ROW, HASH_ROW):
+            row(n, None, _no_ref("DBC", dbc_path), ref_missing=True)
+        return
+    # The hash row. gi_diag's core is shared/bench's decode.py, whose layout_hash the spec names.
     try:
-        i = next(k for k, x in enumerate(lines)
-                 if re.match(r"\|\s*diag_fw_ver\s*\|\s*git rev\s*\|", x))
-    except StopIteration:
-        return None
-    revs = []
-    for x in lines[i + 1:]:
-        if not x.startswith("|"):
-            break
-        m = re.match(r"\|\s*(\d+)\s*\|", x)
-        if m:
-            revs.append(int(m.group(1)))
-    return max(revs) if revs else None
-
-
-def check_fw_version(doc_path, src_path=None):
-    """Row 10's other half: DIAG_FW_VERSION against the schema doc's rev table.
-
-    Added 2026-10-09 (reviewer): the host suite cannot see this value, because
-    the core's default config carries fw_version 1 and no scenario overrides
-    it, so every golden reads 01 and only a device read checked it. A bump
-    the doc does not record, or a doc row the source never reached, fails.
-    The value can also be set with -DDIAG_FW_VERSION (the define is under
-    #ifndef); this row reads the source default, which is what a normal build
-    uses.
-    """
-    src = source_fw_version(src_path)
-    if not doc_path or not os.path.exists(doc_path):
-        row("DIAG_FW_VERSION is the schema doc's latest rev", None,
-            _no_ref("schema doc", doc_path), ref_missing=True)
+        bench = os.path.join(PROJECT, "tools", "bench")
+        if bench not in sys.path:
+            sys.path.insert(0, bench)
+        import gi_diag
+        D = gi_diag.core()
+        probs = D.check_identity(D.load(text=open(dbc_path, encoding="utf-8").read()))
+        row(HASH_ROW, not probs, "; ".join(probs) if probs else "%s: DiagSchemaHash = layout_hash"
+            % os.path.basename(dbc_path))
+    except Exception as e:      # noqa: BLE001 -- a reference this Python cannot read
+        row(HASH_ROW, None, "cannot read the DBC with gi_diag's core: %s" % e, ref_missing=True)
+    # The table row.
+    if gen is None:
+        try:
+            gen = os.path.join(_diag_host().diag_dir(), "tools", "diag_table_gen.py")
+        except Exception as e:  # noqa: BLE001 -- DiagHostError, or the pin unreadable
+            row(TABLE_ROW, None, "no pinned shared/diag generator: %s" % e, ref_missing=True)
+            return
+    if not os.path.isfile(gen):
+        row(TABLE_ROW, None, "no generator at %s" % gen, ref_missing=True)
         return
-    doc = doc_latest_fw_rev(open(doc_path, encoding="utf-8").read())
-    if src is None or doc is None:
-        row("DIAG_FW_VERSION is the schema doc's latest rev", None,
-            "could not read %s" % ("DIAG_FW_VERSION in main/gen_inhibit.c"
-                                   if src is None else "the doc's rev table"),
-            ref_missing=True)
+    missing = [n for n, p in sorted(committed.items()) if not os.path.isfile(p)]
+    if missing:
+        row(TABLE_ROW, False, "no committed %s" % ", ".join(missing))
         return
-    row("DIAG_FW_VERSION is the schema doc's latest rev", src == doc,
-        "main/gen_inhibit.c defines %d, the doc's rev table ends at %d" % (src, doc))
+    tmp = os.path.join(WORKTREE, "scratch", "build-checks", "diag-table-%d" % os.getpid())
+    bench = os.path.join(PROJECT, "tools", "bench")
+    if bench not in sys.path:
+        sys.path.insert(0, bench)
+    import gi_paths
+    gi_paths.remove_tree(tmp)
+    os.makedirs(tmp)
+    try:
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        r = subprocess.run([sys.executable, "-B", gen, os.path.abspath(dbc_path), "--prefix", TABLE_PREFIX,
+                            "--c-header", "gi_diag_table.h", "--c-source", "gi_diag_table.c",
+                            "--python", "gi_diag_table.py"], cwd=tmp, capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout).strip().splitlines()
+            if any("cantools" in x for x in err):
+                row(TABLE_ROW, None, "the generator needs cantools: %s" % err[-1], ref_missing=True)
+            else:
+                row(TABLE_ROW, False, "the generator refused the DBC (exit %d): %s"
+                    % (r.returncode, err[-1] if err else ""))
+            return
+        diffs = []
+        for n, p in sorted(committed.items()):
+            want = open(os.path.join(tmp, n), "rb").read()
+            got = open(p, "rb").read()
+            if want != got:
+                diffs.append("%s (%s)" % (n, _first_diff(got.decode("utf-8", "replace"),
+                                                         want.decode("utf-8", "replace"))))
+        row(TABLE_ROW, not diffs, "differs: %s" % "; ".join(diffs) if diffs else
+            "%s regenerated from %s with %s: identical"
+            % (", ".join(sorted(committed)), os.path.basename(dbc_path), os.path.relpath(gen, WORKTREE)
+               if gen.startswith(WORKTREE) else gen))
+    finally:
+        gi_paths.remove_tree(tmp)
 
 
 def main():
@@ -1884,7 +1958,7 @@ def main():
     dbc, doc = refs_from_git(os.path.abspath(args.ref_repo))
     check_diag(dbc)
     check_schema_doc(doc)
-    check_fw_version(doc)
+    check_diag_table(dbc)
     check_source(build_dir)
     check_one_transmit_owner(build_dir)
     check_lateness_has_a_detector()

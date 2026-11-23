@@ -63,7 +63,7 @@ from build_output import WORKTREE                                   # noqa: E402
 BC = os.path.abspath(os.environ.get("BUILD_CHECKS_DIR") or HERE)    # the folder under test
 ALLOWED = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(BC))), "scratch")
 SKIP = {"test_scratch_only.py", "test_refusal_pairs.py", "test_reference_paths_mutants.py"}
-MUST_WRITE = {"test_build_switches.py", "test_flt_row.py", "test_fw_version_row.py", "test_partition_row.py",
+MUST_WRITE = {"test_build_switches.py", "test_flt_row.py", "test_diag_table_row.py", "test_partition_row.py",
               "test_switch_rows.py", "test_image_rows.py", "test_prod_record.py", "test_source_rows.py",
               "test_refusal_tables.py"}
 FAILS = []
@@ -231,8 +231,9 @@ MOVED = [
      'TMP = os.path.join(HERE, "_test_build_switches_tmp")'),
     ("test_flt_row.py", 'TMP = os.path.join(B.WORKTREE, "scratch", "build-checks", "test_flt_row")',
      'TMP = os.path.join(HERE, "_test_flt_row_tmp")'),
-    ("test_fw_version_row.py", 'TMP = os.path.join(B.WORKTREE, "scratch", "build-checks", "test_fw_version_row")',
-     'TMP = os.path.join(HERE, "_test_fw_version_tmp")'),
+    ("test_diag_table_row.py",
+     'TMP = os.path.join(B.WORKTREE, "scratch", "build-checks", "test_diag_table_row-%d" % os.getpid())',
+     'TMP = os.path.join(HERE, "_test_diag_table_tmp")'),
     ("test_partition_row.py", 'TMP = os.path.join(B.WORKTREE, "scratch", "build-checks", "test_partition_row")',
      'TMP = os.path.join(HERE, "_test_partition_tmp")'),
     ("test_switch_rows.py", 'TMP = os.path.join(BO.WORKTREE, "scratch", "build-checks", "test_switch_rows")',

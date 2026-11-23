@@ -23,6 +23,15 @@ CC=${CC:-gcc}
 WICANDIR=${WICANDIR:-$(${PYTHON:-python3} ../gen_inhibit_shim/wican_ref.py)}
 SHARED=$WICANDIR/..
 FAKE=$SHARED/twai_port/test
+# Since stage (b) batch 2 (gen-inhibit/main db1bfeae) the core packs its diag frames
+# through shared/diag and gen_inhibit.c reads its build id with diag_build_id(): the
+# generated table, the pinned vtrux/diag's diag_pack.c and diag_build_id.c (on the
+# shim's mock esp_app_desc.h), as ../diag_host/diag_host.py gives them, with its
+# misfit wrapper over diag_pack_message(): a misfit the cases never take ends the
+# run with exit 3 (spec 12.3 item 2). DIAGDIR overrides the pinned folder.
+DIAGDIR=${DIAGDIR:-$(${PYTHON:-python3} -B ../diag_host/diag_host.py dir)}
+DIAG_ARGS=$([ -n "$DIAGDIR" ] && ${PYTHON:-python3} -B ../diag_host/diag_host.py args --wrap --diag "$DIAGDIR")
+[ -n "$DIAGDIR" ] && [ -n "$DIAG_ARGS" ] || { echo "build.sh: no pinned shared/diag (diag_host.py above)" >&2; exit 2; }
 # The sources, include order and the install wrap are the shim's Makefile's
 # (../gen_inhibit_shim/Makefile): its stand-ins first, then the fake's ESP-IDF
 # TWAI headers, then the fake's minimal host stand-ins. shim_test.c is
@@ -38,6 +47,7 @@ $CC -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable "$@
     ../../firmware/main/gen_inhibit.c ../../firmware/main/gen_inhibit_core.c ../../firmware/main/gi_sched.c \
     "$SHARED/can_port/can_port.c" "$SHARED/can_port/can_stock.c" \
     "$SHARED/twai_port/twai_port.c" "$SHARED/twai_port/twai_port_ll_esp32c3.c" \
+    "$DIAGDIR/diag_build_id.c" $DIAG_ARGS \
     -pthread \
     -Wl,--wrap=twai_driver_install \
     -Wl,--wrap=twai_receive,--wrap=twai_get_status_info,--wrap=twai_read_alerts \

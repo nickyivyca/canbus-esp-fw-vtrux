@@ -31,11 +31,14 @@ class BoardRefError(ValueError):
     pass
 
 
-def parse_pin(text):
-    """The version (for a git source, the tag) a manifest's text gives vtrux/wican_v3, or None."""
+def parse_pin(text, name=NAME):
+    """The version (for a git source, the tag) a manifest's text gives `name` (vtrux/wican_v3 by
+    default; ../diag_host/ asks for vtrux/diag), or None."""
+    dep = _DEP if name == NAME else re.compile(
+        r"^(\s+)%s:\s*(?:['\"]?([^'\"\s#]+)['\"]?)?\s*(?:#.*)?$" % re.escape(name))
     lines = text.splitlines()
     for i, ln in enumerate(lines):
-        m = _DEP.match(ln)
+        m = dep.match(ln)
         if not m:
             continue
         if m.group(2):
