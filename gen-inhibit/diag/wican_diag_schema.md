@@ -5,11 +5,13 @@ self-documenting: which build ran, what mode it was in, whether/why the inhibit
 was disabled, and how much it transmitted.
 
 Modelled on the 914 telemetry approach (reverse-it's `projects/914/README.md`) but a level
-simpler: no generator pipeline, and three plain fixed-ID frames rather than one
-multiplexed ID. This doc is the source of truth; the DBC
-(`vtrux-wican-diag.dbc`, beside this file) and the firmware (`gen_inhibit.c`,
-`send_diag()`) are hand-kept in sync, guarded by an on-wire `diag_schema_ver` —
-a decoder with a mismatched version flags it rather than trusting the fields.
+simpler: plain fixed-ID frames rather than one multiplexed ID. This doc is the
+source of truth, and the DBC (`vtrux-wican-diag.dbc`, beside this file) is
+kept in step with it by hand. From schema 9 the firmware's frame table is
+generated from the DBC by shared/diag's generator (shared/diag D3; spec 10),
+so the firmware no longer keeps a layout of its own. An on-wire
+`diag_schema_ver` guards it all: a decoder with a mismatched version flags it
+rather than trusting the fields.
 
 ## Frames
 
@@ -27,8 +29,8 @@ the firmware's `diag_period_ms` of 240.)
 ### 0x7F1 — WICAN_Diag_Status
 | Byte | Field | Meaning |
 |---|---|---|
-| B0 | diag_schema_ver | on-wire schema version (currently **8**) |
-| B1 | diag_fw_ver | behaviour/capability revision, hand-bumped (see the rule and table below; the name is historical) |
+| B0 | diag_schema_ver | on-wire schema version (currently **9**) |
+| B1 | diag_reserved_b1 | reserved, sent 0 (schema 9). Through schema 8 this was `diag_fw_ver`, the hand-bumped behaviour/capability revision (its rule and table below are history) |
 | B2 | diag_mode | 0 OFF, 1 OBSERVE, 2 RESPOND, 3 INHIBIT, **4 PASSIVE** |
 | B3 | diag_flags | bit0 disabled, bit1 bus_on (**controller running**, not driver installed -- meaning changed at schema 6), bit2 bus_ours, bit3 autoarm_build, bit4 shutdown_suppressed, bit5 inhibit_live, bit6 key_on, bit7 abort_latched |
 | B4 | diag_disable_reason | 0 none, 1 m_mode, 2 low_soc |
@@ -124,17 +126,17 @@ pages. This replaces the 2026-09-27 wording, which put all of them on one page.
 | Byte | Field | Meaning |
 |---|---|---|
 | B0-B3 | diag_build_id | the first four bytes of the running image's image hash: the ELF SHA-256 ESP-IDF embeds in the app descriptor (`esp_app_get_description()->app_elf_sha256`, shared/tools R1), read at run time. **Names the binary.** Packed as the charge interposer's `0x7F7` build id: a u32 with hash byte 0 most significant, sent little-endian, so the raw bytes B0..B3 are hash bytes 3, 2, 1, 0, and the DBC's unsigned value printed as `%08x` reads as the hash's first four bytes in order (schema 8, spec 10; user, 2026-10-19 and 2026-10-25). Through schema 7 these bytes were `diag_git_hash`, an FNV-1a hash of the build's name |
-| B4-B5 | diag_fw_ver16 | the same behaviour/capability revision as `diag_fw_ver`, as u16 |
+| B4-B5 | diag_reserved16 | reserved, sent 0 (schema 9). Through schema 8 this was `diag_fw_ver16`, the same revision as `diag_fw_ver`, as u16 |
 | B6 | diag_schema_ver_build | schema version (echoed for a build-only decoder) |
 | B7 | — | reserved |
 
 ## Versions
 
-`diag_schema_ver` = **8**. Bump on any layout change, and update the DBC and this
-doc together. The DBC carries the shared decoder's identity attributes
+`diag_schema_ver` = **9**. Bump on any layout change, and update the DBC and this
+doc together; the firmware's table is then regenerated from the DBC. The DBC carries the shared decoder's identity attributes
 (`shared/bench`, `vtrux_bench.decode`): `DiagSchemaVersion`, the schema byte its
-frames carry, and `DiagSchemaHash`, its own layout hash (`00401e953c405902` at
-schema 8, `7af6adef1d948197` at schema 7); a bump changes the version, and the
+frames carry, and `DiagSchemaHash`, its own layout hash (`0c2c4b82529f74e1` at
+schema 9, `00401e953c405902` at schema 8, `7af6adef1d948197` at schema 7); a bump changes the version, and the
 hash whenever a name, position or value table changes. The schema byte sits at `0x7F1` B0 and `0x7F3`
 B6. **A change of meaning counts too**, even when no field moves --
 see version 6.
@@ -182,7 +184,9 @@ come from **spec section 7.1**, the key-state rules.
   read this bit instead.
 
 
-`diag_fw_ver` is a **behaviour/capability revision**, not a build identity;
+**Retired at schema 9** (user, 2026-11-23): the rest of this section and the
+table below are history, for reading logs of schema 8 and older. Through
+schema 8, `diag_fw_ver` was a **behaviour/capability revision**, not a build identity;
 `0x7F3`'s `diag_build_id` names the binary (spec 10).
 - **When to bump:** bump `DIAG_FW_VERSION` in `gen_inhibit.c`, and add a row
   here, in either case:
@@ -201,6 +205,17 @@ come from **spec section 7.1**, the key-state rules.
   rename it at the next schema bump after 7.
 
 The table:
+
+**Version 9** (2026-11-23, user; stage (b) of the shared-code port) retires
+the hand-kept revision and moves no field. `0x7F1` B1 and `0x7F3` B4-B5 are
+reserved and sent 0, renamed `diag_reserved_b1` and `diag_reserved16`, each
+with `RenamedFrom` (`diag_fw_ver`, `diag_fw_ver16`). Through schema 8 they
+carried `diag_fw_ver`, last 7. A tool that gated on `diag_fw_ver` gates on
+`diag_schema_ver` instead, and `diag_build_id` names the binary. The firmware
+packs every page, and the `0x7F0` probe, through a table generated from this
+DBC (shared/diag D3), and no diag value can overflow its signal in a real
+build (spec 10). A schema-8 decoder reads every other field correctly and
+would read the reserved bytes as a revision of 0.
 
 **Version 8** (2026-10-25, user; port step 0c) changes what **`0x7F3` B0-B3**
 mean and moves no field. They are now `diag_build_id`, the first four bytes of
@@ -320,8 +335,9 @@ section 11).
 `diag_build_id` names the binary (spec 10). Look it up in the release build
 records and the bench run records, which name each image by its full hash: a
 build id that matches no record is unknown, and one that matches two is
-ambiguous, never guessed. `diag_fw_ver` is the human-readable handle; for a
-build id with no record, decode `diag_fw_ver` and cross-check the rev table.
+ambiguous, never guessed. On a schema 8 or older log, `diag_fw_ver` is a
+human-readable handle: for a build id with no record, decode it and
+cross-check the rev table. From schema 9 there is no such handle.
 On a schema 7 or older log, B0-B3 are `diag_git_hash`, the hash of the build's
 name.
 

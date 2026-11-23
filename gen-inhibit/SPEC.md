@@ -1405,7 +1405,8 @@ net loss.
 The WiCAN broadcasts its own state so any Android or laptop log of a run is
 self-documenting: which build ran, what mode, whether and why the inhibit was
 disabled, how much it transmitted. Five plain fixed-ID frames, no
-multiplexing, a hand-maintained schema rather than a generator.
+multiplexing. The firmware's frame table is generated from the published
+DBC (shared/diag D3), so the firmware keeps no layout of its own.
 
 **Source of truth for the layout is `gen-inhibit/diag/wican_diag_schema.md`**
 on `gen-inhibit/main` in the firmware repo; the decode DBC is
@@ -1416,9 +1417,9 @@ Five standard 11-bit IDs, DLC 8, round-robin at ~1 Hz each while armed:
 
 | ID | name | carries |
 |---|---|---|
-| `0x7F1` | STATUS | schema_ver, fw_ver, mode, flags (disabled / bus_on (controller running, section 11; reads 1 on the wire in practice, since a controller that is not running sends nothing) / bus_ours / autoarm / shutdown_suppressed / inhibit_live / key_on / abort_latched -- bit layout in the schema doc), disable_reason, shift_pos, soc |
+| `0x7F1` | STATUS | schema_ver, mode, flags (disabled / bus_on (controller running, section 11; reads 1 on the wire in practice, since a controller that is not running sends nothing) / bus_ours / autoarm / shutdown_suppressed / inhibit_live / key_on / abort_latched -- bit layout in the schema doc), disable_reason, shift_pos, soc |
 | `0x7F2` | COUNTERS | tx_ok (u32), tx_fail, ctr_bad, rx_errors |
-| `0x7F3` | BUILD | build_id (the first four bytes of the image hash), fw_ver, schema_ver |
+| `0x7F3` | BUILD | build_id (the first four bytes of the image hash), schema_ver |
 | `0x7F8` | STATUS2 (schema 4) | abort reason, arm block, flags2 (SoC-valid marker, tx pending, ...), would-transmit count, queued-behind count -- layout in the schema doc |
 | `0x7F9` | SKIPS (schema 5) | skipped inhibit frames since arming, withdrawn and late (below) -- layout in the schema doc |
 
@@ -1476,7 +1477,10 @@ truck consumes.
 **The on-wire `diag_schema_ver` is the decoder's guard**: a decoder holding a
 different DBC version flags the mismatch rather than trusting the fields. Bump
 it on any layout change and update the DBC and the schema doc together. The
-firmware, the DBC and the schema doc are hand-kept in sync.
+DBC and the schema doc are kept in step by hand; the firmware packs every
+page, and the `0x7F0` probe, through a table generated from the DBC by
+shared/diag's generator and committed, and a regenerated table must match
+it byte for byte (12.3).
 
 **`0x7F3` names the binary.** `diag_build_id` is the first four bytes of the
 running image's
@@ -1489,9 +1493,12 @@ digits, reads as the hash's first four bytes in order. A build id is looked up
 in the release build records and the bench run records, which name each image
 by its full hash: a prefix that matches no record is unknown, and one that
 matches two is ambiguous, never guessed. The build id only names one binary:
-builds are compared by code hash (shared/tools R2, R3). `diag_fw_ver` is a behaviour/capability revision, with
-its bump rule and table in the schema doc. It stays, by hand, until stage (b)
-of the port retires it in the one diag layout both projects share.
+builds are compared by code hash (shared/tools R2, R3).
+
+**The hand-kept revision is retired at schema 9** (stage (b) of the port).
+`0x7F1` B1 and `0x7F3` B4-B5, `diag_fw_ver` and `diag_fw_ver16` through
+schema 8, are reserved and sent 0. A tool that gated on `diag_fw_ver` gates
+on `diag_schema_ver`, and its rev table stays in the schema doc as history.
 
 **No diag value can overflow its signal in a real build** (shared/diag D3
 leaves this to each project). Every field is bounded where its value comes
@@ -1609,7 +1616,7 @@ mode they count inhibit completions only, and in OBSERVE and PASSIVE they read
   - A value the firmware does not recognise is reported as its number, as a
     string (`"17"`), so the field is always a string.
 - Both are on the status page only. Neither goes on the CAN bus, so no diag
-  page changes and neither `diag_schema_ver` nor `diag_fw_ver` is bumped.
+  page changes and `diag_schema_ver` is not bumped.
 - Both are part of the page's one snapshot (below).
 
 **A reboot is confirmed by uptime, not by the reply.** `/system_reboot`
@@ -1831,9 +1838,11 @@ parts:
    none, bootloader error); test-only
    builds keep info, so the rollback rehearsal reads its log lines;
    partition table byte-identical to stock; image size against the
-   1,781,760-byte slot; `DIAG_FW_VERSION`, the schema doc and the DBC
-   consistent -- diag frames emitted by the host build decoded with cantools
-   against `vtrux-wican-diag.dbc`.
+   1,781,760-byte slot; the diag frame table and the DBC consistent --
+   the committed C and Python tables regenerated from
+   `vtrux-wican-diag.dbc` byte for byte, the DBC's `DiagSchemaHash` its own
+   layout hash (shared/diag D3, D5), and diag frames emitted by the host
+   build decoded with cantools against the DBC.
 
    **Prod builds are release builds of the shared build tooling.** A prod
    build is any image meant for the truck. It is built

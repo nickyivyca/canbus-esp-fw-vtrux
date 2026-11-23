@@ -1118,6 +1118,12 @@ was read as a logger on the truck dropping frames).
   `gen_inhibit_core.c` (implementor, 2026-11-23): the core already caps
   `tx_fail`, `ctr_steps_bad`, `rx_errors` and `tx_queued_behind`, and every
   other field fits by its C type or enum range.
+- **Schema 9, the table from the DBC and `diag_fw_ver` retired:** user,
+  2026-10-25 (the hand-kept revision goes in stage (b)) and 2026-11-23 (the
+  schema 9 text: both bytes reserved and sent 0, renamed with
+  `RenamedFrom`, tools gating on it moved to `diag_schema_ver`, the rev
+  table kept as history); shared/diag D3 (2026-11-23) for the generated
+  table.
 - **Status:** validated.
 
 ## 11. Control surface

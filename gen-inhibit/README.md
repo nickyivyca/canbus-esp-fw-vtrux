@@ -47,6 +47,11 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   in its `README.md`), which this project pins. `firmware/main/` holds
   gen-inhibit's own code, its hooks into the stock code among it
   (`gi_wican.c`/`.h`, spec 3.3).
+- The diag frame table, generated from `gen-inhibit/diag/vtrux-wican-diag.dbc`
+  by shared/diag's generator and committed (shared/diag D3, D4; spec 10):
+  `gen-inhibit/firmware/main/gi_diag_table.c`/`.h` for the firmware and
+  `gen-inhibit/tools/gi_diag_table.py` for Python. The tester's DBC check
+  regenerates both and compares (reviewer, 2026-11-23).
 - Unit tests: `gen-inhibit/test/gen_inhibit_sched/`,
   `gen-inhibit/test/gen_inhibit_shim/` (its `wican_ref.py` finds the stock
   code in the pinned `../shared-<tag>/` checkout).
