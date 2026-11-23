@@ -1493,6 +1493,17 @@ builds are compared by code hash (shared/tools R2, R3). `diag_fw_ver` is a behav
 its bump rule and table in the schema doc. It stays, by hand, until stage (b)
 of the port retires it in the one diag layout both projects share.
 
+**No diag value can overflow its signal in a real build** (shared/diag D3
+leaves this to each project). Every field is bounded where its value comes
+from: its C type or enum range fits the signal, or the core caps it at the
+signal's maximum, as it caps `tx_fail`, `ctr_steps_bad`, `rx_errors` and
+`tx_queued_behind`. The build checks it: a compile-time check against the
+frame table's signal widths fails the build when a field's type could
+exceed its signal without a cap. The packer's misfit report is read by the
+tests only: any misfit in a host or emulated run fails it (12.3). The
+device does nothing of its own about a misfit, with no status-page count
+and no bit on the wire; the packer sends the field as 0.
+
 Broadcast is best-effort and fails silently in listen-only, so a truly passive
 tap emits none.
 
@@ -1807,7 +1818,8 @@ parts:
    clear only on a key 0 -> 1 reading or an explicit re-arm. **PASSIVE is
    differential against INHIBIT**: every scenario run in both, and the PASSIVE
    trace must equal the INHIBIT trace with each inhibit transmit replaced by a
-   would-transmit.
+   would-transmit. No diag misfit reported by the packer (section 10), on
+   any trace.
 3. **Build-output checks**, run on the image to be flashed:
    `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`; secure boot and flash
    encryption unset; `CONFIG_EFUSE_VIRTUAL` off; `CONFIG_TWAI_ISR_IN_IRAM`

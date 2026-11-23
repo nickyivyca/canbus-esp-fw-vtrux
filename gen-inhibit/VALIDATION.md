@@ -1110,6 +1110,14 @@ was read as a logger on the truck dropping frames).
   are compared by code hash, and the image hash only identifies one binary
   (user, 2026-11-08, in the charge-interposer reviewer's session, relayed by
   the methodology owner).
+- **No misfit in a real build:** user, 2026-11-23, in the reviewer's
+  session. shared/diag D3 leaves what follows a misfit to each project. A
+  runtime reaction (a status-page count or a bit on the wire) was proposed
+  and rejected: a misfit is a firmware bug, so it is stopped by the build
+  and the tests and never handled on the device. Reading of
+  `gen_inhibit_core.c` (implementor, 2026-11-23): the core already caps
+  `tx_fail`, `ctr_steps_bad`, `rx_errors` and `tx_queued_behind`, and every
+  other field fits by its C type or enum range.
 - **Status:** validated.
 
 ## 11. Control surface
