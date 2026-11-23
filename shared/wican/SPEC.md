@@ -23,7 +23,7 @@ and the other project's reviewer reads it before it merges into
   (goal 18, and "Stock WiCAN code" under Layer 4 of "The split"), and
   `shared/boards/SPEC.md`.
 
-Requirements are numbered W1 to W14. The numbers are stable.
+Requirements are numbered W1 to W15. The numbers are stable.
 
 - **W1. One component.** `shared/wican/` is one ESP-IDF component,
   `vtrux/wican`, which a project takes at a pinned tag through the
@@ -131,7 +131,8 @@ Requirements are numbered W1 to W14. The numbers are stable.
   erases each block as the write reaches it, not with `OTA_SIZE_UNKNOWN`,
   which erases the whole slot before the first byte of the body is read.
 - **W15. The firmware version shown is the build's commit.** The status
-  page's `fw_version` and the mDNS `fw_version` entry show the app
+  page's `fw_version` and the mDNS firmware-version entry (stock TXT key
+  `fimrware`, spelt as stock and kept) show the app
   descriptor's version string as it is: the commit that shared/tools R4
   puts there. Nothing is parsed out of it. The stock `v<major>.<minor>`
   parse is removed, so the page no longer shows `0.00`, nor mDNS an empty
