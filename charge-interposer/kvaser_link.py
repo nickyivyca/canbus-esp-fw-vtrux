@@ -43,6 +43,35 @@ with the reason, is
 written to the file VTRUX_KVASER_STOP names (bench_suite.py sets it to the
 run's own STOP file, so every later case is NOT-RUN "STOP: ...").
 
+THE BOOKKEEPING IS CAN-TOOLS' (2026-11-23, the charge-interposer
+reviewer's echo_watch ruling; can-tools f19d04b). This module's EchoWatch
+and WatchedBus went into canbench.echo_watch under the shared-first rule,
+with the stall rule taken out, and EchoWatch / WatchedBus here are now thin
+wrappers over its EchoWatch / EchoWatchedBus (ew(): the pinned module,
+loaded by file through can_tools_pin, at the first watch made). What stays
+ours is what a missing echo means: the bound, STALL_S, is passed in, and
+canbench's SendRefused (ENOBUFS) and EchoMissing (no own echo within the
+bound) are raised here as Stall (as_stall), with the same text as before
+("kvaser TX stall: send refused with ENOBUFS (...)", "kvaser TX stall: no
+own echo N ms after send returned (...)") and .t, so every except and
+isinstance on Stall, and run_scenario's KVASER_VOID, still match.
+finish()'s Stall with sends forgiven or excused keeps its old wording too
+(finish_text). Opening stays open_bus (canbench's open_for_echoes is not
+used). Two differences from the old code, absorbed or harmless: canbench's
+watch reads what is waiting after every send, a refused one too
+(read_after_send, the default), where the old one read only in poll(); the
+callers that send and read on one thread (vehicle_sim through WatchedBus,
+bench_usb_host's injector, bench_hold12's kvaser_send, bench_vport's node)
+already read after every send, and still call poll(), which alone checks
+the bound. A driver whose own reader thread reads the bus
+(bench_charger_silent, bench_topology) passes read_after_send=False: the
+watch then never reads, its reader hands each frame to saw() (True for an
+own echo, which is the stall rule's and never a frame heard) and calls
+check() from its loop, so the bound is still judged there. And finish()
+while suspended is refused (EchoWatchError, not a Stall), where the old one
+waited for ever; bench_vport, the only caller that suspends, clears it
+first.
+
 RESTART-MS AND THE KERNEL'S DROPS (the charge-interposer reviewer's ruling
 Q1, 2026-11-20). set_link(True, restart_ms=N), recover(restart_ms=N) and
 stall_lines(restart_ms=N) bring the link up with that bus-off restart, passed
@@ -100,13 +129,10 @@ a planted kernel log.
     python3.13 -B charge-interposer/kvaser_link.py state|up|down|recover
 """
 
-import collections
-import errno
 import os
 import re
 import subprocess
 import sys
-import threading
 import time
 
 ROLE = "kvaser"                     # canctl's role (shared/bench SPEC section 8)
@@ -339,184 +365,186 @@ def open_bus(channel=ROLE, receive_own_messages=True, root=None, can_mod=None,
 
 # ---- the stall rule -----------------------------------------------------------
 
+_EW = None
+# canbench's finish() text with sends excused or forgiven, after its
+# EchoMissing's own text (echo_watch at f19d04b)
+_FINISH_TAIL = re.compile(r"; (\d+) of them excused, up to (\d+) forgiven, (-?\d+) unaccounted$")
+
+
+def ew():
+    """The pinned canbench.echo_watch (can_tools_pin.use: canbench loaded by
+    file from the pinned commit's folder), loaded once per process, at the
+    first watch made (importing this module loads no canbench)."""
+    global _EW
+    if _EW is None:
+        import can_tools_pin
+        can_tools_pin.use()
+        from canbench import echo_watch
+        _EW = echo_watch
+    return _EW
+
+
 def _key(m):
-    return (m.arbitration_id, bool(m.is_extended_id), bytes(m.data))
+    """What an echo is matched on: canbench's key_of, (arbitration_id,
+    is_extended_id, data), so a caller's keys (bench_vport's excused span)
+    are the watch's own."""
+    return ew().key_of(m)
 
 
-def _enobufs(e):
-    for x in (e, getattr(e, "__cause__", None), getattr(e, "__context__", None)):
-        if x is None:
-            continue
-        if getattr(x, "errno", None) == errno.ENOBUFS or getattr(x, "error_code", None) \
-                == errno.ENOBUFS:
-            return True
-        if "No buffer space" in str(x) or "ENOBUFS" in str(x):
-            return True
-    return False
+def as_stall(e):
+    """canbench's SendRefused or EchoMissing -> our Stall: "kvaser TX stall:
+    " and its text, at its .t (the reviewer's echo_watch ruling,
+    2026-11-23)."""
+    return Stall("kvaser TX stall: %s" % e, e.t)
+
+
+def finish_text(e):
+    """The text of finish()'s EchoMissing in this module's old wording: with
+    sends excused or forgiven canbench says "<text>; K of them excused, up
+    to F forgiven, U unaccounted", where the old EchoWatch said "<text>;
+    [K of them excused, ]F of them may be forgiven as dropped by the
+    kernel, U unaccounted". Any other text is kept as it is."""
+    text, cause = str(e), e.__cause__
+    m = _FINISH_TAIL.search(text)
+    if cause is None or m is None or text != str(cause) + m.group(0):
+        return text
+    k, f, u = (int(x) for x in m.groups())
+    return ("%s; %s%d of them may be forgiven as dropped by the kernel, %d unaccounted"
+            % (cause, ("%d of them excused, " % k) if k else "", f, u))
 
 
 class EchoWatch:
-    """The stall rule's bookkeeping on one Kvaser bus opened with its echoes
-    kept. send() sends and notes when send() returned; poll() reads what is
-    waiting, matches own echoes (is_rx False) to the sends in order, hands
-    every other frame to on_rx(msg, t_host), and raises Stall once the oldest
-    unechoed send is older than stall_s. finish() waits out the last echoes.
-    .echoed is the sent count (D3: "sent" means its own echo arrived)."""
+    """The stall rule on one Kvaser bus opened with its echoes kept, over
+    canbench.echo_watch.EchoWatch with the bound STALL_S (the reviewer's
+    echo_watch ruling, 2026-11-23): send() sends and notes when send()
+    returned; poll() reads what is waiting, matches own echoes (is_rx False)
+    to the sends in order, hands every other frame to on_rx(msg, t_host),
+    and raises Stall once the oldest unechoed send is older than stall_s;
+    finish() waits out the last echoes. .echoed is the sent count (D3:
+    "sent" means its own echo arrived); .pending, .calls, .stray,
+    .echo_times and .bus are canbench's watch's. suspended: True while no
+    ACK is expected by design (bench_vport's no-ACK and wrong-rate windows;
+    the reviewer, 2026-11-13), the bound not checked; rebase() when the ACK
+    returns. One thread may send while another reads.
+    read_after_send=False, for a driver whose own reader thread reads the
+    bus (bench_charger_silent, bench_topology): the watch never reads; the
+    reader calls saw(m) on each frame it reads (True for an own echo, not a
+    frame heard) and check() from its loop."""
 
-    def __init__(self, bus, stall_s=STALL_S, on_rx=None, clock=None, on_echo=None):
-        self.bus, self.stall_s, self.on_rx = bus, stall_s, on_rx
-        self.on_echo = on_echo          # (key, t send returned, t echo read)
-        self.clock = clock or perf
-        self.pending = collections.deque()
-        self.calls = self.echoed = self.stray = 0
-        self.echo_times = []
-        # True while no ACK is expected by design (bench_vport's no-ACK and
-        # wrong-rate windows; the reviewer, 2026-11-13): the bound is not
-        # checked; rebase() when the ACK returns
-        self.suspended = False
-        # one thread may send while another reads (bench_topology's drain)
-        self._lock = threading.Lock()
+    def __init__(self, bus, stall_s=STALL_S, on_rx=None, clock=None, on_echo=None,
+                 read_after_send=True, _watch=None):
+        if _watch is None:
+            _watch = ew().EchoWatch(bus, stall_s, on_rx=on_rx, on_echo=on_echo,
+                                    clock=clock or perf, read_after_send=read_after_send)
+        self.w = _watch
+
+    def __getattr__(self, name):
+        if name == "w":
+            raise AttributeError(name)
+        return getattr(self.w, name)
+
+    @property
+    def stall_s(self):
+        return self.w.bound_s
+
+    @property
+    def suspended(self):
+        return self.w.suspended
+
+    @suspended.setter
+    def suspended(self, v):
+        self.w.suspended = v
 
     def send(self, msg, timeout=0.05):
-        # noted BEFORE the send, its time set once send() returns: a reader
-        # on another thread may take the echo before send() has returned
-        entry = [None, _key(msg)]
-        with self._lock:
-            self.pending.append(entry)
+        """A send through the watch; a send refused with ENOBUFS is Stall
+        (not pending), any other error is raised as it is."""
         try:
-            self.bus.send(msg, timeout=timeout)
-        except Exception as e:                          # noqa: BLE001
-            with self._lock:
-                for i, x in enumerate(self.pending):
-                    if x is entry:
-                        del self.pending[i]
-                        break
-            if _enobufs(e):
-                t = self.clock()
-                raise Stall("kvaser TX stall: send refused with ENOBUFS (%s)" % e, t)
-            raise
-        entry[0] = self.clock()
-        with self._lock:
-            self.calls += 1
+            self.w.send(msg, timeout=timeout)
+        except ew().SendRefused as e:
+            raise as_stall(e) from e
 
-    def _take(self, m):
-        if getattr(m, "is_rx", True) or getattr(m, "is_error_frame", False):
-            if self.on_rx is not None:
-                self.on_rx(m, self.clock())
-            return
-        k = _key(m)
-        hit = None
-        with self._lock:
-            for i, (tr, pk) in enumerate(self.pending):
-                if pk == k:
-                    del self.pending[i]
-                    self.echoed += 1
-                    hit = (tr, self.clock())
-                    self.echo_times.append(hit[1])
-                    break
-            else:
-                self.stray += 1
-        if hit is not None and self.on_echo is not None:
-            self.on_echo(k, hit[0], hit[1])
+    def saw(self, m):
+        """A frame the caller's own reader read: True for an own echo
+        (matched, or counted stray), False for anything else. Checks no
+        bound: the reader calls check()."""
+        return self.w.saw(m)
 
     def rebase(self, t):
         """The ACK is back at t: every pending send's age counts from t at
         the earliest, so frames held through a no-ACK window get the bound
         from the ACK's return (the reviewer, 2026-11-13)."""
-        with self._lock:
-            for e in self.pending:
-                if e[0] is not None and e[0] < t:
-                    e[0] = t
+        self.w.rebase(t)
 
     def check(self):
-        if self.suspended:
-            return
-        with self._lock:
-            ts = [e[0] for e in self.pending if e[0] is not None]
-            oldest = min(ts) if ts else None
-            n_pending, n_echoed = len(self.pending), self.echoed
-        if oldest is not None:
-            t = self.clock()
-            age = t - oldest
-            if age > self.stall_s:
-                raise Stall("kvaser TX stall: no own echo %.0f ms after send returned "
-                            "(bound %.0f ms; %d sends unechoed, %d echoed)"
-                            % (age * 1000.0, self.stall_s * 1000.0, n_pending,
-                               n_echoed), t)
+        """Stall if the oldest pending send is older than the bound (not
+        while suspended)."""
+        try:
+            self.w.check()
+        except ew().EchoMissing as e:
+            raise as_stall(e) from e
 
     def poll(self, timeout=0.0):
-        m = self.bus.recv(timeout)
-        while m is not None:
-            self._take(m)
-            m = self.bus.recv(0.0)
-        self.check()
+        """Read what is waiting (the first read waits up to timeout), then
+        check()."""
+        try:
+            self.w.poll(timeout)
+        except ew().EchoMissing as e:
+            raise as_stall(e) from e
 
     def finish(self, forgive=0, excuse=None):
-        """Read until every send is echoed; Stall once the bound passes.
-        forgive: how many sends the kernel is known to have dropped
-        (bench_vport's node: tx_dropped's growth while it was bus-off in
-        wrong-rate windows; the charge-interposer reviewer's ruling Q1,
-        2026-11-20). excuse(key) -> True for a send the caller does not
-        judge (bench_vport's node: its sends from a wrong-rate span, the
-        charge-interposer reviewer's ruling (a), 2026-11-20). Once the bound
-        passes, the excused sends still unechoed, however many, and up to
-        `forgive` of the others leave pending and are returned, not a Stall;
-        more of the others than that is the Stall, its text saying how many
-        were excused and forgiven. Echoes are waited for either way, so an
-        excused send that does echo is counted echoed.
+        """Read until every send is echoed (read_after_send=False: wait for
+        the reader's saw() calls, checking the bound every 5 ms); Stall once
+        the bound passes. forgive: how many sends the kernel is known to
+        have dropped (bench_vport's node: tx_dropped's growth while it was
+        bus-off in wrong-rate windows; the charge-interposer reviewer's
+        ruling Q1, 2026-11-20). excuse(key) -> True for a send the caller
+        does not judge (bench_vport's node: its sends from a wrong-rate
+        span, the charge-interposer reviewer's ruling (a), 2026-11-20).
+        Once the bound passes, the excused sends still unechoed, however
+        many, and up to `forgive` of the others leave pending and are
+        returned, not a Stall; more of the others than that is the Stall,
+        its text saying how many were excused and forgiven (finish_text).
         -> the forgiven and excused entries ([t send returned, key]), []
         when every send echoed."""
-        while self.pending:
-            try:
-                self.poll(0.005)
-            except Stall as e:
-                with self._lock:
-                    n = len(self.pending)
-                    k = sum(1 for x in self.pending
-                            if excuse is not None and excuse(x[1]))
-                    if n - k <= forgive:
-                        gone = list(self.pending)
-                        self.pending.clear()
-                        return gone
-                if forgive or k:
-                    raise Stall("%s; %s%d of them may be forgiven as dropped by the "
-                                "kernel, %d unaccounted"
-                                % (e, ("%d of them excused, " % k) if k else "", forgive,
-                                   n - k - forgive), e.t)
-                raise
-        return []
+        try:
+            return self.w.finish(forgive, excuse)
+        except ew().EchoMissing as e:
+            raise Stall("kvaser TX stall: %s" % finish_text(e), e.t) from e
 
 
 class WatchedBus:
     """A Kvaser bus (opened with its echoes kept) with the stall rule, for a
-    sender that treats it as a plain python-can bus (vehicle_sim): send()
-    goes through EchoWatch, recv() returns only frames that are not own
-    echoes, and either raises Stall once the bound passes. recv(timeout)
-    may return None before timeout when only echoes arrived."""
+    sender that treats it as a plain python-can bus (vehicle_sim), over
+    canbench.echo_watch.EchoWatchedBus with the bound STALL_S (the
+    reviewer's echo_watch ruling, 2026-11-23): send() goes through the
+    watch (.watch, an EchoWatch here), recv() returns only frames that are
+    not own echoes, and either raises Stall once the bound passes. recv(
+    timeout) may return None before timeout when only echoes arrived.
+    .inner names the python-can bus underneath, which adapter_roles.bus_error
+    classifies error frames on (a WatchedBus is no SocketCAN class)."""
 
-    def __init__(self, bus, stall_s=STALL_S, clock=None):
+    def __init__(self, bus, stall_s=STALL_S, clock=None, read_after_send=True):
         self.bus = bus
-        # the python-can bus underneath, which adapter_roles.bus_error
-        # classifies error frames on (a WatchedBus is no SocketCAN class)
+        self._wb = ew().EchoWatchedBus(bus, stall_s, clock=clock or perf,
+                                       read_after_send=read_after_send)
         self.inner = bus
-        self._rx = collections.deque()
-        self.watch = EchoWatch(bus, stall_s, on_rx=lambda m, t: self._rx.append(m),
-                               clock=clock)
+        self.watch = EchoWatch(bus, _watch=self._wb.watch)
 
     def send(self, msg, timeout=None):
         self.watch.send(msg, timeout=0.05 if timeout is None else timeout)
 
     def recv(self, timeout=None):
-        if not self._rx:
-            self.watch.poll(timeout or 0.0)
-        else:
-            self.watch.check()
-        return self._rx.popleft() if self._rx else None
+        try:
+            return self._wb.recv(timeout)
+        except ew().EchoMissing as e:
+            raise as_stall(e) from e
 
     def shutdown(self):
         self.bus.shutdown()
 
     def __getattr__(self, name):
+        if name in ("bus", "_wb"):
+            raise AttributeError(name)
         return getattr(self.bus, name)
 
 

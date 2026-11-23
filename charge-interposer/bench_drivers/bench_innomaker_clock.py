@@ -214,12 +214,43 @@ def open_device():
     return bus, info
 
 
+def open_or_void():
+    """open_device(), or (None, None) with a VOID line printed when the
+    Innomaker does not open (2026-11-23, the reviewer's sweep ruling: a
+    premise failure prints a VOID line rather than a bare non-zero exit;
+    before, a traceback, read FAIL)."""
+    try:
+        return open_device()
+    except Exception as e:                                 # noqa: BLE001
+        print(premise_line("the Innomaker (role canchg) did not open (%s: %s)"
+                           % (type(e).__name__, e)))
+        return None, None
+
+
+def premise_line(why):
+    """A premise of the mode not met (the Innomaker not opening, not in
+    hardware-timestamp mode, or its stamps not usable) as a VOID line, which
+    script_judge reads (2026-11-23, the reviewer's sweep ruling)."""
+    return "VOID: %s: not measured" % why
+
+
+NOT_HW = ("the Innomaker is not in hardware-timestamp mode, so its stamps are "
+          "not a device clock")
+
+
 def offer(bus, rate, seconds, burst, want_id):
-    import bench_pacer
+    """`want_id` offered on `bus` at `rate` in bursts of `burst` for
+    `seconds`: bench_offer's offer (can-tools' pace, ended by time at
+    seconds, since 2026-11-23: the reviewer's pace ruling; bench_pacer's
+    before), so a run whose sends fall behind offers what its time allows,
+    as before, never every frame of its schedule over a longer time:
+    rate-runs' >= 95 % is held against rate x seconds frames in seconds.
+    Its result prints as its figures (bench_pacer's printed as an object)."""
+    import bench_offer
     import can
     msg = can.Message(arbitration_id=want_id, is_extended_id=False,
                       data=bytearray([0x5A] * 8))
-    return bench_pacer.offer(lambda: bus.send(msg, timeout=0.05), rate,
+    return bench_offer.offer(lambda: bus.send(msg, timeout=0.05), rate,
                              seconds, burst)
 
 
@@ -236,11 +267,14 @@ def run_clock(args):
         print("REFUSED: --seconds %.0f is under the %.0f s the reviewer set "
               "for the clock comparison" % (args.seconds, MIN_CLOCK_S))
         return 2
-    bus, info = open_device()
+    bus, info = open_or_void()
+    if bus is None:
+        return 1
     print("device: %s" % describe(info))
     if not info["hw_timestamp"]:
         print("REFUSED: the device is not in hardware-timestamp mode, so its "
               "stamps are not a device clock")
+        print(premise_line(NOT_HW))
         bus.shutdown()
         return 1
     log = EchoLog(bus, CLOCK_ID).start()
@@ -256,6 +290,7 @@ def run_clock(args):
     print("stamps: %s" % why)
     if not ok:
         print("REFUSED: %s" % why)
+        print(premise_line("the Innomaker's stamps are not usable (%s)" % why))
         return 1
     host = [h for h, _r in log.pairs]
     f = fit_rate(host, unwrap_us(raw))
@@ -278,10 +313,13 @@ def run_clock(args):
 
 
 def run_echo(args):
-    bus, info = open_device()
+    bus, info = open_or_void()
+    if bus is None:
+        return 1
     print("device: %s" % describe(info))
     if not info["hw_timestamp"]:
         print("REFUSED: not in hardware-timestamp mode")
+        print(premise_line(NOT_HW))
         bus.shutdown()
         return 1
     log = EchoLog(bus, FILLER_ID).start()
@@ -298,6 +336,7 @@ def run_echo(args):
     print("stamps: %s" % why)
     if not ok:
         print("REFUSED: %s" % why)
+        print(premise_line("the Innomaker's stamps are not usable (%s)" % why))
         return 1
     w, b, fps = burst_shape(unwrap_us(raw), args.burst)
     print("DEVICE-CLOCK burst shape: within %.3f ms, between %.3f ms, mean "
@@ -312,7 +351,9 @@ def run_echo(args):
 
 def run_rate_runs(args):
     kind, idle_s = parse_between(args.between)
-    bus, info = open_device()
+    bus, info = open_or_void()
+    if bus is None:
+        return 1
     print("device: %s" % describe(info))
     rows = []
     try:
@@ -324,7 +365,9 @@ def run_rate_runs(args):
                 elif kind == "reopen":
                     bus.shutdown()
                     time.sleep(1.0)
-                    bus, info = open_device()
+                    bus, info = open_or_void()
+                    if bus is None:
+                        return 1
                     print("  reopened: %s" % describe(info))
             log = EchoLog(bus, FILLER_ID).start()
             o = offer(bus, args.rate, args.seconds, 1, FILLER_ID)
@@ -339,7 +382,8 @@ def run_rate_runs(args):
                   "offered for %.0f s; %s" % (k + 1, len(raw), fps,
                                               args.rate, args.seconds, o))
     finally:
-        bus.shutdown()
+        if bus is not None:
+            bus.shutdown()
     want = args.rate * args.seconds
     held = all(n >= 0.95 * want for _k, n, _f, _o in rows)
     print("between runs: %s. %s" % (args.between, "every run delivered >= 95 "
@@ -348,6 +392,81 @@ def run_rate_runs(args):
 
 
 # --- self-test: the analysis can fail -------------------------------------
+
+def offer_and_premise_checks(check):
+    """2026-11-23: offer() on bench_offer (the reviewer's pace ruling), on a
+    stand-in bus, on time and running late; and the premise VOID lines (the
+    reviewer's sweep ruling), each mode run with a stand-in open_device."""
+    import contextlib
+    import inspect
+    import io
+    import types
+    print("offer, on bench_offer (ended by time)")
+
+    class TxStandIn(object):
+        def __init__(self, cost=0.0):
+            self.cost, self.ids, self.shut = cost, [], False
+
+        def send(self, msg, timeout=None):
+            t = time.perf_counter() + self.cost
+            while time.perf_counter() < t:
+                pass
+            self.ids.append(msg.arbitration_id)
+
+        def shutdown(self):
+            self.shut = True
+    b = TxStandIn()
+    o = offer(b, 1000, 0.2, 1, FILLER_ID)
+    check(abs(o.sent - 200) <= 1 and o.errs == 0 and set(b.ids) == {FILLER_ID},
+          "1,000 fps of 0x%X for 0.2 s: %d sent" % (FILLER_ID, o.sent))
+    b = TxStandIn(0.002)
+    o = offer(b, 1000, 0.2, 1, FILLER_ID)
+    check(o.elapsed < 0.205 and o.sent < 110,
+          "running late (2 ms a send): the offer ends at its 0.2 s (%.4f s, %d "
+          "sent of 200), not after every frame, so rate-runs' count stays one of "
+          "what its time offered" % (o.elapsed, o.sent))
+    check("sent" in str(o) and "max lag" in str(o),
+          "the offer prints as its figures: %s" % o)
+    print("premise lines")
+    g = globals()
+    saved = g["open_device"]
+    a = types.SimpleNamespace(seconds=120.0, rate=100.0, agree_ppm=20.0, burst=8,
+                              runs=2, between="none")
+
+    def run_mode(fn):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = fn(a)
+        return rc, buf.getvalue().splitlines()
+    try:
+        def boom():
+            raise OSError("no device")
+        g["open_device"] = boom
+        for fn in (run_clock, run_echo, run_rate_runs):
+            rc, lines = run_mode(fn)
+            check(rc == 1 and lines[:1] == [
+                "VOID: the Innomaker (role canchg) did not open (OSError: no device): "
+                "not measured"],
+                "%s: the Innomaker not opening -> a VOID line, exit 1 (%s, %s)"
+                % (fn.__name__, rc, lines[:1]))
+        bus = TxStandIn()
+        g["open_device"] = lambda: (bus, dict(fclk_can=48000000, feature=0, flags=0,
+                                              hw_timestamp=False))
+        for fn in (run_clock, run_echo):
+            rc, lines = run_mode(fn)
+            check(rc == 1 and premise_line(NOT_HW) in lines and bus.shut,
+                  "%s: not in hardware-timestamp mode -> a VOID line, exit 1 (%s)"
+                  % (fn.__name__, [x for x in lines if x.startswith("VOID")]))
+    finally:
+        g["open_device"] = saved
+    for fn in (run_clock, run_echo):
+        check("        print(premise_line(\"the Innomaker's stamps are not usable (%s)\" "
+              "% why))\n        return 1\n" in inspect.getsource(fn),
+              "%s: stamps not usable -> a VOID line" % fn.__name__)
+    src = inspect.getsource(run_rate_runs)
+    check(src.count("open_or_void()") == 2 and "open_device()" not in src,
+          "run_rate_runs: the first open and each reopen through open_or_void")
+
 
 def self_test():
     fails = []
@@ -422,14 +541,63 @@ def self_test():
         check(False, "an unknown action is refused")
     except ValueError:
         check(True, "an unknown action is refused")
+    offer_and_premise_checks(check)
     print("\nbench_innomaker_clock self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
 
 
+# --can-fail (script_can_fail.py, since 2026-11-23): each edit must make
+# --self-test fail
+MUTANTS = [
+    ("pace: the offer by schedule alone (until_s), not by time",
+     "    return bench_offer.offer(lambda: bus.send(msg, timeout=0.05), rate,\n"
+     "                             seconds, burst)",
+     "    n = int(rate * seconds)\n"
+     "    return bench_offer.Offered(bench_offer.rp().pace(\n"
+     "        ((k // burst * burst / float(rate), k) for k in range(n)),\n"
+     "        lambda k: bus.send(msg, timeout=0.05), until_s=seconds), n, 0, None, [],\n"
+     "        rate, burst, seconds)"),
+    ("pace: the offer for twice its time",
+     "    return bench_offer.offer(lambda: bus.send(msg, timeout=0.05), rate,\n"
+     "                             seconds, burst)",
+     "    return bench_offer.offer(lambda: bus.send(msg, timeout=0.05), rate,\n"
+     "                             2 * seconds, burst)"),
+    ("premise: the Innomaker not opening, no VOID line",
+     "        print(premise_line(\"the Innomaker (role canchg) did not open (%s: %s)\"\n"
+     "                           % (type(e).__name__, e)))\n", "        pass\n"),
+    ("premise: the clock run's hardware-timestamp refusal, no VOID line",
+     "              \"stamps are not a device clock\")\n        print(premise_line(NOT_HW))\n",
+     "              \"stamps are not a device clock\")\n"),
+    ("premise: the echo run's hardware-timestamp refusal, no VOID line",
+     "        print(\"REFUSED: not in hardware-timestamp mode\")\n"
+     "        print(premise_line(NOT_HW))\n",
+     "        print(\"REFUSED: not in hardware-timestamp mode\")\n"),
+    ("premise: the clock run's stamps refusal, no VOID line",
+     "        print(premise_line(\"the Innomaker's stamps are not usable (%s)\" % why))\n"
+     "        return 1\n    host = [h for h, _r in log.pairs]\n    f = fit_rate(",
+     "        return 1\n    host = [h for h, _r in log.pairs]\n    f = fit_rate("),
+    ("premise: the echo run's stamps refusal, no VOID line",
+     "        print(premise_line(\"the Innomaker's stamps are not usable (%s)\" % why))\n"
+     "        return 1\n    w, b, fps = burst_shape(",
+     "        return 1\n    w, b, fps = burst_shape("),
+    ("premise: rate-runs opened with a traceback",
+     "    bus, info = open_or_void()\n    if bus is None:\n        return 1\n"
+     "    print(\"device: %s\" % describe(info))\n    rows = []",
+     "    bus, info = open_device()\n    print(\"device: %s\" % describe(info))\n"
+     "    rows = []"),
+    ("premise: a reopen with a traceback",
+     "                    bus, info = open_or_void()\n                    if bus is None:\n"
+     "                        return 1\n",
+     "                    bus, info = open_device()\n"),
+]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--can-fail", action="store_true",
+                    help="run --self-test against each MUTANTS edit")
     ap.add_argument("--out", default=None)
     sub = ap.add_subparsers(dest="mode")
     c = sub.add_parser("clock")
@@ -450,6 +618,9 @@ def main():
     args = ap.parse_args()
     if args.self_test:
         return self_test()
+    if args.can_fail:
+        import script_can_fail
+        return script_can_fail.run(__file__, MUTANTS)
     if args.mode is None:
         ap.error("a mode (clock, echo, rate-runs) or --self-test")
     # with no --out, the default output goes where it went before the

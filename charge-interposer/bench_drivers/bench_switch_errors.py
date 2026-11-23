@@ -250,6 +250,22 @@ def self_test():
     Link.fail = None
     for ok, what in reader_death_checks(Link):
         check(ok, what)
+    # 2026-11-23: the Innomaker by bench_charger_witness's opener (with
+    # bench_rate_feasibility retired), and the reviewer's sweep ruling on
+    # premise failures: the port or the Innomaker not opening is a VOID line
+    import inspect
+    pl = premise_line("the Innomaker (role canchg)", OSError("no device"))
+    check(pl == "VOID: the Innomaker (role canchg) did not open (OSError: no device): "
+          "no phase run", "premise_line: a VOID line -> %s" % pl)
+    src = inspect.getsource(run_bench)
+    i_hp = src.find("        hp = U.HostPort(")
+    i_gs = src.find("        gs = bcw.open_gs_usb()\n    except Exception as e:")
+    check(0 < i_hp < i_gs and src.count("log(premise_line(") == 2
+          and src.find("return 3", i_hp) < i_gs
+          and src.find("hp.close()", i_gs) < src.find("return 3", i_gs),
+          "run_bench: the X2's port and the Innomaker (bench_charger_witness's "
+          "opener) each a VOID line and exit 3 when they do not open, the port "
+          "closed after an Innomaker that did not")
     print("\nbench_switch_errors self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -462,9 +478,17 @@ def run_phases(hp, gs, log, cycles, link=kvaser_link):
     return v
 
 
+def premise_line(what, e):
+    """A premise not met (the board's port or the Innomaker that did not
+    open) as a VOID line, exit 3 (2026-11-23, the reviewer's sweep ruling: a
+    premise failure prints a VOID line rather than a bare non-zero exit;
+    before, a traceback, read FAIL)."""
+    return "VOID: %s did not open (%s: %s): no phase run" % (what, type(e).__name__, e)
+
+
 def run_bench(a):
     import bench_usb_host as U
-    import bench_rate_feasibility as RF
+    import bench_charger_witness as bcw
     out = open(a.out, "w", encoding="utf-8")
 
     def log(s):
@@ -477,8 +501,21 @@ def run_bench(a):
                                       RATE, ON_S, CYCLE_S, a.cycles, CANFAIL))
     global ROWS_BASE
     ROWS_BASE = os.path.splitext(a.out)[0]
-    hp = U.HostPort(a.port, os.path.splitext(a.out)[0] + "_serial.txt")
-    gs = RF.open_gs_usb()
+    try:
+        hp = U.HostPort(a.port, os.path.splitext(a.out)[0] + "_serial.txt")
+    except Exception as e:                                 # noqa: BLE001
+        log(premise_line("the X2's port %s" % a.port, e))
+        out.close()
+        return 3
+    # the Innomaker, role canchg (bench_charger_witness's opener;
+    # bench_rate_feasibility's, the same, until 2026-11-23)
+    try:
+        gs = bcw.open_gs_usb()
+    except Exception as e:                                 # noqa: BLE001
+        log(premise_line("the Innomaker (role canchg)", e))
+        hp.close()
+        out.close()
+        return 3
     try:
         v = run_phases(hp, gs, log, a.cycles)
     finally:
@@ -513,6 +550,19 @@ MUTANTS = [
     ("PCAN item 2: the state rows not shown",
      "        % (name, cycles, n, bridged, warn[0], pc.death.states, v.upper()))",
      "        % (name, cycles, n, bridged, warn[0], 0, v.upper()))"),
+    # 2026-11-23, the reviewer's sweep ruling on premise failures
+    ("premise: the X2's port not opening a traceback again",
+     "    try:\n        hp = U.HostPort(a.port, os.path.splitext(a.out)[0] + \"_serial.txt\")\n"
+     "    except Exception as e:                                 # noqa: BLE001\n",
+     "    hp = U.HostPort(a.port, os.path.splitext(a.out)[0] + \"_serial.txt\")\n"
+     "    if False:\n"),
+    ("premise: the Innomaker not opening a traceback again",
+     "    try:\n        gs = bcw.open_gs_usb()\n"
+     "    except Exception as e:                                 # noqa: BLE001\n",
+     "    gs = bcw.open_gs_usb()\n    if False:\n"),
+    ("premise: the port left open after the Innomaker's failure",
+     "        log(premise_line(\"the Innomaker (role canchg)\", e))\n        hp.close()\n",
+     "        log(premise_line(\"the Innomaker (role canchg)\", e))\n"),
 ]
 
 

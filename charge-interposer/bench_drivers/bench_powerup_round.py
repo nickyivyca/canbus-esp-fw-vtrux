@@ -59,6 +59,17 @@ with it, never judged on the rows read before; the exit code is then 1
 with a VOID line and no FAIL line, which the bench suite reads VOID. A FAIL
 on a boot whose witness lived still stands.
 
+Since 2026-11-23 (the reviewer's reader_guard ruling): the witness reads
+with can-tools' canbench.reader_guard.read_loop (guard and screen, which
+were reader_death's own, with drain=False: it stops at the first read
+after stop, as before); the boot's VOID line and DIED are still
+reader_death's. A missed-frames row's text reads "MissedFrames: ..." (it
+read "LostFrames: ..."). From the same day (the reviewer's sweep ruling of
+2026-11-21 on premise failures) a boot whose witness or serial port does
+not open prints a VOID line and is not run (NOT_OPENED, exit 1 with no
+FAIL line: VOID); before, the open's exception ended the run with a
+traceback, which the suite read FAIL.
+
     py -3.14 bench_powerup_round.py --can-fail        # self-test vs MUTANTS
 """
 
@@ -478,21 +489,24 @@ class Witness(object):
         self.mode = "normal (ACKs)" if acks else "listen-only"
         # role pcanfd (shared/bench SPEC section 8, 2026-11-18), bus states
         # reported (the reviewer's PCAN item 2, 2026-11-20): what it reads goes
-        # through reader_death.screen, so a state row is not an error row and
-        # an overrun row VOIDs the boot as lost frames (run_boot's DIED)
+        # through canbench.reader_guard.screen, so a state row is not an error
+        # row and an overrun row VOIDs the boot as lost frames (run_boot's DIED)
         self.bus = adapter_roles.pcanfd_report(500000, **kw)
         self.rows, self.lock = [], threading.Lock()
         self.stop_ev = threading.Event()
         self.death = reader_death.Death("pcan witness")
+        self.rg = reader_death.rg()
         self.t = threading.Thread(target=self._run, daemon=True)
         self.t.start()
 
     def _run(self):
-        # a raise ends the thread with the error kept (reader_death)
-        reader_death.guard(self.death, self.stop_ev, self._step)
+        # canbench.reader_guard's loop (the reviewer's reader_guard ruling,
+        # 2026-11-23): each read screened, a raise or a missed-frames row
+        # ends the thread with the error kept in death; no drain after stop
+        self.rg.read_loop(self.bus, self.death, self.stop_ev, self._row,
+                          read_s=0.05, drain=False)
 
-    def _step(self):
-        m = reader_death.screen(self.bus, self.bus.recv(timeout=0.05), self.death)
+    def _row(self, m):
         if m is not None:
             with self.lock:
                 self.rows.append((m.timestamp, m.arbitration_id,
@@ -553,17 +567,30 @@ def run_boot(args, out_dir, n, mode):
     log = os.path.join(out_dir, "serial_%s.log" % tag)
     wit = None
     adapters = "none"
-    if mode in ("ack", "com3_pcan_normal"):
-        wit = Witness(acks=True)
-    elif mode in ("noack", "com3_pcan_listen"):
-        wit = Witness(acks=False)
+    # a witness or a serial port that does not open is a failed premise: a
+    # VOID line, the boot not run (the reviewer's sweep ruling, 2026-11-21:
+    # a premise failure prints a VOID line rather than a bare non-zero exit)
+    try:
+        if mode in ("ack", "com3_pcan_normal"):
+            wit = Witness(acks=True)
+        elif mode in ("noack", "com3_pcan_listen"):
+            wit = Witness(acks=False)
+    except Exception as e:                                 # noqa: BLE001
+        return NOT_OPENED, ["VOID %s: the PCAN witness did not open (%s: %s); the "
+                            "boot is not run" % (tag, type(e).__name__, e)]
     if wit:
         adapters = "PCAN %s; Kvaser link %s, Innomaker closed" % (
             wit.mode, "up" if mode_acks(mode) else "down")
     time.sleep(1.0)
     pre = wit.take() if wit else []
     tap = R.SerialTap(args.port, 115200, log)
-    tap.start()                      # the first open: itself a COM3 boot
+    try:
+        tap.start()                  # the first open: itself a COM3 boot
+    except Exception as e:                                 # noqa: BLE001
+        if wit:
+            wit.close()
+        return NOT_OPENED, ["VOID %s: the board's serial port %s did not open (%s: %s); "
+                            "the boot is not run" % (tag, args.port, type(e).__name__, e)]
     if mode in ("ack", "noack"):
         time.sleep(3.0)              # let that boot settle
         if wit:
@@ -647,16 +674,21 @@ def run_bench(args):
     return bench_rc(v for _m, _n, v in verdicts)
 
 
+# a boot whose witness or serial port did not open (run_boot; 2026-11-23,
+# the reviewer's sweep ruling of 2026-11-21 on premise failures)
+NOT_OPENED = "not opened"
 VERDICT_WORD = {True: "PASS", False: "FAIL", None: "recorded",
-                reader_death.DIED: "VOID (the witness died)"}
+                reader_death.DIED: "VOID (the witness died)",
+                NOT_OPENED: "VOID (an adapter or the port did not open)"}
 
 
 def bench_rc(oks):
-    """The exit code from the boots' verdicts: 1 if any FAILED or any
-    boot's witness died (reader_death.DIED: its VOID line and no FAIL line
-    make bench_suite's script_judge read the check VOID), else 0."""
+    """The exit code from the boots' verdicts: 1 if any FAILED, any boot's
+    witness died (reader_death.DIED) or any boot did not open (NOT_OPENED):
+    a VOID line and no FAIL line make bench_suite's script_judge read the
+    check VOID; else 0."""
     oks = list(oks)
-    return 1 if any(o is False or o == reader_death.DIED for o in oks) else 0
+    return 1 if any(o is False or o in (reader_death.DIED, NOT_OPENED) for o in oks) else 0
 
 
 # --- self-test: no hardware -------------------------------------------------
@@ -1000,6 +1032,8 @@ def self_test():
     # Witness on a stand-in bus, the serial tap a stand-in, sleeps short.
     for line in reader_death_checks():
         check(*line)
+    # 2026-11-23, the reviewer's reader_guard ruling: drain=False, explicit
+    reader_death.drain_check(__file__, check)
 
     print("\nbench_powerup_round self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
@@ -1113,6 +1147,38 @@ def reader_death_checks():
                     "VOID by its line), recorded and PASS boots 0, a FAIL 1"))
         out.append((VERDICT_WORD[reader_death.DIED].startswith("VOID"),
                     "its verdict word is VOID"))
+        # 2026-11-23, the reviewer's sweep ruling (premise failures as VOID
+        # lines): a witness or serial port that does not open
+        def no_pcan(*a, **k):
+            raise RuntimeError("no PCAN by role pcanfd")
+        adapter_roles.pcanfd_report = no_pcan
+        ok, lines = run_boot(args, d, 4, "noack")
+        out.append((ok == NOT_OPENED and len(lines) == 1
+                    and lines[0].startswith("VOID noack_04: the PCAN witness did not open")
+                    and "no PCAN by role pcanfd" in lines[0],
+                    "CAN-FAIL: a witness that does not open -> one VOID line, the boot "
+                    "not run: %s" % lines))
+
+        class DeadTap(Tap):
+            def start(self):
+                raise OSError("no such port")
+        closed = []
+
+        class ShutQuiet(QuietBus):
+            def shutdown(self):
+                closed.append(1)
+        adapter_roles.pcanfd_report = lambda *a, **k: ShutQuiet([])
+        run_scenario.SerialTap = DeadTap
+        ok, lines = run_boot(args, d, 5, "ack")
+        run_scenario.SerialTap = Tap
+        out.append((ok == NOT_OPENED and len(lines) == 1 and closed == [1]
+                    and lines[0].startswith("VOID ack_05: the board's serial port /dev/x2 "
+                                            "did not open (OSError: no such port)"),
+                    "CAN-FAIL: a serial port that does not open -> one VOID line, the "
+                    "witness closed: %s %s" % (lines, closed)))
+        out.append((bench_rc([True, NOT_OPENED]) == 1
+                    and VERDICT_WORD[NOT_OPENED].startswith("VOID"),
+                    "a boot that did not open is not a pass (1, VOID by its line)"))
     finally:
         adapter_roles.pcanfd_report, run_scenario.SerialTap, globals()["time"] = saved
         scratch_dir.remove(d)
@@ -1214,17 +1280,45 @@ MUTANTS = [
      "    if len(lead) != ERROR_ACTIVE_ATTEMPTS:"),
     # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1
     ("reader death: the witness's recv unguarded",
-     "        reader_death.guard(self.death, self.stop_ev, self._step)",
-     "        while not self.stop_ev.is_set():\n            self._step()"),
+     "        self.rg.read_loop(self.bus, self.death, self.stop_ev, self._row,\n"
+     "                          read_s=0.05, drain=False)",
+     "        while not self.stop_ev.is_set():\n"
+     "            self._row(self.rg.screen(self.bus, self.bus.recv(0.05), self.death))"),
     ("reader death: a dead witness's rows judged",
      "    if wit and wit.death.error:", "    if False:"),
     ("reader death: a dead witness's boot exits 0",
-     "    return 1 if any(o is False or o == reader_death.DIED for o in oks) else 0",
-     "    return 1 if any(o is False for o in oks) else 0"),
+     "o in (reader_death.DIED, NOT_OPENED) for o in oks) else 0",
+     "o in (NOT_OPENED,) for o in oks) else 0"),
     # 2026-11-20, the reviewer's PCAN item 2
     ("PCAN item 2: the witness reads unscreened",
-     "        m = reader_death.screen(self.bus, self.bus.recv(timeout=0.05), self.death)",
-     "        m = self.bus.recv(timeout=0.05)"),
+     "        self.rg.read_loop(self.bus, self.death, self.stop_ev, self._row,\n"
+     "                          read_s=0.05, drain=False)",
+     "        self.rg.guard(self.death, self.stop_ev,\n"
+     "                      lambda: self._row(self.bus.recv(0.05)))"),
+    # 2026-11-23, the reviewer's reader_guard ruling
+    ("reader_guard: the witness drains after stop",
+     "                          read_s=0.05, drain=False)",
+     "                          read_s=0.05, drain=True)"),
+    # 2026-11-23, the reviewer's sweep ruling: premise failures as VOID lines
+    ("premise: a witness that does not open raises",
+     "    except Exception as e:                                 # noqa: BLE001\n"
+     "        return NOT_OPENED, [\"VOID %s: the PCAN witness",
+     "    except ZeroDivisionError as e:\n"
+     "        return NOT_OPENED, [\"VOID %s: the PCAN witness"),
+    ("premise: a serial port that does not open raises",
+     "        tap.start()                  # the first open: itself a COM3 boot\n"
+     "    except Exception as e:",
+     "        tap.start()                  # the first open: itself a COM3 boot\n"
+     "    except ZeroDivisionError as e:"),
+    ("premise: the witness left open when the port does not",
+     "        if wit:\n            wit.close()\n        return NOT_OPENED",
+     "        return NOT_OPENED"),
+    ("premise: a witness that does not open a bare line",
+     "        return NOT_OPENED, [\"VOID %s: the PCAN witness did not open",
+     "        return NOT_OPENED, [\"%s: the PCAN witness did not open"),
+    ("premise: a boot that did not open exits 0",
+     "o in (reader_death.DIED, NOT_OPENED) for o in oks) else 0",
+     "o in (reader_death.DIED,) for o in oks) else 0"),
 ]
 
 

@@ -41,8 +41,9 @@ left here: the role names, the canctl path, and the bench guard.
                              bus and address)
     kvaser_canlib(bitrate, **kw)
                              the Kvaser on CANlib (mode="linuxcan": the
-                             layer moves it there and back), only for
-                             bench_rate_feasibility's hand-run witness
+                             layer moves it there and back); its one user,
+                             bench_rate_feasibility's hand-run witness, was
+                             retired on 2026-11-23, so nothing opens it now
     kvaser_netdev()          the Kvaser's netdev, from resolve("kvaser") in
                              socketcan mode (kvaser_link opens and watches
                              it)

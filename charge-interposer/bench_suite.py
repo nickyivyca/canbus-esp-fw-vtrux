@@ -264,7 +264,12 @@ SELF_TESTS = [
     "bench_boot_reset", "bench_boot_reset_fixture", "bench_coredump_readback",
     "reset_check", "bench_layer_check",
     # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1
-    "reader_death", "bench_rate_feasibility",
+    # (bench_rate_feasibility's too, until it was retired with bench_pacer on
+    # 2026-11-23, the reviewer's pace ruling)
+    "reader_death",
+    # 2026-11-23, the reviewer's pace ruling: the offer on can-tools' pace,
+    # ended by time, and bench_charger_witness's offer and premise line
+    "bench_offer", "bench_charger_witness",
 ]
 # Bench drivers whose --can-fail runs their self-test against each of their
 # MUTANTS (script_can_fail.py), run locally (test_script_coverage).
@@ -290,8 +295,12 @@ CAN_FAILS = [
     # of the harness's use of can-tools' bench_layer
     "bench_layer_check",
     # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1: a PCAN
-    # reader that dies is VOID, never judged on its rows
-    "reader_death", "bench_rate_feasibility",
+    # reader that dies is VOID, never judged on its rows (bench_rate_feasibility's
+    # too, until it was retired on 2026-11-23)
+    "reader_death",
+    # 2026-11-23, the reviewer's pace ruling (bench_offer on can-tools' pace,
+    # in place of bench_pacer) and sweep ruling on premise failures
+    "bench_offer", "bench_charger_witness", "bench_innomaker_clock",
 ]
 # A can-fail's timeout when it is not CAN_FAIL_TIMEOUT_S. bench_vport's ran
 # past 3600 s in run 69d8 (2026-11-21) after 83 of its 149 mutants: about

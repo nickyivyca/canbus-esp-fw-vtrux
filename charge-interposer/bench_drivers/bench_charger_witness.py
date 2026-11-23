@@ -39,6 +39,16 @@ and a matching count alone says nothing about timing.
 
     py -3.14 bench_charger_witness.py            # validate, then measure
     py -3.14 bench_charger_witness.py --validate-only
+    python3.13 -B bench_charger_witness.py --self-test | --can-fail
+
+OPENER AND OFFER. open_gs_usb (role canchg) is the Innomaker opener the
+other drivers import (bench_rate_feasibility's copy, retired 2026-11-23,
+was the same opener). Since 2026-11-23 (the charge-interposer reviewer's
+pace ruling) offer() offers through bench_offer (can-tools' pace, ended by
+time at the seconds asked; bench_pacer's before), and an Innomaker that
+does not open prints a VOID line (the reviewer's sweep ruling on premise
+failures; before, a FAILED line and exit 2). --self-test and --can-fail
+cover those two (2026-11-23); the measurement itself is hand-run.
 """
 
 import argparse
@@ -55,7 +65,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adapter_roles               # noqa: E402  (every adapter by its bench role)
 
-import bench_pacer                                           # noqa: E402
 import can                                                    # noqa: E402
 
 class Tee(object):
@@ -169,7 +178,12 @@ def open_gs_usb():
     return adapter_roles.canchg(BITRATE)
 
 
-def offer(bus, rate, seconds, burst, w):
+def offer(bus, rate, seconds, burst, w, flush_s=1.5):
+    """The filler offered through bench_offer (ended by time; bench_pacer's
+    until 2026-11-23), the witness reset first, then flush_s for the queue
+    and the echoes to flush. Its queued_fps is bench_pacer's: sends that
+    returned over the offer's elapsed time."""
+    import bench_offer
     payload = bytearray([0x5A] * DLC)
     msg = can.Message(arbitration_id=FILLER_ID, is_extended_id=False,
                       data=bytearray(payload))
@@ -177,10 +191,18 @@ def offer(bus, rate, seconds, burst, w):
     def send():
         bus.send(msg, timeout=0.05)
 
+    bench_offer.rp()                    # canbench loaded before the witness's reset
     w.reset()
-    o = bench_pacer.offer(send, rate, seconds, burst)
-    time.sleep(1.5)                     # let the queue and echoes flush
+    o = bench_offer.offer(send, rate, seconds, burst)
+    time.sleep(flush_s)                 # let the queue and echoes flush
     return o
+
+
+def premise_line(what, e):
+    """A premise not met (the Innomaker that did not open) as a VOID line
+    (2026-11-23, the reviewer's sweep ruling: a premise failure prints a VOID
+    line rather than a bare non-zero exit)."""
+    return "VOID: %s did not open (%s: %s): nothing measured" % (what, type(e).__name__, e)
 
 
 def main():
@@ -191,7 +213,16 @@ def main():
                     help="artifact path; default is beside this script, "
                          "stamped with the time so runs cannot overwrite "
                          "each other")
+    ap.add_argument("--self-test", action="store_true",
+                    help="offer() and the premise line, no hardware (2026-11-23)")
+    ap.add_argument("--can-fail", action="store_true",
+                    help="run --self-test against each MUTANTS edit")
     args = ap.parse_args()
+    if args.self_test:
+        return self_test()
+    if args.can_fail:
+        import script_can_fail
+        return script_can_fail.run(__file__, MUTANTS)
 
     # with no --out, the default output goes where it went before the
     # move: SeaDrive's interposer-firmware/ folder, never this tree
@@ -225,6 +256,7 @@ def _run(args):
         bus = open_gs_usb()
     except Exception as exc:
         print("FAILED to open the Innomaker: %s" % exc)
+        print(premise_line("the Innomaker (role canchg)", exc))
         return 2
     w = EchoWitness(bus, FILLER_ID).start()
     try:
@@ -303,6 +335,93 @@ def _run(args):
             bus.shutdown()
         except Exception:
             pass
+
+
+def self_test():
+    """No hardware (2026-11-23): offer() on bench_offer with a stand-in bus
+    and witness (the witness reset before the first send, the filler frame,
+    the count by time on time and running late, bursts whole, queued_fps),
+    and _run() with an Innomaker that does not open (a VOID line, exit 2)."""
+    import contextlib
+    import io
+    import types
+    fails = []
+
+    def check(ok, what):
+        print("  %s  %s" % ("ok  " if ok else "FAIL", what))
+        if not ok:
+            fails.append(what)
+    events = []
+
+    class TxStandIn(object):
+        def __init__(self, cost=0.0):
+            self.cost, self.msgs = cost, []
+
+        def send(self, msg, timeout=None):
+            t = time.perf_counter() + self.cost
+            while time.perf_counter() < t:
+                pass
+            events.append("send")
+            self.msgs.append((msg.arbitration_id, msg.is_extended_id, bytes(msg.data)))
+
+    class W(object):
+        def reset(self):
+            events.append("reset")
+    b = TxStandIn()
+    o = offer(b, 200, 0.5, 1, W(), flush_s=0.0)
+    check(events[:2] == ["reset", "send"] and events.count("reset") == 1,
+          "the witness reset once, before the first send")
+    check(abs(o.sent - 100) <= 1 and set(b.msgs) == {(FILLER_ID, False, bytes([0x5A] * DLC))},
+          "200 fps for 0.5 s: %d of 0x%X, DLC 8, 0x5A" % (o.sent, FILLER_ID))
+    check(abs(o.queued_fps - 200.0) < 5.0,
+          "queued_fps: sends returned over the offer's time (%.1f)" % o.queued_fps)
+    o = offer(TxStandIn(), 1000, 0.205, 8, W(), flush_s=0.0)
+    check(o.sent == 208,
+          "bursts of 8 at 1,000 fps for 0.205 s: 26 whole bursts, 208 (%d)" % o.sent)
+    o = offer(TxStandIn(0.002), 1000, 0.2, 1, W(), flush_s=0.0)
+    check(o.elapsed < 0.205 and o.sent < 110,
+          "running late (2 ms a send): ended by time, %.4f s, %d sent of 200"
+          % (o.elapsed, o.sent))
+    g = globals()
+    saved = g["open_gs_usb"]
+
+    def boom():
+        raise OSError("no device")
+    try:
+        g["open_gs_usb"] = boom
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = _run(types.SimpleNamespace(seconds=1.0, validate_only=True))
+        voids = [x for x in buf.getvalue().splitlines() if x.startswith("VOID")]
+    finally:
+        g["open_gs_usb"] = saved
+    check(rc == 2 and voids == ["VOID: the Innomaker (role canchg) did not open "
+                                "(OSError: no device): nothing measured"],
+          "an Innomaker that does not open: a VOID line, exit 2 (%s, %s)" % (rc, voids))
+    print("\nbench_charger_witness self-test: %s"
+          % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
+    return 1 if fails else 0
+
+
+# --can-fail (script_can_fail.py, since 2026-11-23): each edit must make
+# --self-test fail
+MUTANTS = [
+    ("the witness reset after the offer",
+     "    w.reset()\n    o = bench_offer.offer(send, rate, seconds, burst)\n",
+     "    o = bench_offer.offer(send, rate, seconds, burst)\n    w.reset()\n"),
+    ("pace: the offer by schedule alone (until_s), not by time",
+     "    o = bench_offer.offer(send, rate, seconds, burst)\n",
+     "    n = int(rate * seconds)\n"
+     "    o = bench_offer.Offered(bench_offer.rp().pace(\n"
+     "        ((k // burst * burst / float(rate), k) for k in range(n)),\n"
+     "        lambda k: send(), until_s=seconds), n, 0, None, [], rate, burst, seconds)\n"),
+    ("pace: the bursts ignored", "    o = bench_offer.offer(send, rate, seconds, burst)\n",
+     "    o = bench_offer.offer(send, rate, seconds)\n"),
+    ("the filler's payload", "    payload = bytearray([0x5A] * DLC)\n",
+     "    payload = bytearray([0x00] * DLC)\n"),
+    ("premise: no VOID line",
+     "        print(premise_line(\"the Innomaker (role canchg)\", exc))\n", ""),
+]
 
 
 if __name__ == "__main__":
