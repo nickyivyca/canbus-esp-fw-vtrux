@@ -86,7 +86,12 @@ reader_death.guard, so a recv that raises (python-can raises on most PCAN
 statuses) is kept in Rx.death with its text. A not-reading or close boot
 whose PCAN reader died is VOID with that text (reader_death.DIED), and
 verdict_rc then exits 3 (VOID) unless another boot FAILED, even when the
-other boots passed.
+other boots passed. Since 2026-11-23 (the reviewer's reader_guard ruling)
+Rx reads with can-tools' canbench.reader_guard.read_loop (the guard and
+screen that were reader_death's, drain=False: it stops at the first read
+after stop, as before); the VOID line and DIED are still reader_death's,
+and a missed-frames row's text reads "MissedFrames: ..." (it read
+"LostFrames: ...").
 
 CAPACITY AND THE WICAN'S USB (reviewer ruling, 2026-10-22, after 700f's
 noread-ack VOID at 480 s: the host side held 12.6 kB on 2026-10-14 and
@@ -678,8 +683,9 @@ class HostPort(object):
 class Rx(object):
     """A receive thread on a python-can bus: rows (stamp, host, id, err,
     data), host on time.perf_counter(). What it reads goes through
-    reader_death.screen (the reviewer's PCAN item 2, 2026-11-20): err is a
-    bus error by can-tools' classifier, a state row is kept out of the rows
+    canbench.reader_guard.screen (the reviewer's PCAN item 2, 2026-11-20;
+    reader_death's own screen until 2026-11-23): err is a bus error by
+    can-tools' classifier, a state row is kept out of the rows
     (death.states), and a row reporting frames lost stops the reader with
     death.lost, so its window is VOID (void_if_dead)."""
 
@@ -688,15 +694,18 @@ class Rx(object):
         self.rows, self.lock = [], threading.Lock()
         self.stop_ev = threading.Event()
         self.death = reader_death.Death(name)
+        self.rg = reader_death.rg()
         self.t = threading.Thread(target=self._run, daemon=True)
         self.t.start()
 
     def _run(self):
-        # a raise ends the thread with the error kept (reader_death)
-        reader_death.guard(self.death, self.stop_ev, self._step)
+        # canbench.reader_guard's loop (the reviewer's reader_guard ruling,
+        # 2026-11-23): a raise or a missed-frames row ends the thread with
+        # the error kept in death; no drain after stop
+        self.rg.read_loop(self.bus, self.death, self.stop_ev, self._row,
+                          read_s=0.05, drain=False)
 
-    def _step(self):
-        m = reader_death.screen(self.bus, self.bus.recv(timeout=0.05), self.death)
+    def _row(self, m):
         if m is None:
             return
         if getattr(m, "is_rx", True) is False:
@@ -1554,6 +1563,8 @@ def self_test():
           and void_if_dead(None, ["v"], None, "t") == (None, ["v"]),
           "a live reader (or none) leaves the verdict as it was")
     live.close()
+    # 2026-11-23, the reviewer's reader_guard ruling: drain=False, explicit
+    reader_death.drain_check(__file__, check)
     import inspect as _in
     for fn in (case_noread_boots, case_close_boots):
         src = _in.getsource(fn)
@@ -1851,8 +1862,10 @@ MUTANTS = [
      "                seq += 1\n"),
     # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1
     ("reader death: Rx's recv unguarded",
-     "        reader_death.guard(self.death, self.stop_ev, self._step)",
-     "        while not self.stop_ev.is_set():\n            self._step()"),
+     "        self.rg.read_loop(self.bus, self.death, self.stop_ev, self._row,\n"
+     "                          read_s=0.05, drain=False)",
+     "        while not self.stop_ev.is_set():\n"
+     "            self._row(self.rg.screen(self.bus, self.bus.recv(0.05), self.death))"),
     ("reader death: a dead reader's boot keeps its verdict",
      "    if rx is not None and rx.death.error:", "    if False:"),
     ("reader death: a dead reader among passes exits 0",
@@ -1866,8 +1879,14 @@ MUTANTS = [
      "        ok, ln = void_if_dead(ok, [ln], wit, tag)\n        ln = ln[0]\n", ""),
     # 2026-11-20, the reviewer's PCAN item 2
     ("PCAN item 2: Rx reads unscreened",
-     "        m = reader_death.screen(self.bus, self.bus.recv(timeout=0.05), self.death)",
-     "        m = self.bus.recv(timeout=0.05)"),
+     "        self.rg.read_loop(self.bus, self.death, self.stop_ev, self._row,\n"
+     "                          read_s=0.05, drain=False)",
+     "        self.rg.guard(self.death, self.stop_ev,\n"
+     "                      lambda: self._row(self.bus.recv(0.05)))"),
+    # 2026-11-23, the reviewer's reader_guard ruling
+    ("reader_guard: Rx drains after stop",
+     "                          read_s=0.05, drain=False)",
+     "                          read_s=0.05, drain=True)"),
     # the charge-interposer reviewer's Q2, 2026-11-20
     ("Q2: the injector's Kvaser takes error frames",
      "    return kvaser_link.open_bus(receive_own_messages=True, error_frames=False)",

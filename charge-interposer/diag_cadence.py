@@ -194,18 +194,33 @@ class DiagWitness(object):
         self._stop = threading.Event()
         self._t = None
         self.n = 0
-        self.error = None
+        self.rec = None             # canbench.reader_guard.ReaderRecord, from start()
+
+    @property
+    def error(self):
+        """'<Type>: <text>' of what ended the reader, or None: a raise, or a
+        row saying it missed frames ('MissedFrames: ... reports <why>';
+        'LostFrames: ...' before 2026-11-23). Its type kept too
+        (2026-11-19): run_scenario's witness_outcome makes the case NOT
+        EXERCISED with it."""
+        return self.rec.error if self.rec is not None else None
 
     def start(self):
         import adapter_roles
+        import can_tools_pin
         # bus states reported (the charge-interposer reviewer's PCAN item 2,
         # 2026-11-20): its states and overruns come up as error frames, never
         # raised. _run logs no error frame, and one saying the witness missed
-        # frames (adapter_roles.missed: frames lost, a bus-off, a restart
-        # after bus-off; the reviewer's ruling on bus-off, 2026-11-20) ends
-        # it with self.error, so the case is NOT EXERCISED
-        # (run_scenario.witness_outcome)
-        self.roles = adapter_roles
+        # frames (frames lost, a bus-off, a restart after bus-off; the
+        # reviewer's ruling on bus-off, 2026-11-20) ends it with self.error,
+        # so the case is NOT EXERCISED (run_scenario.witness_outcome). Since
+        # 2026-11-23 (the reviewer's reader_guard ruling) the loop is can-tools'
+        # canbench.reader_guard.read_loop, the guard and screen this class
+        # held a hand copy of
+        can_tools_pin.use()
+        from canbench import reader_guard
+        self.rg = reader_guard
+        self.rec = reader_guard.ReaderRecord("pcan witness")
         self.bus = adapter_roles.pcanfd_report(self.bitrate,
                                                state=witness_bus_state(self.acks))
         self.fh = open(self.path, "w")
@@ -214,33 +229,26 @@ class DiagWitness(object):
         return self
 
     def _run(self):
-        while not self._stop.is_set():
-            try:
-                m = self.bus.recv(timeout=0.2)
-            except Exception as exc:                       # noqa: BLE001
-                # its type kept too (2026-11-19): run_scenario's
-                # witness_outcome makes the case NOT EXERCISED with it
-                self.error = "%s: %s" % (type(exc).__name__, exc)
-                return
-            if m is not None and m.is_error_frame:
-                why = self.roles.missed(m)
-                if why:
-                    self.error = ("LostFrames: error frame 0x%08X data %s reports %s"
-                                  % (m.arbitration_id, bytes(m.data).hex(), why))
-                    return
-                continue                    # a state or bus-error row: not logged
-            host = time.perf_counter()
-            # the status frames, and the charger frames the board forwards:
-            # spec 2.3's mode is read from the latter (ModeWindows)
-            if m is None or not (m.arbitration_id in STATUS_IDS or (
-                    not m.is_extended_id and m.arbitration_id in BMS_IDS) or (
-                    m.is_extended_id and (
-                        is_charger_frame(m.arbitration_id) or
-                        m.arbitration_id == VCU_PAGE00_ID))):
-                continue
-            self.fh.write("%.6f\t%.6f\t%03X\t%s\n" % (
-                host, m.timestamp, m.arbitration_id, bytes(m.data).hex()))
-            self.n += 1
+        # every read screened; the first raise or missed-frames row ends the
+        # loop, kept in rec; no drain after stop (it never drained)
+        self.rg.read_loop(self.bus, self.rec, self._stop, self._row,
+                          read_s=0.2, drain=False)
+
+    def _row(self, m):
+        if m.is_error_frame:
+            return                          # a bus-error row: not logged (as before)
+        host = time.perf_counter()
+        # the status frames, and the charger frames the board forwards:
+        # spec 2.3's mode is read from the latter (ModeWindows)
+        if not (m.arbitration_id in STATUS_IDS or (
+                not m.is_extended_id and m.arbitration_id in BMS_IDS) or (
+                m.is_extended_id and (
+                    is_charger_frame(m.arbitration_id) or
+                    m.arbitration_id == VCU_PAGE00_ID))):
+            return
+        self.fh.write("%.6f\t%.6f\t%03X\t%s\n" % (
+            host, m.timestamp, m.arbitration_id, bytes(m.data).hex()))
+        self.n += 1
 
     def stop(self):
         self._stop.set()

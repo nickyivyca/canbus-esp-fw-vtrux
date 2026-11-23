@@ -55,7 +55,12 @@ reader_death's guard; a raise other than a kvaser TX stall, or a row
 saying the reader missed frames (adapter_roles.missed: frames lost, a
 bus-off, a restart after bus-off; the reviewer's ruling on bus-off,
 2026-11-20), ends it, and the run is
-VOID with its line (void_in), never a topology answer.
+VOID with its line (void_in), never a topology answer. Since 2026-11-23
+(the reviewer's reader_guard ruling) the guard is can-tools'
+canbench.reader_guard.guard and a missed-frames row raises its
+MissedFrames (the VOID line's text reads "MissedFrames: ...", it read
+"LostFrames: ..."); the screen stays the drain's own step, since
+reader_guard.screen does not classify a WatchedBus on its .inner.
 
     py -3.14 charge-interposer/bench_drivers/bench_topology.py
     py -3.14 .../bench_topology.py --self-test | --can-fail
@@ -192,16 +197,20 @@ class Drain(object):
         self.not_bus = 0
         self.total = 0
         self.exc = None          # what ended the drain early (a kvaser TX stall)
-        # under reader_death's guard (the reviewer's PCAN item 2,
-        # 2026-11-20): a raise or a row reporting frames lost ends the drain,
-        # kept in death, and the run is VOID (void_in)
+        # under a guard (the reviewer's PCAN item 2, 2026-11-20): a raise or
+        # a row reporting frames lost ends the drain, kept in death, and the
+        # run is VOID (void_in). Since 2026-11-23 the guard is can-tools'
+        # canbench.reader_guard.guard (the reviewer's reader_guard ruling);
+        # the screen stays this step's own, since reader_guard.screen
+        # classifies the bus it is given, not a WatchedBus's .inner
         self.death = reader_death.Death(name)
+        self.rg = reader_death.rg()
         self._stop = threading.Event()
         self._t = threading.Thread(target=self._run)
         self._t.daemon = True
 
     def _run(self):
-        reader_death.guard(self.death, self._stop, self._step)
+        self.rg.guard(self.death, self._stop, self._step)
 
     def _step(self):
         try:
@@ -214,9 +223,8 @@ class Drain(object):
         if getattr(m, "is_error_frame", False):
             why = adapter_roles.missed(m)
             if why:
-                raise reader_death.LostFrames(
-                    "error frame 0x%08X data %s reports %s"
-                    % (m.arbitration_id, bytes(m.data).hex(), why))
+                raise self.rg.MissedFrames(why, "error frame 0x%08X data %s reports %s"
+                                           % (m.arbitration_id, bytes(m.data).hex(), why))
             if adapter_roles.bus_error(self.bus, m):
                 self.errors += 1
             else:
@@ -469,6 +477,12 @@ def self_test():
           and len(rb.left) == 1 and v and v.startswith("VOID: the pcan reader lost frames"),
           "CAN-FAIL: an overrun row ends the drain (1 bus error, 1 state row, 1 frame "
           "counted before it) and VOIDs the run: %s %s" % ((d.errors, d.not_bus, d.total), v))
+    # 2026-11-23, the reviewer's reader_guard ruling: canbench's guard keeps
+    # it as canbench's MissedFrames, saying what was missed
+    check(d.death.exc_type == "MissedFrames" and d.death.missed == "frames lost"
+          and "(MissedFrames: error frame 0x" in v and "reports frames lost)" in v,
+          "the overrun is kept as reader_guard.MissedFrames, its reason recorded: %s"
+          % d.death.error)
     d2 = Drain("pcan", reader_death.RaisingBus([], RuntimeError("A PCAN status BUSOFF"))).start()
     d2._t.join(2.0)
     check((void_in({"pcan": d2}) or "").startswith("VOID: the pcan reader died"),
@@ -793,8 +807,15 @@ MUTANTS = [
      "        if d.death.error and not isinstance(d.exc, kvaser_link.Stall):",
      "        if False:"),
     ("PCAN item 2: the drain unguarded",
-     "        reader_death.guard(self.death, self._stop, self._step)",
+     "        self.rg.guard(self.death, self._stop, self._step)",
      "        while not self._stop.is_set():\n            self._step()"),
+    # 2026-11-23, the reviewer's reader_guard ruling
+    ("reader_guard: a missed-frames row raised as a plain error",
+     "                raise self.rg.MissedFrames(why, \"error frame",
+     "                raise (lambda why, t: RuntimeError(t))(why, \"error frame"),
+    ("reader_guard: a missed-frames row raised without its reason",
+     "                raise self.rg.MissedFrames(why, \"error frame",
+     "                raise self.rg.MissedFrames(\"\", \"error frame"),
     ("one page is enough",
      "def classify_charger_up(windows, min_pages=MIN_DIAG_PAGES):",
      "def classify_charger_up(windows, min_pages=1):"),

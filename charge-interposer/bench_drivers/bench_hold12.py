@@ -916,6 +916,9 @@ def self_test():
           "the Kvaser sender takes no error frames and sends through kvaser_send (Q2)")
     gate_self_test(check)
     sender_drain_self_test(check)
+    # 2026-11-23, the reviewer's reader_guard ruling: drain=False, explicit
+    import reader_death
+    reader_death.drain_check(__file__, check)
     print("\nbench_hold12 self-test: %s"
           % ("all checks OK" if not fails else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -964,7 +967,10 @@ def proc_identifier(go, done, out_path, seconds):
     2026-11-20: python-can's raise ("The CAN controller was read too late")
     ended this drain in run 40e6. A drain that died or read a row reporting
     frames lost is written to the summary as "reader", its VOID line, and
-    the caller's run is VOID (bench_switch_loss)."""
+    the caller's run is VOID (bench_switch_loss). Since 2026-11-23 (the
+    reviewer's reader_guard ruling) the drain is can-tools'
+    canbench.reader_guard.read_loop (that guard and screen), drain=False:
+    it stops at the first read after stop, as before."""
     import can
     import adapter_roles
     import bench_pacer
@@ -982,10 +988,11 @@ def proc_identifier(go, done, out_path, seconds):
         bus.send(msg, timeout=0.05)
     stop = threading.Event()
     death = reader_death.Death("pcan sender's drain")
+    RG = reader_death.rg()
 
     def drain():
-        reader_death.guard(death, stop,
-                           lambda: reader_death.screen(bus, bus.recv(timeout=0.05), death))
+        # what it reads is screened, then dropped
+        RG.read_loop(bus, death, stop, lambda m: None, read_s=0.05, drain=False)
     th = threading.Thread(target=drain, daemon=True)
     th.start()
     go.wait()
@@ -1413,8 +1420,14 @@ MUTANTS = [
      "    pv = ctx.Process(target=proc_identifier, args=("),
     # 2026-11-20, the reviewer's PCAN item 2
     ("PCAN item 2: the sender's drain unscreened",
-     "                           lambda: reader_death.screen(bus, bus.recv(timeout=0.05), death))",
-     "                           lambda: bus.recv(timeout=0.05))"),
+     "        RG.read_loop(bus, death, stop, lambda m: None, read_s=0.05, drain=False)",
+     "        RG.guard(death, stop, lambda: bus.recv(0.05))"),
+    # 2026-11-23, the reviewer's reader_guard ruling
+    ("reader_guard: the sender's drain unguarded",
+     "        RG.read_loop(bus, death, stop, lambda m: None, read_s=0.05, drain=False)",
+     "        while not stop.is_set():\n            RG.screen(bus, bus.recv(0.05), death)"),
+    ("reader_guard: the sender's drain drains after stop",
+     "lambda m: None, read_s=0.05, drain=False)", "lambda m: None, read_s=0.05, drain=True)"),
     ("PCAN item 2: the sender's drain death not in the summary",
      "                   reader=death.void_line() if death.error else None),",
      "                   reader=None),"),

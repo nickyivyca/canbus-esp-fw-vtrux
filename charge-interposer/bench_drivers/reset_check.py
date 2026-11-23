@@ -36,7 +36,15 @@ reader runs under reader_death.guard, so a recv that raises (python-can
 raises on most PCAN statuses) is kept with its text; the uptime wait stops
 there, and the verdict is RESET PROVEN: NOT-PROVEN with that reason and a
 VOID line, exit 3 (VOID), never an unexplained NO judged on the frames read
-before.
+before. Since 2026-11-23 (the reviewer's reader_guard ruling) that reader
+is can-tools' canbench.reader_guard.read_loop (the guard and screen that
+were reader_death's), with drain=False: it stops at the first read after
+stop, as before. The VOID line is still reader_death's; a missed-frames
+row's text reads "MissedFrames: ..." (it read "LostFrames: ..."). From the
+same day (the reviewer's sweep ruling of 2026-11-21 on premise failures)
+the board's port or an adapter that does not open is one VOID line, exit 3
+(NotOpened); before, the open's exception ended the run with a traceback,
+read FAIL.
 
     python3.13 -B reset_check.py --port /dev/... [--serial-log FILE] > reset_check.txt
     python3.13 -B reset_check.py --self-test | --can-fail
@@ -76,7 +84,7 @@ def open_all(port, serial_log):
     tap = run_scenario.SerialTap(port, 115200, serial_log)
     tap.start()
     # bus states reported (the reviewer's PCAN item 2, 2026-11-20): collect's
-    # reader screens what it reads (reader_death.screen)
+    # reader screens what it reads (canbench.reader_guard.screen)
     pc = adapter_roles.pcanfd_report(500000)
     tx = bcw.open_gs_usb()
     return tap, pc, tx
@@ -86,8 +94,16 @@ def run(a, out=print):
     """-> rc: 0 when the reset is proven (RESET PROVEN: YES), 1 when not, so
     the bench suite's script_judge reads it FAIL (it exited 0 either way
     until 2026-11-19), 3 when not judged (NOT-PROVEN: the PCAN reader
-    died), which script_judge reads VOID by its VOID line."""
-    ok, lines = judge(*collect(a, out))
+    died; or the board's port or an adapter did not open, NotOpened), which
+    script_judge reads VOID by its VOID line."""
+    try:
+        got = collect(a, out)
+    except NotOpened as e:
+        # a failed premise prints a VOID line, never a bare traceback (the
+        # reviewer's sweep ruling, 2026-11-21; 2026-11-23)
+        out("VOID: %s; nothing was judged" % e)
+        return 3
+    ok, lines = judge(*got)
     for ln in lines:
         out(ln)
     return {True: 0, False: 1}.get(ok, 3)
@@ -144,6 +160,11 @@ def judge(rh, rows, frames, pre_up, uptime_of, reader_void=None):
     return ok, lines
 
 
+class NotOpened(Exception):
+    """collect(): the board's serial tap or an adapter did not open (a
+    failed premise: run() prints a VOID line and exits 3)."""
+
+
 def collect(a, out=print):
     """-> judge's arguments, from the bench: the board at a.port held up
     until 0x7F7's uptime reaches 2 min (up to 200 s), reset through
@@ -153,7 +174,11 @@ def collect(a, out=print):
     db = cantools.database.load_file(paths.diag_dbc())
     stop = threading.Event()
     frames = []                       # (host t, id, data)
-    tap, pc, tx = open_all(a.port, a.serial_log or default_serial_log())
+    try:
+        tap, pc, tx = open_all(a.port, a.serial_log or default_serial_log())
+    except Exception as e:                                 # noqa: BLE001
+        raise NotOpened("the board's port %s or an adapter did not open (%s: %s)"
+                        % (a.port, type(e).__name__, e))
 
     def keepalive():
         while not stop.is_set():
@@ -168,18 +193,19 @@ def collect(a, out=print):
             time.sleep(0.1)
 
     death = reader_death.Death("pcan")
+    RG = reader_death.rg()
 
-    def pcan_step():
-        # a state row is dropped; a row reporting frames lost stops the
-        # reader like a raise, death.lost (the reviewer's PCAN item 2)
-        m = reader_death.screen(pc, pc.recv(timeout=0.1), death)
-        if m is not None and 0x7F4 <= m.arbitration_id <= 0x7F7:
+    def pcan_row(m):
+        if 0x7F4 <= m.arbitration_id <= 0x7F7:
             frames.append((time.perf_counter(), m.arbitration_id,
                            bytes(m.data)))
 
     def pcan_rx():
-        # a raise ends the thread with the error kept (reader_death)
-        reader_death.guard(death, stop, pcan_step)
+        # canbench.reader_guard's loop (the reviewer's reader_guard ruling,
+        # 2026-11-23): a state row is dropped; a raise, or a row reporting
+        # frames lost (the reviewer's PCAN item 2), ends the thread with
+        # the error kept, death.lost for the latter; no drain after stop
+        RG.read_loop(pc, death, stop, pcan_row, read_s=0.1, drain=False)
 
     ths = [threading.Thread(target=f, daemon=True) for f in (keepalive, pcan_rx)]
     for t in ths:
@@ -247,15 +273,18 @@ def self_test():
 
     saved = (run_scenario.SerialTap, adapter_roles.pcanfd_report)
     run_scenario.SerialTap, adapter_roles.pcanfd_report = Tap, pcanfd
+    seen = []
     try:
-        try:
-            run(parse(["--port", "/dev/x2", "--serial-log", "x2.serial.log"]),
-                out=lambda s: None)
-            check(False, "run went past the adapters' open")
-        except RuntimeError:
-            pass
+        rc = run(parse(["--port", "/dev/x2", "--serial-log", "x2.serial.log"]),
+                 out=seen.append)
     finally:
         run_scenario.SerialTap, adapter_roles.pcanfd_report = saved
+    # 2026-11-23, the reviewer's sweep ruling: a premise failure is a VOID line
+    check(rc == 3 and len(seen) == 1 and seen[0].startswith(
+        "VOID: the board's port /dev/x2 or an adapter did not open (RuntimeError: "
+        "stop here") and seen[0].endswith("nothing was judged"),
+          "CAN-FAIL: an adapter that does not open -> one VOID line, exit 3, "
+          "nothing judged: %s %s" % (rc, seen))
     check(taps == [("/dev/x2", 115200, "x2.serial.log")],
           "the serial tap on the port given, with the serial log given: %s" % taps)
     check(events == ["tap started", "pcanfd"],
@@ -353,6 +382,8 @@ def self_test():
         globals()["collect"] = saved_collect
     for ok, what in collect_checks():
         check(ok, what)
+    # 2026-11-23, the reviewer's reader_guard ruling: drain=False, explicit
+    reader_death.drain_check(__file__, check)
     print("\nreset_check self-test: %s" % ("all checks OK" if not fails
                                           else "%d FAILED" % len(fails)))
     return 1 if fails else 0
@@ -365,7 +396,8 @@ def collect_checks():
     line: the short frame list is judged, a NO)."""
     import types
     real = time
-    seven = types.SimpleNamespace(arbitration_id=0x7F7, data=bytes(8))
+    # is_error_frame: canbench.reader_guard.screen reads it directly
+    seven = types.SimpleNamespace(arbitration_id=0x7F7, is_error_frame=False, data=bytes(8))
 
     class Tap(object):
         def __init__(self, path):
@@ -489,8 +521,8 @@ MUTANTS = [
     ("the exit code 0 whatever the verdict",
      "    return {True: 0, False: 1}.get(ok, 3)", "    return 0"),
     ("run's verdict not judge's",
-     "    ok, lines = judge(*collect(a, out))",
-     "    ok, lines = True, judge(*collect(a, out))[1]"),
+     "    ok, lines = judge(*got)",
+     "    ok, lines = True, judge(*got)[1]"),
     ("no FAIL line on NO",
      "    if not ok:\n        out(\"FAIL", "    if False:\n        out(\"FAIL"),
     ("the boot line not needed",
@@ -510,8 +542,11 @@ MUTANTS = [
      "\"NOT BACK\" in x for _d, x in marks", "\"NOT BACK\" in x for _d, x in []"),
     # 2026-11-19, the charge-interposer reviewer's PCAN ruling 1
     ("reader death: the PCAN's recv unguarded",
-     "        reader_death.guard(death, stop, pcan_step)",
-     "        while not stop.is_set():\n            pcan_step()"),
+     "        RG.read_loop(pc, death, stop, pcan_row, read_s=0.1, drain=False)",
+     "        while not stop.is_set():\n"
+     "            m = RG.screen(pc, pc.recv(0.1), death)\n"
+     "            if m is not None:\n"
+     "                pcan_row(m)"),
     ("reader death: judged on a dead reader's frames",
      "    if reader_void:\n", "    if False:\n"),
     ("reader death: NOT-PROVEN exits 1",
@@ -521,8 +556,26 @@ MUTANTS = [
      "            None)"),
     # 2026-11-20, the reviewer's PCAN item 2
     ("PCAN item 2: the reader unscreened",
-     "        m = reader_death.screen(pc, pc.recv(timeout=0.1), death)",
-     "        m = pc.recv(timeout=0.1)"),
+     "        RG.read_loop(pc, death, stop, pcan_row, read_s=0.1, drain=False)",
+     "        RG.guard(death, stop,\n"
+     "                 lambda: (lambda m: m is not None and pcan_row(m))(pc.recv(0.1)))"),
+    # 2026-11-23, the reviewer's reader_guard ruling
+    ("reader_guard: the reader drains after stop",
+     "read_s=0.1, drain=False)", "read_s=0.1, drain=True)"),
+    # 2026-11-23, the reviewer's sweep ruling: premise failures as VOID lines
+    ("premise: an adapter that does not open raises",
+     "    except Exception as e:                                 # noqa: BLE001\n"
+     "        raise NotOpened(",
+     "    except ZeroDivisionError as e:\n"
+     "        raise NotOpened("),
+    ("premise: NotOpened not caught by run", "    except NotOpened as e:",
+     "    except ZeroDivisionError as e:"),
+    ("premise: an adapter that does not open a bare line",
+     "        out(\"VOID: %s; nothing was judged\" % e)",
+     "        out(\"%s; nothing was judged\" % e)"),
+    ("premise: an adapter that does not open exits 0",
+     "        out(\"VOID: %s; nothing was judged\" % e)\n        return 3",
+     "        out(\"VOID: %s; nothing was judged\" % e)\n        return 0"),
 ]
 
 

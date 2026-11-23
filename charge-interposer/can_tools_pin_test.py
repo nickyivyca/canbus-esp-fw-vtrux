@@ -12,7 +12,7 @@ working tree or HEAD instead of the pin is caught. The pinned commit has a
 `* text eol=crlf` .gitattributes, so a checkout-style export (which
 converts) is told apart from the raw blobs. No network is needed.
 
-  1. pin(): the committed entry is the reviewer's (repo, 49eb7777...; it
+  1. pin(): the committed entry is the reviewer's (repo, f19d04b5...; it
      was 14f8ee60... until the pin move of 2026-11-01, then 1cd39420...
      until 2026-11-11's, which took canbench.live.linux_fixes, then
      fa6c0aea... until 2026-11-18's, which took canbench.bench_roles, then
@@ -21,7 +21,9 @@ converts) is told apart from the raw blobs. No network is needed.
      which took open_bench's part-way put-back and drain=True, then
      7a27cc94... until 2026-11-20's, which took bus_states="report" and
      errors.lost_frames, then 262ba7b9... until the second of 2026-11-20,
-     which took bench_layer.link_counters); a
+     which took bench_layer.link_counters, then 49eb7777... until
+     2026-11-23's, which took reader_guard, echo_watch with
+     read_after_send=False and replay.pace); a
      pins file with no can-tools entry, a commit that is short or not
      lower-case hex, or no repo, is refused.
   2. clone(): CAN_TOOLS_DIR unset is refused, naming it; a folder with no
@@ -82,7 +84,7 @@ import can_tools_pin  # noqa: E402
 import scratch_dir  # noqa: E402
 
 REPO = "https://github.com/nickyivyca/can-tools"
-COMMIT = "49eb777708628acee7e6e9e04fa9b3035f032243"
+COMMIT = "f19d04b5c1eafefa820b4cc002af404ed878421c"
 OTHER = "0123456789abcdef0123456789abcdef01234567"
 FAILS = []
 
@@ -312,7 +314,7 @@ def checks():
     try:
         # 1. the pin
         p = can_tools_pin.pin()
-        check("1 pins.json's can-tools entry is the reviewer's (repo, 49eb7777...)",
+        check("1 pins.json's can-tools entry is the reviewer's (repo, f19d04b5...)",
               p == {"repo": REPO, "commit": COMMIT}, p)
         for name, entry in (("no can-tools entry", None),
                             ("a short commit", dict(p, commit=COMMIT[:7])),

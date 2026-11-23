@@ -28,6 +28,13 @@ reviewer's PCAN ruling 1): a witness whose reader died makes the case NOT
 EXERCISED with its error (run_scenario.witness_outcome), where it was an
 8.2 FAIL; four more mutants (the old FAIL, the dead witness's rows scored,
 the premise dropped by evaluate, the premise ignored by the verdict).
+
+The diag witness on can-tools' canbench.reader_guard (tester, 2026-11-23;
+the reviewer's reader_guard ruling): DiagWitness reads with read_loop,
+drain=False, its error text "MissedFrames: ..." on an overrun row; a
+bus-error row with a BMS id is not logged; stop() returns at once with
+frames still queued. Mutants: blind to an overrun row (on_missed="mark"),
+the recv unguarded, draining after stop, and bus-error rows logged.
 """
 
 import os
@@ -146,8 +153,10 @@ def test_witness_premise():
     never an 8.2 FAIL (it was "8.2: the witness failed", a FAIL); a live
     witness is scored as before. DiagWitness keeps the error's type."""
     import inspect
+    import time
     import types
     from pathlib import Path
+    import can
     import adapter_roles
     import diag_cadence
     import scratch_dir
@@ -195,19 +204,44 @@ def test_witness_premise():
             w.stop()
             # the reviewer's PCAN item 2 (2026-11-20): the PCAN opened with bus
             # states reported; a state row is not logged and an overrun row
-            # ends the reader with LostFrames: NOT EXERCISED, never scored
+            # ends the reader with MissedFrames (canbench.reader_guard since
+            # 2026-11-23; LostFrames before): NOT EXERCISED, never scored
             Rw = reader_death.report_rows()
             adapter_roles.pcanfd_report = lambda *a, **k: reader_death.report_bus(
                 [Rw["passive"], Rw["ack"], Rw["overrun"]], delay=0.05)
             w2 = diag_cadence.DiagWitness(str(d / "w2.txt")).start()
             w2._t.join(2.0)
             w2.stop()
+            # 2026-11-23, the reviewer's reader_guard ruling: a bus-error row
+            # is not logged, whatever its id (reader_guard.screen keeps bus
+            # errors as rows; the witness drops them, as its own loop did):
+            # an error frame with a BMS id, a bus error off CanbenchPcanBus
+            ef = can.Message(arbitration_id=0x420, is_error_frame=True,
+                             is_extended_id=False, data=bytes(8))
+            adapter_roles.pcanfd_report = lambda *a, **k: reader_death.RaisingBus(
+                [ef], RuntimeError("A PCAN status 0x40000 BUSPASSIVE"))
+            w4 = diag_cadence.DiagWitness(str(d / "w4.txt")).start()
+            w4._t.join(2.0)
+            w4.stop()
+            # ... and drain=False: the witness stops at the first read after
+            # stop, frames still queued then left unread (it never drained)
+            many = reader_death.report_bus([Rw["frame"]] * 3000, delay=0.002)
+            adapter_roles.pcanfd_report = lambda *a, **k: many
+            w3 = diag_cadence.DiagWitness(str(d / "w3.txt")).start()
+            time.sleep(0.1)
+            t_stop = time.monotonic()
+            w3.stop()
+            took = time.monotonic() - t_stop
         finally:
             adapter_roles.pcanfd_report = saved
         assert w.error == err, w.error
-        assert w2.error and w2.error.startswith("LostFrames:") and w2.n == 0, (w2.error, w2.n)
+        assert w2.error and w2.error.startswith("MissedFrames:") and w2.n == 0, (w2.error, w2.n)
+        assert "reports frames lost" in w2.error, w2.error
         d82, void2 = R.witness_outcome(w2, score)
-        assert d82 is None and "LostFrames" in void2 and "lost frames" in void2, void2
+        assert d82 is None and "MissedFrames" in void2 and "lost frames" in void2, void2
+        assert w4.n == 0 and w4.error and "BUSPASSIVE" in w4.error, (w4.n, w4.error)
+        assert took < 1.5 and w3.error is None and w3.n > 0 and len(many.left) > 2000, \
+            (took, w3.error, w3.n, len(many.left))
 
 
 TESTS = [test_forced_order_premise, test_kvaser_premise, test_witness_premise]
@@ -258,17 +292,51 @@ def _outcome_scores_dead(witness, score):
 
 
 def _blind_witness():
-    """DiagWitness that never sees frames lost (its lost_frames always False)."""
-    import types
-    import diag_cadence
-
+    """DiagWitness that never stops on frames lost: reader_guard's screen
+    marks a missed-frames row instead of raising (until 2026-11-23 this
+    mutant blinded the witness's own adapter_roles.missed)."""
     class Blind(_ORIG_DW):
-        def start(self):
-            r = _ORIG_DW.start(self)
-            self.roles = types.SimpleNamespace(lost_frames=lambda m: False,
-                                               missed=lambda m: None)
-            return r
+        def _run(self):
+            self.rg.read_loop(self.bus, self.rec, self._stop, self._row,
+                              read_s=0.2, on_missed="mark", drain=False)
     return Blind
+
+
+def _unguarded_witness():
+    """DiagWitness whose loop keeps no raise: screened, but a recv that
+    raises ends the thread unrecorded (its hand copy kept it from
+    2026-11-19; reader_guard's loop since 2026-11-23)."""
+    class Unguarded(_ORIG_DW):
+        def _run(self):
+            while not self._stop.is_set():
+                m = self.rg.screen(self.bus, self.bus.recv(0.2), self.rec)
+                if m is not None:
+                    self._row(m)
+    return Unguarded
+
+
+def _draining_witness():
+    """DiagWitness that drains after stop (reader_guard's default), not
+    drain=False (the reviewer's reader_guard ruling, 2026-11-23)."""
+    class Draining(_ORIG_DW):
+        def _run(self):
+            self.rg.read_loop(self.bus, self.rec, self._stop, self._row,
+                              read_s=0.2, drain=True)
+    return Draining
+
+
+def _logs_bus_errors():
+    """DiagWitness that logs a bus-error row screen keeps (its own loop
+    dropped every error frame)."""
+    import types
+
+    class Logs(_ORIG_DW):
+        def _row(self, m):
+            m = types.SimpleNamespace(is_error_frame=False, arbitration_id=m.arbitration_id,
+                                      is_extended_id=m.is_extended_id,
+                                      timestamp=m.timestamp, data=m.data)
+            _ORIG_DW._row(self, m)
+    return Logs
 
 
 import diag_cadence as _DC                                  # noqa: E402
@@ -298,7 +366,14 @@ MUTANTS = {
         ("verdict_of", lambda: _verdict_no_premises,
          "a witness premise ignored by the verdict"),
         ("D:DiagWitness", _blind_witness,
-         "the diag witness blind to an overrun row (PCAN item 2)")],
+         "the diag witness blind to an overrun row (PCAN item 2)"),
+        # 2026-11-23, the reviewer's reader_guard ruling
+        ("D:DiagWitness", _unguarded_witness,
+         "the diag witness's recv unguarded (a raise not kept)"),
+        ("D:DiagWitness", _draining_witness,
+         "the diag witness drains after stop (drain=False not passed)"),
+        ("D:DiagWitness", _logs_bus_errors,
+         "the diag witness logs a bus-error row reader_guard.screen keeps")],
 }
 
 
