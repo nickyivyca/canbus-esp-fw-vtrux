@@ -13,7 +13,9 @@ shared/wican W12-W14). Gen-inhibit tester, 2026-11-23.
 4. Mutants of the judge: each must turn a row of the pinned or the pre-fix run wrong.
 5. The extraction: braces and the word esp_ota_begin in comments, strings and
    #defines are not read; none, or two, handler functions are refused; #defines are
-   taken through the ones they name.
+   taken through the ones they name; helper functions, enums and typedefs the handler
+   uses are taken through what they use, a helper defined after it with a prototype,
+   and the build succeeds; a function the fake declares, or one nothing calls, is not.
 
     python3.13 -B test_run_ota_host.py [--wican DIR] [--prefix DIR]
 --wican defaults to the pinned checkout, --prefix to ../shared-2026.11.04/shared/wican
@@ -80,7 +82,12 @@ MUTANTS = [
     ("w13 off by one", "if (++timeouts >= OTA_RECV_MAX_TIMEOUTS)", "if (++timeouts > OTA_RECV_MAX_TIMEOUTS)",
      {("W13", "stall_mid")}),
     ("w13 count never restarts", "        timeouts = 0;\n", "\n", {("W13", "timeouts3_x4"), ("W13", "timeouts2_x2")}),
-    ("9.2 item 2 write pointer parked", "        buf = scratch;\n", "\n", "VOID"),
+    # The write pointer off the receive target (spec 9.2 item 2's kind of defect). Since
+    # W16 (2026.11.23.2) the start is read before the loop and `buf` never moves, so
+    # dropping the loop's reset, as this mutant did before, changes nothing there; one
+    # byte off is a defect in both forms.
+    ("9.2 item 2 write pointer off the receive target", "        buf = scratch;\n",
+     "        buf = scratch + 1;\n", "VOID"),
 ]
 
 
@@ -121,7 +128,10 @@ def main(argv=None):
             continue
         _, _, mrows, mvoid = run_text(text.replace(old, new), "m%d" % i)
         if want == "VOID":
-            check("mutant %s: VOID by the control" % mname, bool(mvoid) and "control" in mvoid, mvoid)
+            # VOID by the control, or (since the receive buffer is poisoned past what was
+            # received, 2026-11-23) by its read of bytes no receive delivered.
+            check("mutant %s: VOID by the control or a read past the received bytes" % mname,
+                  bool(mvoid) and ("control" in mvoid or "read past the received bytes" in mvoid), mvoid)
             continue
         mv, mfailed = verdicts(mrows)
         check("mutant %s: not void" % mname, mvoid is None, mvoid)
@@ -188,6 +198,39 @@ def main(argv=None):
         check("extract: the struct taken", "struct file_server_data { char base_path" in src)
     except R.Refused as e:
         check("extract: planted handler", False, e)
+    # The file-scope items the handler needs, followed through (2026-11-23, for W16's
+    # multipart_start_read): a helper defined after the handler, the typedef'd enum it
+    # returns, a helper that helper calls; not a function the fake declares, nor one
+    # nothing calls.
+    helpers = (
+        'struct file_server_data { char base_path[16]; char scratch[4096]; };\n'
+        'typedef enum { ST_OK = 0, ST_BAD } st_t;\n'
+        'static int inner(int v) { return v + 1; }\n'
+        'const char *get_path_from_uri(char *d, const char *b, const char *u, size_t n) { return 0; }\n'
+        'static int unused_fn(void) { return 3; }\n'
+        'static st_t step(httpd_req_t *req);\n'
+        'static esp_err_t the_handler(httpd_req_t *req, bool *ok)\n{\n'
+        '    esp_ota_handle_t h; esp_ota_begin(esp_ota_get_next_update_partition(0), '
+        'OTA_WITH_SEQUENTIAL_WRITES, &h);\n'
+        '    if (step(req) != ST_OK) { esp_ota_abort(h); return ESP_FAIL; }\n'
+        '    esp_ota_abort(h); return ESP_OK;\n}\n'
+        'static st_t step(httpd_req_t *req) { return inner(0) ? ST_OK : ST_BAD; }\n')
+    try:
+        hname, src = R.handler_source(helpers)
+        check("extract: a helper defined after the handler, with a prototype before it",
+              "static st_t step(httpd_req_t *req);" in src and "return inner(0) ? ST_OK : ST_BAD;" in src, src[:600])
+        check("extract: the typedef'd enum and the helper's helper taken",
+              "typedef enum { ST_OK = 0, ST_BAD } st_t;" in src and "static int inner(int v)" in src)
+        check("extract: a function the fake declares not taken, nor one nothing calls",
+              "return 0; }" not in src.split("get_path_from_uri", 1)[-1][:80] and "unused_fn" not in src, src[:600])
+        try:
+            R.run("<in memory>", src_override=helpers,
+                  work=os.path.join(R.WORKTREE, "scratch", "wican-ota-host", "%d_helpers" % os.getpid()))
+            check("extract: the handler with its helpers builds", True)
+        except R.Refused as e:
+            check("extract: the handler with its helpers builds", False, e)
+    except R.Refused as e:
+        check("extract: handler with helpers", False, e)
     for label, txt in [("none", "static esp_err_t f(httpd_req_t *r) { return 0; }\n"),
                        ("two", "static esp_err_t f(httpd_req_t *r) { esp_ota_begin(0,0,0); return 0; }\n"
                                "static esp_err_t g(httpd_req_t *r) { esp_ota_begin(0,0,0); return 0; }\n")]:
