@@ -123,7 +123,9 @@ Usage, with BASE a copy of the project folder, gen-inhibit/, which holds
 firmware/main/ and test/:
     BASE=~/gi_review python3 mutate.py
 WICANDIR is found from BASE with wican_ref.py unless given, and the pinned
-shared/diag beside it goes into each copy. BASE's test/gen_inhibit_host needs
+shared/diag beside it goes into each copy, with gi_diag.py's diag_schemas/
+export, written from BASE's git (so BASE must be a worktree). BASE's
+test/gen_inhibit_host needs
 its replay scenarios (that folder's README, "Running it"), or the baseline is
 red.
 """
@@ -368,7 +370,12 @@ MUT = {
 # survivors, among them (the full run on 30cc9236). So WICANDIR is found once
 # from BASE and handed to every make, and the pinned shared/diag goes into each
 # copy's shared/diag, the folder diag_host.py takes first (as in ~/gi_host).
-_wr = subprocess.run([sys.executable, "-B", "wican_ref.py"], capture_output=True,
+# THE COPY HAS NO GIT EITHER, so the goldens' diag decoder (tools/bench/
+# gi_diag.py) refused every scenario, and the first run with the fix above
+# stopped on a red baseline (81 of 81 goldens failed, b50950fd). Each copy
+# gets gi_diag's diag_schemas/ export at its root, written from BASE's git, as
+# gi_host_run.sh and baseline_host_run.sh do for theirs.
+_wr =subprocess.run([sys.executable, "-B", "wican_ref.py"], capture_output=True,
                      text=True, cwd=os.path.join(BASE, "test/gen_inhibit_shim"))
 WICANDIR = os.environ.get("WICANDIR") or _wr.stdout.strip()
 if not WICANDIR:
@@ -381,9 +388,15 @@ HOST = ("run_tests.py", "passive_diff.py", "invariants.py")
 
 
 def make_copy(d):
-    """A copy of BASE at d, with the pinned shared/diag in it, all writable."""
+    """A copy of BASE at d, with the pinned shared/diag and the diag_schemas/
+    export in it, all writable."""
     shutil.copytree(BASE, d)
     shutil.copytree(DIAGDIR, os.path.join(d, "shared", "diag"))
+    x = subprocess.run([sys.executable, "-B", os.path.join(BASE, "tools/bench/gi_diag.py"),
+                        "export", os.path.join(d, "diag_schemas")],
+                       capture_output=True, text=True, env=ENV)
+    if x.returncode:
+        sys.exit("gi_diag.py export failed (rc %d): %s" % (x.returncode, x.stderr.strip()[-400:]))
     for root, dirs, files in os.walk(os.path.join(d, "shared")):
         for n in dirs + files:
             q = os.path.join(root, n)

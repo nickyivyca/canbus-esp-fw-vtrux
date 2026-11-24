@@ -379,7 +379,12 @@ every copy, rc 2. Every mutant the shim suite missed was then reported as
 caught, the four expected survivors among them (the full run on `30cc9236`).
 `mutate.py` now finds `WICANDIR` once from `BASE` and hands it to every make.
 It puts the pinned `shared/diag` in each copy's `shared/diag`, the folder
-`diag_host.py` takes first. The baseline is an unmutated copy, scored exactly as
+`diag_host.py` takes first. A copy has no git either, so the goldens' diag
+decoder (`tools/bench/gi_diag.py`) refused every scenario. The first run with
+the fix above stopped on a red baseline for this reason (`b50950fd`). So
+`mutate.py` also writes `gi_diag.py`'s `diag_schemas/` export at each copy's
+root, from `BASE`'s git, as `gi_host_run.sh` does. `BASE` must therefore be
+a worktree. The baseline is an unmutated copy, scored exactly as
 a mutant is: the shim suite and the three host suites. The host suite's
 `run_tests.py` needs the replay scenarios in `BASE` (its README, "Running it").
 
