@@ -52,7 +52,12 @@ Requirements are numbered D1 to D6. The numbers are stable.
   `decode.py`), so it changes with every layout change, but not with a
   change of meaning alone.
 - **D6. Fit checks at build time.** The generated table comes with checks
-  that run when the firmware compiles, in C and in C++. A build must fail if
-  a value's type could exceed its signal, a mask or a constant exceeds its
-  signal, or a signed signal is passed to them. Each project moves to them
-  at its next change of its packing code.
+  that run when the firmware compiles, in C and in C++. The checks must
+  include a capped form, which caps a value at its signal's maximum. A
+  build must fail if any of these is passed to the checks:
+  - a value whose type could exceed its signal, other than through the
+    capped form;
+  - a mask or a constant that exceeds its signal;
+  - a signed signal.
+
+  Each project moves to them at its next change of its packing code.

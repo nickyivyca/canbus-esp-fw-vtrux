@@ -63,6 +63,12 @@ Why each requirement of `SPEC.md` is written as it is. Readings are of
   signal, and a misfit is a defect. The user also ruled that both projects
   use one set of checks, not one copy each. Wording approved by the user,
   2026-11-23.
+- **Capped form:** added on the gen-inhibit reviewer's read, 2026-11-23.
+  Gen-inhibit spec 10 allows a value whose type is wider than its signal
+  if the core caps it at the signal's maximum (`tx_fail`, `ctr_steps_bad`,
+  `rx_errors`, `tx_queued_behind`), through `GI_PUT_CAP`. Without the
+  capped form, D6 would forbid that. Revision approved by the user,
+  2026-11-23, in the charge-interposer reviewer's session.
 - **Reading:** each project has its own copy of the same checks today.
   Gen-inhibit's is in C, in `gen_inhibit_core.c` (`GI_PUT` and others,
   `gen-inhibit/main` line ~1256). The interposer's is in C++, in
