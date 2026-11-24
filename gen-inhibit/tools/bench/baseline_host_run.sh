@@ -146,6 +146,26 @@ if [ -e "$STAGE/test/gen_inhibit_shim/wican_ref.py" ]; then
   WICAN=1
   echo "shared components at $WTAG: $SHIP"
 fi
+# SHARED/DIAG (stage (b) batch 2, 2026-11-23). From batch 2 the core packs its diag frames
+# through vtrux/diag, and every host build of it takes the packer through
+# test/diag_host/diag_host.py, which looks first at <copy>/shared/diag (as gi_host_run.sh
+# ships it). So a commit with test/diag_host/diag_host.py ships shared/diag from git at the
+# tag its firmware/main/idf_component.yml pins vtrux/diag at (diag_host.py reads it), at
+# shared/diag/ in the copy. Until this, the copy had none, and H's make stopped at
+# diag_host.py (batch 2's emulated run gen-inhibit-emulated_20261123T162408_aa4c).
+DIAG=0
+DTAG=
+if [ -e "$STAGE/test/diag_host/diag_host.py" ]; then
+  DTAG=$($LOCAL_PY -B -c "import sys; sys.path.insert(0, sys.argv[1]); import diag_host; print(diag_host.pinned_tag())" \
+    "$STAGE/test/diag_host") || { echo "$C: no vtrux/diag pin diag_host.py can read" >&2; exit 2; }
+  [ -n "$DTAG" ] || { echo "$C pins no vtrux/diag version" >&2; exit 2; }
+  for f in shared/diag/diag_pack.c shared/diag/include/diag_pack.h; do
+    git -C "$TOP" cat-file -e "$DTAG:$f" 2>/dev/null || { echo "no $f at $DTAG" >&2; exit 2; }
+  done
+  mkdir -p "$STAGE/shared/diag" && git -C "$TOP" archive "$DTAG:shared/diag" | tar -x -C "$STAGE/shared/diag" || exit 2
+  DIAG=1
+  echo "shared/diag at $DTAG"
+fi
 tar -C "$STAGE" -cf - . | on_host "rm -rf ~/$DEST && mkdir -p ~/$DEST && tar xf - -C ~/$DEST"
 
 echo "# $HOST_MODE" > "$OUT/host_run.log"
@@ -170,6 +190,8 @@ echo "# project folder: \$RR (from_capture \$PDFLAG)"
 # vtrux/wican's headers for the shims, shipped at the tag the commit pins (port step 1a), and
 # from 1b can_port and twai_port beside them (the source hashes above)
 if [ $WICAN = 1 ]; then export WICANDIR="\$HOME/$DEST/shared/wican"; echo "# shared components: $WTAG, comm_server.h sha256 \$(sha256sum < shared/wican/comm_server.h | cut -c1-16)"; fi
+# shared/diag's packer, shipped at the tag the commit pins vtrux/diag at (batch 2)
+if [ $DIAG = 1 ]; then echo "# shared/diag: $DTAG, diag_pack.c sha256 \$(sha256sum < shared/diag/diag_pack.c | cut -c1-16)"; fi
 # canre at the pinned commit, before replays_regen and the long-arm fixture import it
 if [ $CANRE = 1 ]; then step canre_install $PY -B $BENCH_AT/canre_pin.py install; fi
 cd test/gen_inhibit_host

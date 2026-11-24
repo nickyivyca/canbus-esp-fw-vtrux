@@ -54,6 +54,13 @@ build failed on the import): a commit with both ships gi_paths.py beside canre_p
 byte for byte, and canre_pin imports from the copy's tools/bench/ alone, with no
 retired setting in the environment.
 
+shared/diag (stage (b) batch 2, 2026-11-23, found on batch 2's emulated run, where H's
+make stopped at diag_host.py): a commit with test/diag_host/diag_host.py (DECODE_COMMIT)
+ships every file of shared/diag at the tag its idf_component.yml pins vtrux/diag at, byte
+for byte, at shared/diag/, and nothing else there; the copy's own diag_host.py finds it;
+the log names the tag and diag_pack.c's hash before the first step. The 1a commit ships
+none.
+
     python3.13 -B gen-inhibit/tools/bench/test_baseline_host_run.py
     python3.13 -B gen-inhibit/tools/bench/test_baseline_host_run.py --mutants
 
@@ -252,6 +259,57 @@ def fake_root(base, rel):
         fh.write(CAPTURE_BODY)
 
 
+def diag_checks(tmp, s4, names):
+    """shared/diag (stage (b) batch 2, 2026-11-23; found on batch 2's emulated run, where H's
+    make stopped at diag_host.py): a commit with test/diag_host/diag_host.py (DECODE_COMMIT)
+    ships shared/diag at the tag its idf_component.yml pins vtrux/diag at, every file byte for
+    byte, at shared/diag/; the copy's own diag_host.py then finds it there; the log names the
+    tag and diag_pack.c's hash."""
+    if git_show("%s:gen-inhibit/test/diag_host/diag_host.py" % DECODE_COMMIT) is None:
+        check("a batch 2 commit: %s has test/diag_host/diag_host.py (set GI_TEST_DECODE_COMMIT)" % DECODE_COMMIT,
+              False, DECODE_COMMIT)
+        return
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "gi_board_ref_t", os.path.join(FW, "test", "build_checks", "board_ref.py"))
+    board_ref = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(board_ref)
+    man = git_show("%s:gen-inhibit/firmware/main/idf_component.yml" % DECODE_COMMIT)
+    dtag = board_ref.parse_pin(man.decode(), "vtrux/diag") if man else None
+    # --full-tree: from FW, a subfolder, ls-tree would list only paths under it (none)
+    r = subprocess.run(["git", "-C", FW, "ls-tree", "-r", "--full-tree", "--name-only", "%s:shared/diag" % dtag],
+                       capture_output=True, text=True) if dtag else None
+    files = r.stdout.split() if r is not None and r.returncode == 0 else []
+    check("a batch 2 commit (%s): it pins vtrux/diag (%s), whose shared/diag has diag_pack.c" % (DECODE_COMMIT, dtag),
+          "diag_pack.c" in files and "include/diag_pack.h" in files, files[:6])
+    bad = [f for f in files if tar_member(tmp, "decode", "shared/diag/" + f) != git_show("%s:shared/diag/%s" % (dtag, f))]
+    check("a batch 2 commit: the copy holds every file of shared/diag at %s, byte for byte, at shared/diag/" % dtag,
+          bool(files) and not bad, bad[:5])
+    dirs = {"/".join(f.split("/")[:i]) for f in files for i in range(1, f.count("/") + 1)}
+    extra = [n for n in names if n.startswith("shared/diag/") and n.rstrip("/")[len("shared/diag/"):] not in set(files) | dirs]
+    check("... and nothing else under shared/diag/", not extra, extra[:5])
+    import tarfile
+    copy = os.path.join(tmp, "copy_decode")
+    os.makedirs(copy, exist_ok=True)
+    arc = os.path.join(tmp, "archive_decode.tar")
+    if os.path.exists(arc) and os.path.getsize(arc):     # a refused run sent none: the checks fail, not crash
+        with tarfile.open(arc) as t:
+            t.extractall(copy, filter="data")
+    dh = os.path.join(copy, "test", "diag_host")
+    rd = subprocess.run([sys.executable, "-B", "diag_host.py", "dir"], cwd=dh, capture_output=True, text=True,
+                        env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), timeout=60) if os.path.isdir(dh) else None
+    want = os.path.realpath(os.path.join(copy, "shared", "diag"))
+    check("a batch 2 commit: the copy's own diag_host.py finds shared/diag in the copy",
+          rd is not None and rd.returncode == 0 and os.path.realpath(rd.stdout.strip() or "/nonexistent") == want,
+          rd and (rd.returncode, rd.stdout.strip()[-120:], rd.stderr.strip()[-200:]))
+    out_d, nd = guarded(s4, "# shared/diag: ", copy)     # $DIAG and $DTAG are expanded in the remote script
+    want_h = hashlib.sha256(git_show("%s:shared/diag/diag_pack.c" % dtag) or b"").hexdigest()[:16]
+    check("a batch 2 commit: the log names shared/diag's tag and diag_pack.c's hash, once",
+          nd == 1 and out_d.strip() == "# shared/diag: %s, diag_pack.c sha256 %s" % (dtag, want_h), (nd, out_d))
+    check("... before the first step", 0 <= s4.find("# shared/diag: ") < s4.find("\nstep make "),
+          (s4.find("# shared/diag: "), s4.find("\nstep make ")))
+
+
 def checks(script_dir):
     want_sha = hashlib.sha256(CAPTURE_BODY).hexdigest()
     with tempfile.TemporaryDirectory(prefix="gi-host-run-", dir=gi_paths.scratch("tmp", run=False)) as tmp:
@@ -351,6 +409,7 @@ def checks(script_dir):
               (s4.find("export WICANDIR"), s4.find("\nstep make ")))
         check("a 1b commit: the source hashes name the shared CAN port and the fake, not $M/can.c",
               HASH_1B in s4 and "$M/can.c" not in s4, [ln for ln in s4.splitlines() if ln.startswith("sha256sum")])
+        diag_checks(tmp, s4, names)
         rc8, s8, out8 = remote_script(script_dir, tmp, tag="onea", commit=ONEA_COMMIT)
         names8 = archive_names(tmp, "onea")
         man8 = git_show("%s:gen-inhibit/firmware/main/idf_component.yml" % ONEA_COMMIT)
@@ -364,6 +423,8 @@ def checks(script_dir):
                   want_h is not None and tar_member(tmp, "onea", "shared/wican/" + h) == want_h, wtag8)
         check("a 1a commit: the source hashes name $M/can.c", HASH_OLD in s8,
               [ln for ln in s8.splitlines() if ln.startswith("sha256sum")])
+        check("a commit before batch 2 (%s, no test/diag_host/): no shared/diag shipped" % ONEA_COMMIT,
+              not any(n.startswith("shared/diag") for n in names8), [n for n in names8 if n.startswith("shared/diag")][:3])
         rc7, s7, out7 = remote_script(script_dir, tmp, tag="pre1a", commit=PRE1A_COMMIT)
         names7 = archive_names(tmp, "pre1a")
         out7w, _ = guarded(s7, "WICANDIR", empty, home, ['echo "WICANDIR IS [$WICANDIR]"'])
@@ -535,6 +596,17 @@ MUTANTS = [
     ("every commit hashes the shared CAN port", "CANSRC='$M/can.c'\n",
      "CANSRC='shared/can_port/can_port.c shared/can_port/can_stock.c'\n"),
     ("a leading ~/ is quoted as a literal ~", '''  "~/"*) RQ='"$HOME"/'$(printf %q "${RROOT#"~/"}") ;;\n''', ""),
+    # shared/diag (stage (b) batch 2, 2026-11-23)
+    ("shared/diag not shipped",
+     '  mkdir -p "$STAGE/shared/diag" && git -C "$TOP" archive "$DTAG:shared/diag" | tar -x -C "$STAGE/shared/diag" || exit 2\n',
+     ""),
+    ("shared/diag shipped for every commit", 'if [ -e "$STAGE/test/diag_host/diag_host.py" ]; then', "if true; then"),
+    ("shared/diag's files at the copy's shared/", 'tar -x -C "$STAGE/shared/diag" || exit 2', 'tar -x -C "$STAGE/shared" || exit 2'),
+    ("shared/diag from the commit, not the tag it pins", 'git -C "$TOP" archive "$DTAG:shared/diag"',
+     'git -C "$TOP" archive "$C:gen-inhibit/test/diag_host"'),
+    ("the shared/diag log line dropped",
+     '''if [ $DIAG = 1 ]; then echo "# shared/diag: $DTAG, diag_pack.c sha256 \\$(sha256sum < shared/diag/diag_pack.c | cut -c1-16)"; fi\n''',
+     ""),
     # stdin held open (2026-11-20)
     ("the script waits on its caller's stdin", 'echo "commit $C: $LAYOUT layout"\n',
      'cat > /dev/null; echo "commit $C: $LAYOUT layout"\n'),
