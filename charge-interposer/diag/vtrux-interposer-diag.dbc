@@ -1,4 +1,4 @@
-VERSION "vtrux-interposer-diag schema 4"
+VERSION "vtrux-interposer-diag schema 5"
 
 NS_ :
 	CM_
@@ -15,7 +15,7 @@ BU_: INTP
 
 BO_ 2036 INTP_Status: 8 INTP
  SG_ intp_schema_ver : 0|8@1+ (1,0) [0|255] "" Vector__XXX
- SG_ intp_fw_ver : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ intp_reserved_b1 : 8|8@1+ (1,0) [0|0] "" Vector__XXX
  SG_ intp_state : 16|8@1+ (1,0) [0|6] "" Vector__XXX
  SG_ intp_trip_reason : 24|8@1+ (1,0) [0|255] "" Vector__XXX
  SG_ intp_flags : 32|8@1+ (1,0) [0|255] "" Vector__XXX
@@ -40,7 +40,7 @@ BO_ 2038 INTP_Counters: 8 INTP
 
 BO_ 2039 INTP_Build: 8 INTP
  SG_ intp_build_id : 0|32@1+ (1,0) [0|4294967295] "" Vector__XXX
- SG_ intp_fw_ver16 : 32|16@1+ (1,0) [0|65535] "" Vector__XXX
+ SG_ intp_reserved16 : 32|16@1+ (1,0) [0|0] "" Vector__XXX
  SG_ intp_schema_ver_build : 48|8@1+ (1,0) [0|255] "" Vector__XXX
  SG_ intp_uptime_min : 56|8@1+ (1,0) [0|255] "min" Vector__XXX
 
@@ -66,7 +66,8 @@ CM_ BO_ 2039 "Charge interposer self-telemetry, BUILD. 0x7F7, DLC 8, ~1 Hz. Exac
 CM_ BO_ 2565849313 "MIRROR of 0x18EFC000 (VCU_ChargerCmd) exactly as the interposer SENT it to the charger, rebroadcast on the vehicle side with the J1939 source address replaced by 0xE1 (unused on this truck). Emitted for frames the interposer modified and for its repeats of the VCU's standing page-00 command (spec 4.1), so it is silent outside an override and its repeat bursts. The VCU's original is already on the vehicle bus; this is what the charger actually received. Same layout as VCU_ChargerCmd_18EFC000 in vtrux-powertrain-experimental.dbc.";
 CM_ BO_ 2566903777 "MIRROR of 0x18FFD7C0 (BELINV_hvBatteryAndCharger) exactly as RECEIVED from the charger, rebroadcast on the vehicle side with source address 0xE1, only when the interposer is masking the charger's reported current toward the VCU (mask_charger_telemetry, off by default). The modified version is what the vehicle bus sees natively; this is the original. Same layout as BELINV_hvBatteryAndCharger in BelInverter-v2.dbc.";
 CM_ SG_ 2036 intp_schema_ver "On-wire schema version. A decoder holding a different DBC version should flag a mismatch rather than trust the fields. Bump when any layout changes.";
-CM_ SG_ 2036 intp_fw_ver "Firmware build number, manually bumped per meaningful rev. Maps to a build in the schema doc's version table.";
+CM_ SG_ 2036 intp_reserved_b1 "Reserved, sent 0 (schema 5, port plan step 4, user 2026-11-23). Through schema 4 this byte was intp_fw_ver, a hand-bumped firmware revision (last value 9); its version table stays in the schema doc as history. From schema 5 intp_schema_ver is what a tool gates on, and intp_build_id names the binary.";
+CM_ SG_ 2039 intp_reserved16 "Reserved, sent 0 (schema 5). Through schema 4 these bytes were intp_fw_ver16, the same revision as intp_fw_ver as u16.";
 CM_ SG_ 2036 intp_state "machine.py STATE_NAMES.";
 CM_ SG_ 2036 intp_trip_reason "0 none; otherwise the TripReason enum of firmware/src/machine.h: 1 vmax over hard ceiling, 2 cell_overvolt, 3 RETIRED (was cell_undervolt; never emitted from fw 4 -- spec 6, B-7a. The code is kept rather than removed so every other code means the same thing at schema 2 and 3), 4 BMS EPO, 5 BMS alarm TYPE3, 6 HVIL open, 7 contactors not closed, 8 charger fault, 9 charger out of state 12, 10 BMS frames stale (which of 0x410/0x420/0x430/0x440 is in the event log, not in this byte), 11 charger frames stale, 12 override exceeded the 6 h cap.";
 CM_ SG_ 2036 intp_flags "bit0 bms_seen, bit1 chg_seen_charging, bit2 mainc_closed, bit3 evse_cap_known, bit4 vcu_flow, bit5 override_active (1 in OVERRIDE and in HOLD, schema 4), bit6 bridge_ok, bit7 serial_attached. bridge_ok is health SINCE THE PREVIOUS STATUS FRAME (schema 3, B-3): no RX overflow on either port, no controller entering bus-off, no bridged frame failing to reach the vehicle (added 2026-10-04), and neither controller bus-off now. The board's own diagnostic frames -- the 0x7F4-0x7F7 status frames and the 0xE1 mirrors -- do not count; they are not bridged traffic. It is also clear for the whole run on a board whose controllers did not both start (B-7d), which still sends 0x7F4 alone if the vehicle side came up.";
@@ -82,8 +83,10 @@ BA_DEF_ SG_ "RenamedFrom" STRING ;
 BA_DEF_DEF_ "DiagSchemaVersion" 0;
 BA_DEF_DEF_ "DiagSchemaHash" "";
 BA_DEF_DEF_ "RenamedFrom" "";
-BA_ "DiagSchemaVersion" 4;
-BA_ "DiagSchemaHash" "ed9822898522aa29";
+BA_ "DiagSchemaVersion" 5;
+BA_ "DiagSchemaHash" "65dc02b0479ca6f1";
+BA_ "RenamedFrom" SG_ 2036 intp_reserved_b1 "intp_fw_ver";
+BA_ "RenamedFrom" SG_ 2039 intp_reserved16 "intp_fw_ver16";
 
 VAL_ 2036 intp_state 0 "PASSTHROUGH" 1 "MONITOR" 2 "OVERRIDE" 3 "reserved_was_RELEASING" 4 "TERMINATED" 5 "SAFE" 6 "HOLD";
 VAL_ 2037 intp_vcu_mode 0 "Export_Power_Mode" 1 "Charger_Mode" 2 "Stand_By" 3 "Charger_Low_Power_Mode" 4 "Invalid";
