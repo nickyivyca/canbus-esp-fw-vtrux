@@ -768,53 +768,19 @@ whose it is before you kill anything.
 
 ### Writing
 
-**Text the user reads is written in plain English based on ASD-STE100.**
-This covers every reply to the user and every spec edit: `SPEC.md`,
-`VALIDATION.md`, `VERIFICATION.md` and the prose of published interfaces.
-Existing text, and all other text, follows these rules when it next
-changes. It is not rewritten for them alone (user, 2026-11-23). Why: dense
-sentences hide what a requirement or a result says.
-
-**Rules:**
-1. One topic per sentence. One instruction per sentence.
-2. Aim for 20 words in an instruction and 25 in a description. Code, paths
-   and names do not count.
-3. Put the condition first: "If X, do Y."
-4. Use the imperative for instructions. Use the active voice when the actor
-   is known.
-5. Use the same word for the same thing every time. No synonyms for
-   variety.
-6. Noun clusters: three words at most.
-7. Use a list for steps and for three or more items.
-8. In rules and requirements, use "must", "must not" and "may", not
-   "should".
-9. Avoid: "ensure" (use "make sure"), "utilize" and "leverage" (use "use"),
-   "in order to" (use "to"), "respectively" (say each one) and
-   "aforementioned" (name it).
-10. Keep the reason, in one short sentence.
-
-**Replies to the user:**
-- Result or answer first.
-- Terse and mechanical. Talking like a computer is fine. No greetings,
-  praise, apologies, filler, or recaps of what the user already knows.
-- State facts as facts. Hedge only on a real unknown, once, and say what
-  would settle it.
-- Explain session jargon, such as patch-ids, picks and waiters, or drop it.
-- Use absolute dates and times.
-- Questions for the user go at the end. Number them if there is more than
-  one. Each one must make sense alone.
+**Text the user reads follows the user's shared writing rules,** based on
+ASD-STE100. They are not in this repo: the user-level `~/.claude/CLAUDE.md`
+loads them into every session, under the heading "Writing rules". If they
+are not in your context, ask the user. In this repo they cover every reply
+to the user and every spec edit: `SPEC.md`, `VALIDATION.md`,
+`VERIFICATION.md` and the prose of published interfaces.
 
 **Specs:** existing spec text is not reworded at this time (user,
 2026-11-23). Every spec edit is phrased in this style. A wording change
 goes through the reviewer and the user like any spec change, and must not
 change what a requirement means.
 
-**Exempt:** code, commands, paths, log output, identifiers, upstream text,
-and the user's rulings quoted verbatim.
-
-**Glossary:** a term used with a meaning narrower than plain English is
-defined once, where it is introduced, and used only with that meaning.
-- **must / must not / may:** required, forbidden, allowed.
+**Glossary for this repo:**
 - **validate:** show that a requirement is worded correctly
   (`VALIDATION.md`).
 - **verify:** show that a commit meets a requirement (`VERIFICATION.md`).
