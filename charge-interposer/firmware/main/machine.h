@@ -93,46 +93,21 @@ static const uint32_t DIAG_BUILD_ID = 0x7F7;
 //      schema-3 decoder reads 6 as an unknown state and B5 as the override
 //      command; both are wrong in the same direction, which is why this is
 //      a schema bump and not a quiet addition.
-static const uint8_t DIAG_SCHEMA_VER = 4;
+//   5  the hand-kept firmware version retired (spec 8.2, user 2026-11-23):
+//      0x7F4 B1 and 0x7F7 B4-B5 are reserved and sent 0, and the four
+//      frames are packed from intp_diag_table.c, the table shared/diag's
+//      generator makes from the DBC. machine.cpp static-asserts this value
+//      against the table's DiagSchemaVersion.
+static const uint8_t DIAG_SCHEMA_VER = 5;
 // THE 0x7F6 B7 COUNTER IS NOT MODELLED HERE either -- the core is handed
 // it. main.cpp sums the charger port's three disjoint tallies while the
 // flow bit is 1, the 100 ms queue age-out included (spec 2.2, user
 // 2026-10-13); see txFailed() in port_mcp2515.h for why the sum, and not
 // one of the three, is the spec's counter.
-// Firmware version (spec 8.2, B-2). The two cores must agree; check_port.py
-// fails if they do not.
-//   2  the section A behaviour, Python's value until 2026-10-03
-//   3  0x7F7 B0-B3 changed meaning from fnv1a(GIT_SHA) -- which was always
-//      fnv1a("unknown"), because -DGIT_SHA was never passed -- to the first
-//      four bytes of the application ELF's SHA-256. The wire layout is
-//      unchanged, so this byte is the only thing that tells the two apart.
-//      C++ carried 3 while Python still read 2; that mismatch was B-2.
-//   4  sections A and B: the per-message BMS staleness, no cell_undervolt
-//      trip, 20 repeat frames from every path, the flow-gated charger
-//      transmit-failure counter and the charger-silence flag.
-//   5  spec 5.2's HOLD: the release keeps the page-01 setpoint instead of
-//      handing it back, and the section 6 trips now run in that state.
-//   6  spec 3: arming, re-arming included, needs the charger's LATEST status
-//      to be state 12 with the contactors closed, not a 12 seen earlier in
-//      the session.
-//   7  spec 4, 5.1 and 5.2 of 2026-10-10: the override's command is not
-//      below a 6.10 A floor from 98 % SoC up, the release fires on
-//      bcm_cell_vmax >= 3585 mV for 1 s instead of bcm_chg_max <= 3.0 A, and
-//      the hold steps down at 3600 mV and up only below 3595 mV.
-//   8  spec 5.2 of 2026-10-13: the hold's step gate is 0.28 s, not 0.3 s,
-//      so a step lands on each of the VCU's page-01 frames instead of on
-//      every second one. The only difference it makes on the wire is the
-//      RATE at which the hold follows bcm_chg_max -- 0.1 A per 0.3 s rather
-//      than per 0.6 s -- so a capture cannot be told apart from a version 7
-//      one by any single frame, which is what this byte is for.
-//   9  spec 2.3 of 2026-10-13: the vehicle port is in listen-only while the
-//      charger is silent, so the board puts NOTHING on the vehicle segment
-//      -- no frame, no acknowledgement, no error frame -- while the truck
-//      drives, and sends no diagnostic frames either. A reader who sees
-//      0x7F4-0x7F7 arrive only during a charge, and one round at power-up,
-//      is looking at version 9 working rather than at a board that has
-//      stopped.
-static const uint8_t DIAG_FW_VER = 9;
+// The hand-kept firmware version (DIAG_FW_VER, last value 9) is retired at
+// schema 5 (spec 8.2, user 2026-11-23): the schema version is what a tool
+// gates on, and the build id names the binary. Its history is the schema
+// doc's version table, closed at 9.
 
 // The 29-bit id with its source-address byte replaced by DIAG_SA.
 inline uint32_t mirrorId(uint32_t id) { return (id & 0x1FFFFF00u) | DIAG_SA; }
@@ -566,7 +541,12 @@ class InterposerCore {
   // Spec 8.2: the four status frames (0x7F4-0x7F7), 8 bytes each. Pure
   // packing; the I/O layer supplies what only it knows and sends them on
   // the vehicle side at ~1 Hz plus one STATUS on every state change.
-  void diagFrames(uint32_t t_ms, uint8_t rx_overflow, uint8_t tx_fail,
+  // Packed by shared/diag from the DBC's generated table (schema 5).
+  // Returns the number of values that did not fit their signals (each sent
+  // as 0), with a frame the table could not pack counted as 1. Spec 8.2:
+  // every field is bounded where its value comes from, so this is always 0
+  // and anything else is a defect; main.cpp adds it to intpDiagMisfits().
+  int diagFrames(uint32_t t_ms, uint8_t rx_overflow, uint8_t tx_fail,
                   uint32_t uptime_ms, bool bridge_ok, bool serial,
                   uint32_t build_id, uint8_t frames[4][8]) const;
   // Our commanded current while overriding, in 0.1 A (255 = not commanding).

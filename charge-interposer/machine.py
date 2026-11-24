@@ -3,7 +3,12 @@
 This module is the thing that eventually runs on the micro on the interposer
 board. Everything else in this folder exists to exercise it. Keep it that way:
 
-  * no imports beyond the standard library (currently: none at all)
+  * no imports beyond the standard library, with one exception: the status
+    frames (spec 8.2, schema 5) are packed by shared/diag's Python twin from
+    intp_diag_table.py, the table generated from the DBC. Both are pure
+    stdlib code; the twin comes from the pinned shared checkout, loaded on
+    the first diag_frames() call through diag_table.packer(), which checks
+    the checkout against the pin (git) once
   * integer arithmetic only, in fixed units (mV, centi-amps, ms)
   * no allocation in the steady-state path beyond the small output list
   * no wall-clock reads -- time arrives as a parameter
@@ -73,7 +78,14 @@ DIAG_BUILD_ID = 0x7F7
 #      0x7F6 B7 counts transmit failures toward the charger ONLY while the
 #      VCU's flow bit is 1. The byte is in the same place and means a
 #      different quantity, which is exactly what this guard is for.
-DIAG_SCHEMA_VER = 4
+#   4  state 6 = HOLD (spec 5.2), and 0x7F4 B5 carries our commanded
+#      current in it, the hold setpoint.
+#   5  the hand-kept firmware version retired (spec 8.2, user 2026-11-23):
+#      0x7F4 B1 and 0x7F7 B4-B5 are reserved and sent 0, and the four
+#      frames are packed by shared/diag's twin from intp_diag_table.py,
+#      generated from the DBC. diag_frames() refuses a table whose
+#      DiagSchemaVersion is not this value.
+DIAG_SCHEMA_VER = 5
 # THE 0x7F6 B7 COUNTER IS NOT MODELLED HERE. `diag_frames(tx_fail=...)`
 # takes it from whatever moves the frames. On the board that is main.cpp,
 # which sums the charger port's three disjoint tallies -- queue full,
@@ -82,40 +94,10 @@ DIAG_SCHEMA_VER = 4
 # 2.2, user 2026-10-13). This core has no transmit queue, so
 # interposer_sim.py passes 0 and the byte reads 0 in every simulated run; a
 # host that grows a queue owes the same sum.
-# Firmware version (spec 8.2, B-2). The two cores must agree; check_port.py
-# fails if they do not.
-#   2  the section A behaviour, Python's value until 2026-10-03
-#   3  0x7F7 B0-B3 changed meaning from fnv1a(GIT_SHA) -- which was always
-#      fnv1a("unknown"), because -DGIT_SHA was never passed -- to the first
-#      four bytes of the application ELF's SHA-256. The wire layout is
-#      unchanged, so this byte is the only thing that tells the two apart.
-#      C++ carried 3 while Python still read 2; that mismatch was B-2.
-#   4  sections A and B: the per-message BMS staleness, no cell_undervolt
-#      trip, 20 repeat frames from every path, the flow-gated charger
-#      transmit-failure counter and the charger-silence flag.
-#   5  spec 5.2's HOLD: the release keeps the page-01 setpoint instead of
-#      handing it back, and the section 6 trips now run in that state.
-#   6  spec 3: arming, re-arming included, needs the charger's LATEST status
-#      to be state 12 with the contactors closed, not a 12 seen earlier in
-#      the session.
-#   7  spec 4, 5.1 and 5.2 of 2026-10-10: the override's command is not
-#      below a 6.10 A floor from 98 % SoC up, the release fires on
-#      bcm_cell_vmax >= 3585 mV for 1 s instead of bcm_chg_max <= 3.0 A, and
-#      the hold steps down at 3600 mV and up only below 3595 mV.
-#   8  spec 5.2 of 2026-10-13: the hold's step gate is 0.28 s, not 0.3 s,
-#      so a step lands on each of the VCU's page-01 frames instead of on
-#      every second one. The only difference it makes on the wire is the
-#      RATE at which the hold follows bcm_chg_max -- 0.1 A per 0.3 s rather
-#      than per 0.6 s -- so a capture cannot be told apart from a version 7
-#      one by any single frame, which is what this byte is for.
-#   9  spec 2.3 of 2026-10-13: the vehicle port is in listen-only while the
-#      charger is silent, so the board puts NOTHING on the vehicle segment
-#      -- no frame, no acknowledgement, no error frame -- while the truck
-#      drives, and sends no diagnostic frames either. A reader who sees
-#      0x7F4-0x7F7 arrive only during a charge, and one round at power-up,
-#      is looking at version 9 working rather than at a board that has
-#      stopped.
-DIAG_FW_VER = 9
+# The hand-kept firmware version (DIAG_FW_VER, last value 9) is retired at
+# schema 5 (spec 8.2, user 2026-11-23): the schema version is what a tool
+# gates on, and the build id names the binary. Its history is the schema
+# doc's version table, closed at 9.
 
 
 def mirror_id(arb_id):
@@ -689,6 +671,12 @@ class InterposerCore(object):
         self.chg_veh_conn = -1
 
         self.stats = {"fwd_v2c": 0, "fwd_c2v": 0, "modified": 0, "synth": 0}
+        # Spec 8.2, schema 5: every diag_frames() misfit (a value that did
+        # not fit its signal, sent as 0), and a frame the table could not
+        # pack counted as 1. Every value is bounded where it comes from, so
+        # this stays 0; anything else is a defect. main.cpp's
+        # intpDiagMisfits() is the board's (reviewer, 2026-11-23).
+        self.diag_misfits = 0
 
     # -- helpers ------------------------------------------------------------
     MAX_EVENTS = 500
@@ -1838,23 +1826,65 @@ class InterposerCore(object):
         layer supplies what only it knows (overflow, tx failures, uptime,
         bridge health, serial attached, build hash) and sends them on the
         vehicle side at ~1 Hz plus one STATUS on every state change. Layout:
-        interposer_diag_schema.md, kept in lockstep via DIAG_SCHEMA_VER."""
-        def u8(v):
-            return 0 if v < 0 else (255 if v > 255 else int(v))
+        interposer_diag_schema.md.
 
-        def u16(v):
-            return 0 if v < 0 else (65535 if v > 65535 else int(v))
-
-        def le16(v):
-            v = u16(v)
-            return (v & 0xFF, (v >> 8) & 0xFF)
-
-        def le32(v):
-            v = 0 if v < 0 else (0xFFFFFFFF if v > 0xFFFFFFFF else int(v))
-            return (v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF)
-
+        Schema 5 (spec 8.2, user 2026-11-23): packed by shared/diag's twin
+        from intp_diag_table.py, generated from the DBC, so no byte position
+        is written here. Every value is bounded first, where it is taken --
+        u8/u16/u32 caps, the 255 and 254 markers, the 4-bit mode mask -- so
+        none can overflow its signal, and diag_misfits stays 0."""
+        P, msgs = _diag_packing()
         cap = self._evse_cap_ca()
-        flags = ((1 if self.have_bms else 0)
+        flags = self._diag_flags(cap, bridge_ok, serial)
+        if self.state in (S_OVERRIDE, S_HOLD):
+            ilim_x10 = _u8((self._commanded_ilim_counts() * 5 + 5) // 10)
+            if ilim_x10 > 254:
+                ilim_x10 = 254
+        else:
+            ilim_x10 = 255
+        status = P.raw_values(
+            msgs["INTP_Status"], intp_schema_ver=DIAG_SCHEMA_VER,
+            intp_reserved_b1=0,                 # was fw_ver (schema 5)
+            intp_state=_u8(self.state),
+            intp_trip_reason=_u8(self.trip_reason_code()),
+            intp_flags=flags, intp_our_ilim_x10=ilim_x10,
+            intp_t_in_state_s=_u16((t_ms - self.t_enter) // 1000))
+
+        cap_x10 = 255 if cap < 0 else min(254, _u8((cap + 5) // 10))
+        # B7: low nibble = the VCU's mode, bit 7 = the evap flag (schema 2);
+        # bit 6 = "charger silent while expected" (schema 3, spec 2.2).
+        # Bits 4 and 5 are reserved, in no signal, and sent as 0.
+        observed = P.raw_values(
+            msgs["INTP_Observed"], intp_vmax_mv=_u16(self.vmax),
+            intp_chg_max_ca=_u16(self.chg_max),
+            intp_soc_half=_u8(self.soc_half), intp_chg_state=_u8(self.chg_state),
+            intp_evse_cap_x10=cap_x10, intp_vcu_mode=int(self.vcu_mode) & 0x0F,
+            intp_chg_silent_expected=(1 if self.chg_silent_while_expected(t_ms)
+                                      else 0),
+            intp_evap_active=1 if self.evap else 0)
+
+        counters = P.raw_values(
+            msgs["INTP_Counters"], intp_modified=_u32(self.stats["modified"]),
+            intp_synth=_u16(self.stats["synth"]),
+            intp_rx_overflow=_u8(rx_overflow), intp_tx_fail_expected=_u8(tx_fail))
+
+        build = P.raw_values(
+            msgs["INTP_Build"], intp_build_id=_u32(build_id),
+            intp_reserved16=0,                  # was fw_ver16 (schema 5)
+            intp_schema_ver_build=DIAG_SCHEMA_VER,
+            intp_uptime_min=_u8(uptime_ms // 60000))
+
+        out = []
+        for name, raw in (("INTP_Status", status), ("INTP_Observed", observed),
+                          ("INTP_Counters", counters), ("INTP_Build", build)):
+            n, data, _bits = P.pack_message(msgs[name], raw)
+            self.diag_misfits += 1 if n < 0 else n
+            out.append((msgs[name]["id"], data))
+        return out
+
+    def _diag_flags(self, cap, bridge_ok, serial):
+        """0x7F4 B4, intp_flags."""
+        return ((1 if self.have_bms else 0)
                  | (2 if self.chg_seen_charging else 0)
                  | (4 if self.mainc_closed else 0)
                  | (8 if cap >= 0 else 0)
@@ -1868,40 +1898,6 @@ class InterposerCore(object):
                  | (32 if self.state in (S_OVERRIDE, S_HOLD) else 0)
                  | (64 if bridge_ok else 0)
                  | (128 if serial else 0))
-        if self.state in (S_OVERRIDE, S_HOLD):
-            ilim_x10 = u8((self._commanded_ilim_counts() * 5 + 5) // 10)
-            if ilim_x10 > 254:
-                ilim_x10 = 254
-        else:
-            ilim_x10 = 255
-        t_in = le16((t_ms - self.t_enter) // 1000)
-        status = bytes((DIAG_SCHEMA_VER, DIAG_FW_VER, self.state,
-                        u8(self.trip_reason_code()), flags, ilim_x10,
-                        t_in[0], t_in[1]))
-
-        vmax = le16(self.vmax)
-        cm = le16(self.chg_max)
-        cap_x10 = 255 if cap < 0 else min(254, u8((cap + 5) // 10))
-        # B7: low nibble = the VCU's mode, bit 7 = the evap flag (schema 2);
-        # bit 6 = "charger silent while expected" (schema 3, spec 2.2).
-        # Bits 4 and 5 are reserved and sent as 0.
-        mode_evap = ((self.vcu_mode & 0x0F)
-                     | (0x80 if self.evap else 0)
-                     | (0x40 if self.chg_silent_while_expected(t_ms) else 0))
-        observed = bytes((vmax[0], vmax[1], cm[0], cm[1], u8(self.soc_half),
-                          u8(self.chg_state), cap_x10, mode_evap))
-
-        mod = le32(self.stats["modified"])
-        syn = le16(self.stats["synth"])
-        counters = bytes((mod[0], mod[1], mod[2], mod[3], syn[0], syn[1],
-                          u8(rx_overflow), u8(tx_fail)))
-
-        gh = le32(build_id)
-        fw = le16(DIAG_FW_VER)
-        build = bytes((gh[0], gh[1], gh[2], gh[3], fw[0], fw[1],
-                       DIAG_SCHEMA_VER, u8(uptime_ms // 60000)))
-        return [(DIAG_STATUS_ID, status), (DIAG_OBSERVED_ID, observed),
-                (DIAG_COUNTERS_ID, counters), (DIAG_BUILD_ID, build)]
 
     def trip_reason_code(self):
         """The trip reason as the small integer the board reports (its
@@ -1914,21 +1910,74 @@ class InterposerCore(object):
                 return code
         return 255
 
-    def diag_line(self, t_ms, rx_overflow=0, tx_fail=0):
-        """The serial `diag` line (spec 8.3), same content as the frames."""
+    def diag_line(self, t_ms, rx_overflow=0, tx_fail=0, build_id=0):
+        """The serial `diag` line (spec 8.3), same content as the frames.
+        Schema 5: `build=` is the build id it is given as 0x7F7 B0-B3
+        carries it (capped to 32 bits as diag_frames() caps it), printed as
+        %08x, the image hash's first four bytes in order; it replaced
+        `fw=<n>` (spec 8.3, user 2026-11-23). The flags are diag_frames()'s
+        with its defaults (bridge healthy, no serial host)."""
         cap = self._evse_cap_ca()
         return ("diag st=%s trip=%d flags=0x%02x ilim=%s vmax=%d chgmax=%d "
                 "soc=%.1f evap=%d chg=%d mod=%d synth=%d ovf=%d txf=%d "
-                "silent=%d fw=%d schema=%d"
+                "silent=%d build=%08x schema=%d"
                 % (STATE_NAMES[self.state], self.trip_reason_code(),
-                   self.diag_frames(t_ms, rx_overflow, tx_fail)[0][1][4],
+                   self._diag_flags(cap, True, False),
                    ("%.1f" % (self._commanded_ilim_counts() * 0.05)
                     if self.state in (S_OVERRIDE, S_HOLD) else "-"),
                    self.vmax, self.chg_max, self.soc_half / 2.0, self.evap,
                    self.chg_state, self.stats["modified"], self.stats["synth"],
                    rx_overflow, tx_fail,
                    1 if self.chg_silent_while_expected(t_ms) else 0,
-                   DIAG_FW_VER, DIAG_SCHEMA_VER))
+                   _u32(build_id), DIAG_SCHEMA_VER))
+
+
+def _u8(v):
+    return 0 if v < 0 else (255 if v > 255 else int(v))
+
+
+def _u16(v):
+    return 0 if v < 0 else (65535 if v > 65535 else int(v))
+
+
+def _u32(v):
+    return 0 if v < 0 else (0xFFFFFFFF if v > 0xFFFFFFFF else int(v))
+
+
+# The status frames' packer and table (spec 8.2, schema 5), loaded once on
+# the first diag_frames(): shared/diag's Python twin from the pinned checkout
+# (diag_table.packer(), after shared_pin's R23 checks) and intp_diag_table.py
+# beside this file, generated from the DBC (diag_table.py write / check).
+_DIAG_FRAMES = (("INTP_Status", DIAG_STATUS_ID), ("INTP_Observed", DIAG_OBSERVED_ID),
+                ("INTP_Counters", DIAG_COUNTERS_ID), ("INTP_Build", DIAG_BUILD_ID))
+_diag_cache = []
+
+
+def _diag_packing():
+    """-> (the twin module, {message name: table entry}) for the four
+    status frames. Refuses a table whose schema or ids are not this core's."""
+    if not _diag_cache:
+        import os
+        import sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import diag_table
+        import intp_diag_table
+        if intp_diag_table.SCHEMA_VERSION != DIAG_SCHEMA_VER:
+            raise RuntimeError("intp_diag_table.py is schema %d and this core "
+                               "is schema %d: regenerate it (diag_table.py write)"
+                               % (intp_diag_table.SCHEMA_VERSION, DIAG_SCHEMA_VER))
+        P = diag_table.packer()
+        msgs = {}
+        for name, arb_id in _DIAG_FRAMES:
+            m = P.message(intp_diag_table.MESSAGES, name)
+            if m["id"] != arb_id or m["extended"] or m["dlc"] != 8:
+                raise RuntimeError("intp_diag_table.py's %s is 0x%X dlc %d, not "
+                                   "0x%X dlc 8" % (name, m["id"], m["dlc"], arb_id))
+            msgs[name] = m
+        _diag_cache.append((P, msgs))
+    return _diag_cache[0]
 
 
 # The board's TripReason enum (machine.h), in order, matched against the

@@ -18,5 +18,10 @@
     "tag": "2026.11.08",
     "commit": "5b03505f515cff8fbdd8826aa97fd2626028578a",
     "digest": "1fc65f35a3cc4d803f86e8b1e5051096504722554eda5d59e8f200ff76e46a4e"
+  },
+  "shared/diag": {
+    "tag": "2026.11.23.3",
+    "commit": "ada2ab3729469ea0affe2878862503f5d0507c6d",
+    "digest": "c74a9490f6ae471cfb22e423ab49544ddf7d2fc8cf6e4b0e9a968267372a641b"
   }
 }

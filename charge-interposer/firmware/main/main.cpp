@@ -20,12 +20,11 @@
 
 #include <Arduino.h>
 #include <SPI.h>
-#include <esp_app_desc.h>
-
 #include "board_ports.h"
 #include "bridge_health.h"
 #include "charger_port.h"
 #include "charger_tx_failures.h"
+#include "diag_build_id.h"
 #include "machine.h"
 #include "port_mcp2515.h"
 #include "port_view.h"
@@ -246,8 +245,8 @@ static uint32_t drain_frames = 0;
 // The count is reported on serial (8.3) only. The spec also wants it on a
 // status page "once it has one: the Wi-Fi status page after the move to the
 // WiCAN codebase", which is the ESP-IDF port's job and nothing here. No CAN
-// diagnostic frame carries it, so DIAG_FW_VER stays 9 -- nothing on the wire
-// changes meaning for a reader of 0x7F4-0x7F7.
+// diagnostic frame carries it, so nothing on the wire changes meaning for a
+// reader of 0x7F4-0x7F7.
 static const uint32_t ROUND_WAIT_US = 50000;
 static const uint32_t ROUND_POLL_US = 100;
 static uint8_t boot_round_sent = 0;
@@ -276,6 +275,17 @@ uint32_t intpBootRoundWaitUs() { return boot_round_wait_us; }
 static uint32_t diag_reports = 0;
 uint32_t intpDiagReports() { return diag_reports; }
 
+// Spec 8.2, schema 5 (user, 2026-11-23): no diag value may overflow its
+// signal, and a misfit is a defect. The sum of every diagFrames() misfit
+// count since boot -- every status-frame packing, the 0x7F4-alone ones and
+// those whose frames listen-only kept off the wire included -- read the
+// same way as the counters above by the hosted L2 test, which asserts it
+// stays 0 (reviewer, 2026-11-23, tracker J). Nothing on the wire or the
+// serial line carries it: machine.cpp's compile-time checks and the caps
+// at each value's source keep it 0 on a real build by construction.
+static uint32_t diag_misfits = 0;
+uint32_t intpDiagMisfits() { return diag_misfits; }
+
 // Spec 6.1's boundary lines, for the same reason and read the same way
 // (reviewer, 2026-10-14). The count lives in the core, because the collapse
 // does; this only reaches it, since the L2 harness has no handle on `core`.
@@ -288,7 +298,12 @@ uint32_t intpBoundaryLogs() { return core ? core->boundaryLogs() : 0; }
 
 // --- diagnostics (spec 8.2 / 8.3) -----------------------------------------
 // Build id (0x7F7 B0-B3): the first four bytes of this application's ELF
-// SHA-256, read from the ESP-IDF app descriptor.
+// SHA-256, read from the ESP-IDF app descriptor. From schema 5 it is
+// shared/diag's diag_build_id() (spec 8.2; shared/diag D2): the same read,
+// hash byte 0 the u32's most significant byte, packed little-endian, so the
+// same value and wire order as the buildId() it replaced, which was
+// d->app_elf_sha256[0..3] shifted the same way. The serial line prints it
+// as %08x (spec 8.3), the hash's first four bytes in order.
 //
 // This replaced FNV-1a of a GIT_SHA string, copied from the WiCAN inhibitor.
 // That was never a fingerprint here: the PlatformIO build never passed -DGIT_SHA,
@@ -305,14 +320,6 @@ uint32_t intpBoundaryLogs() { return core ? core->boundaryLogs() : 0; }
 // and the first four bytes are what the board reports. (Ignore that
 // command's Project name / App version / Compile time: those come from the
 // prebuilt Arduino library, not from this project.)
-static uint32_t buildId() {
-  const esp_app_desc_t* d = esp_app_get_description();
-  if (d == NULL) return 0;
-  return ((uint32_t)d->app_elf_sha256[0] << 24) |
-         ((uint32_t)d->app_elf_sha256[1] << 16) |
-         ((uint32_t)d->app_elf_sha256[2] << 8) |
-         (uint32_t)d->app_elf_sha256[3];
-}
 static const uint32_t DIAG_INTERVAL_MS = 1000;
 static const uint32_t DIAG_IDS[4] = {DIAG_STATUS_ID, DIAG_OBSERVED_ID,
                                      DIAG_COUNTERS_ID, DIAG_BUILD_ID};
@@ -391,8 +398,10 @@ static void sendDiag(uint32_t t_ms, bool status_only) {
             : bridge_health.sample(healthy, ovf, boe, veh_bridge_fail,
                                    vehicle.busOff() || charger.busOff());
 
-  core->diagFrames(t_ms, sat8(ovf), sat8(txf), t_ms, bridge_ok,
-                   INTP_SERIAL_READY, buildId(), fr);
+  const uint32_t build_id = diag_build_id();
+  diag_misfits += (uint32_t)core->diagFrames(t_ms, sat8(ovf), sat8(txf), t_ms,
+                                             bridge_ok, INTP_SERIAL_READY,
+                                             build_id, fr);
   if (!quiet) {
     const uint8_t n = status_only ? 1 : 4;
     for (uint8_t i = 0; i < n; i++) {
@@ -403,6 +412,7 @@ static void sendDiag(uint32_t t_ms, bool status_only) {
   diag_reports++;
 #ifdef INTP_NO_SERIAL
   (void)fr;   // spec 8.3: no serial on the truck build, so nothing to format
+  (void)build_id;
 #else
   // spec 8.3: the same content, one line, so a bench run needs no CAN tap
   const uint8_t* s = fr[0];
@@ -416,13 +426,13 @@ static void sendDiag(uint32_t t_ms, bool status_only) {
     INTP_PRINTF("%u.%u", s[5] / 10, s[5] % 10);
   }
   INTP_PRINTF(" vmax=%u chgmax=%u soc=%u.%u evap=%u chg=%u mod=%lu synth=%u "
-                "ovf=%u txf=%u silent=%u fw=%u schema=%u\n",
+                "ovf=%u txf=%u silent=%u build=%08lx schema=%u\n",
                 (unsigned)(o[0] | (o[1] << 8)), (unsigned)(o[2] | (o[3] << 8)),
                 o[4] / 2, (o[4] % 2) ? 5 : 0, (o[7] >> 7) & 1u, o[5],
                 (unsigned long)(k[0] | ((uint32_t)k[1] << 8) |
                                 ((uint32_t)k[2] << 16) | ((uint32_t)k[3] << 24)),
                 (unsigned)(k[4] | (k[5] << 8)), k[6], k[7],
-                (unsigned)((o[7] >> 6) & 1u), s[1], s[0]);
+                (unsigned)((o[7] >> 6) & 1u), (unsigned long)build_id, s[0]);
 #endif
 }
 
