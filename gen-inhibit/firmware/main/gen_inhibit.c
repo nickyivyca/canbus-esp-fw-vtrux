@@ -1025,11 +1025,25 @@ static bool dev_outstanding(void *ctx)
     return info.tx_pending != 0;
 }
 
+/*
+ * The receive queue's count, read by gi_sched right after dev_outstanding()
+ * says the inhibit has left (spec 7 trip 7, user 2026-11-23: the count is
+ * taken after the completion is seen). One status read per inhibit
+ * completion. 0 when the port will not say, as can_msgs_to_rx() returns: the
+ * frame is then on time, as it was when the caller's count read 0.
+ */
+static uint32_t dev_rx_waiting(void *ctx)
+{
+    (void)ctx;
+    return can_msgs_to_rx();
+}
+
 static const gs_hal_t DEV_HAL = {
     .submit = dev_submit,
     .abort_if_awaiting = dev_abort_if_awaiting,
     .buf_state = dev_buf_state,
     .outstanding = dev_outstanding,
+    .rx_waiting = dev_rx_waiting,
     .ctx = NULL,
 };
 
@@ -1053,8 +1067,8 @@ static void sched_advance(int64_t now, gi_events_t *ev)
      *
      * THE PROBE IS THE EXCEPTION, because spec 12.1 defines its figure as RX to
      * handing the probe to the driver, and this function does real work between
-     * that single clock reading and the handover: the alert read,
-     * can_msgs_to_rx(), and gs_tick's buf_state round trips. Using `now` therefore
+     * that single clock reading and the handover: the alert read, then
+     * can_msgs_to_rx() (until 2026-11-23), and gs_tick's buf_state round trips. Using `now` therefore
      * UNDER-reported the figure -- measured at ~9 us on the 2026-09-27 bench,
      * where the Kvaser's wire idle mean sat +9 us above three pre-scheduler runs
      * whose own idle means span 2.6 us, while the device's figure moved -1 us. The
@@ -1085,7 +1099,13 @@ static void sched_advance(int64_t now, gi_events_t *ev)
      */
     (void)twai_port_poll_alerts();
 
-    gs_tick(&s_sched, now, can_msgs_to_rx());
+    /*
+     * NO RECEIVE COUNT HERE since 2026-11-23. This read, every iteration, was
+     * taken before gs_tick() saw a completion, which is the wrong order for
+     * spec 7 trip 7. gi_sched now reads the count itself, through
+     * dev_rx_waiting(), right after it sees a timed frame complete.
+     */
+    gs_tick(&s_sched, now);
 
     const gs_stats_t *st = gs_stats(&s_sched);
 
@@ -2211,22 +2231,26 @@ static void gen_inhibit_task(void *arg)
          * difference is the whole reason this component exists.
          *
          * WAS THE NEXT FRAME ALREADY WAITING? (spec 7 trip 7, user 2026-11-23.)
-         * Read immediately before the receive, and only while an inhibit is
-         * outstanding, which is the only time the answer changes a verdict.
-         * Waiting means this receive will not block: the frame it returns
-         * arrived while the worker was busy, and if it is the VCM's next
-         * 0x051 an inhibit completion first seen after it cannot be placed
-         * before it -- gs_hold_credit() below. Zero means the receive blocks
-         * and wakes on the frame's arrival, so a completion seen then preceded
-         * it, up to the ISR-to-task latency.
+         * Read immediately before the receive, and only while a timed frame
+         * (the inhibit, or RESPOND's probe, spec 11) is in flight with its
+         * completion not yet seen (gs_timed_in_flight()). That is the only
+         * time the answer changes a verdict. Waiting means this receive will
+         * not block: the frame it returns arrived while the worker was busy,
+         * and if it is the VCM's next 0x051 a completion first seen after it
+         * cannot be placed before it -- gs_rx_dequeued() below (path (ii)).
+         * Zero means the receive blocks and wakes on the frame's arrival, so
+         * a completion seen then preceded it, up to the ISR-to-task latency.
+         *
+         * Not read while the verdict waits for counted frames: the completion
+         * is seen, and the counted frames decide it (path (i)).
          *
          * Not free: it is the twai_get_status_info() that rx_backlog_sample()
-         * avoids per dequeue. Gated on the outstanding inhibit, it is about one
-         * read per answer, beside the per-command one at the deadline. Left
-         * open: a frame arriving between this read and the receive call.
+         * avoids per dequeue. Gated, it is about one read per answer, beside
+         * gi_sched's count at the completion. Left open: a frame arriving
+         * between this read and the receive call.
          */
         const uint32_t rx_waiting =
-            gs_inhibit_outstanding(&s_sched) ? can_msgs_to_rx() : 0;
+            gs_timed_in_flight(&s_sched) ? can_msgs_to_rx() : 0;
         esp_err_t rx_err = twai_port_receive(&rx, pdMS_TO_TICKS(GEN_INHIBIT_RX_TIMEOUT_MS));
         if (rx_err != ESP_OK)
         {
@@ -2287,19 +2311,21 @@ static void gen_inhibit_task(void *arg)
              * credited first, or a frame that finished in good time is scored
              * against the deadline below.
              *
-             * UNLESS THE RECEIVE DID NOT BLOCK and this is the VCM's next
-             * 0x051: then the completion may have come after it, and spec 7
-             * trip 7 books a completion "seen only after the VCM's next 0x051
-             * had been dequeued" as a late skip. The hold stops this
-             * sched_advance() and the deadline's own check crediting it;
-             * gs_command_received() ends it. B4's l3s at
+             * FIRST, TELL THE SCHEDULER WHICH FRAME LEFT THE QUEUE (spec 7
+             * trip 7, user 2026-11-23). If an inhibit's verdict waits for the
+             * frames counted at its completion, this is one of them: the
+             * VCM's next 0x051 makes it a late skip, and the last other frame
+             * credits it on time, with frames waiting (path (i)). If the
+             * completion is not yet seen, the receive did not block and this
+             * is the VCM's next 0x051, the completion may have come after it:
+             * "seen only after the VCM's next 0x051 had been dequeued" is a
+             * late skip (path (ii); B4's l3s at
              * gen-inhibit-bench_20261123T171226_4b15 had one late frame booked
-             * on time here.
+             * on time here). In both late cases this sched_advance() and the
+             * deadline's own check do not credit it; gs_command_received()
+             * ends the hold.
              */
-            if (rx.identifier == GI_VCM_ID && rx_waiting > 0)
-            {
-                gs_hold_credit(&s_sched);
-            }
+            gs_rx_dequeued(&s_sched, rx.identifier == GI_VCM_ID, rx_waiting);
             sched_advance(t_rx, &ev);
 
             /*
@@ -2309,11 +2335,9 @@ static void gen_inhibit_task(void *arg)
              * so getting it wrong increments `order_violations` instead of failing
              * silently, and E1 asserts that counter stays 0.
              *
-             * The backlog is read here because an on-time verdict reached with
-             * frames already waiting cannot be verified -- the dequeue lags the
-             * arrival by the backlog, so the VCM's next command may already have
-             * been on the wire. gi_sched counts those separately as
-             * `ontime_unverified` rather than letting them pass as proof.
+             * No receive count is passed: gi_sched reads it itself, after a
+             * timed frame's completion is seen (gs_hal_t.rx_waiting, spec 7
+             * trip 7 as changed 2026-11-23).
              */
             if (rx.identifier == GI_VCM_ID)
             {
@@ -2323,7 +2347,7 @@ static void gen_inhibit_task(void *arg)
                  * withdraws TWO queued frames reports two -- which reporting from
                  * this return value could not do, and did not.
                  */
-                (void)gs_command_received(&s_sched, t_rx, can_msgs_to_rx());
+                (void)gs_command_received(&s_sched, t_rx);
                 sched_advance(t_rx, &ev);
             }
 
@@ -2862,9 +2886,10 @@ int gen_inhibit_get_stats_json(char *buf, int buflen)
      * The transmit scheduler's counters (spec 5.2 item 6, section 11): per class
      * queued/sent/aborted/requeued/dropped/refused and the two waits, plus the
      * skips, the aborts and how hard they were, and the two on-time counts --
-     * `ontime` and `ontime_unverified`, WHICH ARE NEVER SUMMED. An unverified
-     * verdict is one reached with frames already in the receive queue, where the
-     * dequeue lags the arrival and a physically late frame can score as on time.
+     * `ontime` and `ontime_unverified`, WHICH ARE NEVER SUMMED. Since
+     * 2026-11-23 (spec 7 trip 7, section 11) `ontime_unverified` is "on time,
+     * with frames waiting": frames were in the receive queue at the completion,
+     * and none of them was the VCM's next 0x051. The name is kept.
      */
     n = gi_clamp(n + snprintf(buf + n, buflen - n, ","), buflen);
     n = gi_clamp(n + gs_json(&s_snap_sched, buf + n, buflen - n), buflen);

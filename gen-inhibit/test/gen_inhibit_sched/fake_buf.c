@@ -74,6 +74,11 @@ static struct
     int abort_cmds;
     int aborts_no_effect;
     int abort_cmds_while_tx;
+
+    /* the receive queue's count, and a frame that arrives at the next free read */
+    uint32_t rx_waiting;
+    uint32_t arrive_on_free;
+    int      rx_reads;
 } g;
 
 void fb_reset(void)
@@ -279,7 +284,20 @@ static gs_buf_t fb_state(void *ctx)
 static bool fb_outstanding(void *ctx)
 {
     (void)ctx;
+    if (!g.occupied && g.arrive_on_free > 0)
+    {
+        /* Frames that arrive just after this read says the buffer is free. */
+        g.rx_waiting += g.arrive_on_free;
+        g.arrive_on_free = 0;
+    }
     return g.occupied;
+}
+
+static uint32_t fb_rx_waiting_read(void *ctx)
+{
+    (void)ctx;
+    g.rx_reads++;
+    return g.rx_waiting;
 }
 
 static const gs_hal_t HAL = {
@@ -287,8 +305,14 @@ static const gs_hal_t HAL = {
     .abort_if_awaiting = fb_abort_if_awaiting,
     .buf_state = fb_state,
     .outstanding = fb_outstanding,
+    .rx_waiting = fb_rx_waiting_read,
     .ctx = NULL,
 };
+
+void fb_set_rx_waiting(uint32_t n) { g.rx_waiting = n; }
+void fb_arrive_on_free(uint32_t n) { g.arrive_on_free = n; }
+uint32_t fb_rx_waiting(void) { return g.rx_waiting; }
+int fb_rx_reads(void) { return g.rx_reads; }
 
 const gs_hal_t *fb_hal(void) { return &HAL; }
 

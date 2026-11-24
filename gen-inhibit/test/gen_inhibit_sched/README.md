@@ -143,10 +143,12 @@ is the other side: a held answer nobody gave up leaves as `sent`.
 **A completion seen only after the VCM's next `0x051` was dequeued is a late
 skip** (spec 7 trip 7; user 2026-11-23, after B4's l3s at
 `gen-inhibit-bench_20261123T171226_4b15` counted one late frame of three on
-time). The worker calls `gs_hold_credit()` when it dequeues a command that was
-already waiting at its receive, before the dequeue's `gs_tick()`; neither that
-tick nor `gs_command_received()` then credits a held inhibit's departure, and
-the deadline books it late through the buffer-`EMPTY` branch.
+time). The worker reports each dequeue with `gs_rx_dequeued()`, before the
+dequeue's `gs_tick()`. If the dequeued frame is a command that was already
+waiting at its receive, neither that tick nor `gs_command_received()` credits a
+held inhibit's departure, and the deadline books it late through the
+buffer-`EMPTY` branch. Until the path (i) change below this was
+`gs_hold_credit()`.
 
 * `case_held_credit_is_late` -- the inhibit completes while nothing ticks, the
   hold is set, and the deadline must book a late skip, not `ontime` and not
@@ -159,3 +161,44 @@ the deadline books it late through the buffer-`EMPTY` branch.
 `mutate.py` breaks each site that honours the hold (`gs_tick`'s credit, the
 deadline's credit, the deadline ending the hold); all three are caught. The two
 `!aborting` mutants' anchors moved with it.
+
+**The decision with frames waiting** (spec 7 trip 7, user 2026-11-23, path
+(i)). When the scheduler sees a timed frame complete, it reads the receive
+queue's count through the HAL (`gs_hal_t.rx_waiting`), after the completion
+read. 0 is on time. With n > 0 the verdict waits until the worker has removed
+n frames: the VCM's next `0x051` among them makes it a late skip, and otherwise
+it is on time, with frames waiting (`ontime_unverified`). `gs_tick()` and
+`gs_command_received()` take no count since. `fake_buf` models the count
+(`fb_set_rx_waiting()`), and a frame arriving just after the completion read
+(`fb_arrive_on_free()`). `seen_with_waiting()` and `dequeue()` drive the cases:
+
+* `case_ontime_unverified` -- three frames counted, none a command: on time,
+  with frames waiting, decided after the third, and the hold ends at the
+  completion, not at the last dequeue.
+* `case_counted_command_is_late` -- the command is the second counted frame: a
+  late skip.
+* `case_empty_queue_is_on_time` -- nothing counted: `ontime` at once.
+* `case_arrival_between_reads_is_counted` -- the frame that arrives between the
+  completion read and the count is counted, and it is the command.
+* `case_command_after_the_count_is_on_time` -- the dequeue limit: a command
+  behind the counted frames does not make it late.
+* `case_deadline_ends_the_wait_on_time` -- the completion seen after the
+  command was removed (the receive blocked): the frames behind it came after
+  it, so the deadline credits it on time, with frames waiting.
+* `case_standdown_ends_the_wait` -- a stand-down while the verdict waits is a
+  stand-down (spec 5.2 item 5), never a skip or on time.
+
+**RESPOND's probe takes the same path** (spec 11, user 2026-11-23): the wait
+keys on the arm's timed class. A probe is never withdrawn and is never a skip;
+one found late is credited as sent once its deadline has passed, so it is in
+neither on-time count. `case_probe_counted_command_is_late` covers the command
+among the counted frames and path (ii), and
+`case_probe_not_among_them_is_on_time` the other two outcomes.
+
+`mutate.py` takes a list of (old, new) pairs for a mutant that needs more than
+one edit. Ten mutants break the new rule, each caught by its case: the count
+read before the completion read (the reviewer's count order), the verdict
+waiting for one frame more (the dequeue limit), never waiting, a counted
+command not held, the deadline not crediting a verdict that waits, a
+stand-down not ending the wait, the hold running to the last dequeue, and three
+that key the wait on the inhibit class instead of the timed class.

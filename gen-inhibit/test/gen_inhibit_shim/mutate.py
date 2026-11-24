@@ -49,10 +49,18 @@ exact defect it was written to catch.
   N7  the core ignores the scheduler's skip trip (gi_on_inhibit_skip()). It was
       the TX_LATE test, which spec 7 trip 7 as amended replaced with "a third
       skipped inhibit inside a second trips"; this is that trip's core side
-  T1  the worker never holds the credit (gs_hold_credit()) when the VCM's next
-      0x051 was already waiting at its receive; T2 it never reads whether one
-      was. Spec 7 trip 7: a completion seen only after that command was
-      dequeued is a late skip (user, 2026-11-23; B4 l3s). Case 62 kills both
+  T1  the worker never holds the credit (gs_rx_dequeued() is given 0 waiting)
+      when the VCM's next 0x051 was already waiting at its receive; T2 it never
+      reads whether one was. Spec 7 trip 7: a completion seen only after that
+      command was dequeued is a late skip (user, 2026-11-23; B4 l3s). Case 62
+      kills both
+  T3  the scheduler's count is read before the completion read, not after
+      (spec 7 trip 7 as changed 2026-11-23). Case 66 kills it
+  T4  the verdict waits for one frame more than counted, the dequeue limit.
+      Case 64 kills it
+  T5  the wait keys on the inhibit class, not the arm's timed class, so the
+      probe leaves the inhibit's path (spec 11, user 2026-11-23). Case 67
+  T6  the worker never reports a dequeue to the scheduler. Cases 62-64
   K06 an explicit re-arm no longer clears the section 7 abort latch
   K08 the key-on clear no longer resets rpm_ever -- the BUG 2 class
   K17 the SoC threshold becomes <=, moving the 21.00 % boundary by one count
@@ -114,9 +122,13 @@ so a surviving mutation was reported as CAUGHT. rc is the only signal.
 Usage, with BASE a copy of the project folder, gen-inhibit/, which holds
 firmware/main/ and test/:
     BASE=~/gi_review python3 mutate.py
+WICANDIR is found from BASE with wican_ref.py unless given, and the pinned
+shared/diag beside it goes into each copy. BASE's test/gen_inhibit_host needs
+its replay scenarios (that folder's README, "Running it"), or the baseline is
+red.
 """
 
-import subprocess, shutil, sys, os, re
+import subprocess, shutil, sys, os, re, stat
 BASE = os.path.expanduser(os.environ.get("BASE", "~/gi_review"))
 # THE MUTANTS' COPIES are in this run's own folder in the worktree's scratch/,
 # removed when the run ends, pass or fail (AGENTS.md "Removing scratch",
@@ -169,11 +181,39 @@ MUT = {
  "N7_skip_trip_ignored": ("firmware/main/gen_inhibit_core.c", [(
   "    if (trip && st->inhibit_live)", "    if (0)")]),
  "T1_credit_never_held": ("firmware/main/gen_inhibit.c", [(
-  "            if (rx.identifier == GI_VCM_ID && rx_waiting > 0)",
-  "            if (0)")]),
+  "            gs_rx_dequeued(&s_sched, rx.identifier == GI_VCM_ID, rx_waiting);",
+  "            gs_rx_dequeued(&s_sched, rx.identifier == GI_VCM_ID, 0u);")]),
  "T2_waiting_never_read": ("firmware/main/gen_inhibit.c", [(
-  "            gs_inhibit_outstanding(&s_sched) ? can_msgs_to_rx() : 0;",
-  "            gs_inhibit_outstanding(&s_sched) ? 0u : 0u;")]),
+  "            gs_timed_in_flight(&s_sched) ? can_msgs_to_rx() : 0;",
+  "            gs_timed_in_flight(&s_sched) ? 0u : 0u;")]),
+ # Spec 7 trip 7's decision with frames waiting, and spec 11's probe on the
+ # same path (user, 2026-11-23). T3 and T4 are the reviewer's: the count order
+ # and the dequeue limit. gi_sched.c is compiled into the shim as shipped.
+ "T3_count_before_completion": ("firmware/main/gi_sched.c", [
+  ("static void see_departure(gs_t *s, int64_t now, bool at_deadline)\n{",
+   "static uint32_t g_mut_before;\n"
+   "static void see_departure(gs_t *s, int64_t now, bool at_deadline)\n{"),
+  ("        waiting = s->hal->rx_waiting(s->hal->ctx);",
+   "        waiting = g_mut_before;"),
+  ("     */\n    if (s->held && !s->aborting && !credit_held(s)\n"
+   "        && !s->hal->outstanding(s->hal->ctx))",
+   "     */\n    g_mut_before = s->held ? s->hal->rx_waiting(s->hal->ctx) : 0;\n"
+   "    if (s->held && !s->aborting && !credit_held(s)\n"
+   "        && !s->hal->outstanding(s->hal->ctx))"),
+  ("    const bool late_hold = credit_held(s) && s->credit_hold;",
+   "    g_mut_before = s->held ? s->hal->rx_waiting(s->hal->ctx) : 0;\n"
+   "    const bool late_hold = credit_held(s) && s->credit_hold;")]),
+ "T4_waits_one_frame_more": ("firmware/main/gi_sched.c", [(
+  "            s->verdict_left = waiting;",
+  "            s->verdict_left = waiting + 1;")]),
+ "T5_wait_is_inhibit_only": ("firmware/main/gi_sched.c", [(
+  "    return s->held && s->held_class == s->timed_class\n"
+  "        && (s->credit_hold || s->verdict_left > 0);",
+  "    return s->held && s->held_class == GS_CLASS_INHIBIT\n"
+  "        && (s->credit_hold || s->verdict_left > 0);")]),
+ "T6_dequeue_never_reported": ("firmware/main/gen_inhibit.c", [(
+  "            gs_rx_dequeued(&s_sched, rx.identifier == GI_VCM_ID, rx_waiting);",
+  "            (void)rx_waiting;")]),
  # Round 3 (reviewing session, 2026-09-25) mutated the CORE. These four were
  # real survivors and now have scenarios; K01 and K12 were judged equivalent and
  # are not here -- K01's reasoning is recorded in bus_alive_since()'s comment.
@@ -320,21 +360,83 @@ MUT = {
  "W04_soc_debounce_4": ("firmware/main/gen_inhibit_core.c", [(
   "c->soc_debounce = 5;", "c->soc_debounce = 4;")]),
 }
+# THE COPY HAS NO PINNED CHECKOUT BESIDE IT. The shim finds vtrux/wican through
+# wican_ref.py, and the host build finds shared/diag through diag_host.py, both
+# relative to the worktree root, which a copy in scratch/ does not have. Until
+# 2026-11-23 the host build failed in every copy, rc 2, so every mutant the
+# shim suite missed was reported CAUGHT -- N3, K21, V08 and V09, the expected
+# survivors, among them (the full run on 30cc9236). So WICANDIR is found once
+# from BASE and handed to every make, and the pinned shared/diag goes into each
+# copy's shared/diag, the folder diag_host.py takes first (as in ~/gi_host).
+_wr = subprocess.run([sys.executable, "-B", "wican_ref.py"], capture_output=True,
+                     text=True, cwd=os.path.join(BASE, "test/gen_inhibit_shim"))
+WICANDIR = os.environ.get("WICANDIR") or _wr.stdout.strip()
+if not WICANDIR:
+    sys.exit("no vtrux/wican checkout: wican_ref.py said: " + _wr.stderr.strip())
+DIAGDIR = os.path.join(os.path.dirname(WICANDIR), "diag")
+if not os.path.isfile(os.path.join(DIAGDIR, "diag_pack.c")):
+    sys.exit("no pinned shared/diag at " + DIAGDIR)
+ENV = dict(os.environ, WICANDIR=WICANDIR, PYTHONDONTWRITEBYTECODE="1")
+HOST = ("run_tests.py", "passive_diff.py", "invariants.py")
+
+
+def make_copy(d):
+    """A copy of BASE at d, with the pinned shared/diag in it, all writable."""
+    shutil.copytree(BASE, d)
+    shutil.copytree(DIAGDIR, os.path.join(d, "shared", "diag"))
+    for root, dirs, files in os.walk(os.path.join(d, "shared")):
+        for n in dirs + files:
+            q = os.path.join(root, n)
+            os.chmod(q, os.stat(q).st_mode | stat.S_IWUSR)
+
+
+def score(d):
+    """Build and run the shim suite and the three host suites in the copy at d.
+    Returns (rc, output); rc is None when the shim did not build."""
+    t = os.path.join(d, "test/gen_inhibit_shim")
+    b = subprocess.run(["make", "-s"], cwd=t, capture_output=True, text=True,
+                       env=ENV)
+    if b.returncode:
+        return None, b.stderr[-300:]
+    r = subprocess.run(["./shim_test"], cwd=t, capture_output=True, text=True,
+                       timeout=300, env=ENV)
+    out = r.stdout + r.stderr
+    rc = r.returncode
+    # THE CORE IS WHERE MOST OF THE LOGIC LIVES, so a mutation control that
+    # only runs E1 scores the wrong thing. Round 3 mutated the core and found
+    # that 15 of 15 caught mutations were caught by the GOLDENS alone -- never
+    # by an invariant and never by E1. Scoring all three suites together is the
+    # only honest total.
+    h = os.path.join(d, "test/gen_inhibit_host")
+    if not os.path.isdir(os.path.join(h, "scenarios")):
+        return 2, out + "\n[note] no scenarios/ in this copy: host suite NOT scored"
+    for cmd in HOST:
+        hr = subprocess.run([sys.executable, "-B", cmd], cwd=h, capture_output=True,
+                            text=True, timeout=900, env=ENV)
+        if hr.returncode:
+            rc = rc or hr.returncode
+            out += "\n[%s] %s" % (cmd, (hr.stdout + hr.stderr)[-400:])
+    return rc, out
+
+
+RUN = gi_paths.scratch("gen-inhibit-shim-mutants")
+
 # A GREEN MUTATION RUN MEANS NOTHING IF THE BASELINE IS RED: every mutant is
 # then reported caught by a failure that was already there. That happened once,
-# with all fourteen "caught" and two baseline assertions failing.
-_t = os.path.join(BASE, "test/gen_inhibit_shim")
-_b = subprocess.run("make -s && ./shim_test", shell=True, cwd=_t,
-                    capture_output=True, text=True)
-if _b.returncode:
-    print("BASELINE IS RED (rc=%d) -- fix it before reading anything below"
-          % _b.returncode)
-    for _l in _b.stdout.splitlines():
-        if _l.strip().startswith("FAIL:"):
-            print("   ", _l.strip()[:140])
+# with all fourteen "caught" and two baseline assertions failing, and again
+# with the host build failing in every copy (above). So the baseline is an
+# unmutated copy, scored exactly as each mutant is.
+_d = os.path.join(RUN, "gi")
+make_copy(_d)
+_rc, _out = score(_d)
+if _rc != 0:
+    print("BASELINE IS RED (rc=%s) -- fix it before reading anything below" % _rc)
+    for _l in _out.splitlines():
+        if _l.strip().startswith(("FAIL:", "[")):
+            print("   ", _l.strip()[:200])
+    print(_out[-600:])
     sys.exit(2)
-print("baseline green")
-RUN = gi_paths.scratch("gen-inhibit-shim-mutants")
+print("baseline green (shim suite and the three host suites, in a copy)")
 
 # A STALE ANCHOR IS A FAILURE OF THIS FILE, not a skip: a mutation whose
 # pattern no longer matches runs nothing, and until 2026-10-31 thirteen of the
@@ -344,7 +446,7 @@ stale = []
 for name, (f, reps) in MUT.items():
     d = os.path.join(RUN, "gi")
     if not gi_paths.remove_tree(d): sys.exit("the last mutant's copy is still there (above)")
-    shutil.copytree(BASE, d)
+    make_copy(d)
     p = os.path.join(d, f); s = open(p).read()
     ok = True
     for a, b in reps:
@@ -354,30 +456,8 @@ for name, (f, reps) in MUT.items():
         stale.append(name)
         continue
     open(p, "w").write(s)
-    t = os.path.join(d, "test/gen_inhibit_shim")
-    b = subprocess.run("make -s", shell=True, cwd=t, capture_output=True, text=True)
-    if b.returncode: print(name, "BUILD FAIL", b.stderr[-300:]); continue
-    r = subprocess.run("./shim_test", shell=True, cwd=t, capture_output=True,
-                       text=True, timeout=300)
-    out = r.stdout + r.stderr
-    rc = r.returncode
-
-    # THE CORE IS WHERE MOST OF THE LOGIC LIVES, so a mutation control that
-    # only runs E1 scores the wrong thing. Round 3 mutated the core and found
-    # that 15 of 15 caught mutations were caught by the GOLDENS alone -- never
-    # by an invariant and never by E1. Scoring all three suites together is the
-    # only honest total.
-    h = os.path.join(d, "test/gen_inhibit_host")
-    if os.path.isdir(os.path.join(h, "scenarios")):
-        for cmd in ("python3 run_tests.py", "python3 passive_diff.py",
-                    "python3 invariants.py"):
-            hr = subprocess.run(cmd, shell=True, cwd=h, capture_output=True,
-                                text=True, timeout=900)
-            if hr.returncode:
-                rc = rc or hr.returncode
-                out += "\n[%s] %s" % (cmd.split()[-1], hr.stdout[-400:])
-    else:
-        out += "\n[note] no scenarios/ in this copy: host suite NOT scored"
+    rc, out = score(d)
+    if rc is None: print(name, "BUILD FAIL", out); continue
     # rc, not text: "FAIL" also matches the harness's own ESP_FAIL log lines,
     # which reported surviving mutations as caught.
     fails = [l.strip() for l in out.splitlines() if l.strip().startswith("FAIL:")][:3]

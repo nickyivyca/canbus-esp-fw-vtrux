@@ -126,4 +126,24 @@ int fb_abort_cmds_while_transmitting(void);
 bool     fb_outstanding_now(void);
 gs_buf_t fb_state_now(void);
 
+/* ------------------------------------------------------ the receive queue -- */
+
+/*
+ * The count the HAL's rx_waiting() returns (spec 7 trip 7, 2026-11-23). The
+ * model has no frames, only the count: a case sets it, and takes one off with
+ * each gs_rx_dequeued() it makes.
+ */
+void     fb_set_rx_waiting(uint32_t n);
+uint32_t fb_rx_waiting(void);
+
+/*
+ * `n` frames arrive just after the next outstanding() read that finds the
+ * buffer free: between the completion read and the scheduler's count. A count
+ * taken after the completion read includes them; one taken before does not.
+ */
+void fb_arrive_on_free(uint32_t n);
+
+/* How many times the scheduler has read the count. */
+int fb_rx_reads(void);
+
 #endif /* FAKE_BUF_H */

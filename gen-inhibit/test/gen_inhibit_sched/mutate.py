@@ -80,12 +80,8 @@ MUTATIONS = [
 
     ("drop the !aborting guard on gs_command_received's completion path",
      "gi_sched.c",
-     """    s->credit_hold = false;
-    if (s->held && !s->aborting && !held_back
-        && !s->hal->outstanding(s->hal->ctx))""",
-     """    s->credit_hold = false;
-    if (s->held && !held_back
-        && !s->hal->outstanding(s->hal->ctx))""",
+     """    else if (s->held && !s->aborting && !late_hold && !waited""",
+     """    else if (s->held && !late_hold && !waited""",
      "abort: a departure seen by gs_command_received is not credited as sent"),
 
     # ---- spec 7 trip 7's held credit (user, 2026-11-23; B4 l3s) ------------
@@ -99,16 +95,119 @@ MUTATIONS = [
 
     ("trip 7: the deadline credits a held inhibit",
      "gi_sched.c",
-     """    if (s->held && !s->aborting && !held_back""",
-     """    if (s->held && !s->aborting && (held_back || !held_back)""",
+     """    else if (s->held && !s->aborting && !late_hold && !waited""",
+     """    else if (s->held && !s->aborting && (late_hold || !late_hold) && !waited""",
      "trip 7: completion seen after a waiting command is late"),
 
     ("trip 7: the deadline does not end the hold",
      "gi_sched.c",
-     """    s->credit_hold = false;
-    if (s->held""",
-     """    if (s->held""",
+     """    }
+    end_verdict_wait(s);
+
+    /*
+     * THE DEADLINE HAS NOW PASSED""",
+     """    }
+
+    /*
+     * THE DEADLINE HAS NOW PASSED""",
      "trip 7: completion seen after a waiting command is late"),
+
+    # ---- spec 7 trip 7, the decision with frames waiting (user, 2026-11-23) --
+    # The count is taken after the completion read, and the verdict waits for
+    # exactly the counted frames. The first two are the reviewer's: the count
+    # order and the dequeue limit.
+    # The count read moved before the completion read, at both sites that see
+    # a departure: the value taken first is the one see_departure() uses.
+    ("trip 7: the count is read before the completion read",
+     "gi_sched.c",
+     [("""static void see_departure(gs_t *s, int64_t now, bool at_deadline)
+{""",
+       """static uint32_t g_mut_before;
+static void see_departure(gs_t *s, int64_t now, bool at_deadline)
+{"""),
+      ("""        waiting = s->hal->rx_waiting(s->hal->ctx);""",
+       """        waiting = g_mut_before;"""),
+      ("""     */
+    if (s->held && !s->aborting && !credit_held(s)
+        && !s->hal->outstanding(s->hal->ctx))""",
+       """     */
+    g_mut_before = s->held ? s->hal->rx_waiting(s->hal->ctx) : 0;
+    if (s->held && !s->aborting && !credit_held(s)
+        && !s->hal->outstanding(s->hal->ctx))"""),
+      ("""    const bool late_hold = credit_held(s) && s->credit_hold;""",
+       """    g_mut_before = s->held ? s->hal->rx_waiting(s->hal->ctx) : 0;
+    const bool late_hold = credit_held(s) && s->credit_hold;""")],
+     None,
+     "trip 7: a frame arriving between the completion read and the count"),
+
+    ("trip 7: the verdict waits for one frame more than counted",
+     "gi_sched.c",
+     """            s->verdict_left = waiting;""",
+     """            s->verdict_left = waiting + 1;""",
+     "trip 7: a command behind the counted frames does not make it late"),
+
+    ("trip 7: the verdict never waits for counted frames",
+     "gi_sched.c",
+     """        if (waiting > 0 && !at_deadline)""",
+     """        if (0 && at_deadline)""",
+     "trip 7: the command is among the counted frames: late skip"),
+
+    ("trip 7: a counted command does not make it late",
+     "gi_sched.c",
+     """            s->verdict_left = 0;
+            s->credit_hold = true;""",
+     """            s->verdict_left = 0;""",
+     "trip 7: the command is among the counted frames: late skip"),
+
+    ("trip 7: the deadline does not credit a verdict that waits",
+     "gi_sched.c",
+     """        credit_after_wait(s);
+    }
+    else if""",
+     """        (void)0;
+    }
+    else if""",
+     "trip 7: frames behind the dequeued command: on time, waiting"),
+
+    ("trip 7: a stand-down does not end the wait",
+     "gi_sched.c",
+     """        end_verdict_wait(s);
+        if (!s->held_booked)""",
+     """        if (!s->held_booked)""",
+     "trip 7: a stand-down while the verdict waits"),
+
+    ("trip 7: the hold runs to the last dequeue, not to the completion",
+     "gi_sched.c",
+     """    note_left_controller(s, s->seen_at, backlog);""",
+     """    note_left_controller(s, s->seen_at + 5000, backlog);""",
+     "trip 7: frames waiting, no command among them: on time, waiting"),
+
+    # ---- spec 11: the probe takes the inhibit's path (user, 2026-11-23) -----
+    # Each site that keys the wait on the arm's timed class is put back on the
+    # inhibit class alone.
+    ("spec 11: the held verdict keys on the inhibit, not the timed class",
+     "gi_sched.c",
+     """    return s->held && s->held_class == s->timed_class
+        && (s->credit_hold || s->verdict_left > 0);""",
+     """    return s->held && s->held_class == GS_CLASS_INHIBIT
+        && (s->credit_hold || s->verdict_left > 0);""",
+     "spec 11: probe, the command among the counted frames"),
+
+    ("spec 11: the count at the completion is the inhibit's only",
+     "gi_sched.c",
+     """    if (s->held_class == s->timed_class && s->held_deadline_n == s->deadline_n)
+    {
+        waiting""",
+     """    if (s->held_class == GS_CLASS_INHIBIT && s->held_deadline_n == s->deadline_n)
+    {
+        waiting""",
+     "spec 11: probe, frames waiting, no command among them"),
+
+    ("spec 11: a dequeue changes the inhibit's verdict only",
+     "gi_sched.c",
+     """    if (!s->held || s->held_class != s->timed_class || s->aborting)""",
+     """    if (!s->held || s->held_class != GS_CLASS_INHIBIT || s->aborting)""",
+     "spec 11: probe, frames waiting, no command among them"),
 
     ("D3: an inhibit queue-full is not counted as a skip",
      "gi_sched.c",
@@ -280,14 +379,20 @@ def main():
             target = os.path.join(m, fname)
             with open(target) as fh:
                 body = fh.read()
-            if body.count(old) != 1:
+            # A mutation is one (old, new) pair, or, with `new` None, a list of
+            # pairs applied in order, each of which must match exactly once.
+            pairs = [(old, new)] if new is not None else old
+            bad = [(a, body.count(a)) for a, _b in pairs if body.count(a) != 1]
+            if bad:
                 print("[SKIP] %-52s (pattern found %d times)"
-                      % (name, body.count(old)))
+                      % (name, bad[0][1]))
                 skipped.append("%s (pattern found %d times)"
-                               % (name, body.count(old)))
+                               % (name, bad[0][1]))
                 continue
+            for a, b in pairs:
+                body = body.replace(a, b)
             with open(target, "w") as fh:
-                fh.write(body.replace(old, new))
+                fh.write(body)
 
             rc, out = build_and_run(wd)
             if rc is None:

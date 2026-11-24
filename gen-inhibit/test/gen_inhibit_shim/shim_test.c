@@ -382,6 +382,7 @@ static void port_once(void)
 static void setup(void)
 {
     ft_reset();
+    ft_deliver_at_count_reset();
     g_wv_reported = 0;
     ft_set_step_hook(invariant_hook);
     ml_clear();
@@ -3415,6 +3416,10 @@ static void case_long_arm_replay(void)
     CHECK(json_u32("\"late_on_wire\":") == 0,
           "%u inhibit frames went out late over the replay: %s",
           json_u32("\"late_on_wire\":"), stats());
+    /* Spec 5.2's criterion "with no skips" (user, 2026-11-23). */
+    CHECK(json_u32("\"skipped\":") == 0,
+          "%u inhibit frames were skipped over the replay: %s",
+          json_u32("\"skipped\":"), stats());
     CHECK(json_u32("\"order_violations\":") == 0,
           "the deadline did not run before every answer: %s", stats());
 
@@ -3615,6 +3620,16 @@ static void case_mode_change_keeps_the_held_frame(void)
  * the periodic path and from gs_command_received() when the next command is dequeued,
  * and one assertion cannot tell which credited a completion -- so each phase is
  * arranged to be noticed by one of them and asserted on its own.
+ *
+ * CHANGED 2026-11-23 (spec 7 trip 7, user). The two call sites no longer take a
+ * count: gi_sched reads it through the HAL (dev_rx_waiting()) right after it sees
+ * the completion, and the verdict waits until the worker has removed the frames
+ * counted. U1 and U2 have nothing left to mutate. Both phases still hold as
+ * written: in phase A the completion is seen at the first filler's dequeue with 5
+ * frames behind, and the frame is credited after those 5, none of them a 0x051. In
+ * phase B it is seen after the next command was dequeued, so the 6 frames behind
+ * that command can not include it, and the deadline credits it with frames
+ * waiting. Cases 63-68 test the new rule itself.
  */
 static void case_backlog_reaches_the_scheduler(void)
 {
@@ -6135,6 +6150,316 @@ static void case_late_after_a_waiting_command(void)
     case_end();
 }
 
+/*
+ * CASES 63-68 -- SPEC 7 TRIP 7, THE DECISION WITH FRAMES WAITING (user,
+ * 2026-11-23), and spec 11's probe on the same path.
+ *
+ * When the worker sees our frame complete, it counts the receive queue after
+ * that read. 0: on time. n > 0: the worker removes n frames before the device
+ * decides; the VCM's next 0x051 among them makes it a skip (a probe: in
+ * neither on-time count), otherwise it is on time, with frames waiting.
+ *
+ * Each case lets our frame complete while the worker is parked in an empty
+ * receive, then delivers a filler frame: the worker sees the completion in the
+ * sched_advance() after that dequeue, with whatever is queued behind the filler.
+ */
+static const uint8_t TT_FILL[8] = { 0, 0, 0, 0, 0, 0, 0, 0xC8 };
+
+static void tt_command(uint8_t *ctr)
+{
+    uint8_t cmd[6];
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)((*ctr)++ & 0x0F);
+    ft_deliver(0x051, cmd, 6);
+}
+
+/*
+ * A completion is seen only on a worker pass, and a worker parked in an empty
+ * receive makes none. So the warm-up's last frame may be complete and unseen;
+ * a filler frame lets the worker see it before a case reads its baselines.
+ */
+static void tt_settle(void)
+{
+    ft_run(1000);
+    ft_deliver(0x617, TT_FILL, 8);
+    ft_run(500);
+}
+
+/* Live in INHIBIT, with nothing of ours unseen. */
+static void tt_inhibit_answered(uint8_t *ctr)
+{
+    setup();
+    go_live();
+    keep_alive(100000, ctr);
+    CHECK(json_has("\"inhibit_live\":true"),
+          "PRECONDITION: the device is not live, so nothing below is tested: %s",
+          stats());
+    tt_settle();
+}
+
+static void tt_balance(const char *after)
+{
+    g_bal_readings = 0;
+    g_bal_failures = 0;
+    g_bal_first[0] = 0;
+    balance_step_hook();
+    CHECK(g_bal_failures == 0, "the status page does not balance %s: %s",
+          after, g_bal_first);
+}
+
+static void case_tt_counted_command_is_late(void)
+{
+    case_begin("case 63: the next command among the frames counted at the "
+               "completion is a late skip (spec 7 trip 7)");
+    uint8_t ctr = 0x40;
+    tt_inhibit_answered(&ctr);
+
+    const uint32_t late_0 = json_need("\"skipped_late\":");
+    const uint32_t low_0  = json_need("\"late_on_wire\":");
+    const uint32_t on_0   = json_need("\"ontime\":");
+    const uint32_t unv_0  = json_need("\"ontime_unverified\":");
+    const int      wire_0 = ft_wire_count_id(0x051);
+    tt_command(&ctr);
+    ft_run(1000);       /* N answered; the answer completes while the worker is parked */
+    CHECK(ft_rx_pending() == 0 && ft_wire_count_id(0x051) == wire_0 + 1,
+          "PRECONDITION: the answer to N is not on the wire with the queue empty "
+          "(%d waiting)", ft_rx_pending());
+
+    ft_deliver(0x617, TT_FILL, 8);
+    tt_command(&ctr);                   /* N+1, behind the filler */
+    ft_run(500);        /* the filler: the completion is seen with N+1 behind it */
+    CHECK(ft_rx_pending() == 1,
+          "PRECONDITION: N+1 is not the one frame waiting (%d waiting)",
+          ft_rx_pending());
+    CHECK(json_need("\"ontime\":") == on_0
+          && json_need("\"ontime_unverified\":") == unv_0,
+          "the answer was credited on time with N+1 in the queue behind the "
+          "filler: %s", stats());
+    ft_run(500);        /* N+1 */
+
+    CHECK(json_need("\"skipped_late\":") == late_0 + 1,
+          "N+1 was among the frames counted when the answer to N was seen to "
+          "complete, and the device did not book a late skip: %s", stats());
+    CHECK(json_need("\"late_on_wire\":") == low_0 + 1,
+          "and late_on_wire did not move: %s", stats());
+    CHECK(json_need("\"ontime\":") == on_0
+          && json_need("\"ontime_unverified\":") == unv_0,
+          "the late answer was credited on time as well: %s", stats());
+    CHECK(!json_has("\"abort_latched\":true"),
+          "one late skip latched an abort: %s", stats());
+    keep_alive(50000, &ctr);
+    CHECK(json_has("\"inhibit_live\":true"),
+          "the device stopped inhibiting after one late skip: %s", stats());
+    tt_balance("after the late skip");
+    teardown();
+    case_end();
+}
+
+static void case_tt_command_after_the_count_is_on_time(void)
+{
+    case_begin("case 64: frames counted at the completion with no command "
+               "among them: on time, with frames waiting (and no more frames)");
+    uint8_t ctr = 0x50;
+    tt_inhibit_answered(&ctr);
+
+    const uint32_t skip_0 = json_need("\"skipped\":");
+    const uint32_t on_0   = json_need("\"ontime\":");
+    const uint32_t unv_0  = json_need("\"ontime_unverified\":");
+    tt_command(&ctr);
+    ft_run(1000);
+    ft_deliver(0x617, TT_FILL, 8);
+    ft_deliver(0x617, TT_FILL, 8);
+    ft_run(500);        /* filler 1: the completion is seen with 1 frame behind */
+    CHECK(ft_rx_pending() == 1,
+          "PRECONDITION: one filler is not the one frame waiting (%d waiting)",
+          ft_rx_pending());
+    tt_command(&ctr);   /* N+1 arrives AFTER the count, behind filler 2 */
+    ft_run(500);        /* filler 2: the one counted frame */
+    CHECK(json_need("\"ontime_unverified\":") == unv_0 + 1,
+          "the one counted frame was removed and was not a command, so the "
+          "answer is on time, with frames waiting: %s", stats());
+    CHECK(json_need("\"unverified_max_backlog\":") >= 1,
+          "the count is not on the page: %s", stats());
+    ft_run(500);        /* N+1 */
+    CHECK(json_need("\"skipped\":") == skip_0,
+          "a command that arrived after the count made the answer a skip; the "
+          "device waits for the frames counted and no more: %s", stats());
+    CHECK(json_need("\"ontime\":") == on_0,
+          "it was counted in `ontime` with a frame waiting: %s", stats());
+    tt_balance("after the frames-waiting credit");
+    teardown();
+    case_end();
+}
+
+static void case_tt_empty_queue_is_on_time(void)
+{
+    case_begin("case 65: an empty queue at the completion is on time at once");
+    uint8_t ctr = 0x60;
+    tt_inhibit_answered(&ctr);
+
+    const uint32_t on_0  = json_need("\"ontime\":");
+    const uint32_t unv_0 = json_need("\"ontime_unverified\":");
+    tt_command(&ctr);
+    ft_run(1000);
+    ft_deliver(0x617, TT_FILL, 8);
+    ft_run(500);        /* the filler; nothing behind it */
+    CHECK(json_need("\"ontime\":") == on_0 + 1,
+          "the answer completed with nothing in the queue and was not credited "
+          "on time at once: %s", stats());
+    CHECK(json_need("\"ontime_unverified\":") == unv_0,
+          "it was counted with frames waiting: %s", stats());
+    tt_command(&ctr);
+    ft_run(500);
+    CHECK(json_need("\"skipped\":") == 0, "a skip: %s", stats());
+    teardown();
+    case_end();
+}
+
+static void case_tt_arrival_between_reads_is_counted(void)
+{
+    case_begin("case 66: a frame arriving between the completion read and the "
+               "count is counted (spec 7 trip 7)");
+    uint8_t ctr = 0x70;
+    tt_inhibit_answered(&ctr);
+
+    const uint32_t late_0 = json_need("\"skipped_late\":");
+    const uint32_t on_0   = json_need("\"ontime\":");
+    const uint32_t unv_0  = json_need("\"ontime_unverified\":");
+    const int      wire_0 = ft_wire_count_id(0x051);
+    tt_command(&ctr);
+    ft_run(10);         /* N taken; the answer is in the controller */
+    CHECK(ft_wire_count_id(0x051) == wire_0,
+          "PRECONDITION: the answer to N is already on the wire, so the arrival "
+          "below cannot be placed after its completion read");
+    {
+        uint8_t next[6];
+        memcpy(next, VCM, sizeof(next));
+        next[5] = (uint8_t)(ctr++ & 0x0F);
+        ft_deliver_at_count(0x051, next, 6);   /* N+1, between the two reads */
+    }
+    /* No status page read from here until the filler is taken: it would read
+     * the controller free on the test thread and fire the arrival early. */
+    ft_run(1000);       /* the answer completes while the worker is parked */
+    ft_deliver(0x617, TT_FILL, 8);
+    ft_run(500);        /* the filler: completion read, N+1 arrives, count */
+    CHECK(ft_delivered_at_count() == 1,
+          "PRECONDITION: N+1 was not delivered at the count");
+    CHECK(ft_rx_pending() == 1,
+          "PRECONDITION: N+1 is not waiting (%d waiting)", ft_rx_pending());
+    CHECK(json_need("\"ontime\":") == on_0
+          && json_need("\"ontime_unverified\":") == unv_0,
+          "the answer was credited on time: the count missed the frame that "
+          "arrived after the completion read: %s", stats());
+    ft_run(500);        /* N+1 */
+    CHECK(json_need("\"skipped_late\":") == late_0 + 1,
+          "N+1 arrived between the completion read and the count, so it was "
+          "counted, and it is the command: a late skip: %s", stats());
+    tt_balance("after the late skip");
+    teardown();
+    case_end();
+}
+
+/* RESPOND, with nothing of ours unseen. */
+static void tt_probe_answered(uint8_t *ctr, unsigned long *probes_0)
+{
+    setup();
+    CHECK(gen_inhibit_set_mode(GEN_INHIBIT_RESPOND, 500) == ESP_OK,
+          "PRECONDITION: RESPOND would not arm");
+    ft_run(20000);
+    for (int i = 0; i < 6; i++)
+    {
+        uint8_t cmd[6];
+        memcpy(cmd, VCM, sizeof(cmd));
+        cmd[5] = (uint8_t)((*ctr)++ & 0x0F);
+        feed(0x051, cmd, 6, 20000);
+    }
+    tt_settle();
+    static char page[GI_STATUS_PAGE_CAP];
+    gen_inhibit_get_stats_json(page, sizeof(page));
+    *probes_0 = cls_sent(page, "\"probe\":{");
+    CHECK(*probes_0 >= 3 && *probes_0 != 0xFFFFFFFFul,
+          "PRECONDITION: only %lu probes completed: %s", *probes_0, stats());
+}
+
+static unsigned long tt_probes_sent(void)
+{
+    static char page[GI_STATUS_PAGE_CAP];
+    gen_inhibit_get_stats_json(page, sizeof(page));
+    return cls_sent(page, "\"probe\":{");
+}
+
+static void case_tt_probe_counted_command(void)
+{
+    case_begin("case 67: RESPOND, the next command among the counted frames: "
+               "the probe is in neither on-time count (spec 11)");
+    uint8_t ctr = 0x20;
+    unsigned long probes_0 = 0;
+    tt_probe_answered(&ctr, &probes_0);
+
+    const uint32_t on_0   = json_need("\"ontime\":");
+    const uint32_t unv_0  = json_need("\"ontime_unverified\":");
+    const uint32_t skip_0 = json_need("\"skipped\":");
+    const int      wire_0 = ft_wire_count_id(0x7F0);
+    tt_command(&ctr);
+    ft_run(2000);       /* N; the probe goes at +500 us and completes, unseen */
+    CHECK(ft_rx_pending() == 0 && ft_wire_count_id(0x7F0) == wire_0 + 1,
+          "PRECONDITION: the probe to N is not on the wire with the queue empty");
+    ft_deliver(0x617, TT_FILL, 8);
+    tt_command(&ctr);
+    ft_run(500);        /* the filler: the probe's completion seen, N+1 behind */
+    CHECK(ft_rx_pending() == 1,
+          "PRECONDITION: N+1 is not the one frame waiting (%d waiting)",
+          ft_rx_pending());
+    ft_run(500);        /* N+1: the deadline, then the tick after it credits the
+                         * probe to N as sent, untimed; the probe to N+1 goes out
+                         * and completes unseen */
+
+    CHECK(json_need("\"ontime\":") == on_0
+          && json_need("\"ontime_unverified\":") == unv_0,
+          "the probe was counted on time although N+1 was among the frames "
+          "counted at its completion: %s", stats());
+    CHECK(tt_probes_sent() == probes_0 + 1,
+          "the late probe was not still credited as sent (%lu -> %lu): %s",
+          probes_0, tt_probes_sent(), stats());
+    CHECK(json_need("\"skipped\":") == skip_0,
+          "a probe was booked as a skip: %s", stats());
+    CHECK(json_need("\"late_on_wire\":") == 0,
+          "a probe was booked late_on_wire: %s", stats());
+    tt_balance("after the late probe");
+    teardown();
+    case_end();
+}
+
+static void case_tt_probe_not_among_them(void)
+{
+    case_begin("case 68: RESPOND, frames counted with no command among them: "
+               "the probe is on time, with frames waiting (spec 11)");
+    uint8_t ctr = 0x30;
+    unsigned long probes_0 = 0;
+    tt_probe_answered(&ctr, &probes_0);
+
+    const uint32_t on_0  = json_need("\"ontime\":");
+    const uint32_t unv_0 = json_need("\"ontime_unverified\":");
+    tt_command(&ctr);
+    ft_run(2000);
+    ft_deliver(0x617, TT_FILL, 8);
+    ft_deliver(0x617, TT_FILL, 8);
+    ft_run(500);        /* filler 1: the completion seen with 1 frame behind */
+    ft_run(500);        /* filler 2 */
+    CHECK(json_need("\"ontime_unverified\":") == unv_0 + 1,
+          "the probe is not on time, with frames waiting: %s", stats());
+    CHECK(json_need("\"ontime\":") == on_0,
+          "it was counted in `ontime` with a frame waiting: %s", stats());
+    CHECK(tt_probes_sent() == probes_0 + 1, "the probe was not credited: %s",
+          stats());
+    tt_command(&ctr);
+    ft_run(500);
+    CHECK(json_need("\"skipped\":") == 0, "a skip in RESPOND: %s", stats());
+    tt_balance("after the probe");
+    teardown();
+    case_end();
+}
+
 #if !SHIM_AUTOARM_BUILD
 int main(int argc, char **argv)
 {
@@ -6219,6 +6544,12 @@ int main(int argc, char **argv)
     case_bringup_failure_refuses();
     case_failed_diag_does_not_trip();
     case_late_after_a_waiting_command();
+    case_tt_counted_command_is_late();
+    case_tt_command_after_the_count_is_on_time();
+    case_tt_empty_queue_is_on_time();
+    case_tt_arrival_between_reads_is_counted();
+    case_tt_probe_counted_command();
+    case_tt_probe_not_among_them();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;
