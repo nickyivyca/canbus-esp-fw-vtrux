@@ -1,4 +1,5 @@
-"""shared/diag: a project's frame table, generated from its DBC (SPEC.md D3, D4).
+"""shared/diag: a project's frame table, generated from its DBC (SPEC.md D3, D4),
+with its fit checks (D6).
 
     <python> -B diag_table_gen.py DBC --prefix PREFIX \\
         --c-header OUT.h --c-source OUT.c --python OUT.py
@@ -34,6 +35,22 @@ In the C header, for PREFIX p and a message M with a signal s:
                                        constants, for a project's
                                        compile-time checks
     p_MESSAGE_COUNT, p_messages[]
+
+The C header ends with the fit checks (D6): macros that put one raw value
+into an int64_t array in the table's order, each checked when the firmware
+compiles. One form serves C11 and C++ under GCC. For a raw array r:
+    p_FIT_PUT(r, M, s, e)        e's type is unsigned, not bool, and no
+                                 wider than s; never 64 bits wide
+    p_FIT_CAP(r, M, s, e)        e capped at s's largest value; e's type
+                                 is unsigned, of any width
+    p_FIT_BIT(r, M, s, cond)     1 if cond, else 0
+    p_FIT_MASK(r, M, s, e, mask) e & mask; mask is a constant that fits s
+    p_FIT_CONST(r, M, s, c)      c, a constant that fits s
+Each one fails the build if s is signed. A type wider than s fails the
+build only outside p_FIT_CAP. An unsigned signal's largest value
+is 2^BITS - 1, or INT64_MAX from 63 bits up, as the packers take it. The
+frame-id and schema checks stay in each project.
+
 The Python module has SCHEMA_VERSION, SCHEMA_HASH and MESSAGES.
 
 Needs cantools, the parser shared/bench's decode.py uses.
@@ -173,8 +190,93 @@ def c_header(prefix, dbc_name, version, schema_hash, msgs):
                                                          1 if s["is_signed"] else 0))
         out.append("\n")
     out.append("extern const diag_message_t %s_messages[%s_MESSAGE_COUNT];\n\n" % (prefix, prefix))
-    out.append("#ifdef __cplusplus\n}\n#endif\n\n#endif\n")
+    out.append("#ifdef __cplusplus\n}\n#endif\n\n")
+    out.append(FIT_CHECKS.replace("@P@", prefix))
+    out.append("\n#endif\n")
     return "".join(out)
+
+
+# The fit checks (D6), the same text for every table but its prefix. One form
+# compiles as C11 and as C++ under GCC: __typeof__ and the static_assert name
+# work in both. Only the two type tests differ: C++ warns on a cast to a
+# const type, and C has no <type_traits>. It sits after the extern "C"
+# block, since <type_traits> must not be inside one.
+FIT_CHECKS = r"""/*
+ * Fit checks (shared/diag SPEC.md D6): each macro puts one raw value into
+ * an int64_t array in the table's order, and fails the build if the value
+ * could exceed its signal or the signal is signed. Only the capped form
+ * takes a type wider than its signal.
+ *   @P@_FIT_PUT(r, M, s, e)         e's type is unsigned, not bool, no wider
+ *                                   than s and under 64 bits
+ *   @P@_FIT_CAP(r, M, s, e)         e capped at s's largest value; e's type
+ *                                   is unsigned, of any width
+ *   @P@_FIT_BIT(r, M, s, cond)      1 if cond, else 0
+ *   @P@_FIT_MASK(r, M, s, e, mask)  e & mask; mask is a constant that fits s
+ *   @P@_FIT_CONST(r, M, s, c)       c, a constant that fits s
+ * An unsigned signal's largest value is 2^BITS - 1, or INT64_MAX from 63
+ * bits up, as the packers take it.
+ */
+#ifdef __cplusplus
+#include <type_traits>
+#define @P@_FIT_UNSIGNED_TYPE_(e) \
+    (std::is_unsigned<std::remove_cv<__typeof__(e)>::type>::value)
+#define @P@_FIT_NOT_BOOL_(e) \
+    (!std::is_same<std::remove_cv<__typeof__(e)>::type, bool>::value)
+#else
+#include <assert.h>
+#define @P@_FIT_UNSIGNED_TYPE_(e) ((__typeof__(e))-1 > 0)
+#define @P@_FIT_NOT_BOOL_(e) _Generic((e), _Bool: 0, default: 1)
+#endif
+#define @P@_FIT_SIG_(M, S) @P@_##M##__##S
+#define @P@_FIT_BITS_(M, S) @P@_##M##__##S##__BITS
+#define @P@_FIT_MAX_(M, S)                                                   \
+    (@P@_FIT_BITS_(M, S) >= 63 ? INT64_MAX                                   \
+     : (int64_t)((UINT64_C(1) << (@P@_FIT_BITS_(M, S) % 64)) - 1))
+#define @P@_FIT_UNSIGNED_SIG_(M, S)                                        \
+    static_assert(!@P@_##M##__##S##__SIGNED,                                 \
+                  #M "." #S " is signed: the fit checks take unsigned signals")
+#define @P@_FIT_PUT(r, M, S, e)                                              \
+    do {                                                                     \
+        @P@_FIT_UNSIGNED_SIG_(M, S);                                         \
+        static_assert(@P@_FIT_UNSIGNED_TYPE_(e) && @P@_FIT_NOT_BOOL_(e) &&   \
+                      sizeof(e) * 8 <= @P@_FIT_BITS_(M, S) &&                \
+                      sizeof(e) * 8 < 64,                                    \
+                      #M "." #S ": the type of " #e                          \
+                      " could exceed the signal: bound it first");           \
+        (r)[@P@_FIT_SIG_(M, S)] = (int64_t)(e);                              \
+    } while (0)
+#define @P@_FIT_CAP(r, M, S, e)                                              \
+    do {                                                                     \
+        @P@_FIT_UNSIGNED_SIG_(M, S);                                         \
+        static_assert(@P@_FIT_UNSIGNED_TYPE_(e),                             \
+                      #M "." #S ": " #e " is signed: the capped form takes " \
+                      "unsigned values");                                    \
+        const uint64_t @P@_fit_v_ = (uint64_t)(e);                           \
+        (r)[@P@_FIT_SIG_(M, S)] =                                            \
+            @P@_fit_v_ > (uint64_t)@P@_FIT_MAX_(M, S)                        \
+                ? @P@_FIT_MAX_(M, S) : (int64_t)@P@_fit_v_;                  \
+    } while (0)
+#define @P@_FIT_BIT(r, M, S, cond)                                           \
+    do {                                                                     \
+        @P@_FIT_UNSIGNED_SIG_(M, S);                                         \
+        (r)[@P@_FIT_SIG_(M, S)] = (cond) ? 1 : 0;                            \
+    } while (0)
+#define @P@_FIT_MASK(r, M, S, e, mask)                                       \
+    do {                                                                     \
+        @P@_FIT_UNSIGNED_SIG_(M, S);                                         \
+        static_assert((int64_t)(mask) >= 0 &&                                \
+                      (int64_t)(mask) <= @P@_FIT_MAX_(M, S),                 \
+                      #M "." #S ": the mask " #mask " exceeds the signal");  \
+        (r)[@P@_FIT_SIG_(M, S)] = (int64_t)((uint64_t)(e) & (uint64_t)(mask)); \
+    } while (0)
+#define @P@_FIT_CONST(r, M, S, c)                                            \
+    do {                                                                     \
+        @P@_FIT_UNSIGNED_SIG_(M, S);                                         \
+        static_assert((int64_t)(c) >= 0 && (int64_t)(c) <= @P@_FIT_MAX_(M, S), \
+                      #M "." #S ": " #c " exceeds the signal");              \
+        (r)[@P@_FIT_SIG_(M, S)] = (int64_t)(c);                              \
+    } while (0)
+"""
 
 
 def c_source(prefix, header_name, dbc_name, version, schema_hash, msgs):
