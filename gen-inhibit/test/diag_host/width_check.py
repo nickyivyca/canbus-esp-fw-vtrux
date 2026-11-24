@@ -44,7 +44,8 @@ import diag_host as DH  # noqa: E402
 sys.path.insert(0, os.path.join(DH.PROJECT, "tools", "bench"))
 import gi_paths  # noqa: E402
 
-DBC = os.path.join(DH.PROJECT, "diag", "vtrux-wican-diag.dbc")
+# By its git path, read at HEAD with git show, as build_output.py reads it (test_gi_diag item 7)
+DBC_GIT = "gen-inhibit/diag/vtrux-wican-diag.dbc"
 CORE = os.path.join(DH.MAIN, "gen_inhibit_core.c")
 TMP = os.path.join(DH.WORKTREE, "scratch", "width-check", str(os.getpid()))
 CC = os.environ.get("CC", "gcc")
@@ -98,9 +99,10 @@ def run_case(gen, name, dbc_subs, core_subs):
         if f.endswith(".h") or f in ("gen_inhibit_core.c", "gi_diag_table.c"):
             shutil.copy(os.path.join(DH.MAIN, f), d)
     if dbc_subs:
-        dbc = os.path.join(d, os.path.basename(DBC))
-        open(dbc, "w", encoding="utf-8", newline="").write(
-            restate_hash(sub(open(DBC, encoding="utf-8").read(), dbc_subs, "the DBC")))
+        import gi_diag
+        dbc = os.path.join(d, os.path.basename(DBC_GIT))
+        text = gi_diag.git(DH.WORKTREE, "show", "HEAD:%s" % DBC_GIT).decode("utf-8")
+        open(dbc, "w", encoding="utf-8", newline="").write(restate_hash(sub(text, dbc_subs, "the DBC")))
         r = subprocess.run([sys.executable, "-B", gen, dbc, "--prefix", PREFIX, "--c-header", "gi_diag_table.h",
                             "--c-source", "gi_diag_table.c", "--python", "gi_diag_table.py"],
                            cwd=d, capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
