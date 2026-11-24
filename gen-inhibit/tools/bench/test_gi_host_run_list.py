@@ -26,6 +26,9 @@ run there and its replay files went stale.
      shim's Makefile compiles from $(SHAREDDIR)/<x> (can_port and twai_port since 1b,
      when they replaced main/can.c), and each is in the pinned checkout wican_ref.py
      finds. The list in 1-5 is the $FW part only; it ends at the first other -C.
+     Since 2026-11-23 the shim also compiles shared/diag (the implementor's fe8c58e5),
+     which the sync ships from its own `-C "$DIAG_ROOT"` section (7), so check 6 reads
+     both sections; it read only $SHARED_ROOT's and failed on shared/diag.
   7. Stage (b) batch 2 (2026-11-23): the sync ships the pinned shared/diag
      (`-C "$DIAG_ROOT" shared/diag`), firmware/main/gi_diag_table.c and test/diag_host/,
      which every host build of the core now compiles.
@@ -79,12 +82,17 @@ def sync_list(text):
 
 
 def shared_list(text):
-    """The folders the sync's -C "$SHARED_ROOT" section names, or [] without one."""
+    """The shared/<x> folders the sync ships: its -C "$SHARED_ROOT" section's, then its
+    -C "$DIAG_ROOT" section's (shared/diag comes from diag_host.py's checkout since stage (b)
+    batch 2; the shim compiles it since the implementor's fe8c58e5). [] without a
+    $SHARED_ROOT section."""
+    out = []
     for l in text.splitlines():
         s = l.strip()
-        if s.startswith(SHARED_START):
-            return [w for w in s[len(SHARED_START):].rstrip("\\").split() if w]
-    return []
+        for start in (SHARED_START, '-C "$DIAG_ROOT"'):
+            if s.startswith(start):
+                out += [w for w in s[len(start):].rstrip("\\").split() if w.startswith("shared/")]
+    return out if any(l.strip().startswith(SHARED_START) for l in text.splitlines()) else []
 
 
 def shim_shared_needs():

@@ -2341,6 +2341,47 @@ its `README.md`.
     with the old matching fails the new split-trailer check, which is the
     can-fail.
 
+**shared/wican W16, the multipart start read within what was received:
+tester, 2026-11-23, on `db998aca`, whose shared/wican is tag
+`2026.11.23.3`. Result: AS SPECIFIED on the host, for both upload handlers.
+The code before the fix fails it (the can-fail).** Spec 9.2 makes the stock
+upload the interface and item 1 keeps every read inside the receive buffer;
+W16 adds that the multipart start is looked for only within the bytes
+received. This is stage (b) batch 2 (the gen-inhibit reviewer's batch, the
+user's go 2026-11-23). Run files are in `runs/stage_b2_db998aca/host/`, listed
+in its `README.md`.
+- **Harness:** `gen-inhibit/test/wican_upload_host/` (merged in
+  `gen-inhibit/main` `e6d818ef`), run at `gen-inhibit/tester/stage-b2`
+  `4126f144`, clean. Both handlers, the OTA upload's `upload_post_body()` and
+  `/upload/car_data.json`'s `upload_car_data_handler()`, are taken from the
+  pinned `config_server.c` and compiled against a fake ESP-IDF with ASan and
+  UBSan. The fake's receive is scripted and poisons the buffer past each
+  receive, so a read past the bytes received is an ASan error. 13 cases a
+  handler: the start split at five points (in and after the boundary line,
+  in the `Content-Type` header, before and in the blank line), trickled 1
+  and 3 bytes at a time, no boundary line, no `Content-Type`, no blank line,
+  a body that ends early, and a long start, plain and trickled.
+- **On the pinned code** (`upload_host_pinned.txt`, the default, the checkout
+  of `2026.11.23.3`): W16 PASS, W12 PASS, 38 rows, 0 failing. Every split
+  and trickled upload is accepted with the image or file written exactly;
+  each start lacking a part is refused with 400, nothing opened or written,
+  and the OTA refusal leaves no update session open (W12). `unlink` calls on
+  `car_data.json`'s refusals are recorded, not judged.
+- **Can-fail** (`upload_host_canfail.txt`, tag `2026.11.23`, before the
+  fix): W16 FAIL, 26 of 28 rows. Reads past the received bytes (ASan) on
+  both handlers, and `car_data.json` accepting a split start with the file 1
+  or 2 bytes too long.
+- **The harness's own test** (`upload_host_test.txt`, on its default tags
+  `2026.11.23.2` and `2026.11.23`; `upload_host_test_3.txt`, the same with
+  `--wican` the `2026.11.23.3` checkout): 41 checks ok, 0 failed, each. It
+  plants 9 handler defects: 8 are caught (stock's 200-byte `memchr` put
+  back fails 10 or more rows, each a read past the received bytes), and the
+  ninth, the data offset one short, is the control that must come out VOID;
+  6 judge mutants each change a verdict; the handler extraction refuses none
+  or two registrations. The test's labels name `2026.11.23.2` whatever
+  `--wican` is given; the second file ran on `2026.11.23.3`, as its command
+  line shows.
+
 ## 9.4 Image budget
 
 **The regression set after the Bluetooth strip: tester, 2026-11-23, on
@@ -2389,7 +2430,46 @@ Bluetooth off in the build is in 12.3, "Bluetooth off". Run files are in
 - **The inhibitor bench: NOT RUN.** It runs with batch 2's full run (user,
   2026-11-23; reviewer's ruling, 2026-11-23). The chain runner's bench
   suite needs an emulated run on the same clean code first, which batch 1
-  does not have.
+  does not have. *Ran 2026-11-23 with batch 2's full run, on `db998aca`
+  (tester): the next entry.*
+
+**The inhibitor bench after the Bluetooth strip, and the OTA-reply count:
+tester, 2026-11-23, on `db998aca`. Result: the inhibitor bench rows PASS
+(B1, B3, B11, B17a, B18, B21). The full bench run they are part of has two
+FAILs, B4 and B6 (12.4, stage (b) batch 2's full run). Every OTA load in the
+run got its HTTP status.** The image carries the strip (`CONFIG_BT_ENABLED`
+not set, `build_output.py`'s row on the image, 12.3 below). Under the
+reviewer's ruling of 2026-11-23, the strip counts as kept only once the full
+run passes; this run has B4 and B6 not passing, so the ruling is the
+reviewer's to apply. Run: `runs/chain/gen-inhibit-bench_20261123T171226_4b15`,
+described in the 12.4 entry.
+- **The inhibitor bench** (the rows the reviewer named for 9.4):
+  - B1 (3.2, SLCAN refused and counted): PASS, 20 of 20.
+  - B3arms and B3 (the go-live batch): PASS, 20 arms, stale 0.
+  - B11arms and B11 (quiesce under traffic): PASS, 6 arms as specified,
+    `tx_ok` agrees with every INHIBIT span.
+  - B17a (the page names the binary): PASS, `elf_sha256` `cd46e234`.
+  - B18 (`0x7F3` carries the build id): PASS, "MATCH, 7 rows ok",
+    `diag_build_id` `cd46e234`.
+  - B21 (9.3, the OTA refusal at the client): PASS, both guards hold; 20 of
+    20 multipart and 20 of 20 image requests got the whole 403 with its
+    reason.
+- **The OTA-reply count** (recorded, not judged; the reviewer's carry-over
+  from batch 1, where `gi_ota.py`'s load got no HTTP status): the run made
+  six WiCAN OTA loads through the shared flasher, each from its record
+  `_bench/<group>/ota_attempt1_*.json`. All six got HTTP `303` with "File
+  uploaded successfully" (curl exit 0), and each took at attempt 1 (`(c)
+  TOOK`, the new image read back after a software restart). The no-status
+  case did not repeat. `bench/ota_reply_count_4b15.txt`.
+
+  | Load (group) | Image | HTTP status | curl `time_total` |
+  |---|---|---|---|
+  | start (`_man`) | `cd46e234...` | 303 | 12.46 s |
+  | rt | `343464da...` | 303 | 18.36 s |
+  | txabort | `51ab1fc7...` | 303 | 19.37 s |
+  | abortwin | `ad12c4fc...` | 303 | 17.97 s |
+  | rxq | `bccf8159...` | 303 | 17.78 s |
+  | prod (the stand-in) | `cd46e234...` | 303 | 15.42 s |
 
 ## 10 Diagnostics
 
@@ -2428,6 +2508,80 @@ The `bus_on` bit through bus-off is under section 11 below.
 - **Build:** named by HTTP (`f363674`) and on the wire (`0x60EFB786`).
 - **Result:** all 10 checks pass, with the stimulus paced at 10 ms. `0x7F9`
   read 0 withdrawn / 0 late, which is reported but not asserted.
+
+**Schema 9 on `db998aca`: the frame table from the DBC, the compile-time
+width check, the retired revision, and the tools moved to the schema byte --
+tester, 2026-11-23. Result: AS SPECIFIED.** This is stage (b) batch 2
+(`gen-inhibit/main` `db1bfeae`, the diag encoder through shared/diag at tag
+`2026.11.23.3`; `db998aca` changes only the file map), on the schema of
+`d2902fbf` (`DiagSchemaVersion` 9, `DiagSchemaHash` `0c2c4b82529f74e1`). Run
+files are in `runs/stage_b2_db998aca/host/`. The image is `cd46e234...`, the
+bench `_man` image and the release stand-in alike.
+- **The frame table is generated from the DBC:** the committed C and Python
+  tables regenerated from the DBC byte for byte with the pinned generator,
+  and the emitted frames decoding with cantools, on the bench image and the
+  stand-in (12.3, "Item 2, no diag misfit ... and item 3's diag rows").
+  shared/diag's packer and generator against cantools: `shared/diag/VERIFICATION.md`.
+- **No diag value can overflow its signal: the build checks it, and the
+  check can fail** (`host/width_check.txt`, `gen-inhibit/test/diag_host/width_check.py`).
+  It compiles `gen_inhibit_core.c` against tables generated from planted
+  DBCs, and with the core's own field types planted:
+  - the control (the DBC as published) builds;
+  - `diag_tx_ok` 32 -> 16 bits, `diag_flags` 8 -> 7 bits, `diag_mode` 8 -> 2
+    bits (PASSIVE, 4, no longer fits), `diag_flags` made signed, and the core
+    putting `diag_flags` as a `uint16_t` or as an `int8_t`: each fails the
+    build on a static assertion naming the signal;
+  - `diag_tx_fail` 8 -> 4 bits builds: the core caps that field, as spec 10
+    allows.
+  A compile error other than the expected assertion is VOID; the judge's
+  self-test passes 6 of 6 (`host/width_check_selftest.txt`).
+- **The device does nothing of its own about a misfit, and the packer sends
+  the field as 0:** the field left 0 and reported is shared/diag D3
+  (`shared/diag/VERIFICATION.md`). A misfit fails any host or emulated run
+  (12.3 item 2, the entry named above).
+- **The hand-kept revision is retired:** `0x7F1` B1 and `0x7F3` B4-B5 sent 0
+  in every schema-9 page the host build emitted (1063 judged), and on the
+  bench B18 reads the build id at schema 9, "MATCH, 7 rows ok" (12.4, stage
+  (b) batch 2's full run). B15's frames on the segment decode against the
+  DBC.
+- **Tools that gated on `diag_fw_ver` gate on `diag_schema_ver`:**
+  - `diag_check_rules.py` (`host/diag_check_rules_test.txt`, 16 checks ok):
+    the rule is `schema_ver >= 3` (a schema 2 page fails exactly that row),
+    and at schema 9 the rows "`0x7F1` B1 reserved, 0" and "`0x7F3` B4-B5
+    reserved, 0" are added, each failing on a nonzero byte; schema 7 and 8
+    pages get no reserved rows.
+  - `autoarm_bit_offline_test.py` (`host/autoarm_bit_offline_test.txt`): 8 of
+    8 cases as intended, on schema-9 fixtures.
+  - `gi_diag.py` decodes schema 8 and schema 9 by the schema byte on the
+    wire (`host/whole_set_test_gi_diag.txt`, 79 checks ok): the repo's DBC
+    history gives schema 7, 8 and 9, with 9 at HEAD (`d2902fb`, hash
+    `0c2c4b82529f74e1`); schema 8 and 9 pages in one trace are each decoded
+    on their own schema byte's DBC (`diag_fw_ver` at 8,
+    `diag_reserved_b1` at 9); the host suite's and B15host's exported copy
+    decodes by schema with no git and refuses an unknown schema. Mutants:
+    25 of 25 killed, the control passing (`host/gi_diag_mutants.txt`).
+  - The build-id tools (`host/whole_set_test_build_id_verdict.txt`, 19
+    checks ok; `host/whole_set_test_build_id_page.txt`, 54 ok): the DBC set's
+    head is schema 9, which decodes `0x7F3` B0-B3 as `diag_build_id`, the
+    same value as schema 8, and names B4-B5 `diag_reserved16`. Mutants of the
+    page checks: 12 of 12 (`host/build_id_page_mutants.txt`).
+  - `golden_schema_bump_check.py`, with which the 72 goldens were moved from
+    schema 8 to 9 (only the schema byte and the retired bytes changed): its
+    self-test's mutants 8 of 8 (`host/golden_bump_mutants.txt`).
+  - The whole tools test set at `4126f144`
+    (`host/whole_set_summary.txt`): 137 tests, each exit 0 except
+    `test_only_inert.py` (exit 2: a bench tool, as in every earlier set) and
+    `test_gi_host_run_list.py`. That one failed on the test's own reading:
+    the shim compiles `shared/diag` since the implementor's `fe8c58e5`, and
+    the test looked for it only in the sync's `$SHARED_ROOT` section, while
+    `gi_host_run.sh` ships it from its `$DIAG_ROOT` section. Fixed in
+    `a830d59a` (the test reads both); it passes there, 11 of 11
+    mutants (`host/test_gi_host_run_list_fixed.txt`). The set ran in the
+    stage-b2 worktree while these entries were being written, uncommitted.
+    Of its tests, `test_verification_manifest.py` and
+    `test_verification_move.py` read this document; run again from the clean
+    `4126f144` worktree they pass, 33 and 38 checks ok
+    (`host/clean_test_verification_*.txt`).
 
 ## 11 Status page
 
@@ -4054,6 +4208,81 @@ because that profile still says Bluetooth on. The release profile on
   - On the image (`shared_tools_scopes_0a740ce6.txt`): R17, R20, R21 and R30
     each PASS. R17 accepts `dependencies.lock` naming the annotated tag
     object `b5f8a292`, which it resolves to commit `8e16cd74`.
+
+**Item 2, no diag misfit on any trace, and item 3's diag rows, on
+`db998aca`: tester, 2026-11-23. Result: AS SPECIFIED. No host or emulated
+trace carries a misfit, and the misfit report can fail a trace (the
+can-fail). The committed C and Python tables are the DBC's, regenerated byte
+for byte, and the DBC's `DiagSchemaHash` is its layout hash, on the bench
+image and on the release stand-in.** This is stage (b) batch 2, where the
+core began packing every diag page, and the `0x7F0` probe, through
+shared/diag's packer (`vtrux/diag`, tag `2026.11.23.3`) and the table
+generated from the DBC (`gen-inhibit/main` `db1bfeae`; `db998aca` changes
+only the file map). Run files are in `runs/stage_b2_db998aca/host/`, and the
+emulated runs in `runs/chain/`.
+- **How a host build takes the misfit report.** The core discards the
+  packer's report, as spec 10 says the device does, so the host build takes
+  it at the packer: `gen-inhibit/test/diag_host/misfit_wrap.c`, linked with
+  `-Wl,--wrap=diag_pack_message`, records every call that reported a misfit
+  or refused its table entry and passes the result on unchanged.
+  `host_runner` prints each record as a `!! DIAG MISFIT` line, and
+  `invariants.py` fails any trace that has one. A build whose diag frames
+  went out without passing the wrapper prints `!! DIAG PACKER NOT WRAPPED`
+  and exits 2.
+- **No misfit on any trace: PASS** (`gen-inhibit-emulated_20261123T170423_d82f`,
+  H, on `db998aca` clean, `gi_tools` `4126f144` clean). 25 steps exit 0. Its
+  log names the shared/diag it built with, `2026.11.23.3`, `diag_pack.c`
+  sha256 `e44f16f9...`. Invariants: 104 scenarios hold, 0 violate (128,609
+  inhibit frames checked); none of the 294 traces in its
+  `traces_scenarios_golden.tgz` has a `DIAG MISFIT`, `UNPACKABLE` or `NOT
+  WRAPPED` line. Goldens 81 passed, 0 failed, 23 without goldens; 9 replays
+  identical; PASSIVE differential 100 identical, 0 differing; 200 fuzz
+  sequences, 0 with violations.
+- **The can-fail** (`host/diag_host_test.txt`, 19 checks ok): `host_runner`
+  on a copy of the core with `0x7F3`'s `diag_reserved16` planted at 65536
+  (written into the raw array, past spec 10's width check) prints a MISFIT
+  line naming it at each `0x7F3`, and `invariants.py` fails that trace; the
+  unplanted copy prints none and passes. Built without the wrapper, the
+  runner refuses with `DIAG PACKER NOT WRAPPED`, and `invariants.py` fails
+  that trace too. The wrapper's own cases: a fit is not recorded; a misfit is
+  recorded with id, count, mask, name and value; a refused entry as -1; a
+  record nobody takes ends the process with exit 3.
+- **The first emulated run on `db998aca` failed, from a harness gap:**
+  `gen-inhibit-emulated_20261123T162408_aa4c` (`gi_tools` `db998aca`), H FAIL
+  at `make`, because `baseline_host_run.sh` shipped the host copy of the tree
+  without shared/diag, so the build found no `shared/diag`; B15host FAILed
+  after it, on the missing `host_runner`. Fixed in `4126f144`
+  (`baseline_host_run.sh` ships `shared/diag` from the tag the tree pins as
+  `vtrux/diag`, and logs it; its test 68 checks ok, 44 of 44 mutants killed
+  with the control passing, `host/test_baseline_host_run_mutants.txt`).
+  `aa4c` stays as the record; `d82f` is the run counted.
+- **Item 3's diag rows: PASS** (`build_output.py` at `db998aca`, run from
+  each image's own tree; `build_checks/` is the same at `4126f144`):
+  - On the bench `_man` image (`host/build_output_man_owntree.txt`): 51 rows
+    ok, and NO REF on the prod record, as for any bench image. On the release
+    stand-in (`host/build_output_standin_owntree.txt`, its record in the
+    stand-in's records folder): 52 rows ok, none failing. The two are the
+    same image, `cd46e234...`, 1,015,728 bytes.
+  - The diag rows on both: the DBC from git at `d2902fbf`, schema 9, hash
+    `0c2c4b82529f74e1`; `GI_DIAG_SCHEMA_VER` 9 and the schema doc's 9; the
+    DBC's `DiagSchemaHash` is its layout hash; `gi_diag_table.c`,
+    `gi_diag_table.h` and `gi_diag_table.py` regenerated from the DBC with
+    the pinned generator, identical; 2600 frames emitted by the host build on
+    `0x7F1`, `0x7F2`, `0x7F3`, `0x7F8` and `0x7F9` decoded clean with
+    cantools; the retired revision bytes 0 in all 1063 pages judged.
+  - Bluetooth off: `CONFIG_BT_ENABLED=not set`, ok on both.
+  - The rows' own test (`host/diag_table_row_test.txt`, 15 checks ok): one
+    byte changed in each committed table, CRLF line ends, a DBC whose layout
+    moved, a DBC whose `DiagSchemaHash` is not its layout hash, and a missing
+    table each FAIL; no generator, or no DBC, is NO REF, not a pass; at
+    schema 9 a retired byte that is not 0 FAILs; schema 8 alone is NO REF.
+  - Run from the stage-b2 worktree rather than the image's tree, the switch
+    row FAILs on the build's CMake record and the two switch-table rows after
+    it are not reached, as in batch 1 (`host/build_output_man.txt`,
+    `host/build_output_standin.txt`); every other row is the same.
+- **shared/diag's own requirements** (D2-D4) are in
+  `shared/diag/VERIFICATION.md`, from the run in
+  `runs/stage_b2_db998aca/shared_diag/`.
 
 ## 12.4 Required tests
 
@@ -9421,6 +9650,154 @@ beside the not-known rows.
        request | 8.5-11.8, the same ratio over 16 runs. (`B26.py`)
   2. The idle arms and the loaded max backlog are within run-to-run spread. **(H)**
   3. `pcan.ko` against PCAN-Basic, and the forked Kvaser: no effect shown. **(L)**
+
+**Stage (b) batch 2's full run on `db998aca` -- tester, 2026-11-23 16:24-19:43,
+madhouse-debian. Result: the emulated suite PASS (H, B15host, C2scan; C1C7 and C3 the declared
+skips). The bench suite: PASS 36, FAIL 2 (B4, B6), NOT-RUN 1 (B27, the declared skip). B4's
+`l3s` case counted 2 late skips where the witness saw 3. B6's `n9_lead1.5` arm 1 latched trip
+6 with at most 9 error frames on the wire in any window, one pulse counted 8 times. The
+resource record is clean over both, so both count.** The gen-inhibit reviewer's batch 2
+(the user's go 2026-11-23): the full emulated and bench suites on batch 2's image, with batch
+1's 9.4 inhibitor bench (9.4 above), the Bluetooth keep and the OTA-reply count. `gi_commit`
+is `db998aca`, `gen-inhibit/main`'s tip, as the reviewer ruled (2026-11-23); from batch 2's
+firmware merge `db1bfeae` it changes only `gen-inhibit/README.md`. Run files: the chain runs
+in `runs/chain/`, and the desk records in `runs/stage_b2_db998aca/bench/` (its `README.md`).
+- **Code.** Built by the tester from clean worktrees detached at `db998aca`, ESP-IDF v5.4.2:
+  the bench set with `baseline_builds --bench`, and the prod stand-in with the shared tooling's
+  release build (every R row ok). The stand-in's image hash is `cd46e234...`, code hash
+  `f9ce967d...`, the same code hash as at `db1bfeae`. The bench `_man` image is the same image,
+  `cd46e234...`. The other bench images' code hashes, each the same as at `db1bfeae`: `_rt`
+  `72fee584`, `_txabort` `694e6b46`, `_abortwin` `84bd041a`, `_rxq` `bd4b9b4b` (shared/tools
+  `2026.11.16.3`'s R2 reading).
+- **Harness.** `gi_tools` the detached worktree `gen-inhibit-tester-tools-4126f144`, at
+  `gen-inhibit/tester/stage-b2` `4126f144`, clean, with its pinned can-tools `49eb777` and
+  canre `ffbe029` installs; the checks' own clone `gi_checks_clone` at `db998aca`. Settings
+  `chain_settings_madhouse-debian.json` (`gi_*` moved to `db998aca` and `4126f144` for this
+  run), against the `e3d9437` index. The shared core was the checkout of shared/main tag
+  `2026.11.16.5`.
+- **The emulated suite.**
+  - `gen-inhibit-emulated_20261123T162408_aa4c` (16:24, `gi_tools` at `db998aca`): H FAIL,
+    B15host FAIL, C2scan PASS; a harness gap, fixed in `4126f144` (12.3, "Item 2, no diag
+    misfit", above). Kept as the record.
+  - `gen-inhibit-emulated_20261123T170423_d82f` (17:04-17:11, `gi_tools` `4126f144`): H PASS
+    (25 steps; goldens 81 / 0 / 23 without; invariants 104 scenarios, 0 violating; the
+    figures are in 12.3's entry); B15host PASS, every emitted diag frame decodes against the
+    DBC; C2scan PASS, 4 of 4 steps; C1C7 and C3 NOT-RUN, their commands not yet in the suite.
+    The runner exits 1 for the two skips, as before. The bench run below is paired with it.
+- **Bench run:** `gen-inhibit-bench_20261123T171226_4b15` (17:12:26-19:42:57), the whole
+  suite, from the chain runner holding the lock itself. `gi_images` and `gi_prod_dir` at
+  `db998aca`, clean. Every check ran in bench.slice.
+- **Boards.** The runner read both boards before and after every group (`progress.jsonl`).
+  - WiCAN: found on an image no run names (`2aac016d...`, mode 0, nothing latched); loaded by
+    OTA with `_man` `cd46e234...` (17:14:35) for man_app, man_held, man_jammer and man_slcan;
+    `_rt` `343464da...` (18:40:42); `_txabort` `51ab1fc7...` (18:51:08); `_abortwin`
+    `ad12c4fc...` (18:54:58); `_rxq` `bccf8159...` (18:58:28); the prod stand-in `cd46e234...`
+    (19:04:22). Every OTA took at attempt 1 (the OTA-reply count is in 9.4 above). The end hook
+    found `wican_man`, mode 0, latched True.
+  - Power: 12 V on OBD pin 16, as bench-holder.md has recorded since 2026-10-09 (not re-read),
+    and USB plugged at 1-3.1. No WiCAN console capture.
+  - X2 (rule 6): `x2_app` `756d6714` (flashed 17:15:20 and 18:40:48) for man_app, rt, txabort,
+    abortwin, rxq and prod; held in ROM, not driving TX (`x2_hold.py`, 18:27:32), for
+    man_held; the jammer row `ea762c62044cb5c6` under custody, verify-row PASS (19:12:12),
+    for man_jammer; `slcan` (`slcan:V0101:NF001`, flashed 19:36:48) for man_slcan, which it
+    was left on.
+- **Triage** (AGENTS.md, "Parallel work on the shared machine", point 2). `resource-log
+  window` over B4 (17:41:40-17:42:40) and over B6's failing arm (19:25:35-19:27:12): CPU
+  pressure (some) in bench.slice at most 0.8 % and 0.9 %, no memory or IO pressure, 0 major
+  faults, no swap traffic, no logger gap over 5 s (`bench/resource_B4.txt`,
+  `bench/resource_B6_n9_lead1.5.txt`). Clean, so both count as results.
+  - Recorded, not judged: bench.slice ran at 4.6-5.4 cores over those windows and 4.6 on
+    average over the whole run (`bench/resource_run.txt`), against 0.8-1.3 in run C of
+    2026-11-20. Other sessions' wall-clock work shared the slice: the charge-interposer
+    tester's simulator scenarios and the Android emulator. The run's `wallclock-others`
+    events say "no other wall-clock test on local", because the settings' `wallclock_patterns`
+    is empty.
+
+**Passes**
+- **B1 (3.2, SLCAN refused and counted): PASS,** 20 of 20 (17:16:39-17:17:22).
+- **B2 (5, interposer presence controlled; which 0x051 is ours): PASS,** 6 arms as specified,
+  X2 frames 0. INHIBIT 0x051 670 / 670 (x2_app / held), RESPOND probes 2989 / 2993, long arm
+  29977 / 29977.
+- **B3 (the go-live batch): PASS,** 20 arms, stale 0. Recorded, not judged: the first answer
+  after the POST, OFF 150.0-150.9 ms, OBSERVE 25.6-90.6, PASSIVE 20.7-26.5, RESPOND 33.8-51.6.
+- **B24 (4.1, B0 held): PASS,** 22 arms as specified, 1 RESPOND arm
+  with no device frames, 0 other.
+- **B11 (12.4, quiesce under traffic): PASS,** 6 arms as specified, `tx_ok` agrees with every
+  INHIBIT span.
+- **B11raw (spec 3, a mode change in the request-to-reply window): PASS,** 12 of 12 POSTs, 3
+  with nothing to show on the witness (NOT APPLICABLE); windows 13.0-81.4 ms, clock margin at
+  most 14.43 ms.
+- **B13 (12.4, PASSIVE on the wire; 11, the page fields): PASS,** 8 arms ok, booking 8 of 8.
+- **B15 (spec 10, the diag frames on the segment): PASS,** 3 adapters on CAN1 by role: the
+  Kvaser 19 frames, the PCAN 20877, `canmain` 23. Recorded, not judged: the non-ACK repeat id
+  `0x7F9`.
+- **B16 (spec 11, uptime and reset reason): PASS,** 360 polls, 0 unanswered, no outage.
+- **B17a / B17b (12.4, the page names the binary): PASS,** `elf_sha256` `cd46e234` on `_man`
+  and `bccf8159` on `_rxq`.
+- **B18 ("0x7F3 carries the build id", bench half): PASS,** "MATCH, 7 rows ok",
+  `diag_build_id` `cd46e234`, at schema 9.
+- **B20 (the interlock, bench): PASS,** 28 of 28 AS SPECIFIED (18:05:22-18:23:10).
+- **B25 (7.1, key state, on B20's `rekey-long`): PASS,** 0 of 18396 frames against rule 1;
+  gate open 203.483 s, resumed 203.486 s.
+- **B21 (spec 9.3, the OTA refusal at the client): PASS,** both guards hold; 20 of 20
+  multipart and 20 of 20 image requests got the whole 403 with its reason.
+- **B9 (7, trip 6, wrong bit rate; X2 held): PASS,** 9 bursts, 228 witness error frames, TEC
+  max 0, trip 6 latched at +1.42 s.
+- **B10 (12.4, trip 6 before going live, after a re-arm; X2 held): PASS,** 3 of 3 judged arms
+  as specified, 2 flood arms.
+- **B14 (12.4, OBSERVE is listen-only in hardware; X2 held): PASS,** 5 mode checks, mode 0 at
+  the end.
+- **NONODE (12.4, a bus with no other node; X2 held): PASS,** 3 main arms, trips "bus lost --
+  no 0x051" and "error-frame rate exceeded", latched by 0.618 s at most, no answer stuck.
+- **B12 (12.4, no error frames at a restart; `_rt`): PASS,** 7 of 7 cycles, 0 error frames, 7
+  restart records `did_twai` and `did_stdby` true, `timed_out` false; SW 2.311-2.403 s, PANIC
+  0.595-0.611 s.
+- **B23 (12.4, abort behaviour of the C3 TWAI; `_txabort`): PASS,** contend 70 aborted / 4 no
+  effect / 4 lost-then-aborted; retry 78 of 78 free, 0 on the wire, the first abort enough on
+  71. abortwin (`_abortwin`): PASS, rc 0.
+- **B26 (12.4, receive backlog measured directly; `_rxq`): PASS,** max backlog 2 / 3 / 7 (idle
+  a, idle b, loaded), 82464 dequeues per arm. Recorded, not judged: dequeues with a backlog
+  >= 2, 7 / 5 / 2479.
+- **B19 (12.4, test-only features inert in the build that will fly): PASS.** B19present: all
+  four present on their test builds. B19absent: all five absent on the prod stand-in. B19page:
+  `elf_sha256` `cd46e234`.
+- **B5 (7, trip 6, a steady jam): PASS,** 200/s 3 of 3, 500/s 9 of 9.
+- **B7 (7, a bus-off re-arm): PASS,** 3 of 3 arms AS SPECIFIED.
+- **B8 (11, `bus_on`, the bus-off half): PASS,** train 3 of 3; the control INCONCLUSIVE, as
+  in the baseline.
+- **B22 (5.2, case 3 saturation, bench half; X2 `slcan`): PASS,** both arms: provenance
+  clean, 0 `tx_fail`, 0 error frames, 8983 of ours each.
+
+**Not passes**, observed against the spec
+- **B4 (5.2 item 5 and 7 trip 7, skipped inhibit frames, bench half): FAIL, 5 of 6 cases**
+  (17:41:45-17:42:34; `man_app/B4/skip_method_20261123T174145.json`). w3, w2, w3s, l3 and l2
+  PASS.
+  - Observed, `l3s` (three late events about 0.55 s apart, which must not trip 7): the witness
+    classed all three as late (our answer to each marked VCM `0x051` on the wire after the
+    VCM's next one); the device counted 2 late skips and 0 withdrawn; no trip.
+  - Spec 12.4's row "skipped inhibit frames" judges the device's counts against the witness
+    on totals: device late >= witness late. 2 < 3, so one frame that went out late was not
+    counted as a skip. Every earlier full run with B4 has it 6 of 6.
+- **B6 (7, trip 6 at the threshold; the 12.4 row "error-frame rate trip"): FAIL, 9 of 10 arms
+  over 5 runs** (19:13:04-19:34:58).
+  - Observed, `B6_threshold_n9_lead1.5` arm 1 (`x2_jam_threshold_20261123T192539.json`): 9
+    pulses, the witness saw one error frame per pulse, at most 9 in any window. The device's
+    `bus_error` deltas per pulse were `[1, 1, 1, 1, 1, 1, 8, 1, 1]`, and trip 6, "error-frame
+    rate exceeded", latched 6.623 s after the first pulse.
+  - Spec 7, trip 6: 10 or more error frames within a 10 s window. The wire never carried more
+    than 9.
+  - Where the counted error frames fell (`b6_multicount_landing.py` and `b6_class_count.py` at
+    `4126f144`, over the run's 5 threshold records, 96 pulses; `bench/b6_landing_4b15.txt`,
+    `bench/b6_class_4b15.txt`): 95 counted once, 1 counted 8 times. Before that pulse's error
+    frame on the wire was a `0x054` 1335 us earlier, after it a `0x639` 1992 us later; TEC/REC
+    max 0/0. Class (next frame a `0x051` 200-320 us after): 3 pulses, all single-count; other
+    landings 93, 1 over-count.
+  - Precedent on file: the same shape at the `e3d9437` acceptance (one pulse counted 11
+    times), at step 1a2 (`c68c`, `n9_lead1.5` arm 1, 11 times) and at step 1c (`0b9a`, 9
+    times). The open item "One pulse counted 10-12 times" (spec 7, trip 6) is not concluded.
+    Whether this FAIL is carried with them is for the reviewer.
+- **B27: NOT-RUN,** the declared skip (needs the user at the bench; deferred by the user
+  2026-10-17), as in the baseline.
 
 ## 13 Known not to be implemented
 

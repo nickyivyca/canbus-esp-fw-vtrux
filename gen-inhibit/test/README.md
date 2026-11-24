@@ -13,5 +13,5 @@ owners are as the project's file map, `../README.md`, gives them.
 | `build_checks/` | the build-output checks, run on the image that will be flashed (spec 12.3 item 3, 12.4 row 22) | tester |
 | `wican_ota_host/` | `shared/wican`'s OTA upload handler on the host, compiled from the pinned `config_server.c` against a fake ESP-IDF (W12-W14) | tester |
 | `wican_upload_host/` | `shared/wican`'s two multipart upload handlers on the host, with `wican_ota_host/`'s extraction and fake (W16, and W12 for the OTA's refusal) | tester |
-| `diag_host/` | what every host build of the core needs since it packs through shared/diag (the generated table, the pinned packer), the packer's misfit report taken at the packer (spec 12.3 item 2), and spec 10's width-check can-fail; not yet in the file map | tester |
+| `diag_host/` | what every host build of the core needs since it packs through shared/diag (the generated table, the pinned packer), the packer's misfit report taken at the packer (spec 12.3 item 2), and spec 10's width-check can-fail | tester |
 | `wican_status_host/` | `shared/wican`'s status page handler on the host, the same way (W15's page half) | tester |
