@@ -10,6 +10,42 @@ under `$REVERSE_IT_DIR`, with each file's hash. A pass verifies the code it
 ran on. Entries arrive as commits on the tester's `shared/diag/<topic>`
 branch, and the reviewer of the project that needs them merges and pushes.
 
+## D2-D4 on tag `2026.11.23.5` (charge-interposer tester, 2026-11-24)
+
+**Code tested:** `shared/diag` at tag `2026.11.23.5` (`shared/main`
+`2a7ab8be`, code commit `1339d402`), the version the charge interposer's
+schema 5 batch pins. The generator changed from tag `2026.11.23.3` to this
+tag (D6), so the entry for `2026.11.23.3` below does not carry to it.
+**Checks:** `shared/diag/test/verify_diag.py` and `mutate.py` at
+`shared/main` `992d7cbb`, clean. These are the same checks as in the entry
+for `2026.11.23.3`: from that entry's `ef88e63f` to `992d7cbb`, `test/`
+changed only in `README.md` and the D6 files. The
+code at `992d7cbb` is the tag's: `git diff 2026.11.23.5 992d7cbb` over
+`shared/diag`, without `test/`, `README.md` and `VERIFICATION.md`, is empty
+(each run file's header). **DBCs:**
+- the fixture `test/fixtures/verify.dbc`;
+- gen-inhibit's published diag DBC from `origin/gen-inhibit/main`
+  `cca06f36` (last changed in `d2902fbf`, schema 9);
+- the charge interposer's from `origin/charge-interposer/main` `b6c6be9b`
+  (last changed in `d83fc878`, schema 4).
+
+These are the same DBC versions as in the entry for `2026.11.23.3`.
+**Host:** madhouse-debian, Python 3.13, cantools 41.3.1, `cc` (gcc 14.2.0)
+with ASan and UBSan, in `build.slice`. **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/runs/shared_diag_d2d4_992d7cbb/`
+(`SHA256SUMS` hashes both; the folder's `README.md` lists them).
+
+| Req | Result | What was tested | Run file (sha256) |
+|---|---|---|---|
+| D3 | PASS | **The table is the DBC's,** as in the entry for `2026.11.23.3`: the fixture (10 messages, 31 signals), gen-inhibit's DBC (6, 25) and the interposer's (6, 33). **A misfit is reported, not truncated:** 400 value vectors per message (seed 20261123) through both packers. Fixture: 2650 vectors all fit, 1314 with misfits, 36 with a selector that does not fit. Gen-inhibit: 1186 / 1214 / 0. Interposer: 1172 / 1182 / 46. | `verify_992d7cbb.txt` (`9f6549ba...5278e`) |
+| D4 | PASS | **C and Python agree** on the same three tables: the same signal order, the same ranges from each signal's width, and the same result, mask and bytes for 4000 vectors on the fixture and 2400 on each project's DBC. | `verify_992d7cbb.txt` |
+| D2 | PASS | **The build id:** for 65 hashes, `diag_build_id_from()` and `diag_build_id()` give hash bytes 0-3 with byte 0 most significant. Packed, the wire bytes are hash[3..0], and the value printed `%08x` reads as the hash's first four bytes. | `verify_992d7cbb.txt` |
+| D2-D4 (can-fail) | PASS | `test/mutate.py`: 27 one-line defects planted in a copy of the code (11 in the C packer, 5 in the Python twin, 9 in the generator, 2 in the build id). `verify_diag.py` fails on each one (27 of 27 killed), and the unedited copy passes (the control). | `mutate_992d7cbb.txt` (`45b27734...7578a`) |
+
+**Not tested here:** the charge interposer's schema 5 DBC, which is on its
+schema 5 topic and not yet on `origin/charge-interposer/main`. That DBC's
+tables are the interposer's own check.
+
 ## D6 on tag `2026.11.23.5` (charge-interposer tester, 2026-11-24)
 
 **Code tested:** `shared/diag` at tag `2026.11.23.5` (`shared/main`
