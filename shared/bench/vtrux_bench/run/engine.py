@@ -185,6 +185,10 @@ fails when the rule is switched off through RULES):
                   user 2026-11-12). Builds keep every core ({jobs}); a
                   build that ran alongside a wall-clock test says so in its
                   result (alongside_wallclock, alongside_reason)
+  wallclock_default
+                  settings with no wallclock_patterns (or null) scan for
+                  procs.DEFAULT_WALLCLOCK_PATTERNS; a list in the settings,
+                  an empty one included, replaces it (2026-11-23)
   wallclock_slots
                   up to hosts.<h>.wallclock_slots (default 1) of this run's
                   own wall-clock checks that name their virtual-bus
@@ -325,7 +329,8 @@ RULES = {k: True for k in (
     "board_hooks",
     "start_hook_stops", "release_line", "end_crash_boards", "carry_finished",
     "carry_check_end", "missing_setting", "record_device",
-    "hand_roles_wallclock", "wallclock_slots", "slot_concurrency", "bus_alloc",
+    "hand_roles_wallclock", "wallclock_default", "wallclock_slots",
+    "slot_concurrency", "bus_alloc",
     "bus_precheck", "isolation_void")}
 
 # sys.platform, read at each placement; the tests set it
@@ -1107,6 +1112,9 @@ class Engine:
           processes  each wallclock_patterns match that is not this run's
                      own (other_wallclock_processes); process_error if the
                      process list failed
+          patterns   where the scan's patterns came from: "settings"
+                     (the settings' wallclock_patterns) or "default"
+                     (procs.DEFAULT_WALLCLOCK_PATTERNS; wallclock_patterns)
           wallclock  whether any of these means a wall-clock test may be
                      running (an unreadable lock or a failed process list
                      counts: it could not be ruled out)
@@ -1134,6 +1142,7 @@ class Engine:
                             % lk["text"][:80])
         hits, err = self.other_wallclock_processes(host)
         out["processes"] = hits
+        out["patterns"] = self.wallclock_patterns()[1]
         if err:
             out["process_error"] = err
             whys.append("process list failed (%s): cannot rule a wall-clock "
@@ -1145,12 +1154,22 @@ class Engine:
             "no other wall-clock test on %s" % host
         return out
 
+    def wallclock_patterns(self):
+        """(patterns, "settings" or "default"): the regexes the process scan
+        uses. Settings that give wallclock_patterns use that list; an empty
+        list scans nothing. Settings without it, or with it null, use
+        procs.DEFAULT_WALLCLOCK_PATTERNS (rule wallclock_default)."""
+        pats = self.settings.get("wallclock_patterns")
+        if pats is not None or not RULES["wallclock_default"]:
+            return list(pats or []), "settings"
+        return list(procs.DEFAULT_WALLCLOCK_PATTERNS), "default"
+
     def other_wallclock_processes(self, host):
         """([matching command lines], error or None): processes on the host
         matching wallclock_patterns that are not this runner, its ancestors
         or anything it started (locally by process tree; on a remote host,
         by this run's id in the command line)."""
-        pats = self.settings.get("wallclock_patterns") or []
+        pats = self.wallclock_patterns()[0]
         if not pats:
             return [], None
         ssh_host = None if host == "local" else self.host_cfg(host).get("ssh")

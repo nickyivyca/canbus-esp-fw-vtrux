@@ -27,6 +27,39 @@ CREATE_NEW_PROCESS_GROUP = 0x00000200
 # process group killed too (see run_remote).
 RULES = {"remote_stop": True}
 
+# The default wallclock_patterns: what the runner records as another
+# wall-clock test when the settings give no wallclock_patterns (AGENTS.md
+# "Parallel work on the shared machine", point 3: recorded, never a
+# refusal). Regexes over process command lines (re.search). Each project
+# kept its own copy of this list until 2026-11-23 (the charge-interposer's
+# accept_adapter.WALLCLOCK_PATTERNS, gen-inhibit's settings example); it
+# moved here at its next change (AGENTS.md "Shared code"). It holds:
+# - the interposer's and gen-inhibit's simulators and bench drivers;
+# - the CAN replay tooling session's timing-sensitive scripts, as it named
+#   them on 2026-11-12: can-tools' replayer, logger and GUI, every
+#   cantools_bench_<name>.py, and its older harnesses by name (its
+#   analysis-only scripts are not here);
+# - the Android emulator on the same machine (gen-inhibit tester,
+#   2026-11-23): its qemu under the SDK's emulator/qemu/<host>/ folder. A
+#   bare "qemu-system-" would also name the ESP-IDF qemu of an
+#   emulated-time suite, which is not a wall-clock test.
+CAN_TOOLS_HARNESSES = (
+    "wiring_check", "step1_open", "step2_innomaker_echo", "step2_can1_clock",
+    "step2_pcan_stamp_base", "step3_echo_order", "step3_canchg_lo_switch",
+    "step4_replay_witness", "step5_ack", "step6_errors", "step7_x2_serial",
+    "rx_logger", "pcan_raw_confirm", "verify_canbench_fixes",
+    "pcan_backtoback_capability", "kvaser_error_frame_capability",
+    "e4_rig_calibration", "h2_backends")
+DEFAULT_WALLCLOCK_PATTERNS = (
+    r"run_scenario\.py", r"vehicle_sim\.py", r"charger_sim\.py",
+    r"interposer_sim\.py", r"e4_device_calibration\.py", r"live_bench\.py",
+    r"bench_vehicle\.py", r"wican_[a-z_]+_bench\.py", r"bench_[a-z0-9_]+\.py",
+    r"(^|[/\s])can_(replayer|logger|gui)\.py",
+    r"(^|[/\s])cantools_bench_[a-z0-9_]+\.py",
+    r"(^|[/\s])(%s)\.py" % "|".join(CAN_TOOLS_HARNESSES),
+    r"/emulator/qemu/[^/\s]+/qemu-system-",
+)
+
 
 def kill_tree(proc):
     if proc.poll() is not None:
