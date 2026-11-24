@@ -734,6 +734,10 @@ catches a silent VCM first.
   - The alternative not taken: keep the old text and judge B4 as "device
     late + on time, unverified >= witness late". The device would then stay
     blind to a late frame behind waiting frames.
+  - The probe (section 11): the user ruled on 2026-11-23 that the probe uses
+    the same code path as the inhibit frame. Only its frame, its due time
+    and the never-withdrawn rule differ. A late probe was already in neither
+    on-time count, so no status-page field is added.
 - **Trip 8:** review C2b. It was previously counted as `tx_fail` with no
   abort and no event.
 - **The evidence rule:** decided 2026-09-25. Found by the implementing
