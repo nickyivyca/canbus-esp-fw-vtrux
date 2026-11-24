@@ -266,6 +266,18 @@ MUTANTS = [
     ("B22: the superseded count still decides, as before 2026-10-29",
      'if not prov_ok(p) or int(d.group(2)) or',
      'if not prov_ok(p) or "8983 seen" not in t or int(d.group(2)) or'),
+    # spec 5.2's saturation criterion (f1961dcf, user 2026-11-23)
+    ("B22: the saturation counts not read, as before 2026-11-23",
+     '        bad += b22_saturation(F, arm)', '        pass'),
+    ("B22: on time with frames waiting left out of the sum (ontime == queued)",
+     'if s["ontime"] + s["ontime_unverified"] != q or s["skipped"]:',
+     'if s["ontime"] != q or s["skipped"]:'),
+    ("B22: skips not looked at",
+     'if s["ontime"] + s["ontime_unverified"] != q or s["skipped"]:',
+     'if s["ontime"] + s["ontime_unverified"] != q:'),
+    ("B22: a JSON with no on-time counts passes",
+     '            out.append("%s: no page on-time counts in its JSON (%s)" % (arm, name))\n',
+     ''),
     # spec 12.1 (c5849685): a void arm makes B22 VOID, whatever it shows; attribution is a void reason
     ("B22: a void arm passes", '        return [result("B22", "VOID", figs, "; ".join(void))]',
      '        return [result("B22", "PASS", figs, "; ".join(void))]'),

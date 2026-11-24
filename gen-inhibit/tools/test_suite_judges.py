@@ -450,6 +450,16 @@ EDITS = [
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"(provenance \(live\).*?)late 0", r"\g<1>late 1")],
      None, "VOID"),
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", B22_VOID + [(r"^  \[idle\] provenance \(live\).*\n", "")], None, "VOID"),
+    # spec 5.2's saturation criterion (f1961dcf, user 2026-11-23), from the arm's page in its JSON:
+    # ontime + ontime_unverified == the inhibit class's queued, with no skips. The e3d9437 arms read
+    # a 8983 + 0 and b 8982 + 1, of 8983 queued
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.json", r'"ontime": 8982', '"ontime": 8981', "FAIL"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_a\.json", r'"ontime_unverified": 0', '"ontime_unverified": 1', "FAIL"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.json", r'"skipped": 0', '"skipped": 1', "FAIL"),
+    ("B22", "bench", r"B22_case3_e3d9437_man_a\.json", r'"ontime_unverified": 0', '"ontime_unverified_x": 0', "FAIL"),
+    # on time with frames waiting is on time: the same 8983 split another way still passes
+    ("B22", "bench", r"B22_case3_e3d9437_man_b\.json",
+     [(r'"ontime": 8982', '"ontime": 8980'), (r'"ontime_unverified": 1', '"ontime_unverified": 3')], None, "PASS"),
     # a void reason on no 12.1 entry is ERROR, for the gen-inhibit reviewer, never mapped
     ("B22", "bench", r"B22_case3_e3d9437_man_b\.txt", r"^(  device rx_gap us: .*)$",
      "\\g<1>\n  ---- ARM VOID: the figures above do not support a verdict ----\n"

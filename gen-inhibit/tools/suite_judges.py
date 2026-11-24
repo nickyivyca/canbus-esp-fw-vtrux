@@ -1133,6 +1133,28 @@ def e4_response(t):
     return tuple(int(v) for v in m.groups()) if m else None
 
 
+def b22_saturation(F, arm):
+    """Spec 5.2's saturation criterion (f1961dcf, user 2026-11-23), from the arm's page in
+    its e4 JSON (arms.<name>.device.sched): `ontime + ontime_unverified == queued` for the
+    inhibit class, with no skips. The witness half, no inhibit frame late, is provenance's
+    late 0 (prov_ok). Before 2026-11-23 B22 did not read these counts. [] when it holds,
+    else one line per arm that fails it; a JSON with no sched on-time fields fails."""
+    d = json.loads(text(F.one(r"B22_case3_%s_man_%s\.json" % (C7, arm))))
+    out = []
+    for name, a in sorted((d.get("arms") or {}).items()):
+        s = (a.get("device") or {}).get("sched") or {}
+        q = ((s.get("cls") or {}).get("inhibit") or {}).get("queued")
+        if any(s.get(k) is None for k in ("ontime", "ontime_unverified", "skipped")) or q is None:
+            out.append("%s: no page on-time counts in its JSON (%s)" % (arm, name))
+            continue
+        if s["ontime"] + s["ontime_unverified"] != q or s["skipped"]:
+            out.append("%s: saturation (5.2) ontime %d + with frames waiting %d against %d queued, "
+                       "%d skipped" % (arm, s["ontime"], s["ontime_unverified"], q, s["skipped"]))
+    if not d.get("arms"):
+        out.append("%s: no arm in its JSON" % arm)
+    return out
+
+
 @judge("B22", "B")
 def b22(F):
     figs, bad, void, err = {}, [], [], []
@@ -1171,6 +1193,7 @@ def b22(F):
             continue
         if not prov_ok(p) or int(d.group(2)) or int(d.group(3)) or int(d.group(4)) or int(e.group(1)):
             bad.append(arm + " not as before")
+        bad += b22_saturation(F, arm)
         figs.update({"ours_%s" % arm: fig(p["dev"]), "response_us_max_%s" % arm: fig(r[3], "us"),
                      "response_us_mean_%s" % arm: fig(r[2], "us"), "tx_fail_%s" % arm: fig(int(d.group(2))),
                      "ctr_bad_%s" % arm: fig(int(d.group(3))), "error_frames_%s" % arm: fig(int(e.group(1))),
