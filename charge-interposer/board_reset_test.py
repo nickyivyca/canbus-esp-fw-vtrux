@@ -184,8 +184,9 @@ class PiecesPort(FakePort):
 
     PIECES = [b"t=10s state=MON", b"ITOR vmax=3400mV\r\n",
               b"[10001] MONITOR      charge established a=-78 b=0 c=0\r\n",
-              b"diag st=MONITOR trip=0 fla", b"gs=0xdf txf=0 silent=0 fw=9 ",
-              b"schema=4\r\n"]
+              b"diag st=MONITOR trip=0 fla",
+              b"gs=0xdf txf=0 silent=0 build=7f19",
+              b"7bfd schema=5\r\n"]
 
     def readline(self):
         time.sleep(0.01)
@@ -220,7 +221,8 @@ def partial_line_case(R):
         scratch_dir.remove(str(tmp))
     want = ["t=10s state=MONITOR vmax=3400mV",
             "[10001] MONITOR      charge established a=-78 b=0 c=0",
-            "diag st=MONITOR trip=0 flags=0xdf txf=0 silent=0 fw=9 schema=4"]
+            "diag st=MONITOR trip=0 flags=0xdf txf=0 silent=0 build=7f197bfd "
+            "schema=5"]
     check(lines == want and stamped == want,
           "a line returned in pieces is written whole, once, in both copies "
           "-> %s" % lines)
@@ -243,7 +245,7 @@ BOARD_ENDED = "[2395335] HOLD         REPEAT ended a=20 b=20 c=0"
 def diag_line(synth):
     return ("diag st=HOLD trip=0 flags=0xc9 ilim=- vmax=3596 chgmax=11075 "
             "soc=96.5 evap=1 chg=33 mod=24519 synth=%d ovf=2 txf=0 silent=0 "
-            "fw=9 schema=4" % synth)
+            "build=7f197bfd schema=5" % synth)
 
 
 def wall_cases(R):

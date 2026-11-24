@@ -61,9 +61,11 @@ scratch_run l2-mutations || exit 2
 WORK="$SCRATCH_RUN"
 mkdir -p "$WORK/fw" "$WORK/obj" "$WORK/PRISTINE/fw"
 cp "$HB"/*.cpp "$HB"/*.h "$WORK"/
-cp "$SRC"/*.cpp "$SRC"/*.h "$WORK/fw"/
+# main/'s .c files too: hb_c_objs builds the generated intp_diag_table.c
+# from the fw folder (schema 5)
+cp "$SRC"/*.cpp "$SRC"/*.h "$SRC"/*.c "$WORK/fw"/
 cp "$HB"/*.cpp "$HB"/*.h "$WORK/PRISTINE"/
-cp "$SRC"/*.cpp "$SRC"/*.h "$WORK/PRISTINE/fw"/
+cp "$SRC"/*.cpp "$SRC"/*.h "$SRC"/*.c "$WORK/PRISTINE/fw"/
 cd "$WORK" || exit 2
 INC=(-I . -I fw "${HB_INC_SHARED[@]}")
 # The C sources, once, as C, as run.sh compiles them.
@@ -425,6 +427,27 @@ mutate "Z: vehicle-port SA 0xC0 frames also read as charger frames, forwarded as
   's|^    core->onVehicleFrame(f.id, f.ext, f.data, f.len, t_ms, out);$|&\n    if (f.ext \&\& (f.id \& 0xFF) == 0xC0) { EmitList x; core->onChargerFrame(f.id, f.ext, f.data, f.len, t_ms, x); }|' \
   sa-c0-vehicle-port \
   'SA 0xC0 [arm]'
+
+# Diag schema 5 (spec 8.2, user 2026-11-23; tester, 2026-11-24): every
+# case ends on the packer's misfit count being 0, and the fields case reads
+# the reserved bytes as 0.
+mutate "S5a: one misfit counted on every diag report" \
+  fw/main.cpp \
+  's|^  diag_misfits += (uint32_t)core->diagFrames(|  diag_misfits += 1u + (uint32_t)core->diagFrames(|' \
+  cadence \
+  'misfit count is 0'
+
+mutate "S5b: 0x7F4 B1 carries the retired firmware version 9 again" \
+  fw/machine.cpp \
+  's|intp_dbc_FIT_CONST(s, INTP_Status, intp_reserved_b1, 0);|intp_dbc_FIT_CONST(s, INTP_Status, intp_reserved_b1, 9);|' \
+  fields \
+  '0x7F4 byte 1 reserved'
+
+mutate "S5c: 0x7F7 B4-B5 carry the retired firmware version 9 again" \
+  fw/machine.cpp \
+  's|intp_dbc_FIT_CONST(b, INTP_Build, intp_reserved16, 0);|intp_dbc_FIT_CONST(b, INTP_Build, intp_reserved16, 9);|' \
+  fields \
+  '0x7F7 bytes 4-5 reserved'
 
 echo
 if [ "$rc" -eq 0 ]; then

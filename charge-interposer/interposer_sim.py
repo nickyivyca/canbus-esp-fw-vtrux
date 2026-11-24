@@ -460,6 +460,12 @@ def main():
                      core.stats["synth"],
                      ("  trip=%s" % core.trip_reason)
                      if core.trip_reason else "")
+            # Spec 8.2, schema 5 (user, 2026-11-23): "the packer's misfit
+            # count is always 0, and a misfit is a defect". The core's sum
+            # over every diag_frames() call of the run; run_scenario's
+            # DIAG_MISFITS reads it.
+            log.info("diag misfits=%d (spec 8.2, schema 5: the packer's "
+                     "misfit count over the run)", core.diag_misfits)
         if trace is not None:
             trace.close()
             log.info("trace written: %s", args.trace_out)

@@ -828,7 +828,10 @@ def test_suites():
     #      st.bench-charger-witness, cf.bench-charger-witness and
     #      cf.bench-innomaker-clock (the offer on can-tools' pace, ended by
     #      time; the reviewer's pace ruling, 2026-11-23)
-    assert len(seen) == 320, "checks across the suites: %d" % len(seen)
+    # 322: diag-schema-check (emulated, m-host) and diag-schema-check-canfail
+    #      (harness): the DBC and the generated tables at diag schema 5
+    #      (spec 8.2, user 2026-11-23)
+    assert len(seen) == 322, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -1506,10 +1509,39 @@ def test_mutant_wiring():
 REPLY_DIAG = ("=0 ovf=0 txf=0 silent=0 fw=9 schema=4\ndiag st=PASSTHROUGH "
               "trip=0 flags=0xc0 ilim=- vmax=0 chgmax=0 soc=0.0 evap=0 chg=0 "
               "mod=0 synth=0 ovf=0 txf=0 silent=0 fw=9 schema=4\n")
+# The same reply from a schema 5 image (spec 8.3, user 2026-11-23): the
+# diag line's tail is build=<8 hex> schema=5
+REPLY_DIAG5 = REPLY_DIAG.replace("fw=9 schema=4", "build=7f197bfd schema=5")
+# Its tail alone, the start of a reply cut mid-line
+TAIL_DIAG5 = "=0 ovf=0 txf=0 silent=0 build=7f197bfd schema=5\n"
 REPLY_LOSS = (" boot=61522us switch=300/300us(last/max) drained=0\n  LOSS "
               "veh(rx=0 tx=0 err=184 off=0 peak=0) chg(rx=0 tx=0 err=0 off=0 "
               "ring=0/0) bridge=0 emit=0\n       bridged frames that missed "
               "the vehicle: 0 (clears bridge_ok for that interval)\n")
+
+
+def serial_build_cases(I):
+    """bench_identify.serial_build_check (spec 8.3, schema 5): the boot's
+    serial build= is its 0x7F7 build id."""
+    line5 = REPLY_DIAG5.splitlines()[1] + "\n"
+    line4 = REPLY_DIAG.splitlines()[1] + "\n"
+    good = "7f197bfd"
+    for label, ids, schemas, serial, mismatch in (
+            ("schema 5, build= the 0x7F7 id", [good], [5], line5 * 3, False),
+            ("schema 5, one build= not the 0x7F7 id", [good], [5],
+             line5 + line5.replace(good, "deadbeef"), True),
+            ("schema 5 frames, serial diag lines without build=", [good], [5],
+             line4 * 2, True),
+            ("schema 4 frames and serial (an older image)", [good], [4],
+             line4 * 2, False),
+            ("no serial diag line (the truck image)", [good], [5], "", False),
+            ("a diag line cut before its end is not read", [good], [5],
+             line5 + line5.replace(good, "deadbeef")[:-5] + "\n", False),
+            ("a diag line spliced onto another line is not read", [good], [5],
+             line5 + "       charger tx: abandon" + line5.replace(good, "deadbeef"),
+             False)):
+        sids, why = I.serial_build_check(ids, schemas, serial)
+        assert why.startswith("MISMATCH") == mismatch, (label, sids, why)
 
 
 def test_identify():
@@ -1517,12 +1549,15 @@ def test_identify():
     line, and a product image is never sent the SLCAN probe."""
     I = B.bench_identify
     for name, text in (("diag reply", REPLY_DIAG), ("loss reply", REPLY_LOSS),
-                       ("diag line not first", "x\ndiag st=MONITOR trip=0\n")):
+                       ("diag line not first", "x\ndiag st=MONITOR trip=0\n"),
+                       ("schema 5 diag reply", REPLY_DIAG5),
+                       ("schema 5 diag tail alone", TAIL_DIAG5)):
         assert I.PRODUCT_RE.search(text), "%s not seen as product" % name
     for text in ("@HELLO c12_bench version=1 elf_sha256=" + "a" * 64 + "\n",
                  "V0101\rNF001\r", "JAMMER ERR unknown_command\n",
-                 "INFO mcp2515 ready\n"):
+                 "INFO mcp2515 ready\n", "x build=7f19 schema=5\n"):
         assert not I.PRODUCT_RE.search(text), "%r seen as product" % text
+    serial_build_cases(I)
     calls = []
 
     def fake(r7, rh, rs):
@@ -2923,6 +2958,33 @@ def _x2_trusts_flash(s):
 import re as _re                                          # noqa: E402
 _OLD_PRODUCT_RE = _re.compile(r"serial>.*\b(MODE|spec 2\.3)|^diag st=|"
                               r"\bfw=\d+ schema=\d+")
+# schema 5 (spec 8.3): the tail read as schema 4's only, and as build= of
+# any length
+_FW_ONLY_PRODUCT_RE = _re.compile(r"serial>.*\b(MODE|spec 2\.3)|^diag st="
+                                  r"|\bfw=\d+ schema=\d+|\bLOSS veh\("
+                                  r"|bridged frames that missed the vehicle",
+                                  _re.M)
+_ANY_BUILD_PRODUCT_RE = _re.compile(r"serial>.*\b(MODE|spec 2\.3)|^diag st="
+                                    r"|\b(?:build=[0-9a-f]+|fw=\d+) schema=\d+"
+                                    r"|\bLOSS veh\("
+                                    r"|bridged frames that missed the vehicle",
+                                    _re.M)
+_ORIG_SBC = B.bench_identify.serial_build_check
+
+
+def _sbc_never(ids, schemas, serial):
+    """serial_build_check that compares nothing"""
+    return [], "not compared"
+
+
+def _sbc_no_presence(ids, schemas, serial):
+    """serial_build_check without the schema 5 rule that diag lines carry
+    build="""
+    sids, why = _ORIG_SBC(ids, schemas, serial)
+    return sids, ("no build=" if why.startswith("MISMATCH") and not sids
+                  else why)
+
+
 _ORIG_SCRIPT = B.script_judge
 def _target(attr):
     """(module, name) for a mutant attribute, "mod.name" or a name in
@@ -3116,6 +3178,8 @@ _ORIG["bench_identify.PRODUCT_RE"] = B.bench_identify.PRODUCT_RE
 _ORIG["bench_identify.identify"] = B.bench_identify.identify
 _ORIG["bench_identify.read_slcan"] = B.bench_identify.read_slcan
 _ORIG["bench_identify.SPI_V_RE"] = B.bench_identify.SPI_V_RE
+_ORIG["bench_identify.serial_build_check"] = _ORIG_SBC
+_ORIG["bench_identify.SERIAL_BUILD_RE"] = B.bench_identify.SERIAL_BUILD_RE
 _ORIG["self._PYCACHE_DROP"] = _PYCACHE_DROP
 _ORIG["self.NO_ARGPARSE"] = NO_ARGPARSE
 _ORIG["self._ARGV_PROBE"] = _ARGV_PROBE
@@ -3571,6 +3635,18 @@ MUTANTS = {
     "test_identify": [
         ("bench_identify.PRODUCT_RE", _OLD_PRODUCT_RE,
          "PRODUCT_RE without re.M (the 00:30 form)"),
+        ("bench_identify.PRODUCT_RE", _FW_ONLY_PRODUCT_RE,
+         "the diag tail read as schema 4's fw= only (schema 5's build= not "
+         "read)"),
+        ("bench_identify.PRODUCT_RE", _ANY_BUILD_PRODUCT_RE,
+         "build= taken with any number of hex digits, not 8"),
+        ("bench_identify.serial_build_check", _sbc_never,
+         "the serial build= not compared with the 0x7F7 build id"),
+        ("bench_identify.serial_build_check", _sbc_no_presence,
+         "schema 5 serial diag lines without build= taken"),
+        ("bench_identify.SERIAL_BUILD_RE",
+         _re.compile(r"\bbuild=([0-9a-f]{8}) schema=(\d+)"),
+         "build= read from a diag line spliced onto another line"),
         ("bench_identify.identify", _identify_ignores_product,
          "identify goes on to SLCAN after a product reply")],
     "test_x2_test_images_identify": [

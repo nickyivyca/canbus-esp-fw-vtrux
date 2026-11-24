@@ -247,8 +247,10 @@ def decode_7f7(rows):
     for r in rows:
         if r[2] == 0x7F7 and not r[3]:
             d = db.decode_message(0x7F7, r[4], decode_choices=False)
-            out.append("%08x fw %d schema %d up %d min"
-                       % (int(d["intp_build_id"]), int(d["intp_fw_ver16"]),
+            # schema 5: B4-B5 is intp_reserved16, sent 0 (intp_fw_ver16
+            # through schema 4; spec 8.2, user 2026-11-23)
+            out.append("%08x reserved %d schema %d up %d min"
+                       % (int(d["intp_build_id"]), int(d["intp_reserved16"]),
                           int(d["intp_schema_ver_build"]),
                           int(d["intp_uptime_min"])))
     return out

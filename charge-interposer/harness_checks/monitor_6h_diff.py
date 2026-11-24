@@ -125,13 +125,14 @@ def gen_override():
 
 
 def build_runner(src_dir, out_bin):
-    r = subprocess.run(["g++", "-std=c++11", "-O2", "-I", src_dir, "-o",
-                        out_bin, os.path.join(HOST_DIFF, "host_runner.cpp"),
-                        os.path.join(src_dir, "machine.cpp")],
+    # as diff_all.sh builds it: runner_build.sh, with shared/diag's packer
+    # and the generated table (schema 5)
+    r = subprocess.run(["bash", os.path.join(HOST_DIFF, "runner_build.sh"),
+                        out_bin, src_dir],
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit("host_runner did not build from %s:\n%s"
-                         % (src_dir, r.stderr[-2000:]))
+                         % (src_dir, (r.stdout + r.stderr)[-2000:]))
 
 
 def run(cmd):

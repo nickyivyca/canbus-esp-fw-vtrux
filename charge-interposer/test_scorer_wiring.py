@@ -47,12 +47,14 @@ def check(cond, name):
         failures += 1
 
 
-def _diag(fw7f4=9, sch7f4=4, fw7f7=(9, 9, 9), sch7f7=4, state=0,
-          flags=None, b5=None):
-    """A minimal decoded diag stream in parse_diag_frames()'s shape.
-    B4 bit 5 and B5 follow schema 4 for `state` unless given: bit 5 set and
-    B5 a setpoint (29 = 2.9 A) in OVERRIDE (2) and HOLD (6), else bit 5
-    clear and B5 255."""
+def _diag(res7f4=(0, 0, 0), sch7f4=5, res7f7=(0, 0, 0), sch7f7=(5, 5, 5),
+          state=0, flags=None, b5=None):
+    """A minimal decoded diag stream in parse_diag_frames()'s shape: three
+    rounds, round i with 0x7F4 B1 = res7f4[i], 0x7F7 B4-B5 = res7f7[i] (u16,
+    little-endian) and 0x7F7 B6 = sch7f7[i] (schema 5: the reserved bytes
+    are 0). B4 bit 5 and B5 follow schema 4 for `state` unless given: bit 5
+    set and B5 a setpoint (29 = 2.9 A) in OVERRIDE (2) and HOLD (6), else
+    bit 5 clear and B5 255."""
     rewriting = state in (2, 6)
     if flags is None:
         flags = 0x20 if rewriting else 0x00
@@ -60,13 +62,13 @@ def _diag(fw7f4=9, sch7f4=4, fw7f7=(9, 9, 9), sch7f7=4, state=0,
         b5 = 29 if rewriting else 255
     out = []
     t = 0.0
-    for fw in fw7f7:
-        out.append((t, 0x7F4, bytes([sch7f4, fw7f4, state, 0, flags, b5,
+    for r4, r7, s7 in zip(res7f4, res7f7, sch7f7):
+        out.append((t, 0x7F4, bytes([sch7f4, r4, state, 0, flags, b5,
                                      0, 0])))
         out.append((t, 0x7F5, bytes(8)))
         out.append((t, 0x7F6, bytes(8)))
         out.append((t, 0x7F7, bytes([0xfd, 0x7b, 0x19, 0x7f,
-                                     fw & 0xFF, fw >> 8, sch7f7, 0])))
+                                     r7 & 0xFF, r7 >> 8, s7, 0])))
         t += 1.0
     return out
 
@@ -858,14 +860,16 @@ def vehicle_stop_diag_cases():
     tmp = Path(scratch_dir.make("scorer-wiring-test"))
     try:
         v, c, i = (tmp / n for n in ("v.log", "c.log", "i.log"))
+        # 6019's frames moved to schema 5: the schema bytes 5, 0x7F4 B1
+        # and 0x7F7 B4-B5 (its firmware version 9) reserved, 0
         v.write_text("16:58:56 veh diagframe t=1196.8 id=0x7F4 "
-                     "data=04090200ffa0dc00\n"
+                     "data=05000200ffa0dc00\n"
                      "16:58:59 veh diagframe t=1199.8 id=0x7F5 "
                      "data=340d3075a40ca083\n"
                      "16:58:59 veh diagframe t=1199.8 id=0x7F6 "
                      "data=f10a000028000100\n"
                      "16:58:59 veh diagframe t=1199.8 id=0x7F7 "
-                     "data=14676d7509000414\n")
+                     "data=14676d7500000514\n")
         c.write_text("")
         i.write_text("".join(ln + "\n" for _h, ln in stamped))
         Path(str(i) + ".stamped").write_text(
@@ -887,6 +891,15 @@ def vehicle_stop_diag_cases():
               and "SAFE at the end of the run" in got[0][1],
               "evaluate(), the same logs with no witness: the final state, "
               "FAIL -> %s" % (got[0][1][:120] if got else got))
+        # spec 8.2, schema 5: run()'s misfit result is a row of its own
+        for given, want in (((False, "x"), [False]), ((True, "y"), [True]),
+                            (None, [])):
+            r = R.evaluate(sc, v, c, i, timed_out=False, wrows=rows,
+                           misfits=given)
+            got = [ok for ok, why in r["results"]
+                   if why.startswith("diag packer misfits")]
+            check(got == want, "evaluate() reports misfits=%r as %r -> %r"
+                  % (given, want, got))
     finally:
         scratch_dir.remove(str(tmp))
 
@@ -980,28 +993,72 @@ def main():
     check(R.BURST_FRAMES == 20 and R.BURST_MS == 1000,
           "a burst is 20 frames x 50 ms (got %d, %d ms)"
           % (R.BURST_FRAMES, R.BURST_MS))
-    check(R.SPEC_FW_VER == 9 and R.SPEC_SCHEMA_VER == 4,
-          "firmware 9, schema 4 -- the schema doc bae9948312c38cb1 (got "
-          "%d, %d)" % (R.SPEC_FW_VER, R.SPEC_SCHEMA_VER))
+    check(R.SPEC_SCHEMA_VER == 5 and not hasattr(R, "SPEC_FW_VER"),
+          "schema 5, no firmware version -- spec 8.2, user 2026-11-23 (got "
+          "schema %d)" % R.SPEC_SCHEMA_VER)
+    check(R.SPEC_RESERVED == {0x7F4: ((1, "intp_reserved_b1"),),
+                              0x7F7: ((4, "intp_reserved16"),
+                                      (5, "intp_reserved16"))},
+          "the reserved bytes are 0x7F4 B1 and 0x7F7 B4-B5 (spec 8.2, "
+          "schema 5) -> %r" % (R.SPEC_RESERVED,))
     check(R.DIAG_STATES.get(6) == "HOLD",
           "0x7F4 B2 6 decodes as HOLD (schema 4)")
     src = (HERE / "run_scenario.py").read_text(encoding="utf-8")
-    for needle in ("M.DIAG_FW_VER", "M.DIAG_SCHEMA_VER", "burst_frames"):
+    for needle in ("M.DIAG_FW_VER", "M.DIAG_SCHEMA_VER", "burst_frames",
+                   "SPEC_FW_VER"):
         check(needle not in src.replace("# ", "#"),
               "run_scenario.py no longer reads %s" % needle)
 
-    print("\ndiag versions in every frame (reading 15)")
+    print("\ndiag versions and reserved bytes in every frame (reading 15; "
+          "schema 5)")
     ok, why = R._diag_frames_ok(_diag(), "PASSTHROUGH")
-    check(ok, "a clean fw 9 / schema 4 stream passes -> %s" % why)
-    ok, why = R._diag_frames_ok(_diag(fw7f7=(9, 8, 9)), "PASSTHROUGH")
-    check(not ok and "0x7F7" in why,
-          "a MIDDLE 0x7F7 reporting fw 8 (E7's) fails (rev 1 read only the "
+    check(ok and "schema 5" in why,
+          "a clean schema 5 stream, reserved bytes 0, passes -> %s" % why)
+    ok, why = R._diag_frames_ok(_diag(sch7f7=(5, 4, 5)), "PASSTHROUGH")
+    check(not ok and "0x7F7" in why and "schema 4" in why,
+          "a MIDDLE 0x7F7 reporting schema 4 fails (rev 1 read only the "
           "last) -> %s" % why)
-    ok, why = R._diag_frames_ok(_diag(sch7f4=3), "PASSTHROUGH")
-    check(not ok and "schema" in why, "0x7F4 schema 3 fails -> %s" % why)
-    ok, why = R._diag_frames_ok(_diag(fw7f4=8), "PASSTHROUGH")
-    check(not ok and "firmware" in why,
-          "0x7F4 firmware 8 (E7's) fails -> %s" % why)
+    ok, why = R._diag_frames_ok(_diag(sch7f4=4), "PASSTHROUGH")
+    check(not ok and "schema" in why, "0x7F4 schema 4 fails -> %s" % why)
+    ok, why = R._diag_frames_ok(_diag(res7f4=(0, 9, 0)), "PASSTHROUGH")
+    check(not ok and "0x7F4 #2 B1" in why and "reserved" in why,
+          "a MIDDLE 0x7F4 with B1 9 (schema 4's firmware version) fails "
+          "-> %s" % why)
+    ok, why = R._diag_frames_ok(_diag(res7f7=(0, 0, 9)), "PASSTHROUGH")
+    check(not ok and "0x7F7 #3 B4" in why and "reserved" in why,
+          "the last 0x7F7 with B4-B5 9 (schema 4's fw_ver16) fails -> %s"
+          % why)
+    ok, why = R._diag_frames_ok(_diag(res7f7=(0x100, 0, 0)), "PASSTHROUGH")
+    check(not ok and "0x7F7 #1 B5" in why,
+          "the first 0x7F7 with B5 alone non-zero fails -> %s" % why)
+
+    print("\nthe packer's misfit count, on an emulated run (spec 8.2, "
+          "schema 5)")
+    line = ("12:00:00 INFO diag misfits=%d (spec 8.2, schema 5: the "
+            "packer's misfit count over the run)")
+    ok, why = R.diag_misfits_check("x\n" + line % 0 + "\n")
+    check(ok, "misfits=0 passes -> %s" % why)
+    ok, why = R.diag_misfits_check(line % 1)
+    check(not ok and "1 misfit" in why, "misfits=1 fails -> %s" % why)
+    ok, why = R.diag_misfits_check(line % 0 + "\n" + line % 3)
+    check(not ok and "3 misfit" in why, "the last line counts -> %s" % why)
+    ok, why = R.diag_misfits_check("final state=MONITOR  fwd v->c=1\n")
+    check(not ok and "no 'diag misfits=' line" in why,
+          "a log without the line fails -> %s" % why)
+    sim = (HERE / "interposer_sim.py").read_text(encoding="utf-8")
+    check(R.DIAG_MISFITS.search(
+              "diag misfits=0 (spec 8.2, schema 5: the packer's misfit "
+              "count over the run)") is not None
+          and 'log.info("diag misfits=%d (spec 8.2, schema 5: the packer\'s "'
+          in sim and "core.diag_misfits)" in sim,
+          "interposer_sim prints the line DIAG_MISFITS reads, from "
+          "core.diag_misfits")
+    check("misfits = diag_misfits_check(int_log.read_text(" in src
+          and "misfits=misfits)" in src
+          and 'if not args.external_interposer and "--bypass" not in '
+              'sc.interposer:\n        misfits = diag_misfits_check' in src,
+          "run() judges the misfit line on every emulated run whose core is "
+          "driven and hands it to evaluate()")
     ok, why = R._diag_frames_ok(_diag(state=2), "PASSTHROUGH")
     check(not ok and "OVERRIDE" in why,
           "a last 0x7F4 disagreeing with the final state fails -> %s" % why)

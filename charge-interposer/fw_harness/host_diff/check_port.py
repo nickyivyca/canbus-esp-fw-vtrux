@@ -122,8 +122,9 @@ def check_identifiers(problems):
         ("DIAG_OBSERVED_ID", "DIAG_OBSERVED_ID"),
         ("DIAG_COUNTERS_ID", "DIAG_COUNTERS_ID"),
         ("DIAG_BUILD_ID", "DIAG_BUILD_ID"),
+        # DIAG_FW_VER is gone from both cores at schema 5 (spec 8.2, user
+        # 2026-11-23)
         ("DIAG_SCHEMA_VER", "DIAG_SCHEMA_VER"),
-        ("DIAG_FW_VER", "DIAG_FW_VER"),
     ]
     for cname, pname in pairs:
         if cname not in consts:

@@ -23,7 +23,11 @@ host fake of the TWAI driver, test/, and since port step 2b the real port
 host_bridge compiles on it) and "shared/can_port" (since port step 2b: the
 port interface host_bridge compiles twai_port behind). A pin moves only on
 a batch from the reviewer, since moving it is also the decision to re-test
-(goal 12).
+(goal 12). "shared/diag" (diag schema 5, spec 8.2, user 2026-11-23) is the
+implementor's entry, the status frames' packer the firmware takes as
+vtrux/diag; the harness checks it here too, because machine.py's packer,
+the host builds of machine.cpp and the table check load it from the
+pinned checkout.
 
     py -3.14 -B charge-interposer/shared_pin.py check shared/bench
     py -3.14 -B charge-interposer/shared_pin.py where shared/bench
@@ -38,7 +42,9 @@ two components from the pinned checkout. idf-match passes only if the
 "shared/twai_port" and "shared/can_port" pins name one tag, and it is the
 version idf_component.yml gives each; it reads the two files and nothing
 else (no git), so it runs on any host. host_bridge/run.sh runs it before
-any build.
+any build. The "shared/diag" pin has its own tag (IDF_OWN_TAG): idf-match
+also passes only if it is the version idf_component.yml gives vtrux/diag,
+and it need not be the other two's tag.
 
 `entry` prints, for a pin move, the entry the checkout ../shared-<tag>/
 would give (it writes nothing); `where` prints the component's folder once
@@ -102,10 +108,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PIN_FILE = os.path.join(HERE, "firmware", "shared_pins.json")
 IDF_YML = os.path.join(HERE, "firmware", "main", "idf_component.yml")
 START = HERE            # where worktree() starts looking; tests move it
-OURS = ("shared/bench", "shared/twai_port", "shared/can_port")
+OURS = ("shared/bench", "shared/twai_port", "shared/can_port", "shared/diag")
 # the pins idf-match compares, and each one's dependency in IDF_YML
 IDF_DEPS = (("shared/twai_port", "vtrux/twai_port"),
             ("shared/can_port", "vtrux/can_port"))
+# pins idf-match compares with their dependency's version, each at a tag of
+# its own (not held to IDF_DEPS' one tag)
+IDF_OWN_TAG = (("shared/diag", "vtrux/diag"),)
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _LOOKS_LIKE_COMMIT = re.compile(r"^[0-9a-fA-F]{7,40}$")
@@ -554,7 +563,7 @@ def idf_versions(path=None):
     except OSError as e:
         raise SharedPinError("cannot read %s (%s)" % (path, e))
     out = {}
-    want = {dep for _n, dep in IDF_DEPS}
+    want = {dep for _n, dep in IDF_DEPS + IDF_OWN_TAG}
     cur, cur_indent = None, None
     for ln in lines:
         s = ln.split("#", 1)[0].rstrip()
@@ -578,7 +587,7 @@ def idf_match(path=None, yml=None):
     """The idf-match check (module docstring). The tag, or SharedPinError."""
     vers = idf_versions(yml)
     tags = set()
-    for name, dep in IDF_DEPS:
+    for name, dep in IDF_OWN_TAG + IDF_DEPS:
         tag = read(name, path)["tag"]
         if dep not in vers:
             raise SharedPinError("%s names no version for %s, so the %r pin "
@@ -589,7 +598,8 @@ def idf_match(path=None, yml=None):
                                  "host_bridge would build another version than "
                                  "the firmware's" % (name, tag, yml or IDF_YML,
                                                      dep, vers[dep]))
-        tags.add(tag)
+        if (name, dep) in IDF_DEPS:
+            tags.add(tag)
     if len(tags) != 1:
         raise SharedPinError("the %s pins name different tags (%s): twai_port is "
                              "taken with can_port at the same shared/main tag"
@@ -601,8 +611,10 @@ def idf_match(path=None, yml=None):
 def main(argv):
     try:
         if argv == ["idf-match"]:
-            print("OK: %s and %s pinned at %s, as idf_component.yml takes them"
-                  % (IDF_DEPS[0][0], IDF_DEPS[1][0], idf_match()))
+            tag = idf_match()
+            own = "".join(", %s at %s" % (n, read(n)["tag"]) for n, _d in IDF_OWN_TAG)
+            print("OK: %s and %s pinned at %s%s, as idf_component.yml takes them"
+                  % (IDF_DEPS[0][0], IDF_DEPS[1][0], tag, own))
             return 0
         if len(argv) == 2 and argv[0] in ("check", "where"):
             d = folder(argv[1])

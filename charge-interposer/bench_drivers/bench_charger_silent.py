@@ -115,8 +115,11 @@ def tag_seq(data):
 # phases are judged from it, and the CAN frames, where they exist (A, C),
 # are cross-checked against it. Only whole, well-formed diag lines count: a
 # line that lost output mid-line (8.3, 2026-10-14) is skipped, not misread.
+# From schema 5 the line ends `build=<8 hex> schema=<n>`, where it ended
+# `fw=<n> schema=<n>` (spec 8.3, user 2026-11-23).
 DIAG_RE = re.compile(r"^diag st=(\w+) trip=(\d+) flags=0x([0-9a-fA-F]+) "
-                     r".* txf=(\d+) silent=(\d+) fw=(\d+) schema=(\d+)$")
+                     r".* txf=(\d+) silent=(\d+) build=([0-9a-f]{8}) "
+                     r"schema=(\d+)$")
 
 
 def parse_diag(line):
@@ -980,12 +983,14 @@ def self_test():
         check(False, "cantools needed for the decode check")
     # 2026-10-14: the serial diag line (spec 2.3 / 8.3)
     good = ("diag st=MONITOR trip=0 flags=0xdf ilim=- vmax=3406 chgmax=30000 "
-            "soc=88.0 evap=0 chg=12 mod=0 synth=0 ovf=0 txf=7 silent=1 fw=9 "
-            "schema=4")
+            "soc=88.0 evap=0 chg=12 mod=0 synth=0 ovf=0 txf=7 silent=1 "
+            "build=7f197bfd schema=5")
     check(parse_diag(good) == dict(state="MONITOR", txf=7, silent=1),
           "a whole diag line gives state, txf and silent")
     check(parse_diag(good[:120]) is None,
           "a diag line that lost its tail is skipped, not misread")
+    check(parse_diag(good.replace("build=7f197bfd", "build=7f197bf")) is None,
+          "a diag line whose build id lost a digit is skipped (schema 5)")
     check(parse_diag("       charger tx: abandon" + good) is None,
           "a diag line spliced onto another line is skipped")
     check(parse_diag(good.replace("txf=7", "txf=")) is None,
