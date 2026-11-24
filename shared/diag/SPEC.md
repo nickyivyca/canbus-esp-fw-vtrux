@@ -9,6 +9,10 @@ reviewer whose project needs a change drafts it, the user rules in that
 reviewer's session, and the other project's reviewer reads it before it
 merges into `shared/main`.
 
+D6 was added on 2026-11-23. The charge-interposer reviewer drafted it, and
+the user approved it in that reviewer's session. The gen-inhibit reviewer
+reads it before it merges.
+
 - **Why** each requirement is written as it is: `VALIDATION.md`, beside
   this file.
 - **Test evidence:** `VERIFICATION.md`, the tester's, when there is code to
@@ -18,7 +22,7 @@ merges into `shared/main`.
   (step 4), each project's diag schema doc and DBC, and shared/bench's
   `vtrux_bench/decode.py`.
 
-Requirements are numbered D1 to D5. The numbers are stable.
+Requirements are numbered D1 to D6. The numbers are stable.
 
 - **D1. Scope.** `shared/diag` holds the build-id read, the frame packer
   and the diag schema convention. Each project keeps in its own spec its
@@ -47,3 +51,8 @@ Requirements are numbered D1 to D5. The numbers are stable.
   `DiagSchemaHash` is always the DBC's `layout_hash` (shared/bench's
   `decode.py`), so it changes with every layout change, but not with a
   change of meaning alone.
+- **D6. Fit checks at build time.** The generated table comes with checks
+  that run when the firmware compiles, in C and in C++. A build must fail if
+  a value's type could exceed its signal, a mask or a constant exceeds its
+  signal, or a signed signal is passed to them. Each project moves to them
+  at its next change of its packing code.
