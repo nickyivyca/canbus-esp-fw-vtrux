@@ -1825,7 +1825,9 @@ def test_example(bench, emu, settings):
     """The settings example names every key the suites need and every placeholder, and
     its placement (core 2026.11.12; gen-inhibit reviewer, 2026-11-12) starts every bench
     check in bench.slice and every emulated check in build.slice, as the core reads it on
-    Linux (Engine.placement_for)."""
+    Linux (Engine.placement_for). Its wallclock_patterns (gen-inhibit reviewer, 2026-11-23)
+    make the core's scan name the charge-interposer's simulators, its acceptance runs, the
+    CAN replay tooling and the Android emulator, and not desk, build or emulated-time work."""
     import re
     with open(os.path.join(HERE, "suite_gen_inhibit.settings.example.json"), encoding="utf-8") as f:
         ex = json.load(f)
@@ -1884,6 +1886,57 @@ def test_example(bench, emu, settings):
                   % (suite.name, want, len(got[suite.name])), got[suite.name] and not wrong, wrong)
     finally:
         ENG.PLATFORM = plat0
+    # wallclock_patterns (gen-inhibit reviewer, 2026-11-23): bench run 4b15 shared bench.slice
+    # with the charge-interposer's simulator scenarios and the Android emulator, and its
+    # wallclock-others events said "no other wall-clock test on local", the example's list
+    # being empty. The core's own scan (Engine.others_on, which writes that event) over a
+    # made-up process table, none of it this process's tree; no lock is read.
+    pats = ex.get("wallclock_patterns")
+    check("the settings example's wallclock_patterns is a non-empty list of regexes",
+          isinstance(pats, list) and pats and all(isinstance(p, str) and raises(lambda p=p: re.compile(p)) is None
+                                                  for p in pats), pats)
+    wall = {
+        "an interposer simulator scenario": "/usr/bin/python3.13 -B run_scenario.py evap-override-16a --time-scale 1",
+        "its vehicle simulator": "/usr/bin/python3.13 /w/interposer-tester/charge-interposer/vehicle_sim.py --port 1",
+        "its charger simulator": "/usr/bin/python3.13 /w/interposer-tester/charge-interposer/charger_sim.py --port 2",
+        "its interposer simulator": "/usr/bin/python3.13 /w/interposer-tester/charge-interposer/interposer_sim.py",
+        "an interposer acceptance run's bench suite":
+            "python3.13 -B -m vtrux_bench.accept.nested --suite /w/interposer-tester/charge-interposer/bench_suite.py",
+        "a CAN replay tooling replayer": "python3.13 /w/can-tools/can_replayer.py --role canchg",
+        "the Android emulator": "/opt/Android/Sdk/emulator/qemu/linux-x86_64/qemu-system-x86_64-headless -avd Test_API_31",
+    }
+    quiet = {
+        "a desk analysis": "python3.13 -B gen-inhibit/tools/bench/b6_class_count.py run/",
+        "a build": "ninja -C build-tester-man",
+        "an emulated-time suite's runner": "python3.13 -B -m vtrux_bench.run run --suite gen-inhibit-emulated",
+        "Espressif's QEMU (emulated time)": "/x/.espressif/tools/qemu-riscv32/9.0.0/qemu/bin/qemu-system-riscv32 -M esp32c3",
+        "the adb server": "adb -L tcp:5037 fork-server server --reply-fd 4",
+        "the emulator's network daemon": "/opt/Android/Sdk/emulator/netsimd --no-cli-ui",
+    }
+    table = [(900001 + k, 1, a) for k, a in enumerate(list(wall.values()) + list(quiet.values()))]
+    pt0 = ENG.procs.process_table
+
+    def others(patterns):
+        s = {k: v for k, v in settings.items() if k not in ("bench_holder", "bench_lock_log")}
+        s["wallclock_patterns"] = patterns
+        ENG.procs.process_table = lambda ssh_host=None, **kw: table
+        try:
+            return Engine(bench, s).others_on("local")
+        finally:
+            ENG.procs.process_table = pt0
+    got = others(pats)
+    named = got.get("processes") or []
+    for what, line in sorted(wall.items()):
+        check("wallclock_patterns: with the example's list the core names %s as another wall-clock test" % what,
+              line in named, named)
+    for what, line in sorted(quiet.items()):
+        check("wallclock_patterns: the example's list does not name %s" % what, line not in named, named)
+    check("wallclock_patterns: the event says a wall-clock test may be running, naming a process",
+          got.get("wallclock") is True and str(got.get("why", "")).startswith("process: "), got.get("why"))
+    # can-fail: the list as it was (empty) names none of them, as 4b15's events said
+    got = others([])
+    check("wallclock_patterns can-fail: with an empty list the same table names nothing, 'no other wall-clock test'",
+          not got.get("processes") and got.get("why") == "no other wall-clock test on local", got)
 
 
 def test_ota(settings, bench):
