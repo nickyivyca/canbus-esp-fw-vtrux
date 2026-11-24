@@ -126,6 +126,18 @@ bool ft_foreign_transmit(uint32_t id, const uint8_t *data, uint8_t dlc);
 /* Deliver a frame to the worker's receive path. */
 void ft_deliver(uint32_t id, const uint8_t *data, uint8_t dlc);
 
+/*
+ * Deliver a frame between the scheduler's completion read and its count (spec 7
+ * trip 7): after the first firmware status read that finds no frame of ours
+ * pending, at the next can_msgs_to_rx(). One-shot. ft_delivered_at_count()
+ * says how many have been delivered; ft_deliver_at_count_reset() disarms and
+ * clears the count. In deliver_at_count.c, which only this folder's Makefile
+ * links (with the --wrap flags it needs), not in shim_harness.c.
+ */
+void ft_deliver_at_count(uint32_t id, const uint8_t *data, uint8_t dlc);
+int  ft_delivered_at_count(void);
+void ft_deliver_at_count_reset(void);
+
 /* Make the next `n` twai_receive() calls fail with a hard error. */
 void ft_rx_error_next(int n);
 

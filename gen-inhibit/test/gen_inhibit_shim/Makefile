@@ -48,8 +48,13 @@ CFLAGS  ?= -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter \
            -I$(DIAGDIR)/include \
            -I$(FAKEDIR) -I$(FAKEDIR)/include -I$(FAKEDIR)/host
 # --wrap: shim_harness.c sees each install at the call, for the thread that made
-# it (spec 3), which the fake's install log does not record.
-LDFLAGS ?= -pthread -Wl,--wrap=twai_driver_install
+# it (spec 3), which the fake's install log does not record. The status read and
+# the receive count are wrapped so a case can deliver a frame between the
+# scheduler's completion read and its count (ft_deliver_at_count(), spec 7
+# trip 7), and the status page so that its own status read is left out.
+LDFLAGS ?= -pthread -Wl,--wrap=twai_driver_install \
+           -Wl,--wrap=twai_port_status -Wl,--wrap=can_msgs_to_rx \
+           -Wl,--wrap=gen_inhibit_get_stats_json
 
 # The CAN port is compiled AS SHIPPED, not reimplemented: can_port's stock
 # calls (can_stock.c, which replaced main/can.c at port step 1b) and the real
@@ -66,7 +71,7 @@ LDFLAGS ?= -pthread -Wl,--wrap=twai_driver_install
 # shim must not define itself. shim_harness.c is the shim's scheduler and
 # clock around it. The restart stop itself is not called here: its caller is
 # vtrux/restart_guard, which has its own unit tests.
-SRC := shim_test.c shim_harness.c fake_can.c fake_port.c \
+SRC := shim_test.c shim_harness.c deliver_at_count.c fake_can.c fake_port.c \
        $(FAKEDIR)/twai_fake.c \
        $(COREDIR)/gen_inhibit.c $(COREDIR)/gen_inhibit_core.c \
        $(COREDIR)/gi_sched.c $(COREDIR)/gi_diag_table.c \

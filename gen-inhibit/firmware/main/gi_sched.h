@@ -100,6 +100,18 @@ typedef struct
      */
     bool     (*outstanding)(void *ctx);
 
+    /*
+     * How many received frames are waiting in the receive queue now. On the
+     * device this is msgs_to_rx.
+     *
+     * The scheduler reads it itself, right after outstanding() says the timed
+     * inhibit has left the controller. Spec 7 trip 7 (user, 2026-11-23): the
+     * count is taken after the completion is seen, not before, so it also
+     * counts a frame that arrives between the two reads. A count passed in by
+     * the caller is read before gs_tick() runs, which is the wrong order.
+     */
+    uint32_t (*rx_waiting)(void *ctx);
+
     void *ctx;
 } gs_hal_t;
 
@@ -349,6 +361,14 @@ typedef struct
      * So `ontime` counts verified on-time completions and `ontime_unverified`
      * counts the rest. Reported separately on the status page, never summed,
      * because a total would be a number whose failure looks like success.
+     *
+     * CHANGED 2026-11-23 (spec 7 trip 7, user). With frames waiting, the
+     * verdict now waits until the worker has removed the frames counted when
+     * the completion was seen (gs_t.verdict_left). If the VCM's next 0x051 is
+     * one of them, the frame is a late skip. If not, it is on time, "with
+     * frames waiting", and is counted in `ontime_unverified`. The field names
+     * stay, so tools and goldens do not change. `unverified_max_backlog` is
+     * the largest count for one of these.
      */
     uint32_t ontime;
     uint32_t ontime_unverified;
@@ -493,22 +513,38 @@ typedef struct
     int64_t    inhibit_handed;
 
     /*
-     * THE INHIBIT'S CREDIT IS HELD UNTIL THE DEADLINE (spec 7 trip 7: a frame
-     * whose completion was seen only after the VCM's next 0x051 had been
-     * dequeued is a late skip; user 2026-11-23, B4 l3s at
-     * gen-inhibit-bench_20261123T171226_4b15). Set by gs_hold_credit(), cleared
-     * by gs_command_received(). While set, neither gs_tick() nor
-     * gs_command_received() credits a held inhibit's departure as sent: the
-     * frame stays held and outstanding, so the deadline finds the buffer
-     * EMPTY with the inhibit still outstanding and books it late.
+     * THE INHIBIT'S VERDICT WAITS (spec 7 trip 7, user 2026-11-23). Two
+     * states. In both, the held inhibit's departure is not credited as sent:
+     * it stays `held` and outstanding, so nothing is handed over behind it
+     * (item 7 is unchanged).
      *
-     * A FLAG ON THE SCHEDULER, NOT A PARAMETER of gs_command_received(),
-     * because the credit the hold has to stop is the one gs_tick() makes first,
-     * in the sched_advance() the worker runs right after the dequeue. Any other
-     * class's departure is credited as before; only the inhibit's verdict is
-     * at stake.
+     * `credit_hold`: the deadline books the frame late. Set by
+     * gs_rx_dequeued() when the worker removes the VCM's next 0x051 and the
+     * frame's completion can not be placed before it:
+     *   - path (ii), B4 l3s at gen-inhibit-bench_20261123T171226_4b15: the
+     *     command was already waiting at the receive, and the completion was
+     *     not yet seen;
+     *   - path (i): the completion was seen with frames waiting, and the
+     *     command is one of the frames counted then.
+     * gs_command_received() then finds the inhibit outstanding with the
+     * buffer EMPTY, and the EMPTY branch books late_on_wire and a late skip.
+     * It ends the hold.
+     *
+     * `verdict_left`: the completion was seen with this many frames waiting
+     * (counted after the completion read). The worker must remove that many
+     * frames before the scheduler decides. Each gs_rx_dequeued() of another
+     * frame takes one off. At 0 the frame is credited as sent and on time,
+     * with frames waiting (`ontime_unverified`), at `seen_at`, with
+     * `verdict_backlog` as its count.
+     *
+     * A STATE ON THE SCHEDULER, NOT A PARAMETER of gs_command_received(),
+     * because the credit to stop is the one gs_tick() makes first, and the
+     * wait lasts across several worker turns.
      */
     bool       credit_hold;
+    uint32_t   verdict_left;
+    uint32_t   verdict_backlog;
+    int64_t    seen_at;
 
     /*
      * THE DEADLINE TOKEN. Set by gs_command_received(), consumed by queueing an
@@ -612,10 +648,15 @@ bool gs_queue_frame(gs_t *s, gs_class_t cls, const gi_frame_t *f, int64_t now);
 /*
  * Drive the scheduler. Call on every worker iteration, not at one point: a
  * completion is then observed whenever it happens rather than only inside a
- * window, and the reactive path carries no blocking call. `rx_backlog` is
- * msgs_to_rx, used only to decide whether an on-time claim is verifiable.
+ * window, and the reactive path carries no blocking call.
+ *
+ * NO RECEIVE COUNT IS PASSED IN since 2026-11-23. A timed frame's count is
+ * read through the HAL after its completion is seen (gs_hal_t.rx_waiting,
+ * spec 7 trip 7), and no other frame is timed. Until then the caller read
+ * msgs_to_rx before every call, which was the wrong order, and RESPOND's probe
+ * was timed with it (spec 11 now puts the probe on the inhibit's path).
  */
-void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog);
+void gs_tick(gs_t *s, int64_t now);
 
 /*
  * What the deadline found. Three values and not a bool, because "skipped" and
@@ -650,8 +691,6 @@ typedef enum
  * let a silently ineffective inhibit look healthy, which is the worst failure
  * this firmware has. The bench witness is what resolves it for real.
  *
- * `rx_backlog` is msgs_to_rx at this instant.
- *
  * WHY THIS IS THE DEQUEUE AND NOT THE ARRIVAL, stated here because it is the
  * limit of what the device can know. twai_message_t carries no timestamp in the
  * public API, and msgs_to_rx > 0 does not mean a 0x051 has arrived -- the
@@ -660,40 +699,66 @@ typedef enum
  * the gap between arrival and dequeue is exposure that only the bench witness
  * can measure. It is NOT bounded by one frame time: a frame handed over earlier
  * can complete in that gap, physically late, and the device would see its
- * completion first and score it on time. `ontime_unverified` is what keeps that
- * honest. Corrected 2026-09-27 after the reviewing session showed the
- * one-frame-time bound was wrong.
+ * completion first and score it on time. Corrected 2026-09-27 after the
+ * reviewing session showed the one-frame-time bound was wrong.
  *
- * ONE PART OF THAT GAP THE DEVICE CAN SEE: a command that was already waiting
- * when the worker called its receive. Then the frame arrived while the worker
- * was busy, and a completion first seen after this dequeue cannot be placed
- * before it. The worker says so with gs_hold_credit() before the dequeue's
- * sched_advance(), and the frame is booked late here (spec 7 trip 7; see
- * gs_hold_credit()). When the receive blocked, the wake is the command's
- * arrival, so a completion seen then preceded it.
+ * SINCE 2026-11-23 THE DEVICE CLOSES THAT GAP (spec 7 trip 7, user). The
+ * receive queue is first in, first out. So the frames counted when the
+ * completion is seen arrived before the completion was seen. The verdict waits
+ * until the worker has removed them (gs_rx_dequeued()):
+ *   - The VCM's next 0x051 is one of them: `credit_hold` is set, and this
+ *     call books a late skip through the EMPTY branch.
+ *   - It is not: the frame is credited on time, with frames waiting.
+ * A command that was already waiting at the receive, with the completion not
+ * yet seen, is a late skip the same way (path (ii)).
+ *
+ * If this call finds a verdict still waiting without `credit_hold`, the
+ * frames counted came after this command, which the worker removed first. So
+ * none of them is this command, and the frame is on time, with frames
+ * waiting. A departure first seen here is counted the same way. When the
+ * receive blocked, the wake is the command's arrival, so a completion seen
+ * then preceded it.
+ *
+ * RESPOND'S PROBE TAKES THE SAME PATH (spec 11, user 2026-11-23), with one
+ * difference here: a probe is never withdrawn and is never a skip. A probe
+ * held late (`credit_hold`) is left in the controller's record. Its departure
+ * is credited as sent once this deadline has passed, so it is in neither
+ * on-time count.
  */
-gs_deadline_t gs_command_received(gs_t *s, int64_t now,
-                                 uint32_t rx_backlog);
+gs_deadline_t gs_command_received(gs_t *s, int64_t now);
 
 /*
- * The worker has dequeued a VCM 0x051 that was ALREADY WAITING when it called
- * its receive, with an inhibit outstanding. Hold that inhibit's credit until
- * gs_command_received() for this command: a departure seen before then is not
- * credited as sent (or on time), so the deadline finds the inhibit still
- * outstanding with the buffer EMPTY and books it as went-out-late -- a late
- * skip, as spec 7 trip 7 says of "its completion was seen only after the VCM's
- * next 0x051 had been dequeued" (user, 2026-11-23).
+ * The worker removed one frame from the receive queue. Call it after every
+ * successful receive, before the sched_advance() that follows it.
  *
- * Call it before the sched_advance() that follows the dequeue, since that
- * gs_tick() is what would credit the departure first. gs_command_received()
- * ends the hold, whatever it finds. Only the inhibit class is held.
+ * `vcm_cmd`: the frame is the VCM's 0x051. `waiting_before`: the frames
+ * waiting when the worker called its receive, read only while an inhibit's
+ * completion is not yet seen (0 otherwise).
  *
- * A held frame stays `held`, so nothing is handed over behind it while the
- * hold lasts (item 7 is untouched). The hold is set per command today; a rule
- * that held the verdict across several dequeues would set and end it at
- * other points, with the same effect on the credit.
+ * Only the verdict of a held frame of the timed class changes (the inhibit,
+ * or RESPOND's probe, spec 11):
+ *   - The verdict waits for counted frames (`verdict_left`). If this frame is
+ *     the VCM's 0x051, the deadline books a late skip (`credit_hold`).
+ *     Otherwise one counted frame is gone, and after the last one the frame
+ *     is credited on time, with frames waiting.
+ *   - No verdict waits, the frame is the VCM's 0x051 and it was already
+ *     waiting: the deadline books a late skip (path (ii), spec 7 trip 7: "its
+ *     completion was seen only after the VCM's next 0x051 had been
+ *     dequeued").
+ * gs_command_received() ends the hold, whatever it finds.
  */
-void gs_hold_credit(gs_t *s);
+void gs_rx_dequeued(gs_t *s, bool vcm_cmd, uint32_t waiting_before);
+
+/* Does a timed frame's verdict wait for counted frames? */
+bool gs_verdict_pending(const gs_t *s);
+
+/*
+ * Is a frame of the timed class (the inhibit, or RESPOND's probe) handed over
+ * for this deadline, with its completion not yet seen and no verdict yet?
+ * Only then does the worker need the count before its receive: path (ii)
+ * applies to a completion not yet seen.
+ */
+bool gs_timed_in_flight(const gs_t *s);
 
 /* Is an inhibit frame outstanding? Section 10: no telemetry goes out while one
  * is, which item 7 makes a property of the scheduler rather than a rule. */

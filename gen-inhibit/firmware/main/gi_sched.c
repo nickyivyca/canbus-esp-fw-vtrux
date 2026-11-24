@@ -36,6 +36,7 @@
  */
 static void     note_skip(gs_t *s, int64_t now, bool late);
 static void     begin_abort(gs_t *s, int64_t now);
+static void     end_verdict_wait(gs_t *s);
 static uint32_t skips_in_window(const gs_t *s, int64_t now);
 
 /* ------------------------------------------------------------- queueing --- */
@@ -228,7 +229,13 @@ void gs_withdraw_inhibits(gs_t *s, int64_t now)
          * deadline evaluated while the loop is still running cannot book the
          * same frame again as a skip. Nothing is handed over meanwhile: `held`
          * is still set.
+         *
+         * A VERDICT THAT WAITS ENDS HERE (spec 7 trip 7, 2026-11-23). The
+         * frame has left the controller, but spec 5.2 item 5 counts a
+         * stand-down "whether or not it reached the wire". The abort finds the
+         * buffer EMPTY, and step 3 books it `withdrawn`.
          */
+        end_verdict_wait(s);
         if (!s->held_booked)
         {
             s->held_booked = true;
@@ -330,16 +337,29 @@ static uint32_t skips_in_window(const gs_t *s, int64_t now)
 }
 
 /*
- * Is the held frame's credit held back (gs_hold_credit())? Only an inhibit's:
- * any other class's departure is credited as it is seen.
+ * Does the held frame's verdict wait (gs_t.credit_hold, gs_t.verdict_left)?
+ * Only a frame of the arm's timed class: the inhibit, or RESPOND's probe,
+ * which takes the same path (spec 11, user 2026-11-23). Any other class's
+ * departure is credited as it is seen.
  */
 static bool credit_held(const gs_t *s)
 {
-    return s->credit_hold && s->held_class == GS_CLASS_INHIBIT;
+    return s->held && s->held_class == s->timed_class
+        && (s->credit_hold || s->verdict_left > 0);
+}
+
+/* The verdict no longer waits: credited, booked late, or withdrawn. */
+static void end_verdict_wait(gs_t *s)
+{
+    s->credit_hold = false;
+    s->verdict_left = 0;
+    s->verdict_backlog = 0;
 }
 
 static void note_left_controller(gs_t *s, int64_t now, uint32_t rx_backlog)
 {
+    end_verdict_wait(s);
+
     const gs_class_t c = s->held_class;
     const int64_t held_us = now - s->held_since;
 
@@ -419,6 +439,52 @@ static void note_left_controller(gs_t *s, int64_t now, uint32_t rx_backlog)
     s->held = false;
     s->held_carried = false;
     s->aborting = false;
+}
+
+/*
+ * The frames counted at the completion are all removed, and none was the VCM's
+ * next 0x051: on time, with frames waiting (spec 7 trip 7). Booked at the
+ * instant the completion was seen, so the wait for the dequeues does not count
+ * in the frame's hold.
+ */
+static void credit_after_wait(gs_t *s)
+{
+    const uint32_t backlog = s->verdict_backlog;
+    note_left_controller(s, s->seen_at, backlog);
+}
+
+/*
+ * outstanding() just said the held frame has left the controller.
+ *
+ * FOR A FRAME OF THE TIMED CLASS AT ITS OWN DEADLINE, THE QUEUE IS COUNTED
+ * NOW, after that read and not before it (spec 7 trip 7, user 2026-11-23).
+ * The timed class is the inhibit, or RESPOND's probe, which takes the same
+ * path (spec 11, user 2026-11-23). The receive queue is first in, first out,
+ * so every frame counted here arrived before the completion was seen. A frame
+ * that arrives between the two reads is counted too: that is why the count is
+ * read here and not passed in by the caller, who reads before gs_tick() runs.
+ *   - 0: on time. An arrived 0x051 would be in the queue.
+ *   - n > 0: the verdict waits until the worker has removed n frames
+ *     (gs_rx_dequeued()). At the deadline it can not wait: see
+ *     gs_command_received().
+ *
+ * Every other frame is credited at once and is not timed.
+ */
+static void see_departure(gs_t *s, int64_t now, bool at_deadline)
+{
+    uint32_t waiting = 0;
+    if (s->held_class == s->timed_class && s->held_deadline_n == s->deadline_n)
+    {
+        waiting = s->hal->rx_waiting(s->hal->ctx);
+        if (waiting > 0 && !at_deadline)
+        {
+            s->verdict_left = waiting;
+            s->verdict_backlog = waiting;
+            s->seen_at = now;
+            return;
+        }
+    }
+    note_left_controller(s, now, waiting);
 }
 
 /*
@@ -504,7 +570,7 @@ static gs_class_t next_class(const gs_t *s, bool *found)
     return GS_CLASS_N;
 }
 
-void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
+void gs_tick(gs_t *s, int64_t now)
 {
     /* Trip 7's window slides; nothing to advance, only to recompute. */
     s->st.skip_window = skips_in_window(s, now);
@@ -524,14 +590,14 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
      *    statistics. While an abort is in progress the departure belongs to step
      *    3, which counts it as aborted and requeues it.
      *
-     *    `!credit_held(s)`: the VCM's next command was already waiting when the
-     *    worker dequeued it, so a held inhibit's departure seen now is left for
-     *    the deadline to book (gs_hold_credit()).
+     *    `!credit_held(s)`: the held timed frame's verdict waits, for the
+     *    deadline or for counted frames (gs_t.credit_hold, gs_t.verdict_left),
+     *    so its departure is not credited here.
      */
     if (s->held && !s->aborting && !credit_held(s)
         && !s->hal->outstanding(s->hal->ctx))
     {
-        note_left_controller(s, now, rx_backlog);
+        see_departure(s, now, false);
     }
 
     /*
@@ -637,6 +703,7 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
                  */
                 s->st.cls[GS_CLASS_INHIBIT].withdrawn++;
                 s->inhibit_outstanding = false;
+                end_verdict_wait(s);
             }
             s->held = false;
             s->held_carried = false;
@@ -797,7 +864,7 @@ void gs_abortwin_note(gs_t *s)
 }
 #endif
 
-gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
+gs_deadline_t gs_command_received(gs_t *s, int64_t now)
 {
     /*
      * The deadline has been evaluated for this command. Set before anything else,
@@ -836,25 +903,38 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
     gs_abortwin_note(s);
 #endif
     /*
-     * UNLESS THE CREDIT IS HELD (gs_hold_credit(), spec 7 trip 7, user
-     * 2026-11-23). This command was already waiting when the worker called its
-     * receive, so it arrived while the worker was busy, and a departure first
-     * seen now cannot be placed before it: "its completion was seen only after
-     * the VCM's next 0x051 had been dequeued". Left uncredited, the inhibit is
-     * still outstanding below, the buffer reads EMPTY, and the EMPTY branch
-     * books it as went-out-late. The hold ends here, whatever is found.
+     * UNLESS THE VERDICT WAITS (spec 7 trip 7, user 2026-11-23).
      *
-     * Until 2026-11-23 this credited it, with rx_backlog read after the
-     * command had been taken out of the queue, so it read 0 and the frame was
-     * booked `ontime`: B4's l3s, one of three late frames counted on time.
+     * `credit_hold` (gs_rx_dequeued()): this command can not be placed after
+     * the completion. Either it was already waiting at the receive and the
+     * completion was not yet seen (path (ii)), or it is one of the frames
+     * counted when the completion was seen (path (i)). Left uncredited, the
+     * inhibit is still outstanding below, the buffer reads EMPTY, and the
+     * EMPTY branch books it as went-out-late.
+     *
+     * `verdict_left` without `credit_hold`: the completion was seen after the
+     * worker removed this command, with frames waiting behind it. Those frames
+     * arrived after this command, so none of them is it: on time, with frames
+     * waiting. A departure first seen here is the same case, so see_departure()
+     * credits it at once with its count.
+     *
+     * The wait ends here, whatever is found. Until 2026-11-23 a completion
+     * first seen here was credited with a count read after the command had
+     * been taken out of the queue, so it read 0 and the frame was booked
+     * `ontime`: B4's l3s, one of three late frames counted on time.
      */
-    const bool held_back = credit_held(s);
-    s->credit_hold = false;
-    if (s->held && !s->aborting && !held_back
-        && !s->hal->outstanding(s->hal->ctx))
+    const bool late_hold = credit_held(s) && s->credit_hold;
+    const bool waited = credit_held(s) && !s->credit_hold;
+    if (waited && !s->aborting)
     {
-        note_left_controller(s, now, rx_backlog);
+        credit_after_wait(s);
     }
+    else if (s->held && !s->aborting && !late_hold && !waited
+             && !s->hal->outstanding(s->hal->ctx))
+    {
+        see_departure(s, now, true);
+    }
+    end_verdict_wait(s);
 
     /*
      * THE DEADLINE HAS NOW PASSED, and the increment goes here rather than at
@@ -929,8 +1009,7 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
          * the opposite.
          *
          * Since 2026-11-23 this is also where a HELD credit lands: a departure
-         * seen only after a command that was already waiting was dequeued
-         * (gs_hold_credit()).
+         * that can not be placed before this command (gs_t.credit_hold).
          */
         s->st.late_on_wire++;
         verdict = GS_DEADLINE_MAYBE_LATE;
@@ -953,10 +1032,45 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
     return verdict;
 }
 
-void gs_hold_credit(gs_t *s)
+void gs_rx_dequeued(gs_t *s, bool vcm_cmd, uint32_t waiting_before)
 {
-    /* Ended by gs_command_received(); see gi_sched.h. */
-    s->credit_hold = true;
+    /* Only a held frame of the timed class is at stake; see gi_sched.h. */
+    if (!s->held || s->held_class != s->timed_class || s->aborting)
+    {
+        return;
+    }
+    if (s->verdict_left > 0)
+    {
+        if (vcm_cmd)
+        {
+            /* The VCM's next 0x051 is one of the counted frames: late. */
+            s->verdict_left = 0;
+            s->credit_hold = true;
+            return;
+        }
+        s->verdict_left--;
+        if (s->verdict_left == 0)
+        {
+            credit_after_wait(s);
+        }
+        return;
+    }
+    if (vcm_cmd && waiting_before > 0 && s->held_deadline_n == s->deadline_n)
+    {
+        /* Path (ii): the command was waiting, the completion is not yet seen. */
+        s->credit_hold = true;
+    }
+}
+
+bool gs_verdict_pending(const gs_t *s)
+{
+    return credit_held(s) && s->verdict_left > 0;
+}
+
+bool gs_timed_in_flight(const gs_t *s)
+{
+    return s->held && s->held_class == s->timed_class && !s->aborting
+        && s->held_deadline_n == s->deadline_n && !credit_held(s);
 }
 
 bool gs_inhibit_outstanding(const gs_t *s)

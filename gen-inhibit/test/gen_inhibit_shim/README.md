@@ -97,6 +97,18 @@ by the tester, not modelled here (gen-inhibit reviewer, 2026-10-31). One
 observation the fake does not record, which thread installed the driver, is
 taken at the call through the linker's `--wrap` (Makefile).
 
+**One delivery is placed by `--wrap` too** (2026-11-23, spec 7 trip 7).
+`ft_deliver_at_count()` delivers an ordinary frame between the scheduler's
+completion read and its count of the receive queue. In virtual time nothing
+arrives between two driver calls in one worker turn, so the harness wraps
+`twai_port_status()` to see the first firmware read that finds no frame of
+ours pending. It wraps `can_msgs_to_rx()` to deliver the frame before the next
+count. Reads made inside `gen_inhibit_get_stats_json()`, which the step hooks
+call at every step, are left out. This places a delivery the fake already
+makes. It injects no fault, so it is not the fake's to add. It is in
+`deliver_at_count.c`, which only this folder's Makefile links. The tester's
+spec shim compiles `shim_harness.c` without these `--wrap` flags.
+
 Determinism: virtual time, and the worker thread never runs concurrently with
 the test. Two runs of the same script produce the same trace. **It therefore
 cannot find a race** — that is out of reach here and belongs on hardware.
@@ -337,6 +349,39 @@ whether one was. Case 62 catches both: N and N+1 are both waiting when the
 worker takes N, its answer completes before N+1 is dequeued, and the device
 must book a late skip. **V10** was re-anchored on the probe's `GI_PUT_CAP`,
 since stage (b) batch 2 packs it through the DBC table (spec 10); still caught.
+
+**Cases 63-68** (2026-11-23) test spec 7 trip 7's decision with frames
+waiting. In each, our frame completes while the worker is parked in an empty
+receive. A filler frame then lets the worker see the completion with whatever
+is queued behind it:
+- 63: the next command is among the counted frames, so it is a late skip.
+- 64: no command among them, so it is on time, with frames waiting. A command
+  delivered after the count does not make it late (the dequeue limit).
+- 65: nothing counted, so it is on time at once.
+- 66: the command arrives between the completion read and the count
+  (`ft_deliver_at_count()`). It is counted, so it is a late skip.
+- 67 and 68: RESPOND's probe on the same path (spec 11). A probe found late is
+  in neither on-time count, is still sent, and is never a skip.
+
+Case 33's replay also asserts no skips (spec 5.2's criterion, 2026-11-23).
+
+**T3 to T6** (2026-11-23, spec 7 trip 7's decision with frames waiting, and
+spec 11's probe on the same path), on `gi_sched.c` and the worker:
+- T3 reads the count before the completion read (the count order). Case 66
+  catches it.
+- T4 waits for one frame more than counted (the dequeue limit). Case 64.
+- T5 keys the wait on the inhibit class, not the timed class. Case 67.
+- T6 never reports a dequeue to the scheduler. Cases 62-64.
+
+**The host suites score in every copy since 2026-11-23.** Each copy is made in
+`scratch/`, with no pinned checkout beside it, so the host build failed in
+every copy, rc 2. Every mutant the shim suite missed was then reported as
+caught, the four expected survivors among them (the full run on `30cc9236`).
+`mutate.py` now finds `WICANDIR` once from `BASE` and hands it to every make.
+It puts the pinned `shared/diag` in each copy's `shared/diag`, the folder
+`diag_host.py` takes first. The baseline is an unmutated copy, scored exactly as
+a mutant is: the shim suite and the three host suites. The host suite's
+`run_tests.py` needs the replay scenarios in `BASE` (its README, "Running it").
 
 **Read `rc`, not the text.** The original scraped lines containing `FAIL`,
 which also matches the harness's own `twai_receive failed: ESP_FAIL` logging —

@@ -69,14 +69,14 @@ static gi_frame_t mk(uint32_t id, uint8_t kind)
 
 /* Run the scheduler and the buffer forward together, in `step` slices, which is
  * how the worker actually drives it: gs_tick() on every loop iteration. */
-static void run(gs_t *s, int64_t us, int64_t step, uint32_t backlog)
+static void run(gs_t *s, int64_t us, int64_t step)
 {
     for (int64_t t = 0; t < us; t += step)
     {
-        gs_tick(s, fb_now(), backlog);
+        gs_tick(s, fb_now());
         fb_advance(step);
     }
-    gs_tick(s, fb_now(), backlog);
+    gs_tick(s, fb_now());
 }
 
 /* ------------------------------------------------------------- the cases -- */
@@ -95,7 +95,7 @@ static void case_preempt_awaiting_telemetry(void)
 
     gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
     ck(gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now()), "diag queued");
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck_eq(fb_submit_count(), 1, "the diag was handed over");
     ck(fb_state_now() == GS_BUF_AWAITING, "and is awaiting arbitration");
 
@@ -105,7 +105,7 @@ static void case_preempt_awaiting_telemetry(void)
     /* The abort must happen and the inhibit must go out. On an idle-enough bus
      * afterwards the inhibit reaches the wire; the diag comes back later. */
     fb_set_contended(false);
-    run(&s, 2000, 10, 0);
+    run(&s, 2000, 10);
 
     ck(fb_wire_count() >= 1, "something reached the wire");
     ck_eq(fb_wire_id(0), ID_INHIBIT, "THE INHIBIT WENT FIRST");
@@ -115,7 +115,7 @@ static void case_preempt_awaiting_telemetry(void)
     ck_eq(st->skipped, 0, "no skip");
 
     /* and the telemetry is sent eventually, never silently lost */
-    run(&s, 3000, 10, 0);
+    run(&s, 3000, 10);
     bool diag_on_wire = false;
     for (int i = 0; i < fb_wire_count(); i++)
     {
@@ -150,12 +150,12 @@ static void case_never_aborts_while_transmitting(void)
 
     gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
-    run(&s, 20, 5, 0);          /* idle bus: it starts transmitting at once */
+    run(&s, 20, 5);          /* idle bus: it starts transmitting at once */
     ck(fb_state_now() == GS_BUF_TRANSMITTING, "the diag is transmitting");
 
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-    run(&s, 1500, 5, 0);
+    run(&s, 1500, 5);
 
     ck_eq(fb_abort_cmds_while_transmitting(), 0,
           "NO abort command was issued while transmitting");
@@ -187,18 +187,18 @@ static void case_deadline_purges_queued_inhibit(void)
     fb_refuse_next(100);        /* the driver will not take anything */
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-    run(&s, 500, 10, 0);
+    run(&s, 500, 10);
     ck_eq(fb_submit_count(), 0, "nothing was accepted");
     ck(gs_stats(&s)->tx_refused > 0, "the refusal was counted");
 
     /* The VCM's next command arrives. The stale inhibit is now too late. */
-    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v = gs_command_received(&s, fb_now());
     ck(v == GS_DEADLINE_SKIPPED, "the deadline reports a SKIP");
     ck_eq(gs_stats(&s)->skipped, 1, "one skip counted");
 
     /* Now let the driver work again. The purged frame must not appear. */
     fb_reset();                 /* clears the refusal and the wire log */
-    run(&s, 3000, 10, 0);
+    run(&s, 3000, 10);
     for (int i = 0; i < fb_wire_count(); i++)
     {
         ck(fb_wire_id(i) != ID_INHIBIT,
@@ -230,11 +230,11 @@ static void case_three_skips_sliding_window(void)
     const int64_t at[4] = { 0, 950000, 1050000, 1100000 };
     for (int i = 0; i < 4; i++)
     {
-        while (fb_now() < at[i]) { fb_advance(1000); gs_tick(&s, fb_now(), 0); }
+        while (fb_now() < at[i]) { fb_advance(1000); gs_tick(&s, fb_now()); }
         gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
         gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-        gs_tick(&s, fb_now(), 0);
-        gs_command_received(&s, fb_now(), 0);
+        gs_tick(&s, fb_now());
+        gs_command_received(&s, fb_now());
     }
     ck_eq(gs_stats(&s)->skipped, 4, "four skips counted");
     ck(gs_skip_trip(&s), "TRIP 7 FIRES: the newest three span 0.15 s");
@@ -255,8 +255,8 @@ static void case_two_skips_no_trip(void)
     {
         gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
         gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-        gs_tick(&s, fb_now(), 0);
-        gs_command_received(&s, fb_now(), 0);
+        gs_tick(&s, fb_now());
+        gs_command_received(&s, fb_now());
         fb_advance(300000);
     }
     ck_eq(gs_stats(&s)->skipped, 2, "two skips");
@@ -279,10 +279,10 @@ static void case_abort_is_not_a_completion(void)
 
     gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-    run(&s, 300, 10, 0);
+    run(&s, 300, 10);
 
     const gs_stats_t *st = gs_stats(&s);
     ck_eq(st->cls[GS_CLASS_TELEMETRY].sent, 0,
@@ -292,23 +292,327 @@ static void case_abort_is_not_a_completion(void)
           "and no inhibit completion was credited yet");
 }
 
-/* An on-time claim with a backlog is counted separately and never summed in. */
+static long residual(const gs_t *s, gs_class_t c);
+static void ck_standdown_identity(const gs_t *s, const char *what);
+
+/*
+ * SPEC 7 TRIP 7, THE DECISION WITH FRAMES WAITING (user, 2026-11-23). The
+ * inhibit is handed over and completes while the worker is away; the next
+ * gs_tick() sees the completion with `waiting` frames in the receive queue.
+ */
+static void seen_with_waiting(gs_t *s, uint32_t waiting)
+{
+    fb_reset();
+    gs_init(s, fb_hal());
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    ck(gs_queue_frame(s, GS_CLASS_INHIBIT, &inh, fb_now()), "inhibit queued");
+    run(s, 20, 5);
+    ck(fb_state_now() == GS_BUF_TRANSMITTING,
+       "PRECONDITION: the inhibit is transmitting");
+    fb_advance(1000);
+    ck(fb_state_now() == GS_BUF_EMPTY && fb_wire_count() == 1,
+       "PRECONDITION: the inhibit completed on the wire unobserved");
+    fb_set_rx_waiting(waiting);
+    gs_tick(s, fb_now());    /* the completion is seen here */
+}
+
+/* The worker removes one frame from the receive queue, then ticks. */
+static void dequeue(gs_t *s, bool vcm)
+{
+    const uint32_t n = fb_rx_waiting();
+    if (n > 0)
+    {
+        fb_set_rx_waiting(n - 1);
+    }
+    gs_rx_dequeued(s, vcm, 0);
+    gs_tick(s, fb_now());
+}
+
+/*
+ * Frames waiting at the completion, none of them the VCM's next 0x051: on
+ * time, with frames waiting (`ontime_unverified`), decided only after the
+ * worker has removed all of them. Counted separately and never summed in.
+ */
 static void case_ontime_unverified(void)
 {
-    g_case = "on-time with a backlog is unverified";
-    fb_reset();
     gs_t s;
-    gs_init(&s, fb_hal());
+    g_case = "trip 7: frames waiting, no command among them: on time, waiting";
+    seen_with_waiting(&s, 3);
+    ck_eq(fb_rx_reads(), 1, "the scheduler counted the queue at the completion");
+    ck(gs_verdict_pending(&s), "the verdict waits for the counted frames");
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].sent, 0, "not yet credited as sent");
+    ck(gs_inhibit_outstanding(&s), "and still outstanding");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the identity closes meanwhile");
 
-    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
-    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-    run(&s, 400, 10, 3);        /* three frames waiting in the RX queue */
+    fb_advance(2000);   /* the dequeues take time; the hold must not grow */
+    dequeue(&s, false);
+    dequeue(&s, false);
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].sent, 0, "two of three removed: still waits");
+    dequeue(&s, false);
 
     const gs_stats_t *st = gs_stats(&s);
-    ck_eq(fb_wire_count(), 1, "the inhibit reached the wire");
-    ck_eq(st->ontime, 0, "it was NOT counted as verified on time");
-    ck_eq(st->ontime_unverified, 1, "it was counted as unverified");
-    ck_eq(st->unverified_max_backlog, 3, "with the backlog recorded");
+    ck(!gs_verdict_pending(&s), "decided after the third");
+    ck_eq(st->cls[GS_CLASS_INHIBIT].sent, 1, "credited as sent");
+    ck_eq(st->ontime, 0, "NOT counted in `ontime` (the queue was not empty)");
+    ck_eq(st->ontime_unverified, 1, "counted on time, with frames waiting");
+    ck_eq(st->unverified_max_backlog, 3, "with the count recorded");
+    ck(st->cls[GS_CLASS_INHIBIT].max_hold_us < 2000,
+       "the hold ends when the completion was seen, not after the dequeues");
+    ck(gs_command_received(&s, fb_now()) == GS_DEADLINE_OK,
+       "the deadline finds nothing outstanding");
+    ck_eq(st->skipped, 0, "no skip");
+}
+
+/* The VCM's next 0x051 is one of the counted frames: a late skip. */
+static void case_counted_command_is_late(void)
+{
+    gs_t s;
+    g_case = "trip 7: the command is among the counted frames: late skip";
+    seen_with_waiting(&s, 2);
+    dequeue(&s, false);
+    ck(gs_verdict_pending(&s), "one counted frame left, still waits");
+    gs_rx_dequeued(&s, true, 0);    /* the VCM's next 0x051, the second one */
+    ck(s.credit_hold, "the deadline is told to book it late");
+    gs_tick(&s, fb_now());
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].sent, 0, "the tick did not credit it");
+    const gs_deadline_t v = gs_command_received(&s, fb_now());
+
+    ck(v == GS_DEADLINE_MAYBE_LATE, "the deadline books it as went-out-late");
+    ck_eq(s.st.late_on_wire, 1, "late_on_wire counted");
+    ck_eq(s.st.skipped_late, 1, "a LATE skip");
+    ck_eq(s.st.skipped_withdrawn, 0, "not a withdrawn one");
+    ck_eq(s.st.ontime + s.st.ontime_unverified, 0, "NOT credited on time");
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].sent, 0, "and not credited as sent");
+    ck(!s.credit_hold && !gs_verdict_pending(&s), "the deadline ended the wait");
+
+    run(&s, 200, 10);
+    ck(!s.held && !s.inhibit_outstanding, "the frame left the scheduler");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the identity closes");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
+    ck_eq(fb_wire_count(), 1, "nothing else went out");
+}
+
+/* An empty queue at the completion: on time at once, no wait. */
+static void case_empty_queue_is_on_time(void)
+{
+    gs_t s;
+    g_case = "trip 7: an empty queue at the completion: on time";
+    seen_with_waiting(&s, 0);
+    ck(!gs_verdict_pending(&s), "nothing to wait for");
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].sent, 1, "credited as sent at once");
+    ck_eq(s.st.ontime, 1, "counted in `ontime`");
+    ck_eq(s.st.ontime_unverified, 0, "not with frames waiting");
+    ck(gs_command_received(&s, fb_now()) == GS_DEADLINE_OK,
+       "the deadline finds nothing outstanding");
+}
+
+/*
+ * A frame that arrives between the completion read and the count is counted
+ * (spec 7 trip 7: "it counts them after it sees the completion, not before").
+ * Here it is the VCM's next 0x051, so the frame is a late skip. A count taken
+ * before the completion read, as the caller's `rx_backlog` is, reads 0 and
+ * books it on time.
+ */
+static void case_arrival_between_reads_is_counted(void)
+{
+    gs_t s;
+    g_case = "trip 7: a frame arriving between the completion read and the count";
+    fb_reset();
+    gs_init(&s, fb_hal());
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    ck(gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now()), "inhibit queued");
+    run(&s, 20, 5);
+    fb_advance(1000);
+    ck(fb_state_now() == GS_BUF_EMPTY && fb_wire_count() == 1,
+       "PRECONDITION: the inhibit completed on the wire unobserved");
+    fb_arrive_on_free(1);
+    gs_tick(&s, fb_now());   /* the caller's count read 0 */
+    ck_eq(fb_rx_waiting(), 1, "PRECONDITION: the frame arrived");
+    ck(gs_verdict_pending(&s), "the arrival was counted: the verdict waits");
+    ck_eq(s.st.ontime, 0, "not credited on time");
+
+    dequeue(&s, true);
+    ck(gs_command_received(&s, fb_now()) == GS_DEADLINE_MAYBE_LATE,
+       "the counted frame was the command: a late skip");
+    ck_eq(s.st.skipped_late, 1, "booked late");
+    ck_eq(s.st.ontime + s.st.ontime_unverified, 0, "and never on time");
+}
+
+/*
+ * THE LIMIT: the verdict waits for the frames counted, and no more. A VCM
+ * 0x051 that arrives after the count, behind them, is not one of them, so the
+ * frame is on time, with frames waiting.
+ */
+static void case_command_after_the_count_is_on_time(void)
+{
+    gs_t s;
+    g_case = "trip 7: a command behind the counted frames does not make it late";
+    seen_with_waiting(&s, 1);
+    fb_set_rx_waiting(2);           /* the command arrives behind the counted one */
+    dequeue(&s, false);
+    ck(!gs_verdict_pending(&s), "decided after the one counted frame");
+    ck_eq(s.st.ontime_unverified, 1, "on time, with frames waiting");
+    dequeue(&s, true);
+    ck(!s.credit_hold, "no hold for a command after the count");
+    ck(gs_command_received(&s, fb_now()) == GS_DEADLINE_OK,
+       "the deadline finds it on time");
+    ck_eq(s.st.skipped, 0, "no skip");
+    ck_eq(s.st.unverified_max_backlog, 1, "the count was 1");
+}
+
+/*
+ * The completion seen after the worker removed this command, with a blocked
+ * receive (no hold) and frames waiting behind it: they arrived after the
+ * command, so none of them is it. The deadline can not wait for them: on time,
+ * with frames waiting, at once.
+ */
+static void case_deadline_ends_the_wait_on_time(void)
+{
+    gs_t s;
+    g_case = "trip 7: frames behind the dequeued command: on time, waiting";
+    fb_reset();
+    gs_init(&s, fb_hal());
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    ck(gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now()), "inhibit queued");
+    run(&s, 20, 5);
+    fb_advance(1000);
+    gs_rx_dequeued(&s, true, 0);    /* the receive blocked: no hold */
+    fb_set_rx_waiting(2);
+    gs_tick(&s, fb_now());       /* the completion seen after the dequeue */
+    ck(gs_verdict_pending(&s), "PRECONDITION: the verdict waits");
+    ck(gs_command_received(&s, fb_now()) == GS_DEADLINE_OK,
+       "the deadline credits it");
+    ck_eq(s.st.ontime_unverified, 1, "on time, with frames waiting");
+    ck_eq(s.st.unverified_max_backlog, 2, "with the count");
+    ck_eq(s.st.skipped, 0, "no skip");
+    ck(!gs_verdict_pending(&s), "the wait ended");
+
+    /* A departure first seen at the deadline is counted the same way. */
+    g_case = "trip 7: a departure first seen at the deadline, frames behind it";
+    fb_reset();
+    gs_init(&s, fb_hal());
+    ck(gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now()), "inhibit queued");
+    run(&s, 20, 5);
+    fb_advance(1000);
+    fb_set_rx_waiting(2);
+    ck(gs_command_received(&s, fb_now()) == GS_DEADLINE_OK,
+       "the deadline credits it");
+    ck_eq(s.st.ontime_unverified, 1, "on time, with frames waiting");
+    ck_eq(s.st.ontime, 0, "not in `ontime`");
+}
+
+/*
+ * RESPOND'S PROBE TAKES THE INHIBIT'S PATH (spec 11, user 2026-11-23): the
+ * same transmit path, deadline and decision with frames waiting. At the
+ * deadline a probe is never withdrawn and is never a skip, and a probe found
+ * late is in neither on-time count.
+ */
+static void probe_seen_with_waiting(gs_t *s, uint32_t waiting)
+{
+    fb_reset();
+    gs_init(s, fb_hal());
+    gs_rearm(s, fb_hal(), GS_CLASS_PROBE);
+    gi_frame_t p = mk(ID_PROBE, GI_TX_PROBE);
+    ck(gs_queue_frame(s, GS_CLASS_PROBE, &p, fb_now()), "probe queued");
+    run(s, 20, 5);
+    ck(fb_state_now() == GS_BUF_TRANSMITTING,
+       "PRECONDITION: the probe is transmitting");
+    fb_advance(1000);
+    ck(fb_state_now() == GS_BUF_EMPTY && fb_wire_count() == 1,
+       "PRECONDITION: the probe completed on the wire unobserved");
+    fb_set_rx_waiting(waiting);
+    gs_tick(s, fb_now());       /* the completion is seen here */
+}
+
+static void ck_probe_late(gs_t *s, const char *how)
+{
+    g_case = how;
+    ck(gs_command_received(s, fb_now()) == GS_DEADLINE_OK,
+       "a probe is never a skip at the deadline");
+    ck(s->held, "the deadline did not credit it");
+    gs_tick(s, fb_now());
+    const gs_stats_t *st = gs_stats(s);
+    ck_eq(st->cls[GS_CLASS_PROBE].sent, 1, "it is still credited as sent");
+    ck_eq(st->ontime + st->ontime_unverified, 0, "in neither on-time count");
+    ck_eq(st->skipped, 0, "never a skip");
+    ck_eq(st->late_on_wire, 0, "not booked late_on_wire");
+    ck_eq(st->cls[GS_CLASS_PROBE].withdrawn, 0, "never withdrawn");
+    ck_eq(fb_abort_cmds(), 0, "no abort issued");
+    ck_eq(residual(s, GS_CLASS_PROBE), 0, "the identity closes");
+    ck_eq(fb_wire_count(), 1, "nothing else went out");
+}
+
+static void case_probe_counted_command_is_late(void)
+{
+    gs_t s;
+    g_case = "spec 11: probe, the command among the counted frames";
+    probe_seen_with_waiting(&s, 2);
+    ck(gs_verdict_pending(&s), "the probe's verdict waits");
+    ck_eq(s.st.cls[GS_CLASS_PROBE].sent, 0, "not yet credited");
+    dequeue(&s, false);
+    gs_rx_dequeued(&s, true, 0);    /* the VCM's next 0x051 */
+    ck(s.credit_hold, "the deadline is told it was late");
+    gs_tick(&s, fb_now());
+    ck_probe_late(&s, "spec 11: probe, the command among the counted frames");
+
+    /* Path (ii) for the probe: the command was waiting at the receive. */
+    fb_reset();
+    gs_init(&s, fb_hal());
+    gs_rearm(&s, fb_hal(), GS_CLASS_PROBE);
+    gi_frame_t p = mk(ID_PROBE, GI_TX_PROBE);
+    ck(gs_queue_frame(&s, GS_CLASS_PROBE, &p, fb_now()), "probe queued");
+    run(&s, 20, 5);
+    fb_advance(1000);
+    ck(gs_timed_in_flight(&s), "the probe is in flight, completion not seen");
+    gs_rx_dequeued(&s, true, 1);
+    ck(s.credit_hold, "path (ii): held");
+    gs_tick(&s, fb_now());
+    ck_probe_late(&s, "spec 11: probe, the command waiting at the receive");
+}
+
+static void case_probe_not_among_them_is_on_time(void)
+{
+    gs_t s;
+    g_case = "spec 11: probe, frames waiting, no command among them";
+    probe_seen_with_waiting(&s, 1);
+    ck(gs_verdict_pending(&s), "the probe's verdict waits");
+    dequeue(&s, false);
+    ck_eq(s.st.cls[GS_CLASS_PROBE].sent, 1, "credited as sent");
+    ck_eq(s.st.ontime_unverified, 1, "on time, with frames waiting");
+    ck_eq(s.st.ontime, 0, "not in `ontime`");
+    ck_eq(s.st.unverified_max_backlog, 1, "with the count");
+    ck(gs_command_received(&s, fb_now()) == GS_DEADLINE_OK, "no skip");
+    ck_eq(s.st.skipped, 0, "none");
+
+    g_case = "spec 11: probe, an empty queue at the completion";
+    probe_seen_with_waiting(&s, 0);
+    ck_eq(s.st.cls[GS_CLASS_PROBE].sent, 1, "credited as sent at once");
+    ck_eq(s.st.ontime, 1, "on time");
+}
+
+/*
+ * A stand-down while the verdict waits: counted as a stand-down "whether or
+ * not it reached the wire" (spec 5.2 item 5), never as a skip or on time. The
+ * wait ends, and a later dequeue changes nothing.
+ */
+static void case_standdown_ends_the_wait(void)
+{
+    gs_t s;
+    g_case = "trip 7: a stand-down while the verdict waits";
+    seen_with_waiting(&s, 2);
+    ck(gs_verdict_pending(&s), "PRECONDITION: the verdict waits");
+    gs_withdraw_inhibits(&s, fb_now());
+    ck(!gs_verdict_pending(&s) && !s.credit_hold, "the wait ended");
+    ck_eq(s.st.standdown, 1, "a stand-down");
+    dequeue(&s, true);
+    run(&s, 200, 10);
+    ck(!s.held, "the frame left the scheduler");
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].withdrawn, 1, "booked withdrawn");
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].sent, 0, "not sent");
+    ck_eq(s.st.skipped, 0, "not a skip");
+    ck_eq(s.st.ontime + s.st.ontime_unverified, 0, "not on time");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the identity closes");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
 }
 
 /* Telemetry queue overflow: drops counted (item 6). */
@@ -345,12 +649,12 @@ static void case_nothing_behind_an_inhibit(void)
 
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck(gs_inhibit_outstanding(&s), "the inhibit is outstanding");
 
     gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
-    run(&s, 200, 10, 0);
+    run(&s, 200, 10);
     ck_eq(fb_submit_count(), 1, "ONLY the inhibit was handed over");
 }
 
@@ -405,17 +709,17 @@ static void case_withdrawn_held_inhibit_never_returns(void)
 
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck_eq(fb_submit_count(), 1, "the inhibit was handed over");
     ck(fb_state_now() == GS_BUF_AWAITING, "and is awaiting arbitration");
 
-    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v = gs_command_received(&s, fb_now());
     ck(v == GS_DEADLINE_SKIPPED, "the deadline skips it");
     ck_eq(gs_stats(&s)->skipped, 1, "one skip");
 
     /* Let the bus go quiet and run a long time. It must not reappear. */
     fb_set_contended(false);
-    run(&s, 5000, 10, 0);
+    run(&s, 5000, 10);
     for (int i = 0; i < fb_wire_count(); i++)
     {
         ck(fb_wire_id(i) != ID_INHIBIT,
@@ -449,10 +753,10 @@ static void case_transmitting_at_deadline_is_maybe_late(void)
 
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-    run(&s, 100, 10, 0);        /* idle bus: transmitting, ~249 us to go */
+    run(&s, 100, 10);        /* idle bus: transmitting, ~249 us to go */
     ck(fb_state_now() == GS_BUF_TRANSMITTING, "the inhibit is transmitting");
 
-    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v = gs_command_received(&s, fb_now());
     ck(v == GS_DEADLINE_MAYBE_LATE, "the verdict is MAYBE_LATE");
     const gs_stats_t *st = gs_stats(&s);
     ck_eq(st->late_on_wire, 1, "late_on_wire counted");
@@ -484,7 +788,7 @@ static void case_requeue_at_head(void)
 
     gi_frame_t a = mk(0x7F1, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &a, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck_eq(fb_submit_count(), 1, "0x7F1 was handed over");
 
     /* Two more pages queue up behind it while it is in the buffer. */
@@ -497,7 +801,7 @@ static void case_requeue_at_head(void)
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
     fb_set_contended(false);
-    run(&s, 4000, 10, 0);
+    run(&s, 4000, 10);
 
     ck(fb_wire_count() >= 3, "several frames reached the wire");
     ck_eq(fb_wire_id(0), ID_INHIBIT, "the inhibit went first");
@@ -524,7 +828,7 @@ static void case_abort_bound_is_reached(void)
 
     gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck(fb_state_now() == GS_BUF_AWAITING, "the diag is awaiting");
 
     /* The abort will be authorised at AWAITING and land at TS = 1 anyway, and
@@ -534,7 +838,7 @@ static void case_abort_bound_is_reached(void)
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
 
-    run(&s, 2000, 10, 0);
+    run(&s, 2000, 10);
     const gs_stats_t *st = gs_stats(&s);
     ck(fb_aborts_with_no_effect() >= 1, "the race produced a no-effect abort");
     ck(st->abort_bound_hit >= 1, "THE 1 MS BOUND WAS REACHED AND COUNTED");
@@ -558,13 +862,13 @@ static void case_probe_is_preempted_by_inhibit(void)
 
     gi_frame_t p = mk(ID_PROBE, GI_TX_PROBE);
     gs_queue_frame(&s, GS_CLASS_PROBE, &p, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck_eq(fb_submit_count(), 1, "the probe was handed over");
 
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
     fb_set_contended(false);
-    run(&s, 3000, 10, 0);
+    run(&s, 3000, 10);
 
     const gs_stats_t *st = gs_stats(&s);
     ck_eq(st->cls[GS_CLASS_PROBE].aborted, 1, "the probe was aborted");
@@ -579,7 +883,7 @@ static void case_probe_is_preempted_by_inhibit(void)
     gi_frame_t i2 = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s2, GS_CLASS_PROBE, &p2, fb_now());
     gs_queue_frame(&s2, GS_CLASS_INHIBIT, &i2, fb_now());
-    run(&s2, 2000, 10, 0);
+    run(&s2, 2000, 10);
     ck_eq(fb_submit_id(0), ID_INHIBIT, "queued together, the inhibit goes first");
 }
 
@@ -602,11 +906,11 @@ static void case_skip_window_boundary_exactly_one_second(void)
     const int64_t at[3] = { 0, 500000, 1000000 };
     for (int i = 0; i < 3; i++)
     {
-        while (fb_now() < at[i]) { fb_advance(1000); gs_tick(&s, fb_now(), 0); }
+        while (fb_now() < at[i]) { fb_advance(1000); gs_tick(&s, fb_now()); }
         gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
         gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-        gs_tick(&s, fb_now(), 0);
-        gs_command_received(&s, fb_now(), 0);
+        gs_tick(&s, fb_now());
+        gs_command_received(&s, fb_now());
     }
     ck_eq(gs_stats(&s)->skipped, 3, "three skips");
     ck(!gs_skip_trip(&s),
@@ -616,8 +920,8 @@ static void case_skip_window_boundary_exactly_one_second(void)
      * boundary rather than an accident. */
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-    gs_tick(&s, fb_now(), 0);
-    gs_command_received(&s, fb_now(), 0);
+    gs_tick(&s, fb_now());
+    gs_command_received(&s, fb_now());
     ck(gs_skip_trip(&s), "a fourth skip at the same instant DOES trip");
 }
 
@@ -648,7 +952,7 @@ static void case_race_between_read_and_abort(void)
 
     gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck(fb_state_now() == GS_BUF_AWAITING, "the diag is awaiting");
 
     /* The next abort is authorised at AWAITING and lands at TS = 1 anyway. The
@@ -657,7 +961,7 @@ static void case_race_between_read_and_abort(void)
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
     fb_set_contended(false);
-    run(&s, 3000, 10, 0);
+    run(&s, 3000, 10);
 
     ck_eq(fb_aborts_with_no_effect(), 1, "one abort really had no effect");
     ck(fb_abort_cmds_while_transmitting() >= 1,
@@ -691,7 +995,7 @@ static void order_once(bool correct_order, bool prev_outstanding,
     gs_init(&s, fb_hal());
 
     /* One command and answer, so there IS a previous inhibit. */
-    gs_command_received(&s, fb_now(), 0);
+    gs_command_received(&s, fb_now());
     gi_frame_t first = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &first, fb_now());
 
@@ -699,25 +1003,25 @@ static void order_once(bool correct_order, bool prev_outstanding,
     {
         /* Contended: it is handed over and sits AWAITING, never completing. */
         fb_set_contended(true);
-        run(&s, 50, 10, 0);
+        run(&s, 50, 10);
     }
     else
     {
         /* Idle: it completes long before the next command. */
-        run(&s, 600, 10, 0);
+        run(&s, 600, 10);
     }
 
     /* The next command arrives, and its answer is queued. */
     gi_frame_t second = mk(ID_INHIBIT, GI_TX_INHIBIT);
     if (correct_order)
     {
-        gs_command_received(&s, fb_now(), 0);
+        gs_command_received(&s, fb_now());
         gs_queue_frame(&s, GS_CLASS_INHIBIT, &second, fb_now());
     }
     else
     {
         gs_queue_frame(&s, GS_CLASS_INHIBIT, &second, fb_now());
-        gs_command_received(&s, fb_now(), 0);
+        gs_command_received(&s, fb_now());
     }
     *violations = gs_stats(&s)->order_violations;
 }
@@ -751,7 +1055,7 @@ static void case_rearm_keeps_what_the_hardware_holds(void)
     /* The first diag page is handed over and is still in the buffer. */
     gi_frame_t page_a = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page_a, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck_eq(fb_submit_count(), 1, "the first page was handed over");
     ck(fb_outstanding_now(), "and the controller still holds it");
 
@@ -772,7 +1076,7 @@ static void case_rearm_keeps_what_the_hardware_holds(void)
      */
     gi_frame_t page_b = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page_b, fb_now());
-    run(&s, 100, 10, 0);
+    run(&s, 100, 10);
 
     const gs_stats_t *st = gs_stats(&s);
     ck_eq(st->cls[GS_CLASS_TELEMETRY].refused, 0,
@@ -787,7 +1091,7 @@ static void case_rearm_keeps_what_the_hardware_holds(void)
      * first page's departure to nobody at all.
      */
     fb_set_contended(false);
-    run(&s, 3000, 10, 0);
+    run(&s, 3000, 10);
 
     ck_eq(fb_wire_count(), 2, "both pages reached the wire");
     ck_eq(st->cls[GS_CLASS_TELEMETRY].sent, 2,
@@ -837,7 +1141,7 @@ static void case_identity_frame_in_flight(void)
 
     gi_frame_t page = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
 
     ck(fb_outstanding_now(), "the controller is holding the page");
     const gs_class_stats_t *c = &s.st.cls[GS_CLASS_TELEMETRY];
@@ -853,7 +1157,7 @@ static void case_identity_frame_in_flight(void)
 
     /* And it still closes once the frame really goes. */
     fb_set_contended(false);
-    run(&s, 3000, 10, 0);
+    run(&s, 3000, 10);
     ck_eq(fb_wire_count(), 1, "the page reached the wire");
     ck_eq(c->sent, 1, "and was counted as sent");
     ck_eq(held_in(&s, GS_CLASS_TELEMETRY), 0, "nothing is held now");
@@ -876,7 +1180,7 @@ static void case_identity_carried_across_rearm(void)
 
     gi_frame_t page_a = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page_a, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck(fb_outstanding_now(), "the controller holds the first page");
 
     /* Let real time pass before the re-arm, so a hold booked into the new arm
@@ -893,7 +1197,7 @@ static void case_identity_carried_across_rearm(void)
 
     /* Now let it complete. */
     fb_set_contended(false);
-    run(&s, 3000, 10, 0);
+    run(&s, 3000, 10);
 
     ck_eq(c->sent, 1, "the inherited frame was counted as sent");
     ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0,
@@ -916,9 +1220,9 @@ static void case_identity_carried_across_rearm(void)
     fb_set_contended(true);
     gi_frame_t page_b = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page_b, fb_now());
-    run(&s, 500, 10, 0);
+    run(&s, 500, 10);
     fb_set_contended(false);
-    run(&s, 3000, 10, 0);
+    run(&s, 3000, 10);
     ck_eq(c->sent, 2, "the second page went too");
     ck(c->max_hold_us > 0,
        "and ITS hold WAS measured; the exclusion is per-frame, not per-arm");
@@ -952,12 +1256,12 @@ static void case_identity_withdrawn_inhibit_balances(void)
     gs_init(&s, fb_hal());
 
     /* One command, one answer, queued but not yet handed over. */
-    (void)gs_command_received(&s, fb_now(), 0);
+    (void)gs_command_received(&s, fb_now());
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
 
     /* The VCM's NEXT command arrives before it went: the deadline withdraws it. */
-    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v = gs_command_received(&s, fb_now());
     ck_eq((long)v, (long)GS_DEADLINE_SKIPPED, "it was withdrawn, never on the wire");
 
     const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
@@ -1000,10 +1304,10 @@ static void case_identity_withdrawn_held_inhibit_balances(void)
     gs_t s;
     gs_init(&s, fb_hal());
 
-    (void)gs_command_received(&s, fb_now(), 0);
+    (void)gs_command_received(&s, fb_now());
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
 
     const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
     ck_eq(c->handed, 1, "the inhibit was handed to the controller");
@@ -1011,7 +1315,7 @@ static void case_identity_withdrawn_held_inhibit_balances(void)
     ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes while held");
 
     /* The VCM's next command: the deadline gives the frame up. */
-    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v = gs_command_received(&s, fb_now());
     ck_eq((long)v, (long)GS_DEADLINE_SKIPPED,
           "awaiting arbitration at the deadline: withdrawn, never on the wire");
     ck_eq(s.st.skipped, 1, "counted as a skip immediately");
@@ -1030,7 +1334,7 @@ static void case_identity_withdrawn_held_inhibit_balances(void)
     }
 
     /* Let the abort loop finish. */
-    run(&s, 3000, 10, 0);
+    run(&s, 3000, 10);
 
     ck_eq(fb_wire_count(), 0, "the frame never reached the wire");
     ck_eq(c->sent, 0, "and was never credited as sent");
@@ -1069,7 +1373,7 @@ static void case_identity_withdraw_api_balances(void)
     gs_t s;
     gs_init(&s, fb_hal());
 
-    (void)gs_command_received(&s, fb_now(), 0);
+    (void)gs_command_received(&s, fb_now());
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
 
@@ -1092,7 +1396,7 @@ static void case_identity_withdraw_api_balances(void)
     ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
 
     /* Nothing may come back later: item 5 forbids sending a skipped frame. */
-    run(&s, 3000, 10, 0);
+    run(&s, 3000, 10);
     ck_eq(fb_wire_count(), 0, "and it never reaches the wire afterwards");
     ck_eq(c->sent, 0, "nor is it ever credited as sent");
 }
@@ -1163,7 +1467,7 @@ static void case_departure_during_abort_is_not_sent(void)
     /* A diag page in the buffer, awaiting arbitration. */
     gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
     ck(gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now()), "diag queued");
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck_eq(fb_submit_count(), 1, "the diag was handed over");
     ck(fb_state_now() == GS_BUF_AWAITING, "and is awaiting arbitration");
 
@@ -1175,7 +1479,7 @@ static void case_departure_during_abort_is_not_sent(void)
      * ONE tick: it begins the abort and issues the command. fake_buf then frees the
      * buffer a few microseconds later, modelling the measured 6-21 us.
      */
-    gs_tick(&s, fb_now(), 0);
+    gs_tick(&s, fb_now());
     ck(s.st.aborts >= 1, "the abort was issued");
     fb_advance(10);
 
@@ -1183,7 +1487,7 @@ static void case_departure_during_abort_is_not_sent(void)
      * AND NOW THE VCM'S NEXT COMMAND, which is the path under test. The buffer is free
      * because the abort took effect, and the page is still held mid-abort.
      */
-    (void)gs_command_received(&s, fb_now(), 3);
+    (void)gs_command_received(&s, fb_now());
 
     ck_eq(telem->sent, 0,
           "the aborted diag page was credited as SENT by gs_command_received -- the "
@@ -1197,7 +1501,7 @@ static void case_departure_during_abort_is_not_sent(void)
      * departure it cannot classify, and gs_tick's step 3 counts it as aborted and puts
      * it back. So these are asserted after a tick has run, not before.
      */
-    gs_tick(&s, fb_now(), 0);
+    gs_tick(&s, fb_now());
     ck_eq(telem->aborted, 1, "the abort is counted (spec 5.2 item 6)");
     ck_eq(telem->requeued, 1, "and the page is put back, not dropped");
     ck_eq(telem->sent, 0, "and still not credited as sent");
@@ -1209,7 +1513,7 @@ static void case_departure_during_abort_is_not_sent(void)
      * gone.
      */
     fb_set_contended(false);
-    run(&s, 5000, 10, 0);
+    run(&s, 5000, 10);
     ck(wire_count_id(ID_DIAG) >= 1,
        "the requeued diag page never reached the wire: it was booked as sent and lost");
 }
@@ -1258,7 +1562,7 @@ static void case_saturation_sustained(void)
     int pages_offered = 0;
     for (int i = 0; i < N_SHORT; i++)
     {
-        (void)gs_command_received(&s, fb_now(), 0);
+        (void)gs_command_received(&s, fb_now());
         gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
         gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
         if (i % TELEM_EVERY == 0)
@@ -1267,7 +1571,7 @@ static void case_saturation_sustained(void)
             (void)gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page, fb_now());
             pages_offered++;
         }
-        run(&s, VCM_PERIOD_US, 250, 0);
+        run(&s, VCM_PERIOD_US, 250);
     }
 
     wire_log_sane();
@@ -1286,7 +1590,7 @@ static void case_saturation_sustained(void)
     int deadlines_ok = 0;
     for (int i = 0; i < N_MORE; i++)
     {
-        const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+        const gs_deadline_t v = gs_command_received(&s, fb_now());
         if (v == GS_DEADLINE_OK) { deadlines_ok++; }
         gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
         gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
@@ -1296,7 +1600,7 @@ static void case_saturation_sustained(void)
             (void)gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page, fb_now());
             pages_offered++;
         }
-        run(&s, VCM_PERIOD_US, 250, 0);
+        run(&s, VCM_PERIOD_US, 250);
     }
 
     /* 1. NO INHIBIT LATE. */
@@ -1343,10 +1647,10 @@ static void case_saturation_sustained(void)
 
     for (int i = 0; i < 40; i++)
     {
-        (void)gs_command_received(&s, fb_now(), 0);
+        (void)gs_command_received(&s, fb_now());
         gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
         gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-        run(&s, VCM_PERIOD_US, 250, 0);
+        run(&s, VCM_PERIOD_US, 250);
     }
 
     ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0,
@@ -1383,10 +1687,10 @@ static void case_saturation_skip_is_counted(void)
     /* A few normal cycles first, so this is a skip DURING traffic. */
     for (int i = 0; i < 6; i++)
     {
-        (void)gs_command_received(&s, fb_now(), 0);
+        (void)gs_command_received(&s, fb_now());
         gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
         gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-        run(&s, VCM_PERIOD_US, 250, 0);
+        run(&s, VCM_PERIOD_US, 250);
     }
     ck_eq(inhib->sent, 6, "six answers out before the interesting part");
 
@@ -1397,20 +1701,20 @@ static void case_saturation_skip_is_counted(void)
      */
     gi_frame_t page = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page, fb_now());
-    run(&s, 500, 250, 0);
+    run(&s, 500, 250);
     fb_stick_transmitting(30000);
 
-    (void)gs_command_received(&s, fb_now(), 0);
+    (void)gs_command_received(&s, fb_now());
     gi_frame_t stuck = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &stuck, fb_now());
-    run(&s, VCM_PERIOD_US, 250, 0);
+    run(&s, VCM_PERIOD_US, 250);
     ck_eq(inhib->sent, 6, "it did not get out: the buffer is still transmitting");
 
     const int wire_inh_before = wire_count_id(ID_INHIBIT);
     const uint32_t skipped_before = s.st.skipped;
 
     /* The VCM's next command arrives with our answer still queued. */
-    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v = gs_command_received(&s, fb_now());
     ck_eq((long)v, (long)GS_DEADLINE_SKIPPED,
           "never handed over, so it is a clean skip and not a maybe-late");
     ck(s.st.skipped > skipped_before, "the skip is counted");
@@ -1433,7 +1737,7 @@ static void case_saturation_skip_is_counted(void)
     fb_stick_transmitting(0);
 
     /* Item 5: a skipped frame is never sent later. Let everything drain. */
-    run(&s, 80000, 250, 0);
+    run(&s, 80000, 250);
     wire_log_sane();
     ck_eq(wire_count_id(ID_INHIBIT), wire_inh_before,
           "the skipped inhibit never reaches the wire, then or afterwards");
@@ -1441,10 +1745,10 @@ static void case_saturation_skip_is_counted(void)
     /* AND THE NEXT COMMAND IS ANSWERED NORMALLY (item 10's skip bullet). A skip
      * that poisoned the following cycle would be far worse than the skip. */
     const uint32_t sent_before_next = inhib->sent;
-    (void)gs_command_received(&s, fb_now(), 0);
+    (void)gs_command_received(&s, fb_now());
     gi_frame_t next = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &next, fb_now());
-    run(&s, VCM_PERIOD_US, 250, 0);
+    run(&s, VCM_PERIOD_US, 250);
     ck_eq(inhib->sent, sent_before_next + 1,
           "the command after a skip is answered normally");
     ck_eq(s.st.order_violations, 0, "and no ordering violation anywhere in the run");
@@ -1478,7 +1782,7 @@ static void case_identity_carried_requeue_sets_no_wait(void)
 
     gi_frame_t page_a = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &page_a, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck(fb_outstanding_now(), "the controller holds the page");
 
     /*
@@ -1504,10 +1808,10 @@ static void case_identity_carried_requeue_sets_no_wait(void)
      * An inhibit in the new arm preempts it. The buffer is AWAITING, so item 6's
      * preemption aborts the page and requeues it at the head of its class.
      */
-    (void)gs_command_received(&s, fb_now(), 0);
+    (void)gs_command_received(&s, fb_now());
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-    run(&s, 5000, 10, 0);
+    run(&s, 5000, 10);
 
     ck_eq(telem->aborted, 1, "the page was aborted");
     ck_eq(telem->requeued, 1, "and requeued rather than dropped");
@@ -1532,7 +1836,7 @@ static void case_identity_carried_requeue_sets_no_wait(void)
 
     /* Let the inhibit go, then the requeued page. */
     fb_set_contended(false);
-    run(&s, 5000, 10, 0);
+    run(&s, 5000, 10);
     ck_eq(s.st.cls[GS_CLASS_INHIBIT].sent, 1, "the inhibit went first");
     ck_eq(telem->sent, 1, "then the carried page");
 
@@ -1571,7 +1875,7 @@ static void case_identity_carried_requeue_sets_no_wait(void)
 
     /* And a fresh frame that really waits DOES book it -- the exclusion is
      * per-frame, not a blanket silencing of the counter. */
-    run(&s, 20000, 10, 0);
+    run(&s, 20000, 10);
     ck(telem->max_queue_us > 0,
        "a fresh frame's genuine wait IS booked, so the exclusion did not just "
        "turn the counter off");
@@ -1605,20 +1909,20 @@ static void case_withdrawal_clears_inhibit_outstanding(void)
     gs_init(&s, fb_hal());
 
     /* One command, one answer, handed to the controller. */
-    (void)gs_command_received(&s, fb_now(), 0);
+    (void)gs_command_received(&s, fb_now());
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck_eq(s.st.cls[GS_CLASS_INHIBIT].handed, 1, "the inhibit was handed over");
     ck(gs_inhibit_outstanding(&s), "and is outstanding");
 
     /* Its deadline: awaiting arbitration, so it is withdrawn and never reaches the
      * wire. */
-    const gs_deadline_t v1 = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v1 = gs_command_received(&s, fb_now());
     ck_eq((long)v1, (long)GS_DEADLINE_SKIPPED, "withdrawn at the deadline");
 
     /* Let the abort loop finish, so the frame is really gone. */
-    run(&s, 3000, 10, 0);
+    run(&s, 3000, 10);
     ck_eq(s.st.cls[GS_CLASS_INHIBIT].withdrawn, 1, "and booked as withdrawn");
     ck_eq(fb_wire_count(), 0, "nothing reached the wire");
 
@@ -1636,13 +1940,13 @@ static void case_withdrawal_clears_inhibit_outstanding(void)
      * A COMMAND WITH NO ANSWER. The core does this whenever it has stopped being
      * live, which is exactly when a stale flag is most likely to be read.
      */
-    const gs_deadline_t v2 = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v2 = gs_command_received(&s, fb_now());
     ck_eq((long)v2, (long)GS_DEADLINE_OK,
           "a deadline with nothing outstanding and nothing queued is OK");
-    run(&s, 1000, 10, 0);
+    run(&s, 1000, 10);
 
     /* And the command after that -- the one that reads the flag. */
-    const gs_deadline_t v3 = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v3 = gs_command_received(&s, fb_now());
     ck_eq((long)v3, (long)GS_DEADLINE_OK, "and so is the next");
 
     ck_eq(s.st.skipped, 1,
@@ -1693,7 +1997,7 @@ static long json_standdown(const gs_t *s)
 /* One VCM command, phase-locked: its deadline first, then its answer queued. */
 static void command_and_answer(gs_t *s)
 {
-    (void)gs_command_received(s, fb_now(), 0);
+    (void)gs_command_received(s, fb_now());
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     gs_queue_frame(s, GS_CLASS_INHIBIT, &inh, fb_now());
 }
@@ -1711,7 +2015,7 @@ static int pages_after(gs_t *s, int pages, int64_t period_us)
     {
         gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
         gs_queue_frame(s, GS_CLASS_TELEMETRY, &d, fb_now());
-        run(s, period_us, 10, 0);
+        run(s, period_us, 10);
     }
     return wire_count_id(ID_DIAG) - before;
 }
@@ -1738,11 +2042,11 @@ static void case_standdown_queued_answer(void)
     fb_stick_transmitting(5000);
     gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
     gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
-    run(&s, 50, 10, 0);
+    run(&s, 50, 10);
     ck(fb_state_now() == GS_BUF_TRANSMITTING, "the page is transmitting");
 
     command_and_answer(&s);
-    run(&s, 20, 10, 0);
+    run(&s, 20, 10);
     ck_eq(s.q[GS_CLASS_INHIBIT].n, 1,
           "PRECONDITION: the answer is waiting in its queue");
     ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "and is not in the controller");
@@ -1761,7 +2065,7 @@ static void case_standdown_queued_answer(void)
 
     /* The page finishes; telemetry keeps its cadence; the answer never goes. */
     fb_stick_transmitting(0);
-    run(&s, 1000, 10, 0);
+    run(&s, 1000, 10);
     ck_eq(wire_count_id(ID_DIAG), 1, "the page that was on the wire finished");
     ck_eq(pages_after(&s, 5, 20000), 5,
           "every page queued after the stand-down reached the wire");
@@ -1769,8 +2073,8 @@ static void case_standdown_queued_answer(void)
           "the withdrawn answer never reached the wire");
 
     /* A later command with no answer, as the core sends none while not live. */
-    (void)gs_command_received(&s, fb_now(), 0);
-    run(&s, 1000, 10, 0);
+    (void)gs_command_received(&s, fb_now());
+    run(&s, 1000, 10);
     ck_eq(s.st.skipped, 0, "a later deadline does not book it as a skip");
     ck_eq(json_standdown(&s), 1, "nor as a second stand-down");
     ck_standdown_identity(&s, "and the identity still holds");
@@ -1786,7 +2090,7 @@ static void case_standdown_held_answer(void)
     gs_init(&s, fb_hal());
 
     command_and_answer(&s);
-    run(&s, 20, 10, 0);
+    run(&s, 20, 10);
     ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
           "PRECONDITION: the answer is in the controller");
     ck(fb_state_now() == GS_BUF_AWAITING, "awaiting arbitration");
@@ -1802,13 +2106,13 @@ static void case_standdown_held_answer(void)
      * (the buffer reads AWAITING mid-abort) -- a frame withdrawn on purpose, fed
      * to trip 7.
      */
-    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v = gs_command_received(&s, fb_now());
     ck_eq((long)v, (long)GS_DEADLINE_OK,
           "the next deadline finds no answer of ours outstanding");
     ck_eq(s.st.skipped, 0, "so it books no skip");
     ck_eq(s.st.late_on_wire, 0, "and no late frame");
 
-    run(&s, 2000, 10, 0);       /* the loop removes it */
+    run(&s, 2000, 10);       /* the loop removes it */
     const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
     ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "the controller has let it go");
     ck_eq(c->withdrawn, 1, "booked `withdrawn` when the loop removed it");
@@ -1841,11 +2145,11 @@ static void case_standdown_after_deadline_books_once(void)
     gs_init(&s, fb_hal());
 
     command_and_answer(&s);
-    run(&s, 20, 10, 0);
+    run(&s, 20, 10);
     ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
           "PRECONDITION: the answer is in the controller");
 
-    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v = gs_command_received(&s, fb_now());
     ck_eq((long)v, (long)GS_DEADLINE_SKIPPED, "its deadline skips it");
     ck(s.aborting, "PRECONDITION: the deadline's abort is still running");
 
@@ -1853,7 +2157,7 @@ static void case_standdown_after_deadline_books_once(void)
     ck_eq(s.st.skipped, 1, "one skip");
     ck_eq(json_standdown(&s), 0, "and no stand-down for the same frame");
 
-    run(&s, 2000, 10, 0);
+    run(&s, 2000, 10);
     ck_eq(s.st.cls[GS_CLASS_INHIBIT].withdrawn, 1, "one withdrawal");
     ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes");
     ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
@@ -1879,13 +2183,13 @@ static void rearm_mid_withdrawal(bool by_deadline)
     gs_init(&s, fb_hal());
 
     command_and_answer(&s);
-    run(&s, 20, 10, 0);
+    run(&s, 20, 10);
     ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
           "PRECONDITION: the answer is in the controller");
 
     if (by_deadline)
     {
-        const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+        const gs_deadline_t v = gs_command_received(&s, fb_now());
         ck_eq((long)v, (long)GS_DEADLINE_SKIPPED, "the old arm skips it");
     }
     else
@@ -1902,7 +2206,7 @@ static void rearm_mid_withdrawal(bool by_deadline)
     ck_eq(s.st.skipped, 0, "not as a skip: the skip, if any, was the old arm's");
 
     fb_set_contended(false);
-    run(&s, 2000, 10, 0);       /* the loop removes it, in the new arm */
+    run(&s, 2000, 10);       /* the loop removes it, in the new arm */
     ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "the controller has let it go");
     ck_eq(c->withdrawn, 1, "booked `withdrawn` in the new arm");
     ck_eq(c->sent, 0, "and never as sent");
@@ -1937,7 +2241,7 @@ static void case_rearm_with_live_answer_is_no_standdown(void)
     gs_init(&s, fb_hal());
 
     command_and_answer(&s);
-    run(&s, 20, 10, 0);
+    run(&s, 20, 10);
     ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
           "PRECONDITION: the answer is in the controller");
     ck(!s.aborting, "PRECONDITION: nothing is withdrawing it");
@@ -1947,7 +2251,7 @@ static void case_rearm_with_live_answer_is_no_standdown(void)
     ck_eq(json_standdown(&s), 0, "and books no stand-down for it");
 
     fb_set_contended(false);
-    run(&s, 2000, 10, 0);
+    run(&s, 2000, 10);
     const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
     ck_eq(c->sent, 1, "it leaves as sent");
     ck_eq(c->withdrawn, 0, "not withdrawn");
@@ -1962,8 +2266,9 @@ static void case_rearm_with_live_answer_is_no_standdown(void)
  *
  * The worker was busy: the inhibit was handed over, the next command arrived,
  * and the inhibit completed -- all before the worker came back to its receive,
- * which then returned the waiting command at once. The worker holds the credit
- * (gs_hold_credit()) before the dequeue's gs_tick(), so neither that tick nor
+ * which then returned the waiting command at once. The worker reports the
+ * dequeue with the count it read before the receive (gs_rx_dequeued(), path
+ * (ii)) before the dequeue's gs_tick(), so neither that tick nor
  * the deadline credits the departure: the deadline finds the inhibit
  * outstanding with the buffer EMPTY and books it late. Before the hold, the
  * tick credited it `ontime` with a backlog of 0, read after the command had
@@ -1980,7 +2285,7 @@ static void held_credit_once(bool hold, gs_deadline_t *v, gs_t *s)
 
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     ck(gs_queue_frame(s, GS_CLASS_INHIBIT, &inh, fb_now()), "inhibit queued");
-    run(s, 20, 5, 0);
+    run(s, 20, 5);
     ck(fb_state_now() == GS_BUF_TRANSMITTING,
        "PRECONDITION: the inhibit is transmitting");
 
@@ -1989,12 +2294,9 @@ static void held_credit_once(bool hold, gs_deadline_t *v, gs_t *s)
     ck(fb_state_now() == GS_BUF_EMPTY && fb_wire_count() == 1,
        "PRECONDITION: the inhibit completed on the wire unobserved");
 
-    if (hold)
-    {
-        gs_hold_credit(s);
-    }
-    gs_tick(s, fb_now(), 0);    /* the dequeue's sched_advance() */
-    *v = gs_command_received(s, fb_now(), 0);
+    gs_rx_dequeued(s, true, hold ? 1u : 0u);   /* waiting at the receive, or not */
+    gs_tick(s, fb_now());    /* the dequeue's sched_advance() */
+    *v = gs_command_received(s, fb_now());
 }
 
 static void case_held_credit_is_late(void)
@@ -2013,7 +2315,7 @@ static void case_held_credit_is_late(void)
     ck(!s.credit_hold, "the deadline ended the hold");
 
     /* The item 4 loop closes on the empty buffer; the identity balances. */
-    run(&s, 200, 10, 0);
+    run(&s, 200, 10);
     ck(!s.held && !s.inhibit_outstanding, "the frame left the scheduler");
     ck_eq(s.st.cls[GS_CLASS_INHIBIT].withdrawn
               + s.st.cls[GS_CLASS_INHIBIT].dropped,
@@ -2025,8 +2327,8 @@ static void case_held_credit_is_late(void)
     gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
     ck(gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now()),
        "next inhibit queued");
-    run(&s, 1000, 10, 0);
-    v = gs_command_received(&s, fb_now(), 0);
+    run(&s, 1000, 10);
+    v = gs_command_received(&s, fb_now());
     ck(v == GS_DEADLINE_OK, "the next deadline finds it on time");
     ck_eq(s.st.ontime, 1, "and credits it on time");
     ck_eq(s.st.skipped, 1, "no second skip");
@@ -2040,9 +2342,10 @@ static void case_held_credit_is_late(void)
 }
 
 /*
- * The hold is the inhibit's only. A telemetry page that finished while the
- * worker was away is credited as sent at once, and a deadline with no inhibit
- * outstanding still ends the hold.
+ * The wait is the inhibit's only. A telemetry page that finished while the
+ * worker was away is credited as sent at once, with frames waiting or a
+ * waiting command, and a deadline with no inhibit outstanding still ends any
+ * hold.
  */
 static void case_held_credit_spares_telemetry(void)
 {
@@ -2053,17 +2356,20 @@ static void case_held_credit_spares_telemetry(void)
 
     gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
     ck(gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now()), "diag queued");
-    run(&s, 20, 5, 0);
+    run(&s, 20, 5);
     fb_advance(1000);
     ck(fb_state_now() == GS_BUF_EMPTY && fb_wire_count() == 1,
        "PRECONDITION: the diag completed on the wire unobserved");
 
-    gs_hold_credit(&s);
-    gs_tick(&s, fb_now(), 0);
+    fb_set_rx_waiting(3);
+    gs_rx_dequeued(&s, true, 1);
+    ck(!s.credit_hold, "no hold for a telemetry frame");
+    gs_tick(&s, fb_now());
     ck_eq(s.st.cls[GS_CLASS_TELEMETRY].sent, 1, "the diag was credited as sent");
     ck(!s.held, "and the controller is free");
+    ck(!gs_verdict_pending(&s), "with no wait for the frames in the queue");
 
-    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    const gs_deadline_t v = gs_command_received(&s, fb_now());
     ck(v == GS_DEADLINE_OK, "no inhibit, no skip");
     ck_eq(s.st.skipped, 0, "nothing skipped");
     ck(!s.credit_hold, "the deadline ended the hold");
@@ -2106,6 +2412,14 @@ int main(void)
     case_two_skips_no_trip();
     case_abort_is_not_a_completion();
     case_ontime_unverified();
+    case_counted_command_is_late();
+    case_empty_queue_is_on_time();
+    case_arrival_between_reads_is_counted();
+    case_command_after_the_count_is_on_time();
+    case_deadline_ends_the_wait_on_time();
+    case_standdown_ends_the_wait();
+    case_probe_counted_command_is_late();
+    case_probe_not_among_them_is_on_time();
     case_telemetry_overflow();
     case_nothing_behind_an_inhibit();
     case_inhibit_queue_full_is_a_skip();

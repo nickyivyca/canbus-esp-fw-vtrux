@@ -835,7 +835,7 @@ static bool arm_gate_ok(gi_state_t *st, int64_t now, const gi_bus_t *bus)
      * the same batch.
      *
      * A backlog that builds once live is NOT this condition's business: trip
-     * 7 and the unverified count own that, and the gate is not re-run.
+     * 7 owns that, and the gate is not re-run.
      *
      * bus == NULL means the platform told us nothing this tick, which is not
      * evidence of a backlog, so it reads as drained -- the same reading as a
