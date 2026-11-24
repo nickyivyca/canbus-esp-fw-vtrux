@@ -32,6 +32,38 @@ The DBCs are `fixtures/verify.dbc` and each project's published diag DBC as orig
 branch holds it. A DBC missing from the repo is NOT RUN, never a pass. A generator
 refusing a DBC, or the C side crashing under ASan or UBSan, is a failed check.
 
+`fit_checks.py` checks D6, the build-time fit checks. The charge-interposer tester added
+it on 2026-11-24. It calls the macros through their names and arguments in shared/diag
+`README.md`, "Using it". Each case is one small program that includes a header from the
+generator under test and calls one macro:
+
+- **Build cases:** the program must compile with `-Wall -Wextra -Werror`. On the host, it
+  must also put the expected value into the array. Through the capped form, that value is
+  the input capped at the signal's maximum, 2^bits - 1.
+- **Fail cases:** the compiler must stop on a static assertion that names the signal. A
+  build is a FAIL. Any other error is VOID, which also counts as not as expected.
+- **What the fail cases pass in:**
+  - a type wider than the signal, or a 64-bit type, outside the capped form;
+  - a signed type, in the put form and in the capped form;
+  - a mask or a constant over the signal, or a negative one;
+  - a signed signal, through each of the five forms.
+- **The compilers:** the host's gcc as C11 and gnu17, and its g++ as C++17 and gnu++2b.
+  When they are on PATH, the boards' compilers also run, compile only:
+  `xtensa-esp32s3-elf` and `riscv32-esp-elf`, in the firmware dialects. A compiler not
+  on PATH is NOT RUN.
+- **The tables:**
+  - `fixtures/fit.dbc`;
+  - gen-inhibit's diag DBC from `origin/gen-inhibit/main`, as is and with `diag_tx_fail`
+    narrowed to 4 bits. That narrowed case matches gen-inhibit's own width check
+    (`dbc-narrow-tx_fail`): a capped 32-bit counter must build and give 15, and the
+    same counter without the cap must fail;
+  - the charge interposer's diag DBC from `origin/charge-interposer/main`, whose header
+    must compile.
+
+`fit_checks.py --mutants` is the can-fail. It plants one-line defects in the fixture's
+generated header, and the host cases must show each one. The unedited header must pass
+(the control).
+
 | File | What |
 |---|---|
 | `verify_diag.py` | The checks above. `--diag DIR` tests another shared/diag folder; `--n` vectors per message (400); `--seed`; `--no-git` the fixture only. Exit 0 pass, 1 a check failed, 2 refused (no cantools). |
@@ -39,12 +71,19 @@ refusing a DBC, or the C side crashing under ASan or UBSan, is a failed check.
 | `host/esp_app_desc.h` | A host stand-in for ESP-IDF's header, the one field D2 reads; the driver defines `esp_app_get_description()`. |
 | `fixtures/verify.dbc` | Intel and Motorola, signed and unsigned, 1 to 64 bits (7 and 12 bits across bytes, 63 and 64), a 3-byte frame, one multiplexer with a Motorola page, an extended id, and the build id's page. `DiagSchemaHash` is its `layout_hash` (shared/bench `decode.py`). |
 | `mutate.py` | The can-fails: 27 one-line defects planted in a copy of shared/diag, 11 in the C packer, 5 in the Python twin, 9 in the generator, 2 in the build id. `verify_diag.py` must fail each, and an unedited copy must pass. |
+| `fit_checks.py` | D6's checks above. `--diag DIR` tests another shared/diag folder; `--no-git` the fixture only; `--mutants` the can-fail: 13 one-line defects in the generated checks; `--selftest` the judge on made-up compiler results; `--keep` leaves the work folder. Exit 0 every case as expected, 1 not, 2 refused (no cantools, no host compiler, a mutant's text not in the header exactly once). |
+| `fixtures/fit.dbc` | D6's fixture: unsigned signals of 1, 3, 4, 8, 12, 16, 24, 32, 63 and 64 bits, one of them Motorola, and signed signals of 1, 4 and 8 bits. `DiagSchemaHash` is its `layout_hash` (shared/bench `decode.py`). |
 
 ```
 PYTHONDONTWRITEBYTECODE=1 python3.13 -B shared/diag/test/verify_diag.py
 PYTHONDONTWRITEBYTECODE=1 python3.13 -B shared/diag/test/mutate.py
+PYTHONDONTWRITEBYTECODE=1 python3.13 -B shared/diag/test/fit_checks.py
+PYTHONDONTWRITEBYTECODE=1 python3.13 -B shared/diag/test/fit_checks.py --mutants
 ```
 
 Run from the worktree root, in `build.slice` on madhouse. They need cantools and `cc`
-with ASan and UBSan. Work goes to `scratch/diag-verify/<pid>/` and
-`scratch/diag-mutants/<pid>/` at the worktree root, removed afterwards.
+with ASan and UBSan; `fit_checks.py` needs `gcc` and `g++`. For the boards' compilers,
+run `fit_checks.py` in a shell exported for ESP-IDF, with the system Python by its path,
+since the export puts ESP-IDF's own Python, which has no cantools, first on PATH. Work
+goes to `scratch/diag-verify/<pid>/`, `scratch/diag-mutants/<pid>/` and
+`scratch/diag-fit/<pid>/` at the worktree root, removed afterwards.
