@@ -45,6 +45,7 @@ needs the change; writing a file first does not make a project its owner.
 | `tools/diag_table_gen.py` | the table generator (D3, D4): one DBC to a C header and source and a Python module | the same |
 | `CMakeLists.txt`, `idf_component.yml` | the component's build | the same |
 | `unit/` | the implementor's unit tests of the packers and the generator, self-checks; see `unit/README.md` | the same |
+| `test/` | the testers' checks of D2-D4 against cantools, on a fixture DBC and both projects' diag DBCs, and their can-fails; see `test/README.md` | the testers |
 
 The parity test of the C and Python packers (D4), each project's DBC check
 (D3) and any other test that verifies the component are the testers'.
