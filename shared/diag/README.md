@@ -39,6 +39,7 @@ needs the change; writing a file first does not make a project its owner.
 | File | What | Owner |
 |---|---|---|
 | `SPEC.md`, `VALIDATION.md` | the component's spec, D1 to D5, and why each requirement is written as it is | the reviewers, as above |
+| `VERIFICATION.md` | test evidence that a commit of the code meets D1 to D5 | the testers |
 | `include/diag_pack.h`, `diag_pack.c` | the frame packer (D3): Intel and Motorola, signed and unsigned, 1 to 64 bits, one multiplexer; misfits left 0 and reported. Pure C, no ESP-IDF calls | the implementor of the project that needs the change |
 | `include/diag_build_id.h`, `diag_build_id.c` | the build id (D2): the running image's `app_elf_sha256`, first four bytes, byte 0 most significant, read through a volatile pointer | the same |
 | `python/diag_pack.py` | the packer's Python twin (D4), over the generated Python table. Stdlib only | the same |
