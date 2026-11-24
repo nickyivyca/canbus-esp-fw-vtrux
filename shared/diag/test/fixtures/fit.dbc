@@ -1,0 +1,39 @@
+VERSION "shared-diag fit-check fixture"
+
+NS_ :
+	BA_DEF_
+	BA_DEF_DEF_
+
+BS_:
+
+BU_: FIT
+
+BO_ 1808 Fit_A: 8 FIT
+ SG_ tx_fail : 0|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ u1 : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ u3 : 5|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ u8 : 8|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ u12 : 16|12@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ s8 : 28|8@1- (1,0) [0|0] "" Vector__XXX
+ SG_ s4 : 36|4@1- (1,0) [0|0] "" Vector__XXX
+ SG_ u16 : 40|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ s1 : 56|1@1- (1,0) [0|0] "" Vector__XXX
+
+BO_ 1809 Fit_W: 8 FIT
+ SG_ u32 : 0|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ u24 : 32|24@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ m8 : 63|8@0+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1810 Fit_U63: 8 FIT
+ SG_ u63 : 0|63@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ b63 : 63|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1811 Fit_U64: 8 FIT
+ SG_ u64 : 0|64@1+ (1,0) [0|0] "" Vector__XXX
+
+BA_DEF_ "DiagSchemaVersion" INT 0 255;
+BA_DEF_ "DiagSchemaHash" STRING ;
+BA_DEF_DEF_ "DiagSchemaVersion" 0;
+BA_DEF_DEF_ "DiagSchemaHash" "";
+BA_ "DiagSchemaVersion" 1;
+BA_ "DiagSchemaHash" "a1de00d2d5db3d76";
