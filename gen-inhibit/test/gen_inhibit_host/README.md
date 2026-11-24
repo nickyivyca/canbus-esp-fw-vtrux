@@ -38,9 +38,9 @@ stays green forever.
 
 | File | What it is |
 |---|---|
-| `host_runner.c` | Emulates the worker loop, replays a scenario, prints a deterministic trace |
+| `host_runner.c` | Emulates the worker loop, replays a scenario, prints a deterministic trace. **Since stage (b) batch 2** (2026-11-23, gen-inhibit/main db1bfeae, where the core packs its diag frames through shared/diag) it is linked with `../diag_host/misfit_wrap.c` and `--wrap=diag_pack_message`, prints each misfit the packer reported as `<t> !! DIAG MISFIT id=... count=... mask=... first=<signal> raw=<value>` (or `DIAG UNPACKABLE`) at the dispatch that carries the frame, and refuses a run where diag frames went out but the packer was never called through the wrapper (`!! DIAG PACKER NOT WRAPPED`, exit 2; `-DGI_CORE_BEFORE_SHARED_DIAG` turns that off for a control build against an older core). The `cfg fw_version` key is gone with the core's field (schema 9 retired the revision) |
 | `extract_probe.c` | Exposes the core's four hand-rolled extractors for the cantools cross-check |
-| `Makefile` | `make` builds both; `make asan` rebuilds under ASan/UBSan |
+| `Makefile` | `make` builds both; `make asan` rebuilds under ASan/UBSan. Since stage (b) batch 2 both add the generated table `firmware/main/gi_diag_table.c` and the pinned shared/diag packer, and `host_runner` the misfit wrapper, from `../diag_host/diag_host.py` (`DIAG_ARGS`/`DIAG_WRAP_ARGS` override it; `PYTHON` names the interpreter, default `python3.13`) |
 | `make_scenarios.py` | Generates the synthetic scenarios into `scenarios/` |
 | `passive_diff.py` | Replays every scenario in INHIBIT **and** PASSIVE and proves they decided alike (spec 3.1). Has no golden -- see below |
 | `from_capture.py` | Turns a real capture into a scenario; `--scan` finds key-on points |
@@ -53,7 +53,7 @@ stays green forever.
 | `bus_on_check.py` | **Judges 0x7F1's `bus_on` bit against the SPEC, not a golden** (tester, 2026-10-09). Spec 11: true only in `TWAI_STATE_RUNNING`; section 10: the 0x7F1 bit (`diag_flags` bit1) means the same; read by name through `gi_diag` since 2026-10-24 (B3 by hand before; a schema no DBC states is an ERROR). Every 0x7F1 must carry bit1 equal to the controller input in force (the `bus` directive's first field; the runner starts at 1); a frame less than 100 ms after a change is skipped (test tolerance). PASS needs a judged frame while running, while stopped and while running again; otherwise INCONCLUSIVE. Scenarios, without goldens on purpose: `bus-on-stopped-live`, `bus-on-stopped-armed`. **Device-only, not covered:** the mapping from stopped / bus-off / recovering to the input, and the status page's `bus_on`, both built in the shim. `--selftest` 8/8, including the old "driver installed" meaning (bit stuck set) failing and a 0x7F1 on an unknown schema refused. |
 | `drained_check.py` | **Judges going live with a backlog against the SPEC, not a golden** (tester, 2026-10-12). Spec 7 gate condition 9 ("the receive queue is drained", user, 2026-10-10) and the 12.4 row "no stale answers on going live": the first inhibit frame after going live must carry the counter of the newest `0x051` the scenario had presented by then, plus one. Also FAILs if the `rx_waiting` in force when the device went live (the last `RXW` line before the live STATE line, in trace order) was not zero. INCONCLUSIVE if never live, no inhibit after it, or no `receive queue not drained` hold before it -- nothing was waiting, so the case could not fail. A FAIL outranks that. **`rx_waiting` comes from `host_runner`**: with `load` on, each dequeue sets it to the frames still queued and prints `<t> RXW n=<k>` when it changes; without `load` it stays 0 (drained). Scenario, without a golden on purpose: `golive-backlog-held` (the gate's last condition, `0x617`, arrives in a constructed 9.3 ms preemption with two `0x051`s behind it). `--control <main/ of another core>` builds the runner with `-DGI_NO_RX_WAITING` against it and requires every row to FAIL: on `fb61892` the first inhibit answers the older command. `--selftest` 16 cases, 14/14 mutants caught. |
 | `test_signals.py` | 2000 randomised frames per signal, C extractors vs cantools |
-| `test_cfg_build_id.py` | **`cfg build_id` reaches 0x7F3 B0-B3** (port step 0c, 2026-10-25: the core's config field `git_hash` became `build_id`, and the runner's `cfg` key with it). Builds `host_runner` (make), then: `cfg build_id <n>` puts n in every 0x7F3, decoded through `gi_diag` with the schema 8 DBC from git, and in B0-B3 little-endian (spec 10), also for a value with its top bit set; no key leaves it 0, the goldens' value; the old key `git_hash` is refused. Each case needs at least one 0x7F3. Runs where the host suite runs |
+| `test_cfg_build_id.py` | **`cfg build_id` reaches 0x7F3 B0-B3** (port step 0c, 2026-10-25: the core's config field `git_hash` became `build_id`, and the runner's `cfg` key with it). Builds `host_runner` (make), then: `cfg build_id <n>` puts n in every 0x7F3, decoded through `gi_diag` with the DBC at HEAD from git (schema 9 since stage (b) batch 2; each 0x7F3 must state it), and in B0-B3 little-endian (spec 10), also for a value with its top bit set; no key leaves it 0, the goldens' value; the old keys `git_hash` and `fw_version` (schema 9 retired the revision) are refused. Each case needs at least one 0x7F3. Runs where the host suite runs |
 | `project_dir.py` / `test_project_dir.py` | Where the project folder is: `--project-dir`, else `$REVERSE_IT_DIR`, no default (2026-10-20), for `from_capture.py`, `test_signals.py` and `replay_stimulus_delta.py`. The test needs no project folder (it makes a fake one in a temporary folder); `--mutants` runs its mutants. It also checks that no machine's own path (a home folder, a sync client's folder) is in the four tools, their example or this README, with a planted control for the scan (home-path ruling B, user 2026-10-23) |
 | `scenarios/` | Generated inputs. Not hand-edited |
 | `golden/` | Blessed traces |
@@ -350,6 +350,13 @@ python3 invariants.py        # every scenario, no golden involved
 python3 invariants.py -v
 python3 invariants.py --selftest   # the trace walker on hand-made traces
 ```
+
+**No diag misfit, on any trace** (spec 12.3 item 2, stage (b) batch 2, 2026-11-23).
+Every `!! DIAG MISFIT`, `!! DIAG UNPACKABLE` or `!! DIAG PACKER NOT WRAPPED` line
+`host_runner` prints fails the trace. The walker reads them for `fuzz_sequences.py`'s
+randomised sequences too. `--selftest` has a misfit, a refused table entry and an
+unwrapped build each failing an otherwise good trace; the end-to-end can-fail (a core
+copy with a field planted out of range) is `../diag_host/test_diag_host.py`.
 
 **Frames sharing a timestamp are paired one per reply** (2026-10-31). The
 trace does not echo received frames, so `invariants.py` walks the scenario's

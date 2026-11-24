@@ -11,7 +11,10 @@
  *     hash's first byte most significant, sent little-endian. So B0-B3 on the
  *     wire are hash[3], hash[2], hash[1], hash[0], and the value printed %08x
  *     reads as the hash's first four bytes in order;
- *   - spec 10: schema 8 states itself in 0x7F3 B6 (diag_schema_ver_build);
+ *   - spec 10: the schema states itself in 0x7F3 B6 (diag_schema_ver_build): 8
+ *     until 2026-11-23, 9 since stage (b) batch 2 (DIAG_SCHEMA below);
+ *   - spec 10, schema 9: B4-B5, diag_fw_ver16 through schema 8, are reserved and
+ *     sent 0 (the "reserved" result);
  *   - spec 11 / 12.4: the page's elf_sha256 is the image hash, and its first four
  *     bytes are 0x7F3's build id.
  * The rule is worked once more by hand for this descriptor (WANT_WIRE), so the
@@ -27,6 +30,9 @@
 #include "esp_app_desc.h"
 #include "can.h"
 #include "spec_layer.h"
+
+/* The schema the DBC at gen-inhibit/main d2902fbf states (DiagSchemaVersion 9). */
+#define DIAG_SCHEMA 9
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -90,7 +96,7 @@ int main(int argc, char **argv)
     gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
     for (int i = 0; i < 40; i++) ft_run(100000);            /* 4 s: several diag rounds */
 
-    int n = 0, bad_bytes = 0, bad_schema = 0, bad_print = 0, bad_dlc = 0;
+    int n = 0, bad_bytes = 0, bad_schema = 0, bad_print = 0, bad_dlc = 0, bad_reserved = 0;
     char first[17] = "", printed[9] = "";
     for (int i = 0; i < ft_wire_count(); i++) {
         const ft_frame_t *f = ft_wire(i);
@@ -102,7 +108,8 @@ int main(int argc, char **argv)
         n++;
         if (f->dlc != 8) bad_dlc++;
         if (memcmp(f->data, want, 4) != 0) bad_bytes++;
-        if (f->data[6] != 8) bad_schema++;
+        if (f->data[6] != DIAG_SCHEMA) bad_schema++;
+        if (f->data[4] != 0 || f->data[5] != 0) bad_reserved++;
         const uint32_t v = (uint32_t)f->data[0] | (uint32_t)f->data[1] << 8 |
                            (uint32_t)f->data[2] << 16 | (uint32_t)f->data[3] << 24;
         snprintf(printed, sizeof printed, "%08x", v);
@@ -113,8 +120,10 @@ int main(int argc, char **argv)
     snprintf(d, sizeof d, "%d of %d differ; first %s, B0-B3 wanted %02x%02x%02x%02x", bad_bytes, n, first,
              want[0], want[1], want[2], want[3]);
     result("bytes", n > 0 && !bad_bytes && !bad_dlc, d);
-    snprintf(d, sizeof d, "%d of %d not 8 in B6", bad_schema, n);
+    snprintf(d, sizeof d, "%d of %d not %d in B6", bad_schema, n, DIAG_SCHEMA);
     result("schema", n > 0 && !bad_schema, d);
+    snprintf(d, sizeof d, "%d of %d not 0 in B4-B5 (reserved since schema 9)", bad_reserved, n);
+    result("reserved", n > 0 && !bad_reserved, d);
     snprintf(d, sizeof d, "diag_build_id %%08x = %s, the hash's first four bytes %s (%d differ)", printed, want_id,
              bad_print);
     result("printed", n > 0 && !bad_print, d);

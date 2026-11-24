@@ -157,11 +157,6 @@
       "class": "shipping variant",
       "reason": "part of the auto-arm configuration (an #ifndef default of 500 us beside GEN_INHIBIT_AUTOARM_MODE); reviewer's ruling 2026-10-13"
     },
-    "DIAG_FW_VERSION": {
-      "class": "not a switch",
-      "reason": "#ifndef default for the diag fw_version; build_output.py row 10 checks it against the schema doc",
-      "kind": "default value"
-    },
     "PRJ_BIN_LEN": {
       "class": "not a switch",
       "reason": "computed by the build from the project name, used only to refuse a name over 31 characters; reviewer's ruling 2026-10-13",

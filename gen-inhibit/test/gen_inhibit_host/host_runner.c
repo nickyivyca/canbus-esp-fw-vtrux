@@ -94,6 +94,14 @@
  * Deterministic: no host clock, no addresses, no float.
  */
 #include "gen_inhibit_core.h"
+/*
+ * Spec 12.3 item 2 (stage (b) batch 2): no diag misfit reported by the packer,
+ * on any trace. The core discards diag_pack_message()'s report (spec 10), so
+ * the build links ../diag_host/misfit_wrap.c with --wrap=diag_pack_message and
+ * this runner prints each report as a "!! DIAG MISFIT" line at the time of the
+ * dispatch that carries the frame; invariants.py fails any trace with one.
+ */
+#include "misfit_wrap.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -399,9 +407,24 @@ static void dump_events(const gi_events_t *ev)
  * dispatch_emits() does on the device. due_us is honoured by moving the
  * simulated clock, not by spinning.
  */
+static unsigned long g_diag_dispatched;     /* PROBE and DIAG frames sent */
+
+/* Prints every packer report not yet printed (misfit_wrap.h), stamped `now`. */
+static void print_misfits(int64_t now)
+{
+    gi_misfit_t r;
+    char buf[200];
+    while (gi_misfit_take(&r))
+    {
+        gi_misfit_format(&r, buf, sizeof buf);
+        printf("%lld !! %s\n", (long long)now, buf);
+    }
+}
+
 static void dispatch(gi_state_t *st, const gi_emit_t *em, int64_t now)
 {
     static const char *KIND[] = { "PROBE", "INHIBIT", "DIAG" };
+    print_misfits(now);
     for (int i = 0; i < em->n; i++)
     {
         const gi_frame_t *f = &em->f[i];
@@ -410,6 +433,7 @@ static void dispatch(gi_state_t *st, const gi_emit_t *em, int64_t now)
         int ok = !(g_txfail_from >= 0 && t_tx >= g_txfail_from
                    && t_tx < g_txfail_to);
 
+        if (f->kind != GI_TX_INHIBIT) g_diag_dispatched++;
         hexdump(f->data, f->dlc, hex);
         printf("%lld TX %s id=%03X dlc=%u data=%s ok=%d\n",
                (long long)t_tx, KIND[f->kind], f->id, (unsigned)f->dlc,
@@ -626,7 +650,6 @@ static int cfg_set(gi_config_t *c, const char *k, long long v)
     else if (!strcmp(k, "err_min_trip"))    c->err_min_trip    = (uint32_t)v;
     else if (!strcmp(k, "diag_period_ms"))  c->diag_period_ms  = (uint32_t)v;
     else if (!strcmp(k, "max_rx_errors"))   c->max_rx_errors   = (uint32_t)v;
-    else if (!strcmp(k, "fw_version"))      c->fw_version      = (uint16_t)v;
     else if (!strcmp(k, "build_id"))        c->build_id        = (uint32_t)v;   /* git_hash before port step 0c */
     else if (!strcmp(k, "autoarm"))         c->autoarm_configured = v != 0;
     else return 0;
@@ -1025,6 +1048,19 @@ int main(void)
                "under the modelled load, not on the truck.\n");
     }
 
+    print_misfits(now);
     free(g_f);
+    /*
+     * A diag frame went out but the packer was never called through the
+     * wrapper: the build is not taking the report, so a misfit could not show.
+     */
+#ifndef GI_CORE_BEFORE_SHARED_DIAG    /* a control build against a core older than db1bfeae */
+    if (g_diag_dispatched && gi_misfit_calls() == 0)
+    {
+        printf("%lld !! DIAG PACKER NOT WRAPPED: %lu diag frames, 0 packer calls seen\n",
+               (long long)now, g_diag_dispatched);
+        return 2;
+    }
+#endif
     return 0;
 }

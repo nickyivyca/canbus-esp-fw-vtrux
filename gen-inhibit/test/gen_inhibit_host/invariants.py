@@ -74,6 +74,9 @@ STATE_RE = re.compile(
 
 TX_RE = re.compile(r"^(\d+) TX (\w+) id=([0-9A-F]+) dlc=(\d+) data=([0-9A-F]*) ok=(\d+)$")
 EV_RE = re.compile(r"^(\d+) EV (\w+) a=(-?\d+) b=(-?\d+) c=(-?\d+)$")
+# Spec 12.3 item 2 (stage (b) batch 2): host_runner prints each report the packer made
+# (../diag_host/misfit_wrap.c) as one of these. Any one fails the trace.
+MISFIT_RE = re.compile(r"^(\d+) !! (DIAG (?:MISFIT|UNPACKABLE|PACKER NOT WRAPPED).*)$")
 
 
 class Checker:
@@ -324,6 +327,11 @@ def walk(c, trace, same_t_per_reply=True):
             parsed.append((int(m.group(1)), "EV",
                            (m.group(2), int(m.group(3)), int(m.group(4)),
                             int(m.group(5)))))
+            continue
+        m = MISFIT_RE.match(line)
+        if m:
+            c.fail(int(m.group(1)), "spec 12.3 item 2: the diag packer reported %s"
+                   % m.group(2))
 
     for i, (t, kind, payload) in enumerate(parsed):
         while vi < len(vcm) and (vcm[vi][0] < t or
@@ -388,6 +396,20 @@ def selftest():
         ("ordinary frames, each answered +1",
          [(100, 14), (200, 15), (300, 0)],
          [LIVE % 50, tx(100, 15), tx(200, 0), tx(300, 1)], True, False),
+        # Spec 12.3 item 2: a packer report fails the trace, whatever else is right.
+        ("the same, with a diag misfit reported",
+         [(100, 14), (200, 15), (300, 0)],
+         [LIVE % 50, tx(100, 15),
+          "150 !! DIAG MISFIT id=7F3 count=1 mask=0000000000000002 first=diag_reserved16 raw=65536",
+          tx(200, 0), tx(300, 1)], True, True),
+        ("the same, with a table entry the packer refused",
+         [(100, 14), (200, 15), (300, 0)],
+         [LIVE % 50, tx(100, 15), "150 !! DIAG UNPACKABLE id=7F1 result=-1",
+          tx(200, 0), tx(300, 1)], True, True),
+        ("the same, from a build that did not wrap the packer",
+         [(100, 14), (200, 15), (300, 0)],
+         [LIVE % 50, tx(100, 15), tx(200, 0), tx(300, 1),
+          "300 !! DIAG PACKER NOT WRAPPED: 3 diag frames, 0 packer calls seen"], True, True),
     ]
     bad = 0
     with tempfile.TemporaryDirectory() as d:

@@ -57,7 +57,7 @@ ACKed -- a lone transmitter with no other node on the segment never completes a 
 Bench only. Needs PCAN and Kvaser on the desk segment and the WiCAN at 192.168.80.1.
 
 Usage:
-    py -3.14 diag_build_page_check.py --image <the flashed .bin>   # schema 8
+    py -3.14 diag_build_page_check.py --image <the flashed .bin>   # schema 8 and later
     py -3.14 diag_build_page_check.py --expect-sha 4a0a796         # schema 7 and older
 """
 
@@ -297,7 +297,7 @@ def main():
     args = ap.parse_args()
 
     if not args.image and not args.expect_sha:
-        raise SystemExit("give --image (schema 8) or --expect-sha (schema 7 and older): with neither "
+        raise SystemExit("give --image (schema 8 and later) or --expect-sha (schema 7 and older): with neither "
                          "there is nothing to judge the page against")
     image = None
     if args.image:
@@ -487,13 +487,15 @@ def main():
         else:
             print("  %-24s VARIES across pages: %s" % (k, ", ".join(vals)))
 
-    fw_ver = decoded[0].get("diag_fw_ver16")
+    # B4-B5: diag_fw_ver16 through schema 8, diag_reserved16 (sent 0) from schema 9 (spec 10).
+    b45_name = "diag_reserved16" if "diag_reserved16" in decoded[0] else "diag_fw_ver16"
+    fw_ver = decoded[0].get(b45_name)
     schema = decoded[0].get("diag_schema_ver_build")
     stable = (len(uniq) == 1)
     result.update({
         "pages_decoded": len(decoded),
         "distinct_payloads": [p.hex(" ") for p in uniq],
-        "diag_fw_ver16": fw_ver,
+        b45_name: fw_ver,
         "diag_schema_ver_build": schema,
         "payload_stable": stable,
     })
@@ -502,7 +504,7 @@ def main():
         got = decoded[0].get("diag_build_id")
         page_sha = st_before.get("elf_sha256")
         if image is None:
-            id_ok, rows = False, [("--image given (schema 8 judges against the flashed image)", False,
+            id_ok, rows = False, [("--image given (schema 8 and later judge against the flashed image)", False,
                                    "only --expect-sha was given")]
         else:
             id_ok, rows = build_id_verdict(got, image["elf_sha256"], page_sha)
@@ -535,7 +537,7 @@ def main():
         print("  %s" % ("MATCH -- the wire names the expected build"
                         if id_ok else
                         "MISMATCH -- the wire does NOT name the expected build"))
-    print("  diag_fw_ver16 = %s, diag_schema_ver_build = %s" % (fw_ver, schema))
+    print("  %s = %s, diag_schema_ver_build = %s" % (b45_name, fw_ver, schema))
     if not stable:
         print("  WARNING: the payload varied between pages. A build page must be "
               "constant for the life of the image.")

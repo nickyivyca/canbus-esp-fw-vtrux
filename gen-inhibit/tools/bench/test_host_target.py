@@ -280,16 +280,20 @@ def part_baseline(base, me):
 def part_gi_host(base, me):
     print("4. gi_host_run.sh --sched, remote and local")
     shared = os.path.join(base, "sharedco")
-    for comp in ("wican", "can_port", "twai_port"):
+    for comp in ("wican", "can_port", "twai_port", "diag"):
         os.makedirs(os.path.join(shared, "shared", comp))
         open(os.path.join(shared, "shared", comp, "README.md"), "w").close()
 
     def extra(d):
         b = os.path.join(d, "pybin")
         os.makedirs(b)
+        # diag_host.py dir: the pinned shared/diag (batch 2); answered, so the fake
+        # makes no folder named "dir" in the real tree's test/diag_host
         script(os.path.join(b, "fakepy"), 'case "${@: -1}" in wican_ref.py) printf "%%s\\n" %s ;; '
+                                          'dir) printf "%%s\\n" %s ;; '
                                           '*) mkdir -p "${@: -1}" ;; esac\n'
-               % shlex_q(os.path.join(shared, "shared", "wican")))
+               % (shlex_q(os.path.join(shared, "shared", "wican")),
+                  shlex_q(os.path.join(shared, "shared", "diag"))))
         return {"FW": FW, "LOCAL_PY": os.path.join(b, "fakepy"), "PY": "PYTHON"}
     res = run_twice(base, "gihost", [os.path.join(DIR, "gi_host_run.sh"), "--sched"], extra, me)
     compare("gi_host_run --sched", res, me)

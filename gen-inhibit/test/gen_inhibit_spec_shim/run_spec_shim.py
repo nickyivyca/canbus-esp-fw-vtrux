@@ -38,6 +38,7 @@ import host_env  # noqa: E402
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))   # the project folder, gen-inhibit/ since port step 0d
 MAIN = "firmware/main"                                     # the WiCAN sources, relative to it
 BUILT = [MAIN + "/gen_inhibit.c", MAIN + "/gen_inhibit_core.c", MAIN + "/gi_sched.c",
+         MAIN + "/gi_diag_table.c", "test/diag_host/misfit_wrap.c",   # stage (b) batch 2
          "test/gen_inhibit_shim/shim_harness.c", "test/gen_inhibit_shim/fake_can.c",
          "test/gen_inhibit_shim/fake_port.c"]
 # Since port step 1b (2026-10-31) main/can.c is gone: build.sh compiles the shared CAN

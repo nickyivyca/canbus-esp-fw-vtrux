@@ -176,6 +176,14 @@ $LOCAL_PY -B "$FW/tools/bench/gi_diag.py" export "$EXPORT_PARENT/diag_schemas" >
 WICAN_LOCAL="$(cd "$FW/test/gen_inhibit_shim" && $LOCAL_PY -B wican_ref.py)"
 [ -n "$WICAN_LOCAL" ] || { echo "no pinned vtrux/wican checkout (wican_ref.py above)" >&2; exit 1; }
 SHARED_ROOT="$(cd "$WICAN_LOCAL/../.." && pwd)"
+# AND shared/diag (stage (b) batch 2, 2026-11-23): every host build of the core packs
+# its diag frames through the pinned vtrux/diag's diag_pack.c and the generated
+# firmware/main/gi_diag_table.c, as test/diag_host/diag_host.py gives them. It ships to
+# ~/$DEST/shared/diag beside the others, where diag_host.py looks first, from its own
+# pinned checkout (the same tag as vtrux/wican's today, but read on its own).
+DIAG_LOCAL="$(cd "$FW/test/diag_host" && $LOCAL_PY -B diag_host.py dir)"
+[ -n "$DIAG_LOCAL" ] || { echo "no pinned vtrux/diag checkout (diag_host.py above)" >&2; exit 1; }
+DIAG_ROOT="$(cd "$DIAG_LOCAL/../.." && pwd)"
 
 # THE SYNC REPLACES WHAT IT SHIPS (port step 1b acceptance, 2026-10-31). tar only adds
 # and overwrites, so a file the repo dropped stayed in ~/gi_host. At the first sync
@@ -192,12 +200,16 @@ SHARED_ROOT="$(cd "$WICAN_LOCAL/../.." && pwd)"
 # build outputs; the builds remake the rest. test_gi_host_run_env.py unpacks the
 # real archive over a remote with stale files in each place.
 STALE="mkdir -p ~/$DEST/test/gen_inhibit_shim ~/$DEST/test/gen_inhibit_host"
-STALE="$STALE && rm -rf ~/$DEST/firmware ~/$DEST/tools ~/$DEST/test/gen_inhibit_sched ~/$DEST/test/build_checks ~/$DEST/test/gen_inhibit_host/golden"
+STALE="$STALE && rm -rf ~/$DEST/firmware ~/$DEST/tools ~/$DEST/test/gen_inhibit_sched ~/$DEST/test/build_checks ~/$DEST/test/diag_host ~/$DEST/test/gen_inhibit_host/golden"
 STALE="$STALE && find ~/$DEST/test/gen_inhibit_shim -mindepth 1 -maxdepth 1 ! -name scenarios -exec rm -rf {} +"
 STALE="$STALE && find ~/$DEST/test/gen_inhibit_host -maxdepth 1 -type f \( -name '*.py' -o -name '*.c' -o -name '*.h' -o -name Makefile -o -name '*.md' \) -delete"
 
+# --mode=u+w (2026-11-23): the pinned shared checkouts are read-only (AGENTS.md), and tar
+# carried that mode across, so with shared/diag's files and folders read-only on the
+# remote the next sync's rm -rf of ~/$DEST/shared failed halfway, after the STALE step
+# had already removed firmware/ and the goldens. Every shipped file is writable there.
 echo "--- sync $FW -> $REMOTE:~/$DEST"
-tar -C "$FW" -czf - \
+tar --mode=u+w -C "$FW" -czf - \
     $MAIN_HDRS \
     tools/bench/gi_diag.py \
     tools/bench/pins.json \
@@ -207,8 +219,10 @@ tar -C "$FW" -czf - \
     test/gen_inhibit_shim \
     firmware/main/gen_inhibit_core.c \
     firmware/main/gi_sched.c \
+    firmware/main/gi_diag_table.c \
     test/gen_inhibit_sched \
     test/build_checks \
+    test/diag_host \
     test/gen_inhibit_host/Makefile \
     test/gen_inhibit_host/README.md \
     test/gen_inhibit_host/host_runner.c \
@@ -229,6 +243,7 @@ tar -C "$FW" -czf - \
     test/gen_inhibit_host/replay_stimulus_delta.py \
     test/gen_inhibit_host/golden \
     -C "$SHARED_ROOT" shared/wican shared/can_port shared/twai_port \
+    -C "$DIAG_ROOT" shared/diag \
     -C "$EXPORT_PARENT" diag_schemas \
   | on_host "mkdir -p ~/$DEST && $STALE && rm -rf ~/$DEST/diag_schemas ~/$DEST/shared && tar xzf - -C ~/$DEST"
 

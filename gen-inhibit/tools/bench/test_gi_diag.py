@@ -9,9 +9,12 @@ followed by a made-up schema 8. Schema 8 renames diag_shift_pos to diag_shift_le
 page 0x7FA, so each rule has an input where it matters.
 
   1. The schema set from git: the real repo gives schema 7 at 9c54669, hash
-     7af6adef1d948197, and schema 8 at 50f4f63, hash 00401e953c405902, at HEAD
-     (port step 0c; schema 8 was 564c129 until 50f4f63 reworded bit 5 in the DBC,
-     2026-10-30, the later commit of the same version and layout hash). A history of 7, 7 (comment only) and 8 gives two
+     7af6adef1d948197, schema 8 at 50f4f63, hash 00401e953c405902 (port step 0c;
+     schema 8 was 564c129 until 50f4f63 reworded bit 5 in the DBC, 2026-10-30, the
+     later commit of the same version and layout hash), and schema 9 at d2902fb, hash
+     0c2c4b82529f74e1, at HEAD (stage (b) batch 2, 2026-11-23), with diag_fw_ver and
+     diag_fw_ver16 renamed diag_reserved_b1 and diag_reserved16; a schema 8 and a
+     schema 9 page in one trace each decode on their own schema byte's DBC. A history of 7, 7 (comment only) and 8 gives two
      schemas, the later commit of 7, HEAD 8. A version with two layouts, a stated hash
      that is not the DBC's own, a schema signal away from the table's byte and a DBC
      with no schema signal are each refused.
@@ -146,12 +149,34 @@ SET2 = G.SchemaSet.from_git(R2)
 
 def t1():
     real = G.SchemaSet.from_git(REPO)
-    e, e8 = real.get(7), real.get(8)
+    e, e8, e9 = real.get(7), real.get(8), real.get(9)
+    # Schema 9 since gen-inhibit/main d2902fbf (stage (b) batch 2, 2026-11-23): the hand-kept
+    # revision retired, 0x7F1 B1 and 0x7F3 B4-B5 renamed diag_reserved_b1 and diag_reserved16.
     check("1 the real repo: schema 7 at 9c54669, hash 7af6adef1d948197; schema 8 at 50f4f63, hash "
-          "00401e953c405902, at HEAD",
-          lambda: (sorted(real.entries), e.commit[:7], e.hash, e8.commit[:7], e8.hash, real.head_version) ==
-          ([7, 8], "9c54669", "7af6adef1d948197", "50f4f63", "00401e953c405902", 8),
-          (sorted(real.entries), e.commit[:7], e.hash, e8.commit[:7], e8.hash, real.head_version))
+          "00401e953c405902; schema 9 at d2902fb, hash 0c2c4b82529f74e1, at HEAD",
+          lambda: (sorted(real.entries), e.commit[:7], e.hash, e8.commit[:7], e8.hash, e9.commit[:7], e9.hash,
+                   real.head_version) ==
+          ([7, 8, 9], "9c54669", "7af6adef1d948197", "50f4f63", "00401e953c405902", "d2902fb",
+           "0c2c4b82529f74e1", 9),
+          (sorted(real.entries), e.commit[:7], e.hash, e8.commit[:7], e8.hash, e9.commit[:7], e9.hash,
+           real.head_version))
+    check("1 the real repo's renames: diag_fw_ver and diag_fw_ver16 are diag_reserved_b1 and diag_reserved16",
+          lambda: {k: v for k, v in real.renames().items() if k.startswith("diag_fw_ver")} ==
+          {"diag_fw_ver": "diag_reserved_b1", "diag_fw_ver16": "diag_reserved16"}, real.renames())
+    # Batch 2 asks gi_diag to decode schema 8 and 9 captures by their schema byte: the
+    # same bytes, a page of each, in one trace, each on its own schema's names.
+    s8 = bytes.fromhex("0807030600FF0000")
+    s9 = bytes.fromhex("0900030600FF0000")
+    pages, dec = G.decode_pages([(0.0, 0x7F1, s8), (0.1, 0x7F3, bytes.fromhex("EFBEADDE07000800")),
+                                 (0.2, 0x7F1, s9), (0.3, 0x7F3, bytes.fromhex("EFBEADDE00000900"))],
+                                schemas=real, decode_choices=False)
+    got = [sorted(k for k in p if k in ("diag_fw_ver", "diag_reserved_b1", "diag_fw_ver16", "diag_reserved16"))
+           + [p.get("diag_fw_ver", p.get("diag_fw_ver16", p.get("diag_reserved_b1", p.get("diag_reserved16"))))]
+           for _t, _i, p in pages]
+    check("1 schema 8 and 9 pages in one trace: each decoded on its own schema byte's DBC",
+          lambda: (got, dec.summary()["schemas"]) ==
+          ([["diag_fw_ver", 7], ["diag_fw_ver16", 7], ["diag_reserved_b1", 0], ["diag_reserved16", 0]], [8, 9]),
+          (got, dec.summary()))
     check("1 7, 7 (comment), 8: schemas 7 and 8, HEAD 8",
           lambda: (sorted(SET2.entries), SET2.head_version) == ([7, 8], 8))
     check("1 the later commit of a version is the one kept", lambda: SET2.get(7).commit == C2[1])

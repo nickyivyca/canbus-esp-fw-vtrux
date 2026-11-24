@@ -52,16 +52,21 @@ def build_checks(st, bd, s2, sk, dbc_schema):
     """
     flags = raw(st["diag_flags"])
     abort = raw(s2["diag_abort_reason"])
+    schema = raw(st["diag_schema_ver"])
 
-    return {
+    rows = {
         # Pinned to the schema this DBC describes, not to a literal. These
         # read ==1 until 2026-09-22 and had been stale since schema 2 landed
         # on 2026-09-19 -- the script would have failed against the very build
         # the hardware suite passed on. Compare against the DBC's own schema
         # (its DiagSchemaVersion since 2026-10-24, its VERSION string before)
         # so the two cannot drift apart again silently.
-        "schema_ver matches the DBC": raw(st["diag_schema_ver"]) == dbc_schema,
-        "fw_ver >= 3 (spec 7.1)": raw(st["diag_fw_ver"]) >= 3,
+        "schema_ver matches the DBC": schema == dbc_schema,
+        # Spec 7.1's key-state rules reach the wire as diag_flags bits 6 and 7, which
+        # schema 3 added. Until 2026-11-23 this row was "fw_ver >= 3 (spec 7.1)", on the
+        # hand-kept revision; schema 9 retires it (spec 10, the schema doc's version 9):
+        # a tool that gated on diag_fw_ver gates on diag_schema_ver.
+        "schema_ver >= 3 (spec 7.1)": schema >= 3,
         # Left as a label comparison rather than converted to raw()==3: the
         # label is what a reader of the output wants to see, and diag_mode's
         # VAL_ table is the thing being relied on either way.
@@ -127,3 +132,16 @@ def build_checks(st, bd, s2, sk, dbc_schema):
         # a pass nor a failure, and a zero would not be evidence that skips do
         # not happen. wican_sched_bench.py's arms answer that.
     }
+
+    # --- schema 9: the retired revision's bytes are reserved and sent 0 (spec 10) ----
+    #
+    # 0x7F1 B1 and 0x7F3 B4-B5 carried diag_fw_ver and diag_fw_ver16 through schema 8.
+    # The rows exist only for a schema 9 or later page: on an older one the bytes
+    # still carry the revision, and a row that passed there would test nothing.
+    if schema >= 9:
+        # A page decoded on another schema has no such signal: the row fails, not crashes.
+        rows["0x7F1 B1 reserved, 0 (schema 9)"] = ("diag_reserved_b1" in st
+                                                   and raw(st["diag_reserved_b1"]) == 0)
+        rows["0x7F3 B4-B5 reserved, 0 (schema 9)"] = ("diag_reserved16" in bd
+                                                      and raw(bd["diag_reserved16"]) == 0)
+    return rows

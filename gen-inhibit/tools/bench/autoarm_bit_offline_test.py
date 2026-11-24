@@ -67,9 +67,11 @@ print("harness: diag_build_page_check.autoarm_verdict, AUTOARM_BIT = 0x%02X"
 
 def status_payload(flags):
     """A plausible 0x7F1 with the given diag_flags byte."""
+    # 0x7F1 B1: diag_fw_ver through schema 8, diag_reserved_b1 (sent 0) from schema 9.
+    b1 = ("diag_reserved_b1", 0) if HEAD.version >= 9 else ("diag_fw_ver", 4)
     return msg.encode({
         "diag_schema_ver": HEAD.version,
-        "diag_fw_ver": 4,
+        b1[0]: b1[1],
         "diag_mode": 3,
         "diag_flags": flags,
         "diag_disable_reason": 0,

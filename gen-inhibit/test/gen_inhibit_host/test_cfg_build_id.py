@@ -7,12 +7,14 @@ Port step 0c (user, 2026-10-25) renamed the core's config field git_hash to
 build_id, and the runner's `cfg` key with it. The goldens leave the key unset,
 so 0x7F3 B0-B3 are 0 in every one; this test is the only place the key is set.
 Each case feeds the runner a scenario of its own and reads every 0x7F3 it sends,
-decoded by name through gi_diag with the schema 8 DBC from git:
+decoded by name through gi_diag with the DBC at HEAD from git (schema 8 until
+2026-11-23, 9 since stage (b) batch 2; each 0x7F3 must state it):
   - `cfg build_id <n>`: every 0x7F3 carries diag_build_id = n, and B0-B3 are n
     little-endian (spec 10: a u32, sent little-endian), for a value with its top
     bit set too, so a signed narrowing on the way would show;
   - no `cfg build_id`: diag_build_id is 0, the goldens' value;
-  - `cfg git_hash <n>`, the old key: the runner refuses the scenario.
+  - `cfg git_hash <n>`, the old key: the runner refuses the scenario;
+  - `cfg fw_version <n>`, the key of the revision schema 9 retired: refused too.
 Each case needs at least one 0x7F3 frame, so a scenario that sends none fails
 rather than passing on nothing.
 """
@@ -26,7 +28,7 @@ sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "tools", "ben
 import gi_diag  # noqa: E402  the diag DBCs, by schema byte
 
 RUNNER = os.path.join(HERE, "host_runner")
-SCHEMA = 8          # 0x7F3 B0-B3 are diag_build_id from schema 8 on
+SCHEMA = None       # the DBC's at HEAD (main()); 0x7F3 B0-B3 are diag_build_id from schema 8 on
 FAILS = []
 
 
@@ -56,7 +58,11 @@ def main():
     if r.returncode or not os.path.exists(RUNNER):
         print("cannot build host_runner:\n" + r.stdout + r.stderr)
         return 1
-    db = gi_diag.schemas_for().get(SCHEMA).db
+    global SCHEMA
+    schemas = gi_diag.schemas_for()
+    SCHEMA = schemas.head().version
+    check("the DBC at HEAD is schema 8 or later (0x7F3 B0-B3 diag_build_id)", SCHEMA >= 8, SCHEMA)
+    db = schemas.get(SCHEMA).db
 
     for label, n in (("a value", 0x12345678), ("a value with the top bit set", 0xA1B2C3D4)):
         r = run(["cfg build_id %d" % n])
@@ -64,7 +70,7 @@ def main():
         dec = [db.decode_message(0x7F3, p, decode_choices=False) for p in pages]
         check("cfg build_id, %s: the runner accepts it" % label, r.returncode == 0, r.stderr)
         check("cfg build_id, %s: at least one 0x7F3 sent" % label, len(pages) > 0, len(pages))
-        check("cfg build_id, %s: each 0x7F3 states schema 8" % label,
+        check("cfg build_id, %s: each 0x7F3 states schema %d, the DBC's at HEAD" % (label, SCHEMA),
               pages and all(d["diag_schema_ver_build"] == SCHEMA for d in dec), dec[:1])
         check("cfg build_id, %s: diag_build_id = 0x%08X in each 0x7F3" % (label, n),
               pages and all(d["diag_build_id"] == n for d in dec), ["%08x" % d["diag_build_id"] for d in dec[:3]])
@@ -80,6 +86,11 @@ def main():
     r = run(["cfg git_hash 305419896"])
     check("cfg git_hash, the key before port step 0c: refused",
           r.returncode != 0 and "unknown cfg field 'git_hash'" in r.stderr, (r.returncode, r.stderr))
+    # Schema 9 (stage (b) batch 2): the hand-kept revision is retired with the core's
+    # fw_version field, so the runner has no key for it; B4-B5 are reserved, sent 0.
+    r = run(["cfg fw_version 7"])
+    check("cfg fw_version, the key before schema 9: refused",
+          r.returncode != 0 and "unknown cfg field 'fw_version'" in r.stderr, (r.returncode, r.stderr))
 
     print("PASS" if not FAILS else "FAIL: %d" % len(FAILS))
     return 1 if FAILS else 0
