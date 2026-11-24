@@ -715,6 +715,25 @@ catches a silent VCM first.
   VCM's command carrying that counter, so it ignores the late frame. The
   effect is the same as a skip, one real VCM command acted on. "What the
   device can see of lateness": clarified 2026-09-27 (user).
+- **Trip 7, the decision with frames waiting:** changed 2026-11-23 (user).
+  - What exposed it: B4's `l3s` case in
+    `gen-inhibit-bench_20261123T171226_4b15`, on `db998aca`. The witness saw
+    3 late frames. The device counted 2.
+  - The implementor's desk reading found two paths. In path (ii), the
+    device credited a completion after it removed the VCM's next `0x051`.
+    That was against the spec, and the fix is `30cc9236`. In path (i), the
+    device saw the completion with that `0x051` still in the queue, and the
+    spec allowed "on time, unverified".
+  - The ruling closes path (i). The receive queue is first in, first out.
+    Thus the frames counted when the completion is seen arrived before it.
+    If the VCM's next `0x051` is one of them, the frame was late or possibly
+    late.
+  - The cost: a frame that completed in time but was seen late is a skip.
+    This needs a worker delay of almost one VCM interval (minimum 4.69 ms).
+    The design case's worst preemption is 2.39 ms (section 5).
+  - The alternative not taken: keep the old text and judge B4 as "device
+    late + on time, unverified >= witness late". The device would then stay
+    blind to a late frame behind waiting frames.
 - **Trip 8:** review C2b. It was previously counted as `tx_fail` with no
   abort and no event.
 - **The evidence rule:** decided 2026-09-25. Found by the implementing

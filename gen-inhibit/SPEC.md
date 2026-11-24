@@ -403,11 +403,10 @@ holds is a section 12 test on a full-replay bus.
    software RX queue holds **at least 64 frames** -- ~27 ms of truck traffic
    at ~2386 frames/s, about 11x the design-case worst preemption (2.39 ms).
    A deeper queue turns loss into lateness. Lateness past the VCM's next
-   `0x051` is handled by section 7 trip 7, as a skip. The device detects it
-   itself only when the receive queue is empty at that
-   moment. Lateness caused by a receive backlog is exactly the case it can
-   miss. Those verdicts are counted as "on time, unverified" (trip 7,
-   section 11), and the bench witness is the check for them.
+   `0x051` is handled by section 7 trip 7, as a skip. The device finds this
+   lateness itself. If frames are waiting when it sees the inhibit frame
+   complete, it removes them from the queue before it decides (trip 7,
+   "What the device can see of lateness").
 2. **No acceptance-filter narrowing.** The controller keeps accept-all.
    Revisit only together with a test proving every ID the core reads is
    delivered.
@@ -638,10 +637,11 @@ holds is a section 12 test on a full-replay bus.
       aborted, the inhibit delayed by at most that frame;
     - sustained bus saturation: no inhibit late, telemetry delayed and
       counted, never silently lost. **"No inhibit late" is judged as
-      `ontime + ontime_unverified == queued`,** with the bench witness
-      consulted for every unverified one: an unverified completion is one
-      the device could not confirm against an empty receive queue, not a
-      late frame, so `ontime == queued` is not the criterion;
+      `ontime + ontime_unverified == queued`, with no skips,** and the bench
+      witness must show no inhibit frame late. `ontime_unverified` is the
+      count "on time, with frames waiting" (trip 7, "What the device can see
+      of lateness"). Those frames are on time, so `ontime == queued` is not
+      the criterion;
     - telemetry queue overflow: drops counted;
     - an abort racing a completion: no double credit, no inhibit credited
       with a telemetry completion;
@@ -875,8 +875,8 @@ now, never a last-known value, and never-seen is never fresh. The window is
    with frames still queued answers commands the VCM has already passed.
    This condition is the backstop for a backlog from any cause at that
    moment, such as WiFi or lwIP preemption. It is checked only for going
-   live. A backlog that builds once live is handled by trip 7 and the
-   unverified count. A device that never drains, for
+   live. Trip 7 handles frames that collect in the queue after the device
+   goes live. A device that never drains, for
    example under heavy WiFi load, does not go live, and `arm_block` says why.
 
 **The GENE family (`0x054`, `0x471`) is deliberately not required to be
@@ -946,20 +946,33 @@ hold.
    The completion test is the inhibit's own completion, never a TX_SUCCESS
    that may belong to an aborted telemetry frame (5.2 item 5).
 
-   **What the device can see of lateness.** The
-   device judges the deadline when its worker **dequeues** the VCM's next
-   `0x051`, not when that frame arrives, because the driver gives no
-   receive timestamp. So its own detection of a late frame is exact only
-   when the receive queue is empty at the moment it sees the inhibit
-   complete. With frames waiting, the next command may already have arrived,
-   and a frame that was physically late is scored as on time. Such verdicts
-   are counted separately as **on time, unverified**, with the largest
-   backlog seen, on the status page (section 11). The bench witness, which
-   sees both frames on the wire, is the check for them. The device never
-   receives its own frames, so its counter check (`ctr_bad`) cannot see our
-   transmit timing at all. Condition 9 of the gate means the device never
-   goes live with a backlog, so this applies only to a backlog that builds
-   once live.
+   **What the device can see of lateness.** The device finds the deadline
+   when its worker removes the VCM's next `0x051` from the receive queue. It
+   does not use the arrival time, because the driver gives no receive time.
+
+   When the worker sees the inhibit frame complete, it counts the frames in
+   the receive queue. It counts them after it sees the completion, not
+   before. Thus it also counts a frame that arrives between the two reads.
+
+   If the queue is empty, the frame is on time. If the queue has frames, the
+   worker removes that number of frames before it decides:
+   - If one of them is the VCM's next `0x051`, the inhibit frame was late or
+     possibly late. It is a skip (above).
+   - If none of them is the VCM's next `0x051`, the inhibit frame is on
+     time. The device counts it as **on time, with frames waiting**. The
+     status page (section 11) shows this count and the largest number of
+     waiting frames.
+
+   This rule can be wrong in one direction only. A frame can complete in
+   time but be seen after the VCM's next `0x051` arrives. The device records
+   it as a skip, because it cannot tell the two cases apart.
+
+   The device does not receive its own frames, so its counter check
+   (`ctr_bad`) cannot see when our frames are sent. Condition 9 of the gate
+   prevents the device from going live with frames in the queue.
+   *(Changed 2026-11-23, user. Before, a completion seen with frames waiting
+   was counted as "on time, unverified", and only the bench witness could
+   check it.)*
 8. **Short VCM frame.** A `0x051` received with DLC < 6 while
    live cannot be answered -- there is no counter to steal. It aborts.
 
@@ -1587,10 +1600,17 @@ driver is installed.
 status page carries the scheduler's per-class counters from 5.2 item 6. It
 also carries **skipped inhibit frames**: the count since arming, and the
 count in the current 1 s trip-7 window (5.2 item 5, section 7 trip 7). It
-also carries the on-time counts, **verified** (the receive queue was empty)
-and **unverified** (frames were waiting), with the largest backlog seen for
-an unverified one (trip 7, "What the device can see of lateness"). They
-are reported separately and never summed. **All of these are on the status
+also carries the on-time counts (trip 7, "What the device can see of
+lateness"):
+- **on time** (`ontime`): the receive queue was empty;
+- **on time, with frames waiting** (`ontime_unverified`): frames were
+  waiting, and none of them was the VCM's next `0x051`;
+- the largest number of waiting frames for one of these
+  (`unverified_max_backlog`).
+
+The field names keep "unverified" from before 2026-11-23, so tools and
+goldens do not change. The two counts are reported separately and never
+summed. **All of these are on the status
 page, one page for everything.** This includes the
 balance terms `carried_in`, `held` and `withdrawn`, and the stand-down count
 `standdown` (5.2 items 5 and 6). **Only the skip counts
@@ -1973,7 +1993,7 @@ Each row keeps its ruling's date in the row, as the test list's own record.
 | **abort behaviour of the C3 TWAI**, measured before the scheduler is built on it: abort removes a frame awaiting arbitration; abort during transmission is a no-op and the frame completes; what the driver reports afterwards (alerts, `msgs_to_tx`, internal count); time to free the buffer. The emulator's abort model is checked against these numbers | bench | 5.2 item 9 |
 | **transmit scheduler case catalogue** (5.2 item 10), every case run in emulation (mock-HAL + E4) and then on the bench against hardware with identical pass criteria | host mock-HAL + E4, then bench | 5.2 |
 | **abort-and-recheck loop** (5.2 item 4): frees the buffer within 1 ms under contention, including when the first abort has no effect; the emulator's abort model reproduces item 9's three TS = 1 outcomes. | bench + host mock-HAL | 5.2 items 4, 9 |
-| **skipped inhibit frames** (5.2 item 5, section 7 trip 7): a frame not on the wire by the VCM's next `0x051` is withdrawn and never sent late; skips are counted on the status page and in a diag page; 3 within 1 s trip 7 and 2 do not (strictly less than 1 s); a frame that went out late, or may have (still in the buffer at the deadline), counts as a skip; TX_FAILED or a driver refusal trips at once; on-time verdicts with a non-empty receive queue are counted as unverified; the bench witness confirms no frame went out late undetected. Bench method (user, 2026-10-04): the stimulus sends VCM N and N+1 back to back, then ~2 ms of filler below `0x051`, so our answer to N loses arbitration and is withdrawn. With no filler it goes out late and must count as a late skip. Three events within 1 s must trip 7 (reason 15); two, or a third at ~1.1 s, must not. The witness classifies each event by wire order, and the device's counts are judged against it on totals: device late >= witness late, and device withdrawn <= witness never on the wire. A frame still in the controller at the deadline is booked late (trip 7), so the device may book as late a frame the witness saw never reach the wire. *(Changed 2026-10-12, user.)* These strict checks verify the implementation tightly; they are not a claim that the truck needs that exact threshold | host (golden) + E1, then bench | 5.2 item 5, 7 trip 7, 10, 11 |
+| **skipped inhibit frames** (5.2 item 5, section 7 trip 7): a frame not on the wire by the VCM's next `0x051` is withdrawn and never sent late; skips are counted on the status page and in a diag page; 3 within 1 s trip 7 and 2 do not (strictly less than 1 s); a frame that went out late, or may have (still in the buffer at the deadline), counts as a skip; TX_FAILED or a driver refusal trips at once; when the device sees a completion with frames in the queue, it decides after it removes them, and the frame is a skip if the VCM's next `0x051` is one of them *(changed 2026-11-23, user)*; the bench witness confirms no frame went out late undetected. Bench method (user, 2026-10-04): the stimulus sends VCM N and N+1 back to back, then ~2 ms of filler below `0x051`, so our answer to N loses arbitration and is withdrawn. With no filler it goes out late and must count as a late skip. Three events within 1 s must trip 7 (reason 15); two, or a third at ~1.1 s, must not. The witness classifies each event by wire order, and the device's counts are judged against it on totals: device late >= witness late, and device withdrawn <= witness never on the wire. A frame still in the controller at the deadline is booked late (trip 7), so the device may book as late a frame the witness saw never reach the wire. *(Changed 2026-10-12, user.)* These strict checks verify the implementation tightly; they are not a claim that the truck needs that exact threshold | host (golden) + E1, then bench | 5.2 item 5, 7 trip 7, 10, 11 |
 | **no stale answers on going live** (added 2026-10-10, user): the first inhibit frame after going live answers the VCM's newest `0x051`, never one it has already passed. Run under full-bus replay on every entry into INHIBIT: from OFF, OBSERVE, RESPOND and PASSIVE, and from an auto-arm boot. The witness shows no device `0x051` with a counter the VCM had already passed | host (a case with frames waiting at go-live) + bench | 3 (mode change), 7 condition 9 |
 | **the private TWAI abort is confined**: `twai_ll_set_cmd_abort_tx` appears at exactly one site in the shipping source, `twai_port`'s abort-if-awaiting (twai_port T8), where the status read and the abort run in one critical section, and gen-inhibit reaches it only through the scheduler's device HAL. `twai_transmit` appears only in `twai_port`'s send (user, 2026-09-27; port step 1b, 2026-10-31) | E3 (source rows) | 5.2 items 1, 4, 9 |
 | **per-class counts balance on every reading** (user, 2026-09-29): `queued + carried_in = sent + dropped + withdrawn + depth + held` for every class, including a reading after a withdrawn skip. It must hold with a frame in the controller at the reading, and across a re-arm with a frame still held. A carried-in frame's completion never sets the new arm's longest hold. The bench check applies the same identity to every arm's end-of-arm status | host (sched + E1) + bench (every E4 arm) | 5.2 item 6, section 11 |
