@@ -166,6 +166,11 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   multipart upload handlers' start (W16), each compiled from the pinned
   `config_server.c` against a fake ESP-IDF; tester-owned (reviewer,
   2026-11-23).
+- `gen-inhibit/test/diag_host/`: what every host build of the core needs
+  since it packs through shared/diag (the pinned packer and the generated
+  table), the packer wrapper that takes the misfit report spec 12.3 item 2
+  reads, and spec 10's width-check can-fail; tester-owned (reviewer,
+  2026-11-23).
 - In reverse-it, `$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/gen-inhibit/`:
   what stays out of git, as `gen-inhibit/tools/bench/README.md` lists it (run
   folders and fixtures, the jammer's builds and their `manifest.json`, the X2
