@@ -1,8 +1,8 @@
 # shared/diag/
 
-The diag frames' shared parts, to `SPEC.md` D1-D5: the build-id read, a
+The diag frames' shared parts, to `SPEC.md` D1-D6: the build-id read, a
 frame packer driven by a table from each project's DBC (with a Python twin),
-and the diag schema convention. Each project's frame IDs, cadence, contents
+the diag schema convention, and the table's build-time fit checks. Each project's frame IDs, cadence, contents
 and schema byte stay in its own spec, schema doc and DBC.
 
 The spec and `VALIDATION.md` belong to the reviewers: a change is drafted by
@@ -38,12 +38,12 @@ needs the change; writing a file first does not make a project its owner.
 
 | File | What | Owner |
 |---|---|---|
-| `SPEC.md`, `VALIDATION.md` | the component's spec, D1 to D5, and why each requirement is written as it is | the reviewers, as above |
-| `VERIFICATION.md` | test evidence that a commit of the code meets D1 to D5 | the testers |
+| `SPEC.md`, `VALIDATION.md` | the component's spec, D1 to D6, and why each requirement is written as it is | the reviewers, as above |
+| `VERIFICATION.md` | test evidence that a commit of the code meets D1 to D6 | the testers |
 | `include/diag_pack.h`, `diag_pack.c` | the frame packer (D3): Intel and Motorola, signed and unsigned, 1 to 64 bits, one multiplexer; misfits left 0 and reported. Pure C, no ESP-IDF calls | the implementor of the project that needs the change |
 | `include/diag_build_id.h`, `diag_build_id.c` | the build id (D2): the running image's `app_elf_sha256`, first four bytes, byte 0 most significant, read through a volatile pointer | the same |
 | `python/diag_pack.py` | the packer's Python twin (D4), over the generated Python table. Stdlib only | the same |
-| `tools/diag_table_gen.py` | the table generator (D3, D4): one DBC to a C header and source and a Python module | the same |
+| `tools/diag_table_gen.py` | the table generator (D3, D4, D6): one DBC to a C header and source and a Python module, with the build-time fit checks | the same |
 | `CMakeLists.txt`, `idf_component.yml` | the component's build | the same |
 | `unit/` | the implementor's unit tests of the packers and the generator, self-checks; see `unit/README.md` | the same |
 | `test/` | the testers' checks of D2-D4 against cantools, on a fixture DBC and both projects' diag DBCs, and their can-fails; see `test/README.md` | the testers |

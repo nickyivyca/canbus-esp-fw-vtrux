@@ -56,3 +56,24 @@ Why each requirement of `SPEC.md` is written as it is. Readings are of
   layout change and not with a change of meaning alone, which only
   `DiagSchemaVersion` records (revision approved by the user, 2026-11-23).
 - **Status:** validated.
+
+### D6. Fit checks at build time
+- **Basis:** user, 2026-11-23, in the charge-interposer reviewer's session.
+  The interposer's schema 5 ruling says no diag value may overflow its
+  signal, and a misfit is a defect. The user also ruled that both projects
+  use one set of checks, not one copy each. Wording approved by the user,
+  2026-11-23.
+- **Capped form:** added on the gen-inhibit reviewer's read, 2026-11-23.
+  Gen-inhibit spec 10 allows a value whose type is wider than its signal
+  if the core caps it at the signal's maximum (`tx_fail`, `ctr_steps_bad`,
+  `rx_errors`, `tx_queued_behind`), through `GI_PUT_CAP`. Without the
+  capped form, D6 would forbid that. Revision approved by the user,
+  2026-11-23, in the charge-interposer reviewer's session.
+- **Reading:** each project has its own copy of the same checks today.
+  Gen-inhibit's is in C, in `gen_inhibit_core.c` (`GI_PUT` and others,
+  `gen-inhibit/main` line ~1256). The interposer's is in C++, in
+  `machine.cpp` (`INTP_PUT` and others), on the implementor's branch
+  `charge-interposer/implementor/diag-schema5` at `404a6932`, line ~1125.
+  GCC's `__typeof__` and the `static_assert` name work in C11 and in C++,
+  so one set can serve both languages.
+- **Status:** validated.
