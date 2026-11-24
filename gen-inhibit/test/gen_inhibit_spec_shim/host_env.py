@@ -15,14 +15,15 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 IDENTITY_CMD = ('printf "host=%s\\n" "$(uname -n)"; '
                 'printf "compiler=%s\\n" "$(gcc --version 2>/dev/null | head -1)"')
+# probe_test.c's extra build.sh arguments (2026-11-23): its judge, and the harness's
+# ft_deliver_at_count() (../gen_inhibit_shim/deliver_at_count.c, not edited) with the
+# three wraps that file names. One string, so run_spec_shim.py, mutate.py and
+# product_mutants.py build it the same way.
+PROBE_BUILD_ARGS = ("probe_judge.c ../gen_inhibit_shim/deliver_at_count.c "
+                    "-Wl,--wrap=twai_port_status,--wrap=can_msgs_to_rx,--wrap=gen_inhibit_get_stats_json")
 
 
-def scratch_dir(name):
-    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
-    folders"), never the system temp folder: gen-inhibit/tools/bench/gi_paths.scratch()'s,
-    removed with its owner file when the run ends, pass or fail (AGENTS.md "Removing
-    scratch"). gi_paths is the one in the worktree found by walking up to its .git
-    (harness-defects row, 2026-10-24)."""
+def _gi_paths():
     d = HERE
     while not os.path.exists(os.path.join(d, ".git")):
         if os.path.dirname(d) == d:
@@ -32,7 +33,21 @@ def scratch_dir(name):
     if bench not in sys.path:
         sys.path.append(bench)
     import gi_paths
-    return gi_paths.scratch(name, start=HERE)
+    return gi_paths
+
+
+def remove(path):
+    """gi_paths.remove_tree(path): a folder that can't go is printed with the reason."""
+    return _gi_paths().remove_tree(path)
+
+
+def scratch_dir(name):
+    """This run's own folder in the worktree's gitignored scratch/ (AGENTS.md "Files and
+    folders"), never the system temp folder: gen-inhibit/tools/bench/gi_paths.scratch()'s,
+    removed with its owner file when the run ends, pass or fail (AGENTS.md "Removing
+    scratch"). gi_paths is the one in the worktree found by walking up to its .git
+    (harness-defects row, 2026-10-24)."""
+    return _gi_paths().scratch(name, start=HERE)
 
 
 def wsl_path(p):

@@ -24,11 +24,15 @@ emulated"**.
 | `nonode_judge.h`, `nonode_judge.c` | The row's verdicts as pure functions of what a case observed (R1-R7 below, and two checks on the layer). |
 | `judge_test.c` | The judge on made-up observations: each verdict shown to pass and to fail. No fakes, no product code. |
 | `build_id_test.c` | **Spec 12.4 "0x7F3 carries the build id" (host half) and "the page names the binary"** (port step 0c, diag schema 8; 2026-10-25). Built by `build.sh` with `NN_TEST=build_id_test.c`; one case, `build_id`. The stimulus is the fakes' app descriptor hash (`MOCK_ELF_SHA256`). Spec 10's rule gives B0-B3 = hash[3], hash[2], hash[1], hash[0] (a u32 with the hash's first byte most significant, sent little-endian), worked once more by hand for this descriptor (`fff00f00`). Over 4 s in INHIBIT, every 0x7F3 on the wire must carry those bytes, 8 in B6 (schema 8) and, printed `%08x`, the hash's first four bytes; the page's `elf_sha256` must be the descriptor's hash and start with that build id. 7 RESULT lines. WSL self-check on `ef553fa` merged with the tester's branch: 7 PASS; 6 of 6 mutants of the product's build id and page hash, in a scratch copy, caught (`scratch/step0c/mutate_build_id_test.py`). **2026-11-23 (stage (b) batch 2, schema 9):** B6 must read 9, and a new result, `reserved`, needs B4-B5 0 (spec 10: the retired revision, sent 0); 8 PASS on gen-inhibit/main db1bfeae. |
+| `probe_test.c` | **Spec 7 trip 7, "What the device can see of lateness", and spec 11's RESPOND probe on the same path** (both changed 2026-11-23, user; f1961dcf, ab74c3da). Built by `build.sh` with `NN_TEST=probe_test.c` and `host_env.PROBE_BUILD_ARGS` (its judge, and the implementor's `../gen_inhibit_shim/deliver_at_count.c`, not edited, with the three wraps that file names). Ten cases, one per process; see "The trip 7 and probe cases" below. |
+| `probe_judge.h`, `probe_judge.c` | `probe_test`'s verdicts as pure functions of three page readings and the wire count. The header states what correct looks like, from the spec only. |
+| `probe_judge_test.c` | That judge on made-up observations: each case's correct observation passes every verdict, and each wrong one fails the verdict it should (108 rows). No fakes, no product code. |
+| `product_mutants.py` | **The probe cases' can-fail against the product.** It reads the T-series mutants (spec 7 trip 7 and spec 11) from the implementor's `../gen_inhibit_shim/mutate.py` with `ast`, never importing it, applies each to a copy of the parts `build.sh` compiles, in this run's own folder in `scratch/`, and runs every probe case. A mutant is caught by a RESULT line that is not PASS. The unmutated copy runs first and must give only PASS lines. Linux only. |
 | `nonode_test.c` | The cases. One case per process (`nonode_test <case>`; no argument lists them): the firmware's statics outlive `ft_reset()`, and trip 6's error history is one of them. Since port step 1b each process sets up port 0 once, before anything arms, as `app_main` does (`gen_inhibit_port_register()`, spec 3.3); so does `build_id_test.c`. |
 | `build.sh` | Builds `nonode_test` (`bash build.sh <out>`). `SPEC_LAYER`, `NN_TEST`, `NN_JUDGE` substitute a source (the mutants). The stock headers are vtrux/wican's (port step 1a), and since port step 1b the CAN code is the shared `can_port` and `twai_port` on twai_port's host fake, all from the pinned shared checkout, found by the implementor's `../gen_inhibit_shim/wican_ref.py`, or `WICANDIR` where it is elsewhere (`test_host_env.py` sets it for its copy). Sources, include order and the `twai_driver_install` wrap follow the shim's `Makefile`, with `shim_test.c` replaced by this folder's cases, judge and layer; the layer adds five wraps. (From its first refusal on 2026-10-31 until this port, it refused with exit 2.) **Since stage (b) batch 2** (2026-11-23) it adds the generated diag table, the pinned shared/diag's `diag_pack.c` and `diag_build_id.c` (on the shim's mock `esp_app_desc.h`) and the misfit wrapper over `diag_pack_message()`, from `../diag_host/diag_host.py` (`DIAGDIR` overrides the folder): a misfit no case takes ends the run with exit 3 (spec 12.3 item 2). |
-| `mutate.py` | Mutants of the judge (caught by `judge_test`), the layer and the cases (caught by a case's RESULT line). A crash, a build failure or no RESULT line is not a catch. Each run works in its own folder in the worktree's `scratch/gen-inhibit-tests/mutants-spec_shim/`, each mutant's binary in that mutant's folder (2026-10-24; before, a fixed system temp folder and a fixed `/tmp` binary name, shared by two runs at once). Its second output line is the build's host and compiler; a run with either missing stops there with an error (2026-10-24). |
-| `run_spec_shim.py` | The evidence run (since 2026-10-25 also `build_id_test`, into `build_id.txt`, its RESULT lines in the summary): the product identity (HEAD, `main/`'s tree against `--base`, nothing modified, each built file's md5; since port step 1b also the shared checkout it built from: the tag the project pins, the folder, its git HEAD where it is a checkout, and each shared file's md5, a FAIL if the checkout or a file is missing or the checkout modified, and a `shared:` line in the summary), the build's host and compiler, the stimulus decoded with the DBCs, `judge_test`, every case. Writes `identity.json`, `payloads.txt`, `judge_test.txt`, `cases.txt`, `summary.txt` into `--out`. `--local` builds in the local bash, for madhouse-debian; without it, in WSL. Since 2026-10-24: `identity.json` has `host`, `compiler` and `build_env`, and the summary a line for them, which says "a self-check only" for a WSL build. A run with either value missing FAILs. The binaries go in the run's own folder in the worktree's `scratch/gen-inhibit-tests/spec_shim_run/` (before, fixed `/tmp` names). |
-| `host_env.py` | What both runners share: the build shell (WSL or `--local`), paths as it sees them, the per-run scratch folder, and `host_identity()`. That asks the build shell for `uname -n` and the first line of `gcc --version`, and `describe()` makes the summary line (2026-10-24). |
+| `mutate.py` | Mutants of the judge (caught by `judge_test`), the layer and the cases (caught by a case's RESULT line). Since 2026-11-23 also of `probe_judge.c` (caught by `probe_judge_test`) and `probe_test.c` (caught by a probe case's RESULT line). A crash, a build failure or no RESULT line is not a catch. Each run works in its own folder in the worktree's `scratch/gen-inhibit-tests/mutants-spec_shim/`, each mutant's binary in that mutant's folder (2026-10-24; before, a fixed system temp folder and a fixed `/tmp` binary name, shared by two runs at once). Its second output line is the build's host and compiler; a run with either missing stops there with an error (2026-10-24). |
+| `run_spec_shim.py` | The evidence run (since 2026-10-25 also `build_id_test`, into `build_id.txt`, its RESULT lines in the summary; since 2026-11-23 also `probe_judge_test` and `probe_test`, into `probe_judge_test.txt` and `probe.txt`, with `deliver_at_count.c`'s md5 in `identity.json`): the product identity (HEAD, `main/`'s tree against `--base`, nothing modified, each built file's md5; since port step 1b also the shared checkout it built from: the tag the project pins, the folder, its git HEAD where it is a checkout, and each shared file's md5, a FAIL if the checkout or a file is missing or the checkout modified, and a `shared:` line in the summary), the build's host and compiler, the stimulus decoded with the DBCs, `judge_test`, every case. Writes `identity.json`, `payloads.txt`, `judge_test.txt`, `cases.txt`, `summary.txt` into `--out`. `--local` builds in the local bash, for madhouse-debian; without it, in WSL. Since 2026-10-24: `identity.json` has `host`, `compiler` and `build_env`, and the summary a line for them, which says "a self-check only" for a WSL build. A run with either value missing FAILs. The binaries go in the run's own folder in the worktree's `scratch/gen-inhibit-tests/spec_shim_run/` (before, fixed `/tmp` names). |
+| `host_env.py` | Since 2026-11-23 also `PROBE_BUILD_ARGS`, `probe_test`'s extra `build.sh` arguments, and `remove()`, `gi_paths.remove_tree`. What both runners share: the build shell (WSL or `--local`), paths as it sees them, the per-run scratch folder, and `host_identity()`. That asks the build shell for `uname -n` and the first line of `gcc --version`, and `describe()` makes the summary line (2026-10-24). |
 | `test_host_env.py` | Its test, with `--dbc-dir`. The pure checks run anywhere. The real-shell checks run on Linux only (on Windows a bare `bash` is WSL's): the identity command in a real bash with a fake gcc on PATH and with none, `run_spec_shim.py --local` with each (`identity.json`, the summary line, a FAIL naming the missing compiler), and `mutate.py --local` with no gcc. The pure checks also cover the shared checkout's record (an md5 for each shared file `build.sh` compiles, the host fake among them, none when there is no checkout), and a real-shell run with no checkout must FAIL naming it. `--mutants`: 10 of 10 killed on madhouse-debian (2026-10-31, port step 1b), each in a copy of the repo's layout, and the unmutated copy must pass. |
 
 ## The row, as judged
@@ -71,6 +75,37 @@ controller's abort removes a frame that is retrying is the layer's model
 | A4 | `withdrawn + dropped = skipped + standdown` (inhibit) on every read with no inhibit frame held (not mid-withdrawal, which 5.2 item 6 excludes) |
 | A5 | the withdrawal ends the wait: a diag page is handed to the driver after the latch, becomes the stuck frame, and completes when traffic returns |
 
+## The trip 7 and probe cases (`probe_test.c`, 2026-11-23)
+
+Spec 7 trip 7: when the worker sees our frame complete, it counts the frames in
+the receive queue, after the completion. Queue empty: on time. Frames waiting with
+the VCM's next `0x051` among them: late, a skip for an inhibit frame. Frames waiting
+without it: on time, with frames waiting. A frame whose completion is seen only after
+the next `0x051` was dequeued is late too. Spec 11: the RESPOND probe takes the same
+path; a probe found late is in neither on-time count, is never a skip and is never
+withdrawn.
+
+Each case sends one VCM command N. Our frame for it (the probe, or the inhibit frame)
+completes while the worker waits on an empty queue, so the device has not seen it
+complete. Then a filler wakes the worker, with the case's frames behind it:
+
+| case (`respond_`, `inhibit_`) | behind the filler | expected decision for N |
+|---|---|---|
+| `late` | another frame and N+1 | late: neither on-time count; an inhibit frame is a skip |
+| `between` | nothing; N+1 arrives between the completion read and the count (`ft_deliver_at_count()`) | late, as `late` |
+| `waiting` | two frames, neither an `0x051` | on time, with frames waiting; max backlog 2 |
+| `empty` | nothing | on time |
+| `queued` | no filler: N+1 is waiting behind N when the worker takes N | late, as `late` (the completion is seen after N+1 was dequeued) |
+
+Where N+1 came, its frame is booked on time once a last filler lets the device
+see it complete with nothing waiting (`next`). Every frame of ours must be on the
+wire, the late one too; in RESPOND each probe must be credited in
+`cls.probe.sent` and none withdrawn (`sent`). A probe is never a skip; an
+inhibit frame found late is one skip, and no other frame is (`skip`). The max
+backlog moves only for an on-time-with-frames-waiting booking (`backlog`). A
+stimulus that did not land where the case meant is VOID (`setup`), never a
+pass. The verdicts are `probe_judge.c`'s.
+
 A case whose check points or injected errors did not land where it meant
 (a check within 20 ms of the 0.5 s freshness edge, a frame received in the
 silence, the 10th error outside the case's region) is VOID, never a pass.
@@ -85,6 +120,7 @@ commit under test, from the clone's root (before port step 0d, without `gen-inhi
 ```
 python3 -B gen-inhibit/test/gen_inhibit_spec_shim/run_spec_shim.py --local --out <run folder> --dbc-dir <reverse-it>/projects/vtrux
 python3 -B gen-inhibit/test/gen_inhibit_spec_shim/mutate.py --local
+python3 -B gen-inhibit/test/gen_inhibit_spec_shim/product_mutants.py
 python3 -B gen-inhibit/test/gen_inhibit_spec_shim/test_host_env.py --dbc-dir <reverse-it>/projects/vtrux [--mutants]
 ```
 
