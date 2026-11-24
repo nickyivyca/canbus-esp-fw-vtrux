@@ -29,6 +29,19 @@ code to test.
   in the table's order: `diag_pack_message()` in C, `pack_message()` in
   `python/diag_pack.py`. A value that does not fit its signal is left 0 and
   reported, never truncated (D3); the project's spec says what follows.
+- **The fit checks** (D6) are macros at the end of the generated C header.
+  Each one puts one raw value into the array, and the build fails if the
+  value could exceed its signal or the signal is signed. They compile as
+  C11 and as C++ under GCC. For prefix `<p>`:
+  - `<p>_FIT_PUT`: an unsigned value, not bool, whose type is no wider than
+    the signal and under 64 bits.
+  - `<p>_FIT_CAP`: an unsigned value of any width, capped at the signal's
+    largest value.
+  - `<p>_FIT_BIT`: a condition, as 1 or 0.
+  - `<p>_FIT_MASK`: a value masked by a constant that fits the signal.
+  - `<p>_FIT_CONST`: a constant that fits the signal.
+
+  The frame-id and schema checks stay in each project.
 - **The build id** (D2) is `diag_build_id()`.
 
 ## Who owns which file
