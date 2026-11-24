@@ -166,4 +166,80 @@ extern const diag_message_t intp_dbc_messages[intp_dbc_MESSAGE_COUNT];
 }
 #endif
 
+/*
+ * Fit checks (shared/diag SPEC.md D6): each macro puts one raw value into
+ * an int64_t array in the table's order, and fails the build if the value
+ * could exceed its signal or the signal is signed. Only the capped form
+ * takes a type wider than its signal.
+ *   intp_dbc_FIT_PUT(r, M, s, e)         e's type is unsigned, not bool, no wider
+ *                                   than s and under 64 bits
+ *   intp_dbc_FIT_CAP(r, M, s, e)         e capped at s's largest value; e's type
+ *                                   is unsigned, of any width
+ *   intp_dbc_FIT_BIT(r, M, s, cond)      1 if cond, else 0
+ *   intp_dbc_FIT_MASK(r, M, s, e, mask)  e & mask; mask is a constant that fits s
+ *   intp_dbc_FIT_CONST(r, M, s, c)       c, a constant that fits s
+ * An unsigned signal's largest value is 2^BITS - 1, or INT64_MAX from 63
+ * bits up, as the packers take it.
+ */
+#ifdef __cplusplus
+#include <type_traits>
+#define intp_dbc_FIT_UNSIGNED_TYPE_(e) \
+    (std::is_unsigned<std::remove_cv<__typeof__(e)>::type>::value)
+#define intp_dbc_FIT_NOT_BOOL_(e) \
+    (!std::is_same<std::remove_cv<__typeof__(e)>::type, bool>::value)
+#else
+#include <assert.h>
+#define intp_dbc_FIT_UNSIGNED_TYPE_(e) ((__typeof__(e))-1 > 0)
+#define intp_dbc_FIT_NOT_BOOL_(e) _Generic((e), _Bool: 0, default: 1)
+#endif
+#define intp_dbc_FIT_SIG_(M, S) intp_dbc_##M##__##S
+#define intp_dbc_FIT_BITS_(M, S) intp_dbc_##M##__##S##__BITS
+#define intp_dbc_FIT_MAX_(M, S)                                                   \
+    (intp_dbc_FIT_BITS_(M, S) >= 63 ? INT64_MAX                                   \
+     : (int64_t)((UINT64_C(1) << (intp_dbc_FIT_BITS_(M, S) % 64)) - 1))
+#define intp_dbc_FIT_UNSIGNED_SIG_(M, S)                                        \
+    static_assert(!intp_dbc_##M##__##S##__SIGNED,                                 \
+                  #M "." #S " is signed: the fit checks take unsigned signals")
+#define intp_dbc_FIT_PUT(r, M, S, e)                                              \
+    do {                                                                     \
+        intp_dbc_FIT_UNSIGNED_SIG_(M, S);                                         \
+        static_assert(intp_dbc_FIT_UNSIGNED_TYPE_(e) && intp_dbc_FIT_NOT_BOOL_(e) &&   \
+                      sizeof(e) * 8 <= intp_dbc_FIT_BITS_(M, S) &&                \
+                      sizeof(e) * 8 < 64,                                    \
+                      #M "." #S ": the type of " #e                          \
+                      " could exceed the signal: bound it first");           \
+        (r)[intp_dbc_FIT_SIG_(M, S)] = (int64_t)(e);                              \
+    } while (0)
+#define intp_dbc_FIT_CAP(r, M, S, e)                                              \
+    do {                                                                     \
+        intp_dbc_FIT_UNSIGNED_SIG_(M, S);                                         \
+        static_assert(intp_dbc_FIT_UNSIGNED_TYPE_(e),                             \
+                      #M "." #S ": " #e " is signed: the capped form takes " \
+                      "unsigned values");                                    \
+        const uint64_t intp_dbc_fit_v_ = (uint64_t)(e);                           \
+        (r)[intp_dbc_FIT_SIG_(M, S)] =                                            \
+            intp_dbc_fit_v_ > (uint64_t)intp_dbc_FIT_MAX_(M, S)                        \
+                ? intp_dbc_FIT_MAX_(M, S) : (int64_t)intp_dbc_fit_v_;                  \
+    } while (0)
+#define intp_dbc_FIT_BIT(r, M, S, cond)                                           \
+    do {                                                                     \
+        intp_dbc_FIT_UNSIGNED_SIG_(M, S);                                         \
+        (r)[intp_dbc_FIT_SIG_(M, S)] = (cond) ? 1 : 0;                            \
+    } while (0)
+#define intp_dbc_FIT_MASK(r, M, S, e, mask)                                       \
+    do {                                                                     \
+        intp_dbc_FIT_UNSIGNED_SIG_(M, S);                                         \
+        static_assert((int64_t)(mask) >= 0 &&                                \
+                      (int64_t)(mask) <= intp_dbc_FIT_MAX_(M, S),                 \
+                      #M "." #S ": the mask " #mask " exceeds the signal");  \
+        (r)[intp_dbc_FIT_SIG_(M, S)] = (int64_t)((uint64_t)(e) & (uint64_t)(mask)); \
+    } while (0)
+#define intp_dbc_FIT_CONST(r, M, S, c)                                            \
+    do {                                                                     \
+        intp_dbc_FIT_UNSIGNED_SIG_(M, S);                                         \
+        static_assert((int64_t)(c) >= 0 && (int64_t)(c) <= intp_dbc_FIT_MAX_(M, S), \
+                      #M "." #S ": " #c " exceeds the signal");              \
+        (r)[intp_dbc_FIT_SIG_(M, S)] = (int64_t)(c);                              \
+    } while (0)
+
 #endif

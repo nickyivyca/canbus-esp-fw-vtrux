@@ -1,7 +1,5 @@
 #include "machine.h"
 
-#include <type_traits>
-
 #include "intp_diag_table.h"   // generated from the DBC (spec 8.2, schema 5)
 
 namespace interposer {
@@ -1120,50 +1118,17 @@ static uint16_t clamp16(int32_t v) {
 // No value may overflow its signal (spec 8.2; shared/diag D3 leaves it to
 // the project): every field is bounded where it comes from -- by its type,
 // by clamp16 or a saturating cap, or by the 255 and 254 markers -- and each
-// goes into the raw array through one of the macros below, which check at
-// compile time, against the table's own widths, that it cannot exceed its
-// signal. A field whose type could is a build error, so the packer's misfit
-// count is 0 by construction; diagFrames() still returns it, for the host
-// build's intpDiagMisfits().
-//   INTP_PUT    an unsigned value whose type is no wider than the signal
-//   INTP_BIT    a condition, into a one-bit (or wider) signal, as 0 or 1
-//   INTP_MASK   a value masked to a constant that fits the signal
-//   INTP_CONST  a constant that fits the signal
-#define INTP_SIG(M, S) intp_dbc_##M##__##S
-#define INTP_SIG_BITS(M, S) intp_dbc_##M##__##S##__BITS
-#define INTP_SIG_MAX(M, S) ((1ull << INTP_SIG_BITS(M, S)) - 1ull)
-#define INTP_SIG_UNSIGNED(M, S)                                              \
-  static_assert(!intp_dbc_##M##__##S##__SIGNED && INTP_SIG_BITS(M, S) < 64, \
-                #M "." #S ": the macros take unsigned signals under 64 bits")
-#define INTP_PUT(raw, M, S, e)                                               \
-  do {                                                                       \
-    INTP_SIG_UNSIGNED(M, S);                                                 \
-    static_assert(std::is_unsigned<decltype(e)>::value &&                    \
-                      !std::is_same<decltype(e), bool>::value &&             \
-                      sizeof(e) * 8 <= INTP_SIG_BITS(M, S),                  \
-                  #M "." #S ": the type of " #e                              \
-                  " could exceed the signal -- bound it (spec 8.2)");        \
-    (raw)[INTP_SIG(M, S)] = (int64_t)(e);                                    \
-  } while (0)
-#define INTP_BIT(raw, M, S, cond)                                            \
-  do {                                                                       \
-    INTP_SIG_UNSIGNED(M, S);                                                 \
-    (raw)[INTP_SIG(M, S)] = (cond) ? 1 : 0;                                  \
-  } while (0)
-#define INTP_MASK(raw, M, S, e, mask)                                        \
-  do {                                                                       \
-    INTP_SIG_UNSIGNED(M, S);                                                 \
-    static_assert((unsigned long long)(mask) <= INTP_SIG_MAX(M, S),          \
-                  #M "." #S ": the mask " #mask " exceeds the signal");      \
-    (raw)[INTP_SIG(M, S)] = (int64_t)((uint64_t)(e) & (uint64_t)(mask));     \
-  } while (0)
-#define INTP_CONST(raw, M, S, c)                                             \
-  do {                                                                       \
-    INTP_SIG_UNSIGNED(M, S);                                                 \
-    static_assert((c) >= 0 && (unsigned long long)(c) <= INTP_SIG_MAX(M, S), \
-                  #M "." #S ": " #c " exceeds the signal");                  \
-    (raw)[INTP_SIG(M, S)] = (int64_t)(c);                                    \
-  } while (0)
+// goes into the raw array through one of the table's fit checks (shared/diag
+// D6, generated into intp_diag_table.h), which check at compile time,
+// against the table's own widths, that it cannot exceed its signal. A field
+// whose type could is a build error, so the packer's misfit count is 0 by
+// construction; diagFrames() still returns it, for the host build's
+// intpDiagMisfits(). The capped form is not used: each value is capped where
+// it comes from.
+//   intp_dbc_FIT_PUT    an unsigned value whose type is no wider than the signal
+//   intp_dbc_FIT_BIT    a condition, as 0 or 1
+//   intp_dbc_FIT_MASK   a value masked to a constant that fits the signal
+//   intp_dbc_FIT_CONST  a constant that fits the signal
 
 // The table's ids and schema are the ones the rest of the firmware names.
 static_assert(intp_dbc_INTP_Status__ID == DIAG_STATUS_ID, "0x7F4 drift");
@@ -1208,14 +1173,14 @@ int InterposerCore::diagFrames(uint32_t t_ms, uint8_t rx_overflow,
   int misfits = 0;
 
   int64_t s[intp_dbc_INTP_Status__N] = {0};
-  INTP_CONST(s, INTP_Status, intp_schema_ver, DIAG_SCHEMA_VER);
-  INTP_CONST(s, INTP_Status, intp_reserved_b1, 0);   // was fw_ver (schema 5)
-  INTP_PUT(s, INTP_Status, intp_state, state_);
-  INTP_PUT(s, INTP_Status, intp_trip_reason, trip_reason_);
-  INTP_PUT(s, INTP_Status, intp_flags, flags);
-  INTP_PUT(s, INTP_Status, intp_our_ilim_x10, ourIlimX10());
-  INTP_PUT(s, INTP_Status, intp_t_in_state_s,
-           clamp16((int32_t)((uint32_t)(t_ms - t_enter_) / 1000u)));
+  intp_dbc_FIT_CONST(s, INTP_Status, intp_schema_ver, DIAG_SCHEMA_VER);
+  intp_dbc_FIT_CONST(s, INTP_Status, intp_reserved_b1, 0);   // was fw_ver (schema 5)
+  intp_dbc_FIT_PUT(s, INTP_Status, intp_state, state_);
+  intp_dbc_FIT_PUT(s, INTP_Status, intp_trip_reason, trip_reason_);
+  intp_dbc_FIT_PUT(s, INTP_Status, intp_flags, flags);
+  intp_dbc_FIT_PUT(s, INTP_Status, intp_our_ilim_x10, ourIlimX10());
+  intp_dbc_FIT_PUT(s, INTP_Status, intp_t_in_state_s,
+                   clamp16((int32_t)((uint32_t)(t_ms - t_enter_) / 1000u)));
   misfits += packDiag(intp_dbc_INTP_Status, s, frames[0]);
 
   uint8_t cap_x10 = 255;
@@ -1224,35 +1189,35 @@ int InterposerCore::diagFrames(uint32_t t_ms, uint8_t rx_overflow,
     cap_x10 = x > 254 ? 254 : clamp8(x);
   }
   int64_t o[intp_dbc_INTP_Observed__N] = {0};
-  INTP_PUT(o, INTP_Observed, intp_vmax_mv, clamp16(vmax_));
-  INTP_PUT(o, INTP_Observed, intp_chg_max_ca, clamp16(chg_max_));
-  INTP_PUT(o, INTP_Observed, intp_soc_half, soc_half_);
-  INTP_PUT(o, INTP_Observed, intp_chg_state, chg_state_);
-  INTP_PUT(o, INTP_Observed, intp_evse_cap_x10, cap_x10);
+  intp_dbc_FIT_PUT(o, INTP_Observed, intp_vmax_mv, clamp16(vmax_));
+  intp_dbc_FIT_PUT(o, INTP_Observed, intp_chg_max_ca, clamp16(chg_max_));
+  intp_dbc_FIT_PUT(o, INTP_Observed, intp_soc_half, soc_half_);
+  intp_dbc_FIT_PUT(o, INTP_Observed, intp_chg_state, chg_state_);
+  intp_dbc_FIT_PUT(o, INTP_Observed, intp_evse_cap_x10, cap_x10);
   // B7: low nibble = the VCU's mode, bit 7 = the evap flag (schema 2);
   // bit 6 = "charger silent while expected" (schema 3, spec 2.2). Bits 4
   // and 5 are reserved, in no signal, and sent as 0.
-  INTP_MASK(o, INTP_Observed, intp_vcu_mode, vcu_mode_, 0x0Fu);
-  INTP_BIT(o, INTP_Observed, intp_chg_silent_expected,
-           chargerSilentWhileExpected(t_ms));
-  INTP_BIT(o, INTP_Observed, intp_evap_active, evap_ != 0);
+  intp_dbc_FIT_MASK(o, INTP_Observed, intp_vcu_mode, vcu_mode_, 0x0Fu);
+  intp_dbc_FIT_BIT(o, INTP_Observed, intp_chg_silent_expected,
+                   chargerSilentWhileExpected(t_ms));
+  intp_dbc_FIT_BIT(o, INTP_Observed, intp_evap_active, evap_ != 0);
   misfits += packDiag(intp_dbc_INTP_Observed, o, frames[1]);
 
   const uint16_t synth16 = synth_ > 65535u ? 65535u : (uint16_t)synth_;
   int64_t k[intp_dbc_INTP_Counters__N] = {0};
-  INTP_PUT(k, INTP_Counters, intp_modified, modified_);
-  INTP_PUT(k, INTP_Counters, intp_synth, synth16);
-  INTP_PUT(k, INTP_Counters, intp_rx_overflow, rx_overflow);
-  INTP_PUT(k, INTP_Counters, intp_tx_fail_expected, tx_fail);
+  intp_dbc_FIT_PUT(k, INTP_Counters, intp_modified, modified_);
+  intp_dbc_FIT_PUT(k, INTP_Counters, intp_synth, synth16);
+  intp_dbc_FIT_PUT(k, INTP_Counters, intp_rx_overflow, rx_overflow);
+  intp_dbc_FIT_PUT(k, INTP_Counters, intp_tx_fail_expected, tx_fail);
   misfits += packDiag(intp_dbc_INTP_Counters, k, frames[2]);
 
   const uint32_t mins = uptime_ms / 60000u;
   const uint8_t uptime_min = mins > 255u ? 255u : (uint8_t)mins;
   int64_t b[intp_dbc_INTP_Build__N] = {0};
-  INTP_PUT(b, INTP_Build, intp_build_id, build_id);
-  INTP_CONST(b, INTP_Build, intp_reserved16, 0);     // was fw_ver16 (schema 5)
-  INTP_CONST(b, INTP_Build, intp_schema_ver_build, DIAG_SCHEMA_VER);
-  INTP_PUT(b, INTP_Build, intp_uptime_min, uptime_min);
+  intp_dbc_FIT_PUT(b, INTP_Build, intp_build_id, build_id);
+  intp_dbc_FIT_CONST(b, INTP_Build, intp_reserved16, 0);     // was fw_ver16 (schema 5)
+  intp_dbc_FIT_CONST(b, INTP_Build, intp_schema_ver_build, DIAG_SCHEMA_VER);
+  intp_dbc_FIT_PUT(b, INTP_Build, intp_uptime_min, uptime_min);
   misfits += packDiag(intp_dbc_INTP_Build, b, frames[3]);
   return misfits;
 }

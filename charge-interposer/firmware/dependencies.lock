@@ -450,7 +450,7 @@ dependencies:
       type: git
     version: 5b03505f515cff8fbdd8826aa97fd2626028578a
   vtrux/diag:
-    component_hash: 545b9c442ee238ae4ee870cdb8203de0d8ee753e0985b10cfb9f3ab9620d2123
+    component_hash: 59da8b276d2b6f55f6d12c8812717e93d5a0508a1478dfb45a1601b3dd0e3aa9
     dependencies:
     - name: idf
       version: '>=5.4'
@@ -461,7 +461,7 @@ dependencies:
     targets:
     - esp32c3
     - esp32s3
-    version: ada2ab3729469ea0affe2878862503f5d0507c6d
+    version: 2a7ab8be056a57a20a7cdc33730c9d9b9ce8c35d
   vtrux/twai_port:
     component_hash: ca63b1023762c56eb91c278e74ae9488cf432a0251358268ee4ac8c35dc31e9d
     dependencies:
@@ -499,6 +499,6 @@ direct_dependencies:
 - vtrux/diag
 - vtrux/twai_port
 - vtrux/x2
-manifest_hash: 961caaa033ca3957931df8f48d5e13018aa1b81216f2d08eced31589b4233598
+manifest_hash: dcc139b5b71199046f20435baf2ff2756c0f718956fb8c150e9e6ab2e9e876c3
 target: esp32s3
 version: 2.0.0
