@@ -140,7 +140,12 @@ a needed resume stays wedged.
      mode refuses it as self-typing.
 3. Run the same command without `--check`, the same way: a Bash call with
    only this command, sent on its own and not alongside another tool call,
-   as the last action of the turn.
+   as the last action of the turn. **Run it in the foreground, never with
+   `run_in_background`.** It returns in a second or two and hands the wait
+   to a waiter that the harness does not track. As a background task, its
+   own exit sends a task notification, and that notification starts a turn
+   just after the compaction, so `--compact-only` is no longer compact-only.
+   This happened twice on 2026-11-23.
 4. End the turn with one line: a compaction is queued, and either the step
    it resumes with or that it is compact-only and what will wake the
    session.
