@@ -202,7 +202,11 @@ class Env:
                  esptool=dict({"argv": [PY, "-B", os.path.join(HERE, "fake_esptool.py")],
                                "baud": 115200}, **json.loads(json.dumps(ESPTOOL_PORT))),
                  pause_poll_s=0.2, scratch=self.root,
-                 canmain_check=dict(CM_SETTING))
+                 canmain_check=dict(CM_SETTING),
+                 # no process scan unless a test asks for one: the default
+                 # list would name other sessions' real simulators on this
+                 # machine (test_wallclock_default removes the key)
+                 wallclock_patterns=[])
         s.update(kw)
         return s
 
@@ -1150,6 +1154,81 @@ def test_wallclock_records():
     ev = _events(rec, "wallclock-others")
     assert len(ev) == 1 and ev[0]["wallclock"] is True and \
         "the-other-project" in ev[0]["lock"]["who"], ev
+
+
+def test_wallclock_default():
+    """Settings that give no wallclock_patterns, or give it null, scan for
+    the default list, procs.DEFAULT_WALLCLOCK_PATTERNS (2026-11-23: each
+    project's copy moved to shared code, AGENTS.md "Shared code"). A list
+    in the settings replaces the default, and an empty list scans nothing.
+    The wallclock-others event says which list the scan used."""
+    env = Env("wcdefault")
+    # matches the default's run_scenario\.py, and nothing else on the host
+    probe = "vtrux_bench_default_%d_run_scenario.py" % os.getpid()
+    s = suite([Group("g", [Check("sim", pc("pass"), python=True,
+                                 cls="wallclock")])])
+    st = env.settings()
+    del st["wallclock_patterns"]
+    cases = [("absent", st, True, "default"),
+             ("null", dict(st, wallclock_patterns=None), True, "default"),
+             ("empty", dict(st, wallclock_patterns=[]), False, "settings"),
+             ("other", dict(st, wallclock_patterns=[
+                 "vtrux_bench_no_such_%d" % os.getpid()]), False, "settings")]
+    pid = spawn_foreign(probe)
+    try:
+        for name, settings, named, source in cases:
+            eng, rec = run(env, s, settings=settings)
+            assert verdicts(rec) == {"g/sim": "PASS"}, (name, rec["results"])
+            ev = _events(rec, "wallclock-others")
+            assert len(ev) == 1 and ev[0]["patterns"] == source, (name, ev)
+            got = any(probe in a for a in ev[0]["processes"])
+            assert got is named, (name, named, ev)
+            if named:
+                assert ev[0]["wallclock"] is True, (name, ev)
+    finally:
+        kill_pid(pid)
+
+
+def test_wallclock_default_list():
+    """The default list names each kind of wall-clock test it is for, and
+    not the quiet work beside it (procs.DEFAULT_WALLCLOCK_PATTERNS):
+    made-up command lines, matched as the scan matches them."""
+    pats = P.DEFAULT_WALLCLOCK_PATTERNS
+    assert pats, "the default list is empty"
+    for p in pats:
+        re.compile(p)
+    wall = [
+        "python3.13 -B charge-interposer/run_scenario.py --scenario s1",
+        "/usr/bin/python3.13 charge-interposer/vehicle_sim.py --port 43001",
+        "python3.13 charge-interposer/charger_sim.py",
+        "python3.13 charge-interposer/interposer_sim.py",
+        "python3.13 -B tools/e4_device_calibration.py",
+        "python3.13 -B gen-inhibit/tools/bench/live_bench.py",
+        "python3.13 -B gen-inhibit/tools/bench/bench_vehicle.py",
+        "python3.13 -B tools/wican_ota_bench.py",
+        "python3.13 -B tools/bench_switch_errors.py",
+        "python3 /opt/can-tools/can_replayer.py --role canchg",
+        "python3 cantools_bench_ack.py",
+        "python3 /opt/can-tools/old/h2_backends.py",
+        "python3 step5_ack.py",
+        "/opt/android-sdk/emulator/qemu/linux-x86_64/"
+        "qemu-system-x86_64-headless -avd test_avd -no-window",
+    ]
+    quiet = [
+        "ninja -C build",
+        "python3.13 -B gen-inhibit/tools/b6_class_count.py",
+        "/opt/espressif/tools/qemu-riscv32/esp_develop_9.0.0/qemu/bin/"
+        "qemu-system-riscv32 -M esp32c3",
+        "adb -L tcp:5037 fork-server server --reply-fd 4",
+        "/opt/android-sdk/emulator/netsimd --no-cli-ui",
+        "python3 my_can_replayer.py",
+        "python3 x_step5_ack.py",
+        "python3 step5_acknowledge.py",
+    ]
+    for ln in wall:
+        assert P.matching([ln], pats) == [ln], "not named: %s" % ln
+    for ln in quiet:
+        assert P.matching([ln], pats) == [], "named: %s" % ln
 
 
 def test_own_wallclock_wait():
@@ -3423,6 +3502,7 @@ TESTS = [test_validate, test_bare_shell, test_basic_verdicts, test_never_overwri
          test_idle_safe_end, test_idle_unsafe_line, test_idle_pause_untouched,
          test_stop_pause,
          test_build_alongside, test_after, test_wallclock_records,
+         test_wallclock_default, test_wallclock_default_list,
          test_own_wallclock_wait, test_wallclock_hand_roles,
          test_placement_slices, test_placement_readback, test_runner_slice,
          test_requires, test_requires_run,
@@ -3564,6 +3644,14 @@ MUTANTS = {
     "test_after": _rule("after"),
     # the guard refusing again
     "test_wallclock_records": _patch(E.Engine, "run_check", _refusing_run_check),
+    # settings without wallclock_patterns scan nothing again
+    "test_wallclock_default": _rule("wallclock_default"),
+    # the Android emulator's pattern widened to every qemu-system-, which
+    # also names the ESP-IDF qemu of an emulated-time suite
+    "test_wallclock_default_list": _patch(
+        P, "DEFAULT_WALLCLOCK_PATTERNS",
+        tuple(p for p in P.DEFAULT_WALLCLOCK_PATTERNS if "emulator" not in p)
+        + (r"qemu-system-",)),
     "test_own_wallclock_wait": _rule("own_wallclock_wait"),
     # the HAND_ROLES skip removed: a hand take counts again
     "test_wallclock_hand_roles": _rule("hand_roles_wallclock"),
