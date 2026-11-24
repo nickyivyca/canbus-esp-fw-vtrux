@@ -13,7 +13,8 @@ every mutant failed the same six B15host checks). This folder's test, settings e
 x2_pin.py and x2_pin.json, and bench/ (the suite's HARNESS, 2026-10-22) are copied over
 the clone's; each mutant
 writes suite_gen_inhibit.py there with one edit, or, for a mutant whose fourth field
-names it, the settings example (the placement mutants, core 2026.11.12). The unmutated copy runs first, as the
+names it, the settings example (the placement mutants, core 2026.11.12; C2scan's; the
+wallclock_patterns mutants, 2026-11-23). The unmutated copy runs first, as the
 control: if it fails a check, no kill counts. Gen-inhibit tester, 2026-10-19.
 """
 import os
@@ -331,6 +332,19 @@ MUTANTS = [
     ("C2scan: the .ps1 again", '"%s/c_checks_run.py" % HARNESS, "--clone"', '"%s/c_checks_run.ps1" % HARNESS, "--clone"'),
     ("C2scan: not under the host's python", 'python=True, cwd="{reverse_it}", timeout_s=7200, cls="build",',
      'cwd="{reverse_it}", timeout_s=7200, cls="build",'),
+    # wallclock_patterns (gen-inhibit reviewer, 2026-11-23: bench run 4b15's events named no
+    # other wall-clock test, the example's list being empty)
+    ("example: wallclock_patterns empty again",
+     '"wallclock_patterns": ["run_scenario\\\\.py", "vehicle_sim\\\\.py", "charger_sim\\\\.py",',
+     '"wallclock_patterns": [], "_old": ["run_scenario\\\\.py", "vehicle_sim\\\\.py", "charger_sim\\\\.py",',
+     EXAMPLE),
+    ("example: the Android emulator left out", ',\n                         "/emulator/qemu/[^/\\\\s]+/qemu-system-"]',
+     ']', EXAMPLE),
+    ("example: the emulator's pattern any qemu (Espressif's emulated-time QEMU too)",
+     '"/emulator/qemu/[^/\\\\s]+/qemu-system-"', '"qemu-system-"', EXAMPLE),
+    ("example: the interposer's scenario runner left out", '"run_scenario\\\\.py", ', '', EXAMPLE),
+    ("example: the CAN replay tooling's replayer left out",
+     '"(^|[/\\\\s])can_(replayer|logger|gui)\\\\.py",', '"(^|[/\\\\s])can_(logger|gui)\\\\.py",', EXAMPLE),
     ("example: no IDF_TOOLS_PATH for C2scan", ',\n              "IDF_TOOLS_PATH": "<that install\'s tools folder>"', '',
      EXAMPLE),
 ]

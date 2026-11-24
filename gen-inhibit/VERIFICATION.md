@@ -7065,6 +7065,20 @@ as the baseline, with 0x7F3 B0-B3 the expected difference. Harness:
   - **The comparison:** `cfcd/compare_report.txt` (`bench_compare.py report`,
     all four runs; flagged 13 of 39). The three-run report it replaces is kept
     beside it as `compare_report_cfcd_6204_08ea.txt`.
+    - **Correction (tester, 2026-11-23): the folder does not hold these two files as
+      written. Its tree digest changed. The cause is unknown.** Read on madhouse-debian:
+      - The folder has no `compare_report.txt`.
+      - `compare_report_cfcd_6204_08ea.txt` (12,962 bytes, modified 2026-10-25 19:04:37)
+        holds the four-run report. Its first line is the note that adds re-run 3 (`86b5`).
+        It compares all four runs and flags 13 of 39.
+      - No `.txt` file under `runs/` holds the three-run report.
+      - No file or folder in it was modified or changed after 2026-10-25 19:28:50.
+      - The 2026-11-07 manifest, written on NICKY-XPS, gives its tree digest as
+        `50c6b7b7...`. The manifest of 2026-11-23 gives `fc3f1490...` (717 files).
+      - A desk probe removed each file in turn, and changed each file's line endings in
+        both directions. No single change gives `50c6b7b7...`.
+      - The NICKY-XPS copy that the 2026-11-07 manifest hashed cannot be read from
+        madhouse-debian. A read of that copy would settle the cause.
 - **The tester's miss.** `cfcd` was started as a plain `vtrux_bench.run run`,
   not `bench_compare.py chain`, so the automatic re-run of the flagged checks
   did not happen. Re-runs 1 and 2 were started by hand, with the check list
@@ -9712,6 +9726,8 @@ in `runs/chain/`, and the desk records in `runs/stage_b2_db998aca/bench/` (its `
     tester's simulator scenarios and the Android emulator. The run's `wallclock-others`
     events say "no other wall-clock test on local", because the settings' `wallclock_patterns`
     is empty.
+  - *Later 2026-11-23:* the settings' `wallclock_patterns` is filled from the targeted B4
+    re-run on (the next entry). The settings example has the same list from `ebebf4c6`.
 
 **Passes**
 - **B1 (3.2, SLCAN refused and counted): PASS,** 20 of 20 (17:16:39-17:17:22).
@@ -9778,6 +9794,8 @@ in `runs/chain/`, and the desk records in `runs/stage_b2_db998aca/bench/` (its `
   - Spec 12.4's row "skipped inhibit frames" judges the device's counts against the witness
     on totals: device late >= witness late. 2 < 3, so one frame that went out late was not
     counted as a skip. Every earlier full run with B4 has it 6 of 6.
+  - *Later 2026-11-23:* ten more B4 runs on the same image all PASS, `l3s` included (the
+    next entry).
 - **B6 (7, trip 6 at the threshold; the 12.4 row "error-frame rate trip"): FAIL, 9 of 10 arms
   over 5 runs** (19:13:04-19:34:58).
   - Observed, `B6_threshold_n9_lead1.5` arm 1 (`x2_jam_threshold_20261123T192539.json`): 9
@@ -9798,6 +9816,53 @@ in `runs/chain/`, and the desk records in `runs/stage_b2_db998aca/bench/` (its `
     Whether this FAIL is carried with them is for the reviewer.
 - **B27: NOT-RUN,** the declared skip (needs the user at the bench; deferred by the user
   2026-10-17), as in the baseline.
+
+**Targeted B4 re-run on `db998aca` -- tester, 2026-11-23 20:32-21:12, madhouse-debian.
+Result: B4 PASS in 10 of 10 runs, and all 60 arms PASS. `l3s` PASS 10 of 10: each time the
+device counted 3 late skips, as the witness saw.** The gen-inhibit reviewer asked for this
+re-run on 2026-11-23. It gives a rate for the `l3s` miss in bench run 4b15 (the entry above).
+Run files: the ten chain runs in `runs/chain/`, and the desk table in `runs/b4_rerun_db998aca/`
+(its `README.md`).
+- **Code.** The `_man` image of the entry above, `cd46e234...`, code hash `f9ce967d...`. In
+  every run the runner read the WiCAN before and after the group. It read `cd46e234...` each
+  time, so no run loaded an image.
+- **X2.** `x2_app` `756d6714`. The X2 was on `slcan` after 4b15. Run `d99a` flashed `x2_app`
+  at 20:33:39-20:33:43, 4 writes verified. The other nine runs found it on `x2_app`.
+- **Harness.**
+  - `gi_tools` is the worktree `gen-inhibit-tester-tools-4126f144`, at `4126f144`, clean.
+  - The suite file came from `gen-inhibit/tester/wallclock-patterns` `ebebf4c6`. From
+    `4126f144` to `ebebf4c6`, the suite, the judges and `tools/bench/` change only
+    `test_gi_host_run_list.py` and `tools/bench/README.md`.
+  - The shared core is the checkout of shared/main tag `2026.11.16.5`.
+  - Every run's record pairs it with the emulated run `d82f` (the entry above).
+- **Runs.** Ten chain runs, each with the one check `man_app/B4`, back to back from 20:32:51 to
+  21:11:33:
+  `runs/chain/gen-inhibit-bench_20261123T{203251_d99a,203723_b488,204112_0e62,204500_cd12,204848_f00b,205236_3bce,205623_4bef,210011_142f,210359_92c3,210746_3c38}/`.
+  - Each run but the last kept the lock for the tester's session (`--keep-lock`). The next
+    run started from that hold (`--from-hold`). So the bench was not free between runs.
+  - Every check ran in bench.slice. Each B4 took 49.2-50.9 s.
+- **Result per arm.** It is the same in all ten runs. Trip 7 latched only where it must.
+
+  | Arm | Witness | Device | Trip 7 | Verdict |
+  |---|---|---|---|---|
+  | `w3` | 3 withdrawn | 3 withdrawn, 0 late | latched | PASS 10 of 10 |
+  | `w2` | 2 withdrawn | 2 withdrawn, 0 late | none | PASS 10 of 10 |
+  | `w3s` | 3 withdrawn | 3 withdrawn, 0 late | none | PASS 10 of 10 |
+  | `l3` | 3 late | 3 late, 0 withdrawn | latched | PASS 10 of 10 |
+  | `l2` | 2 late | 2 late, 0 withdrawn | none | PASS 10 of 10 |
+  | `l3s` | 3 late | 3 late, 0 withdrawn | none | PASS 10 of 10 |
+
+- **The rate on `db998aca`.** B4 ran 11 times on this image: 4b15 and these ten runs.
+  - `l3s` missed once: 1 of its 33 late events was not counted.
+  - Over every late event (`l3`, `l2` and `l3s`, 8 a run), 1 of 88 was not counted.
+  - Every withdrawn event was counted, 88 of 88.
+- **Triage.** No check failed, so no window is triaged. Recorded, not judged: every run's
+  `wallclock-others` event named other wall-clock work, through the settings' new
+  `wallclock_patterns`. Each run named the Android emulator and a charge-interposer acceptance
+  run's bench suite. Run `3c38` also named `bench_switch_errors.py`.
+- **What this does not change.** 4b15's B4 FAIL stands. These runs show how often the miss
+  comes on this image. The implementor's fix (`ac6621f4`, merged as `30cc9236`) is not
+  tested here.
 
 ## 13 Known not to be implemented
 

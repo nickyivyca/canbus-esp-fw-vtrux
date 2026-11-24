@@ -1623,6 +1623,16 @@ In every other
 mode they count inhibit completions only, and in OBSERVE and PASSIVE they read
 0.
 
+**The probe must use the same code path as the inhibit frame** (user,
+2026-11-23). This includes the transmit path, the deadline and the decision in
+trip 7, "What the device can see of lateness". Only these things differ:
+- the frame: `0x7F0` with the probe's contents, not our `0x051`;
+- the due time: `offset_us` after the `0x051` (section 3);
+- at the deadline, a probe is never withdrawn and is never a skip.
+
+A probe found late is in neither on-time count. Why: one shared path makes
+RESPOND's timing figures measure the same code that INHIBIT runs.
+
 **Uptime and reset reason are reported.**
 - `/gen_inhibit` carries `uptime_ms`: the time since this boot as a whole
   number of milliseconds, from `esp_timer_get_time()`. It only rises while the
