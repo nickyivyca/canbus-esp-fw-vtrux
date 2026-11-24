@@ -6029,6 +6029,112 @@ static void case_failed_diag_does_not_trip(void)
     case_end();
 }
 
+/*
+ * CASE 62 -- AN ANSWER SEEN TO COMPLETE ONLY AFTER A COMMAND THAT WAS ALREADY
+ * WAITING IS A LATE SKIP (spec 7 trip 7: "its completion was seen only after
+ * the VCM's next 0x051 had been dequeued"; spec 5.2 item 5; user 2026-11-23).
+ *
+ * B4's l3s at gen-inhibit-bench_20261123T171226_4b15: the stimulus sends the
+ * VCM's N and N+1 back to back, so N+1 is on the wire before our answer to N.
+ * When the worker took long enough between dequeuing N and dequeuing N+1 for
+ * the answer to finish, the dequeue's sched_advance() credited it `ontime`,
+ * with the backlog read after N+1 had left the queue -- one late frame of three
+ * booked on time.
+ *
+ * Here N and N+1 are both waiting when the worker takes N. It answers N, and
+ * at its next receive N+1 is still waiting; the turn's time passes there, so
+ * the answer completes before N+1 is dequeued. The worker must hold the credit
+ * and the deadline must book a late skip.
+ *
+ * The control first: N alone, the worker parked in an empty receive while the
+ * answer completes, then N+1. That receive blocked, its wake is N+1's arrival,
+ * and the answer is on time.
+ */
+static void case_late_after_a_waiting_command(void)
+{
+    case_begin("case 62: an answer seen to complete only after a command that "
+               "was already waiting is a late skip");
+    setup();
+    go_live();
+    uint8_t ctr = 0x30;
+    keep_alive(100000, &ctr);
+    CHECK(json_has("\"inhibit_live\":true"),
+          "PRECONDITION: the device is not live, so nothing below is tested: %s",
+          stats());
+
+    uint8_t cmd[6];
+
+    /* CONTROL: the receive blocked. */
+    const uint32_t late_c = json_need("\"skipped_late\":");
+    const uint32_t on_c   = json_need("\"ontime\":");
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(ctr++ & 0x0F);
+    ft_deliver(0x051, cmd, 6);
+    ft_run(1000);       /* N taken and answered; the worker parks, the answer completes */
+    CHECK(ft_rx_pending() == 0,
+          "PRECONDITION (control): %d frame(s) still waiting after N",
+          ft_rx_pending());
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(ctr++ & 0x0F);
+    ft_deliver(0x051, cmd, 6);
+    ft_run(500);        /* N+1 taken: the receive had blocked */
+    CHECK(json_need("\"skipped_late\":") == late_c,
+          "control: an answer that completed while the worker was parked in an "
+          "empty receive was booked late: %s", stats());
+    CHECK(json_need("\"ontime\":") > on_c,
+          "control: that answer was not credited on time: %s", stats());
+    ft_run(1000);       /* N+1's answer completes; the next command is credited normally */
+
+    /* THE CASE: N+1 already waiting when the worker takes N. */
+    const uint32_t late_0 = json_need("\"skipped_late\":");
+    const uint32_t low_0  = json_need("\"late_on_wire\":");
+    const uint32_t wd_0   = json_need("\"skipped_withdrawn\":");
+    const int      wire_0 = ft_wire_count_id(0x051);
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(ctr++ & 0x0F);
+    ft_deliver(0x051, cmd, 6);
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(ctr++ & 0x0F);
+    ft_deliver(0x051, cmd, 6);
+    ft_run(1000);       /* N taken and answered; N+1 waits while the answer completes */
+    const uint32_t on_0 = json_need("\"ontime\":");
+    CHECK(ft_rx_pending() == 1,
+          "PRECONDITION: N+1 is not the one frame waiting (%d waiting), so the "
+          "worker never met it at its receive", ft_rx_pending());
+    CHECK(ft_wire_count_id(0x051) == wire_0 + 1,
+          "PRECONDITION: the answer to N did not complete before N+1 was "
+          "dequeued (%d on the wire since)", ft_wire_count_id(0x051) - wire_0);
+    ft_run(500);        /* N+1 dequeued */
+
+    CHECK(json_need("\"skipped_late\":") == late_0 + 1,
+          "the answer to N completed only after N+1 had arrived and been "
+          "dequeued, and the device did not book a late skip (spec 7 trip 7): "
+          "%s", stats());
+    CHECK(json_need("\"late_on_wire\":") == low_0 + 1,
+          "and late_on_wire did not move: %s", stats());
+    CHECK(json_need("\"skipped_withdrawn\":") == wd_0,
+          "it reached the wire, yet was booked as withdrawn: %s", stats());
+    CHECK(json_need("\"ontime\":") == on_0,
+          "the late answer was credited on time as well: %s", stats());
+    CHECK(!json_has("\"abort_latched\":true"),
+          "one late skip latched an abort; trip 7 takes three within 1 s: %s",
+          stats());
+
+    /* The device carries on, and the page balances. */
+    keep_alive(100000, &ctr);
+    CHECK(json_has("\"inhibit_live\":true"),
+          "the device stopped inhibiting after one late skip: %s", stats());
+    g_bal_readings = 0;
+    g_bal_failures = 0;
+    g_bal_first[0] = 0;
+    balance_step_hook();
+    CHECK(g_bal_failures == 0,
+          "the status page does not balance after the late skip: %s",
+          g_bal_first);
+    teardown();
+    case_end();
+}
+
 #if !SHIM_AUTOARM_BUILD
 int main(int argc, char **argv)
 {
@@ -6112,6 +6218,7 @@ int main(int argc, char **argv)
     case_build_page_carries_the_build_id();
     case_bringup_failure_refuses();
     case_failed_diag_does_not_trip();
+    case_late_after_a_waiting_command();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

@@ -49,6 +49,10 @@ exact defect it was written to catch.
   N7  the core ignores the scheduler's skip trip (gi_on_inhibit_skip()). It was
       the TX_LATE test, which spec 7 trip 7 as amended replaced with "a third
       skipped inhibit inside a second trips"; this is that trip's core side
+  T1  the worker never holds the credit (gs_hold_credit()) when the VCM's next
+      0x051 was already waiting at its receive; T2 it never reads whether one
+      was. Spec 7 trip 7: a completion seen only after that command was
+      dequeued is a late skip (user, 2026-11-23; B4 l3s). Case 62 kills both
   K06 an explicit re-arm no longer clears the section 7 abort latch
   K08 the key-on clear no longer resets rpm_ever -- the BUG 2 class
   K17 the SoC threshold becomes <=, moving the 21.00 % boundary by one count
@@ -164,6 +168,12 @@ MUT = {
   "    if (offset_us > 4000)", "    if (offset_us > 40000)")]),
  "N7_skip_trip_ignored": ("firmware/main/gen_inhibit_core.c", [(
   "    if (trip && st->inhibit_live)", "    if (0)")]),
+ "T1_credit_never_held": ("firmware/main/gen_inhibit.c", [(
+  "            if (rx.identifier == GI_VCM_ID && rx_waiting > 0)",
+  "            if (0)")]),
+ "T2_waiting_never_read": ("firmware/main/gen_inhibit.c", [(
+  "            gs_inhibit_outstanding(&s_sched) ? can_msgs_to_rx() : 0;",
+  "            gs_inhibit_outstanding(&s_sched) ? 0u : 0u;")]),
  # Round 3 (reviewing session, 2026-09-25) mutated the CORE. These four were
  # real survivors and now have scenarios; K01 and K12 were judged equivalent and
  # are not here -- K01's reasoning is recorded in bus_alive_since()'s comment.
@@ -262,9 +272,12 @@ MUT = {
   "    if (st->mode == GI_OFF)", "    if (0 && st->mode == GI_OFF)")]),
 
  # The probe's offset field zeroed. It still waits the right length of time --
- # only its report of that is wrong, which no timing assertion can see.
+ # only its report of that is wrong, which no timing assertion can see. Since
+ # stage (b) batch 2 the field is packed through the DBC table (spec 10), so
+ # the anchor is its GI_PUT_CAP; 0u keeps the macro's unsigned check happy.
  "V10_probe_offset_byte": ("firmware/main/gen_inhibit_core.c", [(
-  "    f->data[4] = (uint8_t)(st->offset_us);", "    f->data[4] = 0;")]),
+  "    GI_PUT_CAP(v, WICAN_Probe, probe_offset_us, st->offset_us);",
+  "    GI_PUT_CAP(v, WICAN_Probe, probe_offset_us, 0u);")]),
  # ---- THE 2026-09-25 RULINGS ----------------------------------------------
  #
  # Each ruling changed behaviour, so each needs a mutation showing that a test

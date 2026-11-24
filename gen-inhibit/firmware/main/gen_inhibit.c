@@ -2209,7 +2209,24 @@ static void gen_inhibit_task(void *arg)
          * Blocking receive: the TWAI ISR wakes us directly, so this costs the
          * ISR-to-task latency rather than wican-fw's 1 ms poll interval. That
          * difference is the whole reason this component exists.
+         *
+         * WAS THE NEXT FRAME ALREADY WAITING? (spec 7 trip 7, user 2026-11-23.)
+         * Read immediately before the receive, and only while an inhibit is
+         * outstanding, which is the only time the answer changes a verdict.
+         * Waiting means this receive will not block: the frame it returns
+         * arrived while the worker was busy, and if it is the VCM's next
+         * 0x051 an inhibit completion first seen after it cannot be placed
+         * before it -- gs_hold_credit() below. Zero means the receive blocks
+         * and wakes on the frame's arrival, so a completion seen then preceded
+         * it, up to the ISR-to-task latency.
+         *
+         * Not free: it is the twai_get_status_info() that rx_backlog_sample()
+         * avoids per dequeue. Gated on the outstanding inhibit, it is about one
+         * read per answer, beside the per-command one at the deadline. Left
+         * open: a frame arriving between this read and the receive call.
          */
+        const uint32_t rx_waiting =
+            gs_inhibit_outstanding(&s_sched) ? can_msgs_to_rx() : 0;
         esp_err_t rx_err = twai_port_receive(&rx, pdMS_TO_TICKS(GEN_INHIBIT_RX_TIMEOUT_MS));
         if (rx_err != ESP_OK)
         {
@@ -2269,7 +2286,20 @@ static void gen_inhibit_task(void *arg)
              * landed while we were blocked inside twai_receive() has to be
              * credited first, or a frame that finished in good time is scored
              * against the deadline below.
+             *
+             * UNLESS THE RECEIVE DID NOT BLOCK and this is the VCM's next
+             * 0x051: then the completion may have come after it, and spec 7
+             * trip 7 books a completion "seen only after the VCM's next 0x051
+             * had been dequeued" as a late skip. The hold stops this
+             * sched_advance() and the deadline's own check crediting it;
+             * gs_command_received() ends it. B4's l3s at
+             * gen-inhibit-bench_20261123T171226_4b15 had one late frame booked
+             * on time here.
              */
+            if (rx.identifier == GI_VCM_ID && rx_waiting > 0)
+            {
+                gs_hold_credit(&s_sched);
+            }
             sched_advance(t_rx, &ev);
 
             /*

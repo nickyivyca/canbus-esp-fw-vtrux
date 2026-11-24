@@ -1955,6 +1955,120 @@ static void case_rearm_with_live_answer_is_no_standdown(void)
     ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
 }
 
+/*
+ * SPEC 7 TRIP 7: A COMPLETION SEEN ONLY AFTER THE VCM'S NEXT 0x051 WAS DEQUEUED
+ * IS A LATE SKIP (user, 2026-11-23; B4 l3s at
+ * gen-inhibit-bench_20261123T171226_4b15).
+ *
+ * The worker was busy: the inhibit was handed over, the next command arrived,
+ * and the inhibit completed -- all before the worker came back to its receive,
+ * which then returned the waiting command at once. The worker holds the credit
+ * (gs_hold_credit()) before the dequeue's gs_tick(), so neither that tick nor
+ * the deadline credits the departure: the deadline finds the inhibit
+ * outstanding with the buffer EMPTY and books it late. Before the hold, the
+ * tick credited it `ontime` with a backlog of 0, read after the command had
+ * left the queue.
+ *
+ * The control half is the same sequence with the receive having blocked (no
+ * hold): the departure is credited on time, as it must be, since the wake is
+ * the command's arrival.
+ */
+static void held_credit_once(bool hold, gs_deadline_t *v, gs_t *s)
+{
+    fb_reset();
+    gs_init(s, fb_hal());
+
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    ck(gs_queue_frame(s, GS_CLASS_INHIBIT, &inh, fb_now()), "inhibit queued");
+    run(s, 20, 5, 0);
+    ck(fb_state_now() == GS_BUF_TRANSMITTING,
+       "PRECONDITION: the inhibit is transmitting");
+
+    /* The worker is away: no gs_tick() while the frame finishes. */
+    fb_advance(1000);
+    ck(fb_state_now() == GS_BUF_EMPTY && fb_wire_count() == 1,
+       "PRECONDITION: the inhibit completed on the wire unobserved");
+
+    if (hold)
+    {
+        gs_hold_credit(s);
+    }
+    gs_tick(s, fb_now(), 0);    /* the dequeue's sched_advance() */
+    *v = gs_command_received(s, fb_now(), 0);
+}
+
+static void case_held_credit_is_late(void)
+{
+    gs_t s;
+    gs_deadline_t v;
+
+    g_case = "trip 7: completion seen after a waiting command is late";
+    held_credit_once(true, &v, &s);
+    ck(v == GS_DEADLINE_MAYBE_LATE, "the deadline books it as went-out-late");
+    ck_eq(s.st.late_on_wire, 1, "late_on_wire counted");
+    ck_eq(s.st.skipped_late, 1, "a LATE skip");
+    ck_eq(s.st.skipped_withdrawn, 0, "not a withdrawn one");
+    ck_eq(s.st.ontime + s.st.ontime_unverified, 0, "NOT credited on time");
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].sent, 0, "and not credited as sent");
+    ck(!s.credit_hold, "the deadline ended the hold");
+
+    /* The item 4 loop closes on the empty buffer; the identity balances. */
+    run(&s, 200, 10, 0);
+    ck(!s.held && !s.inhibit_outstanding, "the frame left the scheduler");
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].withdrawn
+              + s.st.cls[GS_CLASS_INHIBIT].dropped,
+          s.st.skipped + s.st.standdown,
+          "withdrawn + dropped == skipped + standdown");
+    ck_eq(fb_wire_count(), 1, "nothing else went out");
+
+    /* The next answer, its receive having blocked, is on time again. */
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    ck(gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now()),
+       "next inhibit queued");
+    run(&s, 1000, 10, 0);
+    v = gs_command_received(&s, fb_now(), 0);
+    ck(v == GS_DEADLINE_OK, "the next deadline finds it on time");
+    ck_eq(s.st.ontime, 1, "and credits it on time");
+    ck_eq(s.st.skipped, 1, "no second skip");
+
+    g_case = "trip 7 control: the receive blocked, the completion is on time";
+    held_credit_once(false, &v, &s);
+    ck(v == GS_DEADLINE_OK, "the deadline finds it already gone");
+    ck_eq(s.st.ontime, 1, "credited on time");
+    ck_eq(s.st.skipped, 0, "no skip");
+    ck_eq(s.st.cls[GS_CLASS_INHIBIT].sent, 1, "credited as sent");
+}
+
+/*
+ * The hold is the inhibit's only. A telemetry page that finished while the
+ * worker was away is credited as sent at once, and a deadline with no inhibit
+ * outstanding still ends the hold.
+ */
+static void case_held_credit_spares_telemetry(void)
+{
+    g_case = "trip 7: the held credit leaves telemetry alone";
+    fb_reset();
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
+    ck(gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now()), "diag queued");
+    run(&s, 20, 5, 0);
+    fb_advance(1000);
+    ck(fb_state_now() == GS_BUF_EMPTY && fb_wire_count() == 1,
+       "PRECONDITION: the diag completed on the wire unobserved");
+
+    gs_hold_credit(&s);
+    gs_tick(&s, fb_now(), 0);
+    ck_eq(s.st.cls[GS_CLASS_TELEMETRY].sent, 1, "the diag was credited as sent");
+    ck(!s.held, "and the controller is free");
+
+    const gs_deadline_t v = gs_command_received(&s, fb_now(), 0);
+    ck(v == GS_DEADLINE_OK, "no inhibit, no skip");
+    ck_eq(s.st.skipped, 0, "nothing skipped");
+    ck(!s.credit_hold, "the deadline ended the hold");
+}
+
 static void case_integration_order(void)
 {
     uint32_t v;
@@ -1997,6 +2111,8 @@ int main(void)
     case_inhibit_queue_full_is_a_skip();
     case_withdrawn_held_inhibit_never_returns();
     case_transmitting_at_deadline_is_maybe_late();
+    case_held_credit_is_late();
+    case_held_credit_spares_telemetry();
     case_requeue_at_head();
     case_abort_bound_is_reached();
     case_probe_is_preempted_by_inhibit();

@@ -331,6 +331,13 @@ mutated code the gi_sched switchover removed. M3 mutated `main/can.c`'s spec
 mutants (reviewer, 2026-10-31). M7, N1, N3, N7 and V08 were re-anchored on the
 1b code, and N3 and N7 were renamed for what they now mutate.
 
+**T1 and T2** (2026-11-23, spec 7 trip 7): the worker never holds the credit
+when the VCM's next `0x051` was already waiting at its receive, and never reads
+whether one was. Case 62 catches both: N and N+1 are both waiting when the
+worker takes N, its answer completes before N+1 is dequeued, and the device
+must book a late skip. **V10** was re-anchored on the probe's `GI_PUT_CAP`,
+since stage (b) batch 2 packs it through the DBC table (spec 10); still caught.
+
 **Read `rc`, not the text.** The original scraped lines containing `FAIL`,
 which also matches the harness's own `twai_receive failed: ESP_FAIL` logging —
 so a surviving mutation was reported as caught.

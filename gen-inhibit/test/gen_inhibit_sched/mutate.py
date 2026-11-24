@@ -71,18 +71,44 @@ MUTATIONS = [
     ("drop the !aborting guard on gs_tick's completion path",
      "gi_sched.c",
      """     */
-    if (s->held && !s->aborting && !s->hal->outstanding(s->hal->ctx))""",
+    if (s->held && !s->aborting && !credit_held(s)
+        && !s->hal->outstanding(s->hal->ctx))""",
      """     */
-    if (s->held && !s->hal->outstanding(s->hal->ctx))""",
+    if (s->held && !credit_held(s)
+        && !s->hal->outstanding(s->hal->ctx))""",
      "item 5: an abort is not credited as a send"),
 
     ("drop the !aborting guard on gs_command_received's completion path",
      "gi_sched.c",
-     """#endif
-    if (s->held && !s->aborting && !s->hal->outstanding(s->hal->ctx))""",
-     """#endif
-    if (s->held && !s->hal->outstanding(s->hal->ctx))""",
+     """    s->credit_hold = false;
+    if (s->held && !s->aborting && !held_back
+        && !s->hal->outstanding(s->hal->ctx))""",
+     """    s->credit_hold = false;
+    if (s->held && !held_back
+        && !s->hal->outstanding(s->hal->ctx))""",
      "abort: a departure seen by gs_command_received is not credited as sent"),
+
+    # ---- spec 7 trip 7's held credit (user, 2026-11-23; B4 l3s) ------------
+    # A completion seen only after a command that was already waiting was
+    # dequeued is a late skip. Each site that honours the hold is broken alone.
+    ("trip 7: gs_tick credits a held inhibit",
+     "gi_sched.c",
+     """    if (s->held && !s->aborting && !credit_held(s)""",
+     """    if (s->held && !s->aborting""",
+     "trip 7: completion seen after a waiting command is late"),
+
+    ("trip 7: the deadline credits a held inhibit",
+     "gi_sched.c",
+     """    if (s->held && !s->aborting && !held_back""",
+     """    if (s->held && !s->aborting && (held_back || !held_back)""",
+     "trip 7: completion seen after a waiting command is late"),
+
+    ("trip 7: the deadline does not end the hold",
+     "gi_sched.c",
+     """    s->credit_hold = false;
+    if (s->held""",
+     """    if (s->held""",
+     "trip 7: completion seen after a waiting command is late"),
 
     ("D3: an inhibit queue-full is not counted as a skip",
      "gi_sched.c",
