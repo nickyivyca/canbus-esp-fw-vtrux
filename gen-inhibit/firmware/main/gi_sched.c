@@ -329,6 +329,15 @@ static uint32_t skips_in_window(const gs_t *s, int64_t now)
     return k;
 }
 
+/*
+ * Is the held frame's credit held back (gs_hold_credit())? Only an inhibit's:
+ * any other class's departure is credited as it is seen.
+ */
+static bool credit_held(const gs_t *s)
+{
+    return s->credit_hold && s->held_class == GS_CLASS_INHIBIT;
+}
+
 static void note_left_controller(gs_t *s, int64_t now, uint32_t rx_backlog)
 {
     const gs_class_t c = s->held_class;
@@ -514,8 +523,13 @@ void gs_tick(gs_t *s, int64_t now, uint32_t rx_backlog)
      *    same confusion item 5 exists to prevent, one level down in the class
      *    statistics. While an abort is in progress the departure belongs to step
      *    3, which counts it as aborted and requeues it.
+     *
+     *    `!credit_held(s)`: the VCM's next command was already waiting when the
+     *    worker dequeued it, so a held inhibit's departure seen now is left for
+     *    the deadline to book (gs_hold_credit()).
      */
-    if (s->held && !s->aborting && !s->hal->outstanding(s->hal->ctx))
+    if (s->held && !s->aborting && !credit_held(s)
+        && !s->hal->outstanding(s->hal->ctx))
     {
         note_left_controller(s, now, rx_backlog);
     }
@@ -821,7 +835,23 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
 #if GI_INSTRUMENT_ABORTWIN
     gs_abortwin_note(s);
 #endif
-    if (s->held && !s->aborting && !s->hal->outstanding(s->hal->ctx))
+    /*
+     * UNLESS THE CREDIT IS HELD (gs_hold_credit(), spec 7 trip 7, user
+     * 2026-11-23). This command was already waiting when the worker called its
+     * receive, so it arrived while the worker was busy, and a departure first
+     * seen now cannot be placed before it: "its completion was seen only after
+     * the VCM's next 0x051 had been dequeued". Left uncredited, the inhibit is
+     * still outstanding below, the buffer reads EMPTY, and the EMPTY branch
+     * books it as went-out-late. The hold ends here, whatever is found.
+     *
+     * Until 2026-11-23 this credited it, with rx_backlog read after the
+     * command had been taken out of the queue, so it read 0 and the frame was
+     * booked `ontime`: B4's l3s, one of three late frames counted on time.
+     */
+    const bool held_back = credit_held(s);
+    s->credit_hold = false;
+    if (s->held && !s->aborting && !held_back
+        && !s->hal->outstanding(s->hal->ctx))
     {
         note_left_controller(s, now, rx_backlog);
     }
@@ -897,6 +927,10 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
          * had not issued. It went out, late. Scored as a clean skip until
          * 2026-09-27, which said it never reached the wire when the evidence says
          * the opposite.
+         *
+         * Since 2026-11-23 this is also where a HELD credit lands: a departure
+         * seen only after a command that was already waiting was dequeued
+         * (gs_hold_credit()).
          */
         s->st.late_on_wire++;
         verdict = GS_DEADLINE_MAYBE_LATE;
@@ -917,6 +951,12 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now, uint32_t rx_backlog)
         begin_abort(s, now);
     }
     return verdict;
+}
+
+void gs_hold_credit(gs_t *s)
+{
+    /* Ended by gs_command_received(); see gi_sched.h. */
+    s->credit_hold = true;
 }
 
 bool gs_inhibit_outstanding(const gs_t *s)

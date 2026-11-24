@@ -139,3 +139,23 @@ has removed an inhibit the old arm gave up. The new arm must count it as a
 stand-down beside its `carried_in`, so its own identity holds once the loop books
 `withdrawn`; on `c6fdab5` it read one over. `case_rearm_with_live_answer_is_no_standdown`
 is the other side: a held answer nobody gave up leaves as `sent`.
+
+**A completion seen only after the VCM's next `0x051` was dequeued is a late
+skip** (spec 7 trip 7; user 2026-11-23, after B4's l3s at
+`gen-inhibit-bench_20261123T171226_4b15` counted one late frame of three on
+time). The worker calls `gs_hold_credit()` when it dequeues a command that was
+already waiting at its receive, before the dequeue's `gs_tick()`; neither that
+tick nor `gs_command_received()` then credits a held inhibit's departure, and
+the deadline books it late through the buffer-`EMPTY` branch.
+
+* `case_held_credit_is_late` -- the inhibit completes while nothing ticks, the
+  hold is set, and the deadline must book a late skip, not `ontime` and not
+  `sent`; the identity balances once the loop closes, and the next answer is on
+  time. Its control half runs the same sequence without the hold (the receive
+  blocked) and expects `ontime`.
+* `case_held_credit_spares_telemetry` -- the hold is the inhibit's only: a page
+  that finished meanwhile is credited as sent.
+
+`mutate.py` breaks each site that honours the hold (`gs_tick`'s credit, the
+deadline's credit, the deadline ending the hold); all three are caught. The two
+`!aborting` mutants' anchors moved with it.

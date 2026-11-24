@@ -493,6 +493,24 @@ typedef struct
     int64_t    inhibit_handed;
 
     /*
+     * THE INHIBIT'S CREDIT IS HELD UNTIL THE DEADLINE (spec 7 trip 7: a frame
+     * whose completion was seen only after the VCM's next 0x051 had been
+     * dequeued is a late skip; user 2026-11-23, B4 l3s at
+     * gen-inhibit-bench_20261123T171226_4b15). Set by gs_hold_credit(), cleared
+     * by gs_command_received(). While set, neither gs_tick() nor
+     * gs_command_received() credits a held inhibit's departure as sent: the
+     * frame stays held and outstanding, so the deadline finds the buffer
+     * EMPTY with the inhibit still outstanding and books it late.
+     *
+     * A FLAG ON THE SCHEDULER, NOT A PARAMETER of gs_command_received(),
+     * because the credit the hold has to stop is the one gs_tick() makes first,
+     * in the sched_advance() the worker runs right after the dequeue. Any other
+     * class's departure is credited as before; only the inhibit's verdict is
+     * at stake.
+     */
+    bool       credit_hold;
+
+    /*
      * THE DEADLINE TOKEN. Set by gs_command_received(), consumed by queueing an
      * inhibit. One bit, because the property is one bit: "has a deadline been
      * evaluated since the last inhibit was queued". A counter would invite
@@ -645,9 +663,37 @@ typedef enum
  * completion first and score it on time. `ontime_unverified` is what keeps that
  * honest. Corrected 2026-09-27 after the reviewing session showed the
  * one-frame-time bound was wrong.
+ *
+ * ONE PART OF THAT GAP THE DEVICE CAN SEE: a command that was already waiting
+ * when the worker called its receive. Then the frame arrived while the worker
+ * was busy, and a completion first seen after this dequeue cannot be placed
+ * before it. The worker says so with gs_hold_credit() before the dequeue's
+ * sched_advance(), and the frame is booked late here (spec 7 trip 7; see
+ * gs_hold_credit()). When the receive blocked, the wake is the command's
+ * arrival, so a completion seen then preceded it.
  */
 gs_deadline_t gs_command_received(gs_t *s, int64_t now,
                                  uint32_t rx_backlog);
+
+/*
+ * The worker has dequeued a VCM 0x051 that was ALREADY WAITING when it called
+ * its receive, with an inhibit outstanding. Hold that inhibit's credit until
+ * gs_command_received() for this command: a departure seen before then is not
+ * credited as sent (or on time), so the deadline finds the inhibit still
+ * outstanding with the buffer EMPTY and books it as went-out-late -- a late
+ * skip, as spec 7 trip 7 says of "its completion was seen only after the VCM's
+ * next 0x051 had been dequeued" (user, 2026-11-23).
+ *
+ * Call it before the sched_advance() that follows the dequeue, since that
+ * gs_tick() is what would credit the departure first. gs_command_received()
+ * ends the hold, whatever it finds. Only the inhibit class is held.
+ *
+ * A held frame stays `held`, so nothing is handed over behind it while the
+ * hold lasts (item 7 is untouched). The hold is set per command today; a rule
+ * that held the verdict across several dequeues would set and end it at
+ * other points, with the same effect on the credit.
+ */
+void gs_hold_credit(gs_t *s);
 
 /* Is an inhibit frame outstanding? Section 10: no telemetry goes out while one
  * is, which item 7 makes a property of the scheduler rather than a rule. */
