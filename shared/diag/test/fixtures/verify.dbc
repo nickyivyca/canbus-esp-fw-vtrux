@@ -1,0 +1,67 @@
+VERSION "shared-diag verify fixture"
+
+NS_ :
+	BA_DEF_
+	BA_DEF_DEF_
+
+BS_:
+
+BU_: VERIFY
+
+BO_ 1792 Verify_Intel: 8 VERIFY
+ SG_ u1 : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ u7 : 1|7@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ s8 : 8|8@1- (1,0) [0|0] "" Vector__XXX
+ SG_ u12 : 16|12@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ s12 : 28|12@1- (1,0) [0|0] "" Vector__XXX
+ SG_ u16 : 40|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ s8b : 56|8@1- (1,0) [0|0] "" Vector__XXX
+
+BO_ 1793 Verify_Wide: 8 VERIFY
+ SG_ u32 : 0|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ s32 : 32|32@1- (1,0) [0|0] "" Vector__XXX
+
+BO_ 1794 Verify_U64: 8 VERIFY
+ SG_ u64 : 0|64@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1795 Verify_S64: 8 VERIFY
+ SG_ s64 : 0|64@1- (1,0) [0|0] "" Vector__XXX
+
+BO_ 1796 Verify_U63: 8 VERIFY
+ SG_ u63 : 0|63@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ b63 : 63|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1797 Verify_Moto: 8 VERIFY
+ SG_ m12 : 7|12@0+ (1,0) [0|0] "" Vector__XXX
+ SG_ ms4 : 11|4@0- (1,0) [0|0] "" Vector__XXX
+ SG_ m16 : 23|16@0+ (1,0) [0|0] "" Vector__XXX
+ SG_ ms20 : 39|20@0- (1,0) [0|0] "" Vector__XXX
+ SG_ m3 : 50|3@0+ (1,0) [0|0] "" Vector__XXX
+ SG_ m8x : 63|8@0+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1798 Verify_Short: 3 VERIFY
+ SG_ a : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ b : 8|16@1- (1,0) [0|0] "" Vector__XXX
+
+BO_ 1799 Verify_Mux: 8 VERIFY
+ SG_ page M : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ p0_a m0 : 8|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ p0_b m0 : 24|8@1- (1,0) [0|0] "" Vector__XXX
+ SG_ p1_a m1 : 8|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ p5_m m5 : 15|12@0+ (1,0) [0|0] "" Vector__XXX
+ SG_ common : 56|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2566848512 Verify_Ext: 8 VERIFY
+ SG_ e16 : 0|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ e8 : 16|8@1- (1,0) [0|0] "" Vector__XXX
+
+BO_ 1800 Verify_Build: 8 VERIFY
+ SG_ build_id : 0|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ rest : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+
+BA_DEF_ "DiagSchemaVersion" INT 0 255;
+BA_DEF_ "DiagSchemaHash" STRING ;
+BA_DEF_DEF_ "DiagSchemaVersion" 0;
+BA_DEF_DEF_ "DiagSchemaHash" "";
+BA_ "DiagSchemaVersion" 1;
+BA_ "DiagSchemaHash" "ba005e2f1dd8fbe8";
