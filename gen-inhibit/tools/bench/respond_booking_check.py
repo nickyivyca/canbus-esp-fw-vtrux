@@ -21,6 +21,15 @@ comparison and judge_balance() JUDGES it (since 2026-10-12, when the user publis
 0x7F0 layout: wican_diag_schema.md, "0x7F0: the RESPOND timing probe", and the DBC's
 WICAN_Probe). Until then it was recorded only, because B6's meaning came from the code.
 
+Since 2026-11-23 (spec 11, ab74c3da; spec 7 trip 7, f1961dcf; user): the probe takes the
+inhibit frame's code path, trip 7's decision with frames waiting included. A probe found
+late is in neither on-time count, and ontime_unverified means "on time, with frames
+waiting". Trip 7's decision can be wrong in one direction only: a frame that completed in
+time but is seen after the VCM's next 0x051 arrived is booked late. So the judged rule is
+unbooked >= the late probes on the wire: FAIL only when unbooked is less, which means a
+probe late on the wire was booked on time. `balanced` (unbooked == late) stays in the
+record. The extra, unbooked minus late, is reported as `booked_late_on_time`.
+
     py -3.14 respond_booking_check.py runs/<e4 run>.json [...]
 """
 import json
@@ -69,17 +78,21 @@ def balance(sched, late_on_wire):
     if probe.get("withdrawn"):
         return {"balanced": None, "why": "%d probe(s) withdrawn" % probe["withdrawn"],
                 "unbooked": unbooked, "late_on_wire": late_on_wire}
-    return {"balanced": unbooked == late_on_wire, "unbooked": unbooked, "late_on_wire": late_on_wire}
+    return {"balanced": unbooked == late_on_wire, "holds": unbooked >= late_on_wire,
+            "unbooked": unbooked, "late_on_wire": late_on_wire,
+            "booked_late_on_time": max(0, unbooked - late_on_wire)}
 
 
 def judge_balance(b):
-    """balance() -> (verdict, detail). PASS when unbooked equals the late probes on the
-    wire, FAIL when it does not, UNRESOLVED when it cannot be compared (no counts, or a
-    probe withdrawn)."""
+    """balance() -> (verdict, detail). PASS when unbooked is at least the late probes on
+    the wire (trip 7 errs one way only, spec 11 since 2026-11-23), FAIL when it is less (a
+    late probe booked on time), UNRESOLVED when it cannot be compared (no counts, or a
+    probe withdrawn). Before 2026-11-23 it needed them equal."""
     if b.get("balanced") is None:
         return "UNRESOLVED", b.get("why", "not comparable")
-    v = "PASS" if b["balanced"] else "FAIL"
-    return v, "unbooked %d, late on the wire %d" % (b["unbooked"], b["late_on_wire"])
+    v = "PASS" if b["holds"] else "FAIL"
+    return v, "unbooked %d, late on the wire %d, booked late but on time on the wire %d" % (
+        b["unbooked"], b["late_on_wire"], b["booked_late_on_time"])
 
 
 def late_probes(frames, identity=None):

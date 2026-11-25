@@ -35,10 +35,11 @@ import gi_paths  # noqa: E402  remove_tree (AGENTS.md "Removing scratch")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from host_env import describe, host_identity, missing, scratch_dir, sh, wsl_path  # noqa: E402
+from host_env import PROBE_BUILD_ARGS, describe, host_identity, missing, scratch_dir, sh, wsl_path  # noqa: E402
 
 
 J, L, T = "nonode_judge.c", "spec_layer.c", "nonode_test.c"
+PJ, PT = "probe_judge.c", "probe_test.c"          # 2026-11-23: spec 7 trip 7 and spec 11's probe
 MUTANTS = [
     # the judge, caught by judge_test
     (J, "a tie is trip 6", "e.trip = (e.c_six >= 0 && e.c_six < e.c_stale) ? 6 : 2;",
@@ -111,6 +112,43 @@ MUTANTS = [
      "    (void)0;                                    /* the answer"),
     (T, "the checks include returns before the last 0x051", "        if (sl_rx(i)->t > t_last) g_checks[o.n_checks++]",
      "        if (sl_rx(i)->t > t_last - 1000000) g_checks[o.n_checks++]", 2),
+    # probe_judge.c (2026-11-23, spec 7 trip 7 and spec 11), caught by probe_judge_test
+    (PJ, "a late frame may be booked with frames waiting", "don == 0 && dunv == 0,", "don == 0,"),
+    (PJ, "a frame with frames waiting may be booked on time", "don == 0 && dunv == 1,", "dunv == 1,"),
+    (PJ, "a frame with nothing waiting may be booked with frames waiting", "don == 1 && dunv == 0,", "don == 1,"),
+    (PJ, "the max backlog may exceed the frames waiting", "o->p1.mx == o->behind,", "o->p1.mx >= o->behind,"),
+    (PJ, "a max backlog already at the case's backlog passes", "if (o->kind == PJ_WAITING && o->p0.mx >= o->behind)",
+     "if (0)"),
+    (PJ, "the max backlog is not checked outside the waiting case", "o->p1.mx == o->p0.mx,", "1,"),
+    (PJ, "skips are judged only at the settled read", "o->p1.skip == o->p0.skip && o->p2.skip == o->p0.skip,",
+     "o->p2.skip == o->p0.skip,", 2),
+    (PJ, "an inhibit frame found late need not be a skip", "o->p1.skip == o->p0.skip + 1 && o->p2.skip == o->p1.skip",
+     "o->p2.skip == o->p1.skip"),
+    (PJ, "the next frame need not be booked on time", "o->p2.on - o->p1.on == 1 && o->p2.unv == o->p1.unv,",
+     "o->p2.unv == o->p1.unv,"),
+    (PJ, "the next frame may be booked with frames waiting", "o->p2.on - o->p1.on == 1 && o->p2.unv == o->p1.unv,",
+     "o->p2.on - o->p1.on == 1,"),
+    (PJ, "a withdrawn probe passes", "ds == want && dw == 0,", "ds == want,"),
+    (PJ, "a probe on the wire need not be credited sent", "o->ours_wire == want && ds == want && dw == 0",
+     "o->ours_wire == want && dw == 0"),
+    (PJ, "the probes on the wire are not counted", "o->ours_wire == want && ds == want && dw == 0",
+     "ds == want && dw == 0"),
+    (PJ, "the inhibit frames on the wire are not counted", 'n = put(out, n, "sent", o->ours_wire == want, "inhibit',
+     'n = put(out, n, "sent", 1, "inhibit'),
+    (PJ, "one frame of ours expected where the next command came", "return PJ_IS_LATE(k) ? 2 : 1;", "return 1;"),
+    (PJ, "a frame seen complete only after the next 0x051 was dequeued is not late",
+     "const bool late = PJ_IS_LATE(o->kind);", "const bool late = o->kind == PJ_LATE || o->kind == PJ_BETWEEN;"),
+    (PJ, "a stimulus that did not land is judged", "    if (!o->pre_ok)\n", "    if (0)\n"),
+    # probe_test.c's case code (2026-11-23), caught by a probe_test RESULT line
+    (PT, "the late case puts no 0x051 behind the filler", "        ft_deliver(0x051, next, 6);       /* N+1, behind",
+     "        (void)next;                       /* N+1, behind"),
+    (PT, "the waiting case puts an 0x051 behind the filler", "        ft_deliver(0x411, SOC, 8);\n",
+     "        ft_deliver(0x051, VCM, 6);\n"),
+    (PT, "the between case never arms the arrival", "        ft_deliver_at_count(0x051, next, 6);\n",
+     "        (void)next;\n"),
+    (PT, "our frame is the inhibit frame in RESPOND too", "c->respond ? 0x7F0 : 0x051", "0x051"),
+    (PT, "the decision is read after the last filler", '    if (!read_page(&o.p1, "p1"))',
+     '    ft_deliver(0x617, FLT, 8);\n    ft_run(500);\n    drain(10, 500);\n    if (!read_page(&o.p1, "p1"))'),
 ]
 # A 5th element is how many places the edit must match (each case that gathers
 # the same observation); without it, exactly one.
@@ -153,16 +191,18 @@ def main(argv):
         m = mp if local else wsl_path(mp)
         bin_ = os.path.join(d, "spec_shim_m%d" % n)          # this mutant's folder, not a shared /tmp name
         bin_ = bin_ if local else wsl_path(bin_)
-        if f == J:
-            cmd = ('cd "%s" && gcc -std=c11 -I. -o %s judge_test.c "%s" && %s; rm -f %s'
-                   % (here, bin_, m, bin_, bin_))
+        if f in (J, PJ):
+            test = {J: "judge_test.c", PJ: "probe_judge_test.c"}[f]
+            cmd = ('cd "%s" && gcc -std=c11 -I. -o %s %s "%s" && %s; rm -f %s'
+                   % (here, bin_, test, m, bin_, bin_))
             rc, out, err = sh(cmd, local)
             hits = [l for l in out.splitlines() if l.startswith("FAIL ")]
             ran = "ok " in out or hits
         else:
-            env = {L: "SPEC_LAYER", T: "NN_TEST"}[f]
-            cmd = ('cd "%s" && %s="%s" bash build.sh %s >/dev/null 2>&1 && for c in $(%s); do timeout 300 %s $c; done; rm -f %s'
-                   % (here, env, m, bin_, bin_, bin_, bin_))
+            env = {L: "SPEC_LAYER", T: "NN_TEST", PT: "NN_TEST"}[f]
+            extra = PROBE_BUILD_ARGS if f == PT else ""
+            cmd = ('cd "%s" && %s="%s" bash build.sh %s %s >/dev/null 2>&1 && for c in $(%s); do timeout 300 %s $c; done; rm -f %s'
+                   % (here, env, m, bin_, extra, bin_, bin_, bin_))
             rc, out, err = sh(cmd, local)
             res = [l for l in out.splitlines() if l.startswith("RESULT ")]
             hits = [l for l in res if l.split()[3] != "PASS"]

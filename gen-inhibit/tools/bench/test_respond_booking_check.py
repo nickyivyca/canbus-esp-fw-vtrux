@@ -51,8 +51,13 @@ def main():
          R.arm_mode("observe", {"mode": 3}) == "inhibit" and R.arm_mode("respond", {"mode": 2}) == "respond"),
         ("no mode on the page -> the run's mode", R.arm_mode("passive", {}) == "passive"),
         ("balance: unbooked 13 against 13 late probes on the wire -> balanced",
-         R.balance(sc(2900, 80, 3), 13) == {"balanced": True, "unbooked": 13, "late_on_wire": 13}),
-        ("balance: against 12 -> not balanced", R.balance(sc(2900, 80, 3), 12)["balanced"] is False),
+         R.balance(sc(2900, 80, 3), 13) == {"balanced": True, "holds": True, "unbooked": 13,
+                                            "late_on_wire": 13, "booked_late_on_time": 0}),
+        ("balance: against 12 -> not balanced, but holds, 1 booked late on time",
+         (lambda r: r["balanced"] is False and r["holds"] is True and r["booked_late_on_time"] == 1)(
+             R.balance(sc(2900, 80, 3), 12))),
+        ("balance: against 14 -> does not hold",
+         (lambda r: r["holds"] is False and r["booked_late_on_time"] == 0)(R.balance(sc(2900, 80, 3), 14))),
         ("balance: unverified probes count as booked (unbooked = sent - ontime - unverified)",
          R.balance(sc(2900, 93, 3), 0)["balanced"] is True),
         ("balance: a withdrawn probe -> None, with the numbers kept",
@@ -103,8 +108,15 @@ def main():
          raises(
              lambda: R.late_probes([(0.0, 0x7F1, bytes([0xEE] + [0] * 7))]), R.gi_diag.UnknownSchema)),
         ("judge_balance: balanced -> PASS", R.judge_balance(R.balance(sc(2900, 80, 3), 13))[0] == "PASS"),
-        ("judge_balance: 13 unbooked against 12 late -> FAIL",
-         R.judge_balance(R.balance(sc(2900, 80, 3), 12))[0] == "FAIL"),
+        # spec 11 since 2026-11-23 (ab74c3da): the probe shares trip 7's decision, which can
+        # book an on-time frame late but never a late one on time
+        ("judge_balance: 13 unbooked against 12 late -> PASS (one booked late, on time on the wire)",
+         R.judge_balance(R.balance(sc(2900, 80, 3), 12)) ==
+         ("PASS", "unbooked 13, late on the wire 12, booked late but on time on the wire 1")),
+        ("judge_balance: 13 unbooked against 14 late -> FAIL (a late probe booked on time)",
+         R.judge_balance(R.balance(sc(2900, 80, 3), 14))[0] == "FAIL"),
+        ("judge_balance: 0 unbooked against 1 late -> FAIL",
+         R.judge_balance(R.balance(sc(2913, 80, 3), 1))[0] == "FAIL"),
         ("judge_balance: a withdrawn probe -> UNRESOLVED, never PASS",
          R.judge_balance(R.balance(dict(sc(2900, 80, 3), cls={"probe": {"sent": 2993, "withdrawn": 1}}), 13))[0]
          == "UNRESOLVED"),

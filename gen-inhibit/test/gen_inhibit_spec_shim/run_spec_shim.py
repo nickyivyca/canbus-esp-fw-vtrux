@@ -3,7 +3,10 @@
 from, the stimulus checked against the DBCs, the judge's own tests, then every
 case, each in its own process. Since port step 0c (2026-10-25) also
 build_id_test, the rows "0x7F3 carries the build id" (host half) and "the page
-names the binary", into build_id.txt; its RESULT lines join the summary.
+names the binary", into build_id.txt; its RESULT lines join the summary. Since
+2026-11-23 also probe_judge_test (probe_judge_test.txt) and probe_test (probe.txt):
+spec 7 trip 7, "What the device can see of lateness", and spec 11's probe on the same
+path; their RESULT lines join the summary too.
 
     python3 -B run_spec_shim.py --local --out <run folder> --dbc-dir <reverse-it>/projects/vtrux
         [--base e3d9437]                       (on madhouse-debian: the run that counts)
@@ -40,7 +43,8 @@ MAIN = "firmware/main"                                     # the WiCAN sources, 
 BUILT = [MAIN + "/gen_inhibit.c", MAIN + "/gen_inhibit_core.c", MAIN + "/gi_sched.c",
          MAIN + "/gi_diag_table.c", "test/diag_host/misfit_wrap.c",   # stage (b) batch 2
          "test/gen_inhibit_shim/shim_harness.c", "test/gen_inhibit_shim/fake_can.c",
-         "test/gen_inhibit_shim/fake_port.c"]
+         "test/gen_inhibit_shim/fake_port.c",
+         "test/gen_inhibit_shim/deliver_at_count.c"]              # probe_test, 2026-11-23
 # Since port step 1b (2026-10-31) main/can.c is gone: build.sh compiles the shared CAN
 # port and twai_port's host fake from the pinned shared checkout (WICANDIR/.., found by
 # the implementor's wican_ref.py), relative to its shared/ folder.
@@ -198,13 +202,36 @@ def main():
     if not bres:
         fails.append("no RESULT line from build_id_test: the build or the run failed")
     res += bres
+
+    # Since 2026-11-23: spec 7 trip 7's decision with frames waiting and spec 11's probe
+    # on the same path (probe_test.c), with its judge's own test first.
+    work = host_env.scratch_dir("spec_shim_run")
+    pjt = host_env.build_path(os.path.join(work, "probe_judge_test"), a.local)
+    rc, out = build('cd "%s" && gcc -std=c11 -Wall -Wextra -I. -o "%s" probe_judge_test.c probe_judge.c '
+                    '&& "%s"; r=$?; rm -f "%s"; exit $r' % (here, pjt, pjt, pjt))
+    open(os.path.join(a.out, "probe_judge_test.txt"), "w", encoding="utf-8", newline="\n").write(out)
+    if rc != 0 or " 0 FAIL" not in out:
+        fails.append("probe_judge_test failed (rc %s)" % rc)
+    pt = host_env.build_path(os.path.join(work, "probe_test"), a.local)
+    rc, out = build('cd "%s" && NN_TEST=probe_test.c bash build.sh "%s" %s 2>&1 | grep -ci error; for c in $("%s"); '
+                    'do echo "=== $c"; timeout 600 "%s" $c; echo "=== rc $?"; done; rm -f "%s"'
+                    % (here, pt, host_env.PROBE_BUILD_ARGS, pt, pt, pt))
+    try:
+        os.rmdir(work)
+    except OSError:
+        pass
+    open(os.path.join(a.out, "probe.txt"), "w", encoding="utf-8", newline="\n").write(out)
+    pres = [l.split(" ", 4) for l in out.splitlines() if l.startswith("RESULT ")]
+    if not pres:
+        fails.append("no RESULT line from probe_test: the build or the run failed")
+    res += pres
     bad = [r for r in res if len(r) < 4 or r[3] != "PASS"]
     if bad:
         fails.append("%d RESULT line(s) not PASS" % len(bad))
     cases = sorted({r[1] for r in res})
 
     summary = ["spec 12.4 'a bus with no other node, emulated', and '0x7F3 carries the build id' (host half) "
-               "with 'the page names the binary', run %s" % ident["started"],
+               "with 'the page names the binary', and spec 7 trip 7 / spec 11 (probe_test), run %s" % ident["started"],
                "head %s; main/ tree %s; %s's %s; main_is_base %s; modified: %s" % (
                    ident["head"][:12], ident["main_tree"][:12], a.base, ident["base_main_tree"][:12],
                    ident["main_is_base"], ident["modified"] or "nothing"),

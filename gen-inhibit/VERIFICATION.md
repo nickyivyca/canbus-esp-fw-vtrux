@@ -749,6 +749,40 @@ are in `artifacts/gen-inhibit/review_mutations/*_1017bbf.out`.
 
 The whole 300 s capture costs about 12 s of wall clock on madhouse-debian.
 
+### Case 3 saturation, the criterion as changed on 2026-11-23 (tester, 2026-11-25, `cca06f36` `_man`)
+
+**B22, both arms -- tester, 2026-11-25 10:53-10:58, on `cca06f36`. Result: AS SPECIFIED.
+In each arm `ontime + ontime_unverified == queued`, with 0 skips, and the witness saw no
+inhibit frame late.** Spec 5.2's saturation criterion as changed on 2026-11-23 (user,
+`f1961dcf`): `ontime_unverified` now means "on time, with frames waiting", so the two
+on-time counts together must equal the frames queued. The status page field names did not
+change. Run: `runs/chain/gen-inhibit-bench_20261125T082838_8047/man_slcan/B22/`, part of the
+full run in the 12.4 entry.
+- **Method.** `baseline_b22.sh`: 90 s per arm with the X2 on `slcan` and the filler on a
+  separate adapter, carried load >= 92.7 % (a lower bound: stuff bits cannot be recovered).
+  The Kvaser witness on its hardware clock (fit slope about 54 ppm, residual p99 2.7 ms).
+- **The device's page, per arm** (each arm's JSON, `arms.idle.device.sched`):
+
+  | Arm | `ontime` | `ontime_unverified` | sum | inhibit `queued` / `sent` | `skipped` | `unverified_max_backlog` |
+  |---|---|---|---|---|---|---|
+  | a | 8979 | 4 | 8983 | 8983 / 8983 | 0 | 3 |
+  | b | 8978 | 5 | 8983 | 8983 / 8983 | 0 | 2 |
+
+- **The witness, per arm:** provenance as specified, replayed 212124 of 212124 found, our
+  `0x051` 8983 (the device says 8983), late 0, double 0, ambiguous 0. 0 error frames,
+  `tx_fail` 0, `ctr_bad` 0.
+- **The judge reads the criterion as the build message words it.**
+  `suite_judges.b22_saturation` (harness `aa947dec`) fails an arm unless `ontime +
+  ontime_unverified` equals the inhibit class's `queued` with `skipped` 0, and fails an arm
+  whose JSON has no on-time counts. The witness half is provenance's late 0. Can-fail:
+  - `test_suite_judges.py` edits the `e3d9437` arms' JSONs. It has 4 new rows that must
+    FAIL: the sum one short, one over, one skip, and a count missing. It has 1 row that
+    must PASS: the same 8983 split another way between the two counts.
+  - `test_suite_judges_mutants.py`: 169 of 169 mutants killed, the 4 new ones included
+    (2026-11-23). These remove the read, leave `ontime_unverified` out of the sum, ignore
+    skips, and pass a JSON with no counts.
+- Recorded, not judged: response time mean 580 us in both arms, max 1099 us and 1386 us.
+
 ## 7 Arming
 
 ### Trip 6 on a live INHIBIT arm under a jam
@@ -2200,6 +2234,55 @@ golden.** Spec 7 trip 8.
   at `65e9446`.
 - **Bench half:** B20's `trip8-dlc5` repeats in the full before-port rerun.
 
+### Trip 7, what the device can see of lateness (spec shim, 2026-11-23)
+
+**The decision with frames waiting, and spec 11's probe on the same path -- tester,
+2026-11-23, on `cca06f36`. Result: AS SPECIFIED, 46 of 46 verdicts, in RESPOND and in
+INHIBIT.** Spec 7 trip 7, "What the device can see of lateness" (changed 2026-11-23,
+user, `f1961dcf`), and spec 11, "The probe must use the same code path as the inhibit
+frame" (`ab74c3da`). The reviewer's build message asked for RESPOND's probe on the shared
+path. Run files: `runs/verdict_hold_cca06f36/spec_shim/` (`probe.txt`,
+`probe_judge_test.txt`, `product_mutants.txt`, `mutate.txt`, `summary.txt`).
+- **Method:** `probe_test.c` on the mock-HAL shim (`test/gen_inhibit_spec_shim`, harness
+  `687a135f`). It builds `main/` as shipped against the implementor's harness, unedited.
+  `run_spec_shim.py --local --base cca06f36` ran it on madhouse-debian, gcc 14.2.0, from
+  the clean worktree `gen-inhibit-tester-tools-687a135f`: main/'s tree is `cca06f36`'s,
+  nothing modified, shared checkout `2026.11.23.3` unmodified.
+- **The stimulus.** Each case sends one VCM command N. Our frame for it, the probe or the
+  inhibit frame, completes while the worker waits on an empty receive queue. Then a filler
+  wakes the worker, with the case's frames behind it:
+  - `late`: another frame and N+1;
+  - `between`: nothing, and N+1 arrives between the completion read and the count (the
+    harness's `ft_deliver_at_count()`);
+  - `waiting`: two frames, neither an `0x051`;
+  - `empty`: nothing;
+  - `queued`: no filler. N+1 is already waiting when the worker takes N, so the
+    completion is seen after N+1 is dequeued.
+- **Result, RESPOND (the probe):**
+  - `late`, `between` and `queued`: the late probe is in neither on-time count (`ontime`
+    +0, `ontime_unverified` +0). It is on the wire, credited in `cls.probe.sent`, not
+    withdrawn and not a skip. `unverified_max_backlog` does not move. The probe to N+1,
+    seen with nothing waiting, is booked on time.
+  - `waiting`: on time, with frames waiting (`ontime_unverified` +1), max backlog 2.
+  - `empty`: on time (`ontime` +1).
+- **Result, INHIBIT:** the same bookings. A frame found late is one skip (`skipped` +1)
+  and still went out on the wire. No other case has a skip.
+- **Can-fail.**
+  - The judge's own test: 108 of 108 rows, each verdict shown to pass and to fail.
+  - `mutate.py --local`: 73 of 73 mutants caught, the 22 new judge and case mutants
+    included.
+  - `product_mutants.py`: the implementor's six trip 7 mutants (T1 to T6, read from
+    `test/gen_inhibit_shim/mutate.py`), 6 of 6 caught. The unmutated copy gave 46 PASS.
+    T1 and T2 (path (ii)) are caught by `inhibit_queued`. T3 (the count read before the
+    completion) is caught as VOID: the arrival between the two reads never happens.
+- **Bench half: AS SPECIFIED, B4 and B13 in the full run on `cca06f36`** (bench run `8047`,
+  2026-11-25; the 12.4 entry).
+  - B4, spec 12.4's row "skipped inhibit frames": 6 of 6 cases PASS. The judge reads the
+    row on totals: device withdrawn + late == witness never-on-wire + witness late, and
+    device late >= witness late (`skip_method_bench.judge_arm_v2`).
+  - B13, RESPOND's probe: the late probes are in neither on-time count, and the witness
+    saw each one on the wire (section 11, "The probe on the inhibit frame's path").
+
 ## 7.1 Key state
 
 The key-state scenarios pass in the host suite on `f363674` (the 78/78 run
@@ -2939,6 +3022,41 @@ read from the device.
   - the descriptor's version is `0a740ce6`.
 - **Recorded, not judged:** `/gen_inhibit`'s `git_version` is null on this
   image. Only its `elf_sha256` and `git_version` fields are read.
+
+### The probe on the inhibit frame's path (tester, 2026-11-25, `cca06f36` `_man`)
+
+**RESPOND's probe, on the bench and in the spec shim -- tester, 2026-11-23 and 2026-11-25, on
+`cca06f36`. Result: AS SPECIFIED. A probe found late is in neither on-time count, and it is
+still sent.** Spec 11 as changed on 2026-11-23 (user, `ab74c3da`): the probe uses the same
+code path as the inhibit frame. Only its frame and its due time differ, and it is never
+withdrawn or a skip. A late probe is in neither on-time count.
+- **The shared path, case by case:** the spec shim entry in section 7, "Trip 7, what the
+  device can see of lateness". Its `late` case puts the VCM's next `0x051` among the frames
+  waiting when the probe's completion is seen. The probe is then in neither on-time count,
+  in `cls.probe.sent`, and not withdrawn or a skip. The same case in INHIBIT books one skip.
+- **On the bench: B13's booking check, in B2's two RESPOND arms** (bench run `8047`,
+  `man_held/B13/B13_respond_booking_check.txt`; the 12.4 entry). The RESPOND arm runs under
+  replayed traffic, once with the X2 on its app and once with it held.
+
+  | Arm | probes sent | `ontime` | `ontime_unverified` | unbooked | late on the wire | `unverified_max_backlog` |
+  |---|---|---|---|---|---|---|
+  | X2 app | 2998 | 2992 | 2 | 4 | 4 | 3 |
+  | X2 held | 2999 | 2997 | 1 | 1 | 1 | 2 |
+
+  - Unbooked is probes sent minus both on-time counts. A probe is late on the wire when the
+    witness saw its VCM's next `0x051` before it. The witness judged every probe, 0
+    malformed.
+  - In both arms unbooked equals late on the wire, and no probe on time on the wire was
+    booked late. Every late probe was sent: the witness saw it.
+- **How the judge reads it.** `respond_booking_check.judge_balance` (harness `aa947dec`)
+  passes when unbooked >= late on the wire, and fails when it is less. The reason: trip 7's
+  decision can book an on-time probe late (the next `0x051` dequeued before the completion
+  is seen, path (ii)), but never a late one on time. Before 2026-11-23 it asked for equality.
+  Can-fail: `test_respond_booking_check.py`, with rows that must FAIL (fewer unbooked than
+  late, 13 against 14 and 0 against 1) and a row that must PASS with one booked late but on
+  time on the wire (13 against 12).
+- **Field names:** the page's `ontime`, `ontime_unverified` and `unverified_max_backlog` read
+  as before. Only what `ontime_unverified` counts changed: on time, with frames waiting.
 
 ## 12.1 Reading the result
 
@@ -7079,6 +7197,22 @@ as the baseline, with 0x7F3 B0-B3 the expected difference. Harness:
         both directions. No single change gives `50c6b7b7...`.
       - The NICKY-XPS copy that the 2026-11-07 manifest hashed cannot be read from
         madhouse-debian. A read of that copy would settle the cause.
+    - **Later 2026-11-23 (tester): the NICKY-XPS copy was read. With its two report files,
+      the folder gives the 2026-11-07 digest in full.** A methodology helper session on
+      NICKY-XPS read the copy, read-only, and gave each file's size and SHA-256.
+      - The NICKY-XPS copy has 718 files. It holds both files as this entry names them:
+        - `compare_report.txt`: 12,962 bytes, modified 2026-10-25 19:04:37, SHA-256
+          `9c5ddda2...`. This is the four-run report.
+        - `compare_report_cfcd_6204_08ea.txt`: 11,436 bytes, modified 2026-10-25 17:56:37,
+          SHA-256 `625eab84...`. This is the three-run report.
+      - On madhouse-debian, `compare_report_cfcd_6204_08ea.txt` has SHA-256 `9c5ddda2...`:
+        the four-run report, under the three-run report's name.
+      - The madhouse-debian tree, with those two files and hashes in place of its one,
+        gives 718 files and the digest `50c6b7b7984e02a1eea999e3bec8932b145df86aaecdf60d8d4e8276853648b4`.
+        This is the 2026-11-07 manifest's digest in full.
+      - NICKY-XPS's SeaDrive log has, at 2026-10-25 19:30:10, a failed rename of
+        `compare_report.txt` to `compare_report_cfcd_6204_08ea.txt` in this folder: "UNIQUE
+        constraint failed". The log does not say which machine made the rename.
 - **The tester's miss.** `cfcd` was started as a plain `vtrux_bench.run run`,
   not `bench_compare.py chain`, so the automatic re-run of the flagged checks
   did not happen. Re-runs 1 and 2 were started by hand, with the check list
@@ -9863,6 +9997,171 @@ Run files: the ten chain runs in `runs/chain/`, and the desk table in `runs/b4_r
 - **What this does not change.** 4b15's B4 FAIL stands. These runs show how often the miss
   comes on this image. The implementor's fix (`ac6621f4`, merged as `30cc9236`) is not
   tested here.
+
+**The full run on `cca06f36`, path (ii) and path (i) with the probe -- tester, 2026-11-23 and
+2026-11-25, madhouse-debian. Result: the emulated suite PASS (H, B15host, C2scan; C1C7 and C3
+the declared skips). The bench suite: PASS 37, INCONCLUSIVE 1 (B6), NOT-RUN 1 (B27, the
+declared skip). No FAIL. B4 PASS 6 of 6. B6 has 8 of 10 arms PASS. Its 2 other arms are each
+one error frame short of the commanded 10, and the resource record is clean over both.** The
+gen-inhibit reviewer's build message: verify `gen-inhibit/main` `cca06f36`, with the path (ii)
+fix (`30cc9236`) and path (i) with the probe (verdict-hold), against the spec as changed on
+2026-11-23 (`f1961dcf`, `ab74c3da`). The scheduler core changed, so the full emulated and
+bench suites ran on new images. Run files: the chain runs in `runs/chain/`, and the desk
+records in `runs/verdict_hold_cca06f36/` (its `README.md`).
+- **Code.** Built by the tester from clean worktrees detached at `cca06f36`, ESP-IDF v5.4.2:
+  the bench set with `baseline_builds --bench`, and the prod stand-in with the shared tooling's
+  release build (32 rows ok). The stand-in's image hash is `e8e6ae76...`, code hash
+  `0f405de5...`. The bench `_man` image is the same image. The other bench images' code
+  hashes: `_rt` `3b862c25`, `_txabort` `5d1d385d`, `_abortwin` `7a8cb109`, `_rxq` `6f914137`.
+  Every code hash differs from `db998aca`'s, so no pass carries over from it.
+- **Harness.** `gi_tools` is the detached worktree `gen-inhibit-tester-tools-687a135f`, at
+  `gen-inhibit/tester/verdict-hold` `687a135f`, clean: `4126f144`, the later fixes on
+  `gen-inhibit/main`, and this topic's judges (`aa947dec`) and spec shim cases (`687a135f`).
+  Its pinned can-tools `49eb777` and canre `ffbe029` are installed. Settings
+  `chain_settings_madhouse-debian.json` (`gi_*` moved to `cca06f36` and `687a135f` for this
+  run). The shared core is the checkout of shared/main tag `2026.11.16.5`.
+- **The spec shim:** AS SPECIFIED, 46 of 46 (section 7, "Trip 7, what the device can see of
+  lateness").
+- **The emulated suite:** `gen-inhibit-emulated_20261123T231000_db8d` (2026-11-23
+  23:10-23:16, build.slice). H PASS: 25 steps, goldens 81 passed / 0 failed / 23 without, 9
+  replays identical, 0 invariant and 0 fuzz violations. B15host PASS: every emitted diag
+  frame decodes against the DBC. C2scan PASS, 4 of 4 steps. C1C7 and C3 NOT-RUN: their
+  commands are not yet in the suite. The runner exits 1 for the two skips, as before. The
+  bench run below is paired with it.
+- **Bench run:** `gen-inhibit-bench_20261125T082838_8047` (2026-11-25 08:28:38-10:59:16),
+  the whole suite. The chain runner held the lock itself. `gi_images` and `gi_prod_dir` were
+  at `cca06f36`, clean. Every check ran in bench.slice.
+  - The first start, 2026-11-23 23:16, was refused: the charge-interposer tester held the
+    lock (run `gen-inhibit-bench_20261123T231641_d25f`). A power failure on 2026-11-24
+    ended the wait. On 2026-11-25 the tester cleared that run's lock, whose process had
+    died (08:24:51), and started this run on the free lock.
+- **Boards.** The runner read both boards before and after every group (`progress.jsonl`).
+  - WiCAN: found on an image no run names (`2aac016d...`, mode 0, nothing latched). Loaded by
+    OTA: `_man` `e8e6ae76...` (08:30:44) for man_app, man_held, man_jammer and man_slcan;
+    `_rt` `49fafc1b...` (09:56:56); `_txabort` `9eeffad3...` (10:07:22); `_abortwin`
+    `1b6c5e9c...` (10:11:13); `_rxq` `c950d53c...` (10:14:44); the prod stand-in `e8e6ae76...`
+    (10:20:37). Every OTA took at attempt 1. The end hook found `wican_man`, mode 0, latched
+    True.
+  - The OTA-reply count, recorded, not judged: all six loads got HTTP `303` with "File
+    uploaded successfully", curl exit 0, `time_total` 11.5-18.5 s
+    (`bench/ota_reply_count_8047.txt`).
+  - Power: 12 V on OBD pin 16, and USB at 1-3.1. The 12 V supply was off after the power
+    failure, and the user re-enabled it on 2026-11-25 before the run. USB alone does not
+    power the WiCAN (user, 2026-11-25). The WiCAN stayed on USB from 08:27:07. No WiCAN
+    console capture.
+  - X2 (rule 6): found on `c12_bench` (`400cf328...`). `x2_app` `756d6714` (flashed 08:31:29
+    and 09:57:02) for man_app, rt, txabort, abortwin, rxq and prod. Held in ROM, not driving
+    TX (`x2_hold.py`, 09:43:51), for man_held. The jammer row `ea762c62044cb5c6` under
+    custody, verify-row PASS (10:28:28), for man_jammer. `slcan` (`slcan:V0101:NF001`,
+    flashed 10:53:10) for man_slcan; the X2 was left on it.
+- **Triage** (AGENTS.md, "Parallel work on the shared machine", point 2). No check failed.
+  B6's two short arms were read against `resource-log window` (10:37:12-10:37:40 and
+  10:40:27-10:41:01): bench.slice 2.3 cores, CPU pressure (some) at most 0.3 % and 0.2 %, no
+  memory or IO pressure, 0 major faults, no swap traffic, no logger gap over 5 s
+  (`bench/resource_B6_n10_lead1.5_arm0.txt`, `bench/resource_B6_n10_lead8.5_arm0.txt`). Clean.
+  - Recorded, not judged: over the whole run bench.slice ran at 2.9 cores at most, CPU
+    pressure at most 0.7 % (`bench/resource_run.txt`). The `wallclock-others` events named
+    the charge-interposer tester's emulated suite and its simulator scenarios at time scale 1,
+    from man_app's B4 to the end.
+
+**Passes**
+- **B1 (3.2, SLCAN refused and counted): PASS,** 20 of 20 (08:32:48-08:33:32).
+- **B2 (5, interposer presence controlled; which 0x051 is ours): PASS,** 6 arms as specified,
+  X2 frames 0. INHIBIT 0x051 670 / 670 (x2_app / held), RESPOND probes 2998 / 2999, long arm
+  29977 / 29977.
+- **B3 (the go-live batch): PASS,** 20 arms, stale 0. Recorded, not judged: the first answer
+  after the POST, OFF 150.1-150.3 ms, OBSERVE 4.5-73.0, PASSIVE 4.9-88.7, RESPOND 40.4-60.5.
+- **B24 (4.1, B0 held): PASS,** 22 arms as specified, 1 RESPOND arm with no device frames, 0
+  other.
+- **B4 (5.2 item 5 and 7 trip 7, skipped inhibit frames, bench half): PASS, 6 of 6 cases**
+  (08:57:41-08:58:28; `man_app/B4/skip_method_20261125T085742.json`). The judge reads spec
+  12.4's row on totals: device withdrawn + late == witness never-on-wire + witness late, and
+  device late >= witness late.
+
+  | Case | Witness never / late | Device withdrawn / late | Trip 7 |
+  |---|---|---|---|
+  | `w3` | 3 / 0 | 0 / 3 | latched |
+  | `w2` | 2 / 0 | 0 / 2 | none |
+  | `w3s` | 3 / 0 | 0 / 3 | none |
+  | `l3` | 0 / 3 | 0 / 3 | latched |
+  | `l2` | 0 / 2 | 0 / 2 | none |
+  | `l3s` | 0 / 3 | 0 / 3 | none |
+
+  - Recorded, not judged: in the filler cases (`w3`, `w2`, `w3s`) the device booked every
+    event late, 0 withdrawn. On `db998aca` it booked them withdrawn. Both satisfy the row.
+    With the filler, the VCM's next `0x051` is among the frames waiting when our frame's
+    completion is seen.
+  - 0 witness error frames. The player sent 19262 frames, 0 failed. The page after the
+    cases: mode 0, nothing latched.
+- **B11 (12.4, quiesce under traffic): PASS,** 6 arms as specified, `tx_ok` agrees with every
+  INHIBIT span.
+- **B11raw (spec 3, a mode change in the request-to-reply window): PASS,** 12 of 12 POSTs, 3
+  with nothing to show on the witness (NOT APPLICABLE); windows 14.0-45.6 ms, clock margin at
+  most 13.43 ms.
+- **B13 (12.4, PASSIVE on the wire; 11, the page fields): PASS,** 8 arms ok, booking 8 of 8.
+  RESPOND's probe balance in B2's two arms: unbooked 4 and 1, late on the wire 4 and 1
+  (section 11, "The probe on the inhibit frame's path").
+- **B15 (spec 10, the diag frames on the segment): PASS,** 3 adapters on CAN1 by role: the
+  Kvaser 19 frames, the PCAN 22300, `canmain` 23. Recorded, not judged: the non-ACK repeat id
+  `0x7F3`.
+- **B16 (spec 11, uptime and reset reason): PASS,** 360 polls, 0 unanswered, no outage.
+- **B17a / B17b (12.4, the page names the binary): PASS,** `elf_sha256` `e8e6ae76` on `_man`
+  and `c950d53c` on `_rxq`.
+- **B18 ("0x7F3 carries the build id", bench half): PASS,** "MATCH, 7 rows ok",
+  `diag_build_id` `e8e6ae76`.
+- **B20 (the interlock, bench): PASS,** 28 of 28 AS SPECIFIED (09:21:07-09:39:05).
+- **B25 (7.1, key state, on B20's `rekey-long`): PASS,** 0 of 18396 frames against rule 1;
+  gate open 203.484 s, resumed 203.487 s.
+- **B21 (spec 9.3, the OTA refusal at the client): PASS,** both guards hold; 20 of 20
+  multipart and 20 of 20 image requests got the whole 403 with its reason.
+- **B9 (7, trip 6, wrong bit rate; X2 held): PASS,** 9 bursts, 178 witness error frames, TEC
+  max 0, trip 6 latched at +1.63 s.
+- **B10 (12.4, trip 6 before going live, after a re-arm; X2 held): PASS,** 3 of 3 judged arms
+  as specified, 2 flood arms.
+- **B14 (12.4, OBSERVE is listen-only in hardware; X2 held): PASS,** 5 mode checks, mode 0 at
+  the end.
+- **NONODE (12.4, a bus with no other node; X2 held): PASS,** 3 main arms, trip "error-frame
+  rate exceeded", latched by 0.458 s at most, no answer stuck.
+- **B12 (12.4, no error frames at a restart; `_rt`): PASS,** 7 of 7 cycles, 0 error frames, 7
+  restart records `did_twai` and `did_stdby` true, `timed_out` false; SW 2.341-2.353 s, PANIC
+  0.609-0.631 s.
+- **B23 (12.4, abort behaviour of the C3 TWAI; `_txabort`): PASS,** contend 69 aborted / 6 no
+  effect / 3 lost-then-aborted; retry 78 of 78 free, 0 on the wire, the first abort enough on
+  70. abortwin (`_abortwin`): PASS, rc 0.
+- **B26 (12.4, receive backlog measured directly; `_rxq`): PASS,** max backlog 2 / 2 / 8 (idle
+  a, idle b, loaded), 82464 dequeues per arm. Recorded, not judged: dequeues with a backlog
+  >= 2, 7 / 1 / 1335.
+- **B19 (12.4, test-only features inert in the build that will fly): PASS.** B19present: all
+  four present on their test builds. B19absent: all five absent on the prod stand-in. B19page:
+  `elf_sha256` `e8e6ae76`.
+- **B5 (7, trip 6, a steady jam): PASS,** 200/s 3 of 3, 500/s 9 of 9.
+- **B7 (7, a bus-off re-arm): PASS,** 3 of 3 arms AS SPECIFIED.
+- **B8 (11, `bus_on`, the bus-off half): PASS,** train 3 of 3; the control INCONCLUSIVE, as
+  in the baseline.
+- **B22 (5.2, case 3 saturation, bench half; X2 `slcan`): PASS,** both arms: provenance
+  clean, 0 `tx_fail`, 0 error frames, 8983 of ours each. Spec 5.2's saturation criterion
+  holds in both: 8979 + 4 and 8978 + 5 of 8983 queued, 0 skipped (section 5.2, "Case 3
+  saturation, the criterion as changed on 2026-11-23").
+
+**Not passes**, observed against the spec
+- **B6 (7, trip 6 at the threshold; the 12.4 row "error-frame rate trip"): INCONCLUSIVE, 8 of
+  10 arms PASS over 5 runs** (10:36:57-10:45:02). No arm FAILs.
+  - Observed, `B6_threshold_n10_lead1.5` arm 0 (`x2_jam_threshold_20261125T103657.json`) and
+    `B6_threshold_n10_lead8.5` arm 0 (`x2_jam_threshold_20261125T104010.json`): the jammer
+    reported 10 pulses sent, "end=complete", inside its deadline. The witness saw 9 error
+    frames, one per pulse for 9 pulses. The pulse missing on the wire is the tenth in the first
+    arm and the seventh in the second. The device's `bus_error` deltas were 1 per pulse, 9 in
+    all, and trip 6 did not latch.
+  - Spec 7, trip 6: 10 or more error frames within a 10 s window. The wire carried 9, so no
+    trip is right, but the arm cannot judge the threshold. The judge gives "delivery was not
+    one error frame per pulse".
+  - The other arm of each of those runs, and both arms of the other three runs, PASS. Each
+    of the four n10 arms that got 10 error frames latched trip 6, at +9.06 s to +9.14 s. The
+    four n9 arms got 9 and did not latch.
+  - Precedent on file: the same short stimulus in run C, 575b and a61f (the entry "Different
+    standing verdict" above). The cause is not known.
+- **B27: NOT-RUN,** the declared skip (needs the user at the bench; deferred by the user
+  2026-10-17), as in the baseline.
 
 ## 13 Known not to be implemented
 
