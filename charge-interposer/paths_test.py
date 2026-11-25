@@ -31,7 +31,10 @@
     notes/, no .py / .sh / .cpp / .h other than paths.py and this file
     still names VTRUX_DATA, no code but paths.py names the diag DBC's file
     (every other reader goes through diag_dbc(); build_check.py, which
-    also did, retired at port step 2a), and no .py puts the working folder
+    also did, retired at port step 2a; from diag schema 5, 2026-11-24, the
+    product's diag_table.py and the intp_diag_table.py it writes may, at
+    charge-interposer/'s top only, while each still names it and the
+    generator reads the file diag_dbc() names), and no .py puts the working folder
     ("." or os.getcwd()) on sys.path, which is how the reverse-it root's
     canre/ used to come in with the scripts run from it --
     all five scans proven able to fail on a planted line. The scans read
@@ -50,10 +53,12 @@ Run:  python charge-interposer/paths_test.py
         itself is never edited); every mutant must make it fail, and the
         unmutated text must pass. Committed 2026-11-01 (the pin move): at
         the cutover it was a scratch script that edited paths.py in place.
-        SCAN_MUTANTS mutate this file's own git_ignored filter, run as a
-        mutated copy with PATHS_TEST_HERE naming charge-interposer/.
+        SCAN_MUTANTS mutate this file's own git_ignored filter and its diag
+        DBC allowances, run as a mutated copy with PATHS_TEST_HERE naming
+        charge-interposer/.
 """
 
+import importlib.util
 import os
 import re
 import shutil
@@ -112,6 +117,21 @@ RETIRED_OK = ("paths.py", "paths_test.py")
 # 2a.
 DIAG_RE = re.compile("vtrux-interposer-" + r"diag\.dbc")
 DIAG_OK = ("paths.py", "paths_test.py")
+# Product files that name it too, by path from charge-interposer/ (diag
+# schema 5, tracker J): the implementor's table generator, whose input it
+# is, and the tables it writes, whose header names their source. Each must
+# still name it, and the generator must read the file diag_dbc() names.
+DIAG_PRODUCT = ("diag_table.py", "intp_diag_table.py",
+                "firmware/main/intp_diag_table.h")
+
+
+def diag_named(hits):
+    """The diag DBC scan's hits no allowance covers: paths.py and this test
+    by base name, DIAG_PRODUCT only by their whole path from the scan's
+    root."""
+    return [h for h in hits
+            if os.path.basename(h.split(":", 1)[0]) not in DIAG_OK
+            and h.split(":", 1)[0].replace(os.sep, "/") not in DIAG_PRODUCT]
 # The working folder put on sys.path: "." or os.getcwd(), in code.
 CWD_RE = re.compile(r"sys\.path\.(insert|append)\([^)]*(['\"]\.['\"]|getcwd)")
 
@@ -363,6 +383,22 @@ SCAN_MUTANTS = [
      '"--others",\n                            "--exclude'),
     ("the scans of charge-interposer/ not given git's list",
      "        ign = git_ignored(HERE)\n", "        ign = None\n"),
+    # The diag DBC's product allowances (diag schema 5, 2026-11-24).
+    ("no product allowance: the generator and its tables not allowed",
+     'DIAG_PRODUCT = ("diag_table.py", ' '"intp_diag_table.py",\n'
+     '                "firmware/main/intp_diag_table.h")\n',
+     'DIAG_PRODUCT = ()\n'),
+    ("an allowance kept for a file that no longer names the DBC",
+     'DIAG_PRODUCT = ("diag_table.py", ' '"intp_diag_table.py",\n',
+     'DIAG_PRODUCT = ("bus.py", "diag_table.py", "intp_diag_table.py",\n'),
+    ("the generator compared with another path than diag_dbc()",
+     "os.path.normpath(dt.DBC) == os.path.normpath(PA." "diag_dbc())",
+     "os.path.normpath(dt.DBC) == os.path.normpath(PA.diag_dbc() + '.x')"),
+    ("the allowances taken by base name anywhere",
+     '            and h.split(":", 1)[0].replace(os.sep, "/") not in '
+     'DIAG_PRODUCT]',
+     '            and os.path.basename(h.split(":", 1)[0]) not in '
+     'DIAG_PRODUCT]'),
 ]
 
 
@@ -562,13 +598,24 @@ def main():
                 and os.path.basename(h.split(":", 1)[0]) not in RETIRED_OK]
         check(not hits, "no .py / .sh / .cpp / .h but paths.py and this "
               "test names the retired variable (%s)" % hits[:3])
-        hits = [h for h in scan(HERE, (".py", ".sh", ".cpp", ".h"),
-                                DIAG_RE, True, ign)
-                if not h.startswith(os.path.basename(tmp))
-                and os.path.basename(h.split(":", 1)[0]) not in DIAG_OK]
+        raw = [h for h in scan(HERE, (".py", ".sh", ".cpp", ".h"),
+                               DIAG_RE, True, ign)
+               if not h.startswith(os.path.basename(tmp))]
+        hits = diag_named(raw)
         check(not hits, "no code but paths.py names the "
               "diag DBC's file: every other reader uses diag_dbc() (%s)"
               % hits[:3])
+        named = set(h.split(":", 1)[0].replace(os.sep, "/") for h in raw)
+        check(set(DIAG_PRODUCT) <= named, "each product file allowed to "
+              "name the diag DBC's file still names it (%s does not)"
+              % sorted(set(DIAG_PRODUCT) - named))
+        spec = importlib.util.spec_from_file_location(
+            "diag_table_under_test", os.path.join(HERE, "diag_table.py"))
+        dt = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(dt)
+        check(os.path.normpath(dt.DBC) == os.path.normpath(PA.diag_dbc()),
+              "diag_table.py, the table generator, reads the DBC "
+              "diag_dbc() names (%s)" % dt.DBC)
         hits = [h for h in scan(HERE, (".py",), CWD_RE, True, ign)
                 if not h.startswith(os.path.basename(tmp))
                 and os.path.basename(h.split(":", 1)[0]) != "paths_test.py"]
@@ -600,6 +647,15 @@ def main():
         check(len(scan(plant, (".py",), DIAG_RE, True)) == 1,
               "the diag DBC scan catches a planted reverse-it read, and "
               "skips it in a comment")
+        top = ["diag_table.py:41: x", "intp_diag_table.py:1: x",
+               "firmware/main/intp_diag_table.h:2: x",
+               "paths.py:3: x", "paths_test.py:2: x"]
+        deep = ["sub/diag_table.py:4: x", "intp_diag_table.h:1: x",
+                "firmware/intp_diag_table.py:1: x", "run_scenario.py:9: x"]
+        check(diag_named(top) == [] and diag_named(deep) == deep,
+              "the diag DBC allowances cover paths.py, this test, and the "
+              "product's generator and tables only at their own paths (%s)"
+              % (diag_named(top + deep),))
         check(len(scan(plant, (".py",), CWD_RE, True)) == 2,
               "the working-folder scan catches a planted '.' and getcwd(), "
               "and skips them in a comment")

@@ -6,7 +6,7 @@ against the DBC (charge-interposer tester, 2026-11-24; diag schema 5, user
     python3.13 -B charge-interposer/diag_schema_check.py
     python3.13 -B charge-interposer/diag_schema_check.py --can-fail
 
-THE CHECKS, on diag/vtrux-interposer-diag.dbc (paths.diag_dbc()):
+THE CHECKS, on the diag DBC (paths.diag_dbc()):
   1. its DiagSchemaVersion is run_scenario.SPEC_SCHEMA_VER (5), the schema
      every scenario's frames are judged against (spec 9);
   2. its DiagSchemaHash is the layout_hash of its own layout and names,
@@ -266,7 +266,7 @@ def can_fail(schema):
             for rel, _i in TABLES:
                 shutil.copyfile(os.path.join(HERE, *rel.split("/")),
                                 os.path.join(where, *rel.split("/")))
-            p = os.path.join(where, "vtrux-interposer-diag.dbc")
+            p = os.path.join(where, os.path.basename(paths.diag_dbc()))
             with open(p, "w", encoding="ascii", newline="") as f:
                 f.write(dbc_text)
             return p
