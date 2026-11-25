@@ -1,0 +1,192 @@
+# Port step 3's bench baseline on madhouse-debian, eighth re-run (shared/bench
+# ACCEPT-SPEC A2, A12a, A13, A17; owned by the charge-interposer reviewer).
+# Drafted by the tester for the reviewer's approval, on the reviewer's
+# rulings of 2026-11-25 on run eac4 ("(c)", then "(i): the bench suite runs
+# whole, and the emulated suite runs whole with bus_alloc"). A re-run of
+# 3-bench-rerun7.toml on the same harness and product: everything its header
+# and those it cites say stands (the harness changes since e599 and their
+# gates, the hand takes, DIFFERENCES LEFT, the judgement changes, the
+# settings, the declared skips, placement and the lock, the open
+# observation), and this header names only what changed since.
+#
+# Run eac4 (runs/accept_3_20261123T153418_eac4, from 3-bench-rerun7.toml at
+# 5a940b38, harness 1151afc1, product digest fee522d4ea6f, shared/bench
+# 2026.11.20) started 2026-11-23 15:34:18 and has NO VERDICT: it was never
+# closed. This list's record names it (A13: the runner's --earlier
+# accept_3_20261123T153418_eac4).
+#
+# WHAT CHANGED SINCE RERUN7:
+#   - The power failure. madhouse-debian lost power at about 22:17 on
+#     2026-11-24 and booted at 22:37, during eac4's bench suite run. The
+#     bench record's last line is 22:17:10, at the end of b-c12; b-vport
+#     never ran. The acceptance runner has no resume, so eac4 never closed.
+#   - The unclosed bench record. eac4's emulated, harness, vp1, vp2 and vp3
+#     runs each finished (end event, record.json, index.txt). Its bench run
+#     did not: no end event, no record.json, no index.txt and no comparison.
+#     Its b-bridge, b-witness, b-truck and b-c12 results, the two 8.2 PASS
+#     lines expected by rerun7's c-bench among them, are lines in an unclosed
+#     record, not results (the reviewer, 2026-11-25, as 8b8e's bench phase).
+#     So the bench suite runs whole here, b-vport included.
+#   - A17 refuses eac4's emulated run. shared/bench's reuse.py takes an
+#     earlier run of a required suite only from a closed acceptance record
+#     (README.md and SHA256SUMS), and eac4 has neither. The bench suite
+#     requires a whole emulated run on the same product (Suite.requires), so
+#     the emulated suite runs whole here, with bus_alloc for every check that
+#     declares its buses (the settings, as in rerun7).
+#   - Three disturbed board checks, the tester's incident. From 13:10 to
+#     about 16:10 on 2026-11-24 the tester ran its schema 5 emulated suite
+#     (run emulated_s5_6426df8c, another worktree) without bus_alloc, on the
+#     default groups, and did not check for bound sockets by hand first
+#     (AGENTS.md "Every other run is checked by hand"). Its sims and eac4's
+#     board checks shared the physics sideband 239.0.2.9:43215. Three eac4
+#     checks overlapped it, so none is a product result:
+#     b-bridge/board.evap-override-imbalanced-hold (12:17-13:34, FAIL: the
+#     tester's charger sim's 16 A reached its vehicle model at 13:18:24),
+#     b-bridge/board.evap-override-above-ceiling (13:34-15:33, PASS) and
+#     b-bridge/board.evap-override-16a (15:33-17:55, PASS). No other eac4
+#     check overlapped 13:10-16:10 (364 results scanned, every part). The
+#     schema 5 run was stopped and is void. All three are inside this list's
+#     whole bench run.
+#   - hold12 starved. eac4's b-witness/hold12 was VOID at 21:53:55 on
+#     2026-11-24 ("96.40 % of complete filler bursts exactly 8, under 99 %").
+#     resource-log over its window (21:53:04-21:53:55): the box at 14.4 of
+#     16 cores (app.slice 13.1), bench.slice CPU "some" pressure 4.5 % (max
+#     9.6 %), "full" 0.8 %; over hold12 in e599 0.2 % (box 1.8 cores) and in
+#     69d8 0.2 % (box 3.4 cores). Starved, so not a result (AGENTS.md
+#     triage); the finding went to the Local LLM hosting session. It is
+#     inside this list's whole bench run.
+#
+# WHAT STANDS ON EAC4 (the reviewer, 2026-11-25): its harness suite run and
+# vp1, vp2 and vp3, each from its own finished nested record, as 8b8e's
+# emulated and harness suites did. This list does not run them again. The
+# tester's VERIFICATION.md entry covers eac4 and this run together and judges
+# each of those four against e599's line by line, as rerun7's c-harness and
+# vp compares say.
+#
+# Trees:
+#   harness   1151afc1, as rerun7 (charge-interposer/main then; no harness
+#             or product file has changed on charge-interposer/main since,
+#             only AGENTS.md, the self-compact skill and the acceptance
+#             lists). This list's own commit follows on
+#             charge-interposer/tester/rerun8, from charge-interposer/main
+#             b6c6be9b.
+#   prod      the same commit, whose product files are 5dc29741's (as 69d8,
+#             e599 and eac4): the three bench builds come from it.
+
+[step]
+id = "3"
+project = "charge-interposer"
+ordered_by = "charge-interposer reviewer"
+ordered_on = "2026-11-25"
+spec = ["2", "2.1", "2.2", "2.3", "2.4", "8", "8.2", "8.3", "9", "9.1", "10", "12"]
+verification = "the tester's VERIFICATION.md entries for port step 3's bench baseline"
+
+[trees.harness]
+project = "1151afc12eb29ee9a772ab76675f5e91a78c7f08"
+
+# ---- the three variants the bench suite flashes ----------------------------
+[[build]]
+id = "bridge"
+tree = "harness"
+target = "idf-build"
+options = { variant = "bridge" }
+
+[[build]]
+id = "witness"
+tree = "harness"
+target = "idf-build"
+options = { variant = "witness" }
+
+[[build]]
+id = "truck"
+tree = "harness"
+target = "idf-build"
+options = { variant = "truck" }
+
+# ---- the emulated suite, whole (the bench suite's requires) ---------------
+# Whole again: A17 cannot take eac4's emulated run (its record is not
+# closed), and e599's is on another harness digest (the can-tools pin).
+[[suite_run]]
+id = "emulated"
+tree = "harness"
+suite = "emulated"
+declared_skips = [
+  { id = "m-build/build-check", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "m-build/manifest-test", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+  { id = "m-build/manifest-offline-test", reason = "retired at port step 2a: the PlatformIO build, its manifest and the build_check / digest_recheck_check family went with Part B (reviewer 2026-11-03, Q3); the IDF builds are 2a acceptance (h)" },
+]
+
+# ---- the bench suite, whole --------------------------------------------------
+# this run's flashes and identifies are the board evidence: each X2 image is
+# the list's own build, read back by its build id; the WiCAN's is the pinned
+# gen-inhibit image (wican_pin.json), read back from its boot slot
+[[suite_run]]
+id = "bench"
+tree = "harness"
+suite = "bench"
+images_from = ["bridge", "witness", "truck"]
+after = ["emulated"]
+declared_skips = [
+  { id = "b-bridge/charger-silent-unplugged", reason = "spec 2.2, the form with the Innomaker physically unplugged: needs hands (no-hands sheet, DEFERRED until the user is back)" },
+  { id = "b-bridge/brownout-cold-boot", reason = "spec 10 hardware mechanics, 'reset and brownout': a power cycle or brownout needs hands (no-hands sheet, DEFERRED)" },
+  { id = "b-bridge/board.evap-bypass", reason = "not runnable on a board as written (plan Step 4 run sheet, item 4: the scenario disables or bypasses the core in the sim)" },
+  { id = "b-bridge/board.hard-ceiling-failsafe", reason = "not runnable on a board as written (plan Step 4 run sheet, item 4: the scenario disables or bypasses the core in the sim)" },
+  { id = "b-witness/innomaker-rate-runs-reopen", reason = "plan Step 4 no-hands sheet item 1 (2026-10-14): reopening the Innomaker in the same process fails with libusb 'Access denied', a harness defect, not fixed (a25e and 4cdb failed the same way); reviewer 2026-10-22: a skip until it reopens in a fresh process" },
+  { id = "b-witness/innomaker-replug", reason = "plan Step 4 no-hands sheet item 1: the Innomaker replug remedy needs hands (DEFERRED)" },
+  { id = "b-witness/sameid-arm-12e2", reason = "spec 12 entry 2, the same-identifier arm: BLOCKED (reviewer 2026-10-14: F items 27, 28, 30 with the user, and the published deferral count)" },
+  { id = "truck-only/spec10-item1", reason = "spec 10 item 1: only the truck can answer" },
+  { id = "truck-only/spec10-item2", reason = "spec 10 item 2: only the truck can answer" },
+  { id = "truck-only/spec10-item3", reason = "spec 10 item 3: only the truck can answer" },
+  { id = "truck-only/spec10-item4", reason = "spec 10 item 4: only the truck can answer" },
+  { id = "truck-only/spec10-item5", reason = "spec 10 item 5: only the truck can answer" },
+  { id = "truck-only/spec10-item6", reason = "spec 10 item 6: only the truck can answer" },
+  { id = "truck-only/spec10-item7", reason = "spec 10 item 7: only the truck can answer" },
+  { id = "truck-only/spec10-item8", reason = "spec 10 item 8: only the truck can answer" },
+  { id = "truck-only/spec10-item9", reason = "spec 10 item 9: only the truck can answer" },
+  { id = "truck-only/spec2.1-offline-board", reason = "spec 2.1: what the truck does with the board offline needs the truck (spec 10 item 6)" },
+]
+
+# ---- the baselines -----------------------------------------------------------
+# e599's, as rerun7 (the reviewer, 2026-11-25: "Baselines stay e599's"): its
+# emulated suite (83 PASS, 2 KNOWN-FAIL, 3 NOT-RUN skips) and bench suite (65
+# PASS, 2 FAIL, 1 KNOWN-FAIL, 1 VOID, 17 NOT-RUN skips), on the same product
+# files as this list.
+[baseline]
+emulated = "accept_3_20261121T191433_e599/runs/accept_3_20261121T191433_e599-emulated"
+bench = "accept_3_20261121T191433_e599/runs/accept_3_20261121T191433_e599-bench"
+
+# The emulated suite against e599's: no difference, as rerun7's c-emulated.
+# The same 40 checks (88 results: 83 PASS, 2 KNOWN-FAIL, 3 NOT-RUN) and
+# Python reference; the two host_bridge KNOWN-FAILs are KNOWN-FAIL on both
+# sides; any other FAIL, or a NOT-RUN that is not a declared skip, is a
+# difference.
+[[compare]]
+id = "c-emulated"
+comparer = "run-records"
+a = "baseline:emulated"
+b = "emulated"
+expect = "listed"
+differences = []
+
+# The bench suite against e599's, as rerun7's c-bench: the same 86 checks and
+# 17 declared skips; board.restart-after-standby and board.hvil-before-flow-drop,
+# e599's two 8.2 FAILs, are expected to PASS on the 8.2 fix;
+# b-witness/switch-loss stays KNOWN-FAIL and vport-listen-wrong-rate VOID. A
+# verdict that moves otherwise is a difference to judge line by line in the
+# tester's entry. b-vport/vport-bitrate's 1M flooding window is rerun7's open
+# observation: a quiet witness there reads VOID against e599's bench PASS, a
+# difference judged with its cause.
+[[compare]]
+id = "c-bench"
+comparer = "run-records"
+a = "baseline:bench"
+b = "bench"
+expect = "listed"
+differences = [
+  "VERDICT b-bridge/board.hvil-before-flow-drop: FAIL -> PASS",
+  "VERDICT b-bridge/board.restart-after-standby: FAIL -> PASS",
+]
+
+# ---- spec 8.3: no ESP-IDF line before setup() -----------------------------
+# In the bench suite run, as in rerun7: the truck by b-truck/flight-silence;
+# bridge and witness by b-bridge/idf-log and b-witness/idf-log.
