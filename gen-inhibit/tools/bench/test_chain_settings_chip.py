@@ -4,16 +4,16 @@ check (core e37995a, flash.py) needs, using the core's own functions.
 
     python3.13 -B gen-inhibit/tools/bench/test_chain_settings_chip.py SETTINGS
     python3.13 -B gen-inhibit/tools/bench/test_chain_settings_chip.py --can-fail SETTINGS
-                 # the settings' PYTHONPATH joined with the other separator: the core
-                 # check must fail (exit 0 only if it does)
+                 # copies with the core back on PYTHONPATH and with an empty
+                 # wallclock_patterns: each check must fail (exit 0 only if both do)
 
 SETTINGS, or GI_CHAIN_SETTINGS, is this machine's chain settings file in reverse-it
 (local, unpublished: it holds the X2's MAC, which no published file may); with neither
-it refuses. The core is imported from the PYTHONPATH the settings give hosts.local,
-split on this platform's separator (":" on Linux), and checked to be that core: until
-2026-11-12 it split on ";" alone, so on Linux the settings' entries were one bogus path
-and the core came from the caller's PYTHONPATH instead (the reviewer's Linux leftovers
-item 5; the evidence driver now passes SETTINGS). The chip-id text is the X2's own, from the
+it refuses. The core is the checkout gen-inhibit pins (gi_core_pin; port step 4 item 1,
+2026-11-25): the settings' hosts.local PYTHONPATH must put no vtrux_bench on the path
+(split on either separator: until 2026-11-12 a split on ";" alone hid the entries on
+Linux), the settings give no wallclock_patterns (the core's default list is used), and
+the core imported is the pinned checkout's. The chip-id text is the X2's own, from the
 e3d9437 chain run's auto-reset check (runs/chain/gen-inhibit-bench_20261020T004332_59b0/
 _bench/man_slcan/autoreset_after.txt). Controls: the same text with another MAC, and
 settings with no MAC or another chip type, must each be refused. Gen-inhibit tester,
@@ -47,22 +47,37 @@ def check(name, cond, detail=""):
         print("FAIL %s  -- %s" % (name, detail))
 
 
+def core_entries(s):
+    """The entries of the settings' hosts.local PYTHONPATH, split on either separator, that
+    hold a vtrux_bench package: a core put on the path by the settings."""
+    pp = s.get("hosts", {}).get("local", {}).get("env", {}).get("PYTHONPATH") or ""
+    return [p for p in re.split(r"[;:]", pp) if p and os.path.isdir(os.path.join(p, "vtrux_bench"))]
+
+
 def main():
     s = json.load(open(SETTINGS, encoding="utf-8"))
-    named = [p for p in (s.get("hosts", {}).get("local", {}).get("env", {}).get("PYTHONPATH") or "").split(os.pathsep)
-             if p]
-    for p in reversed(named):
-        sys.path.insert(0, p)
+    # The core is the checkout gen-inhibit pins (port step 4 item 1, 2026-11-25): the
+    # settings put none on the path, and give no wallclock_patterns of their own (the core's
+    # procs.DEFAULT_WALLCLOCK_PATTERNS, which this suite's list moved into, is used).
+    check("the settings' hosts.local PYTHONPATH puts no core (vtrux_bench) on the path",
+          core_entries(s) == [], core_entries(s))
+    check("the settings give no wallclock_patterns (the core's default list)",
+          "wallclock_patterns" not in s, "wallclock_patterns" in s)
     try:
+        sys.path.insert(0, HERE)
+        import bench_held
+        folder, why = bench_held.use_core()
+        if folder is None:
+            raise RuntimeError(why)
         from vtrux_bench.run import flash as F
     except Exception as e:
-        check("the core named by the settings imports", False, repr(e))
+        check("the pinned core imports", False, repr(e))
         print("\n%d ok, %d FAIL" % (oks, len(fails)))
         return 1
     src = os.path.realpath(F.__file__)
     print("core: %s" % src)
-    check("the core imported is the one the settings' PYTHONPATH names, split on %r" % os.pathsep,
-          any(src.startswith(os.path.realpath(p) + os.sep) for p in named), (src, named))
+    check("the core imported is the pinned checkout's (gi_core_pin)",
+          src.startswith(os.path.realpath(folder) + os.sep), (src, folder))
     check("the core has the mandatory chip check", F.RULES.get("chip_required") is True, F.RULES)
     chip = (s.get("esptool") or {}).get("chip")
     check("settings.esptool names a chip", isinstance(chip, dict), chip)
@@ -81,28 +96,41 @@ def main():
 
 
 def can_fail():
-    """The settings' PYTHONPATH joined with the other platform's separator, in a copy in
-    this run's scratch/ folder: the core check must FAIL (and the test exit 1), the core
-    then coming from the caller's PYTHONPATH."""
+    """Two copies of the settings in this run's scratch/ folder, each of which must FAIL
+    its check (and the test exit 1): one with the pinned core put back on hosts.local's
+    PYTHONPATH (joined with the other platform's separator, which the check must still
+    see), one with an empty wallclock_patterns."""
     import subprocess
-    s = json.load(open(SETTINGS, encoding="utf-8"))
-    env = s.get("hosts", {}).get("local", {}).get("env", {})
-    named = [p for p in (env.get("PYTHONPATH") or "").split(os.pathsep) if p]
-    if len(named) < 2:
-        print("NOT JUDGED: the settings' PYTHONPATH names %d entr%s; the can-fail needs two"
-              % (len(named), "y" if len(named) == 1 else "ies"))
+    sys.path.insert(0, HERE)
+    import bench_held
+    folder, why = bench_held.use_core()
+    if folder is None:
+        print("NOT JUDGED: the pinned core is refused: %s" % why)
         return 1
-    env["PYTHONPATH"] = (";" if os.pathsep == ":" else ":").join(named)
-    copy_path = os.path.join(gi_paths.scratch("chain_settings_chip"), "settings_other_separator.json")
-    with open(copy_path, "w", encoding="utf-8") as fh:
-        json.dump(s, fh)
-    r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), copy_path], capture_output=True, text=True,
-                       timeout=120)
-    hit = [ln for ln in r.stdout.splitlines() if ln.startswith("FAIL the core imported is the one")]
-    ok = r.returncode == 1 and bool(hit)
-    print("%s  the settings' PYTHONPATH joined with %r: the core check fails, exit %d"
-          % ("FAILED as it must" if ok else "DID NOT FAIL", env["PYTHONPATH"][len(named[0])], r.returncode))
-    return 0 if ok else 1
+    d = gi_paths.scratch("chain_settings_chip")
+    ok_all = True
+    for label, edit, want in (
+            ("the core back on PYTHONPATH",
+             lambda s: s["hosts"]["local"]["env"].__setitem__(
+                 "PYTHONPATH", (";" if os.pathsep == ":" else ":").join(
+                     [folder] + [p for p in [s["hosts"]["local"]["env"].get("PYTHONPATH")] if p])),
+             "FAIL the settings' hosts.local PYTHONPATH puts no core"),
+            ("an empty wallclock_patterns", lambda s: s.__setitem__("wallclock_patterns", []),
+             "FAIL the settings give no wallclock_patterns")):
+        s = json.load(open(SETTINGS, encoding="utf-8"))
+        s.setdefault("hosts", {}).setdefault("local", {}).setdefault("env", {})
+        edit(s)
+        copy_path = os.path.join(d, "settings_%d.json" % len(label))
+        with open(copy_path, "w", encoding="utf-8") as fh:
+            json.dump(s, fh)
+        r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__), copy_path], capture_output=True,
+                           text=True, timeout=120)
+        hit = [ln for ln in r.stdout.splitlines() if ln.startswith(want)]
+        ok = r.returncode == 1 and bool(hit)
+        ok_all &= ok
+        print("%s  %s: its check fails, exit %d" % ("FAILED as it must" if ok else "DID NOT FAIL", label,
+                                                   r.returncode))
+    return 0 if ok_all else 1
 
 
 if __name__ == "__main__":

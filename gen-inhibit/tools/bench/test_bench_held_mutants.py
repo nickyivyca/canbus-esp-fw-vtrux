@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Mutants of bench_held.py and of the two lock gates that call it; test_bench_held.py
 must fail on each BY A CHECK. A crash is not a kill, and an edit that does not apply
-is an error. Needs the pinned core's shared/bench on PYTHONPATH, as the test does.
+is an error. The core is the checkout gen-inhibit pins (gi_core_pin, copied with the
+files; port step 4 item 1, 2026-11-25).
 
     py -3.14 -B gen-inhibit/tools/bench/test_bench_held_mutants.py
 
@@ -21,7 +22,7 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEST = "test_bench_held.py"
-FILES = ("bench_held.py", "gi_paths.py", "interlock_bench.py", "x2_pins_noreset_check.py")
+FILES = ("bench_held.py", "gi_paths.py", "interlock_bench.py", "x2_pins_noreset_check.py", "gi_core_pin.py")
 MUTANTS = [
     ("any holder will do", "bench_held.py", '    return h["who"] == ROLE, h["who"]', '    return True, h["who"]'),
     ("any tester will do", "bench_held.py", 'h["who"] == ROLE', 'h["who"].startswith("tester")'),
@@ -30,8 +31,10 @@ MUTANTS = [
     ("a log that cannot be read is ours", "bench_held.py",
      '        return False, "the bench log could not be read: %s" % e',
      '        return True, "the bench log could not be read: %s" % e'),
-    ("no vtrux_bench is ours", "bench_held.py",
-     '        return False, "vtrux_bench is not importable', '        return True, "vtrux_bench is not importable'),
+    ("a refused core pin is ours", "bench_held.py",
+     '        return False, "the pinned core could not be used', '        return True, "the pinned core could not be used'),
+    ("the core from PYTHONPATH, not the pin", "bench_held.py",
+     "        return core_pin().use_bench(), None", "        return 'PYTHONPATH', None"),
     ("the default reads bench-holder.md", "bench_held.py", "gi_paths.bench_log()", "gi_paths.bench_holder()"),
     ("bench_log() is bench-holder.md", "gi_paths.py",
      '    return project("firmware", "bench-log.jsonl")', '    return project("firmware", "bench-holder.md")'),

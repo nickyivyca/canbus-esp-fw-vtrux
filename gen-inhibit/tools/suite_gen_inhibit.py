@@ -48,11 +48,19 @@ wallclock classes, build.slice for build and light, so every bench check starts 
 bench.slice and every emulated one in build.slice (gen-inhibit reviewer, 2026-11-12).
 With it, the core refuses a bench run, which flashes and reboots the boards in the runner
 itself, unless the runner is in bench.slice, and prints the command that starts it there:
-    systemd-run --user --scope --quiet --slice=bench.slice -- python3.13 -B -m vtrux_bench.run run ...
+    systemd-run --user --scope --quiet --slice=bench.slice -- python3.13 -B \
+        gen-inhibit/tools/bench/gi_core_pin.py module vtrux_bench.run run ...
 
-    PYTHONPATH="<core>/shared/bench;<interposer clone>/charge-interposer" \
-    py -3.14 -B -m vtrux_bench.run plan --suite gen-inhibit/tools/suite_gen_inhibit.py:bench \
-        --settings <settings.json>
+The core is the checkout gen-inhibit pins, firmware/shared_pins.json "shared/bench"
+(port step 4 item 1, 2026-11-25; PYTHONPATH named it before): the runner is started
+through bench/gi_core_pin.py, which checks the checkout (shared/tools R23) and runs the
+core's module from it, and the tools take the core the same way. hosts.local.env's
+PYTHONPATH names no shared/bench; it still names the interposer checkout until
+INTERPOSER_CODE retires (port plan goal 20 item 9):
+
+    PYTHONPATH="<interposer clone>/charge-interposer" \
+    python3.13 -B gen-inhibit/tools/bench/gi_core_pin.py module vtrux_bench.run plan \
+        --suite gen-inhibit/tools/suite_gen_inhibit.py:bench --settings <settings.json>
     ... run [--group G] [--check "man_app/B1"]
     ... --suite gen-inhibit/tools/suite_gen_inhibit.py:emulated
 
@@ -137,12 +145,7 @@ import sys
 import time
 import urllib.request
 
-from vtrux_bench.run.model import Check, Figure, Group, Image, Result, Suite
-
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-import suite_judges as SJ   # noqa: E402
-import x2_pin as X2P        # noqa: E402
 
 
 def _load_bench(name):
@@ -154,9 +157,20 @@ def _load_bench(name):
     return mod
 
 
+# The core is the checkout gen-inhibit pins (firmware/shared_pins.json "shared/bench"), never
+# PYTHONPATH (port step 4 item 1, 2026-11-25): the runner is started through gi_core_pin, and a
+# vtrux_bench imported from anywhere else is refused here.
+GS = _load_bench("gi_serial")      # the boards' USB IDs for the tools (DEVICES-SPEC S1, 2026-11-12)
+GS.core_pin().use_bench()
+
+from vtrux_bench.run.model import Check, Figure, Group, Image, Result, Suite  # noqa: E402
+
+sys.path.insert(0, HERE)
+import suite_judges as SJ   # noqa: E402
+import x2_pin as X2P        # noqa: E402
+
 GE = _load_bench("gi_esptool")
 GW = _load_bench("gi_wifi")        # the hotspot through the core's Wi-Fi (settings.ota, 2026-11-16)
-GS = _load_bench("gi_serial")      # the boards' USB IDs for the tools (DEVICES-SPEC S1, 2026-11-12)
 X2_PIN_FILE = X2P.PIN_FILE  # the committed pin; never a setting
 X2_IMAGES = ("x2_app", "x2_slcan")
 # Images not safe to leave idle on the bench (the core's Image.idle_safe=False, shared/main
@@ -971,6 +985,13 @@ def tree_at(path, commit):
     return st
 
 
+def core_pin():
+    """The core's pin as the record keeps it (port plan goal 20 item 8: the tag, the commit
+    and the digest), checked again: {"tag", "commit", "digest", "folder"}."""
+    c = GS.core_pin().check()
+    return {k: c[k] for k in ("tag", "commit", "digest", "folder")}
+
+
 def code_info_for(settings, images, pin=None):
     """What the record keeps about the code (user, 2026-10-17), and what the core's
     Suite.requires compares: commit and dirty. Until the code-hash tool exists the
@@ -1000,7 +1021,7 @@ def code_info_for(settings, images, pin=None):
         clean = all(t["clean"] and t["at"] for t in trees.values()) and all(
             app_version(im.params["bin"]) == commit for im in images.values() if im.params.get("bin"))
         return {"commit": commit, "dirty": not clean, "code_hash": None, "trees": trees, "images": per,
-                "gi_tools": git_state(need(settings, "gi_tools")),
+                "gi_tools": git_state(need(settings, "gi_tools")), "core": core_pin(),
                 "interposer_code": dict(tree_at(need(settings, "interposer_code"),
                                                 settings.get("interposer_code_commit")),
                                         commit=settings.get("interposer_code_commit"))}
@@ -1014,7 +1035,7 @@ def emulated_code_info(settings):
     def code_info(ctx):
         t = tree_at(need(settings, "gi_fw"), commit)
         return {"commit": commit, "dirty": not (t["clean"] and t["at"]), "code_hash": None, "gi_fw": t,
-                "images": {}, "gi_tools": git_state(need(settings, "gi_tools"))}
+                "images": {}, "gi_tools": git_state(need(settings, "gi_tools")), "core": core_pin()}
     return code_info
 
 

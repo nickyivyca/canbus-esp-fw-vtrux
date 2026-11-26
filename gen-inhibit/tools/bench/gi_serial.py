@@ -63,13 +63,32 @@ class Refused(Exception):
     """No port: the IDs are missing or wrong, the lookup refused, or this is not Linux."""
 
 
+def core_pin():
+    """gi_core_pin: the one already imported, else loaded by file from beside this file."""
+    import importlib.util
+    mod = sys.modules.get("gi_core_pin")
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(
+            "gi_core_pin", os.path.join(os.path.dirname(os.path.abspath(__file__)), "gi_core_pin.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["gi_core_pin"] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except BaseException:
+            sys.modules.pop("gi_core_pin", None)
+            raise
+    return mod
+
+
 def serial_dev():
-    """The pinned core's vtrux_bench.serial_dev (core 2026.11.11.6 or later)."""
+    """The pinned core's vtrux_bench.serial_dev, from the checkout gen-inhibit pins
+    (gi_core_pin; port step 4 item 1, 2026-11-25)."""
     try:
+        core_pin().use_bench()
         from vtrux_bench import serial_dev as SD
-    except ImportError as e:
-        raise Refused("vtrux_bench.serial_dev is not importable (%s): put the pinned core's "
-                      "shared/bench on PYTHONPATH (2026.11.11.6 or later)" % e)
+    except Exception as e:  # noqa: BLE001  a refused pin or a failed import: no core
+        raise Refused("vtrux_bench.serial_dev could not be taken from the pinned core "
+                      "(gi_core_pin): %s: %s" % (type(e).__name__, e))
     return SD
 
 

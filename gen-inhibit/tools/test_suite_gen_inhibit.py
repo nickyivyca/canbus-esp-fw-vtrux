@@ -6,8 +6,10 @@ tool fails, and a settings file naming bench_lock_log puts a run on that log whi
 without keeps it on the Holder line. No hardware: every tool the hooks run is stood in
 for.
 
-    PYTHONPATH=<core 2026.11.16.5>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
-        py -3.14 -B test_suite_gen_inhibit.py
+    GI_BASELINE_DIR=<.../runs/baseline_e3d9437> python3.13 -B test_suite_gen_inhibit.py
+
+The core is the checkout firmware/shared_pins.json pins, taken through bench/gi_core_pin.py
+(port step 4 item 1, 2026-11-25; PYTHONPATH named it before).
 
 The board steps run the real wican_reboot.py from this folder's bench/ (the suite's
 HARNESS, 2026-10-22) against its test's fake WiCAN (no hardware either).
@@ -57,6 +59,9 @@ def scratch_dir(name):
     return gi_paths.scratch(name, start=__file__)
 sys.path.insert(0, HERE)
 
+# the core: the checkout gen-inhibit pins, never PYTHONPATH (port step 4 item 1, 2026-11-25)
+import gi_serial                                             # noqa: E402  bench/, on sys.path above
+gi_serial.core_pin().use_bench()
 from vtrux_bench.run import cli as CLI                       # noqa: E402
 from vtrux_bench.run import engine as ENG                    # noqa: E402
 from vtrux_bench.run.engine import Engine, fmt               # noqa: E402
@@ -1417,6 +1422,15 @@ def test_code_info(settings):
           ci["images"]["wican_man"]["commit_clean"] == "%s clean=True" % h, ci["images"]["wican_man"])
     check("code: the core reads the same code for both suites",
           _code_ident(ci) == _code_ident(ce) == "commit:%s" % h, (_code_ident(ci), _code_ident(ce)))
+    # the core's pin in the record (port plan goal 20 item 8; port step 4 item 1, 2026-11-25)
+    with open(os.path.join(gi_paths.worktree_of(HERE), "gen-inhibit", "firmware", "shared_pins.json"),
+              encoding="utf-8") as f:
+        want = json.load(f)["shared/bench"]
+    import vtrux_bench
+    folder = os.path.dirname(os.path.dirname(os.path.abspath(vtrux_bench.__file__)))
+    check("code: both suites record the core's pin (tag, commit, digest) and the folder the core ran from",
+          ci.get("core") == ce.get("core") == dict(want, folder=ci["core"]["folder"])
+          and os.path.realpath(ci["core"]["folder"]) == os.path.realpath(folder), (ci.get("core"), want, folder))
     check("code: gi_commit that is not HEAD is dirty",
           SG.bench(dict(s2, gi_commit="0000000")).code_info({})["dirty"] is True
           and SG.emulated(dict(s2, gi_commit="0000000")).code_info({})["dirty"] is True)
@@ -1850,8 +1864,13 @@ def test_example(bench, emu, settings):
           "ssid_env and never the SSID", o.get("wifi") == "adb" and str(o.get("adb_serial", "")).startswith("<")
           and str(o.get("profile", "")).startswith("<") and o.get("ssid_env") and "ssid" not in o
           and o.get("host") == SG.HOST, o)
-    check("the settings example's core is 2026.11.16.5",
-          "<core 2026.11.16.5>" in json.dumps(ex.get("hosts")), ex.get("hosts"))
+    # The core is the checkout shared_pins.json pins (port step 4 item 1, 2026-11-25): the
+    # example's host PYTHONPATH names no shared/bench, only the interposer checkout
+    henv0 = ((ex.get("hosts") or {}).get("local") or {}).get("env") or {}
+    hpp = str(henv0.get("PYTHONPATH", ""))
+    check("the settings example's host PYTHONPATH names no core (no shared/bench, no <core ...>), only "
+          "the interposer checkout", hpp == "<interposer checkout>/charge-interposer"
+          and "shared/bench" not in json.dumps(henv0) and "<core" not in json.dumps(henv0), henv0)
     # C2scan (item 1, 2026-11-16): c_checks_run.py under the host's python, which exports
     # ESP-IDF from IDF_PATH and IDF_TOOLS_PATH, so the example's host env names both
     c2 = [c for g in emu.groups for c in g.checks if c.id == "C2scan"]
@@ -1889,12 +1908,13 @@ def test_example(bench, emu, settings):
     # wallclock_patterns (gen-inhibit reviewer, 2026-11-23): bench run 4b15 shared bench.slice
     # with the charge-interposer's simulator scenarios and the Android emulator, and its
     # wallclock-others events said "no other wall-clock test on local", the example's list
-    # being empty. The core's own scan (Engine.others_on, which writes that event) over a
-    # made-up process table, none of it this process's tree; no lock is read.
-    pats = ex.get("wallclock_patterns")
-    check("the settings example's wallclock_patterns is a non-empty list of regexes",
-          isinstance(pats, list) and pats and all(isinstance(p, str) and raises(lambda p=p: re.compile(p)) is None
-                                                  for p in pats), pats)
+    # being empty. Since port step 4 item 1 (2026-11-25) the example gives no list, and the
+    # core scans for its own procs.DEFAULT_WALLCLOCK_PATTERNS (core 2026.11.23). The core's
+    # own scan (Engine.others_on, which writes that event) over a made-up process table,
+    # none of it this process's tree; no lock is read.
+    check("the settings example gives no wallclock_patterns (the core's default list is used)",
+          "wallclock_patterns" not in ex, ex.get("wallclock_patterns"))
+    pats = None
     wall = {
         "an interposer simulator scenario": "/usr/bin/python3.13 -B run_scenario.py evap-override-16a --time-scale 1",
         "its vehicle simulator": "/usr/bin/python3.13 /w/interposer-tester/charge-interposer/vehicle_sim.py --port 1",
@@ -1917,8 +1937,10 @@ def test_example(bench, emu, settings):
     pt0 = ENG.procs.process_table
 
     def others(patterns):
-        s = {k: v for k, v in settings.items() if k not in ("bench_holder", "bench_lock_log")}
-        s["wallclock_patterns"] = patterns
+        s = {k: v for k, v in settings.items() if k not in ("bench_holder", "bench_lock_log",
+                                                            "wallclock_patterns")}
+        if patterns is not None:
+            s["wallclock_patterns"] = patterns
         ENG.procs.process_table = lambda ssh_host=None, **kw: table
         try:
             return Engine(bench, s).others_on("local")
@@ -1933,6 +1955,8 @@ def test_example(bench, emu, settings):
         check("wallclock_patterns: the example's list does not name %s" % what, line not in named, named)
     check("wallclock_patterns: the event says a wall-clock test may be running, naming a process",
           got.get("wallclock") is True and str(got.get("why", "")).startswith("process: "), got.get("why"))
+    check("wallclock_patterns: the event says the patterns are the core's default",
+          got.get("patterns") == "default", got.get("patterns"))
     # can-fail: the list as it was (empty) names none of them, as 4b15's events said
     got = others([])
     check("wallclock_patterns can-fail: with an empty list the same table names nothing, 'no other wall-clock test'",

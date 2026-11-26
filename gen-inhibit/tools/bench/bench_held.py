@@ -4,8 +4,8 @@ themselves before they transmit (interlock_bench.py run, x2_pins_noreset_check.p
 
 The lock is the bench log, firmware/bench-log.jsonl, since the cutover of 2026-10-24
 (AGENTS.md "The shared bench"). It is replayed here by shared/bench's own
-vtrux_bench.bench_lock, the code that writes it, so vtrux_bench must be importable:
-the pinned core's shared/bench on PYTHONPATH, as for the chain runner. bench-holder.md's
+vtrux_bench.bench_lock, the code that writes it, taken from the pinned checkout by
+gi_core_pin.use_bench() (port step 4 item 1, 2026-11-25; PYTHONPATH before). bench-holder.md's
 Holder line is the frozen history from before the cutover and is not read.
 
 Fails closed: the lock is ours only when the log replays and its holder is ROLE. A
@@ -18,6 +18,8 @@ reason in the second value.
 Gen-inhibit tester, 2026-10-25: B20 of the 6926fb0 bench run refused at "bench-holder.md
 names 'free' as the holder" with the runner holding the lock in the log.
 """
+import importlib.util
+import os
 import sys
 
 import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
@@ -25,13 +27,41 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 ROLE = "tester (gen-inhibit)"
 
 
+def use_core():
+    """(folder, None) with the pinned core first on sys.path, or (None, why not).
+    gi_core_pin is loaded by file from beside this file, once per process."""
+    try:
+        return core_pin().use_bench(), None
+    except Exception as e:  # noqa: BLE001  any refusal is "no core"
+        return None, "%s: %s" % (type(e).__name__, e)
+
+
+def core_pin():
+    """gi_core_pin: the one already imported, else loaded by file from beside this file."""
+    mod = sys.modules.get("gi_core_pin")
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(
+            "gi_core_pin", os.path.join(os.path.dirname(os.path.abspath(__file__)), "gi_core_pin.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["gi_core_pin"] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except BaseException:
+            sys.modules.pop("gi_core_pin", None)
+            raise
+    return mod
+
+
 def held_by_us(log=None):
     """(ok, who): ok when the bench log's holder is ROLE; who names the holder, or why
     the log could not say."""
+    folder, why = use_core()
+    if folder is None:
+        return False, "the pinned core could not be used (gi_core_pin): %s" % why
     try:
         from vtrux_bench import bench_lock
     except ImportError as e:
-        return False, "vtrux_bench is not importable (%s): put the pinned core's shared/bench on PYTHONPATH" % e
+        return False, "vtrux_bench is not importable from the pinned core %s (%s)" % (folder, e)
     try:
         state = bench_lock.read_state(log or gi_paths.bench_log())
     except Exception as e:  # noqa: BLE001  any failure to read the lock is "not ours"

@@ -16,8 +16,8 @@ The port (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12): main() runs agains
 made-up bench of serial devices (_fake_serial.py) and GI_X2_DEVICE, so the X2's by-id link
 is resolved through gi_serial and the core's serial_dev and handed to esptool; the record
 keeps the port and serial_device. GI_X2_DEVICE unset, a tty name or IDs matching no device
-give a REFUSED record with nothing read; check-dump needs no port. Needs the pinned core's
-shared/bench on PYTHONPATH (2026.11.11.6 or later), and Linux.
+give a REFUSED record with nothing read; check-dump needs no port. Needs the pinned core
+(the checkout gen-inhibit pins, through gi_core_pin; port step 4 item 1), and Linux.
 
 --expect-elf (gen-inhibit reviewer, 2026-11-12): no default any more (it was 7f197bfd).
 main() dump and check-dump, each without it, empty, with 7 digits, a non-hex digit or 65

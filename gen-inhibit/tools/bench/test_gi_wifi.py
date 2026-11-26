@@ -28,7 +28,10 @@ ota_pcap.sh (gi_ota stood in for, in a copy of this folder): it runs gi_ota with
 and <stem>.json, writes <stem>.txt with the SSID masked in both files, passes gi_ota's exit
 on, and refuses without GI_OTA_SETTINGS.
 
-    PYTHONPATH=<core 2026.11.16.5>/shared/bench python3.13 -B test_gi_wifi.py [--mutants]
+    python3.13 -B test_gi_wifi.py [--mutants]
+
+The core is the checkout firmware/shared_pins.json pins, through gi_core_pin (port step 4
+item 1, 2026-11-25; PYTHONPATH named it before).
 
 --mutants: each mutant of gi_wifi.py or gi_ota.py is a copy in this run's scratch folder
 with one edit, run through GI_WIFI_DIR; a check must fail on each, and the unmutated copy,
@@ -52,6 +55,7 @@ sys.path.insert(0, SRC)
 import gi_paths                 # noqa: E402
 import gi_wifi as GW            # noqa: E402
 import gi_ota as GO             # noqa: E402
+GW.core_pin().use_bench()       # the core: the checkout gen-inhibit pins (port step 4 item 1)
 from vtrux_bench.run import ota as OTA      # noqa: E402
 from vtrux_bench.run import wifi as W       # noqa: E402
 
@@ -325,6 +329,8 @@ def mutants():
         for f, s in srcs.items():
             with open(os.path.join(d, f), "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(s.replace(old, new) if f == fname else s)
+        # gi_wifi loads gi_core_pin by file from beside it (port step 4 item 1, 2026-11-25)
+        shutil.copy2(os.path.join(HERE, "gi_core_pin.py"), os.path.join(d, "gi_core_pin.py"))
         r = subprocess.run([sys.executable, "-B", os.path.abspath(__file__)], capture_output=True, text=True,
                            env=dict(os.environ, GI_WIFI_DIR=d), timeout=300)
         fails = [ln.strip() for ln in r.stdout.splitlines() if ln.strip().startswith("FAIL")]

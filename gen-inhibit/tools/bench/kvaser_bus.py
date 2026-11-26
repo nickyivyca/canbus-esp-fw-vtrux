@@ -57,8 +57,8 @@ KvaserLinkError, InnomakerError or RoleError, naming the step.
                        hand gives the Claude Code session's pid, and the tools that session
                        runs descend from it (bench-holder.md rule 2). Anything else raises
                        BenchNotHeld: a free lock, another holder, a log that does not replay,
-                       vtrux_bench not importable (the pinned core's shared/bench is on
-                       PYTHONPATH for bench runs, as for bench_held.py), a pid that is not an
+                       the pinned core not usable (gi_core_pin refuses its checkout; port
+                       step 4 item 1, PYTHONPATH before), a pid that is not an
                        ancestor, or no /proc to walk. There is no switch to turn it off. It
                        exists because a host test once faked a tool's `can` and reached the
                        real Kvaser through this module (2026-11-12, test_e4_rawpost.py): a
@@ -269,14 +269,31 @@ def _gi_paths():
     return _gi_paths_mod
 
 
+def _core_pin():
+    """gi_core_pin: the one already imported, else loaded by file from beside this file (a
+    process that loaded this module by file need not have this folder on sys.path; _gi_paths)."""
+    mod = sys.modules.get("gi_core_pin")
+    if mod is None:
+        spec = importlib.util.spec_from_file_location("gi_core_pin", os.path.join(HERE, "gi_core_pin.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["gi_core_pin"] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except BaseException:
+            sys.modules.pop("gi_core_pin", None)
+            raise
+    return mod
+
+
 def _lock_holder():
     """The bench log's holder ({who, run, pid, ts}, or None when free), replayed by shared/bench's
     own vtrux_bench.bench_lock. Raises BenchNotHeld when it cannot say."""
     try:
+        _core_pin().use_bench()
         from vtrux_bench import bench_lock
-    except ImportError as e:
-        raise BenchNotHeld("vtrux_bench is not importable (%s): a real adapter opens only in a bench "
-                           "run, with the pinned core's shared/bench on PYTHONPATH" % e)
+    except Exception as e:      # noqa: BLE001  a refused pin or a failed import: no lock to read
+        raise BenchNotHeld("the pinned core's vtrux_bench could not be used (gi_core_pin; port step 4 "
+                           "item 1): %s: %s" % (type(e).__name__, e))
     try:
         return bench_lock.read_state(_gi_paths().bench_log())["holder"]
     except Exception as e:      # noqa: BLE001  any failure to read the lock is "not held"

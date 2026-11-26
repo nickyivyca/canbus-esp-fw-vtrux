@@ -3,7 +3,8 @@ Espressif USB-Serial-JTAG (303a:1001, three interfaces, the serial port on inter
 with made-up serials, in a made-up sysfs and /dev/serial/by-id/ folder. No hardware.
 
 The tree is the pinned core's own test fixture (shared/bench tests/_serial_fixture.py,
-FakeSerial), loaded by file from beside the vtrux_bench on PYTHONPATH, so it is laid out as
+FakeSerial), loaded by file from beside the pinned checkout's vtrux_bench (gi_core_pin), so it
+is laid out as
 the core's lookup expects (seen on madhouse-debian, 2026-11-11).
 
     env, ports = fake_bench(folder)
@@ -22,7 +23,9 @@ ESP = ("303a", "1001")
 
 
 def fixture():
-    """The core's FakeSerial class, from tests/ beside the importable vtrux_bench."""
+    """The core's FakeSerial class, from tests/ beside the pinned checkout's vtrux_bench."""
+    import gi_serial
+    gi_serial.core_pin().use_bench()
     import vtrux_bench
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(vtrux_bench.__file__))),
                         "tests", "_serial_fixture.py")
