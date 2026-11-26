@@ -33,6 +33,10 @@ MUTANTS = [
      "            raise PathsError(\"the shared scratch helper (%s's %s) cannot",
      "            S = _staged_core(); 0 and PathsError(\"the shared scratch helper (%s's %s) cannot"),
     ("no copy is ever taken to be in a worktree", "    return True\n\n\ndef core_pin", "    return False\n\n\ndef core_pin"),
+    ("no git, a missing record: the staged file trusted as it is",
+     '        raise PathsError("%s is in no git worktree, so the shared scratch helper is taken only from the "',
+     '        want = hashlib.sha256(open(src_path, "rb").read()).hexdigest(); '
+     '0 and PathsError("%s is in no git worktree, so the shared scratch helper is taken only from the "'),
     ("the staged file's sha256 not compared", "    if got != want:", "    if False:"),
     ("the staged file's sha256 taken from its record", "    got = hashlib.sha256(data).hexdigest()\n", "    got = want\n"),
     ("stage_core: the record's sha256 of other bytes", '"sha256": hashlib.sha256(data).hexdigest()}',

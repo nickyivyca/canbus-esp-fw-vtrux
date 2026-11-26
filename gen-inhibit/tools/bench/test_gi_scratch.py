@@ -39,7 +39,7 @@ On a fake worktree in this run's own scratch/ folder:
      vtrux_bench/scratch.py; a copy in a worktree with a staged file and a valid record
      beside it still takes the pinned one, and when gi_core_pin refuses it is refused
      and the staged file is not used. A copy with no git (stood in for: load_copy) is
-     refused with nothing staged; stage_core() stages the pinned file byte for byte with
+     refused with nothing staged, and with a staged file but no record; stage_core() stages the pinned file byte for byte with
      a record of the pin and the sha256, and the copy then loads it and removes through
      it; a staged file changed after staging, or a record with a bad sha256, is refused.
      stage_core at a commit stages that commit's pin from git, and refuses a commit with
@@ -296,6 +296,12 @@ def source_checks(gp, work):
     S3, err = call(c3.scratch_core)
     check("no git, nothing staged: a PathsError naming the record", lambda: S3 is None
           and isinstance(err, c3.PathsError) and c3.CORE_RECORD in str(err), (S3, err))
+    with open(os.path.join(nogit, gp.CORE_STAGED), "wb") as fh:
+        fh.write(FAKE_CORE)
+    c3b = load_copy(nogit, in_worktree=False)
+    S3b, err = call(c3b.scratch_core)
+    check("no git, a staged file with no record beside it: a PathsError naming the record, the file not loaded",
+          lambda: S3b is None and isinstance(err, c3b.PathsError) and c3b.CORE_RECORD in str(err), (S3b, err))
     rec, err = call(lambda: gp.stage_core(nogit))
     check("stage_core(dest): the pinned checkout's scratch.py, byte for byte, beside its record",
           lambda: err is None and open(os.path.join(nogit, gp.CORE_STAGED), "rb").read() == pinned_bytes, err)
