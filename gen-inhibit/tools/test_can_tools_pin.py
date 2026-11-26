@@ -178,7 +178,7 @@ class PinTool(unittest.TestCase):
     # pin()
     def test_the_committed_pin_is_a_full_commit(self):
         p = ctp.pin()
-        self.assertEqual(p["commit"], "49eb777708628acee7e6e9e04fa9b3035f032243")
+        self.assertEqual(p["commit"], "f19d04b5c1eafefa820b4cc002af404ed878421c")
         self.assertEqual(p["repo"], "https://github.com/nickyivyca/can-tools")
 
     def test_an_incomplete_or_short_pin_is_refused(self):
