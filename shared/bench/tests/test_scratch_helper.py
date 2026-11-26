@@ -136,7 +136,7 @@ def test_leftover_reported(S, work):
         except PermissionError:
             pass
         real = S._writable
-        S._writable = lambda p: None                  # the remover may not fix it
+        S._writable = lambda p, top: None             # the remover may not fix it
         try:
             left = S.remove(d, out=printed.append)
         finally:
@@ -200,6 +200,62 @@ def test_link_not_followed(S, work):
     assert S.remove(links[1], quiet=True) == [], "outer"
     assert not os.path.lexists(d) and not os.path.lexists(links[1])
     assert os.path.isfile(keep), "the link's target was emptied"
+
+
+def test_link_target_mode(S, work):
+    """A14 (gen-inhibit's remove_tree, Linux fix of 2026-11-12): a link in a
+    read-only folder is removed, and the read-only file it points at, outside
+    the path, keeps its mode: chmod follows a link, so a link is never
+    chmod-ed. POSIX only: a Windows link needs a privilege to make, and a
+    Windows folder has no write bit to clear."""
+    if WINDOWS:
+        return
+    target = os.path.join(work, "target.txt")
+    with open(target, "w") as fh:
+        fh.write("t")
+    os.chmod(target, 0o444)
+    d = os.path.join(work, "ro")
+    os.makedirs(d)
+    os.symlink(target, os.path.join(d, "link"))
+    os.chmod(d, 0o555)
+    try:
+        left = S.remove(d, quiet=True)
+        assert left == [] and not os.path.lexists(d), (left, os.path.lexists(d))
+        mode = os.stat(target).st_mode & 0o777
+        assert mode == 0o444, "the link's target was chmod-ed to %o" % mode
+    finally:
+        if os.path.isdir(d):
+            os.chmod(d, 0o755)
+
+
+def test_parent_outside_kept(S, work):
+    """A14 (gen-inhibit's remove_tree, Linux fix of 2026-11-12): nothing
+    outside the path given changes mode. A folder whose parent may not be
+    written is emptied but not removed: remove() returns it with the reason
+    and prints a LEFTOVER line, raises nothing, and the parent keeps its
+    mode. POSIX only (a Windows folder has no write bit to clear); not as
+    root."""
+    if WINDOWS:
+        return
+    if os.geteuid() == 0:
+        raise AssertionError("cannot be tested as root")
+    parent = os.path.join(work, "par")
+    d = os.path.join(parent, "victim")
+    os.makedirs(os.path.join(d, "sub"))
+    plant_git_objects(d)
+    os.chmod(parent, 0o555)
+    printed = []
+    try:
+        left = S.remove(d, out=printed.append)
+        mode = os.stat(parent).st_mode & 0o777
+        assert mode == 0o555, "the parent, outside the path, was chmod-ed to %o" % mode
+        assert os.path.isdir(d), "removed, though its parent may not be written"
+        assert left and all(why for _p, why in left), left
+        assert any("victim" in p for p, _why in left), left
+        assert "LEFTOVER" in "\n".join(printed), printed
+    finally:
+        os.chmod(parent, 0o755)
+        GOOD.remove(d, quiet=True)
 
 
 def test_owner_beside(S, work):
@@ -385,22 +441,26 @@ def test_names(S, work):
 
 
 TESTS = [test_remove_readonly, test_remove_long_path, test_leftover_reported,
-         test_held_briefly, test_link_not_followed, test_owner_beside, test_state, test_prune,
+         test_held_briefly, test_link_not_followed, test_link_target_mode,
+         test_parent_outside_kept, test_owner_beside, test_state, test_prune,
          test_keep, test_run_finally, test_exit_handler, test_names]
 
 MUTANTS = [
-    ("no read-only handling",
-     '    """Clear the read-only flag on p and, on POSIX, make its folder writable."""\n',
-     '    """Clear the read-only flag on p and, on POSIX, make its folder writable."""\n'
-     '    return\n'),
+    ("no read-only handling", '    target."""\n    if not _is_link(p):\n',
+     '    target."""\n    return\n    if not _is_link(p):\n'),
     ("no long-path form", '    if os.name != "nt" or p.startswith("\\\\\\\\?\\\\"):\n        return p\n',
      "    return p\n"),
     ("one try only", "        for wait in (0,) + BACKOFF:", "        for wait in (0,):"),
-    ("ignore_errors", "            _rmtree(lp, _handler(failed))",
+    ("ignore_errors", "            _rmtree(lp, _handler(failed, lp))",
      "            shutil.rmtree(lp, ignore_errors=True)"),
     ("leftovers not returned", "    return left\n\n\n# ---- folders",
      "    return []\n\n\n# ---- folders"),
     ("follows a link at the top", "    elif _is_link(lp):", "    elif False:"),
+    ("a link chmod-ed (its target with it)", "    if not _is_link(p):\n        try:",
+     "    if True:\n        try:"),
+    ("the parent outside the path made writable",
+     '    if parent and os.name != "nt" and _inside(parent, top):',
+     '    if parent and os.name != "nt":'),
     ("owner inside the folder", 'return d.rstrip("/\\\\") + OWNER_SUFFIX',
      'return os.path.join(d, "owner" + OWNER_SUFFIX)'),
     ("start time not compared", '    return "live" if now == o.get("start") else "finished"',
