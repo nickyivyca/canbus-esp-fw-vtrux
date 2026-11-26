@@ -158,7 +158,9 @@ def run(mod, argv, dev):
     guard keeps its rows in module lists, emptied here so each run is its own."""
     del F.records[:], F.fails[:]
     saved = {}
-    for m in (G, F):
+    # G._WH: the pinned core's wican_http, whose gi_status, wifi_mode, set_mode and
+    # device_identity call its own http (port step 4 item 2)
+    for m in (G, F) + ((G._WH,) if hasattr(G, "_WH") else ()):
         for name, new in (("http", dev.http), ("have_external_route", lambda: (True, "198.51.100.7"))):
             saved[(m, name)] = getattr(m, name)
             setattr(m, name, new)
@@ -177,6 +179,19 @@ def run(mod, argv, dev):
         for (m, name), v in saved.items():
             setattr(m, name, v)
     return rc, out.getvalue()
+
+
+def set_mode_query():
+    """The path the ota guard's set_mode asks for, mode 3, with the core's http faked."""
+    asked = []
+    core = getattr(G, "_WH", G)     # a guard without the core (the mutants' control)
+    saved = (G.http, core.http)
+    G.http = core.http = lambda host, path, *a, **kw: (asked.append(path), (200, "{}"))[1]
+    try:
+        G.set_mode("192.0.2.1", 3)
+    finally:
+        G.http, core.http = saved
+    return asked[0] if len(asked) == 1 else asked
 
 
 def record(d, name):
@@ -210,13 +225,38 @@ def main():
     down = Device(page_up=False)
 
     def ident_down():
-        saved, G.http = G.http, down.http
+        core = getattr(G, "_WH", G)     # a guard without the core (the mutants' control)
+        saved = (G.http, core.http)
+        G.http = core.http = down.http
         try:
             return G.device_identity("192.0.2.1")
         finally:
-            G.http = saved
+            G.http, core.http = saved
     check("ota: device_identity is None when the page does not answer", lambda: ident_down() is None)
     check("ota: ... and does not fall back to /check_status", lambda: "/check_status" not in down.paths, down.paths)
+
+    print("\n=== the HTTP helpers are the pinned core's (port step 4 item 2) ===")
+    core = getattr(G, "_WH", None)
+    try:
+        folder = G.core_pin().check()["folder"]
+        wh_file = os.path.realpath(core.__file__)
+    except Exception as e:      # noqa: BLE001  a guard without the core fails these checks
+        folder, wh_file = None, "no core: %s: %s" % (type(e).__name__, e)
+    check("helpers: wican_http is the pinned shared/bench checkout's",
+          lambda: folder is not None
+          and wh_file == os.path.realpath(os.path.join(folder, "vtrux_bench", "run", "wican_http.py")),
+          "%s; pinned %s" % (wh_file, folder))
+    names = ("http", "have_external_route", "wifi_mode", "ap_mode_detail", "gi_status", "set_mode",
+             "device_identity", "runs_dir", "MODES", "TIMEOUT", "RUNS_ENV")
+    check("helpers: the ota guard's are the core's, each one",
+          lambda: core is not None and all(getattr(G, n) is getattr(core, n) for n in names),
+          [n for n in names if core is None or getattr(G, n) is not getattr(core, n)])
+    check("helpers: the flash guard's are the core's, each one it takes",
+          lambda: core is not None and all(getattr(F, n) is getattr(core, n) for n in names if hasattr(F, n))
+          and all(hasattr(F, n) for n in ("http", "gi_status", "set_mode", "runs_dir", "MODES")),
+          [n for n in names if core is None or (hasattr(F, n) and getattr(F, n) is not getattr(core, n))])
+    check("helpers: the ota guard sets a mode with offset 500, its own form",
+          lambda: set_mode_query() == "/gen_inhibit_set?mode=3&offset=500", set_mode_query())
 
     print("\n=== bench_flash_guard.py ===")
     dev = Device()
