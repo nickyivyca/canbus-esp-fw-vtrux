@@ -1,5 +1,5 @@
 {
-  "_comment": "Settings for suite_gen_inhibit.py (bench and emulated). One copy per machine, outside git; every <...> is a local path or name. The WiCAN SSID is never put here: the suite reads it from bench_holder. Keys the core reads: runs_root, bench_holder, bench_lock_log, canmain_check, hosts, esptool, wallclock_patterns, placement (shared/bench/README.md). placement (core 2026.11.12, Linux; AGENTS.md 'Parallel work on the shared machine', point 1): bench.slice for the lock and wallclock classes, build.slice for build and light, so every bench check starts in bench.slice and every emulated one in build.slice; with it the core refuses a bench run whose runner is not itself in bench.slice (start it with systemd-run --user --scope --slice=bench.slice). bench_lock_log puts the bench lock on that log; without it the Holder line of bench_holder is the lock, as before the cutover (shared/bench/SPEC.md (shared/main), section 7). Serial devices are named by their USB IDs, never a COM or tty name (DEVICES-SPEC S1, Linux only): esptool.device is the X2's, wican.usb_device the WiCAN's; the suite hands both to the tools as GI_X2_DEVICE and GI_WICAN_DEVICE. Serial numbers are bench identifiers: local settings only.",
+  "_comment": "Settings for suite_gen_inhibit.py (bench and emulated). One copy per machine, outside git; every <...> is a local path or name. The WiCAN SSID is never put here: the suite reads it from bench_holder. Keys the core reads: runs_root, bench_holder, bench_lock_log, canmain_check, hosts, esptool, placement (shared/bench/README.md). placement (core 2026.11.12, Linux; AGENTS.md 'Parallel work on the shared machine', point 1): bench.slice for the lock and wallclock classes, build.slice for build and light, so every bench check starts in bench.slice and every emulated one in build.slice; with it the core refuses a bench run whose runner is not itself in bench.slice (start it with systemd-run --user --scope --slice=bench.slice). bench_lock_log puts the bench lock on that log; without it the Holder line of bench_holder is the lock, as before the cutover (shared/bench/SPEC.md (shared/main), section 7). Serial devices are named by their USB IDs, never a COM or tty name (DEVICES-SPEC S1, Linux only): esptool.device is the X2's, wican.usb_device the WiCAN's; the suite hands both to the tools as GI_X2_DEVICE and GI_WICAN_DEVICE. Serial numbers are bench identifiers: local settings only.",
   "runs_root": "<reverse-it>/projects/vtrux/notes/artifacts/gen-inhibit/runs/chain",
   "bench_holder": "<reverse-it>/firmware/bench-holder.md",
   "bench_lock_log": "<reverse-it>/firmware/bench-log.jsonl",
@@ -8,7 +8,8 @@
   "hosts": {
     "local": {
       "python": ["python3.13", "-B"],
-      "env": {"PYTHONPATH": "<core 2026.11.16.5>/shared/bench:<interposer checkout>/charge-interposer",
+      "_comment_env": "No shared/bench in PYTHONPATH: the core is the checkout firmware/shared_pins.json pins, which the runner (started through bench/gi_core_pin.py) and the tools take by gi_core_pin (port step 4 item 1, 2026-11-25). PYTHONPATH names only the interposer checkout, for build_lookup and bench_identify, until INTERPOSER_CODE retires (port plan goal 20 item 9).",
+      "env": {"PYTHONPATH": "<interposer checkout>/charge-interposer",
               "IDF_PATH": "<the ESP-IDF v5.4.2 tree: C2scan's c_checks_run.py exports it>",
               "IDF_TOOLS_PATH": "<that install's tools folder>"}
     }
@@ -18,14 +19,7 @@
               "baud": 921600,
               "chip": {"type": "ESP32-S3", "mac": "<the X2's MAC, as esptool chip_id prints it>"}},
   "wican": {"usb_device": {"vid": "303a", "pid": "1001", "serial": "<the WiCAN's USB serial number>", "interface": 0}},
-  "_comment_wallclock_patterns": "Regexes (re.search) over other processes' command lines that the core records in a wall-clock check's wallclock-others event as another wall-clock test running; recorded, never a refusal (AGENTS.md 'Parallel work on the shared machine', point 3). The charge-interposer's set (its accept_adapter.WALLCLOCK_PATTERNS: both projects' simulators and bench drivers, and the CAN replay tooling session's timing-sensitive scripts), and the Android emulator (gen-inhibit reviewer, 2026-11-23: bench run 4b15 shared bench.slice with both and its events named neither, the list being empty).",
-  "wallclock_patterns": ["run_scenario\\.py", "vehicle_sim\\.py", "charger_sim\\.py",
-                         "interposer_sim\\.py", "e4_device_calibration\\.py", "live_bench\\.py",
-                         "bench_vehicle\\.py", "wican_[a-z_]+_bench\\.py", "bench_[a-z0-9_]+\\.py",
-                         "(^|[/\\s])can_(replayer|logger|gui)\\.py",
-                         "(^|[/\\s])cantools_bench_[a-z0-9_]+\\.py",
-                         "(^|[/\\s])(wiring_check|step1_open|step2_innomaker_echo|step2_can1_clock|step2_pcan_stamp_base|step3_echo_order|step3_canchg_lo_switch|step4_replay_witness|step5_ack|step6_errors|step7_x2_serial|rx_logger|pcan_raw_confirm|verify_canbench_fixes|pcan_backtoback_capability|kvaser_error_frame_capability|e4_rig_calibration|h2_backends)\\.py",
-                         "/emulator/qemu/[^/\\s]+/qemu-system-"],
+  "_comment_wallclock_patterns": "No wallclock_patterns: the core then scans for its own procs.DEFAULT_WALLCLOCK_PATTERNS (core 2026.11.23, rule wallclock_default), the list this file gave until port step 4 item 1 (2026-11-25), moved to shared code. A list here, an empty one included, would replace it.",
   "placement": {"slices": {"lock": "bench.slice", "wallclock": "bench.slice",
                            "build": "build.slice", "light": "build.slice"}},
 

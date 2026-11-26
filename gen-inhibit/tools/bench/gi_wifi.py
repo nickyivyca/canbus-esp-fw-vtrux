@@ -37,16 +37,35 @@ class Refused(Exception):
     """No settings.ota block, a block the core refuses, or no core to read it with."""
 
 
+def core_pin():
+    """gi_core_pin: the one already imported, else loaded by file from beside this file."""
+    import importlib.util
+    mod = sys.modules.get("gi_core_pin")
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(
+            "gi_core_pin", os.path.join(os.path.dirname(os.path.abspath(__file__)), "gi_core_pin.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["gi_core_pin"] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except BaseException:
+            sys.modules.pop("gi_core_pin", None)
+            raise
+    return mod
+
+
 def core():
-    """(vtrux_bench.run.ota, vtrux_bench.run.wifi) from the pinned core (2026.11.16.5 or later)."""
+    """(vtrux_bench.run.ota, vtrux_bench.run.wifi) from the checkout gen-inhibit pins
+    (gi_core_pin; port step 4 item 1, 2026-11-25)."""
     try:
+        core_pin().use_bench()
         from vtrux_bench.run import ota as OTA
         from vtrux_bench.run import wifi as W
-    except ImportError as e:
-        raise Refused("vtrux_bench.run.ota is not importable (%s): put the pinned core's "
-                      "shared/bench on PYTHONPATH (shared/main 2026.11.16.5 or later)" % e)
+    except Exception as e:  # noqa: BLE001  a refused pin or a failed import: no core
+        raise Refused("vtrux_bench.run.ota could not be taken from the pinned core "
+                      "(gi_core_pin): %s: %s" % (type(e).__name__, e))
     if not hasattr(OTA, "wifi_backend"):
-        raise Refused("the core on PYTHONPATH has no phone backend (vtrux_bench.run.ota.wifi_backend): "
+        raise Refused("the pinned core has no phone backend (vtrux_bench.run.ota.wifi_backend): "
                       "it must be shared/main 2026.11.16.5 or later")
     return OTA, W
 

@@ -1962,6 +1962,11 @@ class _GuardSocket(_real_socket):
             raise RuntimeError("TRIPWIRE: a CAN socket reached")
         super().__init__(family, *a, **kw)
 socket.socket = _GuardSocket
+if sys.argv[3:] == ["nocore"]:
+    # a core pin gi_core_pin refuses (port step 4 item 1): a stand-in that refuses
+    def _refuse():
+        raise RuntimeError("refused: a stand-in for a pin gi_core_pin refuses")
+    sys.modules["gi_core_pin"] = types.SimpleNamespace(use_bench=_refuse)
 import kvaser_bus as K
 out = {"refused": {}, "trips": trips}
 # a tool module with its own fake can, as test_e4_rawpost faked e4_device_calibration
@@ -1997,25 +2002,33 @@ print("CHILD " + json.dumps(out))
 
 
 def guard_real():
+    # The core is the pinned checkout's whatever PYTHONPATH says (port step 4 item 1,
+    # 2026-11-25), so the child reads a bench log: REVERSE_IT_DIR points at a scratch root
+    # with none, never the real one (a lock held by this session would pass the guard).
+    root = gi_paths.scratch("kvaser-bus-guard")
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
-    r = subprocess.run([sys.executable, "-B", "-c", CHILD_GUARD, SRC, HERE], env=env, capture_output=True,
-                       text=True, timeout=120)
-    line = [x for x in r.stdout.splitlines() if x.startswith("CHILD ")]
-    if r.returncode != 0 or not line:
-        check("guard (real): the child ran", False, (r.returncode, r.stdout[-300:], r.stderr[-600:]))
-        return
-    out = json.loads(line[0][6:])
-    for name, why in sorted(out["refused"].items()):
-        check("guard (real): a host test's %s, the real can and no lock held, refuses with BenchNotHeld" % name,
-              isinstance(why, str) and why.startswith("BenchNotHeld"), why)
-    check("guard (real): no tripwire on the real python-can, CANlib, canctl/sudo/ip or a CAN socket was reached",
-          out["trips"] == [], out["trips"])
-    check("guard (real): the child's tripwires stand: canctl, ip and a CAN socket trip, a harmless command runs",
-          [tuple(x) for x in out.get("selftest", [])] == [("canctl", "tripped"), ("ip", "tripped"),
-                                                          ("socket", "tripped"),
-                                                          ("a harmless command still runs", "ran")],
-          out.get("selftest"))
-    print("      guard (real): %s" % (out["refused"].get("kvaser_bus") or "")[:160])
+    env["REVERSE_IT_DIR"] = root
+    for mode, label, why_in in (("lock", "no bench log", "bench log could not be read"),
+                                ("nocore", "a refused core pin", "could not be used (gi_core_pin")):
+        r = subprocess.run([sys.executable, "-B", "-c", CHILD_GUARD, SRC, HERE, mode], env=env,
+                           capture_output=True, text=True, timeout=120)
+        line = [x for x in r.stdout.splitlines() if x.startswith("CHILD ")]
+        if r.returncode != 0 or not line:
+            check("guard (real, %s): the child ran" % label, False, (r.returncode, r.stdout[-300:], r.stderr[-600:]))
+            continue
+        out = json.loads(line[0][6:])
+        for name, why in sorted(out["refused"].items()):
+            check("guard (real): a host test's %s, the real can and %s, refuses with BenchNotHeld" % (name, label),
+                  isinstance(why, str) and why.startswith("BenchNotHeld") and why_in in why, why)
+        check("guard (real, %s): no tripwire on the real python-can, CANlib, canctl/sudo/ip or a CAN socket "
+              "was reached" % label, out["trips"] == [], out["trips"])
+        check("guard (real, %s): the child's tripwires stand: canctl, ip and a CAN socket trip, a harmless "
+              "command runs" % label,
+              [tuple(x) for x in out.get("selftest", [])] == [("canctl", "tripped"), ("ip", "tripped"),
+                                                              ("socket", "tripped"),
+                                                              ("a harmless command still runs", "ran")],
+              out.get("selftest"))
+        print("      guard (real, %s): %s" % (label, (out["refused"].get("kvaser_bus") or "")[:160]))
 
 
 # kvaser_bus loaded by file, in a process with no folder holding gi_paths on sys.path, as the chain
@@ -2028,6 +2041,12 @@ src = sys.argv[1]
 on_path = [p for p in sys.path if os.path.isfile(os.path.join(p or os.getcwd(), "gi_paths.py"))]
 asked = []
 vb = types.ModuleType("vtrux_bench")
+# the stand-in sits where the pinned core's would (port step 4 item 1): kvaser_bus loads
+# gi_core_pin by file too, and its use_bench keeps a vtrux_bench only from the pinned folder
+_cs = importlib.util.spec_from_file_location("_probe_core_pin", os.path.join(src, "gi_core_pin.py"))
+_cp = importlib.util.module_from_spec(_cs)
+_cs.loader.exec_module(_cp)
+vb.__file__ = os.path.join(_cp.check()["folder"], "vtrux_bench", "__init__.py")
 bl = types.ModuleType("vtrux_bench.bench_lock")
 def read_state(path):
     asked.append(path)
@@ -2046,6 +2065,7 @@ except Exception as e:
     out["holder"] = None
     out["error"] = "%s: %s" % (type(e).__name__, e)
 out["asked"] = asked
+out["core_pin"] = getattr(sys.modules.get("gi_core_pin"), "__file__", None)
 print("CHILD " + json.dumps(out))
 """
 
@@ -2067,6 +2087,9 @@ def by_file():
           out["holder"] == {"who": "planted"}, out.get("error") or out)
     check("by file: the log asked for is REVERSE_IT_DIR's firmware/bench-log.jsonl",
           out["asked"] == [want], (out["asked"], want))
+    check("by file: gi_core_pin was loaded by file from beside kvaser_bus (port step 4 item 1)",
+          out.get("core_pin") and os.path.realpath(out["core_pin"]) == os.path.realpath(os.path.join(SRC, "gi_core_pin.py")),
+          out.get("core_pin"))
 
 
 # ---------------------------------------------------------------- the scan
@@ -2311,9 +2334,12 @@ MUTANTS = [
     ("a free lock passes", "    if h is None:\n        raise", "    if h is None:\n        return h\n        raise"),
     ("any holder's role passes", '    if h.get("who") not in ROLES:\n', "    if False:\n"),
     ("any holder's pid passes", '    if h.get("pid") not in anc:\n', "    if False:\n"),
-    ("vtrux_bench missing reads as held by us",
-     '        raise BenchNotHeld("vtrux_bench is not importable',
-     '        return {"who": ROLES[0], "pid": os.getpid()}\n        raise BenchNotHeld("vtrux_bench is not importable'),
+    ("a refused core pin reads as held by us",
+     '        raise BenchNotHeld("the pinned core\'s vtrux_bench could not be used',
+     '        return {"who": ROLES[0], "pid": os.getpid()}\n'
+     '        raise BenchNotHeld("the pinned core\'s vtrux_bench could not be used'),
+    ("the core from PYTHONPATH, not the pin", "        _core_pin().use_bench()\n        from vtrux_bench import bench_lock",
+     "        from vtrux_bench import bench_lock"),
     ("_ancestors stops at this process", '        pid = int(stat.rsplit(")", 1)[1].split()[1])\n', "        break\n"),
     ("kvaser_bus applies the fixes after the open",
      '    fixes()\n    import can\n    b = can.Bus(interface="kvaser", **kw)\n',
@@ -2596,6 +2622,8 @@ def can_fail():
                 shutil.copy2(os.path.join(TOOLS, f), os.path.join(d, f))
             # gi_paths sits beside kvaser_bus, as in the tree (by_file loads it from there)
             shutil.copy2(os.path.join(HERE, "gi_paths.py"), os.path.join(d, "bench", "gi_paths.py"))
+            # and gi_core_pin, which it loads by file from beside it (port step 4 item 1)
+            shutil.copy2(os.path.join(HERE, "gi_core_pin.py"), os.path.join(d, "bench", "gi_core_pin.py"))
             with open(os.path.join(d, "bench", "kvaser_bus.py"), "w", encoding="utf-8", newline="") as fh:
                 fh.write(src if old is None else src.replace(old, new))
             env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}

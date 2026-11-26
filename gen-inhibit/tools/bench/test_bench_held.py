@@ -2,7 +2,8 @@
 """Tests for bench_held.py, on bench logs written in scratch/ by shared/bench's own
 bench_lock (init, take, release), so they are logs the real writer makes. And that the
 two tools that check the lock themselves ask bench_held, not bench-holder.md. No
-hardware. Needs the pinned core's shared/bench on PYTHONPATH, as bench_held does.
+hardware. The core is the checkout gen-inhibit pins, taken through gi_core_pin as
+bench_held takes it (port step 4 item 1, 2026-11-25; PYTHONPATH before).
 
     py -3.14 -B gen-inhibit/tools/bench/test_bench_held.py
 
@@ -18,6 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import gi_paths  # noqa: E402
 import bench_held as H  # noqa: E402
+H.core_pin().use_bench()
 from vtrux_bench import bench_lock as L  # noqa: E402
 
 fails = []
@@ -103,14 +105,25 @@ def main():
         else:
             os.environ["REVERSE_IT_DIR"] = old
 
-    # Without vtrux_bench the answer is "not ours", never an import error.
+    # The core is the checkout gen-inhibit pins (gi_core_pin; port step 4 item 1,
+    # 2026-11-25), so with no PYTHONPATH the log is still read.
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
-    r = subprocess.run([sys.executable, "-B", "-c",
-                        "import bench_held; ok, who = bench_held.held_by_us(%r); print(ok, who)"
-                        % os.path.join(d, "ours.jsonl")],
-                       cwd=HERE, env=env, capture_output=True, text=True)
-    check("no vtrux_bench -> not ours, with the reason",
-          r.returncode == 0 and r.stdout.startswith("False vtrux_bench is not importable"), r.stdout + r.stderr)
+    probe = ("import bench_held; ok, who = bench_held.held_by_us(%r); print(ok, who)"
+             % os.path.join(d, "ours.jsonl"))
+    r = subprocess.run([sys.executable, "-B", "-c", probe], cwd=HERE, env=env, capture_output=True, text=True)
+    check("no PYTHONPATH -> the pinned core reads the log: ours",
+          r.returncode == 0 and r.stdout.strip() == "True %s" % us, r.stdout + r.stderr)
+    # A pin gi_core_pin refuses is "not ours", with its reason, never an import error: a copy
+    # in a git repository of its own, which has no pin file.
+    lone = os.path.join(d, "lone")
+    os.makedirs(lone)
+    subprocess.run(["git", "init", "-q", lone], check=True)
+    for f in ("bench_held.py", "gi_paths.py", "gi_core_pin.py"):
+        shutil.copy(os.path.join(HERE, f), lone)
+    r = subprocess.run([sys.executable, "-B", "-c", probe], cwd=lone, env=env, capture_output=True, text=True)
+    check("a refused pin -> not ours, with gi_core_pin's reason",
+          r.returncode == 0 and r.stdout.startswith("False the pinned core could not be used (gi_core_pin)")
+          and "no pin file" in r.stdout, r.stdout + r.stderr)
 
     # The tools that check the lock themselves ask bench_held, and nothing reads the
     # frozen Holder line. Read as text: interlock_bench needs can and the host goldens.

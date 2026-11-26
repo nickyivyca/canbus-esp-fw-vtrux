@@ -2,8 +2,11 @@
 """Mutants of suite_gen_inhibit.py; test_suite_gen_inhibit.py must fail on each BY A
 CHECK. A crash is not a kill, and an edit that does not apply is an error.
 
-    PYTHONPATH=<core 2026.11.16.5>/shared/bench GI_BASELINE_DIR=<.../runs/baseline_e3d9437> \
-        py -3.14 -B test_suite_gen_inhibit_mutants.py
+    GI_BASELINE_DIR=<.../runs/baseline_e3d9437> python3.13 -B test_suite_gen_inhibit_mutants.py
+
+The core is the checkout firmware/shared_pins.json pins (bench/gi_core_pin.py; port step 4
+item 1, 2026-11-25): the clone gets this worktree's pin file and, beside its root, a link
+to that checkout.
 
 The mutants run in a shared clone of this repo at HEAD, made in the worktree's scratch/,
 so the copy sits where the suite does (gen-inhibit/tools/ since port step 0d) and
@@ -333,16 +336,20 @@ MUTANTS = [
     ("C2scan: not under the host's python", 'python=True, cwd="{reverse_it}", timeout_s=7200, cls="build",',
      'cwd="{reverse_it}", timeout_s=7200, cls="build",'),
     # wallclock_patterns (gen-inhibit reviewer, 2026-11-23: bench run 4b15's events named no
-    # other wall-clock test, the example's list being empty)
-    ("example: wallclock_patterns empty again",
-     '"wallclock_patterns": ["run_scenario\\\\.py", "vehicle_sim\\\\.py", "charger_sim\\\\.py",',
-     '"wallclock_patterns": [], "_old": ["run_scenario\\\\.py", "vehicle_sim\\\\.py", "charger_sim\\\\.py",',
+    # other wall-clock test, the example's list being empty). Since port step 4 item 1
+    # (2026-11-25) the example gives none and the core's default list is used.
+    ("example: wallclock_patterns empty again", '  "placement": {"slices"',
+     '  "wallclock_patterns": [],\n  "placement": {"slices"', EXAMPLE),
+    ("example: an explicit list without the Android emulator", '  "placement": {"slices"',
+     '  "wallclock_patterns": ["run_scenario\\\\.py", "bench_[a-z0-9_]+\\\\.py"],\n  "placement": {"slices"',
      EXAMPLE),
-    ("example: the Android emulator left out", ',\n                         "/emulator/qemu/[^/\\\\s]+/qemu-system-"]',
-     ']', EXAMPLE),
-    ("example: the emulator's pattern any qemu (Espressif's emulated-time QEMU too)",
-     '"/emulator/qemu/[^/\\\\s]+/qemu-system-"', '"qemu-system-"', EXAMPLE),
-    ("example: the interposer's scenario runner left out", '"run_scenario\\\\.py", ', '', EXAMPLE),
+    # the core from the pin, not PYTHONPATH (port step 4 item 1, 2026-11-25)
+    ("the record keeps no core pin", '"gi_tools": git_state(need(settings, "gi_tools")), "core": core_pin(),',
+     '"gi_tools": git_state(need(settings, "gi_tools")),'),
+    ("the record's core pin without the digest", 'for k in ("tag", "commit", "digest", "folder")}',
+     'for k in ("tag", "commit", "folder")}'),
+    ("example: the core on the host PYTHONPATH again", '"PYTHONPATH": "<interposer checkout>/charge-interposer"',
+     '"PYTHONPATH": "<core 2026.11.23.5>/shared/bench:<interposer checkout>/charge-interposer"', EXAMPLE),
     ("example: the CAN replay tooling's replayer left out",
      '"(^|[/\\\\s])can_(replayer|logger|gui)\\\\.py",', '"(^|[/\\\\s])can_(logger|gui)\\\\.py",', EXAMPLE),
     ("example: no IDF_TOOLS_PATH for C2scan", ',\n              "IDF_TOOLS_PATH": "<that install\'s tools folder>"', '',
@@ -416,6 +423,14 @@ def clone(base):
     shutil.rmtree(os.path.join(d, "bench"))
     shutil.copytree(os.path.join(HERE, "bench"), os.path.join(d, "bench"),
                     ignore=shutil.ignore_patterns("__pycache__"))
+    # The core (port step 4 item 1, 2026-11-25): the pin file as this worktree has it, and
+    # the pinned checkout beside the clone's root, as a link to the one this worktree's pin
+    # names and gi_core_pin has checked, so the copy's gi_core_pin finds and checks it.
+    pins = os.path.join("gen-inhibit", "firmware", "shared_pins.json")
+    shutil.copy(os.path.join(wt, pins), os.path.join(repo, pins))
+    import gi_core_pin
+    c = gi_core_pin.check()
+    os.symlink(os.path.dirname(os.path.dirname(c["folder"])), os.path.join(base, "shared-" + c["tag"]))
     return d
 
 

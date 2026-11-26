@@ -15,8 +15,9 @@ once through the backend, with the settings' profile and interface, and does not
 read); its failure is kept, masked. Without GI_OTA_SETTINGS the tool refuses, exit 2, no
 record. Until 2026-11-16 this read netsh and nmcli output itself.
 
-  PYTHONPATH=<core 2026.11.16.5>/shared/bench \
   python3.13 gen-inhibit/tools/bench/test_page_only_baseline.py [--mutants]
+
+  (the core: the checkout gen-inhibit pins, through gi_core_pin; port step 4 item 1)
 
 --mutants: each mutant of page_only_baseline.py's WLAN read and rejoin is a copy in this run's
 scratch/ folder with one edit, run through GI_PAGE_ONLY_DIR; a check must fail on each,

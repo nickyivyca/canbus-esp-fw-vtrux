@@ -20,7 +20,7 @@ Steps (--steps, default all, in this order):
            ota_failpaths_bench.py, one kind each (W13, W12's bench consequence, W14 on every
            kind's ACKs, and `full` a second end-to-end OTA by a plain client).
 
-The bench lock must be the gen-inhibit tester's (bench_held.py; vtrux_bench on PYTHONPATH);
+The bench lock must be the gen-inhibit tester's (bench_held.py; the pinned core through gi_core_pin);
 refused otherwise. The WiCAN's SSID is read from bench-holder.md as the suite reads it, set
 in the children's environment only, and masked as <WICAN_SSID> in every file written.
 The settings are the chain runner's settings file (its ota block, for gi_wifi/gi_ota).

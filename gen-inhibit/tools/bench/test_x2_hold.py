@@ -14,8 +14,8 @@ The port (DEVICES-SPEC S1; gen-inhibit reviewer, 2026-11-12): each run gets a ma
 of serial devices (_fake_serial.py) and GI_X2_DEVICE, so x2_hold resolves the X2's by-id
 link through gi_serial and the core's serial_dev, and esptool is handed that link; the
 record keeps the port and serial_device. GI_X2_DEVICE unset, a tty name, or IDs that match
-no device refuse (exit 2), with no record and no board command. Needs the pinned core's
-shared/bench on PYTHONPATH (2026.11.11.6 or later), and Linux.
+no device refuse (exit 2), with no record and no board command. Needs the pinned core
+(the checkout gen-inhibit pins, through gi_core_pin; port step 4 item 1), and Linux.
 """
 import json
 import os
