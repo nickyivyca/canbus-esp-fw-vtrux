@@ -32,7 +32,9 @@ taken for the owner), the host and the platform.
                        (remove_remote), a LEFTOVER line if it stays.
   remove(path)         the folder (or file, or link) and its owner file. A
                        read-only entry is made writable (on POSIX its folder
-                       too) and tried again, then once more after 0.2 s; a
+                       too, while that folder is inside path: nothing
+                       outside path changes mode, and a link is never
+                       chmod-ed) and tried again, then once more after 0.2 s; a
                        \\\\?\\ path on Windows, so a path past 260 characters
                        is no obstacle; the whole folder is tried again after
                        waits of 0.05 s doubling to 1.6 s (about 3 s), for a
@@ -235,30 +237,41 @@ def _is_link(p):
     return os.path.islink(p) or getattr(os.path, "isjunction", lambda _p: False)(p)
 
 
-def _writable(p):
-    """Clear the read-only flag on p and, on POSIX, make its folder writable."""
-    try:
-        mode = stat.S_IREAD | stat.S_IWRITE
-        if os.path.isdir(p) and not _is_link(p):
-            mode |= stat.S_IEXEC
-        os.chmod(p, mode)
-    except OSError:
-        pass
+def _inside(p, top):
+    """p is top or below it (both in remove()'s long form)."""
+    top = top.rstrip("/\\")
+    return p == top or p.startswith(top + os.sep)
+
+
+def _writable(p, top):
+    """Clear the read-only flag on p and, on POSIX, make its folder writable,
+    but only while that folder is inside top, the path remove() was given:
+    nothing outside it changes mode (gen-inhibit's remove_tree, Linux fix of
+    2026-11-12). A link is never chmod-ed, since chmod follows it to its
+    target."""
+    if not _is_link(p):
+        try:
+            mode = stat.S_IREAD | stat.S_IWRITE
+            if os.path.isdir(p):
+                mode |= stat.S_IEXEC
+            os.chmod(p, mode)
+        except OSError:
+            pass
     parent = os.path.dirname(p)
-    if parent and os.name != "nt":
+    if parent and os.name != "nt" and _inside(parent, top):
         try:
             os.chmod(parent, stat.S_IRWXU)
         except OSError:
             pass
 
 
-def _handler(failed):
+def _handler(failed, top):
     def again(fn, p, exc):
         exc = exc[1] if isinstance(exc, tuple) else exc
         if fn in (os.open, os.scandir, os.lstat, os.stat, os.path.islink):
             failed.append((p, exc))
             return
-        _writable(p)
+        _writable(p, top)
         for wait in (0, 0.2):
             time.sleep(wait)
             try:
@@ -313,17 +326,17 @@ def remove(path, quiet=False, out=None):
             for _ in range(2):
                 failed = []
                 try:
-                    _rmtree(lp, _handler(failed))
+                    _rmtree(lp, _handler(failed, lp))
                 except OSError as e:
                     failed.append((lp, e))
                 if not os.path.lexists(lp) or not failed:
                     break
                 for p, _e in failed:
-                    _writable(p)
+                    _writable(p, lp)
             if not os.path.lexists(lp):
                 break
     else:
-        _writable(lp)
+        _writable(lp, lp)
         try:
             os.unlink(lp)
         except OSError as e:
