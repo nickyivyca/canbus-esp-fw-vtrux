@@ -37,8 +37,9 @@ MUTANTS = [
     ("the tree digest skips added names", '            lines.append("%s %s" % (r, sha256_file(p)))',
      '            lines.append(sha256_file(p))\n            lines.sort()'),
     # scratch folders (harness-defects row, 2026-10-24)
-    ("scratch has no per-run part", '        d = os.path.join(d, "%s_%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid()))\n',
-     '        d = d\n'),
+    # since port step 4 item 3 the per-run part is shared/bench scratch.make's
+    ("scratch has no per-run part", '    d = scratch_core().make(d, time.strftime("%Y%m%dT%H%M%S"), out=_say(None))\n',
+     '    os.makedirs(d, exist_ok=True)\n'),
     ("scratch in the system temp folder",
      '    d = os.path.join(worktree_of(start or HERE), "scratch", "gen-inhibit-tests", name)',
      '    d = os.path.join(os.environ.get("TEMP") or "/tmp", "gen-inhibit-tests", name)'),
@@ -98,6 +99,9 @@ def copy_tree(base, name, text):
     os.makedirs(d)
     open(os.path.join(d, TARGET), "w", encoding="utf-8", newline="").write(text)
     shutil.copy(os.path.join(HERE, "pins.json"), d)
+    # in a worktree gi_paths takes the shared scratch helper through gi_core_pin.py beside it
+    # (port step 4 item 3)
+    shutil.copy(os.path.join(HERE, "gi_core_pin.py"), d)
     open(os.path.join(os.path.dirname(d), "suite_gen_inhibit.py"), "w").close()
     return d
 

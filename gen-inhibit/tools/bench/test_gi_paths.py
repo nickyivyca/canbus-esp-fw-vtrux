@@ -279,10 +279,11 @@ def main():
     check("a path with no .git above it is refused",
           lambda: raises(lambda: gp.worktree_of(os.path.abspath(os.sep)), "no git worktree"))
     s1 = gp.scratch("t", start=tool)
-    check("scratch is <worktree>/scratch/gen-inhibit-tests/<name>/<time>_<pid>, and made",
+    # The folder name is shared/bench scratch.make's <name>-<pid>-<hex6> since port step 4 item 3.
+    check("scratch is <worktree>/scratch/gen-inhibit-tests/<name>/<time>-<pid>-<hex6>, and made",
           lambda: os.path.isdir(s1) and os.path.normcase(os.path.dirname(s1)) == os.path.normcase(
               os.path.join(wt, "scratch", "gen-inhibit-tests", "t"))
-          and re.fullmatch(r"\d{8}T\d{6}_%d" % os.getpid(), os.path.basename(s1)), s1)
+          and re.fullmatch(r"\d{8}T\d{6}-%d-[0-9a-f]{6}" % os.getpid(), os.path.basename(s1)), s1)
     check("scratch without run is the name's own folder",
           lambda: os.path.normcase(gp.scratch("t", run=False, start=tool))
           == os.path.normcase(os.path.join(wt, "scratch", "gen-inhibit-tests", "t")))

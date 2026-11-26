@@ -24,7 +24,7 @@ import gi_paths  # noqa: E402
 
 TEST = "test_bench_build.py"
 TARGET = "bench_build.py"
-BENCH_FILES = (TARGET, TEST, "gi_paths.py")
+BENCH_FILES = (TARGET, TEST, "gi_paths.py", "gi_core_pin.py")   # gi_paths' helper loader (port step 4 item 3)
 PROJECT_FILES = ("vtrux_tools.py",)
 MUTANTS = [
     ("a refusal is ignored", "    if rc != 0:\n        print(\"bench_build: check-env refused",
