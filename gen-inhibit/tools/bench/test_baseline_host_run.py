@@ -61,6 +61,14 @@ for byte, at shared/diag/, and nothing else there; the copy's own diag_host.py f
 the log names the tag and diag_pack.c's hash before the first step. The 1a commit ships
 none.
 
+The shared scratch helper (port step 4 item 3; the gen-inhibit reviewer's ruling,
+2026-11-26): a commit whose gi_paths names gi_scratch_core.json (DECODE_COMMIT) also ships
+tools/bench/gi_scratch_core.py, byte for byte shared/bench's vtrux_bench/scratch.py at the
+pin its own shared_pins.json gives, and gi_scratch_core.json, which names that pin and the
+file's sha256; the copy's gi_paths, with no git, removes a folder through it. A commit
+whose gi_paths has its own removal (GI_TEST_OLD_GP_COMMIT, default 4c3afb4d) ships
+gi_paths.py and neither file.
+
     python3.13 -B gen-inhibit/tools/bench/test_baseline_host_run.py
     python3.13 -B gen-inhibit/tools/bench/test_baseline_host_run.py --mutants
 
@@ -75,6 +83,7 @@ python3.13 by default, not Windows' py -3.14. Before these, 52 checks and the co
 failed on madhouse-debian. Gen-inhibit tester.
 """
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -310,6 +319,58 @@ def diag_checks(tmp, s4, names):
           (s4.find("# shared/diag: "), s4.find("\nstep make ")))
 
 
+STAGED = ("tools/bench/gi_scratch_core.py", "tools/bench/gi_scratch_core.json")
+OLD_GP_COMMIT = os.environ.get("GI_TEST_OLD_GP_COMMIT", "4c3afb4d")   # gi_paths with its own removal
+
+
+def scratch_core_checks(tmp, names, bench):
+    """The shared scratch helper staged beside gi_paths (port step 4 item 3; the gen-inhibit
+    reviewer's ruling, 2026-11-26): a commit whose gi_paths names gi_scratch_core.json
+    (DECODE_COMMIT) ships gi_scratch_core.py, byte for byte shared/bench's
+    vtrux_bench/scratch.py at the pin its own shared_pins.json gives, and a record whose
+    sha256 is that file's; the copy's gi_paths then removes through it, with no git (a
+    stand-in: IN_WORKTREE=False, as the copy is under this worktree's scratch/)."""
+    gp_src = git_show("%s:gen-inhibit/tools/bench/gi_paths.py" % DECODE_COMMIT) or b""
+    if b"gi_scratch_core.json" not in gp_src:
+        check("a commit whose gi_paths takes the shared scratch helper: %s's does (set GI_TEST_DECODE_COMMIT)"
+              % DECODE_COMMIT, False, DECODE_COMMIT)
+        return
+    try:
+        pin = json.loads(git_show("%s:gen-inhibit/firmware/shared_pins.json" % DECODE_COMMIT))["shared/bench"]
+    except (TypeError, ValueError, KeyError) as e:
+        pin = {"tag": None, "commit": None}
+        check("%s pins shared/bench" % DECODE_COMMIT, False, e)
+    want = git_show("%s:shared/bench/vtrux_bench/scratch.py" % pin["commit"]) if pin["commit"] else None
+    got = tar_member(tmp, "decode", STAGED[0])
+    check("a commit whose gi_paths takes the shared scratch helper (%s): the copy holds %s, byte for byte "
+          "shared/bench's vtrux_bench/scratch.py at its pin (%s)" % (DECODE_COMMIT, STAGED[0], pin["tag"]),
+          want is not None and got == want, (pin, got is None))
+    try:
+        rec = json.loads(tar_member(tmp, "decode", STAGED[1]) or b"null")
+    except ValueError as e:
+        rec = repr(e)
+    check("... and its record names the pin and the file's sha256",
+          isinstance(rec, dict) and rec.get("tag") == pin["tag"] and rec.get("commit") == pin["commit"]
+          and rec.get("sha256") == hashlib.sha256(want or b"").hexdigest() and rec.get("file") == "vtrux_bench/scratch.py",
+          rec)
+    for f in STAGED:
+        b = tar_member(tmp, "decode", f)
+        if b is not None:
+            with open(os.path.join(bench, os.path.basename(f)), "wb") as fh:
+                fh.write(b)
+    gone = os.path.join(tmp, "rm-through-staged")
+    os.makedirs(os.path.join(gone, "sub"))
+    e_imp = {k: v for k, v in os.environ.items() if k not in ("GI_FW_TOOLS", "GEN_INHIBIT_REPO", "VTRUX_DATA",
+                                                             "REVERSE_IT_ROOT", "PYTHONPATH")}
+    code = ("import os, sys, gi_paths; gi_paths.IN_WORKTREE = False; S = gi_paths.scratch_core(); "
+            "print(os.path.basename(S.__file__)); print(gi_paths.remove_tree(sys.argv[1]))")
+    r = subprocess.run([sys.executable, "-B", "-c", code, gone], cwd=bench, capture_output=True, text=True,
+                       env=dict(e_imp, PYTHONDONTWRITEBYTECODE="1"), timeout=60)
+    check("... and the copy's gi_paths, with no git, removes a folder through the staged file",
+          r.returncode == 0 and r.stdout.split() == ["gi_scratch_core.py", "True"] and not os.path.lexists(gone),
+          (r.returncode, r.stdout[-200:], r.stderr[-300:]))
+
+
 def checks(script_dir):
     want_sha = hashlib.sha256(CAPTURE_BODY).hexdigest()
     with tempfile.TemporaryDirectory(prefix="gi-host-run-", dir=gi_paths.scratch("tmp", run=False)) as tmp:
@@ -377,6 +438,7 @@ def checks(script_dir):
                                capture_output=True, text=True, env=e_imp, timeout=60)
         check("... and canre_pin imports from the copy's tools/bench/ alone",
               r_imp.returncode == 0 and r_imp.stdout.strip() == "imported", (r_imp.returncode, r_imp.stderr[-300:]))
+        scratch_core_checks(tmp, names, bench)
         check("the canre_install step comes before replays_regen and the long-arm fixture",
               0 <= s4.find("step canre_install") < s4.find("step replays_regen") < s4.find("step longarm_fixture"),
               (s4.find("step canre_install"), s4.find("step replays_regen")))
@@ -425,6 +487,11 @@ def checks(script_dir):
               [ln for ln in s8.splitlines() if ln.startswith("sha256sum")])
         check("a commit before batch 2 (%s, no test/diag_host/): no shared/diag shipped" % ONEA_COMMIT,
               not any(n.startswith("shared/diag") for n in names8), [n for n in names8 if n.startswith("shared/diag")][:3])
+        rcg, sg, outg = remote_script(script_dir, tmp, tag="oldgp", commit=OLD_GP_COMMIT)
+        namesg = archive_names(tmp, "oldgp")
+        check("a commit whose gi_paths has its own removal (%s): runs to the end, ships gi_paths.py and no staged "
+              "scratch helper" % OLD_GP_COMMIT, rcg == 0 and sg and "tools/bench/gi_paths.py" in namesg
+              and not any(n in STAGED for n in namesg), (rcg, outg[-300:], [n for n in namesg if n.startswith("tools/")]))
         rc7, s7, out7 = remote_script(script_dir, tmp, tag="pre1a", commit=PRE1A_COMMIT)
         names7 = archive_names(tmp, "pre1a")
         out7w, _ = guarded(s7, "WICANDIR", empty, home, ['echo "WICANDIR IS [$WICANDIR]"'])
@@ -579,6 +646,12 @@ MUTANTS = [
      '  git -C "$TOP" show "$C:$BENCH/canre_pin.py" > "$STAGE/$BENCH_AT/canre_pin.py" || exit 2\n', ""),
     ("gi_paths.py not shipped beside canre_pin.py (2026-10-31)",
      '    git -C "$TOP" show "$C:$BENCH/gi_paths.py" > "$STAGE/$BENCH_AT/gi_paths.py" || exit 2\n', ""),
+    # the shared scratch helper staged beside gi_paths (port step 4 item 3, 2026-11-26)
+    ("the shared scratch helper not staged",
+     '      $LOCAL_PY -B "$TOP/gen-inhibit/tools/bench/gi_paths.py" --stage-scratch "$STAGE/$BENCH_AT" --at "$C" >/dev/null || exit 2\n',
+     ""),
+    ("the shared scratch helper staged for every commit with gi_paths",
+     'if git -C "$TOP" show "$C:$BENCH/gi_paths.py" | grep -q gi_scratch_core.json; then', "if true; then"),
     ("the canre_install step dropped",
      "if [ $CANRE = 1 ]; then step canre_install $PY -B $BENCH_AT/canre_pin.py install; fi\n", ""),
     ("the canre_install step for every commit", "if [ $CANRE = 1 ]; then step canre_install",

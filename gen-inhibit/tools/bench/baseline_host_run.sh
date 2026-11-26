@@ -105,6 +105,15 @@ if tree "$BENCH/canre_pin.py"; then
   git -C "$TOP" show "$C:$BENCH/canre_pin.py" > "$STAGE/$BENCH_AT/canre_pin.py" || exit 2
   if tree "$BENCH/gi_paths.py"; then
     git -C "$TOP" show "$C:$BENCH/gi_paths.py" > "$STAGE/$BENCH_AT/gi_paths.py" || exit 2
+    # THE SHARED SCRATCH HELPER BESIDE IT (port step 4 item 3; gen-inhibit reviewer's ruling,
+    # 2026-11-26). A commit whose gi_paths takes its scratch helper from shared/bench (it
+    # names gi_scratch_core.json) loads it, in a copy with no git, only from the staged
+    # gi_scratch_core.py whose sha256 its record gives. So this tree's gi_paths stages both,
+    # from git at the shared/bench pin of C's own shared_pins.json. An earlier commit has its
+    # own removal and gets neither.
+    if git -C "$TOP" show "$C:$BENCH/gi_paths.py" | grep -q gi_scratch_core.json; then
+      $LOCAL_PY -B "$TOP/gen-inhibit/tools/bench/gi_paths.py" --stage-scratch "$STAGE/$BENCH_AT" --at "$C" >/dev/null || exit 2
+    fi
   fi
   CANRE=1
 fi
