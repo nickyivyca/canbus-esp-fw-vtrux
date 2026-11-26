@@ -140,8 +140,10 @@ A project's bench and test tooling that uses a pinned checkout checks it
 the same way as the release build checks the tooling (R23's last sentence),
 with `vtrux_build/pin.py`. Every entry of `shared_pins.json` is a pin of the
 same form, keyed by the component's folder below `shared/`, written with
-`/`: `"shared/<folder>"`, or deeper, as `"shared/boards/<board>"`. Each pin is checked in the checkout of its own tag, so two
-components pinned at two tags are checked in two checkouts.
+`/`: `"shared/<folder>"`, or deeper, as `"shared/boards/<board>"`. Each pin is
+checked in the checkout of its own tag, `../shared-<tag>/` beside the
+worktree's root, as in "Running it", so two components pinned at two tags
+are checked in two checkouts.
 
     python -B -m vtrux_build pin check COMPONENT... [--project DIR]
     python -B -m vtrux_build pin where COMPONENT [--project DIR]
@@ -156,7 +158,8 @@ the project's pinned version. Then:
 - `where` checks one component's pin and prints its folder alone on the
   line, for a script to use;
 - `entry` prints, as JSON `{component: entry}`, the pin that the checkout
-  `../shared-<TAG>/` gives the component, for a pin move. Its commit is the
+  `../shared-<TAG>/` beside the worktree's root gives the component, for a
+  pin move. Its commit is the
   checkout's HEAD, which the tag must mark. Its digest is R7 of the
   component at that commit, from git's objects. It writes nothing, and does
   not compare the checkout's disk with the commit: the pin it gives is
@@ -167,8 +170,8 @@ wrong number of names. A component's pin is refused, in this order, unless:
 - the name is a folder below `shared/`, and the file has its entry, with a tag
   that is not a commit id and can name a folder, a 40-hex commit and a
   64-hex digest (R16);
-- the checkout `../shared-<tag>/` exists; if not, the refusal prints the
-  command that creates it;
+- the checkout `../shared-<tag>/` beside the worktree's root exists; if
+  not, the refusal prints the command that creates it;
 - the checkout's HEAD is the pin's commit, and the pin's tag is a tag there
   that marks it;
 - the commit has the component's folder, and the pin's digest is R7 of it,
@@ -181,8 +184,11 @@ wrong number of names. A component's pin is refused, in this order, unless:
 Only the named component's folder is checked: the rest of the checkout may
 differ from the commit. In Python, `pin.check_component(project_root,
 component)` makes the same check and returns `{"tag", "commit", "digest",
-"dirty", "folder"}`; it does not check the tooling it runs in. `pin.entry(
-project_root, tag, component)` gives the entry. Both raise `PinError`.
+"dirty", "folder"}`; it does not check the tooling it runs in. A caller that
+imports check_component() must first call pin.check(project_root,
+tools_root), with the shared/tools folder it loaded pin.py from, to get the
+same guarantee as the command. `pin.entry(project_root, tag, component)`
+gives the entry. Both raise `PinError`.
 
 ## The IDF environment check (R32)
 
