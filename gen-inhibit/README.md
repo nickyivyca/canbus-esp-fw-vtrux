@@ -101,8 +101,9 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   tooling (`project`, `shared_components`).
 - `gen-inhibit/firmware/shared_pins.json`, the project's pins of shared
   tooling, owned per entry (reviewer, 2026-10-25): the `shared/tools` entry
-  is the implementor's, and a `shared/bench` entry, when the bench toolkit's
-  pin moves in, is the tester's. A pin moves only on a batch from the
+  is the implementor's, and the `shared/bench` entry is the tester's, checked
+  by `gen-inhibit/tools/bench/gi_core_pin.py` (port step 4 item 1,
+  2026-11-25). A pin moves only on a batch from the
   reviewer, since moving it is also the decision to re-test (port plan goal
   12).
 

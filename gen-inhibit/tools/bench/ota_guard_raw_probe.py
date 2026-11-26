@@ -43,8 +43,12 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, gi_paths.fw_tools())
-import bench_ota_guard as G       # noqa: E402
-import bench_flash as BF          # noqa: E402
+import bench_ota_guard as G       # noqa: E402  its HTTP helpers are the pinned core's
+# bench_flash.py's image and verdict code, moved unchanged to the pinned shared/bench's
+# vtrux_bench.run.ota (FLASH-SPEC; port step 4 item 2, 2026-11-25). bench_ota_guard has
+# already put the pinned checkout first on sys.path (gi_core_pin), or refused.
+G.core_pin().use_bench()
+from vtrux_bench.run import ota as BF   # noqa: E402
 
 HOST = "192.168.80.1"
 PORT = 80

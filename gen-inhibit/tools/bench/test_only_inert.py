@@ -24,7 +24,7 @@ Probes, by the table's "observe":
                  bytes 2-3 are AB 7E or AB 7F (the probe's trial tag) in the 3 s after;
   page_key:<k>   under a replay, arm mode 3 at 5 s, read /gen_inhibit at 12 s while
                  live, and look for key <k> at any depth (page_has_key); disarm at 14 s;
-  rollback       OTA_HEALTH_FAULT_INJECT: the image must be OTA'd first (bench_flash.py);
+  rollback       OTA_HEALTH_FAULT_INJECT: the image must be OTA'd first (bench/gi_ota.py);
                  then 70 s with no request, and the build and uptime are read again.
   probe_json:<n> GI_INSTRUMENT_ECC (2026-10-20): GET each path in the table and read the
                  answer as JSON; the effect is there when its "probe" is <n>. A status

@@ -17,8 +17,10 @@ text kind the harness has (.sh, .ps1, .c, .cpp, .h too), and a MAC written bare.
      machine table before a push.
   2. Positive control: each pattern must match a planted sample, so a scan
      that finds nothing is a scan that could have found something.
-  3. bench_flash.py has no committed SSID, so with neither --ssid nor
-     $GI_WICAN_SSID it must refuse before touching the WiFi.
+  3. The OTA has no committed SSID: bench/gi_ota.py (the pinned core's flasher; it
+     replaced bench_flash.py at port step 4 item 2, 2026-11-25), with the variable
+     settings.ota.ssid_env names unset, or with no GI_OTA_SETTINGS, must refuse (exit 2)
+     before touching the Wi-Fi; and bench_flash.py is gone.
   4. The guards' runs folder outside reverse-it.
   5. The scan's reach: in a temporary tree laid out like this folder, a bare MAC in a
      bench/ .py, a home path in a bench/ .sh and in a .ps1, a MAC in x2_jammer/src/'s
@@ -186,29 +188,50 @@ def main():
         bad += not ok
         print("  [%s] %s" % ("PASS" if ok else "FAIL", label))
 
-    print("3. bench_flash.py without an SSID")
-    env = {k: v for k, v in os.environ.items() if k != "GI_WICAN_SSID"}
-    r = subprocess.run([sys.executable, os.path.join(HERE, "bench_flash.py"), "--status"],
-                       capture_output=True, text=True, env=env, timeout=60)
-    ok = (r.returncode == 2 and "GI_WICAN_SSID" in r.stderr
-          and "preflight" not in r.stdout)
+    # gi_ota.py, the harness's OTA through the pinned core's flasher, since bench_flash.py
+    # retired (port step 4 item 2, 2026-11-25). The rule is the same: no SSID is committed,
+    # so with the variable settings.ota.ssid_env names unset, and with no GI_OTA_SETTINGS at
+    # all, it refuses (exit 2) before any Wi-Fi step or upload. From the scanned tree's bench/.
+    print("3. the OTA (gi_ota.py) without an SSID")
+    gi_ota = os.path.join(root, "bench", "gi_ota.py")
+    ota_block = ('{"host": "192.168.80.1", "iface": "wlan0", "profile": "made-up", '
+                 '"ssid_env": "GI_WICAN_SSID", "wifi": "system"}')
+    no_ssid = {k: v for k, v in os.environ.items() if k not in ("GI_WICAN_SSID", "GI_OTA_SETTINGS")}
+    for label, env, says in (("ssid_env's variable unset", dict(no_ssid, GI_OTA_SETTINGS=ota_block),
+                              "GI_WICAN_SSID, named by settings.ota.ssid_env, is unset"),
+                             ("no GI_OTA_SETTINGS", no_ssid, "GI_OTA_SETTINGS is not set")):
+        try:
+            r = subprocess.run([sys.executable, "-B", gi_ota, "--bin", os.path.join(root, "no-such.bin"),
+                                "--record", os.path.join(root, "no-such-record.json")],
+                               capture_output=True, text=True, env=env, timeout=60)
+            rc, out = r.returncode, r.stdout + r.stderr
+        except (OSError, subprocess.SubprocessError) as e:
+            rc, out = None, "%s: %s" % (type(e).__name__, e)
+        ok = (rc == 2 and "REFUSED" in out and says in out and "nothing sent" in out
+              and "posting" not in out and "joined" not in out
+              and not os.path.exists(os.path.join(root, "no-such-record.json")))
+        bad += not ok
+        print("  [%s] %s: refused before the Wi-Fi (rc=%s): %s" % (
+            "PASS" if ok else "FAIL", label, rc, (out.strip().splitlines() or ["(no output)"])[-1]))
+    ok = not os.path.exists(os.path.join(root, "bench_flash.py"))
     bad += not ok
-    print("  [%s] refuses before the WiFi (rc=%d): %s" % (
-        "PASS" if ok else "FAIL", r.returncode,
-        (r.stderr.strip().splitlines() or ["(no stderr)"])[-1]))
+    print("  [%s] bench_flash.py is gone from the scanned folder" % ("PASS" if ok else "FAIL"))
 
+    # bench_ota_guard's runs_dir is the pinned core's wican_http.runs_dir since port step 4
+    # item 2, and its legacy folder that module's _LEGACY_RUNS
     print("4. the guards' runs folder outside reverse-it")
     sys.path.insert(0, HERE)
     import bench_ota_guard as g
-    saved_env, saved_legacy = os.environ.pop(g.RUNS_ENV, None), g._LEGACY_RUNS
-    g._LEGACY_RUNS = os.path.join(HERE, "no-such-runs-folder")
+    w = getattr(g, "_WH", g)
+    saved_env, saved_legacy = os.environ.pop(g.RUNS_ENV, None), w._LEGACY_RUNS
+    w._LEGACY_RUNS = os.path.join(HERE, "no-such-runs-folder")
     try:
         g.runs_dir()
         ok, why = False, "returned a folder"
     except SystemExit as e:
         ok, why = g.RUNS_ENV in str(e), str(e)
     finally:
-        g._LEGACY_RUNS = saved_legacy
+        w._LEGACY_RUNS = saved_legacy
         if saved_env is not None:
             os.environ[g.RUNS_ENV] = saved_env
     bad += not ok

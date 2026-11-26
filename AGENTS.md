@@ -96,10 +96,15 @@ from tag `2026.11.17.3`. Python run from a checkout needs no `-B` where its
 committed `.gitignore` lists bytecode, as `shared/main`'s root one does from
 tag `2026.11.17.3`. Don't edit or add files in a checkout.
 
-**Until gen-inhibit's pin checks follow R23,** they hash the files on disk,
-so a stray write, such as a `__pycache__`, changes the digest and the check
-refuses. A checkout of a tag gen-inhibit pins is made read-only when it is
-made: `chmod -R a-w ../shared-<tag>/shared`, leaving the checkout's root and
+**gen-inhibit's shared/bench pin follows R23** from port step 4 item 1
+(2026-11-25). `gen-inhibit/tools/bench/gi_core_pin.py` checks it with the
+pinned commit's own `pin.py`, and the chain runner starts through it.
+**gen-inhibit's shared/tools pin does not follow R23 yet.** Until it moves to
+a tag with R23's check (`2026.11.17.3` or later), `vtrux_tools.py`'s check
+hashes the files on disk. So a stray write, such as a `__pycache__`, changes
+the digest and the check refuses. A checkout of a tag gen-inhibit pins is
+made read-only when it is made: `chmod -R a-w ../shared-<tag>/shared`,
+leaving the checkout's root and
 its `.git` file writable. Python run from such a checkout, or with one on
 `PYTHONPATH`, runs with `-B` or `PYTHONDONTWRITEBYTECODE=1`, children
 included; on Windows that is the only guard, since a read-only flag does
