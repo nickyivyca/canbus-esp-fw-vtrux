@@ -8,6 +8,11 @@
     python -B -m vtrux_build image BIN...     what the image library reads
                                               from each .bin, as JSON
     python -B -m vtrux_build digest DIR...    the R7 digest of each folder
+    python -B -m vtrux_build pin check COMPONENT... [--project DIR]
+    python -B -m vtrux_build pin where COMPONENT [--project DIR]
+    python -B -m vtrux_build pin entry TAG COMPONENT [--project DIR]
+                                              pins on shared components
+                                              (R23; pin.main)
 
 Exit 0 on success, 1 on a refusal or an unreadable input, 2 on a usage
 error.
@@ -17,7 +22,7 @@ import argparse
 import json
 import sys
 
-from . import devbuild, release
+from . import devbuild, pin, release
 from .digest import component_digest
 from .image import AppImage, ImageError
 
@@ -69,6 +74,14 @@ def main(argv=None):
     i.add_argument("bins", nargs="+")
     d = sub.add_parser("digest", help="R7 component digests")
     d.add_argument("dirs", nargs="+")
+    p = sub.add_parser("pin", help="pins on shared components (R23)")
+    p.add_argument("action", choices=("check", "where", "entry"))
+    p.add_argument("names", nargs="*", metavar="NAME",
+                   help="check: COMPONENT...; where: COMPONENT; "
+                        "entry: TAG COMPONENT")
+    p.add_argument("--project", default=".",
+                   help="the project root, which holds shared_pins.json "
+                        "(default: here)")
     args = ap.parse_args(argv)
     if args.cmd == "release":
         return release.main(args)
@@ -78,6 +91,8 @@ def main(argv=None):
         return devbuild.check_env_main(args)
     if args.cmd == "image":
         return _image(args)
+    if args.cmd == "pin":
+        return pin.main(args)
     return _digest(args)
 
 
