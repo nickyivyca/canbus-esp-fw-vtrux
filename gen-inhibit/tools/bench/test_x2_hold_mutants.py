@@ -6,8 +6,9 @@ edit that does not apply is an error.
     python3.13 -B gen-inhibit/tools/bench/test_x2_hold_mutants.py
 
 Each mutant is a copy of x2_hold.py with one edit, in this run's scratch folder, beside
-copies of the modules it loads from its own folder (gi_paths, gi_esptool,
-x2_hold_inputs); the test runs it through X2_HOLD_DIR. The unmutated copy runs first, as
+copies of the modules it loads from its own folder (gi_paths, gi_esptool, gi_serial,
+x2_hold_inputs, and gi_core_pin, which gi_serial loads from beside itself since port step
+4 item 1); the test runs it through X2_HOLD_DIR. The unmutated copy runs first, as
 the control: if it fails, no mutant is judged and the run exits 1. Gen-inhibit tester,
 2026-11-11.
 """
@@ -22,7 +23,7 @@ import gi_paths  # noqa: E402  scratch/ folders
 
 SRC = "x2_hold.py"
 TEST = "test_x2_hold.py"
-BESIDE = ("gi_paths.py", "gi_esptool.py", "gi_serial.py", "x2_hold_inputs.py")
+BESIDE = ("gi_paths.py", "gi_esptool.py", "gi_serial.py", "x2_hold_inputs.py", "gi_core_pin.py")
 MUTANTS = [
     ("pins and hold: the dashed read-mem", '"read_mem", "0x%08x" % addr)', '"read-mem", "0x%08x" % addr)'),
     ("release: the dashed read-mem", '"hard_reset", "read_mem"', '"hard_reset", "read-mem"'),

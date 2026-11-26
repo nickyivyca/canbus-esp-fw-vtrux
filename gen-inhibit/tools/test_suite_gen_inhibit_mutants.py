@@ -350,8 +350,9 @@ MUTANTS = [
      'for k in ("tag", "commit", "folder")}'),
     ("example: the core on the host PYTHONPATH again", '"PYTHONPATH": "<interposer checkout>/charge-interposer"',
      '"PYTHONPATH": "<core 2026.11.23.5>/shared/bench:<interposer checkout>/charge-interposer"', EXAMPLE),
-    ("example: the CAN replay tooling's replayer left out",
-     '"(^|[/\\\\s])can_(replayer|logger|gui)\\\\.py",', '"(^|[/\\\\s])can_(logger|gui)\\\\.py",', EXAMPLE),
+    # No "replayer left out" mutant since port step 4 item 1: the example has no list to
+    # edit, and an explicit list of any kind is the mutant above. The replayer's pattern is
+    # the core's (procs.DEFAULT_WALLCLOCK_PATTERNS), and its own tests carry it.
     ("example: no IDF_TOOLS_PATH for C2scan", ',\n              "IDF_TOOLS_PATH": "<that install\'s tools folder>"', '',
      EXAMPLE),
 ]
