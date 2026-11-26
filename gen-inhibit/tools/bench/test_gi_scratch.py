@@ -363,6 +363,14 @@ def main():
 def run(work):
     global TOOL
     gp = load()
+    # Every check below goes through the shared helper; if it can't be loaded here, that is
+    # this check's FAIL and nothing else runs (a crash further on would be no verdict).
+    S0, err = call(gp.scratch_core)
+    check("in this worktree, gi_paths loads the shared scratch helper (through gi_core_pin)",
+          lambda: err is None and hasattr(S0, "remove") and not hasattr(S0, "MARK"), (err, S0))
+    if err is not None:
+        print("\nFAIL: %d check(s) failed (the rest need the helper)" % len(FAILS))
+        return 1
     wt = os.path.join(work, "wt")
     TOOL = os.path.join(wt, "gen-inhibit", "tools", "bench", "tool.py")
     os.makedirs(os.path.dirname(TOOL))
