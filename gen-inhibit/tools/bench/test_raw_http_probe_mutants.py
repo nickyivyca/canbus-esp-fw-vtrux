@@ -213,10 +213,15 @@ SUITES = [
         # test_interlock_judge's Windows check runs only on Windows.
         ("priority not raised", "k.SetPriorityClass(ctypes.c_void_p(h), ABOVE_NORMAL)", "pass")
         if sys.platform == "win32" else
-        ("priority not raised", 'return BENCH_SLICE if in_bench_slice(text) else "not in bench.slice"',
+        ("priority not raised", 'return BENCH_SLICE if inside else "not in bench.slice"',
          "return BENCH_SLICE"),
-        ("bench.slice matched as a substring", "BENCH_SLICE in parts[2].split(\"/\")", "BENCH_SLICE in parts[2]"),
-        ("cgroup v1 lines skipped", "if len(parts) == 3 and", "if parts[0] == \"0\" and len(parts) == 3 and"),
+        # the slice read on the core's procs.cgroup_slice (port step 4 item 4, 2026-11-25)
+        ("any slice reads as bench.slice", '(s == BENCH_SLICE or s.startswith("bench-"))', "True"),
+        ("a child slice of bench.slice not counted", '(s == BENCH_SLICE or s.startswith("bench-"))',
+         "s == BENCH_SLICE"),
+        ("bench.slice matched as a substring of the cgroup text",
+         '(s == BENCH_SLICE or s.startswith("bench-"))', "BENCH_SLICE in cgroup_text"),
+        ("no core reads as bench.slice", '        return "not in bench.slice (%s)" % e', "        return BENCH_SLICE"),
         ("unreadable cgroup reads as bench.slice", 'return "not in bench.slice (%s unreadable: %s)" % (cgroup, e)',
          "return BENCH_SLICE"),
         ("Linux not dispatched to bench_slice", 'if sys.platform.startswith("linux"):\n        return bench_slice()',

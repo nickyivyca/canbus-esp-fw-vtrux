@@ -849,8 +849,17 @@ def test_common():
          "run-bench.slice-x.scope\n", "not in bench.slice"),
         ("a child slice of bench.slice", "0::/user.slice/user-1000.slice/user@1000.service/bench.slice/"
          "bench-x.slice/run-p1.scope\n", "bench.slice"),
-        ("cgroup v1 lines, bench.slice in one", "12:cpu,cpuacct:/user.slice\n"
-         "1:name=systemd:/user.slice/user-1000.slice/user@1000.service/bench.slice/run-p1.scope\n", "bench.slice"),
+        # the core's procs.cgroup_slice reads the unified hierarchy's 0:: line alone (port
+        # step 4 item 4, 2026-11-25): cgroup v1 lines are not read, as the core's own
+        # placement read-back does not read them
+        ("cgroup v1 lines only, bench.slice in one", "12:cpu,cpuacct:/user.slice\n"
+         "1:name=systemd:/user.slice/user-1000.slice/user@1000.service/bench.slice/run-p1.scope\n",
+         "not in bench.slice"),
+        ("a v1 line and the unified line in bench.slice", "1:name=systemd:/user.slice\n"
+         "0::/user.slice/user-1000.slice/user@1000.service/bench.slice/run-p1.scope\n", "bench.slice"),
+        ("bench.slice above build.slice: the innermost slice counts",
+         "0::/user.slice/user-1000.slice/user@1000.service/bench.slice/build.slice/run-p1.scope\n",
+         "not in bench.slice"),
         ("empty", "", "not in bench.slice"),
     ]
     for label, text, want in cg_cases:
@@ -862,6 +871,21 @@ def test_common():
     got = B.bench_slice(os.path.join(SCRATCH, "no_such_cgroup"))
     check("bench_slice: an unreadable cgroup file reads as not in bench.slice, with the reason",
           got.startswith("not in bench.slice (") and "no_such_cgroup" in got, "got %r" % got)
+    # the parse is the pinned core's (port step 4 item 4): with no core, the answer says so
+    p = os.path.join(SCRATCH, "cgroup_case")
+    with open(p, "w", encoding="ascii") as f:
+        f.write(cg_cases[0][1])
+    saved = B.bench_held.use_core
+    B.bench_held.use_core = lambda: (None, "a stand-in refusal")
+    try:
+        got = B.bench_slice(p)
+    finally:
+        B.bench_held.use_core = saved
+    check("bench_slice: with no core to parse it, not in bench.slice, with the reason",
+          got == "not in bench.slice (the core's cgroup_slice could not be used: a stand-in refusal)", "got %r" % got)
+    import vtrux_bench.run.procs as P
+    check("bench_slice: the parse is the pinned core's procs.cgroup_slice",
+          os.path.realpath(P.__file__).startswith(os.path.realpath(B.bench_held.use_core()[0]) + os.sep), P.__file__)
     if sys.platform.startswith("linux"):
         real = open("/proc/self/cgroup", encoding="ascii", errors="replace").read()
         want = "bench.slice" if "/bench.slice/" in real else "not in bench.slice"

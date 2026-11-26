@@ -560,13 +560,18 @@ BENCH_SCOPE = "systemd-run --user --scope --slice=bench.slice"
 
 
 def in_bench_slice(cgroup_text):
-    """True if a line of /proc/<pid>/cgroup puts the process under a slice named
-    bench.slice: a whole path component, not a substring of one."""
-    for line in cgroup_text.splitlines():
-        parts = line.split(":", 2)
-        if len(parts) == 3 and BENCH_SLICE in parts[2].split("/"):
-            return True
-    return False
+    """True if the process is in bench.slice: the slice the core reads from a
+    /proc/<pid>/cgroup text (vtrux_bench.run.procs.cgroup_slice: the innermost *.slice
+    of the unified hierarchy's "0::" line; port step 4 item 4, 2026-11-25) is bench.slice,
+    or a child of it, which systemd names bench-<name>.slice. The core's parse, so a
+    cgroup v1 line is not read, as the core's own placement read-back does not read one.
+    Raises if the pinned core cannot be used."""
+    folder, why = bench_held.use_core()
+    if folder is None:
+        raise RuntimeError("the core's cgroup_slice could not be used: %s" % why)
+    from vtrux_bench.run import procs
+    s = procs.cgroup_slice(cgroup_text)
+    return s is not None and (s == BENCH_SLICE or s.startswith("bench-"))
 
 
 def bench_slice(cgroup="/proc/self/cgroup"):
@@ -580,7 +585,11 @@ def bench_slice(cgroup="/proc/self/cgroup"):
             text = f.read()
     except OSError as e:
         return "not in bench.slice (%s unreadable: %s)" % (cgroup, e)
-    return BENCH_SLICE if in_bench_slice(text) else "not in bench.slice"
+    try:
+        inside = in_bench_slice(text)
+    except Exception as e:  # noqa: BLE001  no core to read it with: say so, and go on
+        return "not in bench.slice (%s)" % e
+    return BENCH_SLICE if inside else "not in bench.slice"
 
 
 def raise_priority():
