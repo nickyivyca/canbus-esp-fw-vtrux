@@ -1,43 +1,64 @@
-"""The build tooling's own pin (SPEC R16, R23): which version of shared/tools a
-project uses, and the check that this tooling is that version.
+"""Pins on shared components (SPEC R16, R23): which version of each shared
+component a project uses, and the check that a pinned checkout is that
+version. The build tooling's own pin is one of them.
 
-The pin is the "shared/tools" entry of shared_pins.json in the project's
-root, committed with the project:
+A pin is an entry of shared_pins.json in the project's root, committed with
+the project, keyed by the component's folder:
 
     {"shared/tools": {"tag": "2026.10.24",
                       "commit": "<40 hex digits, the commit the tag marks>",
-                      "digest": "<64 hex digits, R7 of shared/tools at it>"}}
+                      "digest": "<64 hex digits, R7 of shared/tools at it>"},
+     "shared/bench": {...}}
 
-The file is keyed by component so that other shared tooling (the bench
-toolkit) can pin itself in the same file; this module reads only its own
-entry and neither rejects nor relies on others.
+A component's name is its folder below shared/, written with "/":
+"shared/<folder>", or deeper, as "shared/boards/<board>". Each reader reads
+only the entry it is asked for and neither rejects nor relies on others.
+
+check(project_root, tools_root) is the build tooling's own check: R23 for
+shared/tools, which must be the folder this code runs from. A release build
+makes it before anything else. check_component(project_root, component)
+makes the same check for any pinned component (R23's last sentence: a
+project's bench and test tooling that checks a pinned checkout checks it the
+same way), and returns the checked folder. entry(project_root, tag,
+component) gives, for a pin move, the entry the checkout ../shared-<tag>/
+would give; it writes nothing. The command line's `pin` command (main())
+runs the tooling's own check first, then checks each named component.
 
 R23 (changed 2026-11-17): the tooling runs from the checkout
 ../shared-<tag>/, relative to the root of the project's git worktree, and
-that checkout is checked through git, not kept read-only. check() refuses
-unless, in this order:
+that checkout is checked through git, not kept read-only. A component's pin
+is checked against its own tag's checkout, so two components pinned at two
+tags are checked in two checkouts. The checks refuse unless, in this order
+(shared/tools is the component for check()):
 
+  - the pin's component is a folder below shared/, and the pin file has its
+    entry, with a tag (R16, below), a 40-hex commit and a 64-hex digest;
   - the checkout exists (if not, the refusal prints the command that
-    creates it), and the shared/tools folder this code runs from is its;
+    creates it), and, for check(), the shared/tools folder this code runs
+    from is its;
   - the checkout's HEAD is the pin's commit, and the pin's tag is a tag
     there that marks that commit;
-  - the pin's digest is R7 over shared/tools at that commit, read from
+  - the commit has the component's folder;
+  - the pin's digest is R7 over the component at that commit, read from
     git's objects (git_digest), not from the disk;
-  - every file git tracks under shared/tools at that commit is on disk
+  - every file git tracks under the component at that commit is on disk
     with exactly its bytes, read raw, so git's line-ending filters play no
     part, and with the mode git records for it: a regular file, an
     executable (the owner's execute bit) or a symbolic link (its target is
     the blob's bytes). Other permission bits are not compared, so a
     read-only file passes. None is missing;
-  - there is no other file under shared/tools, except files the checkout's
-    own committed .gitignore files list: `git ls-files --others
+  - there is no other file under the component, except files the
+    checkout's own committed .gitignore files list: `git ls-files --others
     --exclude-per-directory=.gitignore`, never --exclude-standard, so a
     machine's own core.excludesFile and info/exclude hide nothing. A file
     staged in the checkout's index (git add) is no exception: every path
-    the index holds under shared/tools must be a file of the commit. A
+    the index holds under the component must be a file of the commit. A
     .gitignore that could hide files must itself be the committed one: an
-    uncommitted .gitignore under shared/tools, or one in a folder above it
+    uncommitted .gitignore under the component, or one in a folder above it
     that differs from the commit's, is refused.
+
+Only the named component's folder is checked: the rest of the checkout may
+differ from the commit without a refusal.
 
 shared/main's .gitignore lists __pycache__/ and *.pyc, so the bytecode
 Python writes beside the code passes, and the checkout needs no -B.
@@ -46,9 +67,11 @@ On Windows the execute bit is not compared (the disk has none), and a
 symbolic link checked out as a plain file passes when its bytes are the
 link's target, as git writes it there without symlink support.
 
-R16, the tooling-pin clause: a pin that names a commit rather than a tag is
-refused: no tag, an empty one, one that reads as a commit id (7 to 40 hex
-digits), or one the checkout has no tag of that name for.
+R16, the tooling-pin clause, applied to every component's pin: a pin that
+names a commit rather than a tag is refused: no tag, an empty one, one that
+reads as a commit id (7 to 40 hex digits), or one the checkout has no tag of
+that name for. A tag that cannot name a folder (spaces around it, a / or a
+\\) is refused too, since the checkout is ../shared-<tag>/.
 """
 
 import hashlib
@@ -66,6 +89,7 @@ COMPONENT = "shared/tools"
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _LOOKS_LIKE_COMMIT = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_NAME = re.compile(r"^shared(/[A-Za-z0-9_][A-Za-z0-9_.-]*)+$")
 _SHOWN = 20          # differences listed in a refusal
 _LINK_HOPS = 40      # symbolic links followed in a row before giving up
 
@@ -94,42 +118,67 @@ def _git_bytes(root, args, stdin=None):
     return r.stdout
 
 
-def read(project_root):
-    """The project's "shared/tools" pin, {"tag", "commit", "digest"}.
-    PinError if the file or the entry is missing or malformed, or (R16) the
-    pin names a commit rather than a tag."""
+def component_name(component):
+    """component if it is a folder below shared/ ("shared/<folder>", or
+    deeper, as "shared/boards/<board>"), written with "/", each name
+    starting with a letter, a digit or "_" (so never "." or ".."), else
+    PinError."""
+    if not isinstance(component, str) or not _NAME.match(component):
+        raise PinError("%r is not a shared component's name: a pin names a "
+                       "folder below shared/, written with /, such as %r or "
+                       "'shared/boards/wican_v3'" % (component, COMPONENT))
+    return component
+
+
+def _what(component):
+    return ("the build tooling" if component == COMPONENT
+            else "the project's %s" % component)
+
+
+def tag_name(tag, where):
+    """tag if a pin may name it (R16) and it can name the checkout folder
+    ../shared-<tag>/, else PinError; where says whose tag it is."""
+    if not isinstance(tag, str) or not tag.strip():
+        raise PinError("%s names no tag; shared code is pinned at a tag, not "
+                       "a commit (R16)" % where)
+    if _LOOKS_LIKE_COMMIT.match(tag):
+        raise PinError("%s names %r as its tag, which is a commit id; shared "
+                       "code is pinned at a tag, not a commit (R16)"
+                       % (where, tag))
+    if tag != tag.strip() or "/" in tag or "\\" in tag:
+        raise PinError("%s names the tag %r, which cannot be a checkout "
+                       "folder's name (../shared-<tag>/, R23)" % (where, tag))
+    return tag
+
+
+def read(project_root, component=COMPONENT):
+    """The project's pin of component ("shared/tools" unless named),
+    {"tag", "commit", "digest"}. PinError if the name is not a component's,
+    if the file or the entry is missing or malformed, or (R16) the pin names
+    a commit rather than a tag."""
+    component_name(component)
     path = os.path.join(project_root, PIN_FILE)
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except OSError as e:
-        raise PinError("no tooling pin: %s (%s). The project pins the "
-                       "build tooling it uses in %s, under %r (R23)"
-                       % (path, e, PIN_FILE, COMPONENT))
+        raise PinError("no pin file: %s (%s). The project pins the shared "
+                       "code it uses in %s, %s under %r (R23)"
+                       % (path, e, PIN_FILE, _what(component), component))
     except ValueError as e:
         raise PinError("%s is not valid JSON: %s" % (path, e))
-    if not isinstance(data, dict) or not isinstance(data.get(COMPONENT), dict):
-        raise PinError("%s has no %r entry, so the build tooling is not "
-                       "pinned (R23)" % (path, COMPONENT))
-    pin = data[COMPONENT]
+    if not isinstance(data, dict) or not isinstance(data.get(component), dict):
+        raise PinError("%s has no %r entry, so %s is not pinned (R23)"
+                       % (path, component, _what(component)))
+    pin = data[component]
     tag, commit, digest = pin.get("tag"), pin.get("commit"), pin.get("digest")
-    if not isinstance(tag, str) or not tag.strip():
-        raise PinError("the %r pin in %s names no tag; the build tooling is "
-                       "pinned at a tag, not a commit (R16)" % (COMPONENT, path))
-    if _LOOKS_LIKE_COMMIT.match(tag):
-        raise PinError("the %r pin in %s names %r as its tag, which is a "
-                       "commit id; the build tooling is pinned at a tag, not "
-                       "a commit (R16)" % (COMPONENT, path, tag))
-    if tag != tag.strip() or "/" in tag or "\\" in tag:
-        raise PinError("the %r pin in %s names the tag %r, which cannot be a "
-                       "checkout folder's name (../shared-<tag>/, R23)"
-                       % (COMPONENT, path, tag))
+    tag_name(tag, "the %r pin in %s" % (component, path))
     if not isinstance(commit, str) or not _COMMIT.match(commit):
         raise PinError("the %r pin in %s must give the tag's commit as 40 "
-                       "lower-case hex digits, not %r" % (COMPONENT, path, commit))
+                       "lower-case hex digits, not %r" % (component, path, commit))
     if not isinstance(digest, str) or not _DIGEST.match(digest):
         raise PinError("the %r pin in %s must give the R7 digest as 64 "
-                       "lower-case hex digits, not %r" % (COMPONENT, path, digest))
+                       "lower-case hex digits, not %r" % (component, path, digest))
     return {"tag": tag, "commit": commit, "digest": digest}
 
 
@@ -390,6 +439,64 @@ def _listed(items):
     return shown
 
 
+def _missing_checkout(checkout, top, tag):
+    return PinError("the pinned checkout %s does not exist. Create it, "
+                    "detached at the pin's tag, with:\n"
+                    "    %s" % (checkout, create_command(top, tag)))
+
+
+def _check(project_root, component, runs_from=None):
+    """R23 and R16's pin clause for component's pin, against its checkout.
+    runs_from, if given, must be the component's folder in that checkout
+    (check(): the tooling runs from it). Returns {"tag", "commit", "dirty",
+    "digest", "folder"}."""
+    pin = read(project_root, component)
+    tag = pin["tag"]
+    checkout, top = checkout_dir(project_root, tag)
+    if not os.path.isdir(checkout):
+        raise _missing_checkout(checkout, top, tag)
+    want = os.path.join(checkout, *component.split("/"))
+    if runs_from is not None and not _same(runs_from, want):
+        raise PinError("this build tooling runs from %s, and the project's "
+                       "pin says %s: the tooling runs from the pinned "
+                       "checkout (R23)" % (os.path.realpath(runs_from), want))
+    rc, head = _git(checkout, "rev-parse", "--verify", "HEAD")
+    if rc != 0 or head != pin["commit"]:
+        raise PinError("the checkout %s is at %s, and the %r pin says %s (R23)"
+                       % (checkout, head or "(unreadable)", component,
+                          pin["commit"]))
+    rc, tagged = _git(checkout, "rev-parse", "--verify", "--quiet",
+                      "refs/tags/%s^{commit}" % tag)
+    if rc != 0 or not tagged:
+        raise PinError("the %r pin names %r as its tag, and the checkout's "
+                       "repository has no tag of that name; shared code is "
+                       "pinned at a tag, not a commit or a branch (R16)"
+                       % (component, tag))
+    if tagged != pin["commit"]:
+        raise PinError("the tag %s marks %s, and the %r pin says %s (R23)"
+                       % (tag, tagged, component, pin["commit"]))
+    digest = git_digest(checkout, pin["commit"], component)
+    if digest != pin["digest"]:
+        raise PinError("%s at %s has the digest %s in git, and the pin says "
+                       "%s: the pin's digest is not that commit's (R23, R7)"
+                       % (component, pin["commit"], digest, pin["digest"]))
+    changed = tracked_differences(checkout, pin["commit"], component)
+    if changed:
+        raise PinError("%d file(s) git tracks under %s differ on disk from "
+                       "the pinned commit %s (R23):\n%s"
+                       % (len(changed), want, pin["commit"], _listed(changed)))
+    extra = untracked_files(checkout, pin["commit"], component)
+    if extra:
+        raise PinError("%s holds %d file(s) the pinned commit does not, "
+                       "beyond those its committed .gitignore files list "
+                       "(R23):\n%s" % (want, len(extra), _listed(extra)))
+    rc, st = _git(checkout, "status", "--porcelain=v1", "--untracked-files=all",
+                  "--", component)
+    return {"tag": tag, "commit": pin["commit"],
+            "dirty": bool(st) if rc == 0 else None, "digest": digest,
+            "folder": want}
+
+
 def check(project_root, tools_root):
     """R23 and R16's tooling-pin clause, for the shared/tools folder at
     tools_root (the one this code runs from). Returns what R13 records,
@@ -397,48 +504,91 @@ def check(project_root, tools_root):
     pin's, now checked; dirty is whether git sees uncommitted changes under
     the checkout's shared/tools, which, once this check has passed, it
     cannot. PinError says what does not hold."""
-    pin = read(project_root)
-    tag = pin["tag"]
+    out = _check(project_root, COMPONENT, runs_from=tools_root)
+    del out["folder"]
+    return out
+
+
+def check_component(project_root, component):
+    """R23 and R16's pin clause for the project's pin of component, a
+    folder below shared/, in the checkout of that pin's tag. Returns
+    {"tag", "commit", "digest", "dirty", "folder"}: the pin, now checked,
+    dirty as check() gives it, and the checked folder, the component in
+    ../shared-<tag>/. PinError says what does not hold. It does not check
+    the tooling it runs in: main() makes check() first."""
+    return _check(project_root, component)
+
+
+def entry(project_root, tag, component):
+    """The pin entry {"tag", "commit", "digest"} the checkout ../shared-<tag>/
+    beside the project's worktree gives component, for a pin move: its HEAD,
+    which tag must mark, and R7 of the component there, from git's objects.
+    Writes nothing. The checkout's disk is not compared with the commit: a
+    pin written from it is checked by check_component() when it is used.
+    PinError if the name or the tag cannot be pinned, the checkout is missing
+    (the refusal prints the command that creates it), its HEAD is not the
+    tag's commit, or the commit has no such component."""
+    component_name(component)
+    tag_name(tag, "the entry asked for")
     checkout, top = checkout_dir(project_root, tag)
     if not os.path.isdir(checkout):
-        raise PinError("the pinned checkout %s does not exist. Create it, "
-                       "detached at the pin's tag, with:\n"
-                       "    %s" % (checkout, create_command(top, tag)))
-    want = os.path.join(checkout, *COMPONENT.split("/"))
-    if not _same(tools_root, want):
-        raise PinError("this build tooling runs from %s, and the project's "
-                       "pin says %s: the tooling runs from the pinned "
-                       "checkout (R23)" % (os.path.realpath(tools_root), want))
-    rc, head = _git(checkout, "rev-parse", "--verify", "HEAD")
-    if rc != 0 or head != pin["commit"]:
-        raise PinError("the checkout %s is at %s, and the pin says %s (R23)"
-                       % (checkout, head or "(unreadable)", pin["commit"]))
+        raise _missing_checkout(checkout, top, tag)
     rc, tagged = _git(checkout, "rev-parse", "--verify", "--quiet",
                       "refs/tags/%s^{commit}" % tag)
     if rc != 0 or not tagged:
-        raise PinError("the pin names %r as its tag, and the checkout's "
-                       "repository has no tag of that name; the build tooling "
-                       "is pinned at a tag, not a commit or a branch (R16)"
-                       % tag)
-    if tagged != pin["commit"]:
-        raise PinError("the tag %s marks %s, and the pin says %s (R23)"
-                       % (tag, tagged, pin["commit"]))
-    digest = git_digest(checkout, pin["commit"])
-    if digest != pin["digest"]:
-        raise PinError("%s at %s has the digest %s in git, and the pin says "
-                       "%s: the pin's digest is not that commit's (R23, R7)"
-                       % (COMPONENT, pin["commit"], digest, pin["digest"]))
-    changed = tracked_differences(checkout, pin["commit"])
-    if changed:
-        raise PinError("%d file(s) git tracks under %s differ on disk from "
-                       "the pinned commit %s (R23):\n%s"
-                       % (len(changed), want, pin["commit"], _listed(changed)))
-    extra = untracked_files(checkout, pin["commit"])
-    if extra:
-        raise PinError("%s holds %d file(s) the pinned commit does not, "
-                       "beyond those its committed .gitignore files list "
-                       "(R23):\n%s" % (want, len(extra), _listed(extra)))
-    rc, st = _git(checkout, "status", "--porcelain=v1", "--untracked-files=all",
-                  "--", COMPONENT)
-    return {"tag": tag, "commit": pin["commit"],
-            "dirty": bool(st) if rc == 0 else None, "digest": digest}
+        raise PinError("the checkout %s's repository has no tag %r; shared "
+                       "code is pinned at a tag, not a commit or a branch (R16)"
+                       % (checkout, tag))
+    rc, head = _git(checkout, "rev-parse", "--verify", "HEAD")
+    if rc != 0 or head != tagged:
+        raise PinError("the checkout %s is at %s, and the tag %s marks %s "
+                       "(R23)" % (checkout, head or "(unreadable)", tag, tagged))
+    return {"tag": tag, "commit": head,
+            "digest": git_digest(checkout, head, component)}
+
+
+TOOLS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def main(args, out=None, err=None):
+    """The command line's `pin` command (cli.py): args.action is "check",
+    "where" or "entry", args.project the project root. Every action first
+    checks the tooling it runs in (check(), against TOOLS_ROOT), so a pin is
+    never checked or written by tooling that is not the project's pinned
+    version.
+
+      check COMPONENT...  each named component's pin, in order; one line
+                          each: "OK: <folder> is the pinned <component> at
+                          <tag>"
+      where COMPONENT     the checked folder, alone on its line
+      entry TAG COMPONENT the entry ../shared-<TAG>/ gives, as JSON
+                          {component: entry}; writes nothing
+
+    Exit 0; 1 with "REFUSED: <reason>" on stderr at the first refusal; 2,
+    with the usage, if the action has the wrong number of names."""
+    import sys
+    out, err = out or sys.stdout, err or sys.stderr
+    want = {"check": (1, None), "where": (1, 1), "entry": (2, 2)}[args.action]
+    n = len(args.names)
+    if n < want[0] or (want[1] is not None and n > want[1]):
+        print("usage: pin check COMPONENT... | pin where COMPONENT | "
+              "pin entry TAG COMPONENT  [--project DIR]", file=err)
+        return 2
+    try:
+        check(args.project, TOOLS_ROOT)
+        if args.action == "entry":
+            tag, name = args.names
+            print(json.dumps({name: entry(args.project, tag, name)},
+                             indent=2), file=out)
+        elif args.action == "where":
+            print(check_component(args.project, args.names[0])["folder"],
+                  file=out)
+        else:
+            for name in args.names:
+                got = check_component(args.project, name)
+                print("OK: %s is the pinned %s at %s"
+                      % (got["folder"], name, got["tag"]), file=out)
+    except PinError as e:
+        print("REFUSED: %s" % e, file=err)
+        return 1
+    return 0

@@ -1,5 +1,6 @@
-"""Tests of the build tooling's pin (vtrux_build.pin): SPEC R23 and R16's
-tooling-pin clause, on scratch git repositories.
+"""Tests of the pins on shared components (vtrux_build.pin): SPEC R23 and
+R16's pin clause, for the build tooling's own pin and any other component's,
+the entry for a pin move and the `pin` command, on scratch git repositories.
 
     python -B shared/tools/tests/test_pin.py
     python -B shared/tools/tests/test_pin.py --can-fail
@@ -10,7 +11,8 @@ where a test needs the two in one repository, as the real worktrees are.
 Needs git.
 
 --can-fail runs this file against edited copies of vtrux_build/pin.py
-(MUTANTS), each a way the R23 check could be wrong, and passes only if the
+(MUTANTS), each a way the R23 check, a component's or the pin command's
+could be wrong, and passes only if the
 unedited copy passes and every edited one fails. The copy is imported
 through VTRUX_BUILD_UNDER_TEST, the folder holding its vtrux_build/.
 """
@@ -456,13 +458,395 @@ class Check(unittest.TestCase):
         self.assertEqual(pin.check(root, tools), dict(good, dirty=False))
 
 
+BENCH = "shared/bench"
+BENCH_FILES = {"vtrux_bench/__init__.py": "b = 1\n", "README.md": "bench\n"}
+
+
+def two_tags(name, bench_tag="2026.02.02"):
+    """A worktree <fresh>/proj pinning shared/tools at TAG and shared/bench at
+    bench_tag, each in its own checkout, the bench checkout also holding a
+    shared/tools that differs from TAG's. Returns (project root, tools
+    folder, bench folder, {component: pin})."""
+    d = scratch.fresh(name)
+    tools, tools_pin = pinkit.checkout(d)
+    _, _ = pinkit.checkout(d, bench_tag, files={"vtrux_build/__init__.py":
+                                                "x = 99\n"},
+                           others={BENCH: BENCH_FILES})
+    bench = os.path.join(d, "shared-" + bench_tag, "shared", "bench")
+    bench_pin = pinkit.pin_of(bench, bench_tag)
+    top = os.path.join(d, "proj")
+    scratch.write(os.path.join(top, pin.PIN_FILE),
+                  pinkit.pins_text(tools_pin, **{BENCH: bench_pin}))
+    git(top, "init", "-q")
+    git(top, "add", "-A")
+    git(top, "commit", "-qm", "init")
+    return top, tools, bench, {pin.COMPONENT: tools_pin, BENCH: bench_pin}
+
+
+class ComponentName(unittest.TestCase):
+    """pin.component_name: a folder below shared/, written with /."""
+
+    def test_good(self):
+        for name in ("shared/tools", "shared/bench", "shared/twai_port",
+                     "shared/x2_test_images", "shared/a.b-c",
+                     "shared/boards/wican_v3", "shared/a/b/c"):
+            self.assertEqual(pin.component_name(name), name)
+
+    def test_refused(self):
+        for name in ("bench", "shared", "shared/", "shared/..", "shared/a/..",
+                     "shared/.", "shared/.hidden", "/shared/bench",
+                     "shared/boards/", "shared//bench", "shared/a/./b",
+                     "shared\\bench", "shared/bench ", "Shared/bench", None, 7,
+                     "../shared/bench"):
+            with self.assertRaises(PinError, msg=repr(name)) as cm:
+                pin.component_name(name)
+            self.assertIn("a folder below shared/", str(cm.exception))
+
+
+@unittest.skipUnless(shutil.which("git"), "needs git")
+class Component(unittest.TestCase):
+    """pin.check_component: R23 for any pinned component, in its own tag's
+    checkout."""
+
+    def refused(self, root, comp, *words):
+        with self.assertRaises(PinError) as cm:
+            pin.check_component(root, comp)
+        for w in words:
+            self.assertIn(w, str(cm.exception))
+        return str(cm.exception)
+
+    def test_good_at_its_own_tag(self):
+        root, tools, bench, pins_ = two_tags("comp_ok")
+        got = pin.check_component(root, BENCH)
+        self.assertEqual(got, dict(pins_[BENCH], dirty=False, folder=os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(bench))),
+            "shared-2026.02.02", "shared", "bench")))
+        self.assertTrue(pin._same(got["folder"], bench))
+        # shared/tools is checked in TAG's checkout, not the bench's.
+        self.assertTrue(pin._same(pin.check_component(root, pin.COMPONENT)
+                                  ["folder"], tools))
+        self.assertEqual(pin.check(root, tools),
+                         dict(pins_[pin.COMPONENT], dirty=False))
+
+    def test_read_other_component(self):
+        root, _, _, pins_ = two_tags("comp_read")
+        self.assertEqual(pin.read(root, BENCH), pins_[BENCH])
+        self.assertEqual(pin.read(root), pins_[pin.COMPONENT])
+
+    def test_not_pinned(self):
+        root, _, _, _ = two_tags("comp_unpinned")
+        self.refused(root, "shared/diag", "no 'shared/diag' entry",
+                     "the project's shared/diag is not pinned", "R23")
+
+    def test_bad_name(self):
+        root, _, _, _ = two_tags("comp_badname")
+        self.refused(root, "shared/bench/", "a folder below")
+        self.refused(root, "bench", "a folder below")
+
+    def test_bad_entry(self):
+        root, _, _, pins_ = two_tags("comp_badentry")
+        for bad, words in (({"tag": "e40f5cb"}, ("commit id", "R16")),
+                           ({"tag": ""}, ("names no tag", "R16")),
+                           ({"tag": "a/b"}, ("checkout folder",)),
+                           ({"commit": "c" * 39}, ("40 lower-case hex",)),
+                           ({"digest": "D" * 64}, ("64 lower-case hex",))):
+            scratch.write(os.path.join(root, pin.PIN_FILE), pinkit.pins_text(
+                pins_[pin.COMPONENT], **{BENCH: dict(pins_[BENCH], **bad)}))
+            self.refused(root, BENCH, BENCH, *words)
+
+    def test_missing_checkout_prints_the_command(self):
+        root, _, bench, pins_ = two_tags("comp_nocheckout")
+        scratch.write(os.path.join(root, pin.PIN_FILE), pinkit.pins_text(
+            pins_[pin.COMPONENT], **{BENCH: dict(pins_[BENCH],
+                                                 tag="2026.03.03")}))
+        self.refused(root, BENCH, "does not exist",
+                     "worktree add --detach ../shared-2026.03.03 2026.03.03")
+
+    def test_component_not_in_the_commit(self):
+        """The pin's tag's checkout has no such folder."""
+        root, _, _, pins_ = two_tags("comp_nofolder")
+        scratch.write(os.path.join(root, pin.PIN_FILE), pinkit.pins_text(
+            pins_[pin.COMPONENT], **{"shared/diag": dict(pins_[BENCH])}))
+        self.refused(root, "shared/diag", "no folder shared/diag", "R23")
+
+    def test_digest_is_the_components(self):
+        """The bench pin carrying shared/tools' digest is refused: the digest
+        is R7 of the named component."""
+        root, _, _, pins_ = two_tags("comp_digest")
+        scratch.write(os.path.join(root, pin.PIN_FILE), pinkit.pins_text(
+            pins_[pin.COMPONENT], **{BENCH: dict(
+                pins_[BENCH], digest=pins_[pin.COMPONENT]["digest"])}))
+        self.refused(root, BENCH, "digest", pins_[BENCH]["digest"], "R23")
+
+    def test_head_differs(self):
+        root, _, bench, _ = two_tags("comp_head")
+        co = os.path.dirname(os.path.dirname(bench))
+        scratch.write(os.path.join(bench, "README.md"), "edited\n")
+        git(co, "commit", "-qam", "md")
+        self.refused(root, BENCH, "is at", "'shared/bench' pin", "R23")
+
+    def test_tag_marks_another_commit(self):
+        root, _, bench, pins_ = two_tags("comp_tagmoved")
+        co = os.path.dirname(os.path.dirname(bench))
+        scratch.write(os.path.join(bench, "README.md"), "edited\n")
+        git(co, "commit", "-qam", "md")
+        moved = dict(pins_[BENCH], commit=git(co, "rev-parse", "HEAD"))
+        scratch.write(os.path.join(root, pin.PIN_FILE), pinkit.pins_text(
+            pins_[pin.COMPONENT], **{BENCH: moved}))
+        self.refused(root, BENCH, "marks", pins_[BENCH]["commit"], "R23")
+
+    def test_tag_is_a_branch(self):
+        root, _, bench, _ = two_tags("comp_branch")
+        co = os.path.dirname(os.path.dirname(bench))
+        git(co, "tag", "-d", "2026.02.02")
+        git(co, "branch", "2026.02.02")
+        self.refused(root, BENCH, "no tag of that name", "R16")
+
+    def test_changed_file_refused(self):
+        root, _, bench, _ = two_tags("comp_changed")
+        scratch.write(os.path.join(bench, "vtrux_bench", "__init__.py"),
+                      "b = 2\n")
+        self.refused(root, BENCH, "vtrux_bench/__init__.py", "bytes differ",
+                     "R23")
+
+    def test_missing_file_refused(self):
+        root, _, bench, _ = two_tags("comp_missing")
+        os.remove(os.path.join(bench, "README.md"))
+        self.refused(root, BENCH, "README.md: missing", "R23")
+
+    def test_untracked_file_refused(self):
+        root, _, bench, _ = two_tags("comp_untracked")
+        scratch.write(os.path.join(bench, "extra.py"), "y\n")
+        self.refused(root, BENCH, "extra.py",
+                     "no committed .gitignore lists it", "R23")
+
+    def test_staged_file_refused(self):
+        root, _, bench, _ = two_tags("comp_staged")
+        co = os.path.dirname(os.path.dirname(bench))
+        scratch.write(os.path.join(bench, "extra.py"), "y\n")
+        git(co, "add", "shared/bench/extra.py")
+        self.refused(root, BENCH, "extra.py", "staged in the checkout's index")
+
+    def test_pycache_passes(self):
+        root, _, bench, pins_ = two_tags("comp_pycache")
+        scratch.write(os.path.join(bench, "vtrux_bench", "__pycache__",
+                                   "__init__.cpython-313.pyc"), b"\0")
+        self.assertEqual(pin.check_component(root, BENCH)["digest"],
+                         pins_[BENCH]["digest"])
+
+    def test_nested_component(self):
+        """A board's folder, two below shared/, is pinned and checked like
+        any other; the board beside it is not checked."""
+        d = scratch.fresh("comp_nested")
+        tools, tools_pin = pinkit.checkout(d, others={
+            "shared/boards/wican_v3": {"board.json": "{}\n"},
+            "shared/boards/x2": {"board.json": "{\"x\": 2}\n"}})
+        co = os.path.dirname(os.path.dirname(tools))
+        board = os.path.join(co, "shared", "boards", "wican_v3")
+        board_pin = pinkit.pin_of(board)
+        self.assertEqual(board_pin["commit"], tools_pin["commit"])
+        top = os.path.join(d, "proj")
+        scratch.write(os.path.join(top, pin.PIN_FILE), pinkit.pins_text(
+            tools_pin, **{"shared/boards/wican_v3": board_pin}))
+        git(top, "init", "-q")
+        git(top, "add", "-A")
+        git(top, "commit", "-qm", "init")
+        got = pin.check_component(top, "shared/boards/wican_v3")
+        self.assertTrue(pin._same(got["folder"], board))
+        self.assertEqual(got["digest"], board_pin["digest"])
+        self.assertEqual(pin.entry(top, TAG, "shared/boards/wican_v3"),
+                         board_pin)
+        scratch.write(os.path.join(co, "shared", "boards", "x2", "extra"), "y\n")
+        pin.check_component(top, "shared/boards/wican_v3")
+        scratch.write(os.path.join(board, "extra"), "y\n")
+        self.refused(top, "shared/boards/wican_v3", "extra",
+                     "no committed .gitignore lists it")
+        os.remove(os.path.join(board, "extra"))
+        scratch.write(os.path.join(co, "shared", "boards", ".gitignore"),
+                      "extra\n")
+        scratch.write(os.path.join(board, "extra"), "y\n")
+        self.refused(top, "shared/boards/wican_v3", "shared/boards/.gitignore",
+                     "not in the commit")
+
+    def test_other_components_not_checked(self):
+        """Only the named component's folder counts: a changed shared/tools
+        in the bench's checkout does not refuse the bench."""
+        root, _, bench, pins_ = two_tags("comp_only")
+        co = os.path.dirname(os.path.dirname(bench))
+        scratch.write(os.path.join(co, "shared", "tools", "vtrux_build",
+                                   "__init__.py"), "x = 100\n")
+        scratch.write(os.path.join(co, "shared", "tools", "extra.py"), "y\n")
+        self.assertEqual(pin.check_component(root, BENCH)["commit"],
+                         pins_[BENCH]["commit"])
+
+    def test_check_still_requires_running_from_the_checkout(self):
+        root, tools, bench, _ = two_tags("comp_runsfrom")
+        self.assertIn("runs from", self._refused_check(root, bench))
+
+    def _refused_check(self, root, tools):
+        with self.assertRaises(PinError) as cm:
+            pin.check(root, tools)
+        return str(cm.exception)
+
+
+@unittest.skipUnless(shutil.which("git"), "needs git")
+class Entry(unittest.TestCase):
+    """pin.entry: the entry a checkout gives, for a pin move."""
+
+    def refused(self, root, tag, comp, *words):
+        with self.assertRaises(PinError) as cm:
+            pin.entry(root, tag, comp)
+        for w in words:
+            self.assertIn(w, str(cm.exception))
+        return str(cm.exception)
+
+    def test_good(self):
+        root, _, _, pins_ = two_tags("entry_ok")
+        self.assertEqual(pin.entry(root, "2026.02.02", BENCH), pins_[BENCH])
+        self.assertEqual(pin.entry(root, TAG, pin.COMPONENT),
+                         pins_[pin.COMPONENT])
+
+    def test_digest_from_git_not_the_disk(self):
+        root, _, bench, pins_ = two_tags("entry_git")
+        scratch.write(os.path.join(bench, "vtrux_bench", "__init__.py"),
+                      "b = 3\n")
+        self.assertEqual(pin.entry(root, "2026.02.02", BENCH), pins_[BENCH])
+
+    def test_writes_nothing(self):
+        root, _, _, _ = two_tags("entry_nowrite")
+        path = os.path.join(root, pin.PIN_FILE)
+        with open(path, "rb") as f:
+            before = f.read()
+        pin.entry(root, "2026.02.02", BENCH)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(git(root, "status", "--porcelain"), "")
+
+    def test_missing_checkout_prints_the_command(self):
+        root, _, _, _ = two_tags("entry_nocheckout")
+        self.refused(root, "2026.04.04", BENCH, "does not exist",
+                     "worktree add --detach ../shared-2026.04.04 2026.04.04")
+
+    def test_head_not_the_tags_commit(self):
+        root, _, bench, _ = two_tags("entry_head")
+        co = os.path.dirname(os.path.dirname(bench))
+        scratch.write(os.path.join(bench, "README.md"), "edited\n")
+        git(co, "commit", "-qam", "md")
+        self.refused(root, "2026.02.02", BENCH, "is at", "marks", "R23")
+
+    def test_no_such_tag(self):
+        root, _, bench, _ = two_tags("entry_notag")
+        co = os.path.dirname(os.path.dirname(bench))
+        git(co, "tag", "-d", "2026.02.02")
+        self.refused(root, "2026.02.02", BENCH, "no tag", "R16")
+
+    def test_bad_tag_or_name(self):
+        root, _, _, _ = two_tags("entry_bad")
+        self.refused(root, "e40f5cb", BENCH, "commit id", "R16")
+        self.refused(root, "", BENCH, "names no tag", "R16")
+        self.refused(root, "a/b", BENCH, "checkout folder")
+        self.refused(root, "2026.02.02", "bench", "a folder below")
+
+    def test_component_not_in_the_commit(self):
+        root, _, _, _ = two_tags("entry_nofolder")
+        self.refused(root, TAG, BENCH, "no folder shared/bench", "R23")
+
+
+@unittest.skipUnless(shutil.which("git"), "needs git")
+class Cli(unittest.TestCase):
+    """The `pin` command (pin.main through cli.main): the tooling's own
+    check first, then each component."""
+
+    def run_cli(self, argv, tools_root):
+        import io
+        from vtrux_build import cli
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(pin, "TOOLS_ROOT", tools_root), \
+                mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+            try:
+                rc = cli.main(argv)
+            except SystemExit as e:
+                rc = e.code
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_check(self):
+        root, tools, bench, _ = two_tags("cli_check")
+        rc, out, err = self.run_cli(["pin", "check", BENCH, pin.COMPONENT,
+                                     "--project", root], tools)
+        self.assertEqual((rc, err), (0, ""))
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("OK: ") and
+                        lines[0].endswith(" is the pinned shared/bench at "
+                                          "2026.02.02"), lines[0])
+        self.assertTrue(lines[1].endswith(" is the pinned shared/tools at "
+                                          + TAG), lines[1])
+
+    def test_where(self):
+        root, tools, bench, _ = two_tags("cli_where")
+        rc, out, _ = self.run_cli(["pin", "where", BENCH, "--project", root],
+                                  tools)
+        self.assertEqual(rc, 0)
+        self.assertTrue(pin._same(out.strip(), bench), out)
+
+    def test_entry(self):
+        root, tools, _, pins_ = two_tags("cli_entry")
+        rc, out, _ = self.run_cli(["pin", "entry", "2026.02.02", BENCH,
+                                   "--project", root], tools)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out), {BENCH: pins_[BENCH]})
+
+    def test_tooling_not_the_pinned_refuses_every_action(self):
+        """Run from a copy of the pinned tooling, nothing is checked or
+        written: the tooling's own check comes first."""
+        root, tools, _, _ = two_tags("cli_selfcheck")
+        other = os.path.join(scratch.fresh("cli_selfcheck_copy"), "tools")
+        shutil.copytree(tools, other)
+        for argv in (["pin", "check", BENCH], ["pin", "where", BENCH],
+                     ["pin", "entry", "2026.02.02", BENCH]):
+            rc, out, err = self.run_cli(argv + ["--project", root], other)
+            self.assertEqual((rc, out), (1, ""), argv)
+            self.assertIn("REFUSED:", err)
+            self.assertIn("runs from", err)
+
+    def test_tooling_changed_refuses(self):
+        root, tools, _, _ = two_tags("cli_toolschanged")
+        scratch.write(os.path.join(tools, "vtrux_build", "__init__.py"),
+                      "x = 2\n")
+        rc, out, err = self.run_cli(["pin", "check", BENCH, "--project", root],
+                                    tools)
+        self.assertEqual((rc, out), (1, ""))
+        self.assertIn("vtrux_build/__init__.py", err)
+
+    def test_component_refused(self):
+        root, tools, bench, _ = two_tags("cli_refused")
+        scratch.write(os.path.join(bench, "extra.py"), "y\n")
+        rc, out, err = self.run_cli(["pin", "check", pin.COMPONENT, BENCH,
+                                     "--project", root], tools)
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(out.splitlines()), 1, "shared/tools passed first")
+        self.assertIn("REFUSED:", err)
+        self.assertIn("extra.py", err)
+
+    def test_usage(self):
+        root, tools, _, _ = two_tags("cli_usage")
+        for argv in (["pin", "check"], ["pin", "where"],
+                     ["pin", "where", BENCH, pin.COMPONENT],
+                     ["pin", "entry", BENCH], ["pin", "entry", "a", "b", "c"]):
+            rc, out, err = self.run_cli(argv + ["--project", root], tools)
+            self.assertEqual((rc, out), (2, ""), argv)
+            self.assertIn("usage:", err)
+        rc, _, _ = self.run_cli(["pin", "list", "--project", root], tools)
+        self.assertEqual(rc, 2)
+
+
 # (name, text of vtrux_build/pin.py, its replacement): each must make this
 # file fail. The text must occur in pin.py exactly once.
 MUTANTS = [
     ("a machine's excludes counted (--exclude-standard)",
      '"--exclude-per-directory=.gitignore",', '"--exclude-standard",'),
     ("no check for other files",
-     '    extra = untracked_files(checkout, pin["commit"])\n',
+     '    extra = untracked_files(checkout, pin["commit"], component)\n',
      '    extra = []\n'),
     ("a file staged in the index passes",
      '        if p and entries.get(p, (None, "tree"))[1] == "tree":\n',
@@ -474,7 +858,7 @@ MUTANTS = [
      "        elif got != r.stdout:\n",
      "        elif False:\n"),
     ("tracked files not compared",
-     '    changed = tracked_differences(checkout, pin["commit"])\n',
+     '    changed = tracked_differences(checkout, pin["commit"], component)\n',
      '    changed = []\n'),
     ("bytes not compared",
      "        if got != want:\n            out.append(\"%s: its bytes",
@@ -498,9 +882,9 @@ MUTANTS = [
      "                if False:\n                    out.append(\"%s: a "
      "symbolic link to"),
     ("the digest taken from the disk",
-     '    digest = git_digest(checkout, pin["commit"])\n',
+     '    digest = git_digest(checkout, pin["commit"], component)\n',
      '    from .digest import component_digest\n'
-     '    digest = component_digest(tools_root)\n'),
+     '    digest = component_digest(want)\n'),
     ("the pin's digest not compared",
      '    if digest != pin["digest"]:\n', '    if False:\n'),
     ("git_digest counts .md files",
@@ -510,6 +894,31 @@ MUTANTS = [
      '    if rc != 0 or head != pin["commit"]:\n', '    if False:\n'),
     ("the tag's commit not compared",
      '    if tagged != pin["commit"]:\n', '    if False:\n'),
+    ("a component's files compared in shared/tools",
+     'changed = tracked_differences(checkout, pin["commit"], component)',
+     'changed = tracked_differences(checkout, pin["commit"], COMPONENT)'),
+    ("a component's other files looked for in shared/tools",
+     'extra = untracked_files(checkout, pin["commit"], component)',
+     'extra = untracked_files(checkout, pin["commit"], COMPONENT)'),
+    ("a component's digest taken over shared/tools",
+     'digest = git_digest(checkout, pin["commit"], component)',
+     'digest = git_digest(checkout, pin["commit"], COMPONENT)'),
+    ("every pin read from the shared/tools entry",
+     '    pin = data[component]\n', '    pin = data[COMPONENT]\n'),
+    ("any name taken as a component",
+     '    if not isinstance(component, str) or not _NAME.match(component):\n',
+     '    if not isinstance(component, str):\n'),
+    ("a component's tag not checked",
+     '    tag_name(tag, "the %r pin in %s" % (component, path))\n',
+     '    pass\n'),
+    ("entry: HEAD not compared with the tag",
+     '    if rc != 0 or head != tagged:\n', '    if rc != 0:\n'),
+    ("entry: the digest taken from the disk",
+     '            "digest": git_digest(checkout, head, component)}',
+     '            "digest": __import__("vtrux_build.digest", fromlist=["x"])'
+     '.component_digest(os.path.join(checkout, *component.split("/")))}'),
+    ("the pin command does not check the tooling first",
+     '        check(args.project, TOOLS_ROOT)\n', '        pass\n'),
 ]
 
 

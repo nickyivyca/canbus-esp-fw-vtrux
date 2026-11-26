@@ -1,6 +1,7 @@
 """A pinned shared/tools checkout for the tests (SPEC R23): a small git
 repository at <parent>/shared-<tag>/, its shared/tools/ committed and tagged,
-and the pin that matches it."""
+and the pin that matches it. Other components can be committed beside it
+(checkout's others), each pinned with pin_of."""
 
 import json
 import os
@@ -26,15 +27,21 @@ def git(root, *args):
                           capture_output=True, text=True).stdout.strip()
 
 
-def checkout(parent, tag=TAG, files=None, gitignore=ROOT_GITIGNORE):
+def checkout(parent, tag=TAG, files=None, gitignore=ROOT_GITIGNORE,
+             others=None):
     """<parent>/shared-<tag>/: a git repository whose one commit holds
-    shared/tools/ (files, TOOL_FILES by default) and a root .gitignore
+    shared/tools/ (files, TOOL_FILES by default), each other component
+    others names ({"shared/<folder>": {path: text}}), and a root .gitignore
     (gitignore; None for none), and is tagged tag. Returns (its shared/tools
     folder, the pin that matches it)."""
     co = os.path.join(parent, "shared-" + tag)
     tools = os.path.join(co, "shared", "tools")
     for rel, text in (files or TOOL_FILES).items():
         scratch.write(os.path.join(tools, *rel.split("/")), text)
+    for comp, comp_files in (others or {}).items():
+        for rel, text in comp_files.items():
+            scratch.write(os.path.join(co, *(comp + "/" + rel).split("/")),
+                          text)
     if gitignore is not None:
         scratch.write(os.path.join(co, ".gitignore"), gitignore)
     git(co, "init", "-q")
@@ -45,7 +52,8 @@ def checkout(parent, tag=TAG, files=None, gitignore=ROOT_GITIGNORE):
 
 
 def pin_of(tools, tag=TAG):
-    """The pin for the shared/tools folder tools at its checkout's HEAD."""
+    """The pin for the component folder tools (shared/tools or another
+    "shared/<folder>") at its checkout's HEAD."""
     co = os.path.dirname(os.path.dirname(tools))
     return {"tag": tag, "commit": git(co, "rev-parse", "HEAD"),
             "digest": component_digest(tools)}

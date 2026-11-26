@@ -32,9 +32,11 @@ project's root, committed with the project (`vtrux_build/pin.py`):
                       "commit": "<the commit the tag marks, 40 hex digits>",
                       "digest": "<R7 digest of shared/tools there, 64 hex digits>"}}
 
-The file is keyed by component so that other shared tooling can pin itself
-there too; the tooling reads only its own entry. The checkout is made once
-per tag, from any worktree of the repository:
+The file is keyed by component, so a project pins its other shared
+components there too. The release build reads only the tooling's entry;
+the `pin` command checks the others ("Pins on other shared components",
+below). The checkout is made once per tag, from any worktree of the
+repository:
 
     git -C <worktree> worktree add --detach ../shared-<tag> <tag>
 
@@ -131,6 +133,62 @@ not set is not set (R24 as amended 2026-11-03). The build prints the
 names it passed and the names it dropped, never values, and the record
 lists the names passed (`environment_passed`). Bench and dev builds are not
 constrained.
+
+## Pins on other shared components (R23)
+
+A project's bench and test tooling that uses a pinned checkout checks it
+the same way as the release build checks the tooling (R23's last sentence),
+with `vtrux_build/pin.py`. Every entry of `shared_pins.json` is a pin of the
+same form, keyed by the component's folder below `shared/`, written with
+`/`: `"shared/<folder>"`, or deeper, as `"shared/boards/<board>"`. Each pin is
+checked in the checkout of its own tag, `../shared-<tag>/` beside the
+worktree's root, as in "Running it", so two components pinned at two tags
+are checked in two checkouts.
+
+    python -B -m vtrux_build pin check COMPONENT... [--project DIR]
+    python -B -m vtrux_build pin where COMPONENT [--project DIR]
+    python -B -m vtrux_build pin entry TAG COMPONENT [--project DIR]
+
+`--project` is the folder that holds `shared_pins.json`, the current folder
+if not given. Each action first makes the release build's own check of the
+tooling's pin, so a pin is never checked or written by tooling that is not
+the project's pinned version. Then:
+- `check` checks each named component's pin in order, and prints `OK:
+  <folder> is the pinned <component> at <tag>` for each;
+- `where` checks one component's pin and prints its folder alone on the
+  line, for a script to use;
+- `entry` prints, as JSON `{component: entry}`, the pin that the checkout
+  `../shared-<TAG>/` beside the worktree's root gives the component, for a
+  pin move. Its commit is the
+  checkout's HEAD, which the tag must mark. Its digest is R7 of the
+  component at that commit, from git's objects. It writes nothing, and does
+  not compare the checkout's disk with the commit: the pin it gives is
+  checked when it is used.
+
+Exit 0; 1 with `REFUSED: <reason>` on stderr at the first refusal; 2 for a
+wrong number of names. A component's pin is refused, in this order, unless:
+- the name is a folder below `shared/`, and the file has its entry, with a tag
+  that is not a commit id and can name a folder, a 40-hex commit and a
+  64-hex digest (R16);
+- the checkout `../shared-<tag>/` beside the worktree's root exists; if
+  not, the refusal prints the command that creates it;
+- the checkout's HEAD is the pin's commit, and the pin's tag is a tag there
+  that marks it;
+- the commit has the component's folder, and the pin's digest is R7 of it,
+  from git's objects;
+- every file git tracks under the component is on disk with its bytes and
+  mode at the commit, none is missing, and no other file is under it but
+  those the checkout's committed `.gitignore` files list, all as for the
+  tooling ("Running it" above).
+
+Only the named component's folder is checked: the rest of the checkout may
+differ from the commit. In Python, `pin.check_component(project_root,
+component)` makes the same check and returns `{"tag", "commit", "digest",
+"dirty", "folder"}`; it does not check the tooling it runs in. A caller that
+imports check_component() must first call pin.check(project_root,
+tools_root), with the shared/tools folder it loaded pin.py from, to get the
+same guarantee as the command. `pin.entry(project_root, tag, component)`
+gives the entry. Both raise `PinError`.
 
 ## The IDF environment check (R32)
 
@@ -346,13 +404,13 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `vtrux_build/record.py` | the release record: R13 |
 | `vtrux_build/toolchain.py` | this IDF's toolchain, from its `tools.json` and toolchain file: R9's check that each chosen compiler is the toolchain's own |
 | `vtrux_build/buildenv.py` | a release build's environment, from an empty one, with no defaults: R24, and R9's `SOURCE_DATE_EPOCH` |
-| `vtrux_build/pin.py` | the tooling's own pin in `shared_pins.json`, and the check that the tooling runs from the pinned checkout, made through git (HEAD and tag, R7 from git's objects, tracked files' bytes and modes, no other file but what committed `.gitignore` files list): R23, R16's tooling-pin clause |
+| `vtrux_build/pin.py` | the pins in `shared_pins.json`: the tooling's own, and the check that the tooling runs from the pinned checkout, made through git (HEAD and tag, R7 from git's objects, tracked files' bytes and modes, no other file but what committed `.gitignore` files list): R23, R16's tooling-pin clause; the same check for any other pinned component, the entry for a pin move, and the `pin` command (R23's last sentence) |
 | `vtrux_build/release.py` | the release build: R8 to R11, R13, R16 (both clauses, the tooling pin through `pin.py`), R21's one-board refusal, R23, R24, R32 (through `idfenv.py`), R33 |
 | `vtrux_build/cli.py`, `__main__.py`, `__init__.py` | the command line |
 | `tests/test_*.py` | unit tests, one file per module (`toolchain.py`'s and the command line's are in `test_release.py`, with the check that uses it; `project.py`'s variants are in `test_devbuild.py`); each runs alone (`python -B shared/tools/tests/test_image.py`) or all with `python -B -m unittest discover -s shared/tools/tests`. `test_buildenv.py`'s `RealConfigure` runs ESP-IDF itself, two configures of a small project (about 40 s), so it is skipped unless `VTRUX_IDF_TESTS=1` is set in an exported ESP-IDF shell; it runs in `build.slice` like a build (`AGENTS.md` "Parallel work on the shared machine") |
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
-| `tests/pinkit.py` | a pinned checkout for the tests: a small tagged repository at `<folder>/shared-<tag>/`, with a root `.gitignore` listing Python's bytecode as `shared/main`'s does, and the pin that matches it; `test_release.py` gives every test project one |
-| `tests/test_pin.py` | `pin.py`'s tests, among them R23's: a stray `__pycache__` or `.pyc` passes; a changed, CRLF-rewritten, missing or `.md` tracked file refuses; an execute bit flipped either way refuses and a read-only component passes; an untracked file refuses, and so does one staged in the index but not in the commit, or hidden only by `core.excludesFile` or `info/exclude`, or by a `.gitignore` that is not the commit's; a pin digest that is not the commit's refuses. `--can-fail` runs them against 17 edited copies of `pin.py` and passes only if the unedited copy passes and every edited one fails |
+| `tests/pinkit.py` | a pinned checkout for the tests: a small tagged repository at `<folder>/shared-<tag>/`, with a root `.gitignore` listing Python's bytecode as `shared/main`'s does, other components beside `shared/tools` if asked for, and the pin that matches each; `test_release.py` gives every test project one |
+| `tests/test_pin.py` | `pin.py`'s tests, among them R23's: a stray `__pycache__` or `.pyc` passes; a changed, CRLF-rewritten, missing or `.md` tracked file refuses; an execute bit flipped either way refuses and a read-only component passes; an untracked file refuses, and so does one staged in the index but not in the commit, or hidden only by `core.excludesFile` or `info/exclude`, or by a `.gitignore` that is not the commit's; a pin digest that is not the commit's refuses. For other components: a name that is not a folder below `shared/` refuses, and a board's folder two below it is checked like any other; each pin is checked in its own tag's checkout, against its own folder only (a changed `shared/tools` beside it does not refuse it), with the same refusals; `entry` takes its digest from git and writes nothing; the `pin` command checks the tooling first, so every action refuses when the tooling is a copy or changed. `--can-fail` runs them against 26 edited copies of `pin.py` and passes only if the unedited copy passes and every edited one fails |
 | `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/<pid>/`, the run's own, removed when the run ends, pass or fail; refused, with no other place, outside a git worktree or where git does not ignore `scratch/` (`AGENTS.md` "Files and folders"), and so under WSL in a worktree made by Git for Windows, whose `.git` file Linux git cannot follow. Its remover clears read-only flags and retries, uses `\\?\` paths on Windows and prints what it could not remove ("Removing scratch"): a copy of `verification/independent.py`'s, since the unit tests do not import the tester's files. Tested in `tests/test_scratch.py` |
 | `verification/` | the tester's: its verification of this tooling against `SPEC.md`, the evidence behind `VERIFICATION.md`, and the build checks' real-build cases; its `README.md` lists the files |
 | `vtrux_checks/` | the tester's: the build checks, SPEC R17 to R21, R29 and R30, reading a finished build through the interface above; their per-project data is the tester's `vtrux_checks.json` in the project's root; its `README.md` lists the checks |
