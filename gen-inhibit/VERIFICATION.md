@@ -10163,6 +10163,78 @@ records in `runs/verdict_hold_cca06f36/` (its `README.md`).
 - **B27: NOT-RUN,** the declared skip (needs the user at the bench; deferred by the user
   2026-10-17), as in the baseline.
 
+**Port step 4 item 1: the harness takes shared/bench from its pinned checkout -- tester,
+2026-11-25 and 2026-11-26, madhouse-debian. Result: the same verdicts as bench run `8047`,
+check by check (39 of 39), and the same emulated verdicts as `db8d`. No verdict changed.
+The harness's own tests found two defects of the change in its mutant files, both fixed on
+the topic (`b353c75f`, `95695442`).** The gen-inhibit reviewer's batch of 2026-11-25 (port
+plan, order of work step 4): the harness takes shared/bench at tag `2026.11.23.5` (commit
+`2a7ab8be`, digest `c7c0f913...`) from the checkout `../shared-2026.11.23.5/`, through
+`bench/gi_core_pin.py` (shared/tools R23's checks, run by the pinned commit's own
+`vtrux_build/pin.py`), and no longer from PYTHONPATH. The settings give no
+`wallclock_patterns`, so the core's default list is used. The product code did not change.
+Acceptance: the full emulated and bench suites, on `cca06f36`'s product images, give the same
+verdicts as `8047`. On `gen-inhibit/tester/bench-pin`, from `4c3afb4d`. Desk records:
+`runs/port_step4_item1/` (its `README.md`).
+- **Harness.** `gi_tools` is the detached worktree `gen-inhibit-tester-tools-3d9ab7cc`, at
+  `3d9ab7cc`, clean. The two later commits change only mutant files that no suite check
+  runs: `b353c75f` takes out a suite mutant that `3d9ab7cc` left with no text to edit, and
+  `95695442` gives `x2_hold`'s mutant copies the file they lack (below). The runner starts as
+  `gi_core_pin.py module vtrux_bench.run run ...`. PYTHONPATH names only the interposer
+  checkout (`interposer-code-3779f9dc`), for `bench_identify`. Every record's `code.core`
+  names the tag, commit, digest and folder.
+- **Code.** The images of the full run on `cca06f36` above, unchanged: `gi_images` and
+  `gi_prod_dir` at `cca06f36`, clean, the same image hashes.
+- **The emulated suite:** `gen-inhibit-emulated_20261125T225543_36df` (2026-11-25
+  22:55-23:05, build.slice). H PASS, B15host PASS, C2scan PASS 4 of 4, C1C7 and C3 NOT-RUN
+  (the declared skips): the same as `db8d`.
+- **Two bench starts stopped before any check ran.**
+  - `gen-inhibit-bench_20261125T230425_6582` (23:04-23:15): NOT-RUN 35, "could not identify
+    x2". The X2 held the charge-interposer's image `2ffba2c6`, whose USB serial takes no
+    input. `x2_hold.py pins` then went past the suite's 120 s limit. By hand, the same read
+    took 205.7 s; each of its 5 esptool `read_mem` calls ended in "Write timeout". The tester
+    then loaded the pinned `x2_app` by hand, under a hand-take of the lock (4 writes
+    verified). `x2_hold.py` and `gi_esptool.py` are the same at `4c3afb4d` and `3d9ab7cc`, so
+    this limit is not from the change.
+  - `gen-inhibit-bench_20261125T232316_da19` (23:23-23:24): stopped at the X2 identify,
+    `ModuleNotFoundError: bench_identify`. The tester's start command left PYTHONPATH out;
+    the suite's own text names the interposer checkout there. This was an operator error.
+- **Bench run:** `gen-inhibit-bench_20261125T233016_58fa` (2026-11-25 23:30:16 to
+  2026-11-26 01:57:24), the whole suite, with the documented start. The chain runner held
+  the lock itself. Every group's placement read back bench.slice.
+  - WiCAN: found on `_man` `e8e6ae76...`, mode 0, nothing latched. Loaded by OTA, each at
+    attempt 1: `_rt` (00:55:36), `_txabort` (01:05:59), `_abortwin` (01:09:47), `_rxq`
+    (01:13:17), the prod stand-in `e8e6ae76...` (01:19:12). The end hook found `wican_man`,
+    mode 0, latched True.
+  - X2: found on `x2_app` `756d6714`. Held in ROM for man_held (00:42:28). `x2_app` flashed
+    again at 00:55:42. The jammer row `ea762c62044cb5c6` under custody, verify-row PASS
+    (01:27:00), for man_jammer. `slcan` flashed at 01:51:14; the X2 was left on it.
+  - Recorded, not judged: the `wallclock-others` events name the charge-interposer
+    tester's acceptance run and its simulator scenarios at time scale 1 (the core's default
+    list).
+- **Verdicts:** PASS 37, INCONCLUSIVE 1 (B6), NOT-RUN 1 (B27, the declared skip). Each of
+  the 39 checks has the same verdict as in `8047`.
+  - B4 PASS 6 of 6. B6: 8 of 10 arms PASS. Its 2 other arms (`B6_threshold_n10_lead1.5`
+    arm 0, `B6_threshold_n10_lead5` arm 1) each got 9 error frames for the 10 commanded
+    pulses ("delivery was not one error frame per pulse"), as in `8047`.
+  - Triage of B6's two runs with a short arm (`resource-log window`, 01:35:14-01:36:45 and
+    01:36:45-01:38:22): bench.slice 4.3-4.5 cores, CPU pressure (some) at most 1.7 %, no
+    memory or IO pressure, major faults at most 0.2/s, no logger gap over 5 s
+    (`resource_B6_n10_lead1.5_58fa.txt`, `resource_B6_n10_lead5_58fa.txt`). Clean. Over the
+    whole run: `resource_run_58fa.txt`.
+- **The harness's own tests** on `3d9ab7cc`: in the tools test set, 137 files exit 0, and
+  `bench/test_only_inert.py` exits 2 without its arguments, as before. Mutant runs:
+  `test_kvaser_bus` 138 of 138 with `--can-fail`, the control passing; the set's 60 mutant
+  files: 58 exit 0, no mutant survives. The other two:
+  - `bench/test_x2_hold_mutants.py`: the control failed (FileNotFoundError), so no mutant
+    was judged. Since `3d9ab7cc`, `gi_serial` loads `gi_core_pin` from beside itself, and
+    the mutant folders held no copy of it. A defect of the change, fixed in `95695442`: 10
+    of 10 caught, the control passing.
+  - `test_suite_gen_inhibit_mutants.py`: killed by the tester's own process cleanup (exit
+    -9), so void. Run again alone on `3d9ab7cc`: 161 of 162 caught and 1 ERROR, the
+    mutant with no text to edit, a defect of the change. On `b353c75f`, which takes it
+    out: 161 of 161 caught, 0 errors, the control passing.
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical
