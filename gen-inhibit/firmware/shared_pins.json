@@ -5,8 +5,8 @@
     "digest": "ed2016be0c53e91bb169c7c8ec6b6729642e33c7f12ae2d45ff081a2ed9b3d6a"
   },
   "shared/bench": {
-    "tag": "2026.11.23.5",
-    "commit": "2a7ab8be056a57a20a7cdc33730c9d9b9ce8c35d",
-    "digest": "c7c0f91310717f30cf18b0105b9dfecc6a51728429db1e569314d2790264b66d"
+    "tag": "2026.11.26",
+    "commit": "2986c5e0edb26041c57fa20cd83d991525c92ee1",
+    "digest": "720d37f549e4c932d48848d65789ee071d6c0f2fbe90d61a9542890e3e77cdc9"
   }
 }
