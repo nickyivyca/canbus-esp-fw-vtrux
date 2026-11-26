@@ -10,8 +10,9 @@ the 12 V supply cut and is parked for the user. The SW figure is recorded as suc
 and is not carried over as the power-on one.
 
 ONE CYCLE: the PCAN replays a window at its recorded timing (queue order, as e4),
-the Kvaser witnesses every frame; --ota-at s into it, bench_flash.py OTAs the
-image (mode 0 first: OTA is refused while armed, spec 9.3). The device restarts
+the Kvaser witnesses every frame; --ota-at s into it, gi_ota.py (the pinned core's
+flasher; bench_flash.py until port step 4 item 2) OTAs the image (mode 0 first: OTA
+is refused while armed, spec 9.3). The device restarts
 (SW), boots into the auto-armed mode and, if the gate passes, goes live. Then:
   - boot instant (host epoch) = a status read's time - its uptime_ms, the median
     over the reads (each read's own time is its response time);
@@ -25,7 +26,7 @@ CONDITION 5 (--expect-no-live): the window has the generator requested (B0 0x0B)
 across the restart; the device must come up armed and never go live: 0 device
 0x051 after the boot, inhibit_live never true.
 
-    GI_WICAN_SSID=... py -3.14 autoarm_boot_to_live.py --bin <image> --capture runs/<log>
+    GI_OTA_SETTINGS=<machine settings json> GI_WICAN_SSID=... python3.13 -B autoarm_boot_to_live.py --bin <image> --capture runs/<log>
         [--window-start 0] --seconds 70 --ota-at 5 [--disarm-first] [--expect-no-live]
 Writes runs/autoarm_<stamp>.json (+ the witness log).
 """
@@ -43,7 +44,10 @@ import gi_paths  # noqa: E402  SeaDrive paths (goal-20 move, 2026-10-22)
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 RUNS = gi_paths.runs()
-BENCH_FLASH = os.path.join(gi_paths.fw_tools(), "bench_flash.py")
+# The OTA: one upload through the pinned core's flasher (gi_ota.py; bench_flash.py retired,
+# port step 4 item 2, 2026-11-25). It joins through the machine's ota settings
+# (GI_OTA_SETTINGS), and its record goes beside this run's.
+GI_OTA = os.path.join(HERE, "gi_ota.py")
 
 
 def boot_instant(reads):
@@ -285,7 +289,8 @@ def main():
 
     def do_ota():
         ota["start"] = time.time()
-        r = subprocess.run([sys.executable, BENCH_FLASH, "--bin", a.bin, "--flash"],
+        r = subprocess.run([sys.executable, "-B", GI_OTA, "--bin", a.bin,
+                            "--record", os.path.join(RUNS, "autoarm_%s_ota.json" % stamp)],
                            capture_output=True, text=True)
         ota["end"] = time.time()
         ota["rc"] = r.returncode

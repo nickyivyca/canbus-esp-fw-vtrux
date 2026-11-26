@@ -156,6 +156,15 @@ def main():
     check("bf_readings into classify: no status, one boot, 35 s on: a1", v[0] == "a1", v)
     v = U.BF.classify(500, t_end, before, U.bf_readings(pages), sha)
     check("classify: a 500 is b", v[0] == "b", v)
+    # port step 4 item 2: the verdict code is the pinned core's, and bench_flash is gone
+    import gi_core_pin
+    folder = gi_core_pin.check()["folder"]
+    bf_file = os.path.realpath(getattr(U.BF, "__file__", "") or "")
+    check("the verdict code is the pinned core's vtrux_bench.run.ota",
+          bf_file == os.path.realpath(os.path.join(folder, "vtrux_bench", "run", "ota.py")),
+          "%s; pinned %s" % (bf_file, folder))
+    check("no bench_flash module is imported", "bench_flash" not in sys.modules,
+          getattr(sys.modules.get("bench_flash"), "__file__", None))
     up = [dict(pages[0], t_resp=t_end - 0.5), dict(pages[1], t_resp=t_end + 0.5)]
     ins = U.inside_upload(up, t_end - 1.0, t_end)
     check("inside_upload: only a read answered while the upload was open", len(ins) == 1
@@ -186,6 +195,12 @@ MUTANTS = [
      "            out.append(dict(ident))"),
     ("inside_upload counts every read", "and start < r[\"t_resp\"] < end]", "]"),
     ("inside_upload counts a read in flight at the connect", 'and r["t_req"] >= start and', "and"),
+    # port step 4 item 2: the verdict code from the pinned core, not a copy of its own
+    ("the verdict code a copy, not the core's module", "BF = P.BF\n",
+     "import types\nBF = types.SimpleNamespace(**{k: getattr(P.BF, k) for k in dir(P.BF)"
+     " if not k.startswith('__')})\n"),
+    ("a bench_flash module beside the core's", "BF = P.BF\n",
+     "BF = P.BF\nsys.modules['bench_flash'] = BF\n"),
 ]
 
 

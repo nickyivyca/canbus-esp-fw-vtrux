@@ -1666,8 +1666,9 @@ def main():
     device_sha, why = device_identity()
     if device_sha is None:
         print("device did not answer /gen_inhibit with its elf_sha256: %s" % why)
-        print("Join its AP first: bench_flash.py --status, in the firmware repo's "
-              "gen-inhibit/tools/ (set GI_WICAN_SSID; see tools-reference.md)")
+        print("Join its hotspot first, through the machine's ota settings: bench/wican_reboot.py's "
+              "ota_route (GI_OTA_SETTINGS, GI_WICAN_SSID; bench_flash.py --status retired at "
+              "port step 4 item 2)")
         return 2
     print("device elf_sha256 %s (from /gen_inhibit)" % device_sha)
 
