@@ -357,6 +357,20 @@ def test_suites(settings, shas):
           nn[0].env.get("GI_TERMINATION") == "{gi_can1_termination}" and
           nn[0].env.get("GI_MAN_SHA") == bench.images["wican_man"].expect and nn[0].argv[-1] == "NONODE",
           nn and nn[0].env)
+    # F5 (2026-11-27): the probe's no-acknowledge modes, on the _txabort image with the X2 held, right after txabort
+    names = [gg.name for gg in bench.groups]
+    f5 = [c for gg in bench.groups if gg.name == "txabort_held" for c in gg.checks]
+    check("bench: txabort_held follows txabort, the _txabort image with the X2 held, F5unacked its only check",
+          "txabort_held" in names and names.index("txabort_held") == names.index("txabort") + 1
+          and [gg.image_list for gg in bench.groups if gg.name == "txabort_held"] == [["wican_txabort", "x2_held"]]
+          and [c.id for c in f5] == ["F5unacked"], (names, [c.id for c in f5]))
+    check("bench: F5unacked runs baseline_b_hand.sh F5, judged on its exit, its output declared, 1800 s, "
+          "the power line naming _txabort",
+          len(f5) == 1 and f5[0].argv[-2:] == [f5[0].argv[-2], "F5"] and f5[0].argv[-2].endswith("/baseline_b_hand.sh")
+          and getattr(f5[0].judge, "__name__", "") == "exit_code_judge"
+          and "F5_unacked_bench.txt" in f5[0].outputs and f5[0].timeout_s == 1800
+          and "txabort" in f5[0].env.get("GI_PW_IMAGE", ""),
+          f5 and (f5[0].argv, getattr(f5[0].judge, "__name__", None), f5[0].outputs, f5[0].env.get("GI_PW_IMAGE")))
     # Reproducible builds (step 0b) make _man2 byte-identical to _man (reviewer, 2026-10-25): no
     # man2 image or group; B17b runs in rxq after B26, on the board already on rxq; the control
     # image (--other) of B17a and of the prod page is rxq.

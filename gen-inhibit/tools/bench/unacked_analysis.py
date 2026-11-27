@@ -42,6 +42,7 @@ import statistics
 TS, TBS, TCS = 32, 4, 8
 PASSIVE_TEC = 128
 RESIDUAL_US = 50.0      # a pair further than this from the median offset makes the join unsure
+ALERT_TX_SUCCESS = 0x00000002   # TWAI_ALERT_TX_SUCCESS (wican_txabort_bench.ALERT_NAMES)
 
 
 def state_of(tec):
@@ -188,6 +189,13 @@ def hold_check(summary, trial, copies, node_up_us, node_down_us, node_rx_us):
     r.update(held=held, expect="goes out" if held else "nothing goes out", node_rx=len(rx),
              witness_copies_while_up=len(seen), out=bool(rx))
     r["as_expected"] = r["out"] == held
+    # the device's own view of the hold, beside the node's (README step 9): TX_SUCCESS in alerts_hold, and
+    # TBS and TCS at the hold's end; recorded, not judged. A difference from the node's view is listed
+    ah = trial.get("alerts_hold")
+    r["device"] = {"tx_success": None if ah is None else bool(ah & ALERT_TX_SUCCESS),
+                   "hold_tbs": trial.get("hold_tbs"), "hold_tcs": trial.get("hold_tcs"),
+                   "hold_ns": trial.get("hold_ns"), "cleanup": trial.get("cleanup")}
+    r["device_differs"] = r["device"]["tx_success"] is not None and r["device"]["tx_success"] != r["out"]
     return r
 
 
@@ -199,6 +207,7 @@ def hold_table(rows):
         out[case] = {"trials": len(rs), "as_expected": sum(1 for x in rs if x["hold"]["as_expected"]),
                      "not_as_expected": [x["t"] for x in rs if not x["hold"]["as_expected"]]}
     out["void"] = [(x["t"], x["hold"]["void"]) for x in rows if x["hold"]["void"] is not None]
+    out["device_differs"] = [x["t"] for x in rows if x["hold"].get("device_differs")]
     return out
 
 

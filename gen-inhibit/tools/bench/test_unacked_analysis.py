@@ -199,6 +199,21 @@ def main():
           ht["held: must go out"] == {"trials": 1, "as_expected": 1, "not_as_expected": []}
           and [v[0] for v in ht["void"]] == [2], ht)
 
+    # 6b. the device's own view of the hold (README step 9), recorded beside the node's
+    th = tr | {"cleared": "hold", "alerts_hold": 0x00000002 | 0x00000200, "hold_tbs": 1, "hold_tcs": 1,
+               "hold_ns": 300_000_000, "cleanup": 0}
+    h = U.hold_check(s, th, copies_for(rises), end_w + 5000, end_w + 50000, [end_w + 5200])
+    check("cleared 'hold' is a frame held at the hold's start: must go out",
+          h["held"] and h["as_expected"], h)
+    check("TX_SUCCESS in alerts_hold read, and agreeing with the node", h["device"]["tx_success"] is True
+          and h["device_differs"] is False, h)
+    h = U.hold_check(s, th | {"alerts_hold": 0x00000001 | 0x00000200}, copies_for(rises), end_w + 5000,
+                     end_w + 50000, [end_w + 5200])
+    check("no TX_SUCCESS though the node received it: the views differ", h["device"]["tx_success"] is False
+          and h["device_differs"], h)
+    ht = U.hold_table([{"t": 9, "hold": h}])
+    check("hold table lists the trial whose views differ", ht["device_differs"] == [9], ht)
+
     # 7. the hold's resends are not the trace's
     s = U.trial_summary(tr, copies_for(rises, extra=[end_w + 1000 + 270 * k for k in range(6)]))
     check("six resends in the hold leave the trace's count at the rises", s["witness_vs_rises"] == 0
@@ -248,6 +263,10 @@ MUTANTS = [
     ("held decided by tbs_tcs only", "    held = trial.get(\"cleared\") not in (\"tbs\", \"tbs_tcs\")\n",
      "    held = trial.get(\"cleared\") != \"tbs_tcs\"\n"),
     ("as expected whatever went out", "    r[\"as_expected\"] = r[\"out\"] == held\n", "    r[\"as_expected\"] = True\n"),
+    ("TX_SUCCESS read from TX_IDLE", "ALERT_TX_SUCCESS = 0x00000002", "ALERT_TX_SUCCESS = 0x00000001"),
+    ("the device's view never compared", "r[\"device\"][\"tx_success\"] != r[\"out\"]\n", "False\n"),
+    ("cleared 'hold' read as freed", "    held = trial.get(\"cleared\") not in (\"tbs\", \"tbs_tcs\")\n",
+     "    held = trial.get(\"cleared\") not in (\"tbs\", \"tbs_tcs\", \"hold\")\n"),
     ("bursts never split", "        if last is not None and c[0] - last > gap_us:\n", "        if False:\n"),
     ("the abort's TS read from TBS", "int(bool(trial[\"ab_st_before\"] & TS))", "int(bool(trial[\"ab_st_before\"] & TBS))"),
     ("no-abort reason dropped", "    out[\"no_abort\"] = [(s[\"t\"], s.get(\"no_abort_reason\") or s[\"skip\"]) for s in summaries if not s[\"abort\"]]\n",

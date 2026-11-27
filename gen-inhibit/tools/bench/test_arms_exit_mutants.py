@@ -39,6 +39,13 @@ MUTANTS = [
      '[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED B2 arm(s) exited non-zero"; exit 1; }', ""),
     ("hand: stops at the first failed arm", HAND, '  echo "$n exit $r"\n  ' + COUNT,
      '  echo "$n exit $r"\n  [ $r -eq 0 ] || { echo "exited non-zero"; exit 1; }'),
+    # F5 (2026-11-27): unacked_bench.py's exit is the script's
+    ("hand: F5's exit dropped", HAND, '[ "${F5_RC:-0}" -eq 0 ] || { echo "F5 exited $F5_RC"; exit "$F5_RC"; }', ""),
+    ("hand: F5's exit flattened to 1", HAND, 'echo "F5 exited $F5_RC"; exit "$F5_RC"; }', 'echo "F5 exited $F5_RC"; exit 1; }'),
+    ("hand: GI_F5_PLAN not passed", HAND, ' ${GI_F5_PLAN:+--plan "$GI_F5_PLAN"}', ""),
+    ("hand: F5 before the B2 check, a failed arm lost", HAND,
+     '[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED B2 arm(s) exited non-zero"; exit 1; }\n[ "${F5_RC:-0}" -eq 0 ] || { echo "F5 exited $F5_RC"; exit "$F5_RC"; }',
+     '[ "${F5_RC:-0}" -eq 0 ] || { echo "F5 exited $F5_RC"; exit "$F5_RC"; }\nexit 0'),
 ]
 
 

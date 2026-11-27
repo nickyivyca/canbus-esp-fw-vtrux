@@ -909,6 +909,11 @@ def suite(settings):
                 (6, "live_crash"), (7, "off_reboot"))] + ["B19_present_rt.txt"], "wican_rt")]),
         Group("txabort", needs_lock=True, image=["wican_txabort", "x2_app"], checks=[
             otag("B23", "txabort", judged("B23"), ["B23_txabort_bench.txt", "B19_present_txabort.txt"], "wican_txabort")]),
+        # F5 (gen-inhibit tracker F5, shared/twai_port T13's 2026-11-27 addition): the probe's no-acknowledge modes on
+        # the _txabort image, the X2 held so no node ACKs; a measurement judged on its exit (unacked_bench.py: 1 when
+        # the positive control fails or a call fails, 2 refused)
+        Group("txabort_held", needs_lock=True, image=["wican_txabort", "x2_held"], checks=[
+            chk("F5unacked", "baseline_b_hand.sh", ["F5"], None, ["F5_unacked_bench.txt"], 1800, "wican_txabort")]),
         Group("abortwin", needs_lock=True, image=["wican_abortwin", "x2_app"], checks=[
             otag("abortwin", "abortwin", None, ["B19_present_abortwin.txt"], "wican_abortwin")]),
         Group("rxq", needs_lock=True, image=["wican_rxq", "x2_app"], checks=[
