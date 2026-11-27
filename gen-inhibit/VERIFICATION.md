@@ -10521,7 +10521,13 @@ and the entries' merge) and `8ff2429c`.
     record: the script runs to the end, and the copy holds both staged files. Can-fail:
     the mutant with the old pipe fails the second check. 74 ok in each of 3 runs;
     `--mutants` 47 of 47 killed, the control passing.
-  - The whole tools test set on `<FIXTIP>` (the stack after `8ff2429c`): WHOLE_FIX.
+  - The whole tools test set on `ac1d986f` (the stack after `8ff2429c` and this entry's
+    first commit, build.slice): 133 of 135 test files exit 0, and the 57 mutant files
+    exit 0. `bench/test_only_inert.py` exits 2, as before. `test_baseline_host_run.py`
+    exits 0. `test_gi_vbus.py` exits 1 on its two "network counters flat" checks: the LAN
+    card's background moved 2593-5257 packets per second over its idle windows, so the
+    check refused again. Run again alone at 12:46 on 2026-11-27, with the card at 23-70
+    packets per second: 59 pass, 0 fail.
 
 ## 13 Known not to be implemented
 
