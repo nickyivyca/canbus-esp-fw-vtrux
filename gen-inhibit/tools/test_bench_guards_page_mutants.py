@@ -12,6 +12,17 @@ wifi_mode() or ap_mode_detail(), which the flash guard imports. The control is
 both guards as they were at 95aa77a, before they moved off /check_status and
 read wifi_mode from /load_config: the test must fail there too.
 Gen-inhibit tester, 2026-10-21.
+
+Port step 4 item 2 (2026-11-25): the HTTP helpers (http, wifi_mode,
+ap_mode_detail, gi_status, set_mode, device_identity, runs_dir and the rest)
+are the pinned shared/bench's vtrux_bench/run/wican_http.py now, so the
+mutants that edited their copies here (device_identity's four, and the five
+"both" ones on wifi_mode and ap_mode_detail) have no text left to edit in this
+folder. The same rules are shared/bench's tests/test_wican_http.py's, one
+mutant per rule, at the pinned tag. In their place, mutants of the wiring: a
+helper that is not the core's (device_identity with a /check_status read, the
+set_mode form without its offset). Each copy carries bench/gi_core_pin.py, which
+bench_ota_guard.py loads by file from there.
 """
 import os
 import shutil
@@ -28,23 +39,23 @@ TEST = "test_bench_guards_page.py"
 OTA, FLASH = "bench_ota_guard.py", "bench_flash_guard.py"
 CONTROL = "95aa77a"
 
-IDENT = '''    page, _ = gi_status(host, strict=False)
-    if page is None:
-        return None
-    return {k: page.get(k) for k in ("elf_sha256", "git_version", "uptime_ms")}
-'''
+PIN = os.path.join("bench", "gi_core_pin.py")
 ALIVE = "            alive = gi_status(host, strict=False)[0] is not None\n"
 FLASH_DEVICE = '           "device": device_identity(args.host),\n'
+CORE_IDENT = "device_identity = _WH.device_identity\n"
+CORE_SET_MODE = "set_mode = _WH.set_mode\n"
 
 MUTANTS = [
-    ("ota: the version read from /check_status again", OTA, IDENT,
-     '    st, txt = http(host, "/check_status")\n    if st != 200:\n        return None\n'
-     '    return json.loads(txt).get("git_version")\n'),
-    ("ota: /check_status asked for, the page still used", OTA, IDENT, '    http(host, "/check_status")\n' + IDENT),
-    ("ota: elf_sha256 left out of the identity", OTA,
-     'for k in ("elf_sha256", "git_version", "uptime_ms")', 'for k in ("git_version", "uptime_ms")'),
-    ("ota: an empty identity when the page does not answer", OTA,
-     "    if page is None:\n        return None\n    return {k:", "    if page is None:\n        return {}\n    return {k:"),
+    # The wiring onto the pinned core (port step 4 item 2)
+    ("ota: device_identity a copy of its own that reads /check_status", OTA, CORE_IDENT,
+     "def device_identity(host):\n    http(host, \"/check_status\")\n    return _WH.device_identity(host)\n"),
+    ("ota: device_identity a copy of its own, the old text", OTA, CORE_IDENT,
+     "def device_identity(host):\n    page, _ = gi_status(host, strict=False)\n    if page is None:\n"
+     "        return None\n    return {k: page.get(k) for k in (\"elf_sha256\", \"git_version\", \"uptime_ms\")}\n"),
+    ("ota: set_mode without its offset (the flasher's disarm form)", OTA, CORE_SET_MODE,
+     "def set_mode(host, mode, offset=500):\n    return _WH.set_mode(host, mode, offset=None)\n"),
+    ("ota: set_mode a copy of its own, the same form", OTA, CORE_SET_MODE,
+     "def set_mode(host, mode, offset=500):\n    return _WH.set_mode(host, mode, offset=offset)\n"),
     ("flash: the version read from /check_status again", FLASH, FLASH_DEVICE,
      '           "device": json.loads(http(args.host, "/check_status")[1]).get("git_version"),\n'),
     ("flash: liveness asked of /check_status again", FLASH, ALIVE,
@@ -52,22 +63,8 @@ MUTANTS = [
     ("flash: the device always counted alive", FLASH, ALIVE, "            alive = True\n"),
     ("flash: liveness from any answer, a failed one included", FLASH, ALIVE,
      "            alive = gi_status(host, strict=False) is not None\n"),
-    # The AP-mode precondition (user, 2026-10-21). The reviewer asked for the
-    # absent field by name: it must be caught, not read as AP.
-    ("both: an absent wifi_mode read as AP", OTA,
-     '    if value is None:\n        return None, "the config has no wifi_mode"\n',
-     '    if value is None:\n        value = "AP"\n'),
-    ("both: a value not read passes the precondition", OTA,
-     '    if value is None:\n        return False, "wifi_mode not read: %s" % err\n',
-     '    if value is None:\n        return True, "wifi_mode not read: %s" % err\n'),
-    ("both: a config that is not JSON read as AP", OTA,
-     '    except ValueError:\n        return None, "the config was not JSON"\n',
-     '    except ValueError:\n        return "AP", None\n'),
-    ("both: the whole config printed", OTA, "        cfg = json.loads(txt)\n",
-     "        print(txt)\n        cfg = json.loads(txt)\n"),
-    ("both: the error carries the config's text", OTA,
-     '        return None, "GET /load_config returned %s" % st\n',
-     '        return None, "GET /load_config returned %s %s" % (st, txt)\n'),
+    # The AP-mode precondition (user, 2026-10-21): its reads are the core's
+    # wifi_mode and ap_mode_detail now (see the docstring); enforcing it is the guards'.
     ("ota: the precondition not enforced", OTA, "    if not ap_ok:\n        return 2\n",
      "    if False:\n        return 2\n"),
     ("ota: the whole config recorded", OTA, '           "wifi_mode": mode_value,\n',
@@ -126,13 +123,27 @@ def main():
             continue
         d = os.path.join(base, "m%d" % n)
         gi_paths.remove_tree(d)
-        os.makedirs(d)
+        os.makedirs(os.path.join(d, "bench"))
+        shutil.copyfile(os.path.join(HERE, PIN), os.path.join(d, PIN))
         for f in (OTA, FLASH):
             open(os.path.join(d, f), "w", encoding="utf-8", newline="").write(
                 src[f].replace(old, new) if f == target else src[f])
         dead, crashed, fails, rc = run_test(d)
         killed += dead
         report("m%d" % n, name, dead, crashed, fails, rc)
+
+    # The copy as it is, with its bench/gi_core_pin.py: it must pass, or every kill above
+    # could be the copy's fault (port step 4 item 2)
+    d = os.path.join(base, "as_is")
+    gi_paths.remove_tree(d)
+    os.makedirs(os.path.join(d, "bench"))
+    shutil.copyfile(os.path.join(HERE, PIN), os.path.join(d, PIN))
+    for f in (OTA, FLASH):
+        open(os.path.join(d, f), "w", encoding="utf-8", newline="").write(src[f])
+    a_dead, crashed, fails, rc = run_test(d)
+    as_is_ok = rc == 0 and not fails and not crashed
+    print("%s as_is   the unmutated copy  (exit %d, %d FAIL%s)" % (
+        "PASS    " if as_is_ok else "FAILED  ", rc, len(fails), ", CRASHED" if crashed else ""))
 
     d = os.path.join(base, "control")
     gi_paths.remove_tree(d)
@@ -144,9 +155,10 @@ def main():
     c_dead, crashed, fails, rc = run_test(d)
     report("control", "both guards at %s" % CONTROL, c_dead, crashed, fails, rc)
     gi_paths.remove_tree(base)
-    print("\n%d of %d killed by a check, %d errors; the control %s"
-          % (killed, len(MUTANTS), errors, "fails by a check, as required" if c_dead else "DOES NOT FAIL"))
-    return 0 if killed == len(MUTANTS) and not errors and c_dead else 1
+    print("\n%d of %d killed by a check, %d errors; the unmutated copy %s; the control %s"
+          % (killed, len(MUTANTS), errors, "passes" if as_is_ok else "DOES NOT PASS",
+             "fails by a check, as required" if c_dead else "DOES NOT FAIL"))
+    return 0 if killed == len(MUTANTS) and not errors and c_dead and as_is_ok else 1
 
 
 if __name__ == "__main__":

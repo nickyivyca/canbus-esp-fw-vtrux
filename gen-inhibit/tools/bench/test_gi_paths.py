@@ -10,7 +10,8 @@ run's scratch/ folder (the machine's temp folder until 2026-10-24), with a fake 
   2. The retired settings (GI_FW_TOOLS, GEN_INHIBIT_REPO, VTRUX_DATA, REVERSE_IT_ROOT)
      are each refused, by check_retired and on import. No file under gen-inhibit/tools
      sets one in a usage line, or names the retired tester clone as a default
-     (home-paths ruling B, 2026-10-24); autoarm_boot_to_live's bench_flash.py is this repo's.
+     (home-paths ruling B, 2026-10-24); autoarm_boot_to_live's OTA is this repo's gi_ota.py
+     (bench_flash.py until port step 4 item 2, 2026-11-25), and it runs bench_flash.py no more.
   3. Pins: a pinned file that matches passes, one changed is refused, one spelt in
      another case is still checked, an unpinned file passes. A pinned folder that
      matches passes; a changed, renamed, added or removed file is refused; a change to an
@@ -150,15 +151,28 @@ def old_clone_names(top):
     return out
 
 
-def autoarm_bench_flash():
-    """BENCH_FLASH as autoarm_boot_to_live.py computes it, read from its source (importing it
-    would need the bench), with this folder's own gi_paths (GI_PATHS_DIR's copy lives elsewhere)."""
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "autoarm_boot_to_live.py"), encoding="utf-8") as fh:
-        m = re.search(r"^BENCH_FLASH = (.+)$", fh.read(), re.M)
+def autoarm_ota(path=None):
+    """GI_OTA as autoarm_boot_to_live.py computes it, read from its source (importing it
+    would need the bench), with HERE as this folder (bench_flash.py's BENCH_FLASH until port
+    step 4 item 2, 2026-11-25: the OTA is gi_ota.py's, the pinned core's flasher). path: another
+    source to read, for the control."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(path or os.path.join(here, "autoarm_boot_to_live.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    m = re.search(r"^GI_OTA = (.+)$", src, re.M)
     try:
-        return eval(m.group(1), {"os": os, "gi_paths": gi_paths}) if m else None
+        return eval(m.group(1), {"os": os, "gi_paths": gi_paths, "HERE": here}) if m else None
     except SyntaxError:         # an expression over more than one line: not this repo's form
         return None
+
+
+def autoarm_names_bench_flash(path=None):
+    """Whether autoarm_boot_to_live.py's code still names bench_flash.py (comments aside).
+    path: another source to read, for the control."""
+    with open(path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "autoarm_boot_to_live.py"),
+              encoding="utf-8") as fh:
+        code = [ln.split("#")[0] for ln in fh if not ln.lstrip().startswith("#")]
+    return any("bench_flash.py\"" in ln or "bench_flash.py'" in ln or "BENCH_FLASH" in ln for ln in code)
 
 
 def main():
@@ -323,9 +337,18 @@ def main():
         fh.write('X = os.path.join(os.path.expanduser("~"), "Git", "%s", "tools")\n' % OLD_CLONE)
     check("control: such a default is found", lambda: [h[0] for h in old_clone_names(root)] == ["flash.py"])
     os.remove(os.path.join(root, "flash.py"))
-    check("autoarm_boot_to_live's bench_flash.py is this repo's, and exists",
-          lambda: autoarm_bench_flash() == os.path.join(gi_paths.fw_tools(), "bench_flash.py")
-          and os.path.isfile(autoarm_bench_flash()), autoarm_bench_flash())
+    here = os.path.dirname(os.path.abspath(__file__))
+    check("autoarm_boot_to_live's OTA is this repo's gi_ota.py, and exists",
+          lambda: autoarm_ota() == os.path.join(here, "gi_ota.py")
+          and os.path.isfile(autoarm_ota()), autoarm_ota())
+    check("autoarm_boot_to_live no longer runs bench_flash.py", lambda: not autoarm_names_bench_flash())
+    old_src = os.path.join(root, "autoarm_old.py")
+    with open(old_src, "w", encoding="utf-8") as fh:
+        fh.write('BENCH_FLASH = os.path.join(gi_paths.fw_tools(), "bench_flash.py")\n'
+                 '        r = subprocess.run([sys.executable, BENCH_FLASH, "--bin", a.bin, "--flash"],\n')
+    check("control: the old autoarm source (bench_flash.py) fails both checks",
+          lambda: autoarm_ota(old_src) is None and autoarm_names_bench_flash(old_src))
+    os.remove(old_src)
 
     print("\n=== pins ===")
     pins = write_pins(gp, root)

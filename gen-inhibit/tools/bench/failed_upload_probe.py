@@ -6,7 +6,8 @@ Two kinds, both run (row 11 covers every error exit of the handler):
   short      the headers declare the whole image's multipart length; only the
              first --cut bytes of the body are sent, then a --stall (s) with the
              connection open, then this side half-closes (FIN). Expected: no HTTP
-             status and no restart, bench_flash.py verdict a1.
+             status and no restart, bench_flash verdict a1 (the core's classify,
+             vtrux_bench.run.ota, since port step 4 item 2).
   truncated  a complete, well-formed request whose image is cut to --cut bytes.
              Expected: a 4xx/5xx, verdict b. Accepted instead is a finding (the
              image's own validation must refuse it): stop and report.
@@ -41,7 +42,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, gi_paths.fw_tools())
 import ota_guard_raw_probe as P   # noqa: E402
-import bench_flash as BF          # noqa: E402
+# bench_flash.py's verdict code (identity, image_elf_sha256, A1_CONFIRM_S, classify), moved
+# unchanged to the pinned core's vtrux_bench.run.ota (port step 4 item 2, 2026-11-25). The
+# record keeps its key "bench_flash_verdict", which the batch-3 judge reads.
+BF = P.BF
 
 HOST, PORT = P.HOST, P.PORT
 OTA_PATH = "/upload/ota.bin"

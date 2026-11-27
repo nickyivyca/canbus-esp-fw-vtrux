@@ -4,10 +4,11 @@ FAIL by a check (a traceback is not a kill), and an edit that does not apply is 
 error. Gen-inhibit tester, 2026-10-22.
 
 Each mutant is a copy of test_publish_scan.py with one edit, in a folder of the
-worktree's scratch/ that also holds this folder's top-level .py files (the scan runs
-bench_flash.py and imports bench_ota_guard from beside itself), run with
-PUBLISH_SCAN_ROOT naming this folder, so it scans the real tree. The control, the
-unmutated copy run the same way, must pass.
+worktree's scratch/ that also holds this folder's top-level .py files (the scan
+imports bench_ota_guard from beside itself) and bench/gi_core_pin.py (which
+bench_ota_guard loads from there, port step 4 item 2, 2026-11-25), run with
+PUBLISH_SCAN_ROOT naming this folder, so it scans the real tree and runs its
+bench/gi_ota.py. The control, the unmutated copy run the same way, must pass.
 
     py -3.14 -B test_publish_scan_mutants.py
 """
@@ -50,6 +51,9 @@ def copy(base, name, text):
     for f in os.listdir(HERE):
         if f.endswith(".py") and os.path.isfile(os.path.join(HERE, f)):
             shutil.copy(os.path.join(HERE, f), d)
+    # bench_ota_guard.py loads bench/gi_core_pin.py by file from beside itself (port step 4 item 2)
+    os.makedirs(os.path.join(d, "bench"))
+    shutil.copy(os.path.join(HERE, "bench", "gi_core_pin.py"), os.path.join(d, "bench"))
     open(os.path.join(d, TARGET), "w", encoding="utf-8", newline="").write(text)
     return d
 
