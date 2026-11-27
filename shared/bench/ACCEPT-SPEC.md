@@ -198,7 +198,10 @@ Requirements are numbered A1 to A18. The numbers are stable.
   LEFTOVER line in the record. A `finally` and an exit handler remove the
   same on any other way out. Anything that fails only after the close, or in
   a run that stopped before closing, is printed and reported to the tester,
-  never written into a closed record (user, 2026-11-01).
+  never written into a closed record (user, 2026-11-01). The helper must
+  not change the mode of anything outside the path it is given, and must
+  not change the mode of a link's target (added 2026-11-26, user, in the
+  gen-inhibit reviewer's session).
 
 ## Projects and ownership
 
