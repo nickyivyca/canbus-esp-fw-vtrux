@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Judges for the spec 13 "an existing harness lacks the case" bench rows.
+"""Judges for the spec 12.4 interlock, trip and gate rows on hardware (the suite's B20).
 
 Gen-inhibit tester, 2026-10-15. Pure: no hardware, no clock. The bench half is
 interlock_bench.py; the cases and what each must show are its CASES table.
