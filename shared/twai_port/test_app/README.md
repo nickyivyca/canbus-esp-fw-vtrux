@@ -59,6 +59,7 @@ too.
 | `wait_us` | m2, m3 | 0 to `window_us` minus 1 | not given | the time from the send the abort is aimed at. Give `wait_att` or `wait_us`, not both |
 | `bound_us` | m2, m3 | 10-20000 | 2000 | after the abort, how long the trace waits for the buffer to come free |
 | `delay_us` | m3 | 0-5000 | 100 | from the TS rise to the abort |
+| `hold_ms` | all | 0-2000 | 0 | the hold before the cleanup (step 9). 0: no hold |
 
 ### What each phase does
 
@@ -85,10 +86,31 @@ Each trial:
    `bound_us`.
 7. The trace runs `trail_us` more after the buffer comes free.
 8. The driver's alerts and counters are read.
-9. If the buffer is still full, the cleanup clears the driver's queue, then
-   issues the abort at each read with TS = 0, for at most 20 ms, until
-   TBS = 1. This is not part of the measurement. It is counted
-   (`cleanup_aborts`) and timed (`cleanup_ns`).
+9. With `hold_ms` above 0, the hold. The driver stays installed and
+   running, with interrupts on. The probe issues no abort, clears nothing
+   and records no change for at least `hold_ms`. Then it reads the status,
+   the TEC, the driver's alerts and the driver's view. The hold runs
+   whether or not the trace saw the buffer come free.
+10. If the buffer is still full, the cleanup clears the driver's queue,
+    then issues the abort at each read with TS = 0, for at most 20 ms,
+    until TBS = 1. This is not part of the measurement. It is counted
+    (`cleanup_aborts`) and timed (`cleanup_ns`).
+
+The hold is for a bench check that brings back an acknowledging node
+after the trace (gen-inhibit reviewer, 2026-11-27). Without it the cleanup
+removes any frame the abort left in the buffer, so a frame that should not
+go out could never be seen going out:
+- `TWAI_ALERT_TX_SUCCESS` in `alerts_hold` shows that a frame went out in
+  the hold.
+- m1 with a hold is the positive control. Its frame was never aborted, so
+  it must go out when the node returns.
+- `cleared` `hold` means the trace ended with the buffer full and TBS read
+  1 at the hold's end.
+- `cleanup` 1 after a hold means the frame was still in the buffer at the
+  hold's end.
+
+The call answers only after its last trial. With `hold_ms=2000` and
+`reps=8` that is more than 16 s.
 
 m2 and m3 read the driver's alerts and counters once before the abort, at
 the point the wait is met (m3: at the TS rise). That read pauses the
@@ -120,7 +142,7 @@ One JSON object, sent in chunks. The head:
 |---|---|
 | `probe`, `git`, `phase`, `label` | `"gi_txabort"`, the app version, `m1`/`m2`/`m3`, the label |
 | `id`, `dlc`, `tag`, `single_shot` | the frame: `"0x7FE"`, 8, `"AB7E trial"`, false |
-| `reps` ... `delay_us` | the arguments as run; -1 for one the phase does not use |
+| `reps` ... `hold_ms` | the arguments as run; -1 for one the phase does not use |
 | `timing`, `cpu_hz`, `cpu_hz_end`, `gap_us` | `"cpu cycle counter"`, the CPU frequency at the start and the end, the gap mark |
 | `st_bits` | the status bits by name: `tbs` 4, `tcs` 8, `rs` 16, `ts` 32, `es` 64, `bs` 128. These are the bit positions the older phases' status words use |
 | `events_max`, `events_used` | the change records: 2048 for the whole call, and how many were used |
@@ -138,13 +160,14 @@ phase):
 | `samples`, `max_gap_ns`, `gaps`, `ev_lost` | samples taken, the longest gap, gaps over the mark, changes lost because the 2048 records were used up |
 | `attempts` | TS rises seen. A rise inside a gap is not seen |
 | `end_ns` | the trace's last sample |
-| `cleared`, `clear_ns` | how the buffer came free: `tbs_tcs` (in the trace, TCS = 1), `tbs` (in the trace, TCS = 0), `cleanup` (by the cleanup), `never`; and the first sample with TBS = 1 |
+| `cleared`, `clear_ns` | how the buffer came free: `tbs_tcs` (in the trace, TCS = 1), `tbs` (in the trace, TCS = 0), `hold` (in the hold: TBS = 1 at its end), `cleanup` (by the cleanup), `never`; and the first sample with TBS = 1 (-1 when not in the trace) |
 | `wait_timeout`, `freed_before` | m2, m3: the wait ran past `window_us`, so no abort; the buffer came free before the abort, so no abort |
 | `met_ns`, `anchor_ns` | m2, m3: when the wait was met; m3: the TS rise the delay counts from |
 | `abort_ns`, `ab_issued`, `ab_st_before`, `ab_st_after`, `ab_tec`, `ab_attempt` | the abort: its time, whether the command was written, the status just before and just after it in the same critical section, the TEC, and the attempts seen up to it |
 | `free_after_abort_ns` | from the abort to TBS = 1 |
 | `alerts_before`, `drv_mid`, `snap_ns` | m2, m3: the driver's alerts and view read before the abort, and how long that read took; `null` and -1 with `irq=off` |
 | `alerts_after`, `drv_after` | the driver's alerts and view after the trace: m1 the whole window, m2 and m3 the abort and after |
+| `hold_ns`, `hold_st`, `hold_tec`, `hold_tbs`, `hold_tcs`, `alerts_hold`, `drv_hold` | the hold: its length; at its end the status, the TEC, TBS and TCS (1 or 0), the driver's alerts in the hold and the driver's view. -1 and `null` with no hold |
 | `cleanup`, `cleanup_ns`, `cleanup_aborts`, `alerts_cleanup` | the cleanup: whether it ran, its time to TBS = 1 (-1: never), abort commands issued, the alerts after it |
 | `st_end`, `drv_end`, `free_end` | the status, the driver's view and TBS at the end of the trial |
 | `clk_cyc`, `clk_us` | the trial's length in cycles and in `esp_timer` microseconds |

@@ -132,3 +132,17 @@ void txp_env_settle(int ms)
 {
     vTaskDelay(pdMS_TO_TICKS(ms));
 }
+
+/*
+ * The hold: blocks, so the driver's ISR and the IDLE task run. pdMS_TO_TICKS()
+ * rounds down, so it waits tick by tick until esp_timer says ms have passed:
+ * at least the hold asked for, never less. The caller times it in cycles.
+ */
+void txp_env_hold(int ms)
+{
+    const int64_t end = esp_timer_get_time() + (int64_t)ms * 1000;
+    while (esp_timer_get_time() < end)
+    {
+        vTaskDelay(1);
+    }
+}

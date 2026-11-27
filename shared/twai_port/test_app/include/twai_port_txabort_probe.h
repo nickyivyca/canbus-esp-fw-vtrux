@@ -86,7 +86,9 @@
  * phase=m1|m2|m3 ARE THE OPPOSITE: the no-acknowledge modes (T13, gen-inhibit
  * tracker F5), for a bus where NO node acknowledges, with their own arguments
  * and answer (twai_port_unacked.h; test_app/README.md). The older phases'
- * arguments are refused with them.
+ * arguments are refused with them. Their `hold_ms` keeps the driver running
+ * after the trace, with no abort, so a bench check can bring back an
+ * acknowledging node and see what goes out.
  */
 /*
  * Register the URI, from the project's URI hook (shared/wican W8). `owns_bus`

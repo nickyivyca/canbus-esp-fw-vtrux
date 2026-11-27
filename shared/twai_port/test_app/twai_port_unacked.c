@@ -148,6 +148,7 @@ bool txp_parse(const char *phase, txp_get_fn get, void *ctx,
         { "wait_att",  &p->wait_att,  1,   255,          M_23 },
         { "bound_us",  &p->bound_us,  10,  20000,        M_23 },
         { "delay_us",  &p->delay_us,  0,   5000,         MB(TXP_M3) },
+        { "hold_ms",   &p->hold_ms,   0,   2000,         M_ALL },
     };
     for (unsigned i = 0; i < sizeof(nums) / sizeof(nums[0]); i++)
     {
@@ -349,6 +350,31 @@ static bool wait_for(smp_t *s, const txp_params_t *p, uint32_t cpm)
     return true;
 }
 
+/*
+ * The hold (gen-inhibit reviewer, 2026-11-27, on the tester's question).
+ * Without it the cleanup removes whatever frame the abort left behind, so a
+ * bench check "an acknowledging node comes back: nothing may go out" could
+ * never fail. During the hold the driver stays installed and running, with
+ * interrupts on; nothing is aborted, cleared or recorded, so resends do not
+ * use up the change records. Its end is read: the status first, as close to
+ * the end as it can be, then the TEC, the alerts and the driver's view.
+ */
+static void hold(const txp_params_t *p, txp_trial_t *r)
+{
+    const uint32_t c = txp_env_cycles();
+    txp_env_hold(p->hold_ms);
+    r->hold_cyc = txp_env_cycles() - c;
+    r->held = 1;
+    r->hold_st = txp_ll_status();
+    r->hold_tec = txp_ll_tec();
+    r->alerts_hold = txp_env_alerts();
+    r->have_hold = txp_env_driver(&r->drv_hold);
+    if (r->cleared == TXP_CLR_NONE && (r->hold_st & TXP_ST_TBS))
+    {
+        r->cleared = TXP_CLR_HOLD;
+    }
+}
+
 static void cleanup(txp_trial_t *r, uint32_t cpm)
 {
     txp_abort_t a;
@@ -517,7 +543,14 @@ static void trial(const txp_params_t *p, txp_run_t *run, uint16_t idx)
     r->alerts_after = txp_env_alerts();
     r->have_after = txp_env_driver(&r->drv_after);
 
-    if (r->clear_t < 0)
+    /* Whether or not the trace saw the buffer free: a frame the abort removed
+     * must not go out when a node acknowledges again either. */
+    if (p->hold_ms > 0)
+    {
+        hold(p, r);
+    }
+
+    if (r->cleared == TXP_CLR_NONE)
     {
         cleanup(r, cpm);
     }
@@ -576,6 +609,7 @@ static const char *cleared_name(uint8_t c)
     case TXP_CLR_TBS_TCS: return "tbs_tcs";
     case TXP_CLR_TBS:     return "tbs";
     case TXP_CLR_CLEANUP: return "cleanup";
+    case TXP_CLR_HOLD:    return "hold";
     default:              return "never";
     }
 }
@@ -646,8 +680,7 @@ static bool trial_json(const txp_run_t *run,
         "\"cleanup\":%u,\"cleanup_ns\":%lld,\"cleanup_aborts\":%u,"
         "\"alerts_cleanup\":%lu,"
         "\"st_end\":%lu,\"drv_end\":%s,\"free_end\":%u,"
-        "\"clk_cyc\":%lu,\"clk_us\":%lld,"
-        "\"events\":[",
+        "\"clk_cyc\":%lu,\"clk_us\":%lld,",
         first ? "" : ",", (unsigned)r->trial, skip_name(r->skip),
         (unsigned)r->reinstalled,
         (unsigned long)r->st_pre, (unsigned long)r->tec_pre, d0,
@@ -668,6 +701,36 @@ static bool trial_json(const txp_run_t *run,
         (unsigned long)r->st_end, d3,
         (r->st_end & TXP_ST_TBS) ? 1u : 0u,
         (unsigned long)r->clk_cyc, (long long)r->clk_us);
+    if (!put(emit, ctx, b, n, sizeof(b)))
+    {
+        return false;
+    }
+
+    /* The hold, in a chunk of its own; -1 and null with no hold. */
+    if (r->held)
+    {
+        char dh[160];
+        if (drv_json(dh, sizeof(dh), r->have_hold, &r->drv_hold) >= (int)sizeof(dh))
+        {
+            return false;
+        }
+        n = snprintf(b, sizeof(b),
+            "\"hold_ns\":%lld,\"hold_st\":%lu,\"hold_tec\":%lu,"
+            "\"hold_tbs\":%u,\"hold_tcs\":%u,\"alerts_hold\":%lu,"
+            "\"drv_hold\":%s,\"events\":[",
+            to_ns(run, r->hold_cyc), (unsigned long)r->hold_st,
+            (unsigned long)r->hold_tec,
+            (r->hold_st & TXP_ST_TBS) ? 1u : 0u,
+            (r->hold_st & TXP_ST_TCS) ? 1u : 0u,
+            (unsigned long)r->alerts_hold, dh);
+    }
+    else
+    {
+        n = snprintf(b, sizeof(b),
+            "\"hold_ns\":-1,\"hold_st\":-1,\"hold_tec\":-1,"
+            "\"hold_tbs\":-1,\"hold_tcs\":-1,\"alerts_hold\":null,"
+            "\"drv_hold\":null,\"events\":[");
+    }
     if (!put(emit, ctx, b, n, sizeof(b)))
     {
         return false;
@@ -719,6 +782,7 @@ bool txp_write_json(const txp_params_t *p, const txp_run_t *run,
         "\"reps\":%d,\"settle_ms\":%d,\"fresh\":%d,\"irq\":\"%s\","
         "\"sample_us\":%d,\"window_us\":%d,\"trail_us\":%d,"
         "\"wait_us\":%d,\"wait_att\":%d,\"bound_us\":%d,\"delay_us\":%d,"
+        "\"hold_ms\":%d,"
         "\"timing\":\"cpu cycle counter\",\"cpu_hz\":%lu,\"cpu_hz_end\":%lu,"
         "\"gap_us\":%d,"
         "\"st_bits\":{\"tbs\":%u,\"tcs\":%u,\"rs\":%u,\"ts\":%u,\"es\":%u,"
@@ -729,7 +793,7 @@ bool txp_write_json(const txp_params_t *p, const txp_run_t *run,
         h->git, phase_name(p->mode), p->label, h->id, h->dlc,
         p->reps, p->settle_ms, p->fresh ? 1 : 0, p->irq_off ? "off" : "on",
         p->sample_us, p->window_us, p->trail_us,
-        p->wait_us, p->wait_att, p->bound_us, p->delay_us,
+        p->wait_us, p->wait_att, p->bound_us, p->delay_us, p->hold_ms,
         (unsigned long)run->cpu_hz, (unsigned long)run->cpu_hz_end,
         TXP_GAP_US,
         TXP_ST_TBS, TXP_ST_TCS, TXP_ST_RS, TXP_ST_TS, TXP_ST_ES, TXP_ST_BS,

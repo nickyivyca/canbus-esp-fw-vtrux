@@ -47,6 +47,7 @@ static struct {
     int      rule;
     uint32_t free_delay;
     int64_t  removed_at;            /* -1, or TBS = 1 from then */
+    bool     removed_tcs0;          /* a removed frame reads TCS = 0 */
     int      aborts, aborts_ts1, aborts_always;
     uint32_t abort_cyc[8];
     uint32_t abort_st[8];
@@ -59,6 +60,12 @@ static struct {
     int      alert_calls;
     uint32_t alert_seq[16];
     int      driver_calls;
+    /* the hold: an acknowledging node comes back at its start */
+    bool     ack_back;
+    int      holds, hold_ms;
+    int      aborts_at_hold, clear_tx_at_hold, alert_calls_at_hold;
+    int      settles_at_hold, holds_with_irq_off;
+    bool     sent_in_hold;          /* the held frame went out in the hold */
 } S;
 
 static uint32_t att_start[1200];
@@ -128,7 +135,7 @@ static uint32_t status_at(uint32_t t)
     }
     if (S.removed_at >= 0 && (int64_t)t >= S.removed_at)
     {
-        return TXP_ST_TBS | TXP_ST_TCS;
+        return TXP_ST_TBS | (S.removed_tcs0 ? 0 : TXP_ST_TCS);
     }
     if (S.complete_at >= 0 && (int64_t)t >= S.complete_at)
     {
@@ -276,6 +283,26 @@ void txp_env_settle(int ms)
     S.sent = false;      /* between trials the last frame is gone */
 }
 
+/* The hold: the clock jumps by ms. With ack_back, a frame still in the
+ * buffer at the hold's start goes out 100 us into it. */
+void txp_env_hold(int ms)
+{
+    if (S.irq_depth != 0) { S.holds_with_irq_off++; }
+    no_irq_off();
+    S.holds++;
+    S.hold_ms = ms;
+    S.aborts_at_hold = S.aborts;
+    S.clear_tx_at_hold = S.clear_tx;
+    S.alert_calls_at_hold = S.alert_calls;
+    S.settles_at_hold = S.settles;
+    if (S.ack_back && S.sent && !(status_at(now_rel()) & TXP_ST_TBS))
+    {
+        S.complete_at = (int64_t)now_rel() + 100 * CPM;
+        S.sent_in_hold = true;
+    }
+    S.cyc += (uint32_t)ms * 1000u * CPM;
+}
+
 /* ------------------------------------------------------------ arguments -- */
 
 typedef struct { const char *k[12]; const char *v[12]; int trunc; } args_t;
@@ -317,7 +344,8 @@ static void test_parse(void)
     CHECK(p.mode == TXP_M1 && p.reps == 1 && p.settle_ms == 20 && p.fresh
           && !p.irq_off && p.sample_us == 1 && p.window_us == 10000
           && p.trail_us == 500 && p.wait_us == -1 && p.wait_att == -1
-          && p.bound_us == -1 && p.delay_us == -1 && p.label[0] == '\0');
+          && p.bound_us == -1 && p.delay_us == -1 && p.label[0] == '\0'
+          && p.hold_ms == 0);
     CHECK(parse("m2", (args_t){ {NULL} }, &p, err));
     CHECK(p.mode == TXP_M2 && p.wait_att == 1 && p.wait_us == -1
           && p.bound_us == 2000 && p.delay_us == -1);
@@ -362,6 +390,7 @@ static void test_parse(void)
         { "wait_att", "0", "1" }, { "wait_att", "256", "255" },
         { "bound_us", "9", "10" }, { "bound_us", "20001", "20000" },
         { "reps", "2x", "2" }, { "reps", "", "2" },
+        { "hold_ms", "2001", "2000" }, { "hold_ms", "-1", "0" },
     };
     for (unsigned i = 0; i < sizeof(ranges) / sizeof(ranges[0]); i++)
     {
@@ -369,6 +398,11 @@ static void test_parse(void)
         CHECK(parse("m2", (args_t){ {ranges[i].k}, {ranges[i].good} }, &p, err));
     }
     CHECK(!parse("m3", (args_t){ {"delay_us"}, {"5001"} }, &p, err));
+    /* hold_ms: every phase */
+    CHECK(parse("m1", (args_t){ {"hold_ms"}, {"1500"} }, &p, err) && p.hold_ms == 1500);
+    CHECK(parse("m3", (args_t){ {"hold_ms"}, {"7"} }, &p, err) && p.hold_ms == 7);
+    CHECK(!parse("m1", (args_t){ {"hold_ms"}, {"2001"} }, &p, err));
+    CHECK(strstr(err, "hold_ms") != NULL);
     CHECK(!parse("m1", (args_t){ {"fresh"}, {"2"} }, &p, err));
     CHECK(!parse("m1", (args_t){ {"irq"}, {"no"} }, &p, err));
     CHECK(!parse("m1", (args_t){ {"label"},
@@ -469,6 +503,8 @@ static void test_m1_trace(void)
     CHECK(r->have_after && r->have_end && (r->st_end & TXP_ST_TBS));
     CHECK(r->clk_cyc > 0 && r->clk_us > 0);
     CHECK(S.settles == 1 && S.settle_ms == 20);
+    /* no hold by default */
+    CHECK(S.holds == 0 && !r->held && r->hold_cyc == 0);
 }
 
 static void test_m1_tec_change_alone(void)
@@ -800,7 +836,7 @@ static void test_unsupported(void)
           && S.alert_calls == 0 && S.aborts == 0);
 }
 
-/* ----------------------------------------------------------------- JSON -- */
+/* -------------------------------------------------- the answer's sink -- */
 
 static char J[200000];
 static size_t JN;
@@ -823,6 +859,124 @@ static bool emit(void *ctx, const char *s, size_t n)
     return true;
 }
 
+/* ----------------------------------------------------------------- hold -- */
+
+#define TX_SUCCESS 0x2u   /* any marker: the script returns what it is given */
+
+static void test_hold_m1_positive(void)
+{
+    printf("hold, m1: the frame was never aborted, so it goes out when the "
+           "node returns\n");
+    /* the same trace without a hold, to compare */
+    script_default();
+    txp_params_t p = params(TXP_M1);
+    p.window_us = 1000;
+    CHECK(txp_run(&p, &R));
+    const uint32_t samples0 = R.trials[0].samples, ev0 = R.trials[0].ev_n;
+    const uint32_t used0 = R.events_used;
+
+    script_default();
+    S.ack_back = true;
+    S.alert_seq[1] = 0x40;          /* after the trace */
+    S.alert_seq[2] = TX_SUCCESS;    /* at the hold's end */
+    p.hold_ms = 100;
+    CHECK(txp_run(&p, &R));
+    const txp_trial_t *r = &R.trials[0];
+    CHECK(S.holds == 1 && S.hold_ms == 100 && r->held);
+    /* after the trace and its reads, before the cleanup and the settle */
+    CHECK(S.alert_calls_at_hold == 2 && S.settles_at_hold == 0);
+    CHECK(S.aborts_at_hold == 0 && S.clear_tx_at_hold == 0);
+    CHECK(S.holds_with_irq_off == 0);
+    /* nothing recorded during it */
+    CHECK(r->samples == samples0 && r->ev_n == ev0 && R.events_used == used0);
+    CHECK(r->end_cyc < 1002 * CPM);
+    /* its length, and its end */
+    CHECK(r->hold_cyc >= 100000 * CPM && r->hold_cyc < 100001 * CPM);
+    CHECK(S.sent_in_hold);
+    CHECK((r->hold_st & (TXP_ST_TBS | TXP_ST_TCS)) == (TXP_ST_TBS | TXP_ST_TCS));
+    CHECK(r->hold_tec == 128);      /* the script's TEC, error-passive by then */
+    CHECK(r->alerts_after == 0x40 && r->alerts_hold == TX_SUCCESS);
+    CHECK(r->have_hold && r->drv_hold.msgs_to_tx == 0);
+    /* freed in the hold: no cleanup, nothing aborted */
+    CHECK(r->cleared == TXP_CLR_HOLD && r->clear_t < 0);
+    CHECK(!r->cleanup && S.aborts == 0 && S.clear_tx == 0);
+}
+
+static void test_hold_m1_no_node(void)
+{
+    printf("hold, m1: no node returns: still held at its end, then the "
+           "cleanup\n");
+    script_default();
+    txp_params_t p = params(TXP_M1);
+    p.window_us = 1000;
+    p.hold_ms = 20;
+    CHECK(txp_run(&p, &R));
+    const txp_trial_t *r = &R.trials[0];
+    CHECK(r->held && !S.sent_in_hold);
+    CHECK(!(r->hold_st & TXP_ST_TBS));
+    CHECK(r->hold_tec == 128);
+    CHECK(r->have_hold && r->drv_hold.msgs_to_tx == 1);
+    /* the cleanup ran after the hold, not before */
+    CHECK(S.aborts_at_hold == 0 && S.clear_tx_at_hold == 0);
+    CHECK(r->cleanup && S.clear_tx == 1 && r->cleanup_aborts >= 1);
+    CHECK(r->cleared == TXP_CLR_CLEANUP);
+}
+
+static void test_hold_m2(void)
+{
+    printf("hold, m2: the abort removed the frame: nothing goes out\n");
+    script_default();
+    S.ack_back = true;
+    S.removed_tcs0 = true;
+    txp_params_t p = params(TXP_M2);
+    p.hold_ms = 50;
+    CHECK(txp_run(&p, &R));
+    const txp_trial_t *r = &R.trials[0];
+    CHECK(r->ab_issued && r->clear_t >= 0);
+    /* the hold runs although the trace saw the buffer free */
+    CHECK(S.holds == 1 && r->held && !S.sent_in_hold);
+    CHECK((r->hold_st & (TXP_ST_TBS | TXP_ST_TCS)) == TXP_ST_TBS);
+    CHECK(r->cleared == TXP_CLR_TBS && !r->cleanup);
+    const txp_head_t h = { "g", 1, 2, 0x7FE, 8 };
+    JN = 0;
+    g_emit_fail_at = 0;
+    CHECK(txp_write_json(&p, &R, &h, emit, NULL));
+    CHECK(strstr(J, "\"hold_tbs\":1,\"hold_tcs\":0,") != NULL);
+
+    printf("hold, m2: the abort left the frame: it goes out in the hold\n");
+    script_default();
+    S.rule = RULE_NONE;
+    S.ack_back = true;
+    p.bound_us = 100;
+    CHECK(txp_run(&p, &R));
+    r = &R.trials[0];
+    CHECK(r->ab_issued && r->clear_t < 0);
+    CHECK(S.sent_in_hold && S.aborts_at_hold == 1 && S.aborts == 1);
+    CHECK((r->hold_st & (TXP_ST_TBS | TXP_ST_TCS)) == (TXP_ST_TBS | TXP_ST_TCS));
+    CHECK(r->cleared == TXP_CLR_HOLD && !r->cleanup);
+}
+
+static void test_hold_irq_and_skip(void)
+{
+    printf("hold: interrupts on, after irq=off's trace\n");
+    script_default();
+    txp_params_t p = params(TXP_M2);
+    p.irq_off = true;
+    p.reps = 2;
+    p.hold_ms = 5;
+    CHECK(txp_run(&p, &R));
+    CHECK(S.holds == 2 && S.holds_with_irq_off == 0 && S.calls_with_irq_off == 0);
+
+    printf("hold: a skipped trial has none\n");
+    script_default();
+    S.send_ok = false;
+    p.reps = 1;
+    CHECK(txp_run(&p, &R));
+    CHECK(S.holds == 0 && !R.trials[0].held);
+}
+
+/* ----------------------------------------------------------------- JSON -- */
+
 static void test_json(void)
 {
     printf("the answer\n");
@@ -839,7 +993,11 @@ static void test_json(void)
                        "\"label\":\"bench-a\",\"id\":\"0x7FE\",\"dlc\":8,";
     CHECK(strncmp(J, head, strlen(head)) == 0);
     CHECK(strstr(J, "\"single_shot\":false") != NULL);
-    CHECK(strstr(J, "\"wait_us\":-1,\"wait_att\":2,\"bound_us\":2000,\"delay_us\":-1") != NULL);
+    CHECK(strstr(J, "\"wait_us\":-1,\"wait_att\":2,\"bound_us\":2000,\"delay_us\":-1,"
+                    "\"hold_ms\":0,") != NULL);
+    CHECK(strstr(J, "\"hold_ns\":-1,\"hold_st\":-1,\"hold_tec\":-1,\"hold_tbs\":-1,"
+                    "\"hold_tcs\":-1,\"alerts_hold\":null,\"drv_hold\":null,"
+                    "\"events\":[") != NULL);
     CHECK(strstr(J, "\"cpu_hz\":160000000") != NULL);
     CHECK(strstr(J, "\"st_bits\":{\"tbs\":4,\"tcs\":8,\"rs\":16,\"ts\":32,\"es\":64,\"bs\":128}") != NULL);
     CHECK(strstr(J, "\"n\":1,\"run_us\":42,\"uptime_us\":99,\"trials\":[{\"t\":0,") != NULL);
@@ -877,12 +1035,32 @@ static void test_json(void)
     CHECK(strstr(J, "\"cleared\":\"never\",\"clear_ns\":-1") != NULL);
     CHECK(strstr(J, "\"alerts_before\":null,\"drv_mid\":null,\"snap_ns\":-1") != NULL);
 
+    printf("the answer, with a hold\n");
+    script_default();
+    S.ack_back = true;
+    S.alert_seq[2] = TX_SUCCESS;
+    p = params(TXP_M1);
+    p.window_us = 500;
+    p.hold_ms = 10;
+    CHECK(txp_run(&p, &R));
+    JN = 0;
+    CHECK(txp_write_json(&p, &R, &h, emit, NULL));
+    CHECK(strstr(J, "\"delay_us\":-1,\"hold_ms\":10,") != NULL);
+    CHECK(strstr(J, "\"cleared\":\"hold\",\"clear_ns\":-1") != NULL);
+    CHECK(strstr(J, "\"cleanup\":0,") != NULL);
+    snprintf(want, sizeof(want), "\"hold_ns\":%lld,\"hold_st\":12,\"hold_tec\":128,",
+             (long long)R.trials[0].hold_cyc * 1000 / 160);
+    CHECK(strstr(J, want) != NULL);
+    CHECK(strstr(J, "\"hold_tbs\":1,\"hold_tcs\":1,\"alerts_hold\":2,"
+                    "\"drv_hold\":{\"state\":0,\"mtx\":0,") != NULL);
+    CHECK(JN >= 4 && strcmp(J + JN - 4, "]}]}") == 0);
+
     printf("the answer stops when a chunk fails\n");
     script_default();
     p = params(TXP_M1);
     p.window_us = 2000;
     CHECK(txp_run(&p, &R));
-    for (int at = 1; at <= 4; at++)
+    for (int at = 1; at <= 5; at++)
     {
         JN = 0;
         g_emit_fail_at = at;
@@ -912,6 +1090,10 @@ int main(void)
     test_fresh_and_skips();
     test_irq_off();
     test_unsupported();
+    test_hold_m1_positive();
+    test_hold_m1_no_node();
+    test_hold_m2();
+    test_hold_irq_and_skip();
     test_json();
     printf("%s: %d failure(s)\n", g_fail ? "FAIL" : "PASS", g_fail);
     return g_fail ? 1 : 0;

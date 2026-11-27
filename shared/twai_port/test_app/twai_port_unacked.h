@@ -50,6 +50,8 @@ typedef struct {
     int  wait_att;      /* m2, m3: -1 when not given */
     int  bound_us;      /* m2, m3: how long after the abort to wait for TBS */
     int  delay_us;      /* m3: from the TS rise to the abort */
+    int  hold_ms;       /* after the trace, before the cleanup: the driver runs,
+                         * nothing is aborted or recorded; 0: no hold */
 } txp_params_t;
 
 /* The driver's view, from twai_get_status_info(). */
@@ -82,6 +84,7 @@ enum {
     TXP_CLR_TBS_TCS,        /* freed inside the trace, TCS = 1 */
     TXP_CLR_TBS,            /* freed inside the trace, TCS = 0 */
     TXP_CLR_CLEANUP,        /* freed by the end-of-trial cleanup */
+    TXP_CLR_HOLD,           /* freed in the hold: TBS = 1 at its end */
 };
 
 typedef struct {
@@ -119,7 +122,16 @@ typedef struct {
     bool     have_after;
     txp_drv_t drv_after;
 
-    /* The end-of-trial cleanup, when the trace ended with the buffer full. */
+    /* The hold (hold_ms), read at its end. */
+    uint8_t  held;
+    uint32_t hold_cyc;          /* the hold's length */
+    uint32_t hold_st, hold_tec;
+    uint32_t alerts_hold;
+    bool     have_hold;
+    txp_drv_t drv_hold;
+
+    /* The end-of-trial cleanup, when the buffer is still full: after the
+     * trace, or after the hold when there is one. */
     uint8_t  cleanup;
     int32_t  cleanup_cyc;       /* from its start to TBS; -1: never */
     uint16_t cleanup_aborts;
@@ -191,5 +203,7 @@ bool     txp_env_driver(txp_drv_t *out);
 void     txp_env_clear_tx(void);    /* drop the driver's queued frames */
 void     txp_env_flush_rx(void);
 void     txp_env_settle(int ms);
+void     txp_env_hold(int ms);      /* block at least ms, interrupts on, the
+                                     * driver running */
 
 #endif /* TWAI_PORT_UNACKED_H */
