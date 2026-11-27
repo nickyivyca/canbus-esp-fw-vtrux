@@ -58,7 +58,7 @@ dependencies:
     - esp32s3
     version: ada2ab3729469ea0affe2878862503f5d0507c6d
   vtrux/twai_port:
-    component_hash: ca63b1023762c56eb91c278e74ae9488cf432a0251358268ee4ac8c35dc31e9d
+    component_hash: 50ac361bc630ba95680ea6186b8dee6c912825fecd824092e04a2bd04da221eb
     dependencies:
     - name: idf
       version: '>=5.4'
@@ -69,7 +69,7 @@ dependencies:
     targets:
     - esp32c3
     - esp32s3
-    version: ada2ab3729469ea0affe2878862503f5d0507c6d
+    version: 3bb6c945e4278f673a39818a0703a9bcdb2fd7e2
   vtrux/wican:
     component_hash: 810f87262af6b9bcaf803b32249fc2b41b30d747eb395e9eef36c582589ce5c1
     dependencies:
@@ -103,6 +103,6 @@ direct_dependencies:
 - vtrux/twai_port
 - vtrux/wican
 - vtrux/wican_v3
-manifest_hash: a7031ed7e76aa69322fb2459840391ece08d701908ec48a1bb0ac04d0e17106b
+manifest_hash: 572f36106a6f4f8372ed512631e060c731db7628fcf69428044c55da891dd36c
 target: esp32c3
 version: 2.0.0
