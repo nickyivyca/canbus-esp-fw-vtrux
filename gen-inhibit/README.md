@@ -118,12 +118,11 @@ starting `$REVERSE_IT_DIR` are in reverse-it and not yet moved.
   cited by `shared/tools/VALIDATION.md` R2).
 - In `gen-inhibit/tools/`: `bench_vehicle.py`, `live_bench.py`, `gi_vbus.py`,
   `test_gi_vbus.py`, `test_publish_scan.py`, `replay_inhibit.py`,
-  `bench_flash.py`, `bench_flash_guard.py`, `bench_ota_guard.py` (reviewer,
-  2026-10-08), `bench_flash_wire.py`, `test_bench_flash_wire.py`,
-  `test_bench_flash_wire_mutants.py`, `test_bench_flash_outcome.py`,
-  `test_bench_flash_outcome_mutants.py` (reviewer, 2026-10-17);
-  `test_bench_flash_preflight.py` and `test_bench_guards_page.py` with their
-  `_mutants` files, and `test_publish_scan_mutants.py`; the chain suite
+  `bench_flash_guard.py`, `bench_ota_guard.py` (reviewer, 2026-10-08);
+  `test_bench_guards_page.py` with its `_mutants` file, and
+  `test_publish_scan_mutants.py`. The OTA flasher and its tests moved to
+  shared/bench's `ota.py` and `ota_wire.py` (port step 4 item 2,
+  2026-11-27); the chain suite
   `suite_gen_inhibit.py`, `suite_gen_inhibit.settings.example.json`,
   `suite_judges.py`, `bench_compare.py` and their `test_suite_*` and
   `test_bench_compare*` files (reviewer, 2026-10-23); the evidence doc's
