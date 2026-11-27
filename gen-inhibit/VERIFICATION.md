@@ -10313,6 +10313,123 @@ held past the bound" (tracker F5).
     - The 60 mutant files exit 0.
 - **Run files.** `runs/f5_withdrawn_988c95ff/` (`README.md` there).
 
+**Port step 4 item 2: the OTA flasher on shared/bench's `ota`, `ota_wire` and `wican_http`
+-- tester, 2026-11-25 to 2026-11-27, madhouse-debian. Result: accepted by one stacked run
+on the stack tip `6b944055` (items 2, 4 and 3). 38 of the 39 bench checks have the same
+verdict as bench run `8047`. B9 was VOID in the stacked run, on its bursts' timing, with a
+clean resource record; run again alone, it passes. The emulated verdicts are the same as
+`db8d`.** The gen-inhibit reviewer's batch of 2026-11-25 (port plan, order of work step
+4). `bench_flash.py` and `bench_flash_wire.py` are removed. Their code is shared/bench's
+`vtrux_bench/run/ota.py` and `ota_wire.py` (FLASH-SPEC), taken from the pinned checkout
+through `bench/gi_core_pin.py`. `bench_ota_guard.py` takes its HTTP helpers from the
+core's `wican_http`. The product code did not change. On `gen-inhibit/tester/ota-shared`,
+from `3d9ab7cc`: `ff2e2531`, then two merges of gen-inhibit/main (`f1c3fe77`, and
+`efeda1e6` after the run). Desk records: `runs/port_step4_items_2_4_3/` (its `README.md`).
+- **One acceptance for three items.** The reviewer ruled on 2026-11-26 that one emulated
+  and one bench run on the stack tip accept items 2, 4 and 3. The stack as run:
+  - item 2: `f1c3fe77`;
+  - item 4: `729a6014`, which merges item 2;
+  - item 3: `6b944055`, which merges item 4. This is the stack tip.
+
+  The entries for items 4 and 3 below refer to this run.
+- **Harness.** `gi_tools` is the detached worktree `gen-inhibit-tester-tools-6b944055`, at
+  `6b944055`, clean. shared/bench is at tag `2026.11.26` (commit `2986c5e0`, digest
+  `720d37f5...`), item 3's pin. Item 2 alone pins `2026.11.23.5`. Between the two tags,
+  shared/bench changes only `scratch.py`, its test and its README, so `ota.py`,
+  `ota_wire.py` and `wican_http.py` are the same at both. The runner starts as in item 1's
+  entry. Every record's `code.core` names the tag, commit, digest and folder.
+- **After the run,** the stack took gen-inhibit/main `ad7ccf15` by merge: item 2
+  `efeda1e6`, item 4 `3081186e`, item 3 `d9c087b5`. In the bench harness, these merges
+  change only F2's three lines of text: `tools/bench/README.md` and the docstrings of
+  `interlock_bench.py` and `interlock_judge.py`. Item 3's `8eb92cdb`, after the stack tip,
+  changes only test files. No code that a suite check runs changed after the run.
+- **Code.** The images of the full run on `cca06f36` above, unchanged: `gi_images` and
+  `gi_prod_dir` at `cca06f36`, clean, the same image hashes.
+- **The emulated suite:** `gen-inhibit-emulated_20261126T040520_c878` (2026-11-26
+  04:05:20-04:11:36, build.slice). H PASS (25 steps), B15host PASS, C2scan PASS 4 of 4,
+  C1C7 and C3 NOT-RUN (the declared skips): the same as `db8d` and `36df`.
+- **Bench run:** `gen-inhibit-bench_20261127T010627_c0ed` (2026-11-27 01:06:27-03:37:11),
+  the whole suite, started from the tester's hold (`--from-hold`). The chain runner held
+  the lock itself. Every group's placement read back bench.slice.
+  - WiCAN: found on an image the run did not know, `2aac016d...`, mode 0, nothing latched.
+    Each load went through the shared `ota.py`, and each took at attempt 1 (verdict "(c)
+    TOOK"): `_man` (01:08:28), `_rt` (02:34:31), `_txabort` (02:45:03), `_abortwin`
+    (02:48:55), `_rxq` (02:52:27), the prod stand-in `e8e6ae76...` (02:58:22). The end
+    hook found `wican_man`, mode 0, latched True.
+  - X2: `x2_app` `756d6714` flashed at 01:09:13. Held in ROM for man_held (02:21:22).
+    `x2_app` again at 02:34:37. The jammer row `ea762c62044cb5c6` under custody,
+    verify-row PASS (03:06:17), for man_jammer. `slcan` flashed at 03:31:03; the X2 was
+    left on it.
+  - Recorded, not judged: the `wallclock-others` events name an Android emulator, headless,
+    for every check.
+- **Verdicts:** PASS 36, VOID 1 (B9), INCONCLUSIVE 1 (B6), NOT-RUN 1 (B27, the declared
+  skip). The other 38 checks have the same verdict as in `8047` and in item 1's `58fa`.
+  - B6: 7 of 10 arms PASS; INCONCLUSIVE, as in `8047` (8 of 10). Its 3 other arms
+    (`B6_threshold_n10_lead1.5` arm 1, `B6_threshold_n10_lead5` arm 1,
+    `B6_threshold_n9_lead5` arm 1) got 9, 9 and 8 error frames for 10, 10 and 9 commanded
+    pulses ("delivery was not one error frame per pulse").
+  - B9: VOID, "burst timing VOID": none of the three 20 ms bursts drew a witness error
+    frame. The other six bursts drew 6 to 38 each. Recorded, not judged: the PCAN witness
+    read BUSOFF at the end, and the WiCAN page read TEC 184 at 19.5 s into the record and
+    the state bus_off at 22.5 s. In `8047`, `58fa` and the re-run below, the witness read
+    OK at the end, and the page read the state running and TEC 0 throughout.
+    `wrong_bitrate_errors.py`, `burst_measures.py` and `baseline_b_hand.sh` are the same at
+    `6b944055` as at `8047`'s `687a135f`.
+  - B9 run again alone: `gen-inhibit-bench_20261127T034017_4a72` (2026-11-27
+    03:40:17-03:43:47), `--check man_held/B9`, from the tester's hold. PASS: 9 bursts, 320
+    witness error frames (the 20 ms bursts 54, 25 and 46), TEC max 0, trip 6 latched at
+    +1.61 s. The X2 was left on `x2_app`.
+  - Triage (AGENTS.md, "Parallel work on the shared machine", point 2), `resource-log
+    window` over B9 (02:28:20-02:29:11) and over the three B6 runs with a short arm: in
+    each, bench.slice at most 2.2 cores, CPU pressure (some) at most 0.4 %, no memory or
+    IO pressure, no major faults, no logger gap over 5 s. Clean. Over the whole run:
+    `resource_run_c0ed.txt`.
+- **The harness's own tests** on `ff2e2531`:
+  - Shared/bench's `test_ota_outcome`, `test_ota_preflight` and `test_ota_wire` carry all
+    59 mutants of the removed flasher tests, with the same edit strings (FLASH-SPEC O13).
+    At tag `2026.11.23.5`, their `--can-fail` runs kill 26 of 26, 76 of 76 and 30 of 30.
+  - `test_bench_guards_page.py`: 67 checks, 4 of them that the helpers are the pinned
+    core's. Mutants 21 of 21, both controls passing.
+  - `test_failed_upload_probe.py`: mutants 16 of 16. `test_publish_scan.py`: PASS, mutants
+    9 of 9, the control passing. Its part 3 failed while `bench_flash.py` was still
+    there, which shows that the part can fail.
+  - The whole tools test set on `f1c3fe77` (build.slice): 133 of 135 test files exit 0.
+    `bench/test_only_inert.py` exits 2 without its arguments, as before. `test_gi_vbus.py`
+    exits 1: the tester ran the three stack tips' sets at the same time, so three copies
+    of it ran at 04:06:57 on 2026-11-26 on the same multicast groups and ports, and each
+    heard the others' frames in its idle windows. This is the tester's scheduling, not a
+    defect. Run alone, one tip after the other: 59 pass, 0 fail on each of `f1c3fe77`,
+    `729a6014` and `6b944055`. The 57 mutant files exit 0.
+
+**Port step 4 item 4: `interlock_bench`'s slice read-back on the core's
+`procs.cgroup_slice` -- tester, 2026-11-25 to 2026-11-27, madhouse-debian. Result:
+accepted by the stacked run on the stack tip `6b944055` (items 2, 4 and 3; see item 2's
+entry above).** The gen-inhibit reviewer's batch of 2026-11-25 (port plan, order of work
+step 4). `interlock_bench.in_bench_slice` reads the slice with the pinned core's
+`vtrux_bench.run.procs.cgroup_slice`: the innermost slice of the unified `0::` line, as
+the core's own placement read-back reads it. It counts `bench.slice`, or a child that
+systemd names `bench-<name>.slice`. Its own line parser is removed, and cgroup v1 lines
+are no longer read. With no core, the run records "not in bench.slice (<why>)" and goes
+on. The product code did not change. On `gen-inhibit/tester/slice-readback`, from
+`3d9ab7cc`: `1195d9c8`, then merges of item 1 and item 2 (`729a6014` as run; `3081186e`
+and the entry's merge after the run).
+- **On the bench,** in `gen-inhibit-bench_20261127T010627_c0ed`: B20 PASS, 28 of 28 AS
+  SPECIFIED. Each of its 28 interlock run files records `process_priority` as
+  `bench.slice`.
+- **The emulated suite** `gen-inhibit-emulated_20261126T040520_c878`: as in item 2's
+  entry.
+- **The harness's own tests** on `1195d9c8`:
+  - `test_interlock_judge.py`: 182 checks. The v1-only file now reads "not in
+    bench.slice". New files: a v1 line beside the unified line in bench.slice, and
+    build.slice inside bench.slice. Also the reason with no core, and that the parse is
+    the pinned core's.
+  - Its mutants, in `test_raw_http_probe_mutants.py` (`interlock_bench.py`): 23 of 23
+    killed, every control passing.
+  - The whole tools test set on `729a6014` (build.slice): the same as on `f1c3fe77` (item
+    2's entry). 133 of 135 test files exit 0. `bench/test_only_inert.py` exits 2, as
+    before. `test_gi_vbus.py` exits 1 only in the set, from the tester's scheduling, and
+    passes alone. The 57 mutant files exit 0.
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical
