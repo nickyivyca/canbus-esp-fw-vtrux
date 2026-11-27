@@ -36,7 +36,9 @@ DIAG_ARGS=$([ -n "$DIAGDIR" ] && ${PYTHON:-python3} -B ../diag_host/diag_host.py
 # (../gen_inhibit_shim/Makefile): its stand-ins first, then the fake's ESP-IDF
 # TWAI headers, then the fake's minimal host stand-ins. shim_test.c is
 # replaced by this folder's cases, judge and layer. The layer wraps five driver
-# calls (spec_layer.c); shim_harness.c wraps twai_driver_install.
+# calls (spec_layer.c); shim_harness.c wraps twai_driver_install. Since
+# 2026-11-26 the layer also wraps two register calls, for the withdrawn frame
+# stuck in the controller (spec_layer.h); with no frame armed they pass through.
 $CC -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable "$@" \
     -I. -I../gen_inhibit_shim -I../gen_inhibit_shim/mock -I../../firmware/main -I"$WICANDIR" \
     -I"$SHARED/can_port/include" -I"$SHARED/twai_port/include" \
@@ -51,4 +53,5 @@ $CC -std=c11 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable "$@
     -pthread \
     -Wl,--wrap=twai_driver_install \
     -Wl,--wrap=twai_receive,--wrap=twai_get_status_info,--wrap=twai_read_alerts \
-    -Wl,--wrap=twai_reconfigure_alerts,--wrap=twai_initiate_recovery
+    -Wl,--wrap=twai_reconfigure_alerts,--wrap=twai_initiate_recovery \
+    -Wl,--wrap=twai_ll_get_status,--wrap=twai_ll_set_cmd_abort_tx

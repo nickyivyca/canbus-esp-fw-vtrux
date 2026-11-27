@@ -10,11 +10,16 @@
  * between the product and the driver model, as the controller's view of the
  * bus would. twai_driver_install is shim_harness.c's wrap, so the layer sees
  * an install by the fake's count instead (twai_fake_install_count).
+ *
+ * Since 2026-11-26 also twai_ll_get_status and twai_ll_set_cmd_abort_tx, for
+ * the withdrawn frame stuck in the controller (spec_layer.h); with no frame
+ * armed they pass every call through.
  */
 #include "spec_layer.h"
 
 #include "shim_harness.h"
 #include "driver/twai.h"
+#include "hal/twai_ll.h"
 
 #include <string.h>
 
@@ -41,6 +46,27 @@ static struct
     int64_t  err_t[SL_MAX_ERR];
     void   (*next)(void);
 } L;
+
+/* The withdrawn frame stuck in the controller (spec_layer.h, 2026-11-26). */
+static struct
+{
+    bool     armed;
+    uint32_t id;
+    int      sent0;             /* the fake's sent count when armed */
+    int      idx;               /* the stuck frame in the fake's sent log; -1: not handed over yet */
+    int64_t  removed_at, wire_at;
+    bool     back;              /* the nodes returned with it held */
+    int64_t  back_start;        /* the first attempt that starts after they returned */
+    int64_t  back_gap;          /* the idle time before that attempt */
+    int64_t  back_done;         /* that attempt's end: the frame completes */
+    int      n_reads, n_reads_clear;  /* status reads while it was held, and those that read TS clear */
+    int      n_ab;
+    int64_t  ab_t[SL_MAX_ABORTS];
+    bool     ab_att[SL_MAX_ABORTS];
+} S;
+
+uint32_t __real_twai_ll_get_status(twai_dev_t *hw);
+void     __real_twai_ll_set_cmd_abort_tx(twai_dev_t *hw);
 
 esp_err_t __real_twai_receive(twai_message_t *m, TickType_t ticks);
 esp_err_t __real_twai_get_status_info(twai_status_info_t *s);
@@ -91,9 +117,56 @@ static void see_installs(void)
     }
 }
 
+/* ------------------------------------- the withdrawn frame, stuck (2026-11-26) -- */
+
+static void stuck_find(void)
+{
+    if (!S.armed || S.idx >= 0) return;
+    for (int i = S.sent0; i < twai_fake_sent_count(); i++)
+        if (twai_fake_sent(i)->id == S.id)
+        {
+            S.idx = i;
+            return;
+        }
+}
+
+static bool stuck_held(void)
+{
+    stuck_find();
+    return S.armed && S.idx >= 0 && S.removed_at < 0 && S.wire_at < 0;
+}
+
+/* The pattern's period now, and the idle time that ends it: the intermission,
+ * and from TEC 128 (error passive) the suspend transmission too. */
+static int64_t period_now(void) { return (L.passive_us > 0 && L.tec >= 128) ? L.passive_us : L.retry_us; }
+static int64_t idle_now(void)   { return (L.passive_us > 0 && L.tec >= 128) ? SL_IFS_US + SL_SUSPEND_US : SL_IFS_US; }
+
+/* TS clear: the frame is held and the bus is in its idle time before the next
+ * attempt. In the silence the next attempt starts at the next error's time;
+ * after the nodes return, at back_start. */
+static bool stuck_gap(void)
+{
+    if (!stuck_held()) return false;
+    const int64_t now = ft_now();
+    if (S.back) return now >= S.back_start - S.back_gap && now < S.back_start;
+    if (!L.silent || L.bus_off || L.retry_t0 < 0) return false;
+    return now >= L.last_err_t + period_now() - idle_now();
+}
+
+/* After the nodes return: the acknowledged attempt ends, and the frame with it. */
+static void stuck_step(void)
+{
+    if (S.back && stuck_held() && ft_now() >= S.back_done)
+    {
+        S.wire_at = S.back_done;
+        __real_twai_ll_set_cmd_abort_tx(twai_fake_ll_hw(0));   /* out of the buffer, TX_SUCCESS */
+    }
+}
+
 void sl_step(void)
 {
     see_installs();
+    stuck_step();
     if (L.silent && !L.bus_off)
     {
         twai_status_info_t s;
@@ -130,6 +203,9 @@ void sl_step(void)
 void sl_reset(void (*next)(void))
 {
     memset(&L, 0, sizeof(L));
+    memset(&S, 0, sizeof(S));
+    S.idx = -1;
+    S.removed_at = S.wire_at = -1;
     L.retry_t0 = -1;
     L.next = next;
     L.installs = twai_fake_install_count();
@@ -177,6 +253,14 @@ void sl_bus_off(void)
 void sl_nodes_back(void)
 {
     sl_step();
+    if (stuck_held() && L.silent && !L.bus_off && L.retry_t0 >= 0)
+    {
+        /* the attempt now on the bus was not acknowledged; the next one is */
+        S.back = true;
+        S.back_start = L.last_err_t + period_now();
+        S.back_gap = idle_now();
+        S.back_done = S.back_start + period_now() - idle_now();
+    }
     L.silent = false;
     L.retry_t0 = -1;
     if (!L.bus_off) set_tec(0);
@@ -242,6 +326,64 @@ esp_err_t __wrap_twai_initiate_recovery(void)
     L.recovery_calls++;
     return __real_twai_initiate_recovery();
 }
+
+/* The stuck frame's attempts over the fake's register model (spec_layer.h):
+ * TS set during an attempt, clear in the idle time before the next. */
+uint32_t __wrap_twai_ll_get_status(twai_dev_t *hw)
+{
+    sl_step();
+    uint32_t st = __real_twai_ll_get_status(hw);
+    if (stuck_held())
+    {
+        if (!stuck_gap()) st |= TWAI_LL_STATUS_TS;
+        else S.n_reads_clear++;
+        S.n_reads++;
+    }
+    return st;
+}
+
+/* During an attempt the abort does nothing, as the fake's abort of a
+ * transmitting frame does; in the idle time the fake removes the frame. */
+void __wrap_twai_ll_set_cmd_abort_tx(twai_dev_t *hw)
+{
+    sl_step();
+    if (!stuck_held())
+    {
+        __real_twai_ll_set_cmd_abort_tx(hw);
+        return;
+    }
+    const bool attempt = !stuck_gap();
+    if (S.n_ab < SL_MAX_ABORTS)
+    {
+        S.ab_t[S.n_ab] = ft_now();
+        S.ab_att[S.n_ab] = attempt;
+    }
+    S.n_ab++;
+    if (attempt) return;
+    const int removed0 = twai_fake_ll_removed();
+    __real_twai_ll_set_cmd_abort_tx(hw);
+    if (twai_fake_ll_removed() > removed0) S.removed_at = ft_now();
+}
+
+void sl_retry_stuck(uint32_t id)
+{
+    memset(&S, 0, sizeof(S));
+    S.armed = true;
+    S.id = id;
+    S.sent0 = twai_fake_sent_count();
+    S.idx = -1;
+    S.removed_at = S.wire_at = -1;
+}
+
+bool    sl_stuck_in_buffer(void)  { return stuck_held(); }
+int64_t sl_stuck_handed_at(void)  { stuck_find(); return S.idx >= 0 ? twai_fake_sent(S.idx)->t_queued : -1; }
+int64_t sl_stuck_removed_at(void) { return S.removed_at; }
+int64_t sl_stuck_on_wire_at(void) { return S.wire_at; }
+bool    sl_stuck_in_gap(void)     { sl_step(); return stuck_gap(); }
+int     sl_stuck_status_reads(int *ts_clear) { if (ts_clear) *ts_clear = S.n_reads_clear; return S.n_reads; }
+int     sl_stuck_abort_count(void) { return S.n_ab < SL_MAX_ABORTS ? S.n_ab : SL_MAX_ABORTS; }
+int64_t sl_stuck_abort_time(int i) { return S.ab_t[i]; }
+bool    sl_stuck_abort_in_attempt(int i) { return S.ab_att[i]; }
 
 /* ------------------------------------------------------------ readers -- */
 

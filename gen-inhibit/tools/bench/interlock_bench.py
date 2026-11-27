@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The spec 13 "an existing harness lacks the case" bench rows, on hardware.
+"""The spec 12.4 interlock, trip and gate rows, on hardware: the suite's B20.
 
 Gen-inhibit tester, 2026-10-15. Spec 12.4 rows 2438-2443 (SoC back at 22 %,
 the 21.00 % boundary, two 0x10 episodes, the 6.2 wake / pre-close rows, every

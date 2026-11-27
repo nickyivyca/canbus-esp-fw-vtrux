@@ -300,6 +300,48 @@ static void see_departure(gs_t *s, int64_t now, bool at_deadline)
      """    s->deadline_token = true;""",
      """    s->deadline_token = s->deadline_token;""",
      "order: correct, previous complete"),
+
+    # F5 (spec 5.2 item 5, user 2026-11-26): a withdrawn inhibit held past
+    # the 1 ms bound is aborted again on every later pass.
+    ("F5: the loop ends at the bound for a withdrawn inhibit too",
+     "gi_sched.c",
+     """            if (s->held_class == GS_CLASS_INHIBIT)
+            {
+                s->aborting = true;""",
+     """            if (s->held_class == GS_CLASS_INHIBIT)
+            {
+                s->aborting = false;""",
+     "F5: a stand-down held past the bound is aborted on every pass"),
+
+    ("F5: the bound is counted on every pass past it",
+     "gi_sched.c",
+     """    if (!s->abort_past_bound && now - s->abort_since >= GS_ABORT_BOUND_US)""",
+     """    if (now - s->abort_since >= GS_ABORT_BOUND_US)""",
+     "F5: a stand-down held past the bound is aborted on every pass"),
+
+    ("F5: a new abort keeps the last one's past-bound state",
+     "gi_sched.c",
+     """    s->abort_cmds_this = 0;
+    s->abort_past_bound = false;""",
+     """    s->abort_cmds_this = 0;""",
+     "F5: a stand-down held past the bound is aborted on every pass"),
+
+    ("F5: a later deadline books the held skip again",
+     "gi_sched.c",
+     """    if (!s->inhibit_outstanding || s->held_booked)""",
+     """    if (!s->inhibit_outstanding)""",
+     "F5: a deadline skip held past the bound is aborted, booked once"),
+
+    # F7 (spec 5.2 item 6, user 2026-11-26): the bound ends the loop only on
+    # a read that issued no command.
+    ("F7: the bound ends the loop on the read that issued the command",
+     "gi_sched.c",
+     """         * result instead: EMPTY books it aborted and requeued (step 3).
+         */
+        return false;""",
+     """         * result instead: EMPTY books it aborted and requeued (step 3).
+         */""",
+     "F7: a page aborted on the bound's read is requeued, not sent"),
 ]
 
 
