@@ -25,7 +25,9 @@
  * calls in its gen_inhibit.c (gen-inhibit/main 4020bc8, both last changed at
  * c48e05b): the install and teardown, the board's pins and standby line, the
  * one twai_transmit, the alert read. The register-level abort and buffer state
- * are in the chip's file, twai_port_ll_<chip>.c (T8).
+ * are in the chip's file, twai_port_ll_<chip>.c (T8). The kept-driver switch
+ * (T14 to T18) is below, with its register steps in the same file per chip
+ * (twai_port_ll.h).
  *
  * WHO CALLS WHAT, AND WHEN. Install, teardown, set_mode and configure change
  * the driver's installation and are not reentrant: the project calls them
@@ -47,11 +49,13 @@
  * have. It waits on no task (T9).
  */
 #include "twai_port.h"
+#include "twai_port_ll.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "board.h"
 
 static const char *TAG = "twai_port";
@@ -94,6 +98,43 @@ static struct {
 static can_port_status_t s_count;
 
 static bool s_tx_failed_held;
+
+/*
+ * THE KEPT-DRIVER SWITCH (T14 to T18), when the project chose it.
+ *
+ * s_tx_block: the port's own flag that refuses every send in listen-only
+ * (T14). The driver was installed in normal mode, so it would take them.
+ *
+ * THE RECORD OF FRAMES SENT (T17). The driver's TX queue cannot be read, so
+ * the port keeps the frames it queued, with their tags, in a ring of
+ * TWAI_PORT_SWITCH_HELD_MAX. The driver sends in queue order, and its status
+ * gives how many it still holds (msgs_to_tx, the one in the buffer
+ * included), so the frames held at a switch are the newest msgs_to_tx in the
+ * ring. That holds while sends come from one task, so the ring's order is
+ * the driver's (twai_port.h). s_ring_n counts the frames recorded since the
+ * install; a ring slot is reused only after tx_queue_len + 1 newer sends, by
+ * which time the driver no longer holds it.
+ *
+ * s_tx_failed_skip: transmit failures the driver will count for frames the
+ * switch aborted, which T17 counts in tx_discarded_switch instead, so each
+ * is counted once.
+ *
+ * s_ev_pending: events raised by the switch's own alert polls (T18), kept
+ * for the project's next twai_port_poll_alerts().
+ */
+static volatile bool s_tx_block;
+static struct {
+    twai_message_t frame;
+    uint32_t tag;
+} s_ring[TWAI_PORT_SWITCH_HELD_MAX];
+static uint32_t s_ring_n;
+static uint32_t s_tx_failed_skip;
+static uint32_t s_ev_pending;
+static twai_port_switch_report_t s_switch;
+
+/* The bound on the wait for the driver to let an aborted frame go (T9). */
+#define SWITCH_ABORT_WAIT_MAX_US    1000u
+#define SWITCH_ABORT_WAIT_STEP_US   10u
 
 /* ----------------------------------------------------------- helpers -- */
 
@@ -160,7 +201,13 @@ static void fold(const twai_status_info_t *st, uint32_t gen)
                   &s_count.rx_lost_queue_full);
         take_rise(st->rx_overrun_count, &s_raw.rx_overrun,
                   &s_count.rx_lost_overrun);
+        const uint32_t failed_before = s_count.tx_failed;
         take_rise(st->tx_failed_count, &s_raw.tx_failed, &s_count.tx_failed);
+        /* A frame the switch aborted is counted once, at the switch (T17). */
+        const uint32_t rise = s_count.tx_failed - failed_before;
+        const uint32_t skip = rise < s_tx_failed_skip ? rise : s_tx_failed_skip;
+        s_count.tx_failed -= skip;
+        s_tx_failed_skip -= skip;
         take_rise(st->bus_error_count, &s_raw.bus_error, &s_count.bus_errors);
         take_rise(st->arb_lost_count, &s_raw.arb_lost, &s_count.arb_lost);
         sum_rx_lost();
@@ -233,6 +280,19 @@ esp_err_t twai_port_setup(const twai_port_config_t *cfg)
     {
         return ESP_ERR_INVALID_STATE;
     }
+    if (cfg->kept_driver_switch)
+    {
+        /* T14: only on a chip whose register file is measured for it. */
+        if (!twai_port_ll_switch_supported())
+        {
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+        /* T17: every frame the driver can hold must fit the record. */
+        if (cfg->tx_queue_len + 1u > TWAI_PORT_SWITCH_HELD_MAX)
+        {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
     s_cfg = *cfg;
     s_timing = cfg->timing;
     s_mode = cfg->mode;
@@ -242,6 +302,15 @@ esp_err_t twai_port_setup(const twai_port_config_t *cfg)
 }
 
 /* ----------------------------------------------------- install, T4 ---- */
+
+static esp_err_t kept_switch(can_port_mode_t to);
+
+/* T14: the port reaches listen-only through the registers, from a driver
+ * installed in normal mode. */
+static bool kept_lom(can_port_mode_t mode)
+{
+    return s_cfg.kept_driver_switch && mode == CAN_PORT_MODE_LISTEN_ONLY;
+}
 
 /* A failed step: abort if the project chose that, otherwise report it. */
 static esp_err_t install_failed(twai_port_step_t step, esp_err_t err)
@@ -288,6 +357,11 @@ esp_err_t twai_port_install(void)
     if (!mode_to_twai(s_mode, &mode))
     {
         return install_failed(TWAI_PORT_STEP_INSTALL, ESP_ERR_INVALID_ARG);
+    }
+    if (kept_lom(s_mode))
+    {
+        /* T14: the driver's mode is fixed at install and gates every send. */
+        mode = TWAI_MODE_NORMAL;
     }
 
     /* The board's pins for its port, just before the install (B5). */
@@ -337,8 +411,27 @@ esp_err_t twai_port_install(void)
     s_count.bus_off = false;
     s_count.bring_ups++;
     s_tx_failed_held = false;
+    s_ring_n = 0;
+    s_tx_failed_skip = 0;
+    s_tx_block = kept_lom(s_mode);
     s_installed = true;
     taskEXIT_CRITICAL(&s_lock);
+
+    /*
+     * A kept-driver port set up in listen-only is switched there now, with
+     * the transceiver still in standby, so the controller is never on the
+     * bus in normal mode. Nothing has been sent, so nothing is held.
+     */
+    if (kept_lom(s_mode))
+    {
+        err = kept_switch(CAN_PORT_MODE_LISTEN_ONLY);
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "bring-up: the switch to listen-only failed: %s",
+                     esp_err_to_name(err));
+            return err;
+        }
+    }
 
     /* Normal operation. "Not supported" is a board with no standby line. */
     (void)board_can_standby(s_cfg.board_port, false);
@@ -440,7 +533,222 @@ twai_port_step_t twai_port_last_step(void)
     return s_last_step;
 }
 
+/* --------------------------------------- the kept-driver switch, T14 -- */
+
+/* Take the alerts, keeping the events for the project's next poll (T18). */
+static uint32_t switch_poll(void)
+{
+    const uint32_t ev = twai_port_poll_alerts();
+    taskENTER_CRITICAL(&s_lock);
+    s_ev_pending |= ev;
+    taskEXIT_CRITICAL(&s_lock);
+    return ev;
+}
+
+/*
+ * T17: remove the frames the driver holds, with the controller in reset
+ * mode, so none can complete while they are counted. Returns how many.
+ */
+static uint32_t switch_remove_held(void)
+{
+    twai_status_info_t st;
+    if (read_status(&st) != ESP_OK)
+    {
+        return 0;
+    }
+    uint32_t held = st.msgs_to_tx;
+    taskENTER_CRITICAL(&s_lock);
+    const uint32_t recorded = s_ring_n;
+    taskEXIT_CRITICAL(&s_lock);
+    if (held > recorded)
+    {
+        held = recorded;    /* cannot happen with sends from one task */
+    }
+
+    /* The queue goes now; the frame in the buffer, if any, after the switch,
+     * when it can only be awaiting (twai_port_set_mode(), step 4). */
+    (void)twai_clear_transmit_queue();
+
+    taskENTER_CRITICAL(&s_lock);
+    s_count.tx_discarded_switch += held;
+    taskEXIT_CRITICAL(&s_lock);
+
+    /* Oldest first: the frame in the buffer, then the queue in order. */
+    if (s_cfg.switch_discard != NULL)
+    {
+        for (uint32_t i = 0; i < held; i++)
+        {
+            const uint32_t k = (recorded - held + i) % TWAI_PORT_SWITCH_HELD_MAX;
+            s_cfg.switch_discard(s_cfg.hook_ctx, &s_ring[k].frame, s_ring[k].tag);
+        }
+    }
+    return held;
+}
+
+/*
+ * T17: the frame left in the transmit buffer, now in listen-only, where it
+ * can only be awaiting. The abort frees the buffer; the driver's interrupt
+ * then counts a transmit failure, which is not counted again (s_tx_failed_skip),
+ * and raises a transmit-failed alert, which is not passed up. Waits, bounded,
+ * until the driver holds no frame.
+ */
+static void switch_abort_head(twai_port_switch_report_t *rep)
+{
+    taskENTER_CRITICAL(&s_lock);
+    const bool failed_was_held = s_tx_failed_held;
+    const uint32_t failed_was_pending = s_ev_pending & TWAI_PORT_EV_TX_FAILED;
+    taskEXIT_CRITICAL(&s_lock);
+
+    const twai_port_buf_t seen = twai_port_ll_abort_if_awaiting();
+    rep->head_aborted = (seen == TWAI_PORT_BUF_AWAITING);
+    if (rep->head_aborted)
+    {
+        taskENTER_CRITICAL(&s_lock);
+        s_tx_failed_skip++;
+        taskEXIT_CRITICAL(&s_lock);
+    }
+
+    twai_status_info_t st;
+    uint32_t waited = 0;
+    bool driver_holds = true;
+    for (;;)
+    {
+        if (read_status(&st) == ESP_OK && st.msgs_to_tx == 0)
+        {
+            driver_holds = false;
+            break;
+        }
+        if (waited >= SWITCH_ABORT_WAIT_MAX_US)
+        {
+            break;
+        }
+        esp_rom_delay_us(SWITCH_ABORT_WAIT_STEP_US);
+        waited += SWITCH_ABORT_WAIT_STEP_US;
+    }
+    rep->abort_wait_us = waited;
+    rep->abort_timed_out = driver_holds;
+    rep->driver_tx_stuck = driver_holds
+                           && twai_port_ll_buf_state() == TWAI_PORT_BUF_EMPTY;
+
+    /* The abort's alert: nothing can fail on the wire in listen-only, so the
+     * transmit-failed event this poll sees is the abort's. */
+    (void)switch_poll();
+    taskENTER_CRITICAL(&s_lock);
+    if (rep->head_aborted)
+    {
+        s_ev_pending = (s_ev_pending & ~TWAI_PORT_EV_TX_FAILED) | failed_was_pending;
+        s_tx_failed_held = failed_was_held;
+    }
+    /* A failure the driver never counted is not taken off a later one. */
+    if (driver_holds)
+    {
+        s_tx_failed_skip = 0;
+    }
+    taskEXIT_CRITICAL(&s_lock);
+}
+
+/*
+ * THE KEPT-DRIVER SWITCH (T14 to T18), between normal and listen-only, with
+ * the driver installed and kept. The steps are listed at twai_port_set_mode()
+ * in twai_port.h. The record changes only once the switch has run.
+ */
+static esp_err_t kept_switch(can_port_mode_t to)
+{
+    twai_port_switch_report_t rep;
+    memset(&rep, 0, sizeof(rep));
+    rep.seq = s_switch.seq + 1u;
+    rep.to_mode = to;
+    const bool to_lom = (to == CAN_PORT_MODE_LISTEN_ONLY);
+
+    twai_status_info_t st;
+    esp_err_t err = read_status(&st);
+    if (err == ESP_OK && st.state != TWAI_STATE_RUNNING)
+    {
+        err = ESP_ERR_INVALID_STATE;    /* bus-off or recovering */
+    }
+    if (err != ESP_OK)
+    {
+        rep.result = err;
+        s_switch = rep;
+        return err;
+    }
+
+    if (to_lom)
+    {
+        s_tx_block = true;      /* step 1: every send refused from here */
+    }
+
+    /*
+     * Step 2, THE PLACE FOR T16, the switch's placement in the inter-frame
+     * gap: HELD by the user (2026-11-27) until T13's no-acknowledge
+     * measurements report on the C3 and the S3. No wait and no timeout rule
+     * here yet: reset mode is entered at once, and the status register just
+     * before it is reported (status_at_reset, buf_at_reset).
+     */
+    twai_port_ll_entry_t entry;
+    twai_port_ll_switch_enter(&entry);
+    rep.status_at_reset = entry.status;
+    rep.buf_at_reset = entry.buf;
+
+    /* Step 3, T18: the controller sends no more, so this poll and the status
+     * read below take every bus error up to the switch. */
+    (void)switch_poll();
+
+    if (to_lom)
+    {
+        rep.held = switch_remove_held();    /* T17 */
+    }
+
+    /* T15: REC 128 into listen-only, 0 out of it, read back. */
+    rep.rec_written = to_lom ? 128u : 0u;
+    twai_port_ll_switch_leave(to_lom, rep.rec_written,
+                              &rep.rec_read_back, &rep.tec_read_back);
+
+    if (to_lom && rep.held > 0)
+    {
+        switch_abort_head(&rep);
+    }
+
+    s_mode = to;
+    if (!to_lom)
+    {
+        s_tx_block = false;
+    }
+    rep.result = ESP_OK;
+    s_switch = rep;
+    if (rep.rec_read_back != rep.rec_written)
+    {
+        ESP_LOGW(TAG, "switch: REC written %u, read back %u",
+                 (unsigned)rep.rec_written, (unsigned)rep.rec_read_back);
+    }
+    return ESP_OK;
+}
+
+esp_err_t twai_port_last_switch(twai_port_switch_report_t *out)
+{
+    if (out == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_cfg.kept_driver_switch)
+    {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    *out = s_switch;
+    return ESP_OK;
+}
+
 /* --------------------------------------------- mode and settings, T4 -- */
+
+/* T14: a change the kept-driver switch makes, rather than T4. */
+static bool kept_change(can_port_mode_t from, can_port_mode_t to)
+{
+    const bool from_kept = from == CAN_PORT_MODE_NORMAL
+                           || from == CAN_PORT_MODE_LISTEN_ONLY;
+    const bool to_kept = to == CAN_PORT_MODE_NORMAL
+                         || to == CAN_PORT_MODE_LISTEN_ONLY;
+    return s_cfg.kept_driver_switch && from_kept && to_kept;
+}
 
 esp_err_t twai_port_set_mode(can_port_mode_t mode)
 {
@@ -457,6 +765,10 @@ esp_err_t twai_port_set_mode(can_port_mode_t mode)
     {
         s_mode = mode;
         return ESP_OK;
+    }
+    if (kept_change(s_mode, mode))
+    {
+        return kept_switch(mode);
     }
     /* The new mode is recorded only once the teardown has succeeded. */
     const esp_err_t err = twai_port_teardown();
@@ -558,13 +870,20 @@ esp_err_t twai_port_receive(twai_message_t *out, TickType_t wait)
 
 esp_err_t twai_port_send(const twai_message_t *m, TickType_t wait)
 {
+    return twai_port_send_tagged(m, wait, 0);
+}
+
+esp_err_t twai_port_send_tagged(const twai_message_t *m, TickType_t wait,
+                                uint32_t tag)
+{
     if (m == NULL)
     {
         count_add(&s_count.tx_refused, 1);
         return ESP_ERR_INVALID_ARG;
     }
-    if (!s_installed)
+    if (!s_installed || s_tx_block)
     {
+        /* Down, or in listen-only on a kept-driver port (T14). */
         count_add(&s_count.tx_refused, 1);
         return ESP_ERR_INVALID_STATE;
     }
@@ -584,7 +903,17 @@ esp_err_t twai_port_send(const twai_message_t *m, TickType_t wait)
     const esp_err_t err = twai_transmit(&tx, wait);
     if (err == ESP_OK)
     {
-        count_add(&s_count.tx_frames, 1);
+        taskENTER_CRITICAL(&s_lock);
+        s_count.tx_frames++;
+        if (s_cfg.kept_driver_switch)
+        {
+            /* The record of frames sent (T17), in the driver's order. */
+            const uint32_t k = s_ring_n % TWAI_PORT_SWITCH_HELD_MAX;
+            s_ring[k].frame = *m;
+            s_ring[k].tag = tag;
+            s_ring_n++;
+        }
+        taskEXIT_CRITICAL(&s_lock);
     }
     else if (err == ESP_ERR_TIMEOUT || err == ESP_FAIL)
     {
@@ -624,13 +953,18 @@ uint32_t twai_port_poll_alerts(void)
     {
         return 0;
     }
+    /* Events a kept-driver switch's own polls took (T18), passed up now. */
+    taskENTER_CRITICAL(&s_lock);
+    uint32_t ev = s_ev_pending;
+    s_ev_pending = 0;
+    taskEXIT_CRITICAL(&s_lock);
+
     uint32_t alerts = 0;
     if (twai_read_alerts(&alerts, 0) != ESP_OK || alerts == 0)
     {
-        return 0;
+        return ev;
     }
 
-    uint32_t ev = 0;
     if (alerts & TWAI_ALERT_TX_SUCCESS)    { ev |= TWAI_PORT_EV_TX_SUCCESS; }
     if (alerts & TWAI_ALERT_BUS_ERROR)     { ev |= TWAI_PORT_EV_BUS_ERROR; }
     if (alerts & TWAI_ALERT_RX_QUEUE_FULL) { ev |= TWAI_PORT_EV_RX_QUEUE_FULL; }
@@ -745,6 +1079,12 @@ esp_err_t twai_port_status(can_port_status_t *out)
         out->rx_waiting = st.msgs_to_rx;
         out->tec = st.tx_error_counter;
         out->rec = st.rx_error_counter;
+        if (s_cfg.kept_driver_switch)
+        {
+            /* T15: the driver reads 0 for both in listen-only, and on a
+             * kept-driver port it believes it is in normal mode anyway. */
+            twai_port_ll_counters(&out->tec, &out->rec);
+        }
     }
     else
     {

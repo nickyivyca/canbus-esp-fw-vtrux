@@ -3,6 +3,10 @@
 #include "esp_rom_sys.h"
 #include "soc/soc.h"
 #include "soc/system_reg.h"
+#include "soc/rtc_cntl_reg.h"
+#include "esp_cpu.h"
+
+static void call(const char *name);
 
 #include <stdio.h>
 #include <string.h>
@@ -17,7 +21,22 @@ uint32_t stub_reg_read(uint32_t reg)
 {
     if (reg == SYSTEM_PERIP_CLK_EN0_REG) { return stub.clk_en0; }
     if (reg == SYSTEM_PERIP_RST_EN0_REG) { return stub.rst_en0; }
+    if (reg == RTC_CNTL_OPTIONS0_REG) { return stub.rtc_options0; }
+    if (reg == RTC_CNTL_SW_CPU_STALL_REG) { return stub.rtc_sw_stall; }
     return 0;
+}
+
+/* The S3 restart stop's stall of the other core (T12). */
+int esp_cpu_get_core_id(void)
+{
+    return stub.core_id;
+}
+
+void esp_cpu_stall(int core_id)
+{
+    call("cpu_stall");
+    stub.stalled_core = core_id;
+    stub.stalls++;
 }
 
 void esp_rom_delay_us(uint32_t us)
@@ -183,7 +202,8 @@ esp_err_t twai_read_alerts(uint32_t *alerts, TickType_t ticks_to_wait)
     (void)ticks_to_wait;
     call("read_alerts");
     *alerts = stub.alerts;
-    stub.alerts = 0;
+    stub.alerts = stub.alerts_then;
+    stub.alerts_then = 0;
     return stub.read_alerts_ret;
 }
 
@@ -214,4 +234,10 @@ esp_err_t twai_clear_receive_queue(void)
 {
     call("clear_rx");
     return stub.clear_rx_ret;
+}
+
+esp_err_t twai_clear_transmit_queue(void)
+{
+    call("clear_tx");
+    return ESP_OK;
 }

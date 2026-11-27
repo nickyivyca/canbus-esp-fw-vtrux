@@ -61,6 +61,11 @@ static void reset(void)
     memset(&s_raw, 0, sizeof(s_raw));
     memset(&s_count, 0, sizeof(s_count));
     s_tx_failed_held = false;
+    s_tx_block = false;
+    s_ring_n = 0;
+    s_tx_failed_skip = 0;
+    s_ev_pending = 0;
+    memset(&s_switch, 0, sizeof(s_switch));
     stub_reset();
     s_hook_calls = s_teardown_calls = 0;
     s_hook_saw = NULL;
@@ -123,6 +128,16 @@ static void case_setup(void)
     c.mode = (can_port_mode_t)7;
     CHECK(twai_port_setup(&c) == ESP_ERR_INVALID_ARG);
     CHECK(twai_port_setup(NULL) == ESP_ERR_INVALID_ARG);
+
+    /* T14 is not measured on the C3: refused, and the port is not set up. */
+    twai_port_config_defaults(&c);
+    CHECK(!c.kept_driver_switch && c.switch_discard == NULL);
+    c.kept_driver_switch = true;
+    CHECK(twai_port_setup(&c) == ESP_ERR_NOT_SUPPORTED);
+    CHECK(!s_setup);
+    twai_port_switch_report_t rep;
+    CHECK(twai_port_last_switch(&rep) == ESP_ERR_NOT_SUPPORTED);
+    CHECK(twai_port_last_switch(NULL) == ESP_ERR_INVALID_ARG);
 
     up();
     twai_port_config_defaults(&c);
