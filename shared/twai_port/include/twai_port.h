@@ -100,7 +100,10 @@ typedef struct {
      * its registers (T14, T15, T17, T18); a `mode` of listen-only above is
      * reached that way after the install. twai_port_setup() refuses it with
      * ESP_ERR_NOT_SUPPORTED on a chip whose register file is not measured
-     * for it, and with ESP_ERR_INVALID_ARG when tx_queue_len + 1 is above
+     * for it (on the host only, the define TWAI_PORT_HOST_SWITCH makes the
+     * S3 file report it supported, for the tests on the T10 fake; an
+     * ESP-IDF build that sets it stops: twai_port_ll.h, CMakeLists.txt),
+     * and with ESP_ERR_INVALID_ARG when tx_queue_len + 1 is above
      * TWAI_PORT_SWITCH_HELD_MAX. With it chosen, sends come from one task at
      * a time, so the port's record of the frames sent is in the driver's
      * order.

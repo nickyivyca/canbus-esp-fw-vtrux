@@ -130,5 +130,6 @@ esp_err_t twai_reconfigure_alerts(uint32_t alerts_enabled, uint32_t *current_ale
 esp_err_t twai_initiate_recovery(void);
 esp_err_t twai_get_status_info(twai_status_info_t *status_info);
 esp_err_t twai_clear_receive_queue(void);
+esp_err_t twai_clear_transmit_queue(void);
 
 #endif

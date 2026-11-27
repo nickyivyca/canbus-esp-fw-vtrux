@@ -2,10 +2,11 @@
 """Break twai_port one behaviour at a time; its unit tests must fail on each.
 
 The implementor's (SPEC.md T11), beside the unit tests it scores. Each mutant
-below undoes one behaviour in a copy of twai_port.c or the C3 register file,
-twai_port_ll_esp32c3.c, and builds and runs test_twai_port against the copy.
-The run passes only if the unmutated build passes and every mutant builds and
-fails. A mutant that does not build is not a catch, and one whose text does
+below undoes one behaviour in a copy of twai_port.c or a register file
+(twai_port_ll_esp32c3.c, twai_port_ll_esp32s3.c), and builds and runs the
+three unit binaries against the copy; a mutant is caught when any of them
+fails. The run passes only if the unmutated build passes and every mutant
+builds and fails. A mutant that does not build is not a catch, and one whose text does
 not occur exactly once ran nothing; either fails the run. Self-checks, not
 verification: acceptance is the testers', on the T10 fake in test/.
 
@@ -30,6 +31,9 @@ COMPONENTS = ("shared/twai_port", "shared/can_port")   # the unit build reads bo
 UNIT = "shared/twai_port/unit"
 TP = "shared/twai_port/twai_port.c"
 LL = "shared/twai_port/twai_port_ll_esp32c3.c"
+S3 = "shared/twai_port/twai_port_ll_esp32s3.c"
+BINS = ("test_twai_port", "test_twai_port_s3", "test_twai_port_s3_probe",
+        "test_twai_port_s3_host")
 
 # (name, file, text, its replacement). Each text occurs once in its file.
 MUTANTS = [
@@ -134,6 +138,74 @@ MUTANTS = [
     ("restart stop entry status read late", LL,
      "    r->was_in_reset    = twai_ll_is_in_reset_mode(hw);\n    r->status_at_entry = twai_ll_get_status(hw);",
      "    r->was_in_reset    = twai_ll_is_in_reset_mode(hw);\n    r->status_at_entry = TWAI_LL_STATUS_TBS;"),
+    # T14 to T18, the kept-driver switch.
+    ("switch allowed where unmeasured", TP,
+     "        if (!twai_port_ll_switch_supported())", "        if (0)"),
+    ("kept port installs in listen-only", TP,
+     "        /* T14: the driver's mode is fixed at install and gates every send. */\n        mode = TWAI_MODE_NORMAL;",
+     "        /* T14 */"),
+    ("sends taken in listen-only", TP,
+     "    if (!s_installed || s_tx_block)", "    if (!s_installed)"),
+    ("no-ACK through the switch", TP,
+     "    return s_cfg.kept_driver_switch && from_kept && to_kept;",
+     "    return s_cfg.kept_driver_switch && (from_kept || to_kept);"),
+    ("switch while not running", TP,
+     "    if (err == ESP_OK && st.state != TWAI_STATE_RUNNING)", "    if (0)"),
+    ("no alert poll at the switch", TP,
+     "    (void)switch_poll();\n\n    if (to_lom)\n    {\n        rep.held = switch_remove_held();",
+     "    if (to_lom)\n    {\n        rep.held = switch_remove_held();"),
+    ("switch's events lost", TP,
+     "    uint32_t ev = s_ev_pending;", "    uint32_t ev = 0;"),
+    ("held frames not counted", TP,
+     "    s_count.tx_discarded_switch += held;\n", ""),
+    ("queue not cleared at the switch", TP,
+     "    (void)twai_clear_transmit_queue();\n", ""),
+    ("oldest frames handed back", TP,
+     "(recorded - held + i) % TWAI_PORT_SWITCH_HELD_MAX", "(i) % TWAI_PORT_SWITCH_HELD_MAX"),
+    ("aborted frame counted twice", TP,
+     "        s_tx_failed_skip++;\n", ""),
+    ("abort's event passed up", TP,
+     "        s_ev_pending = (s_ev_pending & ~TWAI_PORT_EV_TX_FAILED) | failed_was_pending;\n        s_tx_failed_held = failed_was_held;\n",
+     "        (void)failed_was_pending;\n        (void)failed_was_held;\n"),
+    ("uncounted abort eats a later failure", TP,
+     "    if (driver_holds)\n    {\n        s_tx_failed_skip = 0;\n    }", ""),
+    ("REC 127 into listen-only", TP,
+     "    rep.rec_written = to_lom ? 128u : 0u;", "    rep.rec_written = to_lom ? 127u : 0u;"),
+    ("counters from the driver", TP,
+     "            twai_port_ll_counters(&out->tec, &out->rec);", "            (void)0;"),
+    ("no bound on the abort wait", TP,
+     "        if (waited >= SWITCH_ABORT_WAIT_MAX_US)\n        {\n            break;\n        }",
+     "        if (waited >= 100u * SWITCH_ABORT_WAIT_MAX_US)\n        {\n            break;\n        }"),
+    # The S3 register file (T19).
+    ("host switch ignored", S3,
+     "#define S3_SWITCH_SUPPORTED 1", "#define S3_SWITCH_SUPPORTED 0"),
+    ("switch aborts through the public T8", TP,
+     "    const twai_port_buf_t seen = twai_port_ll_abort_if_awaiting();",
+     "    const twai_port_buf_t seen = twai_port_abort_if_awaiting();"),
+    ("S3 supported without the switch", S3,
+     "#define S3_SUPPORTED 0      /* not measured yet (T19) */", "#define S3_SUPPORTED 1"),
+    ("S3 abort while transmitting", S3,
+     "    if (seen == TWAI_PORT_BUF_AWAITING)\n    {\n        twai_ll_set_cmd_abort_tx(hw);",
+     "    if (seen != TWAI_PORT_BUF_EMPTY)\n    {\n        twai_ll_set_cmd_abort_tx(hw);"),
+    ("S3 switch without reset mode", S3,
+     "    out->buf = buf_from_status(out->status);\n    twai_ll_enter_reset_mode(hw);",
+     "    out->buf = buf_from_status(out->status);"),
+    ("S3 REC written after reset mode", S3,
+     "    twai_ll_set_rec(hw, rec);\n    *rec_back = twai_ll_get_rec(hw);\n    *tec_back = twai_ll_get_tec(hw);\n    twai_ll_exit_reset_mode(hw);",
+     "    twai_ll_exit_reset_mode(hw);\n    twai_ll_set_rec(hw, rec);\n    *rec_back = twai_ll_get_rec(hw);\n    *tec_back = twai_ll_get_tec(hw);"),
+    ("S3 restart stop no stall", S3,
+     "        esp_cpu_stall(other);", "        (void)other;"),
+    ("S3 restart stop stalls a stalled core", S3,
+     "    if (!core_stalled(other))", "    if (1 || !core_stalled(other))"),
+    ("S3 restart stop stalls its own core", S3,
+     "    const int other = (esp_cpu_get_core_id() == 0) ? 1 : 0;",
+     "    const int other = esp_cpu_get_core_id();"),
+    ("S3 restart stop no abort", S3,
+     "        if (abort_if_awaiting_raw(hw) == TWAI_PORT_BUF_AWAITING)\n        {\n            r->aborts++;\n        }\n",
+     ""),
+    ("S3 restart stop no reset mode", S3,
+     "    r->status_at_reset = twai_ll_get_status(hw);\n    twai_ll_enter_reset_mode(hw);",
+     "    r->status_at_reset = twai_ll_get_status(hw);"),
 ]
 
 
@@ -171,12 +243,16 @@ def run(cmd, cwd):
 
 
 def score(cc, copy, out):
-    """'pass', 'fail' or 'did not build', for the copy at `copy`."""
+    """'pass', 'fail' or 'did not build', for the copy at `copy`: 'fail' if
+    any of the unit binaries fails."""
     rc, _ = run(["make", "-s", "-C", UNIT, "CC=" + cc, "OUT=" + out, "all"], copy)
     if rc != 0:
         return "did not build"
-    rc, _ = run([os.path.join(out, "test_twai_port")], copy)
-    return "pass" if rc == 0 else "fail"
+    for b in BINS:
+        rc, _ = run([os.path.join(out, b)], copy)
+        if rc != 0:
+            return "fail"
+    return "pass"
 
 
 def fresh_copy(run_dir):

@@ -25,7 +25,8 @@ typedef struct {
     esp_err_t pins_ret;
     board_twai_pins_t pins;
     esp_err_t read_alerts_ret;
-    uint32_t alerts;                /* returned once, then 0 */
+    uint32_t alerts;                /* returned once, then alerts_then */
+    uint32_t alerts_then;           /* returned by the next read, then 0 */
     /* Status reads: each returns the next, and the last repeats. */
     twai_status_info_t status[STUB_MAX_STATUS];
     esp_err_t status_ret[STUB_MAX_STATUS];
@@ -56,6 +57,11 @@ typedef struct {
 
     /* The restart stop (T12). The two system registers REG_READ returns. */
     uint32_t clk_en0, rst_en0;
+    /* The S3's stall of the other core: this core's id, the two registers
+     * holding the stall code, and each esp_cpu_stall() made. */
+    int core_id;
+    uint32_t rtc_options0, rtc_sw_stall;
+    int stalled_core, stalls;
     /* At the status_change_at'th wait (1 for the first; 0 for never) the
      * status becomes status_after. */
     int status_change_at;
