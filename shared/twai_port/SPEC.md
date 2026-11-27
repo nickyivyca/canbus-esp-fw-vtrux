@@ -148,7 +148,11 @@ Requirements are numbered T1 to T19. The numbers are stable.
   and whether it entered reset mode. It is in IRAM, takes no lock,
   allocates nothing and logs nothing. It is register-level, in T8's file
   per chip; only the C3's is measured (gen-inhibit spec 3). On any other
-  chip it reports "not supported" and touches nothing.
+  chip it reports "not supported" and touches nothing. On a chip with two
+  cores, such as the S3, it first stalls the other core, before the steps
+  above, so that nothing on that core loads a frame during the wait. The
+  other core is not started again: the restart follows (added 2026-11-27,
+  user).
 - **T13. The test app.** `twai_port/test_app/` holds the transmit-abort
   probe, moved from gen-inhibit's `gi_txabort_probe.c`: a measurement of
   what the chip's abort command does to a frame awaiting arbitration, to

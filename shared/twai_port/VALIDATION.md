@@ -226,6 +226,15 @@ verification"; charge-interposer reviewer, 2026-10-31).
 - **Other chips:** as T8: nothing is measured on the S3, so the stop
   reports "not supported" there rather than running an unmeasured
   sequence. The interposer measures it in its stage (b), gap fix 3.
+- **Two cores** (user, 2026-11-27, in the charge-interposer reviewer's
+  session, on the charge-interposer implementor's question): the steps
+  assume that with interrupts off nothing else loads a frame, which holds
+  on the single-core C3. On the X2 the S3 runs both cores, and the stop
+  turns interrupts off only on its own core. The TWAI interrupt, or a task
+  on the other core, can then load the next queued frame during the wait,
+  and the reset cuts it on the bus. ESP-IDF's `esp_restart_noos` stalls
+  the other core itself a little later, so stalling it first changes
+  nothing else. The stop takes no lock, so a stalled core cannot block it.
 - **Status:** validated for the C3; unsupported elsewhere by design.
 
 ### T13. The test app
