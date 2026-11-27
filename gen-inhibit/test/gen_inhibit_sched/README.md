@@ -235,3 +235,18 @@ counts the loop's reads of the buffer.
 Both cases fail on 4c3afb4d's `gi_sched.c` (16 assertions). Four mutants break
 the fix, each caught: the loop ending at the bound, the bound counted on every
 pass, a new abort keeping the past-bound state, and the second booking.
+
+### 2026-11-26: a page aborted on the bound's read (tracker F7)
+
+Spec 5.2 item 6, "never lost silently" (user, 2026-11-26; no spec change). On
+a0c19825 the bound could end the loop on a read that had just issued the abort
+command. The command frees the buffer 6-21 us later, so the page was still held
+with `aborting` clear, and the next pass's step 1 booked it `sent`. It never
+reached the wire and was never requeued, and the balance still closed. A read
+that issues the command now never ends the loop; the next pass reads the result.
+
+`case_page_aborted_at_the_bound_is_requeued` builds it: the first command has
+no effect (`fb_race_next()`), and the page retries unacknowledged
+(`fb_set_unacked()`) until the pass at the bound lands in a gap. It fails on
+a0c19825's `gi_sched.c` (4 assertions), and the mutant that ends the loop on
+that read again is caught.

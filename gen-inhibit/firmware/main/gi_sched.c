@@ -552,6 +552,17 @@ static bool abort_step(gs_t *s, int64_t now)
     {
         s->abort_cmds_this++;
         s->st.abort_cmds++;
+        /*
+         * A READ THAT ISSUED THE COMMAND NEVER ENDS THE LOOP, not even at the
+         * bound (spec 5.2 item 6, tracker F7, user 2026-11-26). The command
+         * frees the buffer 6-21 us later, so the frame is still there when
+         * this returns. Ending the loop here left a lower-class frame held
+         * with `aborting` clear, and the next pass's step 1 saw the buffer
+         * free and credited it `sent`: a page that never reached the wire,
+         * booked as if it had, so lost silently. The next pass reads the
+         * result instead: EMPTY books it aborted and requeued (step 3).
+         */
+        return false;
     }
     /* GS_BUF_TRANSMITTING: no command was issued. Wait for TS to fall. */
 

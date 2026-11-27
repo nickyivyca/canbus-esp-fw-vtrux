@@ -331,6 +331,17 @@ static void see_departure(gs_t *s, int64_t now, bool at_deadline)
      """    if (!s->inhibit_outstanding || s->held_booked)""",
      """    if (!s->inhibit_outstanding)""",
      "F5: a deadline skip held past the bound is aborted, booked once"),
+
+    # F7 (spec 5.2 item 6, user 2026-11-26): the bound ends the loop only on
+    # a read that issued no command.
+    ("F7: the bound ends the loop on the read that issued the command",
+     "gi_sched.c",
+     """         * result instead: EMPTY books it aborted and requeued (step 3).
+         */
+        return false;""",
+     """         * result instead: EMPTY books it aborted and requeued (step 3).
+         */""",
+     "F7: a page aborted on the bound's read is requeued, not sent"),
 ]
 
 
