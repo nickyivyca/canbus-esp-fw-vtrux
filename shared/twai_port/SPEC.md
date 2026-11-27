@@ -149,7 +149,8 @@ Requirements are numbered T1 to T19. The numbers are stable.
   allocates nothing and logs nothing. It is register-level, in T8's file
   per chip; only the C3's is measured (gen-inhibit spec 3). On any other
   chip it reports "not supported" and touches nothing. On a chip with two
-  cores, such as the S3, it first stalls the other core, before the steps
+  cores where the stop is supported, such as the S3 once measured (T19),
+  it first stalls the other core, before the steps
   above, so that nothing on that core loads a frame during the wait. The
   other core is not started again: the restart follows (added 2026-11-27,
   user).
