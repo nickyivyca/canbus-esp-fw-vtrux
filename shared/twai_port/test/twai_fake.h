@@ -248,8 +248,9 @@ uint32_t twai_fake_active_error_flags(void);
  * for it in twai_fake_advance() and esp_rom_delay_us(). On the C3 there is
  * no other core: a stall there, or of the calling core, is counted in
  * twai_fake_stall_misused() and does nothing.
- * twai_fake_ll_calls_at_stall() is how many twai_ll calls and REG_READs
- * had been made (twai_fake_ll_calls()) when the first stall took effect,
+ * twai_fake_ll_calls_at_stall() is how many twai_ll calls and REG_READs of
+ * the TWAI's clock and reset bits (twai_fake_ll_calls(); not the stall
+ * fields) had been made when the first stall took effect,
  * or -1, so a test can tell whether the stall came first.
  */
 void     twai_fake_set_core(int core);
@@ -259,8 +260,29 @@ bool     twai_fake_core_stalled(int core);
 int      twai_fake_stall_calls(void);
 int      twai_fake_unstall_calls(void);
 int      twai_fake_stall_misused(void);
+/* esp_cpu_stall() of a core already stalled: in ESP-IDF v5.4.2 it clears
+ * and sets the stall fields again, so the core runs for about one register
+ * write, twice. REG_READ() of RTC_CNTL_OPTIONS0_REG and
+ * RTC_CNTL_SW_CPU_STALL_REG (include/soc/rtc_cntl_reg.h) gives the stall
+ * fields of each core stalled. */
+int      twai_fake_restalls(void);
+int      twai_fake_stall_reg_reads(void);   /* REG_READs of the stall fields */
 int      twai_fake_ll_calls(void);
 int      twai_fake_ll_calls_at_stall(void);
+
+/*
+ * The driver's interrupt runs on the core that installed the driver
+ * (twai_fake_isr_core(), the core twai_fake_set_core() named at install). It
+ * cannot run while that core has interrupts off, as on the restart path
+ * (twai_fake_set_interrupts_off(), default off), or while that core is
+ * stalled. Meanwhile the controller still finishes, fails or drops the
+ * frame in its buffer, but nothing books it or loads the next: the
+ * driver's TX-buffer-occupied flag stays set (twai_fake_driver_buf_stuck()),
+ * no alert is raised, and twai_fake_isr_held() counts the events held.
+ */
+void     twai_fake_set_interrupts_off(bool off);
+int      twai_fake_isr_core(void);
+uint32_t twai_fake_isr_held(void);
 
 /* ----------------------------------------------------------- busy waits -- */
 

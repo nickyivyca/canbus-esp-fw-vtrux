@@ -5,10 +5,37 @@
       "reason": "compiler-defined; the extern \"C\" wrapper in include/twai_port.h",
       "kind": "library macro"
     },
+    "ESP_PLATFORM": {
+      "class": "not a switch",
+      "reason": "twai_port_ll.h stops a compile that sets TWAI_PORT_HOST_SWITCH with #error when it is defined; ESP-IDF defines it in every ESP-IDF build",
+      "kind": "a value the build injects"
+    },
     "IDF_TARGET": {
       "class": "not a switch",
-      "reason": "CMakeLists.txt picks T8's register file by chip: twai_port_ll_esp32c3.c on the C3, twai_port_ll_unsupported.c elsewhere; ESP-IDF sets it from the board's target, which R21 checks",
+      "reason": "CMakeLists.txt picks T8's register file by chip: twai_port_ll_esp32c3.c on the C3, twai_port_ll_esp32s3.c on the S3, twai_port_ll_unsupported.c elsewhere; ESP-IDF sets it from the board's target, which R21 checks",
       "kind": "a value the build injects"
+    },
+    "TWAI_PORT_HOST_SWITCH": {
+      "class": "test-only",
+      "reason": "the testers' host builds on the T10 fake only: twai_port_ll_esp32s3.c reports the kept-driver switch (T14) supported before T19's measurement, so the port's switch runs on the fake. CMakeLists.txt stops any ESP-IDF build that sets it (FATAL_ERROR) and twai_port_ll.h stops the compile (#error under ESP_PLATFORM), so no image can carry it. The row's symbol is a placeholder until the implementor's marker lands (asked 2026-11-27)",
+      "refusal": [
+        {
+          "elf_symbols_absent": [
+            "twai_port_host_switch_build"
+          ]
+        }
+      ]
+    },
+    "TWAI_PORT_S3_PROBE": {
+      "class": "test-only",
+      "reason": "T19's measurement build for the X2 (the s3probe variant): twai_port_ll_esp32s3.c reports T8, T12 and the kept-driver switch supported before the measurement has passed. The row's symbol is a placeholder until the implementor's marker lands (asked 2026-11-27); the serial test app's symbols and command strings join it when that code lands",
+      "refusal": [
+        {
+          "elf_symbols_absent": [
+            "twai_port_s3_probe_build"
+          ]
+        }
+      ]
     },
     "TWAI_PORT_TXABORT_PROBE": {
       "class": "test-only",

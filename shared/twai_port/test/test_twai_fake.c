@@ -10,6 +10,7 @@
 #include "twai_fake.h"
 #include "hal/twai_ll.h"
 #include "soc/system_reg.h"
+#include "soc/rtc_cntl_reg.h"
 #include "esp_rom_sys.h"
 #include "esp_cpu.h"
 
@@ -1054,12 +1055,19 @@ static void case_two_cores(void)
     esp_rom_delay_us(150);                          /* 1150: nothing due */
     esp_rom_delay_us(50);                           /* 1200: one due */
     CHECK(twai_fake_other_core_sent() == 5);
+    CHECK(REG_READ(RTC_CNTL_OPTIONS0_REG) == 0 && REG_READ(RTC_CNTL_SW_CPU_STALL_REG) == 0);
     esp_cpu_stall(1);
     CHECK(twai_fake_core_stalled(1) && twai_fake_ll_calls_at_stall() == 2);
+    CHECK(REG_READ(RTC_CNTL_OPTIONS0_REG) == (2u << RTC_CNTL_SW_STALL_APPCPU_C0_S));
+    CHECK(REG_READ(RTC_CNTL_SW_CPU_STALL_REG) == (0x21u << RTC_CNTL_SW_STALL_APPCPU_C1_S));
+    CHECK(twai_fake_stall_reg_reads() == 4 && twai_fake_ll_calls() == 2);   /* not TWAI calls */
+    CHECK(twai_fake_restalls() == 0);
+    esp_cpu_stall(1);
+    CHECK(twai_fake_restalls() == 1 && twai_fake_stall_calls() == 2);
     twai_fake_advance(10000);
     esp_rom_delay_us(1000);
     CHECK(twai_fake_other_core_sent() == 5 && twai_fake_stall_misused() == 0);
-    CHECK(twai_fake_stall_calls() == 1 && twai_fake_unstall_calls() == 0);
+    CHECK(twai_fake_stall_calls() == 2 && twai_fake_unstall_calls() == 0);
     esp_cpu_stall(0);                               /* its own core */
     CHECK(twai_fake_stall_misused() == 1 && !twai_fake_core_stalled(0));
     esp_cpu_unstall(1);
@@ -1083,6 +1091,55 @@ static void case_two_cores(void)
     twai_fake_advance(1000);
     CHECK(twai_fake_other_core_sent() == 0);
     twai_fake_set_other_core_sender(NULL, 0);
+}
+
+static void case_isr_blocked(void)
+{
+    twai_message_t m = msg(0x100, 8);
+    twai_dev_t *hw = TWAI_LL_GET_HW(0);
+    twai_status_info_t s;
+    g_case = "interrupt held (interrupts off): the frame on the wire finishes, nothing books it or loads the next";
+    up(TWAI_MODE_NORMAL, 5, 5, TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_IDLE, true);
+    CHECK(twai_fake_isr_core() == 0);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    m.identifier = 0x101;
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_set_interrupts_off(true);
+    twai_fake_advance(222);
+    CHECK(twai_fake_wire_count() == 1 && twai_fake_isr_held() == 1);
+    CHECK((twai_ll_get_status(hw) & TXBITS) == TWAI_LL_STATUS_TBS);
+    CHECK(twai_fake_driver_buf_stuck() && twai_fake_tx_pending() == 1);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.msgs_to_tx == 2);
+    CHECK(read_alerts() == 0);
+    twai_fake_advance(10000);
+    CHECK(twai_fake_wire_count() == 1);
+
+    g_case = "interrupt held: an abort removes the awaiting frame, nothing books it";
+    up(TWAI_MODE_NORMAL, 5, 5, TWAI_ALERT_TX_SUCCESS, true);
+    twai_fake_stall_next(1);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_set_interrupts_off(true);
+    twai_ll_set_cmd_abort_tx(hw);
+    CHECK(twai_fake_ll_removed() == 1 && twai_fake_isr_held() == 1);
+    CHECK(twai_fake_driver_buf_stuck() && read_alerts() == 0);
+    twai_fake_set_interrupts_off(false);
+
+    g_case = "interrupt held (S3): on the core that installed the driver, held while that core is stalled";
+    twai_fake_set_chip(TWAI_FAKE_CHIP_S3);
+    twai_fake_set_core(1);
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    twai_fake_set_core(0);
+    CHECK(twai_fake_isr_core() == 1);
+    twai_fake_set_interrupts_off(true);             /* off on core 0: the interrupt runs on 1 */
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(222);
+    CHECK(twai_fake_isr_held() == 0 && twai_fake_wire_count() == 1);
+    esp_cpu_stall(1);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(222);
+    CHECK(twai_fake_isr_held() == 1 && twai_fake_driver_buf_stuck());
+    twai_fake_set_interrupts_off(false);
+    twai_fake_set_chip(TWAI_FAKE_CHIP_C3);
 }
 
 int main(void)
@@ -1123,6 +1180,7 @@ int main(void)
     case_ack_errors_and_flags();
     case_switch_s3();
     case_two_cores();
+    case_isr_blocked();
     printf("test_twai_fake: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

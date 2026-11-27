@@ -16,6 +16,7 @@
 #include "hal/twai_ll.h"
 #include "soc/soc.h"
 #include "soc/system_reg.h"
+#include "soc/rtc_cntl_reg.h"
 #include "esp_rom_sys.h"
 #include "esp_cpu.h"
 
@@ -211,8 +212,12 @@ static int64_t  g_delay_total;
  * stalled, and the sender on the other one. */
 static int      g_core;
 static bool     g_stalled[2];
-static int      g_stall_calls, g_unstall_calls, g_stall_misused;
+static int      g_stall_calls, g_unstall_calls, g_stall_misused, g_restalls;
+static int      g_stall_reg_reads;
 static int      g_ll_calls, g_ll_at_stall = -1;
+static int      g_isr_core;     /* the core the driver's interrupt runs on */
+static bool     g_irq_off;      /* interrupts off on the calling core */
+static uint32_t g_isr_held;
 static bool     g_oc_on, g_oc_busy;
 static twai_message_t g_oc_msg;
 static int64_t  g_oc_every, g_oc_next;
@@ -366,6 +371,15 @@ static void drop_id(uint32_t id)
     g_drop_ids[g_n_drop++] = id;
 }
 
+/* Can the driver's interrupt run? It runs on the core that installed the
+ * driver (esp_intr_alloc there), so not while that core has interrupts off
+ * (the restart path) or is stalled. Then the controller still finishes or
+ * drops the frame in its buffer, but no handler books it or loads the next. */
+static bool isr_blocked(void)
+{
+    return (g_isr_core == g_core && g_irq_off) || g_stalled[g_isr_core];
+}
+
 /* A frame into the transmit buffer, with its transmit request set
  * (twai_hal_set_tx_buffer_and_transmit). */
 static void put_in_buf(const qframe_t *q, int64_t start)
@@ -411,6 +425,15 @@ static void complete_buf(int64_t done, bool failed)
         g_sent.v[q.sent_idx].failed = failed;
     }
     g_buf_full = false;
+    if (!failed) { flog_push(&g_wire, &q.f); }
+    if (isr_blocked())
+    {
+        /* The buffer is free, but the interrupt that books it waits: the
+         * driver's flag stays set and nothing more is loaded. */
+        g_phantom = true;
+        g_isr_held++;
+        return;
+    }
     if (failed)
     {
         g_tx_failed++;
@@ -419,7 +442,6 @@ static void complete_buf(int64_t done, bool failed)
     }
     else
     {
-        flog_push(&g_wire, &q.f);
         raise_alert(TWAI_ALERT_TX_SUCCESS);
         /* Self-reception: the controller receives its own frame. */
         if (q.f.self)
@@ -666,6 +688,7 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
     g_hw_mode = TWAI_MODE_LISTEN_ONLY;
     g_tec = g_rec = 0;
     g_phantom = false;
+    g_isr_core = g_core;
     g_install_n++;
     if (g_n_inst < INSTLOGMAX)
     {
@@ -1186,6 +1209,12 @@ static void abort_remove(int64_t t)
     g_buf_full = false;
     g_abort_pend = false;
     g_ll_removed++;
+    if (isr_blocked())
+    {
+        g_phantom = true;
+        g_isr_held++;
+        return;
+    }
     raise_alert(TWAI_ALERT_TX_SUCCESS);
     load_next(t);
 }
@@ -1209,10 +1238,34 @@ void twai_ll_set_cmd_abort_tx(twai_dev_t *hw)
     abort_remove(twai_fake_now());
 }
 
+/* The stall code's two fields per core, as esp_cpu_stall() writes them (2
+ * in C0, 0x21 in C1); 0 for a core running. Not a TWAI register, so not in
+ * twai_fake_ll_calls(). */
+static bool stall_reg_read(uint32_t addr, uint32_t *val)
+{
+    if (addr == (uint32_t)RTC_CNTL_OPTIONS0_REG)
+    {
+        *val = (g_stalled[0] ? 2u << RTC_CNTL_SW_STALL_PROCPU_C0_S : 0u)
+             | (g_stalled[1] ? 2u << RTC_CNTL_SW_STALL_APPCPU_C0_S : 0u);
+    }
+    else if (addr == (uint32_t)RTC_CNTL_SW_CPU_STALL_REG)
+    {
+        *val = (g_stalled[0] ? 0x21u << RTC_CNTL_SW_STALL_PROCPU_C1_S : 0u)
+             | (g_stalled[1] ? 0x21u << RTC_CNTL_SW_STALL_APPCPU_C1_S : 0u);
+    }
+    else { return false; }
+    g_stall_reg_reads++;
+    if (g_chip != TWAI_FAKE_CHIP_C3) { g_ll_unmeasured++; }
+    return true;
+}
+
 /* REG_READ (soc/soc.h): the TWAI's bit of the two system registers, 0 for
- * their other bits; any other address is counted and reads 0. */
+ * their other bits, and the cores' stall fields; any other address is
+ * counted and reads 0. */
 uint32_t twai_fake_reg_read(uint32_t addr)
 {
+    uint32_t v;
+    if (stall_reg_read(addr, &v)) { return v; }
     g_ll_calls++;
     if (g_chip != TWAI_FAKE_CHIP_C3) { g_ll_unmeasured++; }
     if (addr == (uint32_t)SYSTEM_PERIP_CLK_EN0_REG)
@@ -1274,6 +1327,10 @@ void esp_cpu_stall(int core_id)
         g_stall_misused++;
         return;
     }
+    /* A second stall clears and sets the fields again, letting the core run
+     * for about one register write, twice (ESP-IDF v5.4.2
+     * cpu_utility_ll_stall_cpu): counted, as a stop must not do it. */
+    if (g_stalled[core_id]) { g_restalls++; }
     if (!g_stalled[core_id] && g_ll_at_stall < 0) { g_ll_at_stall = g_ll_calls; }
     g_stalled[core_id] = true;
 }
@@ -1287,6 +1344,9 @@ void esp_cpu_unstall(int core_id)
 int esp_cpu_get_core_id(void) { return g_core; }
 
 void twai_fake_set_core(int core) { g_core = core == 1 ? 1 : 0; }
+void twai_fake_set_interrupts_off(bool off) { catch_up(); g_irq_off = off; }
+uint32_t twai_fake_isr_held(void) { return g_isr_held; }
+int  twai_fake_isr_core(void) { return g_isr_core; }
 
 void twai_fake_set_other_core_sender(const twai_message_t *m, int64_t every_us)
 {
@@ -1304,6 +1364,8 @@ bool     twai_fake_core_stalled(int core) { return (core == 0 || core == 1) && g
 int      twai_fake_stall_calls(void) { return g_stall_calls; }
 int      twai_fake_unstall_calls(void) { return g_unstall_calls; }
 int      twai_fake_stall_misused(void) { return g_stall_misused; }
+int      twai_fake_restalls(void) { return g_restalls; }
+int      twai_fake_stall_reg_reads(void) { return g_stall_reg_reads; }
 int      twai_fake_ll_calls(void) { return g_ll_calls; }
 int      twai_fake_ll_calls_at_stall(void) { return g_ll_at_stall; }
 
@@ -1611,9 +1673,13 @@ void twai_fake_reset(void)
     g_active_flags = g_reset_kept = g_reset_released = g_aborted_attempts = 0;
     g_n_rec_log = 0;
     g_stalled[0] = g_stalled[1] = false;
-    g_stall_calls = g_unstall_calls = g_stall_misused = 0;
+    g_stall_calls = g_unstall_calls = g_stall_misused = g_restalls = 0;
+    g_stall_reg_reads = 0;
     g_ll_calls = 0;
     g_ll_at_stall = -1;
+    g_isr_core = 0;
+    g_irq_off = false;
+    g_isr_held = 0;
     g_oc_on = g_oc_busy = false;
     g_oc_every = g_oc_next = 0;
     g_oc_sent = 0;

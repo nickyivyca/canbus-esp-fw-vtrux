@@ -16,13 +16,25 @@
  *   wrong step           polls every 10 us, not every 2 us
  *   status not recorded  reports 0 for the status at entry
  *   counters not read    reports 0 for the error counters
+ *   stalls a core        (one core) calls esp_cpu_stall()
+ *
+ * Built with -DT12_STANDIN_TWO_CORES (the S3), it first stalls the other
+ * core, unless its stall fields show it stalled already (T12, added
+ * 2026-11-27), and these break that:
+ *
+ *   no stall             never stalls the other core
+ *   stall after steps    stalls it only after T12's steps
+ *   restalls             stalls it even when it is stalled already
+ *   unstalls             starts it again at the end
  *
  *   make -C shared/twai_port/test t12-standins
  */
 #include "twai_port.h"
 #include "hal/twai_ll.h"
 #include "soc/system_reg.h"
+#include "soc/rtc_cntl_reg.h"
 #include "esp_rom_sys.h"
+#include "esp_cpu.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -35,14 +47,51 @@ static bool broken(const char *name)
     return b != NULL && strcmp(b, name) == 0;
 }
 
+#ifdef T12_STANDIN_TWO_CORES
+/* The stall code esp_cpu_stall() writes: C0 = 2 and C1 = 0x21. */
+static bool other_stalled(int core)
+{
+    const uint32_t c0 = REG_READ(RTC_CNTL_OPTIONS0_REG) >> (core == 0 ? RTC_CNTL_SW_STALL_PROCPU_C0_S
+                                                                    : RTC_CNTL_SW_STALL_APPCPU_C0_S);
+    const uint32_t c1 = REG_READ(RTC_CNTL_SW_CPU_STALL_REG) >> (core == 0 ? RTC_CNTL_SW_STALL_PROCPU_C1_S
+                                                                       : RTC_CNTL_SW_STALL_APPCPU_C1_S);
+    return (c0 & 0x3u) == 0x2u && (c1 & 0x3Fu) == 0x21u;
+}
+
+static void stall_other(void)
+{
+    const int other = esp_cpu_get_core_id() == 0 ? 1 : 0;
+    if (broken("no stall")) { return; }
+    if (!other_stalled(other) || broken("restalls")) { esp_cpu_stall(other); }
+}
+#endif
+
+static esp_err_t steps(can_port_restart_report_t *out);
+
 esp_err_t t12_standin_restart_stop(can_port_restart_report_t *out)
+{
+    esp_err_t e;
+    if (out == NULL) { return ESP_ERR_INVALID_ARG; }
+#ifdef T12_STANDIN_TWO_CORES
+    if (!broken("stall after steps")) { stall_other(); }
+#else
+    if (broken("stalls a core")) { esp_cpu_stall(1); }
+#endif
+    e = steps(out);
+#ifdef T12_STANDIN_TWO_CORES
+    if (broken("stall after steps")) { stall_other(); }
+    if (broken("unstalls")) { esp_cpu_unstall(esp_cpu_get_core_id() == 0 ? 1 : 0); }
+#endif
+    return e;
+}
+
+static esp_err_t steps(can_port_restart_report_t *out)
 {
     twai_dev_t *hw = TWAI_LL_GET_HW(0);
     const uint32_t step = broken("wrong step") ? 10u : 2u;
     const uint32_t limit = broken("no bound") ? 10000u : 1000u;
     uint32_t waited = 0;
 
-    if (out == NULL) { return ESP_ERR_INVALID_ARG; }
     memset(out, 0, sizeof(*out));
     out->clock_on = (REG_READ(SYSTEM_PERIP_CLK_EN0_REG) & SYSTEM_TWAI_CLK_EN) != 0;
     out->held_in_reset = (REG_READ(SYSTEM_PERIP_RST_EN0_REG) & SYSTEM_TWAI_RST) != 0;
