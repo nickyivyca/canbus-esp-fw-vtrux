@@ -2614,6 +2614,76 @@ static void case_deadline_skip_held_past_bound(void)
     wire_log_sane();
 }
 
+/*
+ * F7 (spec 5.2 item 6, "never lost silently"; user 2026-11-26). A page is
+ * being aborted for an inhibit, the first command had no effect (the race),
+ * and the pass that reaches the 1 ms bound finds the page AWAITING and issues
+ * the command again. That command removes it 7 us later. On a0c19825 the
+ * bound ended the loop on that read with the page still held, and the next
+ * pass's step 1 saw the buffer free and booked the page `sent`: never on the
+ * wire, never requeued, and the balance still closed.
+ */
+static void case_page_aborted_at_the_bound_is_requeued(void)
+{
+    g_case = "F7: a page aborted on the bound's read is requeued, not sent";
+    fb_reset();
+    fb_set_unacked(true, 20);   /* keeps the page retrying, so it stays held */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
+    run(&s, 20, 10);
+    ck_eq(held_in(&s, GS_CLASS_TELEMETRY), 1,
+          "PRECONDITION: the page is in the controller");
+
+    (void)gs_command_received(&s, fb_now());
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+
+    /* Preemption opens the loop in a gap; its command lands at TS = 1. */
+    until_state(GS_BUF_AWAITING);
+    fb_race_next(300);
+    gs_tick(&s, fb_now());
+    ck_eq(fb_aborts_with_no_effect(), 1,
+          "PRECONDITION: the first command had no effect");
+    const int64_t opened = fb_now();
+
+    /* A pass on a retry before the bound: the loop waits. */
+    fb_advance(500);
+    until_state(GS_BUF_TRANSMITTING);
+    gs_tick(&s, fb_now());
+
+    /* The pass that reaches the bound lands in a gap and issues the command. */
+    fb_advance(opened + 1000 - fb_now());
+    until_state(GS_BUF_AWAITING);
+    const int cmds = fb_abort_cmds();
+    gs_tick(&s, fb_now());
+    ck_eq(fb_abort_cmds() - cmds, 1,
+          "PRECONDITION: the bound's pass issued the command");
+    ck(fb_now() - opened >= 1000, "PRECONDITION: at the bound");
+
+    /* The command frees the buffer; the next pass sees it. */
+    fb_advance(50);
+    ck(fb_state_now() == GS_BUF_EMPTY, "PRECONDITION: the abort removed the page");
+    gs_tick(&s, fb_now());
+
+    const gs_class_stats_t *t = &s.st.cls[GS_CLASS_TELEMETRY];
+    ck_eq(t->sent, 0, "THE ABORTED PAGE IS NOT BOOKED SENT");
+    ck_eq(t->aborted, 1, "it is booked aborted");
+    ck_eq(t->requeued, 1, "and requeued");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "the balance closes");
+
+    fb_set_unacked(false, 0);
+    run(&s, 3000, 10);
+    ck_eq(wire_count_id(ID_INHIBIT), 1, "the inhibit went out");
+    ck(fb_wire_count() >= 1 && fb_wire_id(0) == ID_INHIBIT, "first");
+    ck_eq(wire_count_id(ID_DIAG), 1, "THE PAGE REACHED THE WIRE, once");
+    ck_eq(t->sent, 1, "and is booked sent once");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "the balance still closes");
+    wire_log_sane();
+}
+
 int main(void)
 {
     printf("scheduler cases (spec 5.2 item 10, emulation half)\n");
@@ -2664,6 +2734,7 @@ int main(void)
     case_rearm_with_live_answer_is_no_standdown();
     case_standdown_held_past_bound();
     case_deadline_skip_held_past_bound();
+    case_page_aborted_at_the_bound_is_requeued();
 
     if (g_fail == 0)
     {
