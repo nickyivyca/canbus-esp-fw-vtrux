@@ -86,6 +86,26 @@ void fb_race_next(int64_t lose_after_us);
  */
 void fb_stick_transmitting(int64_t us);
 
+/*
+ * NO OTHER NODE ACKNOWLEDGES (spec 5.2 item 5 as changed 2026-11-26). While
+ * on, a frame that reaches the end of its air time does not complete: it is
+ * not acknowledged, so the controller retries it. The buffer reads AWAITING
+ * for `gap_us` between retries and TRANSMITTING during each one, so an abort
+ * works only if it is issued in a gap. Turning it off is a node coming back:
+ * the next retry completes and reaches the wire.
+ *
+ * NOT CALIBRATED. The bench measured one retry every 262-274 us (spec 12.4,
+ * "a bus with no other node"), but not how long TS reads 0 between retries.
+ * The cases pick the phase of each read on purpose, so the gap's length
+ * decides nothing they assert. The tester's emulated case replays the
+ * measured pattern.
+ */
+void fb_set_unacked(bool on, int64_t gap_us);
+
+/* How many times the scheduler has called abort_if_awaiting(): every turn of
+ * item 4's loop reads the buffer this way, with or without a command. */
+int fb_abort_reads(void);
+
 /* The HAL the scheduler is given. */
 const gs_hal_t *fb_hal(void);
 

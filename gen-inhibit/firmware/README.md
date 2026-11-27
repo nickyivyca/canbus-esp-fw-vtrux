@@ -88,8 +88,11 @@ dependency is the new tag's commit.
 
 Not from upstream:
 
-- `shared_pins.json`: the project's pins of shared tooling, read by the
-  release launcher `../vtrux_tools.py` and the pinned tooling.
+- `shared_pins.json`: the project's pins of shared code. It is read by:
+  - the release launcher `../vtrux_tools.py` and the pinned tooling, for
+    the `shared/tools` entry;
+  - `../tools/bench/gi_core_pin.py`, for the `shared/bench` entry, from
+    port step 4 item 1.
 - `vtrux_build.json`: the project's build data for the release tooling
   (`project`, `shared_components`: the board, `vtrux/wican_v3`; the
   stock code, `vtrux/wican` and `vtrux/debug_logs`; the CAN port,

@@ -313,7 +313,8 @@ that the stock code carries out, it carries out through these hooks:
   functions are `can_port`'s on port 0 (shared/wican W3), backed by
   `twai_port` (`shared/can_port`, `shared/twai_port`). gen-inhibit sets
   port 0 up with: the board's port 0; the configured bitrate; listen-only
-  from the install for OBSERVE (3, 13 item 1) and normal otherwise;
+  from the install for OBSERVE (3, 13 item 1), and the stored `can_mode`
+  otherwise (3.2);
   accept-all, forced by its install hook while it owns the bus (5.1 item
   2); an RX queue of at least 64 (5.1 item 1); no bus-off recovery (7);
   an install failure reported, not a restart; and its pre-teardown hook,
@@ -511,6 +512,11 @@ holds is a section 12 test on a full-replay bus.
    on purpose; nothing failed, and it cannot feed trip 7. It is counted as a
    **stand-down** (item 6), never as a skip, whether or not it reached the
    wire. A skip means only that a live inhibit missed a cycle.
+
+   **A withdrawn frame held past the bound** (added 2026-11-26, user). If an
+   inhibit frame is withdrawn and the 1 ms limit is reached while it is
+   still in the controller, the scheduler must abort it again on every
+   later pass until the buffer is free. Telemetry waits behind it.
 6. **Telemetry is never lost silently.** It may be delayed, aborted and
    requeued, or dropped when its queue is full. Every one of those is
    counted, per class: queued, sent, aborted, requeued, dropped, and the
@@ -1985,7 +1991,7 @@ Each row keeps its ruling's date in the row, as the test list's own record.
 | evidence rule: a whole-bus stop reports trip 2 "bus lost" -- never trip 3 or 5 -- including with `0x617`'s last frame 250 ms before `0x051`'s; a single signal stopping on a live bus trips 3/5 within one `0x051` gap of its expiry | host (+ replay trailing silences) | 7 |
 | whole-bus dropout: ~0.45 s rides through with no abort whatever `0x617`'s phase; ~0.6 s latches and reports trip 2, not a stale `0x617` | host | 7 (`0x617` window) |
 | **a bus with no other node** (added 2026-10-20, user): with the inhibit live, every other node stops transmitting and acknowledging, and the witness stays in listen-only mode. Required: the witness sees the device's frame repeat unacknowledged (otherwise the run is void); the device sends no `0x051` after its answer to the last VCM command; it latches within 0.7 s of that command (`0x051`'s 0.5 s window plus up to one 200 ms receive timeout; corrected 2026-10-20, user); when the nodes return without a key-on it stays latched and its diag pages resume; a key-on then clears the latch (7.1). Recorded, not judged: which trip latched (2 or 6) and when; the device's TEC, REC and driver state throughout; whether it reached bus-off. Part of the before-port suite on `e3d9437`, then of every full bench run, including each build during the port (user, 2026-10-20) | bench | 5, 7 trips 2 and 6, 7.1 |
-| **a bus with no other node, emulated** (added 2026-10-20, user): with the inhibit live, the fake driver stops delivering frames, the device's own frames stay unacknowledged (never complete, error-passive, a bus-error alert per retry), and in a second case the controller goes bus-off. Required: no `0x051` after its answer to the last VCM command; the trips are evaluated once per received frame or per 200 ms receive timeout, and at those points the latch and its reason follow spec 7 for the injected timing: trip 6 if its threshold is met at an earlier check than the one that finds `0x051` stale, otherwise trip 2 (0.5-0.7 s after the last `0x051`; corrected 2026-10-20, user); a stuck diag frame does not block the worker, the status page or the latch; when traffic returns without a key-on the device stays latched and the stuck frame completes; a key-on then clears the latch (7.1); in the bus-off case the device starts no recovery and stays off until a re-arm or reboot (7). Once the bench row has measured the real alert pattern, the fake replays that pattern | host (shim fault injection) | 5, 7 trips 2 and 6, 7.1, 12.3 item 1 |
+| **a bus with no other node, emulated** (added 2026-10-20, user): with the inhibit live, the fake driver stops delivering frames, the device's own frames stay unacknowledged (never complete, error-passive, a bus-error alert per retry), and in a second case the controller goes bus-off. Required: no `0x051` after its answer to the last VCM command; the trips are evaluated once per received frame or per 200 ms receive timeout, and at those points the latch and its reason follow spec 7 for the injected timing: trip 6 if its threshold is met at an earlier check than the one that finds `0x051` stale, otherwise trip 2 (0.5-0.7 s after the last `0x051`; corrected 2026-10-20, user); a stuck diag frame does not block the worker, the status page or the latch; when traffic returns without a key-on the device stays latched and the stuck frame completes; a key-on then clears the latch (7.1); in the bus-off case the device starts no recovery and stays off until a re-arm or reboot (7). Once the bench row has measured the real alert pattern, the fake replays that pattern. **A withdrawn inhibit frame stuck in the controller** (added 2026-11-26, user): the trip lands while the device's inhibit frame is in the controller and unacknowledged; the fake retries it at the bench row's measured pattern (one retry every 262-274 us) and reports it transmitting during each retry. Required: the scheduler aborts it again on later passes until the buffer is free (5.2 item 5); it never completes; no `0x051` reaches the wire when traffic returns; the queued telemetry then goes out. Emulated only: no bench run (user, 2026-11-26) | host (shim fault injection) | 5, 5.2 item 5, 7 trips 2 and 6, 7.1, 12.3 item 1 |
 | GENE family quiet together (`0x054` and `0x471`) reports trip 3 regardless of which frame arrived last; `0x054` alone stale with `0x471` fresh reports trip 5 | host | 7 trips 3, 5 |
 | SoC debounce: 4 consecutive sub-threshold readings do not release, the 5th does, and one reading at/above the threshold restarts the count | host | 6.2 |
 | error-frame rate trip. One way to test it, not the only one: error frames from a spare adapter at the wrong bit rate, in three regimes (error-active, error-passive, and at the trip threshold), with the device's `state`, TEC and REC, its `bus_error` count and the witness's error-frame count read throughout. The regimes may be split across methods (*user, 2026-10-12*). On the 2026-10-10 bench the wrong bit rate reached only error-passive; error-active and at-threshold were taken with the X2 GPIO jammer (2026-10-09, `VERIFICATION.md` 7) | bench | 7, D4, 14 q8 |
@@ -2036,19 +2042,13 @@ is done.
 `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-review-2026-09-22.md`.
 Delete each line as it is implemented.
 
-- **Bench, an existing harness lacks the case:**
-  - SoC back at 22 % stays latched; the 21.00 % boundary; two 0x10
-    episodes in one power cycle; the live flag clearing on a latched
-    release; the 6.2 BMS-wake and pre-close rows (6.4);
-  - gate refusal with `0x440` reading open; trip 5 for each signal;
-    trip 8 (7).
-- **Truck, at bring-up:**
+- **Bench, waits on the switched 12 V supply** (moved from the truck list
+  2026-11-26, user):
   - only what a restart skips: the 12 V supply ramp and any start-up that
     runs only at power-on. In this build, image validation runs on every
-    boot, since no skip-validate option is set in `sdkconfig`. So on the
-    truck, measure power-on to live once and compare it with the bench figure.
-- **Not written** (adopted 2026-10-04, user):
-  - a WiCAN truck bring-up procedure.
+    boot, since no skip-validate option is set in `sdkconfig`. So measure
+    cold power-on to live once on the auto-arm INHIBIT image, and compare
+    it with the restart figure.
 
 **Known to differ from spec 7, trip 6's count** (*added 2026-10-21, user;
 tracker B6*). Trip 6 counts the controller's bus-error interrupts, and these
@@ -2090,6 +2090,12 @@ Meeting the literal condition above is deliberately not treated as
 sufficient -- a gate whose condition an agent may evaluate and then clear
 for itself is not a gate, and this one guards transmitting a real `0x051`
 onto a live powertrain bus.
+
+*Re-review done 2026-11-26 (user):* a fresh session reviewed
+`gen-inhibit/main` `4c3afb4d` and found no defect that stops the inhibit on
+the truck. The gate stays shut until the bench has the capabilities still
+missing, such as the switched 12 V supply, and the hardware suite has
+passed on the prod build that will fly.
 
 **To confirm at truck bring-up.** None is expected to be a problem; each is
 cheap to observe on the first runs.

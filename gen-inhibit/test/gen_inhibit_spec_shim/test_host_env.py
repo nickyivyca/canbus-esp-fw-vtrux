@@ -12,7 +12,8 @@ in a real bash with a fake gcc on PATH and with none; run_spec_shim.py --local
 with each (identity.json, the summary line, a FAIL naming the missing compiler);
 mutate.py --local with no gcc (an error, exit 1, before any mutant). --dbc-dir
 (or $REVERSE_IT_DIR) is for run_spec_shim.py's payload check. Gen-inhibit tester,
-2026-10-24.
+2026-10-24. Since 2026-11-26 the pure checks also cover mutate.py's catch rule
+against its control run (verdicts(), differs()).
 """
 import json
 import os
@@ -176,13 +177,38 @@ def real(he, folder, dbc, tmp):
           (r.returncode, r.stdout[-120:]))
 
 
+def mutate_rule(mu):
+    """mutate.py's catch rule against its control (2026-11-26): a layer or case mutant is caught
+    only by a verdict that differs from the unmutated build's."""
+    out = ("RESULT a R1 PASS x\nRESULT a layer PASS y\nRESULT a layer VOID z\nRESULT b W1 NOT-AS-SPECIFIED w\n"
+           "noise\nSUMMARY a 2 PASS\n")
+    v = mu.verdicts(out)
+    check("mutate verdicts: one key per RESULT line, a repeated requirement counted",
+          v == {("a", "R1", 0): "PASS", ("a", "layer", 0): "PASS", ("a", "layer", 1): "VOID",
+                ("b", "W1", 0): "NOT-AS-SPECIFIED"}, v)
+    check("mutate: the same verdicts as the control, failing ones too, are not a catch", mu.differs(v, v) == [])
+    check("mutate: a line that failed in the control and passes now is a catch",
+          len(mu.differs(v | {("b", "W1", 0): "PASS"}, v)) == 1)
+    check("mutate: a line that passed in the control and fails now is a catch",
+          len(mu.differs(v | {("a", "R1", 0): "VOID"}, v)) == 1)
+    check("mutate: a failing line the control does not have is a catch",
+          len(mu.differs(v | {("c", "W2", 0): "NOT-AS-SPECIFIED"}, v)) == 1)
+    check("mutate: a passing line the control does not have is not a catch",
+          mu.differs(v | {("c", "W2", 0): "PASS"}, v) == [])
+    check("mutate: a control line the mutant does not print is not a catch (a crash is not a catch)",
+          mu.differs({("a", "R1", 0): "PASS"}, v) == [])
+
+
 def checks(folder, dbc, tmp):
     del bad[:]
     sys.path.insert(0, folder)
     sys.modules.pop("host_env", None)
+    sys.modules.pop("mutate", None)
     import host_env as he
+    import mutate as mu
     try:
         pure(he)
+        mutate_rule(mu)
         shared(folder, tmp)
         if os.name == "nt":
             print("  ---- the real-shell checks run on Linux only (on Windows a bare bash is WSL's)")
@@ -191,6 +217,7 @@ def checks(folder, dbc, tmp):
     finally:
         sys.path.remove(folder)
         sys.modules.pop("host_env", None)
+        sys.modules.pop("mutate", None)
     return list(bad)
 
 
@@ -199,6 +226,10 @@ def copy_tree(d):
     run_spec_shim.py finds ../../firmware/main as it does here; returns the copy of this folder."""
     shutil.copytree(os.path.join(REPO, "firmware", "main"), os.path.join(d, "firmware", "main"))
     shutil.copytree(os.path.join(REPO, "test", "gen_inhibit_shim"), os.path.join(d, "test", "gen_inhibit_shim"))
+    # run_spec_shim.py records and build.sh compiles ../diag_host's files since stage (b)
+    # batch 2 (2026-11-23); until 2026-11-26 the copy lacked them and the control failed
+    shutil.copytree(os.path.join(REPO, "test", "diag_host"), os.path.join(d, "test", "diag_host"),
+                    ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(HERE, os.path.join(d, "test", "gen_inhibit_spec_shim"),
                     ignore=shutil.ignore_patterns("__pycache__"))
     os.makedirs(os.path.join(d, "tmp"))
@@ -227,6 +258,13 @@ MUTANTS = [
     ("run_spec_shim.py", "the shared files are not recorded", "    for f in SHARED_BUILT:\n", "    for f in SHARED_BUILT[:0]:\n"),
     ("run_spec_shim.py", "run_spec_shim takes a missing shared checkout",
      '        fails.append("the shared checkout or a file it builds is missing")\n', "        pass\n"),
+    # mutate.py's catch rule against its control (2026-11-26)
+    ("mutate.py", "mutate ignores the control", 'for k, v in got.items() if v != ctl.get(k, "PASS")]',
+     'for k, v in got.items() if v != "PASS"]'),
+    ("mutate.py", "mutate never judges a line the control lacks", 'for k, v in got.items() if v != ctl.get(k, "PASS")]',
+     'for k, v in got.items() if v != ctl.get(k, v)]'),
+    ("mutate.py", "mutate keeps one line per requirement", "            n = seen.get((p[1], p[2]), 0)\n",
+     "            n = 0\n"),
 ]
 # Not a mutant: gcc --version without head -1. Its later lines hold no "=", and only
 # key=value lines are read, so the record comes out the same (equivalent).

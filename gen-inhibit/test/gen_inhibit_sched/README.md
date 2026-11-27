@@ -202,3 +202,51 @@ waiting for one frame more (the dequeue limit), never waiting, a counted
 command not held, the deadline not crediting a verdict that waits, a
 stand-down not ending the wait, the hold running to the last dequeue, and three
 that key the wait on the inhibit class instead of the timed class.
+
+### 2026-11-26: a withdrawn inhibit held past the bound (tracker F5)
+
+Spec 5.2 item 5 as changed 2026-11-26: if an inhibit frame is withdrawn and the
+1 ms limit is reached while it is still in the controller, the scheduler must
+abort it again on every later pass until the buffer is free. Telemetry waits
+behind it. On 4c3afb4d the bound ended the loop and nothing opened another, so
+a frame the controller kept retrying unacknowledged stayed there and went out,
+stale, when a node came back.
+
+`fake_buf` has a mode for it, `fb_set_unacked()`: the frame is retried with a
+gap between retries, TRANSMITTING during each retry and AWAITING in the gap.
+**The gap is not calibrated**: the bench measured the retry period (262-274 us),
+not how long TS reads 0. The cases place each pass on a retry or in a gap on
+purpose, so the gap's length decides nothing they assert. `fb_abort_reads()`
+counts the loop's reads of the buffer.
+
+* `case_standdown_held_past_bound` -- the stand-down route. The bound is
+  reached on a retry; five passes 200 ms apart, each on a retry, each read the
+  buffer again, the bound is counted once, and a page queued meanwhile waits.
+  The pass in a gap aborts it: booked `withdrawn`, never `sent`, and no
+  `0x051` on the wire when the nodes return. A second withdrawal reaches its
+  own bound.
+* `case_deadline_skip_held_past_bound` -- the deadline route. The VCM's next
+  command arrives while the skipped frame is still held. On 4c3afb4d that
+  deadline booked the same frame as a second skip and a second late frame,
+  which broke `withdrawn + dropped == skipped + standdown`. It now books only
+  the queued answer it purges, and the answer to the current command is the
+  only inhibit on the wire.
+
+Both cases fail on 4c3afb4d's `gi_sched.c` (16 assertions). Four mutants break
+the fix, each caught: the loop ending at the bound, the bound counted on every
+pass, a new abort keeping the past-bound state, and the second booking.
+
+### 2026-11-26: a page aborted on the bound's read (tracker F7)
+
+Spec 5.2 item 6, "never lost silently" (user, 2026-11-26; no spec change). On
+a0c19825 the bound could end the loop on a read that had just issued the abort
+command. The command frees the buffer 6-21 us later, so the page was still held
+with `aborting` clear, and the next pass's step 1 booked it `sent`. It never
+reached the wire and was never requeued, and the balance still closed. A read
+that issues the command now never ends the loop; the next pass reads the result.
+
+`case_page_aborted_at_the_bound_is_requeued` builds it: the first command has
+no effect (`fb_race_next()`), and the page retries unacknowledged
+(`fb_set_unacked()`) until the pass at the bound lands in a gap. It fails on
+a0c19825's `gi_sched.c` (4 assertions), and the mutant that ends the loop on
+that read again is caught.

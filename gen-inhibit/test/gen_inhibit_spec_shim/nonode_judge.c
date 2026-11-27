@@ -199,3 +199,47 @@ nn_verdict_t nn_r7_rearm(int frames_received, bool latched)
                    "after a re-arm more than 10 s after the last error: frames received %d, latched %d",
                    frames_received, latched);
 }
+
+/* ---------------------------- the withdrawn frame stuck in the controller (2026-11-26) -- */
+
+nn_verdict_t nn_w1_freed(int64_t t_latch, bool held_at_latch, int64_t removed_at, int64_t t_return, int aborts,
+                         int aborts_in_attempt, int passes, int status_reads, int reads_ts_clear)
+{
+    if (t_latch < 0) return verdict(VOID, "no latch: nothing withdrew the frame");
+    if (!held_at_latch && (removed_at < 0 || removed_at > t_latch))
+        return verdict(VOID, "the latch at %lld us found the inhibit frame no longer in the controller",
+                       (long long)t_latch);
+    const bool ok = removed_at >= 0 && removed_at < t_return;
+    char when[96];
+    if (removed_at >= 0) snprintf(when, sizeof(when), "%+lld us from the latch", (long long)(removed_at - t_latch));
+    else snprintf(when, sizeof(when), "never");
+    return verdict(ok ? PASS : NAS, "the stuck inhibit frame removed by an abort: %s (traffic returned %+lld us from "
+                   "the latch); %d abort command(s) while it was held, %d of them during an attempt, in %d pass(es) "
+                   "more than 1 ms apart; %d status read(s) while it was held, %d of them TS clear", when,
+                   (long long)(t_return - t_latch), aborts, aborts_in_attempt, passes, status_reads, reads_ts_clear);
+}
+
+nn_verdict_t nn_w2_never_completes(int64_t on_wire_at)
+{
+    char when[64];
+    if (on_wire_at >= 0) snprintf(when, sizeof(when), "at %lld us", (long long)on_wire_at);
+    else snprintf(when, sizeof(when), "never");
+    return verdict(on_wire_at < 0 ? PASS : NAS, "the stuck inhibit frame completed on the wire: %s (traffic back "
+                   "included)", when);
+}
+
+nn_verdict_t nn_w3_no_051_on_return(int wire051_after_return)
+{
+    return verdict(wire051_after_return == 0 ? PASS : NAS, "0x051 frames on the wire after traffic returned: %d",
+                   wire051_after_return);
+}
+
+nn_verdict_t nn_w4_telemetry_out(bool any_done_in_silence, long waiting_at_return, long sent_after_return,
+                                 int diag_wire_after_return)
+{
+    if (any_done_in_silence) return verdict(VOID, "a frame completed in the silence: nothing waited");
+    if (waiting_at_return < 1) return verdict(VOID, "no telemetry frame was waiting when traffic returned");
+    return verdict(sent_after_return >= waiting_at_return && diag_wire_after_return >= waiting_at_return ? PASS : NAS,
+                   "telemetry waiting when traffic returned %ld (depth + held); sent after it %ld; diag pages on "
+                   "the wire after it %d", waiting_at_return, sent_after_return, diag_wire_after_return);
+}

@@ -78,4 +78,24 @@ nn_verdict_t nn_a3_balance(int reads, int bad_reads, const char *first_bad);
 nn_verdict_t nn_a4_equality(int reads_checked, int bad_reads, const char *first_bad);
 nn_verdict_t nn_a5_not_held(int diag_handed_after, bool any_done_in_silence, bool first_done_on_return);
 
+/* The withdrawn inhibit frame stuck in the controller (spec 12.4 row, added
+ * 2026-11-26, user; spec 5.2 item 5, "A withdrawn frame held past the bound"):
+ * the trip lands while the inhibit frame is in the controller, unacknowledged
+ * and retried at the bench's pattern, transmitting during each retry.
+ *   W1  the scheduler aborts it again on later passes until the buffer is
+ *       free: an abort of the device's removed it before traffic returned;
+ *       VOID if no trip withdrew it (no latch), or the latch came with the
+ *       frame no longer held (the stimulus did not land);
+ *   W2  it never completes, traffic back included;
+ *   W3  no 0x051 reaches the wire when traffic returns;
+ *   W4  the queued telemetry then goes out: every telemetry frame waiting
+ *       when traffic returned is sent, and that many diag pages reach the
+ *       wire; VOID if none was waiting, or a frame completed in the silence. */
+nn_verdict_t nn_w1_freed(int64_t t_latch, bool held_at_latch, int64_t removed_at, int64_t t_return, int aborts,
+                         int aborts_in_attempt, int passes, int status_reads, int reads_ts_clear);
+nn_verdict_t nn_w2_never_completes(int64_t on_wire_at);
+nn_verdict_t nn_w3_no_051_on_return(int wire051_after_return);
+nn_verdict_t nn_w4_telemetry_out(bool any_done_in_silence, long waiting_at_return, long sent_after_return,
+                                 int diag_wire_after_return);
+
 #endif

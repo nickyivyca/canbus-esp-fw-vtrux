@@ -2401,6 +2401,289 @@ static void case_integration_order(void)
     ck_eq(v, 1, "ONE violation counted");
 }
 
+/* ------------------------- F5: a withdrawn inhibit held past the bound --- */
+
+/*
+ * SPEC 5.2 ITEM 5, "A withdrawn frame held past the bound" (user, 2026-11-26,
+ * tracker F5): "If an inhibit frame is withdrawn and the 1 ms limit is reached
+ * while it is still in the controller, the scheduler must abort it again on
+ * every later pass until the buffer is free. Telemetry waits behind it."
+ *
+ * The defect, from the adversarial review on 4c3afb4d: the withdrawal opened
+ * one abort, the next pass ended it at the bound with the frame still held,
+ * and nothing opened another. Step 2 aborts lower classes only, and a
+ * stand-down withdraws once, on the falling edge of the live flag. With no
+ * node acknowledging, the controller retries the frame, and a read every
+ * 200 ms that never lands between retries left it there; it went out, stale,
+ * when a node came back.
+ *
+ * Each pass below is placed on purpose, on a retry or in the gap between two
+ * (fb_set_unacked()), so the gap's length decides nothing asserted here.
+ */
+
+/* Step the model, with no pass, until the buffer reads `want`. */
+static void until_state(gs_buf_t want)
+{
+    for (int i = 0; i < 2000 && fb_state_now() != want; i++)
+    {
+        fb_advance(1);
+    }
+    ck(fb_state_now() == want, "PRECONDITION: the buffer reads the state picked");
+}
+
+/* An inhibit with a marker byte, so the wire shows which one went out. */
+static void queue_marked_inhibit(gs_t *s, uint8_t marker)
+{
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    inh.data[0] = marker;
+    gs_queue_frame(s, GS_CLASS_INHIBIT, &inh, fb_now());
+}
+
+/*
+ * The held inhibit is given up while the controller is retrying it, and the
+ * pass 1 ms later finds it retrying again: the bound is reached with the frame
+ * still held.
+ */
+static void bound_reached_on_a_retry(gs_t *s)
+{
+    fb_advance(1000);
+    until_state(GS_BUF_TRANSMITTING);
+    gs_tick(s, fb_now());
+    ck_eq(held_in(s, GS_CLASS_INHIBIT), 1,
+          "PRECONDITION: the bound was reached with the inhibit still held");
+}
+
+/* `n` passes 200 ms apart, the worker's receive timeout on a quiet bus, each
+ * landing on a retry. Returns how many times the passes read the buffer. */
+static int passes_on_retries(gs_t *s, int n)
+{
+    const int reads = fb_abort_reads();
+    for (int i = 0; i < n; i++)
+    {
+        fb_advance(200000);
+        until_state(GS_BUF_TRANSMITTING);
+        gs_tick(s, fb_now());
+    }
+    return fb_abort_reads() - reads;
+}
+
+/* One pass lands between two retries. Returns the abort commands it issued. */
+static int pass_in_a_gap(gs_t *s)
+{
+    fb_advance(200000);
+    until_state(GS_BUF_AWAITING);
+    const int cmds = fb_abort_cmds();
+    gs_tick(s, fb_now());
+    return fb_abort_cmds() - cmds;
+}
+
+static void case_standdown_held_past_bound(void)
+{
+    g_case = "F5: a stand-down held past the bound is aborted on every pass";
+    fb_reset();
+    fb_set_unacked(true, 20);
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    (void)gs_command_received(&s, fb_now());
+    queue_marked_inhibit(&s, 1);
+    run(&s, 20, 10);
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
+          "PRECONDITION: the answer is in the controller");
+
+    /* The trip lands while the controller is retrying it. */
+    until_state(GS_BUF_TRANSMITTING);
+    gs_withdraw_inhibits(&s, fb_now());
+    ck_eq(json_standdown(&s), 1, "booked as a stand-down");
+
+    bound_reached_on_a_retry(&s);
+    const gs_stats_t *st = gs_stats(&s);
+    ck_eq(st->abort_bound_hit, 1, "the 1 ms bound was reached and counted");
+
+    gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
+
+    ck_eq(passes_on_retries(&s, 5), 5,
+          "THE LOOP READ THE BUFFER AGAIN ON EVERY LATER PASS");
+    ck_eq(fb_submit_count(), 1, "TELEMETRY WAITS BEHIND IT");
+    ck_eq(st->abort_bound_hit, 1, "the bound is counted once, not per pass");
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1, "the inhibit is still held");
+    ck_eq(st->cls[GS_CLASS_INHIBIT].sent, 0, "and not booked as sent");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the inhibit balance closes meanwhile");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "so does telemetry's");
+
+    ck_eq(pass_in_a_gap(&s), 1,
+          "THE PASS BETWEEN TWO RETRIES ISSUED THE ABORT AGAIN");
+
+    /* The nodes come back. */
+    fb_set_unacked(false, 0);
+    run(&s, 2000, 10);
+    const gs_class_stats_t *c = &st->cls[GS_CLASS_INHIBIT];
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "the controller has let it go");
+    ck_eq(c->withdrawn, 1, "booked `withdrawn` when the loop removed it");
+    ck_eq(c->sent, 0, "never as sent");
+    ck_eq(st->skipped, 0, "and no skip");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
+    ck_eq(wire_count_id(ID_INHIBIT), 0,
+          "THE WITHDRAWN INHIBIT NEVER REACHED THE WIRE");
+    ck_eq(wire_count_id(ID_DIAG), 1, "the page queued behind it went out");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "telemetry's balance closes");
+
+    /*
+     * A LATER WITHDRAWAL STARTS A NEW LOOP, with its own bound. Without
+     * begin_abort() clearing the past-bound state, this loop would never
+     * reach its bound and the count would stay at 1.
+     */
+    fb_set_unacked(true, 20);
+    (void)gs_command_received(&s, fb_now());
+    queue_marked_inhibit(&s, 2);
+    run(&s, 20, 10);
+    until_state(GS_BUF_TRANSMITTING);
+    gs_withdraw_inhibits(&s, fb_now());
+    bound_reached_on_a_retry(&s);
+    ck_eq(st->abort_bound_hit, 2, "a second withdrawal reaches its own bound");
+    ck_eq(pass_in_a_gap(&s), 1, "and is aborted again in a gap");
+    fb_set_unacked(false, 0);
+    run(&s, 2000, 10);
+    ck_eq(wire_count_id(ID_INHIBIT), 0, "neither inhibit reached the wire");
+    ck_standdown_identity(&s, "the identity holds after both");
+    wire_log_sane();
+}
+
+/*
+ * The deadline route: the VCM's next 0x051 withdraws the held answer as a
+ * skip, and the bound is reached with it still held. Then another command
+ * arrives while it is still there -- as in an error storm, where the frame is
+ * retried for errors and not for want of an acknowledgement. That deadline
+ * must not book the same frame again: one frame, one skip.
+ */
+static void case_deadline_skip_held_past_bound(void)
+{
+    g_case = "F5: a deadline skip held past the bound is aborted, booked once";
+    fb_reset();
+    fb_set_unacked(true, 20);
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    (void)gs_command_received(&s, fb_now());
+    queue_marked_inhibit(&s, 1);
+    run(&s, 20, 10);
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
+          "PRECONDITION: the answer is in the controller");
+
+    until_state(GS_BUF_TRANSMITTING);
+    const gs_deadline_t v1 = gs_command_received(&s, fb_now());
+    ck_eq((long)v1, (long)GS_DEADLINE_MAYBE_LATE,
+          "transmitting at its deadline: a skip that may go out late");
+    ck_eq(s.st.skipped, 1, "one skip");
+    queue_marked_inhibit(&s, 2);    /* the answer to the new command */
+
+    bound_reached_on_a_retry(&s);
+    const gs_stats_t *st = gs_stats(&s);
+    ck_eq(st->abort_bound_hit, 1, "the 1 ms bound was reached and counted");
+
+    ck_eq(passes_on_retries(&s, 3), 3,
+          "THE LOOP READ THE BUFFER AGAIN ON EVERY LATER PASS");
+    ck_eq(fb_submit_count(), 1, "nothing was handed over behind it");
+
+    /*
+     * The next command, with the old answer still held. Its deadline purges
+     * the queued answer 2 (never handed over: a skip of its own), and must not
+     * book the held answer 1 again.
+     */
+    const gs_deadline_t v2 = gs_command_received(&s, fb_now());
+    ck_eq((long)v2, (long)GS_DEADLINE_SKIPPED, "the queued answer was purged");
+    ck_eq(s.st.skipped, 2, "ONE SKIP PER FRAME: the held one is not booked again");
+    ck_eq(s.st.late_on_wire, 1, "and not counted late again");
+    queue_marked_inhibit(&s, 3);    /* the answer to this command */
+
+    ck_eq(pass_in_a_gap(&s), 1,
+          "THE PASS BETWEEN TWO RETRIES ISSUED THE ABORT AGAIN");
+    fb_set_unacked(false, 0);
+    run(&s, 2000, 10);
+
+    const gs_class_stats_t *c = &st->cls[GS_CLASS_INHIBIT];
+    ck_eq(c->withdrawn, 2, "answers 1 and 2 booked `withdrawn`");
+    ck_eq(c->sent, 1, "answer 3 sent");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
+    ck_eq(wire_count_id(ID_INHIBIT), 1, "ONE inhibit reached the wire");
+    ck(fb_wire_count() >= 1 && fb_wire_data(0)[0] == 3,
+       "AND IT WAS THE ANSWER TO THE CURRENT COMMAND, not the stale one");
+    wire_log_sane();
+}
+
+/*
+ * F7 (spec 5.2 item 6, "never lost silently"; user 2026-11-26). A page is
+ * being aborted for an inhibit, the first command had no effect (the race),
+ * and the pass that reaches the 1 ms bound finds the page AWAITING and issues
+ * the command again. That command removes it 7 us later. On a0c19825 the
+ * bound ended the loop on that read with the page still held, and the next
+ * pass's step 1 saw the buffer free and booked the page `sent`: never on the
+ * wire, never requeued, and the balance still closed.
+ */
+static void case_page_aborted_at_the_bound_is_requeued(void)
+{
+    g_case = "F7: a page aborted on the bound's read is requeued, not sent";
+    fb_reset();
+    fb_set_unacked(true, 20);   /* keeps the page retrying, so it stays held */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
+    run(&s, 20, 10);
+    ck_eq(held_in(&s, GS_CLASS_TELEMETRY), 1,
+          "PRECONDITION: the page is in the controller");
+
+    (void)gs_command_received(&s, fb_now());
+    gi_frame_t inh = mk(ID_INHIBIT, GI_TX_INHIBIT);
+    gs_queue_frame(&s, GS_CLASS_INHIBIT, &inh, fb_now());
+
+    /* Preemption opens the loop in a gap; its command lands at TS = 1. */
+    until_state(GS_BUF_AWAITING);
+    fb_race_next(300);
+    gs_tick(&s, fb_now());
+    ck_eq(fb_aborts_with_no_effect(), 1,
+          "PRECONDITION: the first command had no effect");
+    const int64_t opened = fb_now();
+
+    /* A pass on a retry before the bound: the loop waits. */
+    fb_advance(500);
+    until_state(GS_BUF_TRANSMITTING);
+    gs_tick(&s, fb_now());
+
+    /* The pass that reaches the bound lands in a gap and issues the command. */
+    fb_advance(opened + 1000 - fb_now());
+    until_state(GS_BUF_AWAITING);
+    const int cmds = fb_abort_cmds();
+    gs_tick(&s, fb_now());
+    ck_eq(fb_abort_cmds() - cmds, 1,
+          "PRECONDITION: the bound's pass issued the command");
+    ck(fb_now() - opened >= 1000, "PRECONDITION: at the bound");
+
+    /* The command frees the buffer; the next pass sees it. */
+    fb_advance(50);
+    ck(fb_state_now() == GS_BUF_EMPTY, "PRECONDITION: the abort removed the page");
+    gs_tick(&s, fb_now());
+
+    const gs_class_stats_t *t = &s.st.cls[GS_CLASS_TELEMETRY];
+    ck_eq(t->sent, 0, "THE ABORTED PAGE IS NOT BOOKED SENT");
+    ck_eq(t->aborted, 1, "it is booked aborted");
+    ck_eq(t->requeued, 1, "and requeued");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "the balance closes");
+
+    fb_set_unacked(false, 0);
+    run(&s, 3000, 10);
+    ck_eq(wire_count_id(ID_INHIBIT), 1, "the inhibit went out");
+    ck(fb_wire_count() >= 1 && fb_wire_id(0) == ID_INHIBIT, "first");
+    ck_eq(wire_count_id(ID_DIAG), 1, "THE PAGE REACHED THE WIRE, once");
+    ck_eq(t->sent, 1, "and is booked sent once");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "the balance still closes");
+    wire_log_sane();
+}
+
 int main(void)
 {
     printf("scheduler cases (spec 5.2 item 10, emulation half)\n");
@@ -2449,6 +2732,9 @@ int main(void)
     case_rearm_during_deadline_withdrawal();
     case_rearm_during_standdown_withdrawal();
     case_rearm_with_live_answer_is_no_standdown();
+    case_standdown_held_past_bound();
+    case_deadline_skip_held_past_bound();
+    case_page_aborted_at_the_bound_is_requeued();
 
     if (g_fail == 0)
     {
