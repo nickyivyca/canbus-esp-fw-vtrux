@@ -10235,6 +10235,77 @@ verdicts as `8047`. On `gen-inhibit/tester/bench-pin`, from `4c3afb4d`. Desk rec
     mutant with no text to edit, a defect of the change. On `b353c75f`, which takes it
     out: 161 of 161 caught, 0 errors, the control passing.
 
+**A withdrawn inhibit frame stuck in the controller, emulated -- tester, 2026-11-26, the
+mock-HAL shim on `madhouse-debian` (gcc 14.2.0). Result: NOT AS SPECIFIED on
+gen-inhibit/main `54e1ea13` (the can-fail) and on the implementor's fix `8b991a45`. In
+`withdrawn_262` the frame is never removed, and it reaches the wire when traffic
+returns.** Spec 12.4 row "a bus with no other node, emulated", its withdrawn-frame part
+(added 2026-11-26, user; emulated only, no bench run); spec 5.2 item 5, "A withdrawn frame
+held past the bound" (tracker F5).
+- **Harness.** `gen-inhibit/tester/withdrawn-stuck` `988c95ff`
+  (`test/gen_inhibit_spec_shim/`, README "The withdrawn frame stuck in the controller").
+  Two cases at the bench row's measured pattern: `withdrawn_262` (246 us apart to TEC 128,
+  then 262 us) and `withdrawn_274` (258 us, then 274 us). The nodes go after the last VCM
+  command and before the device's answer completes, so the answer is the inhibit frame in
+  the controller. The 10th error comes about 2.5 ms after the frame is handed over. Trip 6
+  latches at the first check after it (+200 ms) and withdraws the frame.
+- **The retries are the layer's model** (`spec_layer.h`, `sl_retry_stuck`):
+  - During each attempt, TS reads set and an abort does nothing. This is the fake's abort
+    of a transmitting frame (twai_port T8, measured on the C3).
+  - In the bus idle time before the next attempt, TS reads clear and the fake's abort
+    removes the frame. The idle time is 6 us while error active (the intermission, 3 bit
+    times) and 22 us from TEC 128 (plus the suspend transmission, 8 bit times). The bench's
+    passive gaps are 16 us longer than its active ones.
+  - How long TS stays clear on the C3 is not measured.
+  - A frame still held when the nodes return completes at the end of the first attempt
+    that starts after they return.
+- **Verdicts:**
+  - W1: the scheduler aborts the frame again on later passes until the buffer is free. An
+    abort of the device's must remove it before traffic returns.
+  - W2: the frame never completes.
+  - W3: no `0x051` reaches the wire when traffic returns.
+  - W4: the queued telemetry then goes out.
+  - Also R1-R4, R6, A2-A4 and the layer's two checks, as for `answer_stuck`.
+- **Observed on `54e1ea13`** (`run_spec_shim.py --local --base 54e1ea13` at `988c95ff`):
+  - `withdrawn_262`: W1, W2 and W3 are NOT AS SPECIFIED. The device issued no abort command
+    while the frame was held. It read the status register twice in that time, and both
+    reads showed TS set. Traffic returned 1.8 s after the latch, and the frame then
+    completed on the wire, one `0x051`. A4 is VOID, because the frame was held on every
+    read.
+  - The other 10 `withdrawn_262` verdicts PASS: trip 6 at the +200 ms check point,
+    `standdown` +1 and `skipped` +0, the counts balanced on every read, the queued
+    telemetry sent when traffic returned, and a key-on cleared the latch.
+  - `withdrawn_274`: 14 PASS. One abort, 200 ms after the latch, fell in an idle time and
+    removed the frame.
+  - Every other case gave only PASS lines.
+- **Observed on `8b991a45`** (the same run at `c94b40e6`, a local merge of `988c95ff` with
+  `8b991a45`, made for this run only):
+  - The verdicts are the same as on `54e1ea13`, line for line.
+  - Only the W1 detail differs. While the frame was held, the device read the status
+    register 14 times: once or twice per pass, every 200 ms, with the two reads 3 us apart.
+    Every read showed TS set. The device issued no abort command and made no busy-wait
+    call.
+- **The harness's own tests** on `988c95ff`:
+  - `judge_test`: 88 ok. W1-W4 are each shown to pass and to fail.
+  - `layer_stuck` and `layer_stuck_back` PASS. They check TS over 6 ms against the model,
+    with both idle times seen. An abort in an attempt leaves the frame held, and one in the
+    idle time removes it, never on the wire. With the nodes back mid-attempt, an abort does
+    nothing, and the frame completes 240 us after a 22 us idle time.
+  - `mutate.py --local`: 94 of 94 caught, 21 of them new. A layer or case mutant is now
+    caught only by a verdict that differs from a control run of the unmutated build,
+    because the case fails on `54e1ea13` by design.
+  - `test_host_env.py`: all ok. Its new checks cover that catch rule. `--mutants`: 13 of 13
+    killed, the control passing. Since stage (b) batch 2 (2026-11-23), its control had
+    failed: the copy lacked `test/diag_host/`. Fixed in `988c95ff`.
+  - `product_mutants.py`: the probe cases' control passes, 6 of 6 caught.
+  - The whole tools test set at `988c95ff`'s files:
+    - 137 of the 138 test files exit 0. `test_only_inert.py` exits 2, as on earlier
+      commits: it is a bench script that needs its arguments.
+    - 18 of the 137 first exited 1, because the canre and can-tools pins were not yet
+      installed in this new worktree. With both installed, all 18 exit 0.
+    - The 60 mutant files exit 0.
+- **Run files.** `runs/f5_withdrawn_988c95ff/` (`README.md` there).
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical
