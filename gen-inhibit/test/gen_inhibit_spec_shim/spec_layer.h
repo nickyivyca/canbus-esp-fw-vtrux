@@ -129,4 +129,60 @@ uint32_t       sl_alerts_delivered(void);   /* every injected alert bit the devi
  * harness test can drive it without a worker. */
 void sl_step(void);
 
+/*
+ * A WITHDRAWN INHIBIT FRAME STUCK IN THE CONTROLLER (spec 12.4, "a bus with no
+ * other node, emulated", added 2026-11-26, user): the fake retries the frame at
+ * the bench row's measured pattern and reports it transmitting during each
+ * retry. Gen-inhibit tester, 2026-11-26.
+ *
+ * THE MODEL. The case holds the frame with the harness's ft_stall_id() before
+ * it is handed over, so to the fake it is a frame awaiting arbitration, which
+ * the fake's abort removes (measured on the C3, twai_port T8). Over that the
+ * layer lays the retries, through two more link-time wraps, of
+ * twai_ll_get_status() and twai_ll_set_cmd_abort_tx():
+ *   - the retries follow sl_silence_measured()'s error times: each period of
+ *     the pattern is one attempt, and its ACK error is the error the layer
+ *     injects at the period's end;
+ *   - during an attempt the status reads TS set (transmitting), and an abort
+ *     does nothing, as the fake's abort of a transmitting frame does (T8);
+ *     the call is counted;
+ *   - in the bus idle time before the next attempt, TS reads clear and an
+ *     abort goes to the fake, which removes the frame: never on the wire, and
+ *     the driver reports TX_SUCCESS, as for a completion (spec 5.2 item 5).
+ *     That idle time is the intermission, 3 bit times (6 us at 500 kbit/s),
+ *     plus the suspend transmission an error-passive transmitter waits, 8 bit
+ *     times (16 us), from TEC 128 on. The bench pattern carries the second:
+ *     its passive gaps are 16 us longer than its active ones (262 - 246 and
+ *     274 - 258). How long TS stays clear on the C3 is not measured; this is
+ *     the layer's model, from the CAN protocol;
+ *   - when the nodes return (sl_nodes_back) with the frame still held, the
+ *     first attempt that starts after it is acknowledged: the frame completes
+ *     at that attempt's end. The layer records it as on the wire then and
+ *     takes it out of the fake's buffer with the fake's own abort, so the
+ *     driver reports TX_SUCCESS as for any completion. The fake's wire log
+ *     does not have it: read sl_stuck_on_wire_at().
+ * Every other frame is as in the other cases. With no frame armed the two
+ * wraps pass every call through unchanged.
+ */
+#define SL_IFS_US      6        /* intermission: 3 bit times at 500 kbit/s */
+#define SL_SUSPEND_US  16       /* suspend transmission, error passive: 8 bit times */
+#define SL_MAX_ABORTS  4096
+
+/* The next frame of `id` the device hands over is the stuck one. Call after
+ * ft_stall_id(id, 1) and sl_silence_measured(), before it is handed over. */
+void    sl_retry_stuck(uint32_t id);
+bool    sl_stuck_in_buffer(void);           /* handed over, not yet removed or completed */
+int64_t sl_stuck_handed_at(void);           /* its t_queued; -1 before */
+int64_t sl_stuck_removed_at(void);          /* when an abort removed it; -1: not removed */
+int64_t sl_stuck_on_wire_at(void);          /* when it completed on the wire; -1: never */
+/* Is the stuck frame in its idle time before the next attempt now (TS clear)? */
+bool    sl_stuck_in_gap(void);
+/* Status register reads while it was held, and how many of them read TS clear. */
+int     sl_stuck_status_reads(int *ts_clear);
+/* Every abort command issued while the stuck frame was in the buffer: its time
+ * and whether it came during an attempt (and so did nothing). */
+int     sl_stuck_abort_count(void);
+int64_t sl_stuck_abort_time(int i);
+bool    sl_stuck_abort_in_attempt(int i);
+
 #endif

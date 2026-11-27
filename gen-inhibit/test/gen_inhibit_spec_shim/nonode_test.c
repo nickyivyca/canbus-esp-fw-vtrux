@@ -37,6 +37,7 @@
 #include "shim_harness.h"
 #include "gen_inhibit.h"
 #include "driver/twai.h"
+#include "hal/twai_ll.h"
 #include "esp_log.h"
 #include "can.h"
 #include "spec_layer.h"
@@ -664,6 +665,291 @@ static void answer_case(void)
     teardown();
 }
 
+/* ----------------------------- the withdrawn frame stuck in the controller -- */
+
+/* The aborts in groups more than 1 ms apart: the scheduler's passes, as far as
+ * the abort commands show them (5.2 item 4 bounds one pass's loop at 1 ms). */
+static int abort_passes(void)
+{
+    int passes = 0;
+    for (int i = 0; i < sl_stuck_abort_count(); i++)
+        if (i == 0 || sl_stuck_abort_time(i) - sl_stuck_abort_time(i - 1) > 1000) passes++;
+    return passes;
+}
+
+static int aborts_in_attempt(void)
+{
+    int n = 0;
+    for (int i = 0; i < sl_stuck_abort_count(); i++) n += sl_stuck_abort_in_attempt(i);
+    return n;
+}
+
+/* Live, then the last VCM command with its answer held in the controller and
+ * retried at the bench's pattern (sl_retry_stuck). Returns false (and reports
+ * VOID) if that did not happen. */
+static bool live_and_stuck(const char *cs, int64_t active_us, int64_t passive_us, int64_t *t_last)
+{
+    gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
+    traffic(KEY_ON, 1500 * MS);
+    if (!is_live(page()))
+    {
+        nn_verdict_t v = { "VOID", "never went live on the interlock set" };
+        report(cs, "setup", v);
+        return false;
+    }
+    ft_stall_id(0x051, 1);
+    sl_silence_measured(active_us, passive_us);
+    sl_retry_stuck(0x051);
+    const int sent051 = ft_sent_count_id(0x051);
+    uint8_t cmd[6];
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)(g_ctr++ & 0x0F);
+    ft_deliver(0x051, cmd, 6);
+    for (int i = 0; i < 20 && !sl_stuck_in_buffer(); i++) ft_run(100);
+    *t_last = ft_last_rx_time();
+    if (ft_sent_count_id(0x051) != sent051 + 1 || !sl_stuck_in_buffer())
+    {
+        nn_verdict_t v = { "VOID", "" };
+        snprintf(v.detail, sizeof(v.detail), "the last command was answered %d times, held in the controller %d",
+                 ft_sent_count_id(0x051) - sent051, sl_stuck_in_buffer());
+        report(cs, "setup", v);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Spec 12.4 row "a bus with no other node, emulated", added 2026-11-26 (user):
+ * the trip lands while the device's inhibit frame is in the controller and
+ * unacknowledged; the fake retries it at the bench row's measured pattern (one
+ * retry every 262-274 us) and reports it transmitting during each retry.
+ * Required: the scheduler aborts it again on later passes until the buffer is
+ * free (5.2 item 5); it never completes; no 0x051 reaches the wire when traffic
+ * returns; the queued telemetry then goes out. Emulated only (user,
+ * 2026-11-26).
+ *
+ * The stimulus is the answer-stuck case's, at the bench's pattern: the nodes go
+ * after the last VCM command and before the device's answer completes, so the
+ * answer is the inhibit frame in the controller. The 10th error comes about
+ * 2.5 ms after it is handed over, so trip 6 latches at the first check after it
+ * (region 1) and withdraws the answer as a stand-down. How the retries look to
+ * the device is the layer's model (spec_layer.h, sl_retry_stuck): an abort
+ * during an attempt does nothing; one in the idle time before the next attempt
+ * removes the frame. If it is still held when the nodes return, it completes.
+ */
+static void withdrawn_case(const char *cs, int64_t active_us, int64_t passive_us)
+{
+    char reason[160] = "", bal_first[160] = "", eq_first[160] = "";
+    int64_t t_last;
+    setup();
+    if (!live_and_stuck(cs, active_us, passive_us, &t_last)) { teardown(); return; }
+    /* read with the answer held and no trip yet: its stand-down is what A2 looks for */
+    const long sd0 = sched_num(page(), "standdown"), sk0 = sched_num(page(), "skipped");
+    const int wire_at_silence = ft_wire_count();
+    const int64_t answer_t = sl_stuck_handed_at();
+    int sent_after_answer = 0;
+    for (int i = 0; i < ft_sent_count(); i++)
+        if (ft_sent(i)->id == 0x051 && ft_sent(i)->t_queued == answer_t) sent_after_answer = i + 1;
+    const int rx_at_silence = sl_rx_count();
+
+    int64_t t_latch = -1, t_unlatched = ft_now(), gap_max = 0, t_prev = ft_now();
+    long err_n_max = -1;
+    bool held_at_latch = false;
+    int reads = 0, bal_bad = 0, eq_checked = 0, eq_bad = 0;
+    while (ft_now() < t_last + WATCH_US)
+    {
+        ft_run(STEP_US);
+        const char *p = page();
+        if (p[0])
+        {
+            if (ft_now() - t_prev > gap_max) gap_max = ft_now() - t_prev;
+            t_prev = ft_now();
+        }
+        reads++;
+        identities(p, &bal_bad, bal_first, &eq_checked, &eq_bad, eq_first);
+        const long e = page_num(p, "err_n");
+        if (e > err_n_max) err_n_max = e;
+        if (t_latch < 0 && latched(p))
+        {
+            t_latch = ft_now();
+            held_at_latch = sl_stuck_in_buffer();
+            page_str(p, "abort_reason", reason, sizeof(reason));
+        }
+        else if (t_latch < 0)
+        {
+            t_unlatched = ft_now();
+        }
+    }
+    const char *pe = page();
+    const long sd1 = sched_num(pe, "standdown"), sk1 = sched_num(pe, "skipped");
+
+    int late051 = 0;
+    for (int i = sent_after_answer; i < ft_sent_count(); i++)
+        if (ft_sent(i)->id == 0x051) late051++;
+    report(cs, "R1", nn_r1_no_051(late051));
+
+    nn_obs_t o = { 0 };
+    o.t_last = t_last;
+    o.checks = g_checks;
+    for (int i = 0; i < sl_rx_count(); i++)
+        if (sl_rx(i)->t > t_last) g_checks[o.n_checks++] = sl_rx(i)->t;
+    for (int i = rx_at_silence; i < sl_rx_count(); i++) o.frames_in_silence += sl_rx(i)->ok;
+    o.errs = g_errs;
+    for (int k = 0; k < sl_err_count() && k < SL_MAX_ERR; k++) g_errs[o.n_errs++] = sl_err_time(k);
+    o.region = 1;
+    o.t_unlatched = t_unlatched;
+    o.t_latch = t_latch;
+    o.reason = reason;
+    nn_verdict_t why;
+    const nn_expect_t e = nn_expect(&o, &why);
+    if (!e.usable) report(cs, "R2/R3", why);
+    else
+    {
+        report(cs, "R2", nn_r2_at_check(&o));
+        report(cs, "R3", nn_r3_trip(&o, &e));
+    }
+    report(cs, "layer", nn_layer_reaches(err_n_max, sl_err_count()));
+    report(cs, "layer", bench_pattern(active_us, passive_us));
+    report(cs, "A2", nn_a2_standdown(sd1 - sd0, sk1 - sk0));
+    report(cs, "A3", nn_a3_balance(reads, bal_bad, bal_first));
+    report(cs, "A4", nn_a4_equality(eq_checked, eq_bad, eq_first));
+    report(cs, "R4", nn_r4_not_blocked(sl_rx_count() - rx_at_silence, gap_max, ft_sent_count() - ft_wire_count()));
+
+    /* traffic returns, key on, no key cycle */
+    const bool done_in_silence = ft_wire_count() != wire_at_silence;
+    const char *pr = page();
+    const long tele_wait = cls_num(pr, "telemetry", "depth") + cls_num(pr, "telemetry", "held");
+    const long tele_sent0 = cls_num(pr, "telemetry", "sent");
+    const int diag0 = diag_on_wire();
+    sl_nodes_back();
+    const int64_t t_return = ft_now();
+    traffic(KEY_ON, 1000 * MS);
+    const long tele_sent1 = cls_num(page(), "telemetry", "sent");
+
+    int st_clear = 0;
+    const int st_reads = sl_stuck_status_reads(&st_clear);
+    report(cs, "W1", nn_w1_freed(t_latch, held_at_latch, sl_stuck_removed_at(), t_return, sl_stuck_abort_count(),
+                                 aborts_in_attempt(), abort_passes(), st_reads, st_clear));
+    int64_t on_wire = sl_stuck_on_wire_at();
+    int wire051_after = on_wire >= t_return ? 1 : 0;
+    for (int i = 0; i < ft_wire_count(); i++)
+    {
+        const ft_frame_t *w = ft_wire(i);
+        if (w->id == 0x051 && w->t_queued == answer_t && on_wire < 0) on_wire = w->t_done;
+        if (w->id == 0x051 && w->t_done >= t_return) wire051_after++;
+    }
+    report(cs, "W2", nn_w2_never_completes(on_wire));
+    report(cs, "W3", nn_w3_no_051_on_return(wire051_after));
+    report(cs, "W4", nn_w4_telemetry_out(done_in_silence, tele_wait, tele_sent1 - tele_sent0, diag_on_wire() - diag0));
+
+    traffic(KEY_OFF, 300 * MS);
+    traffic(KEY_ON, 300 * MS);
+    report(cs, "R6", nn_r6_key_on(latched(page())));
+    teardown();
+}
+
+/*
+ * THE LAYER'S STUCK FRAME ON ITS OWN (spec_layer.h, sl_retry_stuck), on a live
+ * device that is a bystander: nothing about it is judged. Before the device's
+ * first check after the silence (up to 200 ms on), so before any trip:
+ *   ts      over 6 ms, every 2 us, TS reads set except in the idle time before
+ *           each error: 6 us while error active, 22 us from TEC 128; both seen;
+ *   attempt an abort during an attempt leaves the frame held;
+ *   gap     an abort in the idle time removes it, and it is never on the wire.
+ * layer_stuck_back instead brings the nodes back mid-attempt:
+ *   back    an abort in the attempt in progress at the return does nothing;
+ *           the frame completes at the end of the first attempt that starts
+ *           after the return (240 us after a 22 us idle time), not before.
+ */
+static void layer_stuck_case(bool back)
+{
+    const char *cs = back ? "layer_stuck_back" : "layer_stuck";
+    int64_t t_last;
+    nn_verdict_t v;
+    twai_dev_t *hw = twai_fake_ll_hw(0);
+    setup();
+    if (!live_and_stuck(cs, 246, 262, &t_last)) { teardown(); return; }
+
+    if (!back)
+    {
+        const int64_t t0 = ft_now();
+        int samples = 0, bad = 0, clear_active = 0, clear_passive = 0;
+        int64_t first_bad = -1;
+        while (ft_now() < t0 + 6000)
+        {
+            ft_run(2);
+            const bool ts = (twai_ll_get_status(hw) & TWAI_LL_STATUS_TS) != 0;
+            const int64_t now = ft_now();
+            /* the next error after now; k errors so far, so active while k < 16 */
+            int k = 0;
+            while (k < sl_err_count() && sl_err_time(k) <= now) k++;
+            const int64_t next = k == 0 ? sl_stuck_handed_at() + 246 : sl_err_time(k - 1) + (k < 16 ? 246 : 262);
+            const int64_t idle = k < 16 ? 6 : 22;
+            const bool want_clear = now >= next - idle && now < next;
+            samples++;
+            if (want_clear == ts) { bad++; if (first_bad < 0) first_bad = now; }
+            if (!ts && k < 16) clear_active++;
+            if (!ts && k >= 16) clear_passive++;
+        }
+        snprintf(v.detail, sizeof(v.detail), "%d reads over 6 ms: %d off the model (first at %lld us); TS clear in "
+                 "%d reads while active, %d from TEC 128; %d errors", samples, bad, (long long)first_bad, clear_active,
+                 clear_passive, sl_err_count());
+        v.v = (bad == 0 && clear_active > 0 && clear_passive > 0 && sl_err_count() >= 20) ? "PASS" : "NOT-AS-SPECIFIED";
+        report(cs, "ts", v);
+
+        while (sl_stuck_in_gap()) ft_run(1);
+        ft_run(50);                                 /* well inside an attempt */
+        const bool in_attempt = !sl_stuck_in_gap();
+        twai_ll_set_cmd_abort_tx(hw);
+        snprintf(v.detail, sizeof(v.detail), "an abort during an attempt (TS set %d): held %d, removed at %lld",
+                 in_attempt, sl_stuck_in_buffer(), (long long)sl_stuck_removed_at());
+        v.v = (in_attempt && sl_stuck_in_buffer() && sl_stuck_removed_at() < 0 && sl_stuck_abort_count() >= 1 &&
+               sl_stuck_abort_in_attempt(sl_stuck_abort_count() - 1)) ? "PASS" : "NOT-AS-SPECIFIED";
+        report(cs, "attempt", v);
+
+        while (!sl_stuck_in_gap()) ft_run(1);
+        const int64_t t_abort = ft_now();
+        twai_ll_set_cmd_abort_tx(hw);
+        const bool removed = sl_stuck_removed_at() == t_abort && !sl_stuck_in_buffer();
+        ft_run(5 * MS);
+        bool on_wire = false;
+        for (int i = 0; i < ft_wire_count(); i++)
+            if (ft_wire(i)->id == 0x051 && ft_wire(i)->t_queued == sl_stuck_handed_at()) on_wire = true;
+        snprintf(v.detail, sizeof(v.detail), "an abort in the idle time at %lld us: removed %d, on the wire %d, the "
+                 "layer's wire record %lld", (long long)t_abort, removed, on_wire, (long long)sl_stuck_on_wire_at());
+        v.v = (removed && !on_wire && sl_stuck_on_wire_at() < 0 && !sl_stuck_abort_in_attempt(sl_stuck_abort_count() - 1))
+              ? "PASS" : "NOT-AS-SPECIFIED";
+        report(cs, "gap", v);
+    }
+    else
+    {
+        ft_run(6000);                               /* error passive: 22 us idle times */
+        while (sl_stuck_in_gap()) ft_run(1);
+        ft_run(50);                                 /* inside an attempt */
+        sl_nodes_back();
+        const int64_t t_back = ft_now();
+        twai_ll_set_cmd_abort_tx(hw);               /* in the attempt in progress: nothing */
+        const bool held_after_abort = sl_stuck_in_buffer();
+        int64_t gap_start = -1, gap_end = -1;
+        while (sl_stuck_in_buffer() && ft_now() < t_back + 2000)
+        {
+            const bool g = sl_stuck_in_gap();
+            if (g && gap_start < 0) gap_start = ft_now();
+            if (!g && gap_start >= 0 && gap_end < 0) gap_end = ft_now();
+            ft_run(1);
+        }
+        const int64_t done = sl_stuck_on_wire_at();
+        snprintf(v.detail, sizeof(v.detail), "back at %lld us, mid-attempt; held after an abort then %d; idle time "
+                 "%lld-%lld us; completed at %lld us (%+lld from the idle time's end), still held %d",
+                 (long long)t_back, held_after_abort, (long long)gap_start, (long long)gap_end, (long long)done,
+                 (long long)(done - gap_end), sl_stuck_in_buffer());
+        v.v = (held_after_abort && gap_start > t_back && gap_end - gap_start == 22 && done == gap_end + 240 &&
+               !sl_stuck_in_buffer() && sl_stuck_removed_at() < 0) ? "PASS" : "NOT-AS-SPECIFIED";
+        report(cs, "back", v);
+    }
+    teardown();
+}
+
 static const case_t CASES[] = {
     /* name           retry_us  tenth_us   bus_off  region */
     { "fast",              300,        0,       0,   1 },
@@ -686,12 +972,21 @@ int main(int argc, char **argv)
         printf("layer_bench\n");
         for (size_t i = 0; i < n; i++) printf("%s\n", CASES[i].name);
         printf("answer_stuck\n");
+        printf("layer_stuck\n");
+        printf("layer_stuck_back\n");
+        printf("withdrawn_262\n");
+        printf("withdrawn_274\n");
         return 0;
     }
     bool found = false;
     if (strcmp(argv[1], "layer") == 0) { layer_case(); found = true; }
     if (strcmp(argv[1], "layer_bench") == 0) { layer_bench_case(); found = true; }
     if (strcmp(argv[1], "answer_stuck") == 0) { answer_case(); found = true; }
+    if (strcmp(argv[1], "layer_stuck") == 0) { layer_stuck_case(false); found = true; }
+    if (strcmp(argv[1], "layer_stuck_back") == 0) { layer_stuck_case(true); found = true; }
+    /* the bench's measured pattern (nonode_bench.py 2026-10-20 17:04), as bench_262 and bench_274 */
+    if (strcmp(argv[1], "withdrawn_262") == 0) { withdrawn_case(argv[1], 246, 262); found = true; }
+    if (strcmp(argv[1], "withdrawn_274") == 0) { withdrawn_case(argv[1], 258, 274); found = true; }
     for (size_t i = 0; i < n && !found; i++)
         if (strcmp(argv[1], CASES[i].name) == 0) { run_case(&CASES[i]); found = true; }
     if (!found) { printf("RESULT %s - VOID no such case\n", argv[1]); return 2; }
