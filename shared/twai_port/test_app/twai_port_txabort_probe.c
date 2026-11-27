@@ -112,6 +112,8 @@
 
 #include "can.h"
 #include "twai_port_txabort_probe.h"
+#include "twai_port_probe_ll.h"
+#include "twai_port_unacked.h"
 
 static const char *TAG = "gi_txabort";
 
@@ -863,6 +865,105 @@ static int phase_from(const char *s)
     return -1;
 }
 
+/* ------------------------------------------- the no-acknowledge modes -- */
+
+static int txp_get(void *ctx, const char *key, char *val, size_t vn)
+{
+    return arg_get((const char *)ctx, key, val, vn);
+}
+
+static bool txp_emit(void *ctx, const char *s, size_t n)
+{
+    return httpd_resp_send_chunk((httpd_req_t *)ctx, s, (ssize_t)n) == ESP_OK;
+}
+
+static txp_run_t s_txp_run;
+
+/*
+ * m1, m2 and m3 (T13, gen-inhibit tracker F5): parse, refuse on a chip with
+ * no register file and while the project owns the bus, bring the bus up as
+ * the older phases do, run at their priority, answer. The arguments and the
+ * answer are in test_app/README.md.
+ */
+static esp_err_t txp_handler(httpd_req_t *req, const char *query,
+                             const char *phase)
+{
+    txp_params_t p;
+    char err[200];
+
+    if (!txp_parse(phase, txp_get, (void *)query, &p, err, sizeof(err)))
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, err);
+        ESP_LOGE(TAG, "refused: %s", err);
+        return ESP_FAIL;
+    }
+    if (!txp_ll_supported())
+    {
+        httpd_resp_send_err(req, HTTPD_501_METHOD_NOT_IMPLEMENTED,
+                            "m1, m2 and m3 are not supported on this chip: no "
+                            "probe register file (twai_port_probe_ll_<chip>.c)");
+        return ESP_FAIL;
+    }
+    if (s_owns_bus == NULL || s_owns_bus())
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, s_owned_body);
+        return ESP_FAIL;
+    }
+    if (!can_is_enabled())
+    {
+        can_set_silent(0);
+        can_set_bitrate(CAN_500K);
+        can_enable();
+    }
+    if (!can_is_enabled())
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "CAN bus would not come up");
+        return ESP_FAIL;
+    }
+    if (can_is_silent())
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "bus is listen-only; nothing can be transmitted");
+        return ESP_FAIL;
+    }
+    if (twai_reconfigure_alerts(TWAI_ALERT_ALL, NULL) != ESP_OK)
+    {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "alerts would not enable");
+        return ESP_FAIL;
+    }
+
+    const int64_t t_run0 = esp_timer_get_time();
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    const UBaseType_t prio0 = uxTaskPriorityGet(self);
+    vTaskPrioritySet(self, 18);
+    const bool ran = txp_run(&p, &s_txp_run);
+    vTaskPrioritySet(self, prio0);
+    if (!ran)
+    {
+        httpd_resp_send_err(req, HTTPD_501_METHOD_NOT_IMPLEMENTED,
+                            "m1, m2 and m3 are not supported on this chip");
+        return ESP_FAIL;
+    }
+
+    const txp_head_t h = {
+        .git = esp_app_get_description()->version,
+        .run_us = (long long)(esp_timer_get_time() - t_run0),
+        .uptime_us = (long long)esp_timer_get_time(),
+        .id = TXAB_ID,
+        .dlc = TXAB_DLC,
+    };
+    httpd_resp_set_type(req, "application/json");
+    if (!txp_write_json(&p, &s_txp_run, &h, txp_emit, req))
+    {
+        return ESP_FAIL;
+    }
+    ESP_LOGW(TAG, "measurement run: phase=%s label=%s trials=%d -- "
+                  "THIS IS NOT A SHIPPING BUILD", phase, p.label, s_txp_run.n);
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
 static esp_err_t txab_handler(httpd_req_t *req)
 {
     char query[256];
@@ -897,6 +998,20 @@ static esp_err_t txab_handler(httpd_req_t *req)
                                 "argument would silently have taken its default");
             ESP_LOGE(TAG, "refused: query string too long (%d)", (int)qe);
             return ESP_FAIL;
+        }
+    }
+
+    /*
+     * THE NO-ACKNOWLEDGE MODES, m1-m3 (T13, gen-inhibit tracker F5), have
+     * their own arguments and answer (twai_port_unacked.c), so they leave
+     * here, before the older phases' parsing, which is unchanged.
+     */
+    if (have_query)
+    {
+        const int g = arg_get(query, "phase", val, sizeof(val));
+        if (g > 0 && txp_phase_from(val) != 0)
+        {
+            return txp_handler(req, query, val);
         }
     }
 
@@ -985,7 +1100,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
     if (phase < 0)
     {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "phase must be abort|control|noabort");
+                            "phase must be abort|control|noabort|m1|m2|m3");
         return ESP_FAIL;
     }
     if (strcmp(gate_s, "rs") != 0 && strcmp(gate_s, "off") != 0)
