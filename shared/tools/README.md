@@ -13,7 +13,8 @@ as the machine's.
 
 The files in `vtrux_build/` and `tests/` listed below are the implementor's:
 product tooling and its unit tests (gen-inhibit reviewer, 2026-10-23, batch
-C6f). The build checks, SPEC R17 to R21, R29 and R30 (apart from R21's
+C6f). So are the pin tools in `vtrux_pins/` (R35, R36), from gen-inhibit's
+port step 4 items 6 and 7. The build checks, SPEC R17 to R21, R29 and R30 (apart from R21's
 one-board refusal, which the release build makes), and the comparison tool of port
 plan goal 6 are the tester's (the same ruling), in files of their own:
 `verification/` and `vtrux_checks/` in the table below, with the rest
@@ -189,6 +190,175 @@ imports check_component() must first call pin.check(project_root,
 tools_root), with the shared/tools folder it loaded pin.py from, to get the
 same guarantee as the command. `pin.entry(project_root, tag, component)`
 gives the entry. Both raise `PinError`.
+
+## Pins on outside packages (R35)
+
+`vtrux_pins` pins two outside Python packages that a project's harness
+imports, each at one commit, and loads them so that no other copy is used:
+- **canbench,** the CAN adapter package, from the can-tools repo
+  (`vtrux_pins/cantools.py`);
+- **canre,** the CAN analysis library, from the public reverse-engineering
+  repo (`vtrux_pins/canre.py`).
+
+Both pins are in one pins file, which the caller names. Each entry has the
+repo and the full commit; canre's also has its version:
+
+    {"can-tools": {"repo": "https://github.com/nickyivyca/can-tools",
+                   "commit": "<40 lower-case hex digits>"},
+     "canre": {"repo": "https://github.com/nickyivyca/canbus-reveng-vtrux-coda",
+               "version": "0.1.0",
+               "commit": "<40 lower-case hex digits>"}}
+
+The file may hold other keys, such as a project's other pins, and they are
+ignored. An entry that is missing, has an empty field, or has a commit that
+is not 40 lower-case hex digits is refused.
+
+    python -B -m vtrux_pins can-tools install|check|where --pins FILE
+    python -B -m vtrux_pins canre install|check|where --pins FILE
+
+- `install` writes the pinned commit's package if it is not there, then
+  checks it.
+- `check` checks it and writes nothing.
+- `where` prints its folder.
+
+Exit 0; 1 with `REFUSED: <reason>` on stderr at a refusal; 2 for a usage
+error. In Python, `check(pins_file)` makes checks 1 to 3 below and returns
+the folder, `use(pins_file)` makes every check and loads the package, and
+`install(pins_file)` installs. Each raises `vtrux_pins.pinsfile.PinsError`.
+The caller loads `vtrux_pins` from the pinned shared/tools checkout, and
+first checks the tooling's own pin, as for `check_component()` above.
+
+**Where each package is written.** Never into an interpreter's
+site-packages, where every other tool on the machine would import it. The
+worktree is the git worktree that holds the pins file, found by walking up
+from the file to a `.git`:
+- canbench: `<worktree>/scratch/can-tools/<commit>/canbench/`. Outside a
+  git worktree canbench is refused.
+- canre: `<worktree>/scratch/canre/<commit>/`. If `CANRE_DIR` is set, it is
+  that folder instead, which must be an absolute path. This is how a copy of
+  the code with no git, such as one shipped to the bench host, names its
+  canre. Outside a git worktree only `CANRE_DIR` names the folder, and canre
+  is refused if it is not set: a copy never finds canre by its own location.
+
+**Install.** The package is written into `<target>.partial-<pid>` beside the
+target, and moved into place only after it passes the checks. A partial
+folder from an earlier run is removed first; if it cannot be removed,
+install is refused. The partial folder is removed at the end, pass or fail
+(`vtrux_pins/remove.py`, AGENTS.md "Removing scratch"). A target that is
+there already is checked and never replaced: if it fails, install is
+refused, and deleting it is left to a person. Install is refused outside a
+git worktree.
+- canbench is written from the can-tools clone that `CAN_TOOLS_DIR` names.
+  Every file under `canbench/` at the pinned commit is written from its git
+  blob (`git cat-file blob`), so no line-ending or other filter applies. The
+  clone's HEAD, branch and working tree play no part.
+- canre is installed by pip: `pip install --no-deps --no-compile
+  --disable-pip-version-check --no-input --target <partial folder>
+  git+<repo>@<commit>`. pip needs the network. Install always writes into
+  the worktree, never into `CANRE_DIR`.
+
+**The canbench checks**, in order. canbench is refused unless:
+1. `CAN_TOOLS_DIR` is set and holds `canbench/`. There is no default.
+2. The clone has the pinned commit; if not, the refusal says to fetch it.
+   Every entry under `canbench/` at that commit is a regular or executable
+   file (no link, no submodule), and `canbench/__init__.py` is one of them.
+3. The folder exists; if not, the refusal names the install command. Every
+   file in its `canbench/` has the git blob hash of the same path at the
+   pinned commit. None is missing, none is changed and none is added.
+   `__pycache__` folders are not compared.
+4. `use()` loads canbench by file from that folder. Neither the folder nor
+   the clone is put on `sys.path`, so nothing else imports from them by
+   accident. A canbench imported earlier from any other file is refused;
+   one already loaded from the pinned folder is kept.
+
+The repo in the pin is recorded, not compared with the clone's remote: the
+commit fixes the content.
+
+**The canre checks**, in order. canre is refused unless:
+1. The folder exists; if not, the refusal names the install command.
+2. It holds exactly one canre `.dist-info` folder. Its `METADATA` gives the
+   pinned version. Its `direct_url.json` (PEP 610) names the pinned repo
+   and, as a git commit, the pinned commit. A folder with no
+   `direct_url.json` is refused, since it was not installed from a commit.
+3. Every file its `RECORD` lists with a hash is there with that sha256, so
+   an installed file edited by hand is refused. Every file under its
+   `canre/` package is in `RECORD`, so a file added by hand is refused.
+   `__pycache__` folders are not compared. A package with no
+   `canre/__init__.py` is refused.
+4. `use()` puts the folder first on `sys.path`, so `canre.*` imports after
+   it come from it, and `import canre` must load that folder's
+   `canre/__init__.py`. A canre imported earlier from any other file is
+   refused.
+
+## Pins on outside images (R36)
+
+An image pin names the files of firmware images that a project's bench
+flashes but does not build, such as gen-inhibit's X2 images and the
+interposer's WiCAN image (`vtrux_pins/images.py`). The pin is a committed
+JSON file, which the caller names. The files are not in git: they sit in a
+folder that the local settings name, and nothing in the settings can change
+what the pin names.
+
+    {"_comment": "...",
+     "pin": "<id: a plain folder name>",
+     "source": {"project": "gen-inhibit", "commit": "<40 hex>", ...},
+     "images": {
+       "<image name>": {
+         "image_hash": "<64 hex: R1, the app descriptor's ELF sha256>",
+         "code_hash": "<64 hex: R2>",
+         "identity": "<optional: what the bench reads off the board>",
+         "files": [{"offset": "0x10000", "name": "app.bin", "size": 1021520,
+                    "sha256": "<64 hex>", "md5": "<32 hex>", "app": true},
+                   ...]}}}
+
+Other keys at the top, in `source` and in each image (how it was built, how
+its identity is read, chip and flash settings) are recorded and not judged.
+
+    python -B -m vtrux_pins image check --pin FILE --dir DIR
+    python -B -m vtrux_pins image install --pin FILE --dir DIR --source FOLDER [--source FOLDER ...]
+
+**The pin is refused**, before any file is read, unless:
+- its id is a plain folder name (letters, digits, `.`, `_` and `-`; not `.`
+  or `..`);
+- its `source` names a non-empty `project` and a 40-hex `commit`;
+- it names at least one image, and each image name is a plain folder name;
+- each image has a 64-hex `image_hash` and a 64-hex `code_hash`, both
+  required, and at least one file;
+- each image's `identity`, if given, is a non-empty string, and an 8-hex
+  identity is the first 8 digits of the image hash (a build id the board
+  reports);
+- each file has only the keys `offset`, `name`, `size`, `sha256`, `md5`
+  and `app`, all but `app` required: an offset written as lower-case hex
+  (`0x10000`), a plain file name, a positive size, a 64-hex sha256 and a
+  32-hex md5. `app`, if given, is `true`;
+- no image gives one offset or one name twice;
+- exactly one file in each image is the app.
+
+**check** (and `images.load(pin_file, dir)`, in Python) finds each file at
+`<DIR>/<pin id>/<image name>/<name>`. It passes only if:
+- DIR is a folder;
+- every pinned file is there with its size, sha256 and md5;
+- each app file parses as an ESP-IDF app image (`vtrux_build.image`), and
+  its image hash (R1) and code hash (R2) are the image's `image_hash` and
+  `code_hash`.
+
+It prints the pin's id, the sha256 of the pin file's bytes, and each image
+and file. `load()` returns them for the flasher: each image's files with
+their offsets, in flash order, its app file and its identity.
+
+**install** copies each pinned file into place, from the first `--source`
+folder that holds a file of that name with the pinned size, sha256 and md5.
+It does not search sub-folders. It plans every file before it copies any:
+- a file already in place with the pinned bytes is left as it is;
+- a file in place with other bytes is refused, and nothing is overwritten;
+- a file that no source holds is refused.
+
+Each copy is written to `<name>.partial` and then renamed into place. Then
+install runs check.
+
+Exit 0 when every file matches; 1 when a file is missing or does not match
+(`MISMATCH:`); 2 when the pin is refused or the arguments are wrong
+(`REFUSED:`).
 
 ## The IDF environment check (R32)
 
@@ -391,7 +561,7 @@ the module docstring (`RECORD_SCHEMA` 1).
 | File | What |
 |---|---|
 | `SPEC.md`, `VALIDATION.md`, `VERIFICATION.md` | the spec and its two companions (the reviewer's and the tester's) |
-| `pyproject.toml`, `.gitignore` | the package (`vtrux-build`, command `vtrux-build`) |
+| `pyproject.toml`, `.gitignore` | the package (`vtrux-build`, command `vtrux-build`, with `vtrux_pins`) |
 | `vtrux_build/image.py` | the image library: R1, R2 |
 | `vtrux_build/digest.py` | the component digest: R7 |
 | `vtrux_build/builddir.py` | the build folder readers: R11, and the records the checks read |
@@ -411,6 +581,15 @@ the module docstring (`RECORD_SCHEMA` 1).
 | `tests/imagekit.py` | synthetic app images for the tests, so no firmware image is committed |
 | `tests/pinkit.py` | a pinned checkout for the tests: a small tagged repository at `<folder>/shared-<tag>/`, with a root `.gitignore` listing Python's bytecode as `shared/main`'s does, other components beside `shared/tools` if asked for, and the pin that matches each; `test_release.py` gives every test project one |
 | `tests/test_pin.py` | `pin.py`'s tests, among them R23's: a stray `__pycache__` or `.pyc` passes; a changed, CRLF-rewritten, missing or `.md` tracked file refuses; an execute bit flipped either way refuses and a read-only component passes; an untracked file refuses, and so does one staged in the index but not in the commit, or hidden only by `core.excludesFile` or `info/exclude`, or by a `.gitignore` that is not the commit's; a pin digest that is not the commit's refuses. For other components: a name that is not a folder below `shared/` refuses, and a board's folder two below it is checked like any other; each pin is checked in its own tag's checkout, against its own folder only (a changed `shared/tools` beside it does not refuse it), with the same refusals; `entry` takes its digest from git and writes nothing; the `pin` command checks the tooling first, so every action refuses when the tooling is a copy or changed. `--can-fail` runs them against 26 edited copies of `pin.py` and passes only if the unedited copy passes and every edited one fails |
+| `vtrux_pins/pinsfile.py` | the pins file of outside packages, and the worktree that holds it: R35 |
+| `vtrux_pins/cantools.py` | the canbench pin: R35 |
+| `vtrux_pins/canre.py` | the canre pin: R35 |
+| `vtrux_pins/images.py` | the pins on outside images: R36, with `vtrux_build.image` for R1 and R2 |
+| `vtrux_pins/remove.py` | the remover of an install's partial folder (AGENTS.md "Removing scratch"), the same as `tests/scratch.py`'s |
+| `vtrux_pins/cli.py`, `__main__.py`, `__init__.py` | the command line of the pin tools |
+| `tests/test_vtrux_pins_packages.py` | the package pins' tests: the pins file (other keys ignored; an incomplete or short entry refused), canbench against a stand-in clone (raw blobs written; a link at the commit, a missing commit or no `canbench/__init__.py` refused; a missing, changed, CRLF-rewritten or added file refused; a folder there is never replaced; a stale partial removed, and one that cannot be removed refuses; outside a worktree refused; loaded by file with `sys.path` unchanged, and a canbench from elsewhere refused), and canre against stand-in installs and a stand-in pip (another commit, repo, vcs or version, no `direct_url.json`, two `.dist-info` folders, and a changed, added or removed file refused; `CANRE_DIR` used when set and absolute, and the only way outside a worktree; install never writes to it; first on `sys.path`), and both commands. `--can-fail` runs them against 36 edited copies of `vtrux_pins` and passes only if the unedited copy passes and every edited one fails |
+| `tests/test_vtrux_pins_images.py` | the image pins' tests, on synthetic images: every malformed pin refused, the code hash required; files found only at `<dir>/<pin>/<image>/<name>`; each of size, sha256 and md5 compared; the app's image hash and code hash compared; files in flash order; install takes the first source with the bytes, searches no sub-folder, plans before it copies and never overwrites; the command's exit codes. `--can-fail` runs them against 22 edited copies of `images.py` |
+| `tests/pinpkgkit.py` | the package pins' stand-ins: a can-tools clone, canre installs and pip |
 | `tests/scratch.py` | the tests' scratch folders: `<worktree>/scratch/shared-tools-tests/<pid>/`, the run's own, removed when the run ends, pass or fail; refused, with no other place, outside a git worktree or where git does not ignore `scratch/` (`AGENTS.md` "Files and folders"), and so under WSL in a worktree made by Git for Windows, whose `.git` file Linux git cannot follow. Its remover clears read-only flags and retries, uses `\\?\` paths on Windows and prints what it could not remove ("Removing scratch"): a copy of `verification/independent.py`'s, since the unit tests do not import the tester's files. Tested in `tests/test_scratch.py` |
 | `verification/` | the tester's: its verification of this tooling against `SPEC.md`, the evidence behind `VERIFICATION.md`, and the build checks' real-build cases; its `README.md` lists the files |
 | `vtrux_checks/` | the tester's: the build checks, SPEC R17 to R21, R29 and R30, reading a finished build through the interface above; their per-project data is the tester's `vtrux_checks.json` in the project's root; its `README.md` lists the checks |

@@ -13,4 +13,4 @@ dependencies = []
 vtrux-build = "vtrux_build.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["vtrux_build*"]
+include = ["vtrux_build*", "vtrux_pins*"]
