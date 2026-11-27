@@ -428,12 +428,10 @@ EMULATED_KNOWN_FAILS = [
               "are not reported, 2026-11-07); first recorded on src "
               "36edf3e55552 (reviewer 2026-10-16)"),
 ]
+# b-vport/vport-listen-wrong-rate and its KNOWN-FAIL went on 2026-11-27
+# (the reviewer, on the user's ruling): spec 9 leaves the wrong bit rate out
+# of the listen-only cases.
 BENCH_KNOWN_FAILS = [
-    KnownFail("b-vport/vport-listen-wrong-rate",
-              "spec 2.3 / spec 9 (reviewer 2026-10-21): in listen-only at a "
-              "wrong bit rate, error frames on the bus while a node "
-              "transmits, none with it closed (2026-10-16 discriminator; "
-              "a25e 77 and 55,359); the source is an open tracker item"),
     KnownFail("b-witness/switch-loss",
               "spec 2.3 / spec 12 (2026-10-15): each switch of the vehicle "
               "port loses 1-2 vehicle frames (44 over 41 switches at "
@@ -1373,14 +1371,13 @@ def bench(settings):
                                                   "dominant", "recstart")
                    else script_judge)
 
-    # vport-listen's two wrong-rate arms are a KNOWN FAIL (reviewer,
-    # 2026-10-21), so they run as their own check and the rest of the
-    # listen step stays judged.
+    # vport-listen's two wrong-rate arms ran as their own KNOWN-FAIL check,
+    # vport-listen-wrong-rate (reviewer, 2026-10-21), until 2026-11-27: spec
+    # 9 now leaves the wrong bit rate out of the listen-only cases (the
+    # reviewer, on the user's ruling), so the check and the arms are gone.
     b_vport = Group("b-vport", needs_lock=True, image="vport_bench", checks=[
         vport("vport-listen", "listen",
-              ["--listen-arms", "no-ack,idle,flood-7F4,flood-649,stall"]),
-        vport("vport-listen-wrong-rate", "listen",
-              ["--listen-arms", "wrong-250k,wrong-1m"])] + [
+              ["--listen-arms", "no-ack,idle,flood-7F4,flood-649,stall"])] + [
         vport("vport-" + st, st)
         for st in ("bitrate", "flood", "stall", "dominant", "recstart")])
 
