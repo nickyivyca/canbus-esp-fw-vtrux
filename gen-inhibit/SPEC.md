@@ -313,7 +313,8 @@ that the stock code carries out, it carries out through these hooks:
   functions are `can_port`'s on port 0 (shared/wican W3), backed by
   `twai_port` (`shared/can_port`, `shared/twai_port`). gen-inhibit sets
   port 0 up with: the board's port 0; the configured bitrate; listen-only
-  from the install for OBSERVE (3, 13 item 1) and normal otherwise;
+  from the install for OBSERVE (3, 13 item 1), and the stored `can_mode`
+  otherwise (3.2);
   accept-all, forced by its install hook while it owns the bus (5.1 item
   2); an RX queue of at least 64 (5.1 item 1); no bus-off recovery (7);
   an install failure reported, not a restart; and its pre-teardown hook,
@@ -2090,6 +2091,12 @@ Meeting the literal condition above is deliberately not treated as
 sufficient -- a gate whose condition an agent may evaluate and then clear
 for itself is not a gate, and this one guards transmitting a real `0x051`
 onto a live powertrain bus.
+
+*Re-review done 2026-11-26 (user):* a fresh session reviewed
+`gen-inhibit/main` `4c3afb4d` and found no defect that stops the inhibit on
+the truck. The gate stays shut until the bench has the capabilities still
+missing, such as the switched 12 V supply, and the hardware suite has
+passed on the prod build that will fly.
 
 **To confirm at truck bring-up.** None is expected to be a problem; each is
 cheap to observe on the first runs.

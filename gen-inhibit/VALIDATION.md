@@ -201,6 +201,11 @@ missing.
   into `shared/wican`; the move changed none of the rules the hooks carry
   out, and the refusal bodies were unchanged by it. The CAN port: port
   step 1b (user, 2026-10-31), including the bring-up failure rule.
+- **Corrected 2026-11-26 (user, tracker F1):** the CAN port's mode outside
+  OBSERVE read "normal otherwise". It now reads "the stored `can_mode`
+  otherwise (3.2)", as section 3 and 3.2 already said. An adversarial
+  review found the difference. The reason: a device configured as silent
+  stays silent and cannot inhibit, which fails safe.
 - **Status:** validated.
 
 ## 4. The inhibit frame
@@ -1337,6 +1342,10 @@ cleared is the user's decision, 2026-09-20.
   section 10's correction. R2 does not blank `project_name`, so a build of
   another variant no longer counts as code-identical; the auto-arm build is
   tested in full in any case (the same entry's "Arming").
+- **Added 2026-11-26 (user, tracker F6):** the re-review line. The user
+  ruled that the adversarial review of `4c3afb4d` is the fresh-session
+  re-review the gate waits on, and that the missing bench capabilities
+  come before the prod build's suite and the truck.
 - **Status:** validated.
 
 ## 14. Open questions
