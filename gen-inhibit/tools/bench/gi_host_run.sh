@@ -164,6 +164,15 @@ rm -rf "$EXPORT_PARENT"
 mkdir -p "$EXPORT_PARENT"
 $LOCAL_PY -B "$FW/tools/bench/gi_diag.py" export "$EXPORT_PARENT/diag_schemas" >/dev/null
 
+# THE SHARED SCRATCH HELPER (port step 4 item 3; gen-inhibit reviewer's ruling,
+# 2026-11-26). gi_paths takes its scratch removal from shared/bench's
+# vtrux_bench/scratch.py, and canre_pin.py's install calls it. ~/gi_host has no git, so
+# its gi_paths loads only the staged tools/bench/gi_scratch_core.py whose sha256 the
+# record gi_scratch_core.json beside it gives. This tree's gi_paths stages both here,
+# from the checkout this worktree pins (after gi_core_pin's check), and they ship
+# beside gi_paths.py. The sync's rm -rf of ~/$DEST/tools drops the last ones first.
+$LOCAL_PY -B "$FW/tools/bench/gi_paths.py" --stage-scratch "$EXPORT_PARENT/core/tools/bench" >/dev/null
+
 # THE SHARED COMPONENTS THE SHIM COMPILES (port steps 1a and 1b, 2026-10-31).
 # vtrux/wican's headers (can.h, comm_server.h) since 1a, and since 1b can_port
 # (can_port.c, can_stock.c, which replaced main/can.c) and twai_port with its one
@@ -245,6 +254,7 @@ tar --mode=u+w -C "$FW" -czf - \
     -C "$SHARED_ROOT" shared/wican shared/can_port shared/twai_port \
     -C "$DIAG_ROOT" shared/diag \
     -C "$EXPORT_PARENT" diag_schemas \
+    -C "$EXPORT_PARENT/core" tools/bench/gi_scratch_core.py tools/bench/gi_scratch_core.json \
   | on_host "mkdir -p ~/$DEST && $STALE && rm -rf ~/$DEST/diag_schemas ~/$DEST/shared && tar xzf - -C ~/$DEST"
 
 # project_dir.py WAS MISSING UNTIL 2026-10-26: from_capture.py,

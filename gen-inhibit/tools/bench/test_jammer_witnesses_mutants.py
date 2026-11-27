@@ -38,7 +38,8 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEST = "test_jammer_witnesses.py"
-COPIES = ("witness_anchor.py", "bench_witness.py", "x2_jammer.py", "gi_paths.py", "witness_clock.py")
+COPIES = ("witness_anchor.py", "bench_witness.py", "x2_jammer.py", "gi_paths.py", "witness_clock.py",
+          "gi_core_pin.py")   # gi_paths takes the shared scratch helper through it (port step 4 item 3)
 WA, BWF, XJ = "witness_anchor.py", "bench_witness.py", "x2_jammer.py"
 MUTANTS = [
     # the anchor (P1 (1)-(3))

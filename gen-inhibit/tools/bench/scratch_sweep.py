@@ -13,8 +13,11 @@ scratch/canre/ (the pinned installs) and scratch/session-compact/.
 
 What it judges, walking down from each scratch/: a RUN FOLDER is one with an owner file
 beside it (gi_paths.scratch(), since 2026-10-31) or a name of the form <yyyymmdd>T<hhmmss>_<pid>
-that scratch() gives (not any name ending _<n>: mutant copies, mkdtemp folders and toolchain
-versions end so too). It does not walk into a run folder. For each:
+that scratch() gave until port step 4 item 3 (not any name ending _<n>: mutant copies, mkdtemp
+folders and toolchain versions end so too). It does not walk into a run folder. Since item 3
+the owner files, their states and the removal are shared/bench's scratch helper, through
+gi_paths: an owner file in gi_paths' old form (no host) reads as another host's, so its
+folder is judged as one with no owner file, by the pid in its name. For each:
   REMOVE   its owner file names a finished process (no such pid, or the pid reused);
            or it has no owner file, no process with the pid in its name is running, and
            nothing in it changed in the last hour (--quiet-hours).
@@ -208,8 +211,7 @@ def main(argv=None):
                     changed.append((p, why))
                     continue
                 buf = io.StringIO()
-                if gi_paths.remove_tree(p, out=buf):
-                    gi_paths._remove_owner(p)
+                if gi_paths.remove_tree(p, out=buf):        # the owner file beside it goes too
                     removed.append((p, files, size))
                 else:
                     failed.append((p, buf.getvalue().strip()))

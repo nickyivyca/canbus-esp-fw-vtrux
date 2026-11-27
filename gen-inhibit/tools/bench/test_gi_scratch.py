@@ -21,18 +21,33 @@ On a fake worktree in this run's own scratch/ folder:
      another, and None once it has exited, waited for or not (a zombie on Linux); pid 0
      and -1 give None.
   3. Owner files: scratch() writes one beside the run folder (nothing inside it), with
-     this pid and start time; owner_state says running for it, finished for a pid that
-     isn't running or one whose start differs (a reused pid), kept for a kept one, and
-     None for no file or an unreadable one.
+     this pid, start time and host; owner_state says running for it, finished for a pid
+     that isn't running or one whose start differs (a reused pid), kept for a kept one,
+     and None for no file, an unreadable one or another host's.
   4. remove_finished_siblings removes finished folders with their owner files, and
-     leaves running, kept and ownerless ones; one it can't remove is printed and kept
-     with its owner file.
+     owner files whose folder is gone; it leaves running, kept, ownerless and other
+     hosts' ones; one it can't remove is printed and kept with its owner file.
   5. scratch() in a child process: its folder and owner file are gone after a normal
      end, sys.exit(3) and an uncaught exception; GI_KEEP_SCRATCH keeps them, says so and
      marks the owner file kept; a run killed outright (os._exit) leaves them, and the
      next run of the same name removes them; another name's folders are not touched.
+     A run folder's name is <time>-<pid>-<hex6>.
   6. run_dir removes its folder at the end of the block and on an exception, keep=True
      keeps it; finish from another pid (a forked child) leaves the folder.
+  7. Where the shared helper comes from (port step 4 item 3; the gen-inhibit reviewer's
+     ruling of 2026-11-26): in this worktree, the pinned checkout's
+     vtrux_bench/scratch.py; a copy in a worktree with a staged file and a valid record
+     beside it still takes the pinned one, and when gi_core_pin refuses it is refused
+     and the staged file is not used. A copy with no git (stood in for: load_copy) is
+     refused with nothing staged, and with a staged file but no record; stage_core() stages the pinned file byte for byte with
+     a record of the pin and the sha256, and the copy then loads it and removes through
+     it; a staged file changed after staging, or a record with a bad sha256, is refused.
+     stage_core at a commit stages that commit's pin from git, and refuses a commit with
+     no shared/bench pin.
+
+Since port step 4 item 3 the removal itself is the shared helper's, and its own tests
+(shared/bench tests/test_scratch_helper.py, with --can-fail) carry its mechanics; these
+checks are gen-inhibit's rules for it (AGENTS.md "Removing scratch").
 
     python3.13 -B test_gi_scratch.py        # exit 0 only if every check passes
                                             # (py -3.14 on Windows)
@@ -45,6 +60,8 @@ import io
 import json
 import os
 import re
+import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -148,10 +165,12 @@ def unopenable(path):
     return _refuse(path, ("open",), "refused by the test: a folder the walk can't open")
 
 
-def owner(gp, d, pid, start, keep=False):
+def owner(gp, d, pid, start, keep=False, host=None):
+    """An owner file in the shared helper's form (pid, start, host, platform)."""
     os.makedirs(os.path.dirname(gp.owner_path(d)), exist_ok=True)
     with open(gp.owner_path(d), "w", encoding="utf-8") as fh:
-        json.dump({"pid": pid, "start": start, "made": "x", "keep": keep}, fh)
+        json.dump({"pid": pid, "start": start, "made": "x", "keep": keep,
+                   "host": host or socket.gethostname(), "platform": sys.platform}, fh)
 
 
 def call(fn):
@@ -197,6 +216,144 @@ def run_dir_checks(gp):
 
 
 
+COPIES = []
+
+
+def load_copy(folder, in_worktree=None):
+    """folder/gi_paths.py, loaded as a module of its own; in_worktree, if given, stands
+    in for its finding of a .git upwards (a copy with no git can't be made inside this
+    worktree's scratch/, and nowhere else is ours to write)."""
+    import importlib.util
+    name = "gi_paths_copy_%d" % len(COPIES)
+    spec = importlib.util.spec_from_file_location(name, os.path.join(folder, "gi_paths.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.IN_WORKTREE = in_worktree
+    COPIES.append(mod)
+    return mod
+
+
+FAKE_CORE = b"MARK = 'the staged file'\nOWNER_SUFFIX = '.owner.json'\n"
+
+
+def stage_fake(folder, gp, data=FAKE_CORE, sha=None):
+    """A staged helper and a record that matches it (or gives sha)."""
+    with open(os.path.join(folder, gp.CORE_STAGED), "wb") as fh:
+        fh.write(data)
+    with open(os.path.join(folder, gp.CORE_RECORD), "w", encoding="utf-8") as fh:
+        json.dump({"sha256": sha or __import__("hashlib").sha256(data).hexdigest()}, fh)
+
+
+def source_checks(gp, work):
+    """Where the shared helper comes from (port step 4 item 3; gen-inhibit reviewer's
+    ruling, 2026-11-26)."""
+    import hashlib
+    GCP = gp.core_pin()
+    pin = GCP.check()
+    pinned = os.path.join(pin["folder"], *gp.CORE_FILE.split("/"))
+    with open(pinned, "rb") as fh:
+        pinned_bytes = fh.read()
+    S = gp.scratch_core()
+    check("in this worktree: the helper is the pinned checkout's vtrux_bench/scratch.py",
+          lambda: os.path.samefile(S.__file__, pinned) and "shared-%s" % pin["tag"] in S.__file__, S.__file__)
+
+    # a copy in this worktree with a staged file and a valid record beside it: still the pin
+    cp = os.path.join(work, "copy-wt")
+    os.makedirs(cp)
+    for f in ("gi_paths.py", "gi_core_pin.py"):
+        shutil.copyfile(os.path.join(SRC_DIR if f == "gi_paths.py" else HERE, f), os.path.join(cp, f))
+    stage_fake(cp, gp)
+    c1 = load_copy(cp)
+    S1, err = call(c1.scratch_core)
+    check("in a worktree with a staged file and a valid record beside it: the pinned helper, not the staged one",
+          lambda: err is None and not hasattr(S1, "MARK") and os.path.samefile(S1.__file__, pinned), (err, S1))
+
+    # the same copy when gi_core_pin refuses: refused, and the staged file is still not used
+    class Refusing:
+        class Refused(Exception):
+            pass
+
+        def use_bench(self, start=None):
+            raise self.Refused("refused by the test: the pin check fails")
+    saved = sys.modules.get("gi_core_pin")
+    sys.modules["gi_core_pin"] = Refusing()
+    try:
+        c2 = load_copy(cp)
+        S2, err = call(c2.scratch_core)
+    finally:
+        if saved is None:
+            sys.modules.pop("gi_core_pin", None)
+        else:
+            sys.modules["gi_core_pin"] = saved
+    check("in a worktree whose pin check refuses: a PathsError naming the refusal, the staged file not used",
+          lambda: S2 is None and isinstance(err, c2.PathsError) and "refused by the test" in str(err), (S2, err))
+
+    # copies with no git
+    nogit = os.path.join(work, "copy-nogit")
+    os.makedirs(nogit)
+    shutil.copyfile(os.path.join(SRC_DIR, "gi_paths.py"), os.path.join(nogit, "gi_paths.py"))
+    c3 = load_copy(nogit, in_worktree=False)
+    S3, err = call(c3.scratch_core)
+    check("no git, nothing staged: a PathsError naming the record", lambda: S3 is None
+          and isinstance(err, c3.PathsError) and c3.CORE_RECORD in str(err), (S3, err))
+    with open(os.path.join(nogit, gp.CORE_STAGED), "wb") as fh:
+        fh.write(FAKE_CORE)
+    c3b = load_copy(nogit, in_worktree=False)
+    S3b, err = call(c3b.scratch_core)
+    check("no git, a staged file with no record beside it: a PathsError naming the record, the file not loaded",
+          lambda: S3b is None and isinstance(err, c3b.PathsError) and c3b.CORE_RECORD in str(err), (S3b, err))
+    rec, err = call(lambda: gp.stage_core(nogit))
+    check("stage_core(dest): the pinned checkout's scratch.py, byte for byte, beside its record",
+          lambda: err is None and open(os.path.join(nogit, gp.CORE_STAGED), "rb").read() == pinned_bytes, err)
+    check("... the record names shared/bench, the pin's tag and commit, the file, and the bytes' sha256",
+          lambda: rec == {"component": "shared/bench", "tag": pin["tag"], "commit": pin["commit"],
+                          "file": "vtrux_bench/scratch.py", "sha256": hashlib.sha256(pinned_bytes).hexdigest()}
+          and json.load(open(os.path.join(nogit, gp.CORE_RECORD), encoding="utf-8")) == rec, rec)
+    c4 = load_copy(nogit, in_worktree=False)
+    S4, err = call(c4.scratch_core)
+    check("no git, staged with a matching record: the staged file is the helper",
+          lambda: err is None and os.path.samefile(S4.__file__, os.path.join(nogit, gp.CORE_STAGED)), (err, S4))
+    t = tree(os.path.join(work, "rm-staged"))
+    buf = io.StringIO()
+    check("... and remove_tree works through it", lambda: c4.remove_tree(t, out=buf) is True and not os.path.lexists(t),
+          buf.getvalue())
+    with open(os.path.join(nogit, gp.CORE_STAGED), "ab") as fh:
+        fh.write(b"\n# one more line\n")
+    c5 = load_copy(nogit, in_worktree=False)
+    S5, err = call(c5.scratch_core)
+    check("no git, the staged file changed after staging: a PathsError naming both sha256s",
+          lambda: S5 is None and isinstance(err, c5.PathsError) and rec["sha256"] in str(err), (S5, err))
+    stage_fake(nogit, gp, sha="ABC")
+    c6 = load_copy(nogit, in_worktree=False)
+    S6, err = call(c6.scratch_core)
+    check("no git, a record whose sha256 is not 64 hex digits: a PathsError", lambda: S6 is None
+          and isinstance(err, c6.PathsError), (S6, err))
+    stage_fake(nogit, gp)
+    c7 = load_copy(nogit, in_worktree=False)
+    S7, err = call(c7.scratch_core)
+    check("no git, a staged file with a matching record: that file is loaded (the check is the sha256, "
+          "nothing else)", lambda: err is None and getattr(S7, "MARK", None) == "the staged file", (err, S7))
+
+    # stage_core at a commit (H's): the shared/bench pin that commit gives, from git
+    at = os.path.join(work, "staged-at")
+    rec, err = call(lambda: gp.stage_core(at, STAGE_AT))
+    want = os.path.join(gp.worktree_of(HERE), os.pardir, "shared-%s" % STAGE_AT_TAG, *"shared/bench/vtrux_bench/scratch.py".split("/"))
+    check("stage_core(dest, %s): that commit's pin (%s), its scratch.py from git, byte for byte" % (STAGE_AT[:8], STAGE_AT_TAG),
+          lambda: err is None and rec["tag"] == STAGE_AT_TAG and rec["commit"] == STAGE_AT_COMMIT
+          and open(os.path.join(at, gp.CORE_STAGED), "rb").read() == open(want, "rb").read(), (err, rec))
+    rec, err = call(lambda: gp.stage_core(os.path.join(work, "staged-none"), NO_PIN_AT))
+    check("stage_core(dest, %s), a commit with no shared/bench pin: a PathsError, nothing staged" % NO_PIN_AT[:8],
+          lambda: rec is None and isinstance(err, gp.PathsError)
+          and not os.path.lexists(os.path.join(work, "staged-none")), (rec, err))
+
+
+# A commit whose shared/bench pin is 2026.11.26 (item 3's pin move), and one from before
+# gen-inhibit pinned shared/bench at all (port step 4 item 1's base).
+STAGE_AT, STAGE_AT_TAG = "bbedbdbb", "2026.11.26"
+STAGE_AT_COMMIT = "2986c5e0edb26041c57fa20cd83d991525c92ee1"
+NO_PIN_AT = "4c3afb4d"
+
+
 def main():
     global TOOL
     with real_gi_paths.run_dir("gi-scratch") as work:
@@ -206,6 +363,14 @@ def main():
 def run(work):
     global TOOL
     gp = load()
+    # Every check below goes through the shared helper; if it can't be loaded here, that is
+    # this check's FAIL and nothing else runs (a crash further on would be no verdict).
+    S0, err = call(gp.scratch_core)
+    check("in this worktree, gi_paths loads the shared scratch helper (through gi_core_pin)",
+          lambda: err is None and hasattr(S0, "remove") and not hasattr(S0, "MARK"), (err, S0))
+    if err is not None:
+        print("\nFAIL: %d check(s) failed (the rest need the helper)" % len(FAILS))
+        return 1
     wt = os.path.join(work, "wt")
     TOOL = os.path.join(wt, "gen-inhibit", "tools", "bench", "tool.py")
     os.makedirs(os.path.dirname(TOOL))
@@ -291,31 +456,9 @@ def run(work):
     else:
         print("n/a   the walk's open refused, a link's target, an unwritable parent: off Windows only "
               "(Windows' rmtree walks by path, and a folder's read-only flag doesn't stop removal)")
-    # Python before 3.12 (WSL's 3.10, where the C suites' runners run) has no onexc, only onerror
-    real_rmtree = gp.shutil.rmtree
-
-    def old_rmtree(path, ignore_errors=False, onerror=None, **kw):
-        if kw:
-            raise TypeError("rmtree() got an unexpected keyword argument '%s'" % next(iter(kw)))
-        return real_rmtree(path, ignore_errors, onerror)
-    gp.shutil.rmtree = old_rmtree
-    try:
-        t = tree(os.path.join(work, "rm-old"))
-        buf = io.StringIO()
-        res, err = call(lambda: gp.remove_tree(t, out=buf))
-        check("an rmtree with onerror only (Python < 3.12): the read-only tree is removed, True, nothing printed",
-              lambda: err is None and res is True and not os.path.lexists(t) and buf.getvalue() == "", (res, err))
-        t2 = tree(os.path.join(work, "rm-old2"), ro_dir=False)
-        held2 = os.path.join(t2, "held.txt")
-        open(held2, "w").close()
-        buf = io.StringIO()
-        with held(held2):
-            res, err = call(lambda: gp.remove_tree(t2, out=buf))
-        check("... and what it can't remove is printed with the reason, False, no exception",
-              lambda: err is None and res is False and "held.txt" in buf.getvalue(), (res, err, buf.getvalue()))
-    finally:
-        gp.shutil.rmtree = real_rmtree
-    gp.remove_tree(os.path.join(work, "rm-old2"), out=buf)
+    # No check of an rmtree with onerror only (Python < 3.12) since port step 4 item 3: the
+    # shared helper chooses onexc or onerror by the Python version, not by a TypeError, and
+    # the bench tooling runs on python3.13 only (user, 2026-11-12).
     if os.name == "nt":
         deep = os.path.join(work, "deep")
         p = deep
@@ -383,8 +526,10 @@ def run(work):
     check("scratch() writes <run folder>.owner.json beside the folder",
           lambda: os.path.isfile(os.path.join(parent, os.path.basename(d) + ".owner.json")), d)
     check("... nothing inside the folder", lambda: os.listdir(d) == [], os.listdir(d))
-    check("... with this pid and its start time", lambda: o.get("pid") == os.getpid() and o.get("start") == me
-          and o.get("keep") is False, o)
+    check("... with this pid, its start time and this host, not kept", lambda: o.get("pid") == os.getpid()
+          and o.get("start") == me and o.get("host") == socket.gethostname() and not o.get("keep"), o)
+    check("gi_paths' OWNER_SUFFIX is the shared helper's",
+          lambda: gp.OWNER_SUFFIX == gp.scratch_core().OWNER_SUFFIX == ".owner.json")
     check("owner_state: running for this process", lambda: gp.owner_state(d) == "running", gp.owner_state(d))
     x = os.path.join(work, "own", "x")
     os.makedirs(os.path.dirname(x))
@@ -396,6 +541,9 @@ def run(work):
     check("kept: a kept one, even finished", lambda: gp.owner_state(x) == "kept")
     owner(gp, x, os.getpid(), None)
     check("running: a live pid whose start wasn't read", lambda: gp.owner_state(x) == "running")
+    owner(gp, x, p.pid, kid, host="another-host")
+    check("None: another host's owner file, even with a finished pid (not ours to judge)",
+          lambda: gp.owner_state(x) is None, gp.owner_state(x))
     with open(gp.owner_path(x), "w") as fh:
         fh.write('{"pid": ')
     check("None: an unreadable owner file", lambda: gp.owner_state(x) is None)
@@ -411,6 +559,8 @@ def run(work):
         mk[name] = tree(os.path.join(sib, name))
         owner(gp, mk[name], pid, start, keep)
     mk["noowner"] = tree(os.path.join(sib, "noowner"))
+    mk["otherhost"] = tree(os.path.join(sib, "otherhost"))
+    owner(gp, mk["otherhost"], p.pid, kid, host="another-host")
     mk["stuck"] = os.path.join(sib, "stuck")
     os.makedirs(os.path.join(mk["stuck"], "sub"))
     held_f = os.path.join(mk["stuck"], "sub", "held.txt")
@@ -423,12 +573,14 @@ def run(work):
     names = sorted(os.path.basename(r) for r in removed or [])
     check("remove_finished_siblings raises nothing", lambda: err is None, err)
     check("finished ones removed with their owner files (and an owner file with no folder)",
-          lambda: names == ["done", "orphan", "reused"] and gone(gp, mk["done"]) and gone(gp, mk["reused"])
+          lambda: names == ["done", "reused"] and gone(gp, mk["done"]) and gone(gp, mk["reused"])
           and not os.path.lexists(os.path.join(sib, "orphan.owner.json")), names)
-    check("running, kept and ownerless ones left", lambda: all(os.path.isdir(mk[k]) for k in ("live", "kept", "noowner"))
-          and os.path.exists(gp.owner_path(mk["live"])) and os.path.exists(gp.owner_path(mk["kept"])))
-    check("one it can't remove: printed, kept with its owner file",
-          lambda: "could not remove" in buf.getvalue() and os.path.exists(gp.owner_path(mk["stuck"])), buf.getvalue())
+    check("running, kept, ownerless and another host's ones left",
+          lambda: all(os.path.isdir(mk[k]) for k in ("live", "kept", "noowner", "otherhost"))
+          and all(os.path.exists(gp.owner_path(mk[k])) for k in ("live", "kept", "otherhost")))
+    check("one it can't remove: printed with the entry's path, kept with its owner file",
+          lambda: held_f in buf.getvalue() and os.path.isdir(mk["stuck"]) and os.path.exists(gp.owner_path(mk["stuck"])),
+          buf.getvalue())
     check("a parent that isn't there: nothing", lambda: gp.remove_finished_siblings(os.path.join(work, "none")) == [])
 
     print("\n=== scratch() removal at exit ===")
@@ -453,11 +605,16 @@ def run(work):
     check("the next run of the same name removes the killed run's folder, and its own at exit",
           lambda: r.returncode == 0 and gone(gp, killed) and gone(gp, r.stdout.strip()), r.stderr[-200:])
     check("... and leaves the kept one, and another name's", lambda: os.path.isdir(d) and os.path.isdir(other))
-    check("a run folder's name is <time>_<pid>", lambda: re.fullmatch(r"\d{8}T\d{6}_\d+", os.path.basename(killed)))
+    check("a run folder's name is <time>-<pid>-<hex6> (the shared helper's make())",
+          lambda: re.fullmatch(r"\d{8}T\d{6}-\d+-[0-9a-f]{6}", os.path.basename(killed)), killed)
 
     print("\n=== run_dir and finish ===")
     _, err = call(lambda: run_dir_checks(gp))
     check("the run_dir and finish checks ran to the end, raising nothing", lambda: err is None, err)
+
+    print("\n=== where the shared helper comes from ===")
+    _, err = call(lambda: source_checks(gp, work))
+    check("the source checks ran to the end, raising nothing", lambda: err is None, err)
 
     print("\nFAIL: %d check(s) failed" % len(FAILS) if FAILS else "\nPASS")
     return 1 if FAILS else 0

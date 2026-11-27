@@ -288,11 +288,14 @@ def part_gi_host(base, me):
         b = os.path.join(d, "pybin")
         os.makedirs(b)
         # diag_host.py dir: the pinned shared/diag (batch 2); answered, so the fake
-        # makes no folder named "dir" in the real tree's test/diag_host
-        script(os.path.join(b, "fakepy"), 'case "${@: -1}" in wican_ref.py) printf "%%s\\n" %s ;; '
+        # makes no folder named "dir" in the real tree's test/diag_host.
+        # gi_paths --stage-scratch is the real Python (port step 4 item 3): the copy ships its output.
+        script(os.path.join(b, "fakepy"), 'case "$*" in *--stage-scratch*) exec %s "$@" ;; esac\n'
+                                          'case "${@: -1}" in wican_ref.py) printf "%%s\\n" %s ;; '
                                           'dir) printf "%%s\\n" %s ;; '
                                           '*) mkdir -p "${@: -1}" ;; esac\n'
-               % (shlex_q(os.path.join(shared, "shared", "wican")),
+               % (shlex_q(sys.executable),
+                  shlex_q(os.path.join(shared, "shared", "wican")),
                   shlex_q(os.path.join(shared, "shared", "diag"))))
         return {"FW": FW, "LOCAL_PY": os.path.join(b, "fakepy"), "PY": "PYTHON"}
     res = run_twice(base, "gihost", [os.path.join(DIR, "gi_host_run.sh"), "--sched"], extra, me)

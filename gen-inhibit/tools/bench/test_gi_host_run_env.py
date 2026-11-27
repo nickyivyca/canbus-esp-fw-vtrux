@@ -37,6 +37,12 @@ REVERSE_IT_DIR they see:
      read-only, as a checkout is), the generated table and test/diag_host/; a second
      sync over the first exits 0 with the shipped files there, which it did not while
      tar carried the checkout's read-only mode across.
+ 10. The shared scratch helper (port step 4 item 3; the gen-inhibit reviewer's ruling,
+     2026-11-26): the sync ships tools/bench/gi_scratch_core.py, byte for byte the
+     pinned checkout's vtrux_bench/scratch.py (staged by the real gi_paths
+     --stage-scratch), and its record gi_scratch_core.json naming the pin and the
+     file's sha256; the copy's gi_paths, with no git (stood in for), removes a folder
+     through it.
 
 The sync is the real one, from this project folder, into the fake ssh; the export goes
 to the worktree's scratch/gi-host-export, which every gi_host_run.sh run replaces.
@@ -85,8 +91,10 @@ def setup(base):
     # and its stdin (the sync's archive) in <calls>.in/<n>
     script(os.path.join(b, "ssh"), 'd="$FAKE_CALLS"; n=$(ls "$d" | wc -l); printf %s "${@: -1}" > "$d/$n"; '
                                    'mkdir -p "$d.in"; cat > "$d.in/$n"; exit 0\n')
-    # LOCAL_PY: wican_ref.py answers the fake shared checkout; anything else is the gi_diag export
-    script(os.path.join(b, "fakepy"), 'case "${@: -1}" in wican_ref.py) printf "%s\\n" "$FAKE_WICAN" ;; '
+    # LOCAL_PY: wican_ref.py answers the fake shared checkout; gi_paths' --stage-scratch is the real
+    # one, run by this test's Python (item 10); anything else is the gi_diag export
+    script(os.path.join(b, "fakepy"), 'case "$*" in *--stage-scratch*) exec "$REAL_PY" "$@" ;; esac\n'
+                                      'case "${@: -1}" in wican_ref.py) printf "%s\\n" "$FAKE_WICAN" ;; '
                                       'dir) printf "%s\\n" "$FAKE_DIAG" ;; *) mkdir -p "${@: -1}" ;; esac\n')
     script(os.path.join(b, "make"), 'echo "make $*" >> "$FAKE_LOG"\n')
     for comp in ("wican", "can_port", "twai_port", "diag"):
@@ -113,6 +121,7 @@ def env_for(base, bindir, extra):
     # on madhouse-debian is the local mode (host_target.sh, 2026-11-12) and would write the real ~/gi_host
     e.update(PATH=fwd(bindir) + os.pathsep + os.environ.get("PATH", ""), MSYS_NO_PATHCONV="1",
              REMOTE="nowhere.invalid", LOCAL_PY="fakepy", PY="sigpy", FW=fwd(gi_paths.project_root()),
+             REAL_PY=sys.executable, PYTHONDONTWRITEBYTECODE="1",
              FAKE_WICAN=fwd(os.path.join(base, "sharedco", "shared", "wican")),
              FAKE_DIAG=fwd(os.path.join(base, "sharedco", "shared", "diag")))
     e.update(extra)
@@ -168,7 +177,9 @@ SHIPPED = ["test/gen_inhibit_shim/Makefile", "test/gen_inhibit_shim/mock/freerto
            "test/gen_inhibit_host/run_tests.py", "test/gen_inhibit_sched/Makefile", "test/build_checks/config_vs_spec.py",
            "shared/twai_port/README.md",
            # stage (b) batch 2: the pinned shared/diag, the generated table, the host helper
-           "shared/diag/README.md", "firmware/main/gi_diag_table.c", "test/diag_host/diag_host.py"]
+           "shared/diag/README.md", "firmware/main/gi_diag_table.c", "test/diag_host/diag_host.py",
+           # port step 4 item 3: the staged shared scratch helper and its record
+           "tools/bench/gi_scratch_core.py", "tools/bench/gi_scratch_core.json"]
 
 
 def msys(p):
@@ -193,6 +204,38 @@ def unpack(base, name, cmd, archive, seed):
     root = os.path.join(home, "gi_host")
     got = {fwd(os.path.relpath(os.path.join(d, f), root)) for d, _, fs in os.walk(root) for f in fs}
     return r.returncode, got
+
+
+def staged_checks(base, bench):
+    """10. The shared scratch helper (port step 4 item 3; gen-inhibit reviewer's ruling,
+    2026-11-26), in the remote copy after the first sync (bench: its tools/bench/)."""
+    import hashlib
+    import json
+    pin = gi_paths.core_pin().check()
+    with open(os.path.join(pin["folder"], "vtrux_bench", "scratch.py"), "rb") as fh:
+        want = fh.read()
+    p_core, p_rec = os.path.join(bench, "gi_scratch_core.py"), os.path.join(bench, "gi_scratch_core.json")
+    got = open(p_core, "rb").read() if os.path.isfile(p_core) else None
+    check("10 the copy's tools/bench/gi_scratch_core.py is the pinned checkout's vtrux_bench/scratch.py (%s), "
+          "byte for byte" % pin["tag"], got == want, got is None)
+    try:
+        rec = json.load(open(p_rec, encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        rec = repr(e)
+    check("10 ... and its record names the pin and the file's sha256",
+          isinstance(rec, dict) and rec.get("tag") == pin["tag"] and rec.get("commit") == pin["commit"]
+          and rec.get("sha256") == hashlib.sha256(want).hexdigest(), rec)
+    gone = os.path.join(base, "rm-through-staged")
+    os.makedirs(os.path.join(gone, "sub"))
+    code = ("import os, sys, gi_paths; gi_paths.IN_WORKTREE = False; S = gi_paths.scratch_core(); "
+            "print(os.path.basename(S.__file__)); print(gi_paths.remove_tree(sys.argv[1]))")
+    e = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH",)}
+    r = subprocess.run([sys.executable, "-B", "-c", code, gone], cwd=bench, capture_output=True, text=True,
+                       env=dict(e, PYTHONDONTWRITEBYTECODE="1", REVERSE_IT_DIR=""), timeout=60) \
+        if os.path.isdir(bench) else None
+    check("10 ... and the copy's gi_paths, with no git (stood in for), removes a folder through it",
+          r is not None and r.returncode == 0 and r.stdout.split() == ["gi_scratch_core.py", "True"]
+          and not os.path.lexists(gone), r and (r.returncode, r.stdout[-200:], r.stderr[-300:]))
 
 
 def checks():
@@ -268,6 +311,7 @@ def checks():
                   (r9.returncode, r9.stderr[-200:], [p for p in SHIPPED if p not in got9]))
         check("8 the first sync, into an empty remote: exit 0, the shipped files there",
               rc == 0 and [p for p in SHIPPED if p not in got] == [], (rc, [p for p in SHIPPED if p not in got]))
+        staged_checks(base, os.path.join(base, "rhome8b", "gi_host", "tools", "bench"))
     finally:
         for p in (os.path.join(base, "sharedco", "shared", "diag"),
                   os.path.join(base, "sharedco", "shared", "diag", "README.md")):
@@ -309,6 +353,11 @@ MUTANTS = [
     ("the host folder's build outputs dropped too", "-maxdepth 1 -type f \\( -name '*.py'", "-maxdepth 1 -type f \\( -name '*'"),
     ("no folders made for a first sync", 'STALE="mkdir -p ~/$DEST/test/gen_inhibit_shim ~/$DEST/test/gen_inhibit_host"',
      'STALE="true"'),
+    # port step 4 item 3: the staged shared scratch helper
+    ("the shared scratch helper not shipped",
+     '    -C "$EXPORT_PARENT/core" tools/bench/gi_scratch_core.py tools/bench/gi_scratch_core.json \\\n', ""),
+    ("the shared scratch helper shipped without its record",
+     " tools/bench/gi_scratch_core.py tools/bench/gi_scratch_core.json \\", " tools/bench/gi_scratch_core.py \\"),
 ]
 
 

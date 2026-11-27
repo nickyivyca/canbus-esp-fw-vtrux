@@ -26,6 +26,7 @@ import contextlib
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -71,8 +72,11 @@ def mk(path, age_s=7200, files=2):
 
 
 def owner(d, pid, start, keep=False):
+    """An owner file in the shared helper's form (port step 4 item 3: pid, start, host,
+    platform)."""
     with open(gi_paths.owner_path(d), "w", encoding="utf-8") as fh:
-        json.dump({"pid": pid, "start": start, "made": "x", "keep": keep}, fh)
+        json.dump({"pid": pid, "start": start, "made": "x", "keep": keep,
+                   "host": socket.gethostname(), "platform": sys.platform}, fh)
 
 
 def snapshot(top):

@@ -10343,6 +10343,9 @@ from `3d9ab7cc`: `ff2e2531`, then two merges of gen-inhibit/main (`f1c3fe77`, an
   change only F2's three lines of text: `tools/bench/README.md` and the docstrings of
   `interlock_bench.py` and `interlock_judge.py`. Item 3's `8eb92cdb`, after the stack tip,
   changes only test files. No code that a suite check runs changed after the run.
+  Correction, 2026-11-27: item 3's `8ff2429c` then changed one test in
+  `baseline_host_run.sh`, which H runs. For `cca06f36`, the commit H builds, the old and
+  the new test give the same result (item 3's entry).
 - **Code.** The images of the full run on `cca06f36` above, unchanged: `gi_images` and
   `gi_prod_dir` at `cca06f36`, clean, the same image hashes.
 - **The emulated suite:** `gen-inhibit-emulated_20261126T040520_c878` (2026-11-26
@@ -10429,6 +10432,102 @@ and the entry's merge after the run).
     2's entry). 133 of 135 test files exit 0. `bench/test_only_inert.py` exits 2, as
     before. `test_gi_vbus.py` exits 1 only in the set, from the tester's scheduling, and
     passes alone. The 57 mutant files exit 0.
+
+**Port step 4 item 3: `gi_paths`' scratch helpers on shared/bench's
+`vtrux_bench/scratch.py`, and the shared/bench pin moved from `2026.11.23.5` to
+`2026.11.26` -- tester, 2026-11-26 and 2026-11-27, madhouse-debian. Result: accepted by
+the stacked run on the stack tip `6b944055` (items 2, 4 and 3; see item 2's entry above).
+The whole tools test set on the stack tip found six test files still on the old scratch
+layout, all fixed in `8eb92cdb` (test files only). The whole set on `d9c087b5` found a
+race in `baseline_host_run.sh`'s stage of the scratch helper, fixed in `8ff2429c`.** The
+gen-inhibit reviewer's batch of
+2026-11-25 (port plan, order of work step 4) and its ruling of 2026-11-26 on copies with no
+git (option a). The product code did not change. On `gen-inhibit/tester/scratch-shared`,
+from the merge `30f8f6bf`: `bbedbdbb`, `7c7a0027`, `c83cd484`, `7a671ab7`, the merge of item
+4 (`6b944055`, the stack tip as run), then `8eb92cdb`, merges after the run (`d9c087b5`
+and the entries' merge) and `8ff2429c`.
+- **The pin move** (`bbedbdbb`). shared/bench `2026.11.23.5` (commit `2a7ab8be`, digest
+  `c7c0f913...`) to `2026.11.26` (commit `2986c5e0`, digest `720d37f5...`). Between the two
+  tags, shared/bench changes only `scratch.py`, its test and its README: `remove()` changes
+  no mode outside the path it is given and never changes the mode of a link. The digest
+  from `gi_core_pin.py entry` is the same as `vtrux_tools.py`'s digest over the checkout
+  `../shared-2026.11.26/`. Every record of the stacked run names this tag in `code.core`.
+- **The helpers** (`7c7a0027`). `gi_paths` keeps gen-inhibit's layout and names
+  (`scratch`, `run_dir`, `finish`, `remove_tree`, `owner_state`,
+  `remove_finished_siblings`) on the shared helper's `make`, `remove`, `keep`, `state` and
+  `prune`. Run folder names are now `<time>-<pid>-<hex6>`. `scratch_sweep.py` no longer
+  calls the removed `_remove_owner`.
+- **Copies with no git** (the reviewer's ruling of 2026-11-26, option a):
+  - Each copy records the sha256 of the staged `scratch.py`: `gi_paths.py
+    --stage-scratch DEST [--at COMMIT]` writes `gi_scratch_core.py` and its record
+    `gi_scratch_core.json`.
+  - In a copy, `gi_paths` checks the staged file against its record before it loads it,
+    and refuses on a mismatch or a missing record. In a git worktree, `gi_paths` takes the
+    helper only through `gi_core_pin.py` (R23's check of `../shared-<tag>/`), never a
+    staged copy.
+  - The copies that load `gi_paths` are H's `~/gi_baseline_<C>`, staged by
+    `baseline_host_run.sh` for a commit whose `gi_paths` names the record, and
+    `gi_host_run.sh`'s `~/gi_host`. B15host's copy holds no `gi_paths`. The tester's
+    question of 2026-11-26 named B15host by mistake; the ruling was applied to these two
+    copies.
+  - In `c878`, H builds `cca06f36`, whose `gi_paths` names no record, so H's copy used that
+    commit's own `gi_paths`. The staged path is shown by the tests below, not by a suite
+    run.
+- **Can-fails for the copies,** each a check that fails on its mutant:
+  - a changed staged file is refused (`test_gi_scratch.py` section 7);
+  - a staged file with no record is refused (`c83cd484`, with its mutant);
+  - a worktree with a staged file present does not use it (`test_gi_scratch.py` section
+    7);
+  - the copies that `baseline_host_run.sh` and `gi_host_run.sh` make hold the staged file
+    and its record (`test_baseline_host_run.py`, `test_gi_host_run_env.py` item 10).
+- **The harness's own tests** on `7a671ab7`:
+  - `test_gi_scratch_mutants.py`: 26 of 26 killed, the control passing. Two mutants first
+    crashed the test instead of failing a check; `7a671ab7` makes the test stop with a
+    FAIL when the shared helper does not load.
+  - `test_baseline_host_run.py --mutants`: 46 of 46, the control passing.
+    `test_gi_host_run_env.py --mutants`: 23 of 23. `test_scratch_sweep_mutants.py`: 17 of
+    17, the control passing.
+  - The whole tools test set on `6b944055` (build.slice): 131 of 135 test files exit 0.
+    `bench/test_only_inert.py` exits 2, as before, and `test_gi_vbus.py` exits 1 from the
+    tester's scheduling (item 2's entry). Two defects of the change:
+    `bench/test_gi_paths.py` (its folder-name pattern was still `<time>_<pid>`) and
+    `bench/test_host_target.py` (its fake `LOCAL_PY` did not stage the helper, so tar
+    could not find `gi_scratch_core.py`). 53 of the 57 mutant files exit 0. The controls
+    of the other 4 failed, because their copies lacked `gi_core_pin.py` beside
+    `gi_paths.py`: `test_bench_build_mutants`, `test_gi_paths_mutants` (also 1 ERROR: the
+    old text of its "no per-run part" mutant was gone), `test_jammer_witnesses_mutants`
+    and `test_serial_noreset_mutants`.
+  - Fixed in `8eb92cdb`, test files only: `test_gi_paths.py` and `test_host_target.py` exit
+    0. The four mutant files: 17 of 17, 28 of 28 (1 is skipped off Windows), 92 of 92 and
+    12 of 12 killed, each control passing.
+  - The whole tools test set on `d9c087b5` (the stack after `8eb92cdb` and the merge of
+    gen-inhibit/main, build.slice): 132 of 135 test files exit 0, and the 57 mutant files
+    exit 0. `bench/test_only_inert.py` exits 2, as before. `test_gi_vbus.py` exits 1 on
+    its two "network counters flat" checks: the LAN card's background moved 1573-3500
+    packets per second over its idle windows, too much to tell a leak, so the check
+    refused. At about 08:10 on 2026-11-27 the card sent 5150 packets per second: a TLS
+    upload over TCP, with no multicast. Its frame checks on the segments passed.
+  - A defect of the change: `bench/test_baseline_host_run.py` failed 3 checks. H's copy
+    of HEAD lacked the staged `gi_scratch_core.py` and its record. It failed in 3 of 11
+    runs alone, with or without the set's environment. `baseline_host_run.sh` tested for
+    the record with `git show <C>:.../gi_paths.py | grep -q gi_scratch_core.json` under
+    `pipefail`. `grep -q` exits at the first match, and `git show` then dies of SIGPIPE
+    (exit 141). In build.slice that pipe was false in 114 of 500 tries, so the stage was
+    skipped. On `cca06f36`'s `gi_paths.py`, which names no record, it was false with no
+    SIGPIPE in 500 of 500 tries, as it must be. So H in `c878` was not affected.
+  - Fixed in `8ff2429c`: the test reads the `gi_paths.py` just staged, with no pipe.
+    `test_baseline_host_run.py` adds two checks with a `git` first on PATH that writes
+    `gi_paths.py` in two parts, with a 1 s pause after the first line that names the
+    record: the script runs to the end, and the copy holds both staged files. Can-fail:
+    the mutant with the old pipe fails the second check. 74 ok in each of 3 runs;
+    `--mutants` 47 of 47 killed, the control passing.
+  - The whole tools test set on `ac1d986f` (the stack after `8ff2429c` and this entry's
+    first commit, build.slice): 133 of 135 test files exit 0, and the 57 mutant files
+    exit 0. `bench/test_only_inert.py` exits 2, as before. `test_baseline_host_run.py`
+    exits 0. `test_gi_vbus.py` exits 1 on its two "network counters flat" checks: the LAN
+    card's background moved 2593-5257 packets per second over its idle windows, so the
+    check refused again. Run again alone at 12:46 on 2026-11-27, with the card at 23-70
+    packets per second: 59 pass, 0 fail.
 
 ## 13 Known not to be implemented
 

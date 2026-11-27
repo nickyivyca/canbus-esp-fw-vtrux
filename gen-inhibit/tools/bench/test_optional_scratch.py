@@ -7,7 +7,8 @@ what it wrote there.
 For each test in OPTIONAL: run it with no scratch folder (GI_KEEP_SCRATCH unset; the mutant
 runner test_raw_http_probe_mutants.py, also fixed that day, with one target); it must exit 0,
 and its gi_paths.scratch(<name>) run folder, <worktree>/scratch/gen-inhibit-tests/<name>/
-<time>_<pid>, and the owner file beside it must be gone, found by the child's pid.
+<time>-<pid>-<hex6> (<time>_<pid> before port step 4 item 3), and the owner file beside it
+must be gone, found by the child's pid.
 Can-fail: test_reply_golive_report.py run with GI_KEEP_SCRATCH=1 keeps its folder, and the
 same look must find it (then this test removes it).
 
@@ -15,6 +16,7 @@ same look must find it (then this test removes it).
                                                 # (py -3.14 -B on Windows)
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -53,13 +55,13 @@ def run(test, keep=False, args=()):
 
 
 def left(name, pid):
-    """What the run with this pid left in its scratch name's folder: entries named _<pid>."""
+    """What the run with this pid left in its scratch name's folder: entries named
+    <time>-<pid>-<hex6>, the shared helper's make() (port step 4 item 3), and their owner files."""
     d = os.path.join(gi_paths.worktree_of(HERE), "scratch", "gen-inhibit-tests", name)
     if not os.path.isdir(d):
         return []
-    tag = "_%d" % pid
-    return sorted(os.path.join(d, e) for e in os.listdir(d)
-                  if e.endswith(tag) or e.endswith(tag + gi_paths.OWNER_SUFFIX))
+    tag = re.compile(r"^\d{8}T\d{6}-%d-[0-9a-f]{6}(%s)?$" % (pid, re.escape(gi_paths.OWNER_SUFFIX)))
+    return sorted(os.path.join(d, e) for e in os.listdir(d) if tag.match(e))
 
 
 def main():

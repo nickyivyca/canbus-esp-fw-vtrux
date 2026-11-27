@@ -29,7 +29,8 @@ MUTANTS = [
     ("--apply counts no files", "sum(r[1] for r in removed)", "0"),
     ("--apply doesn't list what it left", '                print("  LEFT %s  [judged again: %s]" % (p, why), file=o)\n',
      "                pass\n"),
-    ("--apply leaves the owner file", "                    gi_paths._remove_owner(p)\n", ""),
+    # No "--apply leaves the owner file" since port step 4 item 3: gi_paths.remove_tree removes
+    # it with the folder (the shared helper's remove()), and test_gi_scratch checks that.
     ("file counts leave out subfolders", "                            stack.append(e.path)", "                            pass"),
     ("--out not written", '([open(a.out, "w", encoding="utf-8")] if a.out else [])', "[]"),
     ("the report leaves out the protected folders",
