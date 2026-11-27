@@ -64,8 +64,10 @@ typedef struct {
     can_port_state_t state;
     uint32_t tx_pending;        /* frames to transmit, the one in flight included */
     uint32_t rx_waiting;        /* frames received and not yet taken */
-    uint32_t tec;               /* transmit error counter (0 in listen-only) */
-    uint32_t rec;               /* receive error counter (0 in listen-only) */
+    uint32_t tec;               /* transmit error counter (0 in listen-only, but
+                                 * from the registers on a port with twai_port's
+                                 * kept-driver switch, T15) */
+    uint32_t rec;               /* receive error counter (as tec) */
     uint32_t rx_queue_len;      /* the receive queue's depth the port brings up with */
     bool bus_off;               /* inside a bus-off episode */
     /* Counts. */
@@ -96,6 +98,10 @@ typedef struct {
                                  * deliberate discard, not a loss */
     uint32_t rx_high_water;     /* the most frames seen waiting at once */
     uint32_t bring_ups;         /* successful bring-ups so far */
+    uint32_t tx_discarded_switch;   /* frames held at a kept-driver switch to
+                                     * listen-only, removed (twai_port T17),
+                                     * apart from tx_discarded_teardown and
+                                     * never also in tx_failed */
 } can_port_status_t;
 
 /*

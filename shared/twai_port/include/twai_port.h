@@ -48,6 +48,15 @@ typedef enum {
     TWAI_PORT_STEP_ALERTS,
 } twai_port_step_t;
 
+/*
+ * T17: one frame the kept-driver switch removed on its way into listen-only,
+ * passed to the project's switch_discard hook (below): the frame as the
+ * project sent it, and the tag it gave at twai_port_send_tagged() (0 for
+ * twai_port_send()).
+ */
+typedef void (*twai_port_discard_fn)(void *ctx, const twai_message_t *frame,
+                                     uint32_t tag);
+
 /* The acceptance filter of one install. */
 typedef struct {
     uint32_t acceptance_code;
@@ -83,7 +92,34 @@ typedef struct {
      */
     void (*install_hook)(void *ctx, twai_port_filter_t *filter);
     void *hook_ctx;
+    /*
+     * T14, THE KEPT-DRIVER SWITCH. False (the default): every mode change is
+     * T4's teardown and install. True: the driver is installed in normal mode
+     * (no-ACK self-test stays T4's), and twai_port_set_mode() between normal
+     * and listen-only keeps it installed and switches the controller through
+     * its registers (T14, T15, T17, T18); a `mode` of listen-only above is
+     * reached that way after the install. twai_port_setup() refuses it with
+     * ESP_ERR_NOT_SUPPORTED on a chip whose register file is not measured
+     * for it, and with ESP_ERR_INVALID_ARG when tx_queue_len + 1 is above
+     * TWAI_PORT_SWITCH_HELD_MAX. With it chosen, sends come from one task at
+     * a time, so the port's record of the frames sent is in the driver's
+     * order.
+     */
+    bool kept_driver_switch;
+    /*
+     * T17: called once for each frame the switch to listen-only removes, the
+     * frame in the transmit buffer first and then the queue in order, from
+     * the task that called twai_port_set_mode(), with no lock of the port
+     * held. NULL: the frames are still removed and counted
+     * (tx_discarded_switch). It must not call back into the port except
+     * twai_port_status(). Used only with kept_driver_switch.
+     */
+    twai_port_discard_fn switch_discard;
 } twai_port_config_t;
+
+/* T17: the most frames a kept-driver switch can hold (tx_queue_len + 1, the
+ * one in the transmit buffer included). */
+#define TWAI_PORT_SWITCH_HELD_MAX   64u
 
 /* Events the alert poll passes up (T5): bits, never counts. */
 #define TWAI_PORT_EV_TX_FAILED      (1u << 0)   /* held until taken */
@@ -139,9 +175,52 @@ twai_port_step_t twai_port_last_step(void);
  * next install if down; otherwise a teardown, then the mode recorded, then an
  * install. A refused teardown returns its error with the record and the
  * controller left in the old mode.
+ *
+ * With kept_driver_switch, a change between normal and listen-only while
+ * installed is the kept-driver switch instead (T14): the driver stays
+ * installed and no queue is discarded by the switch. To listen-only:
+ *   1. sends are refused from here, as tx_refused (T14);
+ *   2. THE PLACE FOR T16 (held, user 2026-11-27): no wait for the
+ *      inter-frame gap yet; the controller goes straight to reset mode, and
+ *      the report gives the status register as it went in;
+ *   3. reset mode; one more alert poll (T18);
+ *   4. the frames the driver holds are removed, each passed to
+ *      switch_discard and counted once in tx_discarded_switch, never also as
+ *      tx_failed (T17);
+ *   5. listen-only, REC written 128, read back (T15); out of reset mode.
+ * To normal: reset mode, normal, REC written 0, read back, out of reset mode.
+ * ESP_ERR_INVALID_STATE, with the record and the controller left in the old
+ * mode, when the driver is not running (bus-off or recovering). Each switch
+ * is reported by twai_port_last_switch().
  */
 esp_err_t twai_port_set_mode(can_port_mode_t mode);
 can_port_mode_t twai_port_mode(void);
+
+/* What the last kept-driver switch did (T14 to T18). */
+typedef struct {
+    uint32_t seq;               /* switches so far; 0: none yet */
+    can_port_mode_t to_mode;    /* normal or listen-only */
+    esp_err_t result;           /* what twai_port_set_mode() returned */
+    /* T16's place: the status register as reset mode was entered (TS, RS,
+     * TBS as the chip gives them), with no wait before it. */
+    uint32_t status_at_reset;
+    twai_port_buf_t buf_at_reset;   /* the transmit buffer then */
+    /* T17 */
+    uint32_t held;              /* frames removed and counted */
+    bool head_aborted;          /* the frame in the transmit buffer was aborted */
+    uint32_t abort_wait_us;     /* until the driver had let that frame go */
+    bool abort_timed_out;       /* it had not within the bound */
+    bool driver_tx_stuck;       /* afterwards the buffer read empty while the
+                                 * driver still counted a frame to transmit */
+    /* T15 */
+    uint32_t rec_written;       /* 128 into listen-only, 0 out of it */
+    uint32_t rec_read_back;     /* the register read after the write */
+    uint32_t tec_read_back;
+} twai_port_switch_report_t;
+
+/* The last kept-driver switch. ESP_ERR_INVALID_ARG for a NULL `out`;
+ * ESP_ERR_NOT_SUPPORTED, `out` untouched, if the port did not choose it. */
+esp_err_t twai_port_last_switch(twai_port_switch_report_t *out);
 
 /*
  * New timing, mode and filter, applied as a mode change is: nothing if they
@@ -161,6 +240,11 @@ esp_err_t twai_port_receive(twai_message_t *out, TickType_t wait);
  */
 esp_err_t twai_port_send(const twai_message_t *m, TickType_t wait);
 
+/* twai_port_send() with a tag the project chooses, which a kept-driver
+ * switch hands back with the frame if it removes it (T17). */
+esp_err_t twai_port_send_tagged(const twai_message_t *m, TickType_t wait,
+                                uint32_t tag);
+
 /*
  * The one alert reader (T5): read and fold the alerts, return the events
  * they raised. Non-blocking; callable before the project's loop starts. With
@@ -177,7 +261,8 @@ bool twai_port_take_tx_failed(void);
 void twai_port_service(void);
 
 /* One status read (T7). Not installed is not an error: the levels read down
- * and the counts are as they stand. */
+ * and the counts are as they stand. With kept_driver_switch, tec and rec are
+ * read from the controller's registers in every mode (T15). */
 esp_err_t twai_port_status(can_port_status_t *out);
 
 /* Discard the frames received and not yet taken. */
