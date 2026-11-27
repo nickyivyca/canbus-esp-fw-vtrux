@@ -17,6 +17,7 @@
 #include "soc/soc.h"
 #include "soc/system_reg.h"
 #include "esp_rom_sys.h"
+#include "esp_cpu.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -142,6 +143,19 @@ static bool     g_clk_on, g_rst_held;
 static bool     g_rm_ll;
 static int64_t  g_rx_busy_until;
 
+/* The register-level switch (twai_port T14-T18): the mode register, which
+ * the driver writes at install, start, stop and bus-off and code outside it
+ * may write in reset mode; the transmit request of the frame in the buffer;
+ * the driver's TX-buffer-occupied flag left set over a buffer the hardware
+ * freed (TWAI_FAKE_RESET_TX_RELEASE); an abort pending on a frame being
+ * retransmitted; and the attempts of that frame so far. */
+static twai_mode_t g_hw_mode;
+static bool     g_buf_tr;
+static bool     g_phantom;
+static bool     g_abort_pend;
+static int64_t  g_attempts;
+static uint32_t g_buf_loads;    /* frames put in the buffer, ever */
+
 /* Knobs. */
 static twai_fake_tx_timing_t g_timing;
 static int64_t  g_air_us;
@@ -159,6 +173,9 @@ static bool     g_fail_start, g_fail_reconf;
 static esp_err_t g_fail_install_rc, g_fail_start_rc;
 static int      g_rx_err_n;
 static bool     g_misreport;
+static twai_fake_reset_tx_t      g_reset_tx;
+static twai_fake_abort_report_t  g_abort_report;
+static bool     g_ack_errors;
 
 /* Logs and counts. */
 static flog_t   g_sent, g_wire;
@@ -182,8 +199,24 @@ static int      g_n_inst;
 static int      g_ll_aborts, g_ll_aborts_tx, g_ll_removed, g_ll_unmeasured;
 static int      g_ll_rm_entries, g_ll_unclocked;
 static uint32_t g_cut_reset, g_reg_reads, g_reg_unknown;
+static int      g_ll_outside_reset, g_ll_exit_misused, g_ll_rec_reads;
+static uint32_t g_active_flags, g_reset_kept, g_reset_released, g_aborted_attempts;
+#define RECLOGMAX 64
+static uint32_t g_rec_log[RECLOGMAX];
+static int      g_n_rec_log;
 static uint32_t g_delay_calls;
 static int64_t  g_delay_total;
+
+/* Two cores: the one the code under test runs on (wiring), which are
+ * stalled, and the sender on the other one. */
+static int      g_core;
+static bool     g_stalled[2];
+static int      g_stall_calls, g_unstall_calls, g_stall_misused;
+static int      g_ll_calls, g_ll_at_stall = -1;
+static bool     g_oc_on, g_oc_busy;
+static twai_message_t g_oc_msg;
+static int64_t  g_oc_every, g_oc_next;
+static uint32_t g_oc_sent;
 
 /* ---------------------------------------------------------------- time -- */
 
@@ -194,10 +227,13 @@ int64_t twai_fake_now(void)
 
 static void catch_up(void);
 
+static void other_core_run(void);
+
 void twai_fake_advance(int64_t us)
 {
     if (g_clock == NULL && us > 0) { g_own_now += us; }
     catch_up();
+    other_core_run();
 }
 
 void twai_fake_poll(void) { catch_up(); }
@@ -330,13 +366,25 @@ static void drop_id(uint32_t id)
     g_drop_ids[g_n_drop++] = id;
 }
 
+/* A frame into the transmit buffer, with its transmit request set
+ * (twai_hal_set_tx_buffer_and_transmit). */
+static void put_in_buf(const qframe_t *q, int64_t start)
+{
+    g_buf = *q;
+    g_buf_full = true;
+    g_buf_start = start;
+    g_buf_tr = true;
+    g_abort_pend = false;
+    g_attempts = 0;
+    g_buf_loads++;
+}
+
 static void load_next(int64_t start)
 {
     if (g_txq.n > 0)
     {
-        g_buf = fifo_pop(&g_txq);
-        g_buf_full = true;
-        g_buf_start = start;
+        const qframe_t q = fifo_pop(&g_txq);
+        put_in_buf(&q, start);
     }
     else
     {
@@ -395,19 +443,73 @@ static void complete_buf(int64_t done, bool failed)
     }
 }
 
+/* Is the frame in the buffer on its way to the wire? Not without its
+ * transmit request (cancelled by reset mode, TWAI_FAKE_RESET_TX_KEEP), not
+ * stalled, and not while the mode register says listen-only, where the
+ * controller sends nothing (twai_ll.h, twai_ll_set_mode). */
+static bool buf_may_send(void)
+{
+    return g_buf_tr && !g_buf.stalled && g_hw_mode != TWAI_MODE_LISTEN_ONLY;
+}
+
 /* Can the frame in the buffer finish? A stalled frame never starts; in
  * normal mode with nobody ACKing, a frame is retransmitted for ever unless
- * single-shot, when its one attempt fails. */
+ * single-shot, when its one attempt fails. The mode is the mode register's:
+ * no-ACK self-test needs no ACK. */
 static bool buf_can_finish(bool *failed)
 {
     *failed = g_buf.fail;
-    if (g_buf.stalled) { return false; }
-    if (g_mode == TWAI_MODE_NORMAL && !g_acked)
+    if (!buf_may_send()) { return false; }
+    if (g_hw_mode == TWAI_MODE_NORMAL && !g_acked)
     {
         if (!g_buf.f.ss) { return false; }
         *failed = true;
     }
     return true;
+}
+
+static void bus_errors(uint32_t n);
+static void abort_remove(int64_t t);
+
+/* A frame retransmitted for want of an ACK, each attempt one air time,
+ * back to back from g_buf_start. With ACK errors on, every attempt that
+ * ends raises a bus error. An abort issued during an attempt stops the
+ * retransmission: the frame ends with that attempt, never on the wire, and
+ * the driver reports it as the knob says (TWAI_FAKE_ABORT_*). */
+static bool unacked_retrying(void)
+{
+    return g_buf_full && buf_may_send() && g_hw_mode == TWAI_MODE_NORMAL && !g_acked && !g_buf.f.ss;
+}
+
+static void end_aborted_attempt(int64_t done)
+{
+    g_aborted_attempts++;
+    if (g_abort_report == TWAI_FAKE_ABORT_REPORTS_FAILED) { complete_buf(done, true); }
+    else { abort_remove(done); }
+}
+
+static void retry_attempts(int64_t t, bool ignore_air)
+{
+    int64_t air = air_for(&g_buf.f);
+    if (air <= 0) { air = 1; }
+    if (ignore_air)
+    {
+        if (!g_abort_pend) { return; }
+        if (g_ack_errors) { bus_errors(1); }
+        end_aborted_attempt(t);
+        return;
+    }
+    while (unacked_retrying() && g_buf_start + (g_attempts + 1) * air <= t)
+    {
+        const int64_t end = g_buf_start + (g_attempts + 1) * air;
+        g_attempts++;
+        if (g_ack_errors) { bus_errors(1); }
+        if (g_abort_pend)
+        {
+            end_aborted_attempt(end);
+            return;
+        }
+    }
 }
 
 /* Run the transmit side up to `t` (TIMED), or as far as it can go now
@@ -418,9 +520,20 @@ static void tx_advance(int64_t t, bool ignore_air)
     {
         bool failed;
         int64_t done;
-        if (!buf_can_finish(&failed)) { return; }
+        if (!buf_can_finish(&failed))
+        {
+            const uint32_t loads = g_buf_loads;
+            if (!unacked_retrying()) { return; }
+            retry_attempts(t, ignore_air);
+            /* Go on only if the aborted frame left (the loop ends if the
+             * buffer is empty, or runs the next one); a frame still
+             * retrying waits for the clock. */
+            if (g_buf_full && g_buf_loads == loads) { return; }
+            continue;
+        }
         done = ignore_air ? t : g_buf_start + air_for(&g_buf.f);
         if (!ignore_air && t < done) { return; }
+        if (failed && g_ack_errors && g_hw_mode == TWAI_MODE_NORMAL && !g_acked) { bus_errors(1); }
         complete_buf(done, failed);
     }
 }
@@ -448,6 +561,7 @@ static void enter_bus_off(void)
 {
     if (!g_installed || g_state != TWAI_STATE_RUNNING || g_rm_ll) { return; }
     g_state = TWAI_STATE_BUS_OFF;
+    g_hw_mode = TWAI_MODE_LISTEN_ONLY;      /* twai_hal_iram.c, twai_hal_get_events */
     raise_alert(TWAI_ALERT_BUS_OFF);
     if (g_inflight_fails && g_buf_full)
     {
@@ -461,6 +575,10 @@ static void enter_bus_off(void)
 /* Throw away every frame in the controller, counting them in `*count`. */
 static void discard_tx(uint32_t *count, bool record_ids, bool cut_head)
 {
+    /* The driver's count and its TX-buffer-occupied flag reset with the
+     * queue (twai.c:613, :645, :826), a flag left over a freed buffer too. */
+    g_phantom = false;
+    g_abort_pend = false;
     if (g_buf_full)
     {
         if (record_ids) { drop_id(g_buf.f.id); }
@@ -543,6 +661,11 @@ esp_err_t twai_driver_install(const twai_general_config_t *g,
     g_rst_held = false;
     g_rm_ll = false;
     g_rx_busy_until = 0;
+    /* twai_hal.c:34-37, twai_hal_init: listen-only to freeze REC, both
+     * error counters 0. */
+    g_hw_mode = TWAI_MODE_LISTEN_ONLY;
+    g_tec = g_rec = 0;
+    g_phantom = false;
     g_install_n++;
     if (g_n_inst < INSTLOGMAX)
     {
@@ -585,6 +708,12 @@ esp_err_t twai_start(void)
     /* twai.c:605-611: both queues reset. */
     discard_rx();
     discard_tx(&g_disc_start, false, false);
+    /* twai_hal.c:73-87, twai_hal_start: the install's mode, TEC 0, and REC
+     * 128 in listen-only (CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM, on for
+     * the C3 and the S3), else 0. */
+    g_hw_mode = g_mode;
+    g_tec = 0;
+    g_rec = g_mode == TWAI_MODE_LISTEN_ONLY ? 128u : 0u;
     g_state = TWAI_STATE_RUNNING;
     g_rm_ll = false;                        /* twai_hal.c:91, out of reset mode */
     return ESP_OK;
@@ -602,6 +731,7 @@ esp_err_t twai_stop(void)
     cut = g_timing == TWAI_FAKE_TX_TIMED && g_buf_full && !g_buf.stalled
           && twai_fake_now() >= g_buf_start;
     discard_tx(&g_disc_stop, true, cut);
+    g_hw_mode = TWAI_MODE_LISTEN_ONLY;      /* twai_hal.c:98, REC frozen */
     g_state = TWAI_STATE_STOPPED;
     return ESP_OK;
 }
@@ -652,7 +782,9 @@ static esp_err_t transmit(const twai_message_t *m, TickType_t ticks, bool foreig
     q.f.self = m->self != 0;
     q.f.foreign = foreign;
 
-    if (g_buf_full)
+    /* The driver goes by its own count (twai.c:682), so a flag left set
+     * over a freed buffer (g_phantom) sends every frame to the queue. */
+    if (g_buf_full || g_phantom)
     {
         /* twai.c:688-718: into the queue, waiting for space. */
         if (g_txq.cap == 0) { return ESP_FAIL; }
@@ -668,7 +800,7 @@ static esp_err_t transmit(const twai_message_t *m, TickType_t ticks, bool foreig
                 }
                 catch_up();
                 if (!g_installed || g_state != TWAI_STATE_RUNNING) { return wrong_state(); }
-                if (g_txq.n < g_txq.cap || !g_buf_full) { break; }
+                if (g_txq.n < g_txq.cap || !(g_buf_full || g_phantom)) { break; }
             }
         }
     }
@@ -678,12 +810,10 @@ static esp_err_t transmit(const twai_message_t *m, TickType_t ticks, bool foreig
     if (q.fail) { g_failed_rule++; }
     q.sent_idx = g_sent.n;
     flog_push(&g_sent, &q.f);
-    if (!g_buf_full)
+    if (!g_buf_full && !g_phantom)
     {
         /* twai.c:680: nothing waiting, so straight into the buffer. */
-        g_buf = q;
-        g_buf_full = true;
-        g_buf_start = q.f.t_queued;
+        put_in_buf(&q, q.f.t_queued);
     }
     else
     {
@@ -819,7 +949,7 @@ static void fill_status(twai_status_info_t *s)
         s->tx_error_counter = g_tec;
         s->rx_error_counter = g_rec;
     }
-    s->msgs_to_tx = g_misreport ? 0u : (uint32_t)((g_buf_full ? 1 : 0) + g_txq.n);
+    s->msgs_to_tx = g_misreport ? 0u : (uint32_t)((g_buf_full || g_phantom ? 1 : 0) + g_txq.n);
     s->msgs_to_rx = (uint32_t)g_rxq.n;
     s->tx_failed_count = g_tx_failed;
     s->rx_missed_count = g_rx_missed;
@@ -903,7 +1033,7 @@ static bool in_reset_mode(void)
 
 static bool buf_transmitting(void)
 {
-    return g_buf_full && !g_buf.stalled && g_installed && !g_rm_ll
+    return g_buf_full && buf_may_send() && g_installed && !g_rm_ll
            && g_state == TWAI_STATE_RUNNING && twai_fake_now() >= g_buf_start;
 }
 
@@ -917,6 +1047,7 @@ static bool receiving(void)
  * for another controller, or with the clock off or the reset held. */
 static bool ll_usable(twai_dev_t *hw)
 {
+    g_ll_calls++;
     if (g_chip != TWAI_FAKE_CHIP_C3) { g_ll_unmeasured++; }
     catch_up();
     if (hw != twai_fake_ll_hw(0)) { return false; }
@@ -949,6 +1080,19 @@ bool twai_ll_is_in_reset_mode(twai_dev_t *hw)
     return in_reset_mode();
 }
 
+/*
+ * Reset mode entered from outside the driver. A frame in the buffer, on
+ * the wire or awaiting arbitration, then meets one of three behaviours, as
+ * the knob says (twai_fake_set_reset_tx); none is measured (twai_port T19):
+ *   KEEP     it stays in the buffer with its transmit request cancelled:
+ *            never sent, the buffer occupied, until an abort removes it or
+ *            the driver discards it (the default);
+ *   RESUME   its request survives: it is sent once reset mode is left;
+ *   RELEASE  the hardware frees the buffer with no transmit interrupt, so
+ *            the driver's TX-buffer-occupied flag and its count stay set,
+ *            and every later send queues behind a frame that is not there
+ *            until the driver discards its queue.
+ */
 void twai_ll_enter_reset_mode(twai_dev_t *hw)
 {
     if (!ll_usable(hw)) { return; }
@@ -957,13 +1101,99 @@ void twai_ll_enter_reset_mode(twai_dev_t *hw)
     g_rm_ll = true;
     g_rx_busy_until = 0;
     g_ll_rm_entries++;
+    g_abort_pend = false;
+    if (!g_buf_full) { return; }
+    if (g_reset_tx == TWAI_FAKE_RESET_TX_RELEASE)
+    {
+        g_buf_full = false;
+        g_phantom = true;
+        g_reset_released++;
+    }
+    else if (g_reset_tx == TWAI_FAKE_RESET_TX_KEEP)
+    {
+        g_buf_tr = false;
+        g_reset_kept++;
+    }
+}
+
+/* Out of a reset mode this file's twai_ll_enter_reset_mode() entered; the
+ * controller takes part in the bus again in the mode register's mode. Out
+ * of one the driver keeps (stopped, bus-off, recovered, not installed) is a
+ * write the driver does not expect: counted, and the model left as it is. */
+void twai_ll_exit_reset_mode(twai_dev_t *hw)
+{
+    if (!ll_usable(hw)) { return; }
+    if (!g_rm_ll)
+    {
+        if (in_reset_mode()) { g_ll_exit_misused++; }
+        return;
+    }
+    g_rm_ll = false;
+    if (g_buf_full && g_buf_tr)
+    {
+        g_buf_start = twai_fake_now();      /* RESUME: a fresh attempt */
+        g_attempts = 0;
+    }
+}
+
+/* The mode register and the error counters are written only in reset mode
+ * (twai_ll.h: "Must be called in reset mode"); a write outside it is
+ * counted and does nothing (assumed). */
+static bool ll_writable(twai_dev_t *hw)
+{
+    if (!ll_usable(hw)) { return false; }
+    if (!in_reset_mode())
+    {
+        g_ll_outside_reset++;
+        return false;
+    }
+    return true;
+}
+
+void twai_ll_set_mode(twai_dev_t *hw, twai_mode_t mode)
+{
+    if (ll_writable(hw)) { g_hw_mode = mode; }
+}
+
+void twai_ll_set_rec(twai_dev_t *hw, uint32_t rec)
+{
+    if (!ll_writable(hw)) { return; }
+    g_rec = rec & 0xFFu;
+    if (g_n_rec_log < RECLOGMAX) { g_rec_log[g_n_rec_log++] = g_rec; }
+}
+
+void twai_ll_set_tec(twai_dev_t *hw, uint32_t tec)
+{
+    if (ll_writable(hw)) { g_tec = tec & 0xFFu; }
 }
 
 /* The counters themselves, frozen or not: the driver's status reads 0 in
  * listen-only (fill_status), the registers do not. */
 uint32_t twai_ll_get_tec(twai_dev_t *hw) { return ll_usable(hw) ? g_tec : 0u; }
-uint32_t twai_ll_get_rec(twai_dev_t *hw) { return ll_usable(hw) ? g_rec : 0u; }
+uint32_t twai_ll_get_rec(twai_dev_t *hw)
+{
+    if (!ll_usable(hw)) { return 0u; }
+    g_ll_rec_reads++;
+    return g_rec;
+}
 
+/* Removed from the buffer by an abort: the sent log keeps t_done -1, the
+ * wire log is not touched, and the ISR handles it as a completion, which
+ * reads TCS set (twai_ll.h, twai_ll_set_cmd_abort_tx) and so reports
+ * TX_SUCCESS (twai.c:183-206). */
+static void abort_remove(int64_t t)
+{
+    g_buf_full = false;
+    g_abort_pend = false;
+    g_ll_removed++;
+    raise_alert(TWAI_ALERT_TX_SUCCESS);
+    load_next(t);
+}
+
+/* Awaiting arbitration, or held without its request (KEEP, or listen-only
+ * in the mode register): removed. Being transmitted: not stopped, but not
+ * retransmitted either (twai_ll.h), which matters only to a frame nobody
+ * ACKs: it ends with its attempt (retry_attempts). */
 void twai_ll_set_cmd_abort_tx(twai_dev_t *hw)
 {
     if (!ll_usable(hw)) { return; }
@@ -972,20 +1202,18 @@ void twai_ll_set_cmd_abort_tx(twai_dev_t *hw)
     if (buf_transmitting())
     {
         g_ll_aborts_tx++;
+        g_abort_pend = true;
+        if (g_timing == TWAI_FAKE_TX_INSTANT) { tx_advance(twai_fake_now(), true); }
         return;
     }
-    /* Removed: the sent log keeps t_done -1, the wire log is not touched,
-     * and the ISR handles it as a completion (twai.c:183-206). */
-    g_buf_full = false;
-    g_ll_removed++;
-    raise_alert(TWAI_ALERT_TX_SUCCESS);
-    load_next(twai_fake_now());
+    abort_remove(twai_fake_now());
 }
 
 /* REG_READ (soc/soc.h): the TWAI's bit of the two system registers, 0 for
  * their other bits; any other address is counted and reads 0. */
 uint32_t twai_fake_reg_read(uint32_t addr)
 {
+    g_ll_calls++;
     if (g_chip != TWAI_FAKE_CHIP_C3) { g_ll_unmeasured++; }
     if (addr == (uint32_t)SYSTEM_PERIP_CLK_EN0_REG)
     {
@@ -1017,7 +1245,67 @@ void esp_rom_delay_us(uint32_t us)
         while (twai_fake_now() < deadline && g_wait(deadline, g_wait_ctx)) { }
     }
     catch_up();
+    other_core_run();
 }
+
+/* ------------------------------------------------------------ two cores -- */
+
+static int other_core(void) { return g_core == 0 ? 1 : 0; }
+
+/* The other core's sender: every frame due by now, while that core runs. */
+static void other_core_run(void)
+{
+    const int64_t now = twai_fake_now();
+    if (!g_oc_on || g_oc_busy || g_chip == TWAI_FAKE_CHIP_C3) { return; }
+    g_oc_busy = true;
+    while (!g_stalled[other_core()] && g_oc_next <= now)
+    {
+        g_oc_next += g_oc_every;
+        if (transmit(&g_oc_msg, 0, true) == ESP_OK) { g_oc_sent++; }
+    }
+    g_oc_busy = false;
+}
+
+void esp_cpu_stall(int core_id)
+{
+    g_stall_calls++;
+    if (g_chip == TWAI_FAKE_CHIP_C3 || core_id != other_core())
+    {
+        g_stall_misused++;
+        return;
+    }
+    if (!g_stalled[core_id] && g_ll_at_stall < 0) { g_ll_at_stall = g_ll_calls; }
+    g_stalled[core_id] = true;
+}
+
+void esp_cpu_unstall(int core_id)
+{
+    g_unstall_calls++;
+    if (core_id == 0 || core_id == 1) { g_stalled[core_id] = false; }
+}
+
+int esp_cpu_get_core_id(void) { return g_core; }
+
+void twai_fake_set_core(int core) { g_core = core == 1 ? 1 : 0; }
+
+void twai_fake_set_other_core_sender(const twai_message_t *m, int64_t every_us)
+{
+    catch_up();
+    g_oc_on = m != NULL && every_us > 0;
+    if (!g_oc_on) { return; }
+    g_oc_msg = *m;
+    g_oc_every = every_us;
+    g_oc_next = twai_fake_now();
+    other_core_run();
+}
+
+uint32_t twai_fake_other_core_sent(void) { return g_oc_sent; }
+bool     twai_fake_core_stalled(int core) { return (core == 0 || core == 1) && g_stalled[core]; }
+int      twai_fake_stall_calls(void) { return g_stall_calls; }
+int      twai_fake_unstall_calls(void) { return g_unstall_calls; }
+int      twai_fake_stall_misused(void) { return g_stall_misused; }
+int      twai_fake_ll_calls(void) { return g_ll_calls; }
+int      twai_fake_ll_calls_at_stall(void) { return g_ll_at_stall; }
 
 uint32_t twai_fake_delay_calls(void) { return g_delay_calls; }
 int64_t  twai_fake_delay_us_total(void) { return g_delay_total; }
@@ -1072,7 +1360,7 @@ void twai_fake_set_acked(bool acked)
 {
     catch_up();
     /* An ACKer arriving: the attempt it ACKs starts now. */
-    if (acked && !g_acked && g_buf_full) { g_buf_start = twai_fake_now(); }
+    if (acked && !g_acked && g_buf_full) { g_buf_start = twai_fake_now(); g_attempts = 0; }
     g_acked = acked;
     if (g_timing == TWAI_FAKE_TX_INSTANT) { tx_advance(twai_fake_now(), true); }
 }
@@ -1118,12 +1406,26 @@ void twai_fake_rx_overrun(uint32_t n)
     raise_alert(TWAI_ALERT_RX_FIFO_OVERRUN);
 }
 
-void twai_fake_bus_error(uint32_t n)
+/* Bus errors: counted, TWAI_ALERT_BUS_ERROR. A controller on the bus
+ * (running, out of reset mode) and error-active (both counters below 128)
+ * answers each with an active error flag, six dominant bits, in
+ * listen-only too: the errata CONFIG_TWAI_ERRATA_FIX_LISTEN_ONLY_DOM works
+ * around by writing REC 128 (twai_hal.c:76-85). */
+static void bus_errors(uint32_t n)
 {
-    catch_up();
     if (n == 0 || !g_installed) { return; }
     g_bus_errors += n;
     raise_alert(TWAI_ALERT_BUS_ERROR);
+    if (g_state == TWAI_STATE_RUNNING && !g_rm_ll && g_tec < 128 && g_rec < 128)
+    {
+        g_active_flags += n;
+    }
+}
+
+void twai_fake_bus_error(uint32_t n)
+{
+    catch_up();
+    bus_errors(n);
 }
 
 void twai_fake_set_error_counters(uint32_t tec, uint32_t rec) { g_tec = tec; g_rec = rec; }
@@ -1157,6 +1459,9 @@ void twai_fake_fail_start_next(esp_err_t rc) { g_fail_start = true; g_fail_start
 void twai_fake_fail_reconfigure_alerts(bool fail) { g_fail_reconf = fail; }
 void twai_fake_rx_error_next(int n) { g_rx_err_n = n; }
 void twai_fake_misreport_msgs_to_tx(bool on) { g_misreport = on; }
+void twai_fake_set_reset_tx(twai_fake_reset_tx_t b) { catch_up(); g_reset_tx = b; }
+void twai_fake_set_abort_report(twai_fake_abort_report_t r) { catch_up(); g_abort_report = r; }
+void twai_fake_set_ack_errors(bool on) { catch_up(); g_ack_errors = on; }
 
 /* ---------------------------------------------------------- inspection -- */
 
@@ -1228,6 +1533,19 @@ uint32_t twai_fake_reg_unknown_reads(void) { return g_reg_unknown; }
 bool     twai_fake_periph_clock(void) { return g_clk_on; }
 bool     twai_fake_periph_reset_held(void) { return g_rst_held; }
 bool     twai_fake_in_reset_mode(void) { catch_up(); return in_reset_mode(); }
+twai_mode_t twai_fake_hw_mode(void) { return g_hw_mode; }
+uint32_t twai_fake_tec(void) { return g_tec; }
+uint32_t twai_fake_rec(void) { return g_rec; }
+bool     twai_fake_driver_buf_stuck(void) { catch_up(); return g_phantom; }
+int      twai_fake_ll_writes_outside_reset(void) { return g_ll_outside_reset; }
+int      twai_fake_ll_exits_misused(void) { return g_ll_exit_misused; }
+int      twai_fake_ll_rec_reads(void) { return g_ll_rec_reads; }
+int      twai_fake_rec_write_count(void) { return g_n_rec_log; }
+uint32_t twai_fake_rec_write(int i) { return g_rec_log[i]; }
+uint32_t twai_fake_active_error_flags(void) { return g_active_flags; }
+uint32_t twai_fake_tx_kept_by_reset(void) { return g_reset_kept; }
+uint32_t twai_fake_tx_released_by_reset(void) { return g_reset_released; }
+uint32_t twai_fake_aborted_attempts(void) { return g_aborted_attempts; }
 
 /* --------------------------------------------------------------- reset -- */
 
@@ -1251,8 +1569,14 @@ void twai_fake_reset(void)
     g_clk_on = g_rst_held = false;
     g_rm_ll = false;
     g_rx_busy_until = 0;
+    g_hw_mode = TWAI_MODE_NORMAL;
+    g_buf_tr = g_phantom = g_abort_pend = false;
+    g_attempts = 0;
 
     g_timing = TWAI_FAKE_TX_TIMED;
+    g_reset_tx = TWAI_FAKE_RESET_TX_KEEP;
+    g_abort_report = TWAI_FAKE_ABORT_REPORTS_SUCCESS;
+    g_ack_errors = false;
     g_air_us = 0;
     g_n_air_id = 0;
     g_acked = true;
@@ -1283,6 +1607,16 @@ void twai_fake_reset(void)
     g_ll_aborts = g_ll_aborts_tx = g_ll_removed = g_ll_unmeasured = 0;
     g_ll_rm_entries = g_ll_unclocked = 0;
     g_cut_reset = g_reg_reads = g_reg_unknown = 0;
+    g_ll_outside_reset = g_ll_exit_misused = g_ll_rec_reads = 0;
+    g_active_flags = g_reset_kept = g_reset_released = g_aborted_attempts = 0;
+    g_n_rec_log = 0;
+    g_stalled[0] = g_stalled[1] = false;
+    g_stall_calls = g_unstall_calls = g_stall_misused = 0;
+    g_ll_calls = 0;
+    g_ll_at_stall = -1;
+    g_oc_on = g_oc_busy = false;
+    g_oc_every = g_oc_next = 0;
+    g_oc_sent = 0;
     g_delay_calls = 0;
     g_delay_total = 0;
 }
@@ -1365,10 +1699,43 @@ static const twai_fake_assumption_t k_assumptions[] = {
     {TWAI_FAKE_ASSUMED, "status register bit names (hal/twai_ll.h)",
      "RS while a frame is being received, BS while bus-off or recovering, ES with "
      "an error counter at 96 or more; RS and TS clear in reset mode"},
+    {TWAI_FAKE_SOURCE, "twai_hal.c:34-37, :73-87, :98; twai_hal_iram.c (bus-off)",
+     "the mode register: listen-only at install, the install's mode at start, "
+     "listen-only at stop and at bus-off; start writes TEC 0 and REC 128 in "
+     "listen-only (LISTEN_ONLY_DOM errata) or 0; install writes both 0"},
+    {TWAI_FAKE_SOURCE, "hal/esp32s3 twai_ll.h:163-215, :524-570 (the C3's the same)",
+     "reset mode entered and left, the mode register and the error counters "
+     "written only in reset mode; listen-only sends nothing; REC is not frozen "
+     "in reset mode"},
+    {TWAI_FAKE_ASSUMED, "a write outside reset mode",
+     "a mode or error-counter write outside reset mode does nothing; counted"},
+    {TWAI_FAKE_ASSUMED, "reset mode with a frame in the buffer (twai_port T19 measures it)",
+     "KEEP by default: the frame stays with its transmit request cancelled; "
+     "twai_fake_set_reset_tx() gives RESUME (sent after reset mode) and RELEASE "
+     "(buffer freed with no transmit interrupt, the driver's count left set)"},
+    {TWAI_FAKE_SOURCE, "hal/esp32s3 twai_ll.h:258-276, twai_ll_set_cmd_abort_tx",
+     "an abort does not stop a frame being transmitted but stops its "
+     "retransmission; it sets TCS"},
+    {TWAI_FAKE_ASSUMED, "an abort during an unacknowledged attempt (twai_port T19 measures it)",
+     "the frame ends with that attempt, never on the wire, reported TX_SUCCESS "
+     "(TCS set, as the C3's awaiting abort measured); twai_fake_set_abort_report() "
+     "gives TX_FAILED; each attempt one air time, back to back, with no error "
+     "frame, intermission or suspend between them; TS stays set throughout"},
+    {TWAI_FAKE_ASSUMED, "CAN error signalling (ISO 11898-1); LISTEN_ONLY_DOM errata",
+     "a bus error on a controller on the bus with both counters below 128 sends "
+     "an active error flag, in listen-only too; an unacknowledged attempt raises "
+     "a bus error only with twai_fake_set_ack_errors()"},
+    {TWAI_FAKE_SOURCE, "soc_caps.h (S3 two cores, C3 one); esp_cpu.h; twai_port T12 (2026-11-27)",
+     "the S3's other core can queue frames through the driver until it is stalled; "
+     "the C3 has no other core to stall"},
+    {TWAI_FAKE_ASSUMED, "the other core's sender",
+     "a fixed period in the fake's time, through the same driver queue; time passes "
+     "for it only in twai_fake_advance() and esp_rom_delay_us()"},
     {TWAI_FAKE_NOT_MODELLED, "nothing here raises them",
      "arbitration, error frames, the error counters climbing, error passive and "
      "warning alerts, RECOVERY_IN_PROGRESS, ARB_LOST, dual-filter mode, the "
-     "ESP32-only errata workarounds, and the DLC > 8 non-compliant frames"},
+     "ESP32-only errata workarounds, the DLC > 8 non-compliant frames, and the "
+     "error counters' changes at bus-off"},
 };
 
 const twai_fake_assumption_t *twai_fake_assumptions(int *count)

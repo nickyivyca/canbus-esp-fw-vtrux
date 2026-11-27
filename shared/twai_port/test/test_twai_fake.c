@@ -11,6 +11,7 @@
 #include "hal/twai_ll.h"
 #include "soc/system_reg.h"
 #include "esp_rom_sys.h"
+#include "esp_cpu.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -764,6 +765,326 @@ static void case_periph_s3(void)
     twai_fake_set_chip(TWAI_FAKE_CHIP_C3);
 }
 
+/* --------------------------------- the register-level switch (T14-T18) -- */
+
+#define TXBITS (TWAI_LL_STATUS_TBS | TWAI_LL_STATUS_TS)
+#define TXALERTS (TWAI_ALERT_TX_SUCCESS | TWAI_ALERT_TX_FAILED | TWAI_ALERT_BUS_ERROR)
+
+/* Into listen-only or out of it as code outside the driver would. */
+static void ll_switch(twai_mode_t mode, uint32_t rec)
+{
+    twai_dev_t *hw = TWAI_LL_GET_HW(0);
+    twai_ll_enter_reset_mode(hw);
+    twai_ll_set_mode(hw, mode);
+    twai_ll_set_rec(hw, rec);
+    twai_ll_exit_reset_mode(hw);
+}
+
+static void case_mode_register(void)
+{
+    g_case = "mode register: listen-only at install, the install's at start, listen-only at stop and bus-off";
+    up(TWAI_MODE_NORMAL, 5, 5, 0, false);
+    CHECK(twai_fake_hw_mode() == TWAI_MODE_LISTEN_ONLY);
+    twai_fake_set_error_counters(9, 7);
+    CHECK(twai_start() == ESP_OK);
+    CHECK(twai_fake_hw_mode() == TWAI_MODE_NORMAL);
+    CHECK(twai_fake_tec() == 0 && twai_fake_rec() == 0);
+    CHECK(twai_stop() == ESP_OK && twai_fake_hw_mode() == TWAI_MODE_LISTEN_ONLY);
+    CHECK(twai_start() == ESP_OK);
+    twai_fake_bus_off();
+    CHECK(twai_fake_hw_mode() == TWAI_MODE_LISTEN_ONLY);
+
+    g_case = "error counters: install writes both 0; start in listen-only writes REC 128 (LISTEN_ONLY_DOM)";
+    up(TWAI_MODE_LISTEN_ONLY, 5, 5, 0, false);
+    CHECK(twai_fake_tec() == 0 && twai_fake_rec() == 0);
+    twai_fake_set_error_counters(9, 7);
+    CHECK(twai_start() == ESP_OK);
+    CHECK(twai_fake_hw_mode() == TWAI_MODE_LISTEN_ONLY);
+    CHECK(twai_fake_tec() == 0 && twai_fake_rec() == 128);
+    CHECK(twai_fake_rec_write_count() == 0);
+    twai_fake_set_error_counters(9, 7);
+    CHECK(twai_stop() == ESP_OK && twai_driver_uninstall() == ESP_OK);
+    {
+        twai_general_config_t g = gcfg(TWAI_MODE_NORMAL, 5, 5, 0);
+        CHECK(twai_driver_install(&g, &T500, &FALL) == ESP_OK);
+    }
+    CHECK(twai_fake_tec() == 0 && twai_fake_rec() == 0);
+    up(TWAI_MODE_NO_ACK, 5, 5, 0, true);
+    CHECK(twai_fake_hw_mode() == TWAI_MODE_NO_ACK && twai_fake_rec() == 0);
+}
+
+static void case_ll_switch(void)
+{
+    twai_message_t m = msg(0x100, 8);
+    twai_dev_t *hw = TWAI_LL_GET_HW(0);
+    twai_status_info_t s;
+    g_case = "switch: the mode and REC written only in reset mode; a write outside it counted and lost";
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    twai_ll_set_mode(hw, TWAI_MODE_LISTEN_ONLY);
+    twai_ll_set_rec(hw, 128);
+    twai_ll_set_tec(hw, 5);
+    CHECK(twai_fake_ll_writes_outside_reset() == 3);
+    CHECK(twai_fake_hw_mode() == TWAI_MODE_NORMAL && twai_fake_rec() == 0 && twai_fake_tec() == 0);
+    CHECK(twai_fake_rec_write_count() == 0);
+    twai_ll_enter_reset_mode(hw);
+    twai_ll_set_mode(hw, TWAI_MODE_LISTEN_ONLY);
+    twai_ll_set_rec(hw, 128);
+    twai_ll_set_tec(hw, 5);
+    CHECK(twai_fake_ll_writes_outside_reset() == 3);
+    CHECK(twai_fake_hw_mode() == TWAI_MODE_LISTEN_ONLY && twai_fake_rec() == 128 && twai_fake_tec() == 5);
+    CHECK(twai_fake_rec_write_count() == 1 && twai_fake_rec_write(0) == 128);
+    twai_ll_exit_reset_mode(hw);
+    CHECK(!twai_ll_is_in_reset_mode(hw) && twai_fake_ll_exits_misused() == 0);
+    CHECK(twai_ll_get_rec(hw) == 128 && twai_fake_ll_rec_reads() == 1);
+
+    g_case = "switch to listen-only: the driver still normal, its send accepted, nothing sent; frames received";
+    CHECK(twai_fake_mode() == TWAI_MODE_NORMAL && twai_fake_state() == TWAI_STATE_RUNNING);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(10000);
+    CHECK(twai_fake_wire_count() == 0 && twai_fake_tx_pending() == 1);
+    CHECK((twai_ll_get_status(hw) & TXBITS) == 0);              /* reads as awaiting */
+    twai_fake_deliver_std(0x30, D8, 8);
+    CHECK(twai_fake_rx_pending() == 1);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.rx_error_counter == 128);  /* driver mode normal */
+
+    g_case = "switch back to normal (KEEP): the held frame not sent; an abort removes it, TX_SUCCESS; the next one sent";
+    twai_fake_set_tx_timing(TWAI_FAKE_TX_TIMED);
+    ll_switch(TWAI_MODE_NORMAL, 0);
+    CHECK(twai_fake_hw_mode() == TWAI_MODE_NORMAL && twai_fake_rec() == 0);
+    CHECK(twai_fake_tx_kept_by_reset() == 1);
+    twai_fake_advance(10000);
+    CHECK(twai_fake_wire_count() == 0 && (twai_ll_get_status(hw) & TXBITS) == 0);
+    twai_ll_set_cmd_abort_tx(hw);
+    CHECK(twai_fake_ll_removed() == 1 && twai_fake_tx_pending() == 0);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(222);
+    CHECK(twai_fake_wire_count() == 1);
+
+    g_case = "switch: an exit from a reset mode the driver keeps is counted and does nothing";
+    CHECK(twai_stop() == ESP_OK);
+    twai_ll_exit_reset_mode(hw);
+    CHECK(twai_fake_ll_exits_misused() == 1 && twai_ll_is_in_reset_mode(hw));
+    CHECK(twai_start() == ESP_OK);
+    twai_ll_exit_reset_mode(hw);                    /* not in reset mode: nothing */
+    CHECK(twai_fake_ll_exits_misused() == 1);
+}
+
+static void case_reset_tx(void)
+{
+    twai_message_t m = msg(0x100, 8);
+    twai_dev_t *hw = TWAI_LL_GET_HW(0);
+    twai_status_info_t s;
+    g_case = "reset mode, a frame on the wire, RESUME: sent once reset mode is left";
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    twai_fake_set_reset_tx(TWAI_FAKE_RESET_TX_RESUME);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(100);
+    twai_ll_enter_reset_mode(hw);
+    twai_fake_advance(10000);
+    CHECK(twai_fake_wire_count() == 0);
+    twai_ll_exit_reset_mode(hw);
+    twai_fake_advance(221);
+    CHECK(twai_fake_wire_count() == 0);
+    twai_fake_advance(1);
+    CHECK(twai_fake_wire_count() == 1 && twai_fake_tx_kept_by_reset() == 0);
+
+    g_case = "reset mode, a frame on the wire, RELEASE: buffer free, the driver's count stuck, later sends queue for ever";
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    twai_fake_set_reset_tx(TWAI_FAKE_RESET_TX_RELEASE);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(100);
+    twai_ll_enter_reset_mode(hw);
+    CHECK(twai_fake_tx_released_by_reset() == 1 && twai_fake_driver_buf_stuck());
+    twai_ll_exit_reset_mode(hw);
+    CHECK((twai_ll_get_status(hw) & TXBITS) == TWAI_LL_STATUS_TBS);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.msgs_to_tx == 1);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(10000);
+    CHECK(twai_fake_wire_count() == 0);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.msgs_to_tx == 2);
+    CHECK(twai_clear_transmit_queue() == ESP_OK);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.msgs_to_tx == 1);
+    CHECK(twai_stop() == ESP_OK && twai_start() == ESP_OK);
+    CHECK(!twai_fake_driver_buf_stuck());
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(222);
+    CHECK(twai_fake_wire_count() == 1);
+
+    g_case = "reset mode, a frame on the wire, KEEP (default): cut, kept without its request, not sent after";
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(100);
+    twai_ll_enter_reset_mode(hw);
+    CHECK(twai_fake_tx_cut_by_reset() == 1 && twai_fake_tx_kept_by_reset() == 1);
+    twai_ll_exit_reset_mode(hw);
+    twai_fake_advance(10000);
+    CHECK(twai_fake_wire_count() == 0 && twai_fake_tx_pending() == 1);
+    CHECK((twai_ll_get_status(hw) & TXBITS) == 0 && !twai_fake_driver_buf_stuck());
+}
+
+static void case_abort_unacked(void)
+{
+    twai_message_t m = msg(0x100, 8);
+    twai_dev_t *hw = TWAI_LL_GET_HW(0);
+    twai_status_info_t s;
+    g_case = "abort during an unacknowledged attempt: ends with the attempt, never on the wire, TX_SUCCESS (default)";
+    up(TWAI_MODE_NORMAL, 5, 5, TXALERTS, true);
+    twai_fake_set_acked(false);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    m.identifier = 0x101;
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(500);                         /* into the third attempt */
+    CHECK((twai_ll_get_status(hw) & TXBITS) == TWAI_LL_STATUS_TS);
+    twai_ll_set_cmd_abort_tx(hw);
+    CHECK(twai_fake_ll_aborts_while_tx() == 1 && twai_fake_aborted_attempts() == 0);
+    twai_fake_advance(165);                         /* 665: the third attempt ends at 666 */
+    CHECK(twai_fake_aborted_attempts() == 0 && twai_fake_tx_pending() == 2);
+    twai_fake_advance(1);
+    CHECK(twai_fake_aborted_attempts() == 1 && twai_fake_tx_pending() == 1);
+    CHECK(read_alerts() == TWAI_ALERT_TX_SUCCESS);
+    CHECK(twai_fake_wire_count() == 0 && twai_fake_sent(0)->t_done == -1);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.tx_failed_count == 0 && s.bus_error_count == 0);
+    twai_fake_advance(10000);                       /* 0x101 loaded, retrying, never aborted */
+    CHECK(twai_fake_aborted_attempts() == 1 && twai_fake_tx_pending() == 1);
+
+    g_case = "abort during an unacknowledged attempt, reported failed: TX_FAILED, tx_failed_count";
+    up(TWAI_MODE_NORMAL, 5, 5, TXALERTS, true);
+    twai_fake_set_abort_report(TWAI_FAKE_ABORT_REPORTS_FAILED);
+    twai_fake_set_acked(false);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(10);
+    twai_ll_set_cmd_abort_tx(hw);
+    twai_fake_advance(212);
+    CHECK(twai_fake_aborted_attempts() == 1 && read_alerts() == TWAI_ALERT_TX_FAILED);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.tx_failed_count == 1 && s.msgs_to_tx == 0);
+    CHECK(twai_fake_wire_count() == 0);
+
+    g_case = "abort on an acknowledged frame on the wire: sent as normal; INSTANT unacked: ends at once";
+    up(TWAI_MODE_NORMAL, 5, 5, TXALERTS, true);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(10);
+    twai_ll_set_cmd_abort_tx(hw);
+    twai_fake_advance(212);
+    CHECK(twai_fake_wire_count() == 1 && twai_fake_aborted_attempts() == 0);
+    twai_fake_set_acked(false);
+    twai_fake_set_tx_timing(TWAI_FAKE_TX_INSTANT);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    CHECK(twai_fake_tx_pending() == 1);
+    twai_ll_set_cmd_abort_tx(hw);
+    CHECK(twai_fake_aborted_attempts() == 1 && twai_fake_tx_pending() == 0);
+}
+
+static void case_ack_errors_and_flags(void)
+{
+    twai_message_t m = msg(0x100, 8);
+    twai_status_info_t s;
+    g_case = "ACK errors: one bus error per unacknowledged attempt, only when asked for; active flags while error-active";
+    up(TWAI_MODE_NORMAL, 5, 5, TXALERTS, true);
+    twai_fake_set_acked(false);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(666);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.bus_error_count == 0);
+    twai_fake_set_ack_errors(true);
+    twai_fake_advance(666);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.bus_error_count == 3);
+    CHECK(read_alerts() == TWAI_ALERT_BUS_ERROR && twai_fake_active_error_flags() == 3);
+    twai_fake_set_error_counters(128, 0);
+    twai_fake_advance(222);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.bus_error_count == 4);
+    CHECK(twai_fake_active_error_flags() == 3);
+    m.ss = 1;
+    up(TWAI_MODE_NORMAL, 5, 5, TXALERTS, true);
+    twai_fake_set_acked(false);
+    twai_fake_set_ack_errors(true);
+    CHECK(twai_transmit(&m, 0) == ESP_OK);
+    twai_fake_advance(222);
+    CHECK(twai_get_status_info(&s) == ESP_OK && s.bus_error_count == 1 && s.tx_failed_count == 1);
+
+    g_case = "active error flags: listen-only with REC 0 sends them (the errata), with REC 128 not, nor in reset mode";
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    twai_fake_bus_error(1);
+    CHECK(twai_fake_active_error_flags() == 1);
+    ll_switch(TWAI_MODE_LISTEN_ONLY, 0);
+    twai_fake_bus_error(1);
+    CHECK(twai_fake_active_error_flags() == 2);
+    ll_switch(TWAI_MODE_LISTEN_ONLY, 128);
+    twai_fake_bus_error(1);
+    CHECK(twai_fake_active_error_flags() == 2);
+    ll_switch(TWAI_MODE_NORMAL, 0);
+    twai_ll_enter_reset_mode(TWAI_LL_GET_HW(0));
+    twai_fake_bus_error(1);
+    CHECK(twai_fake_active_error_flags() == 2);
+    up(TWAI_MODE_LISTEN_ONLY, 5, 5, 0, true);
+    twai_fake_bus_error(1);
+    CHECK(twai_fake_active_error_flags() == 0);
+}
+
+static void case_switch_s3(void)
+{
+    twai_dev_t *hw = TWAI_LL_GET_HW(0);
+    g_case = "switch (S3): exit, mode and counter writes counted unmeasured";
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    twai_fake_set_chip(TWAI_FAKE_CHIP_S3);
+    twai_ll_enter_reset_mode(hw);
+    twai_ll_set_mode(hw, TWAI_MODE_LISTEN_ONLY);
+    twai_ll_set_rec(hw, 128);
+    twai_ll_set_tec(hw, 0);
+    twai_ll_exit_reset_mode(hw);
+    CHECK(twai_fake_ll_unmeasured_calls() == 5);
+    CHECK(twai_fake_hw_mode() == TWAI_MODE_LISTEN_ONLY && twai_fake_rec() == 128);
+    twai_fake_set_chip(TWAI_FAKE_CHIP_C3);
+}
+
+static void case_two_cores(void)
+{
+    twai_message_t m = msg(0x300, 8);
+    twai_dev_t *hw = TWAI_LL_GET_HW(0);
+    g_case = "two cores (S3): the other core's sender queues frames until stalled; the ll calls before the stall counted";
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    twai_fake_set_chip(TWAI_FAKE_CHIP_S3);
+    twai_fake_set_core(0);
+    CHECK(esp_cpu_get_core_id() == 0);
+    twai_fake_set_other_core_sender(&m, 300);       /* t = 0, 300, 600, 900 */
+    twai_fake_advance(1000);
+    CHECK(twai_fake_other_core_sent() == 4 && twai_fake_sent_count() == 4);
+    CHECK(twai_fake_sent(0)->foreign);
+    CHECK(twai_fake_ll_calls_at_stall() == -1);
+    (void)twai_ll_get_status(hw);
+    (void)twai_ll_get_tec(hw);
+    esp_rom_delay_us(150);                          /* 1150: nothing due */
+    esp_rom_delay_us(50);                           /* 1200: one due */
+    CHECK(twai_fake_other_core_sent() == 5);
+    esp_cpu_stall(1);
+    CHECK(twai_fake_core_stalled(1) && twai_fake_ll_calls_at_stall() == 2);
+    twai_fake_advance(10000);
+    esp_rom_delay_us(1000);
+    CHECK(twai_fake_other_core_sent() == 5 && twai_fake_stall_misused() == 0);
+    CHECK(twai_fake_stall_calls() == 1 && twai_fake_unstall_calls() == 0);
+    esp_cpu_stall(0);                               /* its own core */
+    CHECK(twai_fake_stall_misused() == 1 && !twai_fake_core_stalled(0));
+    esp_cpu_unstall(1);
+    twai_fake_advance(1);
+    CHECK(twai_fake_unstall_calls() == 1 && twai_fake_other_core_sent() > 5);
+
+    g_case = "two cores: on core 1 the other core is 0; the C3 has no other core";
+    twai_fake_set_chip(TWAI_FAKE_CHIP_C3);
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    twai_fake_set_core(1);
+    CHECK(esp_cpu_get_core_id() == 1);
+    esp_cpu_stall(0);
+    CHECK(twai_fake_stall_misused() == 1);          /* chip is the C3 */
+    twai_fake_set_chip(TWAI_FAKE_CHIP_S3);
+    esp_cpu_stall(0);
+    CHECK(twai_fake_stall_misused() == 1 && twai_fake_core_stalled(0));
+    twai_fake_set_chip(TWAI_FAKE_CHIP_C3);
+    twai_fake_set_core(0);
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    twai_fake_set_other_core_sender(&m, 300);
+    twai_fake_advance(1000);
+    CHECK(twai_fake_other_core_sent() == 0);
+    twai_fake_set_other_core_sender(NULL, 0);
+}
+
 int main(void)
 {
     case_no_driver();
@@ -795,6 +1116,13 @@ int main(void)
     case_counter_registers();
     case_delay_us();
     case_periph_s3();
+    case_mode_register();
+    case_ll_switch();
+    case_reset_tx();
+    case_abort_unacked();
+    case_ack_errors_and_flags();
+    case_switch_s3();
+    case_two_cores();
     printf("test_twai_fake: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

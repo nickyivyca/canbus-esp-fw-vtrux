@@ -153,6 +153,115 @@ bool twai_fake_in_reset_mode(void);
  */
 void twai_fake_set_receiving(int64_t us);
 
+/* ------------------------------------------ the register-level switch -- */
+
+/*
+ * What code outside the driver can do through hal/twai_ll.h to switch a
+ * running controller between normal and listen-only with the driver kept
+ * (twai_port T14-T18), as ESP-IDF v5.4.2's twai_hal.c and twai_ll.h drive
+ * the same registers:
+ *   - the mode register: listen-only at install (twai_hal_init), the
+ *     install's mode at twai_start(), listen-only at twai_stop() and at
+ *     bus-off. twai_ll_set_mode() writes it in reset mode. The driver's own
+ *     mode (twai_fake_mode()), which gates twai_transmit(), never changes.
+ *     In listen-only the controller sends nothing: a frame in the buffer
+ *     stays there, reading as awaiting arbitration.
+ *   - the error counters: twai_start() writes TEC 0 and REC 128 in
+ *     listen-only (the LISTEN_ONLY_DOM errata) or 0; install writes both 0.
+ *     twai_ll_set_rec() and twai_ll_set_tec() write them in reset mode.
+ *   - twai_ll_exit_reset_mode() leaves a reset mode that
+ *     twai_ll_enter_reset_mode() entered.
+ * A mode or counter write outside reset mode does nothing and is counted
+ * (twai_fake_ll_writes_outside_reset()); so is an exit from a reset mode the
+ * driver keeps (stopped, bus-off; twai_fake_ll_exits_misused()). A healthy
+ * run keeps both at zero.
+ */
+twai_mode_t twai_fake_hw_mode(void);            /* the mode register */
+uint32_t    twai_fake_tec(void);                /* the registers, no call counted */
+uint32_t    twai_fake_rec(void);
+int         twai_fake_ll_writes_outside_reset(void);
+int         twai_fake_ll_exits_misused(void);
+int         twai_fake_ll_rec_reads(void);       /* twai_ll_get_rec() calls */
+/* Every value twai_ll_set_rec() wrote in reset mode, in order (the first 64). */
+int         twai_fake_rec_write_count(void);
+uint32_t    twai_fake_rec_write(int i);
+
+/*
+ * What reset mode, entered from outside the driver, does to a frame in the
+ * transmit buffer (on the wire or awaiting arbitration). Not measured
+ * (twai_port T19 measures it on the S3); every behaviour is selectable so a
+ * port can be tested on each.
+ *   KEEP     the frame stays, its transmit request cancelled: never sent,
+ *            the buffer occupied and reading as awaiting, until an abort
+ *            removes it or the driver discards it (the default).
+ *   RESUME   the request survives: the frame is sent once reset mode is left.
+ *   RELEASE  the hardware frees the buffer with no transmit interrupt. The
+ *            driver's TX-buffer-occupied flag and its msgs_to_tx stay set,
+ *            so every later twai_transmit() queues behind a frame that is
+ *            not there, until a stop, uninstall or recovery resets them
+ *            (twai_fake_driver_buf_stuck()).
+ */
+typedef enum {
+    TWAI_FAKE_RESET_TX_KEEP = 0,
+    TWAI_FAKE_RESET_TX_RESUME,
+    TWAI_FAKE_RESET_TX_RELEASE,
+} twai_fake_reset_tx_t;
+void     twai_fake_set_reset_tx(twai_fake_reset_tx_t b);
+uint32_t twai_fake_tx_kept_by_reset(void);
+uint32_t twai_fake_tx_released_by_reset(void);
+bool     twai_fake_driver_buf_stuck(void);
+
+/*
+ * An abort on a frame being transmitted does not stop it but stops its
+ * retransmission (twai_ll.h). On a frame nobody ACKs, the frame then ends
+ * with its current attempt, never on the wire, and the driver reports it
+ * as TX_SUCCESS (the default: the abort sets TCS, as the C3's abort of an
+ * awaiting frame measured) or TX_FAILED. Not measured (twai_port T19).
+ * Each attempt is one air time, back to back from the frame's start.
+ */
+typedef enum {
+    TWAI_FAKE_ABORT_REPORTS_SUCCESS = 0,
+    TWAI_FAKE_ABORT_REPORTS_FAILED,
+} twai_fake_abort_report_t;
+void     twai_fake_set_abort_report(twai_fake_abort_report_t r);
+uint32_t twai_fake_aborted_attempts(void);
+
+/* Every unacknowledged attempt that ends raises one bus error (an ACK
+ * error). Default off, so frames retrying for ever do not count bus errors
+ * in harnesses written before it. */
+void     twai_fake_set_ack_errors(bool on);
+
+/* Active error flags sent: one per bus error while the controller is on the
+ * bus (running, out of reset mode) with both error counters below 128, in
+ * listen-only too (the LISTEN_ONLY_DOM errata). */
+uint32_t twai_fake_active_error_flags(void);
+
+/* ------------------------------------------------------------ two cores -- */
+
+/*
+ * The S3 has two cores, the C3 one. esp_cpu_stall(), esp_cpu_unstall() and
+ * esp_cpu_get_core_id() (host/esp_cpu.h) are the fake's. The code under
+ * test runs on core twai_fake_set_core() (default 0). A sender on the other
+ * core queues a frame every `every_us` of the fake's time through the
+ * driver (twai_fake_foreign_transmit()), while that core runs and the
+ * driver takes it, until the core is stalled; NULL stops it. Time passes
+ * for it in twai_fake_advance() and esp_rom_delay_us(). On the C3 there is
+ * no other core: a stall there, or of the calling core, is counted in
+ * twai_fake_stall_misused() and does nothing.
+ * twai_fake_ll_calls_at_stall() is how many twai_ll calls and REG_READs
+ * had been made (twai_fake_ll_calls()) when the first stall took effect,
+ * or -1, so a test can tell whether the stall came first.
+ */
+void     twai_fake_set_core(int core);
+void     twai_fake_set_other_core_sender(const twai_message_t *m, int64_t every_us);
+uint32_t twai_fake_other_core_sent(void);
+bool     twai_fake_core_stalled(int core);
+int      twai_fake_stall_calls(void);
+int      twai_fake_unstall_calls(void);
+int      twai_fake_stall_misused(void);
+int      twai_fake_ll_calls(void);
+int      twai_fake_ll_calls_at_stall(void);
+
 /* ----------------------------------------------------------- busy waits -- */
 
 /*

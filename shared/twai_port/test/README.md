@@ -34,14 +34,14 @@ builds run under ASan and UBSan.
 
 | File | What |
 |---|---|
-| `twai_fake.h`, `twai_fake.c` | the model and the driver's entry points: `twai_driver_install` to `twai_clear_receive_queue`, the six register calls of `hal/twai_ll.h`, `REG_READ` of the TWAI's clock and reset bits, and `esp_rom_delay_us`. C in the common subset of C11 and C++11 |
+| `twai_fake.h`, `twai_fake.c` | the model and the driver's entry points: `twai_driver_install` to `twai_clear_receive_queue`, the ten register calls of `hal/twai_ll.h`, `REG_READ` of the TWAI's clock and reset bits, `esp_rom_delay_us`, and `esp_cpu_stall`, `esp_cpu_unstall` and `esp_cpu_get_core_id`. C in the common subset of C11 and C++11 |
 | `include/driver/twai.h`, `include/hal/twai_ll.h` | the driver's headers for host builds, from ESP-IDF v5.4.1's own (`driver/twai.h`, `hal/twai_types.h`, the C3's `hal/twai_ll.h`): the real types, field order, alert values and initialisers. The `_v2` calls are left out, so a call the fake does not implement fails to link |
 | `include/soc/soc.h`, `include/soc/reg_base.h`, `include/soc/system_reg.h` | `BIT()`, `REG_READ()` and the TWAI's clock-enable and reset bits of `SYSTEM_PERIP_CLK_EN0_REG` and `SYSTEM_PERIP_RST_EN0_REG`, ESP-IDF v5.4.1's addresses and bits, for the restart stop (T12). `REG_READ()` is a call into the fake |
-| `host/` | minimal stand-ins for `esp_err.h`, `esp_rom_sys.h`, `freertos/FreeRTOS.h`, `freertos/task.h`, `driver/gpio.h`, `esp_attr.h`, `esp_log.h` and `board.h`, for a build with none of its own. A project's own come first on its include path |
+| `host/` | minimal stand-ins for `esp_err.h`, `esp_rom_sys.h`, `esp_cpu.h`, `freertos/FreeRTOS.h`, `freertos/task.h`, `driver/gpio.h`, `esp_attr.h`, `esp_log.h` and `board.h`, for a build with none of its own. A project's own come first on its include path |
 | `cpp/twai_fake.h`, `cpp/twai_fake.cpp` | the interposer's C++ interface to the fake: `namespace twaifake`, `TwaiFake`, `fake()`, as its host_bridge tests call them, each member a call into the model. Its clock adapter is the interposer's `hostclock::micros()` |
 | `cpp/test_cpp_wrapper.cpp` | the interface's own tests, for the members that do more than pass their arguments on (`setBusOffAfterSent`); `cpp/README.md` |
-| `test_twai_fake.c` | the fake's own tests: 29 cases, each a driver or register behaviour from the source, or one of the assumptions the table names |
-| `mutate.py` | 54 mutants of `twai_fake.c`, one behaviour each; the run passes only if the unmutated build passes and every mutant fails |
+| `test_twai_fake.c` | the fake's own tests: 36 cases, each a driver or register behaviour from the source, or one of the assumptions the table names. The last 7 are the register-level switch and the two cores ("The register-level switch" and "Two cores" below) |
+| `mutate.py` | 96 mutants of `twai_fake.c`, one behaviour each; the run passes only if the unmutated build passes and every mutant fails |
 | `test_mutate.py` | `mutate.py`'s removal of its scratch folder, with the builds stood in for (no compiler): removed after a pass, a fail and an exception, read-only files and paths past 260 characters included; a folder it cannot remove printed with the reason; an existing `--out` refused and left as it was; with no `--out`, a new `<time>_<pid>` folder, which a killed run's folder does not stop. `--mutants` breaks these twelve ways, each of which it must fail by a check (three only fail on Windows) |
 | `test_port_on_fake.c`, `host_platform.c` | the real `twai_port.c`, compiled as shipped, on the fake: built with the C3's register file on the fake's C3 and with the unsupported one on its S3, 14 cases from T2 to T9 each, one process per case. For T12, the restart stop, 11 more on the C3: an idle bus (reset mode at once, the report filled, nothing logged, and nothing takes it out of reset mode until the next install), a frame on the wire and one being received let finish, polled every 2 us, a reception and a transmission outlasting 1 ms (the wait runs out at 1 ms, reset mode anyway, the frame cut), a frame awaiting arbitration aborted, the clock off and the reset held (touches nothing, the report 0 but those bits), the driver running with the port never set up, bus-off (already in reset mode), and a NULL report; and 1 on the S3 (not supported, touching nothing). `host_platform.c` is the board, tick and log calls the port makes |
 | `t12_standin.c` | the T12 cases' can-fail: the tester's own restart stop, written from T12 and the fake's register calls. Built with `-DT12_STANDIN`, the T12 cases call it in place of the port's. As written it passes them all; `T12_BROKEN` breaks one rule (9 ways: no wait, no bound, no reset on timeout, no abort, the clock or the reset ignored, 10 us steps, the status or the error counters not reported), and `t12-standins` passes only if each is caught by a check (exit 1 with a FAIL line), never by a sanitizer |
@@ -75,6 +75,9 @@ builds run under ASan and UBSan.
   build must not define its own. It moves the fake's own clock; with a
   clock adapter it calls the wait hook up to its deadline, and with no hook
   it only counts (`twai_fake_delay_calls()`).
+- **The cores:** `esp_cpu_stall()`, `esp_cpu_unstall()` and
+  `esp_cpu_get_core_id()` are the fake's too, so a project's host build must
+  not define its own ("Two cores").
 - **The peripheral (T12):** install turns the TWAI's clock on and leaves
   the controller in reset mode until start, as ESP-IDF does; uninstall
   turns the clock off. `twai_fake_set_periph()` sets the clock and reset
@@ -137,7 +140,63 @@ transmit-buffer register behaviour is measured (T8). On the fake's S3
 (`twai_fake_set_chip(TWAI_FAKE_CHIP_S3)`) the registers behave as the C3's,
 and every `twai_ll_*` call and `REG_READ()` is counted in
 `twai_fake_ll_unmeasured_calls()`, which a healthy S3 run keeps at zero; the
-port's S3 build makes none.
+port's S3 build makes none. ESP-IDF v5.4.2's two `twai_ll.h` files were
+diffed again for the switch (2026-11-27): only the clock and reset field
+names, a copyright line and indentation differ. The one difference the fake
+models is the cores: the S3 has two, the C3 one ("Two cores").
+
+## The register-level switch (T14 to T18)
+
+What code outside the driver can do to a running controller through
+`hal/twai_ll.h`, read in ESP-IDF v5.4.2's `twai_hal.c` and the S3's
+`twai_ll.h` (the C3's is the same):
+
+- **The mode register** (`twai_fake_hw_mode()`): listen-only at install
+  (`twai_hal.c:34`), the install's mode at start (`:73`), listen-only at stop
+  (`:98`) and at bus-off (`twai_hal_iram.c`, `twai_hal_get_events`).
+  `twai_ll_set_mode()` writes it. The driver's own mode, which gates
+  `twai_transmit()`, never changes. In listen-only the controller sends
+  nothing: a frame in the buffer stays, reading as awaiting arbitration.
+- **The error counters:** install writes both 0 (`:36-37`); start writes TEC
+  0 and REC 128 in listen-only, the `LISTEN_ONLY_DOM` errata, or 0
+  (`:75-87`). `twai_ll_set_rec()` and `twai_ll_set_tec()` write them, and
+  every REC value written from outside the driver is logged.
+- **Reset mode:** `twai_ll_exit_reset_mode()` leaves a reset mode that
+  `twai_ll_enter_reset_mode()` entered.
+- **Misuse, counted:** a mode or counter write outside reset mode does
+  nothing (`twai_ll.h`: "Must be called in reset mode"); an exit from a reset
+  mode the driver keeps (stopped, bus-off) does nothing. A healthy run keeps
+  both counts at zero.
+
+Three behaviours are not measured. T19 measures them on the S3, so each is
+a knob, and a port can be tested on every choice:
+
+| Knob | Choices (default first) |
+|---|---|
+| `twai_fake_set_reset_tx()`: reset mode with a frame in the buffer | KEEP: the frame stays with its transmit request cancelled, never sent until an abort removes it; RESUME: sent once reset mode is left; RELEASE: the buffer freed with no transmit interrupt, the driver's TX-buffer-occupied flag and `msgs_to_tx` left set, so later sends queue behind a frame that is not there (`twai_fake_driver_buf_stuck()`) until a stop, uninstall or recovery |
+| `twai_fake_set_abort_report()`: an abort during an unacknowledged attempt | the frame ends with the attempt, never on the wire (`twai_ll.h`: no retransmission), and the driver reports TX_SUCCESS (the abort sets TCS, as the C3's abort of an awaiting frame measured) or TX_FAILED |
+| `twai_fake_set_ack_errors()` | off: frames retrying for ever count no bus errors, as before; on: every unacknowledged attempt raises one bus error |
+
+Each unacknowledged attempt lasts one air time, back to back, with no error
+frame, intermission or suspend between attempts, and TS stays set
+throughout. What TS reads between resends is T13's and T19's measurement.
+`twai_fake_active_error_flags()` counts active error flags: one per bus
+error while the controller is on the bus with both counters below 128, in
+listen-only too, which is the errata that REC 128 works around.
+
+## Two cores
+
+On a chip with two cores the restart stop first stalls the other core (T12,
+added 2026-11-27). `esp_cpu_stall()`, `esp_cpu_unstall()` and
+`esp_cpu_get_core_id()` (`host/esp_cpu.h`) are the fake's.
+`twai_fake_set_core()` names the core the code under test runs on.
+`twai_fake_set_other_core_sender()` queues a frame through the driver every
+given number of microseconds while the other core runs. Time passes for it
+in `twai_fake_advance()` and `esp_rom_delay_us()`, so it sends during the
+stop's wait. A stall of the calling core, or any stall on the C3, is counted
+in `twai_fake_stall_misused()` and does nothing.
+`twai_fake_ll_calls_at_stall()` gives the number of register calls made
+before the first stall, so a test can tell whether the stall came first.
 
 ## What it rests on
 
@@ -148,10 +207,13 @@ not modelled. Assumed for the restart stop (T12): the clock off before the
 first install; registers that read 0 while unclocked or held in reset; what
 a reset mode entered from outside the driver does to the frame on the wire
 (cut, kept unsent), to reception, to bus-off and to an abort (nothing); and
-the status register's RS, BS and ES bits. Not modelled: arbitration, error frames, error counters that
+the status register's RS, BS and ES bits. Assumed for the switch: the three
+knobs' defaults above, a write outside reset mode doing nothing, and the
+other core's sender. Not modelled: arbitration, error frames, error counters that
 climb by themselves, error-passive and warning alerts,
 `RECOVERY_IN_PROGRESS`, `ARB_LOST`, dual-filter mode, the ESP32-only errata
-workarounds, and non-compliant DLCs above 8.
+workarounds, non-compliant DLCs above 8, and the error counters' changes at
+bus-off.
 
 ## What changed from each source fake
 

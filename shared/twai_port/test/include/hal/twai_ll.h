@@ -5,7 +5,9 @@
  * status register's bits and twai_ll_get_status(),
  * twai_ll_set_cmd_abort_tx() (T8), and for the restart stop (T12)
  * twai_ll_is_in_reset_mode(), twai_ll_enter_reset_mode(), twai_ll_get_tec()
- * and twai_ll_get_rec(). The bit values and signatures are ESP-IDF v5.4.1's
+ * and twai_ll_get_rec(); for the kept-driver switch (T14, T15)
+ * twai_ll_exit_reset_mode(), twai_ll_set_mode(), twai_ll_set_rec() and
+ * twai_ll_set_tec(). The bit values and signatures are ESP-IDF v5.4.1's
  * (components/hal/esp32c3/include/hal/twai_ll.h; the S3's file has the same
  * registers). The real calls are static inline register accesses; here
  * they are functions of the fake, which derives the status and the reset
@@ -17,6 +19,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>     /* as ESP-IDF's twai_ll.h includes it */
+#include "driver/twai.h" /* twai_mode_t, which ESP-IDF's has from hal/twai_types.h */
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,6 +48,12 @@ bool     twai_ll_is_in_reset_mode(twai_dev_t *hw);
 void     twai_ll_enter_reset_mode(twai_dev_t *hw);
 uint32_t twai_ll_get_tec(twai_dev_t *hw);
 uint32_t twai_ll_get_rec(twai_dev_t *hw);
+
+/* The kept-driver switch (twai_port T14, T15). */
+void     twai_ll_exit_reset_mode(twai_dev_t *hw);
+void     twai_ll_set_mode(twai_dev_t *hw, twai_mode_t mode);
+void     twai_ll_set_rec(twai_dev_t *hw, uint32_t rec);
+void     twai_ll_set_tec(twai_dev_t *hw, uint32_t tec);
 
 #ifdef __cplusplus
 }

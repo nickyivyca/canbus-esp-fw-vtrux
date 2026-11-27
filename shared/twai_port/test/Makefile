@@ -20,7 +20,7 @@ CFLAGS ?= -std=c11 -O1 -g $(WARN) -fsanitize=address,undefined -fno-omit-frame-p
 INC    := -Iinclude -Ihost -I. -I../include -I../../can_port/include
 
 FAKE := twai_fake.c twai_fake.h include/driver/twai.h include/hal/twai_ll.h \
-        $(wildcard include/soc/*.h) host/esp_rom_sys.h
+        $(wildcard include/soc/*.h) host/esp_rom_sys.h host/esp_cpu.h
 PORT := ../twai_port.c ../include/twai_port.h ../../can_port/include/can_port.h \
         $(wildcard host/*.h host/*/*.h) host_platform.c
 
