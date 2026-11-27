@@ -23,6 +23,10 @@ follows v5.4.2 since gen-inhibit's port step 1d ("ESP-IDF v5.4.2" below).
     make -C shared/twai_port/test mutate-test  # mutate.py removes its scratch folder, pass or fail
     make -C shared/twai_port/test cxx        # the fake and cpp/ compiled as C++11
     make -C shared/twai_port/test cxx-test   # cpp/'s own tests
+    make -C shared/twai_port/test host-switch-refused  # an ESP-IDF build refuses TWAI_PORT_HOST_SWITCH
+
+`host-switch-refused` needs a shell exported for ESP-IDF v5.4.2
+(`local-paths.md`); the others need only gcc and g++.
 
 The binaries go to `scratch/twai_port-test/` and the mutants to
 `scratch/twai_fake-mutants/<time>_<pid>/`, at the worktree's root. `mutate.py`
@@ -50,6 +54,7 @@ builds run under ASan and UBSan.
 | `t12_standin.c` | the T12 cases' can-fail: the tester's own restart stop, written from T12 and the fake's register calls. Built with `-DT12_STANDIN`, the T12 cases call it in place of the port's, on the C3's file and on the S3's measurement build (with `-DT12_STANDIN_TWO_CORES`). As written it passes them all; `T12_BROKEN` breaks one rule (9 ways on both: no wait, no bound, no reset on timeout, no abort, the clock or the reset ignored, 10 us steps, the status or the error counters not reported; on the C3, a core stalled; on the S3, no stall, the stall after the steps, a core stalled again, the core started again), and `t12-standins` passes only if each is caught by a check (exit 1 with a FAIL line), never by a sanitizer |
 | `test_switch_on_fake.c` | the kept-driver switch (T14, T15, T17, T18) through the port's interface, on the fake's S3, 13 cases: the driver kept across the switch with no queue discarded, sends refused in listen-only as `tx_refused`, frames still received; a port set up in listen-only; no-ACK still T4's; the switch refused while bus-off; the held-frame bound; REC 128 and 0 written in reset mode, read back and reported, the status's counters from the registers; no active error flag in listen-only; the held frames handed to the hook once each, head first, with their tags, counted once as `tx_discarded_switch` and never as `tx_failed`, and a send reaching the wire after; none held; no hook; every bus error up to the switch counted. Built against the real port (the S3's file with the host-only `TWAI_PORT_HOST_SWITCH`) and against `switch_standin.c`. `SWITCH_RESET_TX` and `SWITCH_ABORT_REPORT` choose the fake's unmeasured knobs. No result for the held frames is final until T16 is written and T19 has measured |
 | `switch_standin.c` | the switch cases' can-fail: the tester's own port, the part the switch cases call, written from T14-T18 on the fake's calls. As written it passes every case on every knob value; `SWITCH_BROKEN` breaks one rule (13 ways), and `switch-standins` passes only if each is caught by a check |
+| `host_switch_refused.sh` | `TWAI_PORT_HOST_SWITCH` refused by every ESP-IDF build, the evidence `vtrux_checks.json` rests on for it (a host-test-only define, "not a switch"; charge-interposer reviewer, 2026-11-27). In `scratch/`, a minimal S3 project with the port, `can_port` and the x2 board: its configure succeeds without the define and stops on the component's `FATAL_ERROR` with it; and `twai_port_ll.h` compiles on the host with the define and stops on its `#error` once `ESP_PLATFORM` is defined too. Each refusal has its control, so a refusal for another reason fails the control. `HOST_SWITCH_REFUSED_BROKEN=1` makes the refused runs without the define, and the script must then fail (`host-switch-refused` runs both) |
 | `Makefile` | the builds above |
 | `README.md` (here and in `include/`, `host/`, `cpp/`) | this |
 

@@ -16,19 +16,13 @@
       "kind": "a value the build injects"
     },
     "TWAI_PORT_HOST_SWITCH": {
-      "class": "test-only",
-      "reason": "the testers' host builds on the T10 fake only: twai_port_ll_esp32s3.c reports the kept-driver switch (T14) supported before T19's measurement, so the port's switch runs on the fake. CMakeLists.txt stops any ESP-IDF build that sets it (FATAL_ERROR) and twai_port_ll.h stops the compile (#error under ESP_PLATFORM), so no image can carry it. The row's symbol is a placeholder until the implementor's marker lands (asked 2026-11-27)",
-      "refusal": [
-        {
-          "elf_symbols_absent": [
-            "twai_port_host_switch_build"
-          ]
-        }
-      ]
+      "class": "not a switch",
+      "reason": "the testers' host builds on the T10 fake only: twai_port_ll_esp32s3.c reports the kept-driver switch (T14) supported before T19's measurement, so the port's switch runs on the fake. CMakeLists.txt stops any ESP-IDF build that sets it (FATAL_ERROR) and twai_port_ll.h stops the compile (#error under ESP_PLATFORM), so no image can carry it and it needs no image row (charge-interposer reviewer, 2026-11-27). VERIFICATION.md records an ESP-IDF configure refused with it set",
+      "kind": "host-test-only define, refused by every ESP-IDF build"
     },
     "TWAI_PORT_S3_PROBE": {
       "class": "test-only",
-      "reason": "T19's measurement build for the X2 (the s3probe variant): twai_port_ll_esp32s3.c reports T8, T12 and the kept-driver switch supported before the measurement has passed. The row's symbol is a placeholder until the implementor's marker lands (asked 2026-11-27); the serial test app's symbols and command strings join it when that code lands",
+      "reason": "T19's measurement build for the X2 (the s3probe variant): twai_port_ll_esp32s3.c reports T8, T12 and the kept-driver switch supported before the measurement has passed. The row's symbol is the implementor's mark, defined only under this switch (shared/twai_port/t19-s3-app b2240441; it reaches shared/main with T19's code); the serial test app's symbols and command strings join it when that code lands",
       "refusal": [
         {
           "elf_symbols_absent": [

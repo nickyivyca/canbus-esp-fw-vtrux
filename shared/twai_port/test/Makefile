@@ -9,6 +9,7 @@
 #   make -C shared/twai_port/test t12-standins  # the T12 cases fail on each broken restart stop
 #   make -C shared/twai_port/test switch-standins  # the switch cases fail on each broken switch
 #   make -C shared/twai_port/test switch-knobs  # the real switch on every unmeasured knob (a report)
+#   make -C shared/twai_port/test host-switch-refused  # an ESP-IDF build refuses TWAI_PORT_HOST_SWITCH (needs ESP-IDF exported)
 #
 # Binaries go to the worktree's scratch/ (AGENTS.md, "Files and folders");
 # give OUT=<folder> to put them elsewhere.
@@ -156,6 +157,10 @@ switch-standins: $(OUT)/test_switch_standin
 	done; \
 	test $$ok -eq 1 && echo "switch-standins: the standin as written passed every switch case on every knob, every broken one caught"
 
+host-switch-refused:
+	bash host_switch_refused.sh
+	HOST_SWITCH_REFUSED_BROKEN=1 bash host_switch_refused.sh; test $$? -eq 1 && echo "host-switch-refused: the broken form FAILED, as it must"
+
 mutants:
 	$(PYTHON) mutate.py --cc $(CC)
 
@@ -176,4 +181,4 @@ clean:
 	rm -f $(OUT)/test_twai_fake $(OUT)/test_port_on_fake_c3 $(OUT)/test_port_on_fake_s3 \
 	    $(OUT)/test_port_on_fake_t12 $(OUT)/twai_fake_cxx.o $(OUT)/twai_fake_cpp.o $(OUT)/test_cpp_wrapper
 
-.PHONY: all run t12-standins mutants mutate-test cxx cxx-test clean
+.PHONY: all run t12-standins mutants mutate-test cxx cxx-test clean host-switch-refused
