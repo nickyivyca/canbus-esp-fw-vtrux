@@ -66,6 +66,12 @@ static struct
     int64_t  race_lose_after;
     int64_t  stick_us;
 
+    /* no node acknowledges: the frame is retried, with a gap between retries */
+    bool     unacked;
+    int64_t  unacked_gap_us;
+    bool     in_retry_gap;
+    int      abort_reads;
+
     fb_frame_t wire[FB_MAX];
     int        wire_n;
     fb_frame_t sub[FB_MAX];
@@ -106,10 +112,27 @@ void fb_race_next(int64_t lose_after_us)
 
 void fb_stick_transmitting(int64_t us) { g.stick_us = us; }
 
+void fb_set_unacked(bool on, int64_t gap_us)
+{
+    g.unacked = on;
+    g.unacked_gap_us = gap_us;
+}
+
+int fb_abort_reads(void) { return g.abort_reads; }
+
 /* How long the current frame will transmit for. */
 static int64_t fb_air(void)
 {
     return (g.stick_us > 0) ? g.stick_us : FB_AIR_US;
+}
+
+/* When an awaiting frame starts transmitting: after the gap between two
+ * unacknowledged retries, else at once on an idle bus, else after the
+ * arbitration wait on a contended one. */
+static int64_t fb_start_at(void)
+{
+    if (g.in_retry_gap) { return g.t_submitted + g.unacked_gap_us; }
+    return g.t_submitted + (g.contended ? FB_ARB_WAIT_US : 1);
 }
 
 /*
@@ -129,8 +152,7 @@ void fb_advance(int64_t us)
         {
             /* waiting to start: immediately on an idle bus, after the
              * arbitration wait on a contended one */
-            const int64_t start = g.t_submitted
-                                + (g.contended ? FB_ARB_WAIT_US : 1);
+            const int64_t start = fb_start_at();
             if (start < next) { next = start; }
         }
         if (g.occupied && g.transmitting && !g.in_noeffect)
@@ -178,10 +200,21 @@ void fb_advance(int64_t us)
             continue;
         }
         if (g.occupied && !g.transmitting && !g.abort_pending
-            && g.now >= g.t_submitted + (g.contended ? FB_ARB_WAIT_US : 1))
+            && g.now >= fb_start_at())
         {
             g.transmitting = true;
+            g.in_retry_gap = false;
             g.t_start_tx = g.now;
+            continue;
+        }
+        if (g.occupied && g.transmitting && g.unacked
+            && g.now >= g.t_start_tx + fb_air())
+        {
+            /* NOT ACKNOWLEDGED: no completion, and the controller retries it
+             * after the gap. TS reads 0 meanwhile. */
+            g.transmitting = false;
+            g.in_retry_gap = true;
+            g.t_submitted = g.now;
             continue;
         }
         if (g.occupied && g.transmitting
@@ -213,6 +246,7 @@ static bool fb_submit(void *ctx, const gi_frame_t *f)
     }
     g.occupied = true;
     g.transmitting = false;
+    g.in_retry_gap = false;
     g.t_submitted = g.now;
     g.f.id = f->id;
     g.f.dlc = f->dlc;
@@ -231,6 +265,7 @@ static gs_buf_t fb_abort_if_awaiting(void *ctx)
                         : ((g.transmitting || g.in_noeffect)
                            ? GS_BUF_TRANSMITTING : GS_BUF_AWAITING);
     (void)ctx;
+    g.abort_reads++;
 
     if (seen != GS_BUF_AWAITING)
     {
