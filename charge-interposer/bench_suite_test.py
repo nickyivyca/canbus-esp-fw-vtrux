@@ -831,7 +831,10 @@ def test_suites():
     # 322: diag-schema-check (emulated, m-host) and diag-schema-check-canfail
     #      (harness): the DBC and the generated tables at diag schema 5
     #      (spec 8.2, user 2026-11-23)
-    assert len(seen) == 322, "checks across the suites: %d" % len(seen)
+    # 321: b-vport/vport-listen-wrong-rate gone (spec 9 leaves the wrong bit
+    #      rate out of the listen-only cases; the reviewer, on the user's
+    #      ruling, 2026-11-27)
+    assert len(seen) == 321, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -2415,28 +2418,30 @@ def _set_mode(cid, mode):
     return fn
 
 
-def test_vport_split():
-    """vport-listen's two wrong-rate arms run as their own check, which is a
-    registered KNOWN FAIL (reviewer, 2026-10-21); the rest stay judged in
-    vport-listen; between them every listen arm runs exactly once."""
+def test_vport_listen():
+    """vport-listen is the one check of bench_vport's listen step, it runs
+    every listen arm, and no listen-only window is at a wrong bit rate:
+    vport-listen-wrong-rate and its KNOWN FAIL are gone (the reviewer,
+    2026-11-27, on the user's ruling: spec 9 leaves the wrong bit rate out
+    of the listen-only cases). Until then the wrong-rate arms ran as their
+    own KNOWN-FAIL check (reviewer, 2026-10-21)."""
     sys.path.insert(0, _drivers())
     import bench_vport as V
     s, su = _all()
-    checks = {c.id: c for g in su["bench"].groups for c in g.checks}
-    arms = {}
-    for cid in ("vport-listen", "vport-listen-wrong-rate"):
-        c = checks[cid]
-        assert _opt(c.argv, "--steps") == "listen", cid
-        arms[cid] = V.listen_arm_keys(_opt(c.argv, "--listen-arms") or "all")
-    assert arms["vport-listen-wrong-rate"] == ["wrong-250k", "wrong-1m"]
-    assert not set(arms["vport-listen"]) & {"wrong-250k", "wrong-1m"}, \
-        "a known-fail arm left in the judged check"
-    allarms = arms["vport-listen"] + arms["vport-listen-wrong-rate"]
-    assert sorted(allarms) == sorted(V.LISTEN_ARMS), \
-        "listen arms lost or doubled: %s" % allarms
-    kf = {k.id for k in su["bench"].known_fails}
-    assert "b-vport/vport-listen-wrong-rate" in kf
-    assert "b-vport/vport-listen" not in kf
+    checks = [(g.name, c) for g in su["bench"].groups for c in g.checks]
+    listen = ["%s/%s" % (g, c.id) for g, c in checks
+              if _opt(c.argv, "--steps") == "listen"]
+    assert listen == ["b-vport/vport-listen"], \
+        "checks of bench_vport's listen step: %s" % listen
+    c = next(c for g, c in checks if c.id == "vport-listen")
+    arms = V.listen_arm_keys(_opt(c.argv, "--listen-arms") or "all")
+    assert arms == list(V.LISTEN_ARMS), \
+        "vport-listen runs %s of %s" % (arms, list(V.LISTEN_ARMS))
+    for name, cmds in V.listen_subs(arms):
+        assert cmds is None or cmds[0] == "BITRATE 500k", \
+            "listen window %s not at the bus rate: %s" % (name, cmds)
+    kf = [k.id for k in su["bench"].known_fails if k.id.startswith("b-vport/")]
+    assert not kf, "a b-vport known fail: %s" % kf
 
 
 def test_bench_argv():
@@ -2665,7 +2670,7 @@ TESTS = [test_script_judge, test_recorded_judge, test_scenario_judge,
          test_usb_baselines, test_usb_stops, test_reopen_skip,
          test_script_coverage, test_shared_bench_tests,
          test_harness_py_canfails, test_strict_port_off,
-         test_vport_split, test_bench_argv, test_wican_board,
+         test_vport_listen, test_bench_argv, test_wican_board,
          test_scripts_in_tree, test_can_tools_record, test_runner_stage,
          test_m_lanes_host, test_idle_safe, test_adapters_by_role,
          test_x2_port_from_settings, test_reset_check_verdict, test_esptool_env,
@@ -3307,9 +3312,15 @@ def _skip_reason(cid, reason):
     return fn
 
 
-def _wrong_rate_back(s):
-    c = _check(s, "vport-listen")
-    c.argv[c.argv.index("--listen-arms") + 1] = "all"
+def _wrong_rate_check_back(s):
+    """vport-listen-wrong-rate back as a second listen-step check (its argv
+    without the arms that are gone, so the walk itself does not refuse)."""
+    import copy
+    g = next(g for g in s.groups if g.name == "b-vport")
+    c = copy.deepcopy(_check(s, "vport-listen"))
+    c.id = "vport-listen-wrong-rate"
+    c.argv[c.argv.index("--listen-arms") + 1] = "idle"
+    g.checks.append(c)
 
 
 def _arm_lost(s):
@@ -3317,9 +3328,9 @@ def _arm_lost(s):
     c.argv[c.argv.index("--listen-arms") + 1] = "no-ack,idle,flood-7F4,flood-649"
 
 
-def _known_fail_dropped(s):
-    s.known_fails = [k for k in s.known_fails
-                     if k.id != "b-vport/vport-listen-wrong-rate"]
+def _known_fail_back(s):
+    s.known_fails = list(s.known_fails) + [B.KnownFail(
+        "b-vport/vport-listen", "the wrong-rate KNOWN FAIL back")]
 
 
 def _flight_silence_a25e(s):
@@ -3613,13 +3624,13 @@ MUTANTS = {
         ("bench", _wrap_suite("bench", _set_mode("powerup-round-noack",
                                                  "ack")),
          "no no-ACKer power-up check left to pin")],
-    "test_vport_split": [
-        ("bench", _wrap_suite("bench", _wrong_rate_back),
-         "the wrong-rate arms back in vport-listen"),
+    "test_vport_listen": [
+        ("bench", _wrap_suite("bench", _wrong_rate_check_back),
+         "a second listen-step check (vport-listen-wrong-rate) back"),
         ("bench", _wrap_suite("bench", _arm_lost),
          "vport-listen loses its stall arm"),
-        ("bench", _wrap_suite("bench", _known_fail_dropped),
-         "the wrong-rate check not a known fail")],
+        ("bench", _wrap_suite("bench", _known_fail_back),
+         "a b-vport known fail back")],
     "test_recorded_judge": [("recorded_judge", _pass_all, "passes everything")],
     "test_scenario_judge": [
         ("scenario_judge", _pass_all, "passes everything"),

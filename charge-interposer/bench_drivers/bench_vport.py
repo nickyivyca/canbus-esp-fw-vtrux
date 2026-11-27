@@ -31,9 +31,11 @@ checks 2.3 on hardware):
             segment acknowledges (the witness, the WiCAN, anything), and
             the whole run is REFUSED, since steps 1 and 4 would then judge
             an ACK the board did not need
-  1 listen  the port in listen-only under each of 2-4 below: the witness
+  1 listen  the port in listen-only under each of 3-4 below: the witness
             must see no board frame and no error frame, and every node
-            frame must get through
+            frame must get through. Not at a wrong bit rate: spec 9 leaves
+            it out of the listen-only cases (user, 2026-10-16 and
+            2026-11-27), so the wrong-250k and wrong-1m arms are gone
   2 bitrate the port at 250k and 1M against the 500k bus, normal mode,
             idle and then flooding: error frames per burst, bursts per
             minute (bus-off recovery on, as the product, B-7c), and the
@@ -74,8 +76,8 @@ stamp_bounds is unchanged. Where the node's frames are expected to
 complete (an ACKer present, the board at 500k) a kvaser TX stall (ENOBUFS,
 or an echo later than 100 ms) makes the run VOID with the kernel's lines,
 and the Kvaser is recovered (stall_report). In the no-ACK windows (step
-1's no-ack arm and its can-fail) and the wrong-rate ones (the wrong-rate
-listen arms, 1b discrim, 1c offpair, step 2, m1) the rule is suspended
+1's no-ack arm and its can-fail) and the wrong-rate ones (1b discrim,
+1c offpair, step 2, m1) the rule is suspended
 (Node.expect_acks(False)): ENOBUFS is a refused send, as CANlib's full
 queue was, and an unechoed frame is not sent. The node starts with the rule
 suspended, since step 0 leaves nothing to acknowledge it, and each step
@@ -1862,7 +1864,11 @@ def node_sender(watch, msg_of, expect, now, put, forgive=lambda: 0, wrong=lambda
     sends are refused for seconds at a time, and a node that skipped its
     reads then found its receive queue full when the ACK came back, lost
     the held frames' echoes and VOIDed the flush (run 40e6's vport-listen,
-    "28 sends unechoed, 552 echoed")."""
+    "28 sends unechoed, 552 echoed"). canbench's EchoWatch.send does that
+    read (read_after_send, default True), so the node's own poll(0.0)
+    after a refused send is gone (the reviewer, 2026-11-23: at
+    bench_vport's next change); the poll(0.0) after a send checks the
+    bound."""
     st = {"exp": True}
     span = set()                        # keys of the sends from a wrong-rate span
 
@@ -1891,11 +1897,7 @@ def node_sender(watch, msg_of, expect, now, put, forgive=lambda: 0, wrong=lambda
         except kvaser_link.Stall as e:
             if exp:
                 raise
-            watch.poll(0.0)             # a refused send still reads the socket
             raise RuntimeError("refused, no ACK expected: %s" % e)
-        except Exception:                                  # noqa: BLE001
-            watch.poll(0.0)
-            raise
         watch.poll(0.0)
         return pause
     return send
@@ -3302,15 +3304,15 @@ def node_fault(node, what):
     return None
 
 
-LISTEN_ARMS = ("no-ack", "idle", "wrong-250k", "wrong-1m", "flood-7F4",
-               "flood-649", "stall")
+LISTEN_ARMS = ("no-ack", "idle", "flood-7F4", "flood-649", "stall")
 
 
 def listen_arm_keys(spec):
     """--listen-arms: "all" or a comma list of LISTEN_ARMS keys -> the keys,
     in LISTEN_ARMS order; ValueError on an unknown or empty one (tester,
-    2026-10-21: the reviewer ruled wrong-250k and wrong-1m KNOWN-FAIL, so
-    the suite runs them as a check of their own)."""
+    2026-10-21). The wrong-250k and wrong-1m arms are gone (the reviewer,
+    2026-11-27, on the user's ruling: spec 9 leaves the wrong bit rate out
+    of the listen-only cases), so their names are refused too."""
     if spec == "all":
         return list(LISTEN_ARMS)
     keys = [k.strip() for k in spec.split(",") if k.strip()]
@@ -3322,14 +3324,11 @@ def listen_arm_keys(spec):
 
 
 def listen_subs(keys):
-    """The listen-only windows for the selected keys: (name, commands)."""
+    """The listen-only windows for the selected keys: (name, commands).
+    Each window with commands sets the bus rate, 500k, first."""
     subs = []
     if "idle" in keys:
         subs.append(("idle", None))
-    for r, k in (("250k", "wrong-250k"), ("1M", "wrong-1m")):
-        if k in keys:
-            subs.append(("bitrate %s + flood 7F4" % r,
-                         ("BITRATE " + r, "FLOOD 7F4")))
     for i in FLOOD_IDS:
         if "flood-%X" % i in keys:
             subs.append(("flood %X" % i, ("BITRATE 500k", "FLOOD %X" % i)))
@@ -3343,19 +3342,15 @@ def listen_window(board, wit, node, secs, name, cmds):
     """One of step 1's windows, the witness acknowledging: the sub's
     commands, a window cut by the witness's stamps (user ruling
     2026-10-25), STOP, score_listen. -> (ok, lines); ok FAULT when the
-    node, the witness or the stamps' clock faulted the window. A wrong-rate
-    sub (cmds[0] "BITRATE 250k" / "BITRATE 1M") disrupts the node's frames
-    by design, so the stall rule is suspended for it; any other sub sets
-    500k first and then expects the node's frames to complete, after the
-    node's flush (Node.expect_acks; the reviewer, 2026-11-13)."""
-    wrong = bool(cmds) and cmds[0].startswith("BITRATE") and cmds[0] != "BITRATE 500k"
+    node, the witness or the stamps' clock faulted the window. A sub with
+    commands sets 500k first; every window then expects the node's frames
+    to complete, after the node's flush (Node.expect_acks; the reviewer,
+    2026-11-13). No window is at a wrong bit rate (spec 9; the reviewer,
+    2026-11-27), so none suspends the stall rule."""
     expect = getattr(node, "expect_acks", lambda on, **kw: None)   # scripted nodes: none
-    if wrong:
-        expect(False, wrong_rate=True)
     if cmds:
         board.cmd(cmds[0])
-    if not wrong:
-        expect(True)
+    expect(True)
     rows, sent = window(board, wit, node, secs, cmds[1] if cmds else None,
                         from_command=bool(cmds))
     board.cmd("STOP")
@@ -5775,23 +5770,29 @@ def self_test():
           "each command's reply tag")
 
     # 2026-10-21: --listen-arms (the reviewer's KNOWN-FAIL split)
-    names = [n for n, _ in listen_subs(listen_arm_keys("all"))]
-    check(names == ["idle", "bitrate 250k + flood 7F4",
-                    "bitrate 1M + flood 7F4", "flood 7F4", "flood 649",
-                    "stall %d" % STALL_N],
-          "arms: all gives the six windows of before, in order")
-    rest = listen_arm_keys("no-ack,idle,flood-7F4,flood-649,stall")
-    names = [n for n, _ in listen_subs(rest)]
-    check("no-ack" in rest and not any(n.startswith("bitrate") for n in names)
-          and "flood 7F4" in names and len(names) == 4,
-          "arms: the suite's vport-listen has no wrong-rate window")
-    wrong = [n for n, _ in listen_subs(listen_arm_keys("wrong-250k,wrong-1m"))]
-    check(wrong == ["bitrate 250k + flood 7F4", "bitrate 1M + flood 7F4"]
-          and "no-ack" not in listen_arm_keys("wrong-250k,wrong-1m"),
-          "arms: the known-fail check has exactly the two wrong-rate windows")
+    # 2026-11-27: the wrong-rate arms gone (the reviewer, on the user's
+    # ruling: spec 9 leaves the wrong bit rate out of the listen-only cases)
+    subs = listen_subs(listen_arm_keys("all"))
+    names = [n for n, _ in subs]
+    check(names == ["idle", "flood 7F4", "flood 649", "stall %d" % STALL_N],
+          "arms: all gives the four windows, in order -> %s" % names)
+    check(listen_arm_keys("all") == ["no-ack", "idle", "flood-7F4",
+                                     "flood-649", "stall"],
+          "arms: all is the no-ack arm and the four windows")
+    check(all(c is None or c[0] == "BITRATE 500k" for _, c in subs),
+          "arms: every listen window with commands sets 500k first -> %s"
+          % [c for _, c in subs])
     check(listen_arm_keys("stall,idle") == ["idle", "stall"],
           "arms: run in the fixed order whatever the order given")
-    for spec in ("flood-7f4", "", "idle,bogus"):
+    # a subset runs only its own windows (the wrong-rate selection checked
+    # this until 2026-11-27)
+    part = {s: [n for n, _ in listen_subs(listen_arm_keys(s))]
+            for s in ("idle,stall", "flood-649", "no-ack")}
+    check(part == {"idle,stall": ["idle", "stall %d" % STALL_N],
+                   "flood-649": ["flood 649"], "no-ack": []},
+          "arms: a subset runs only its own windows -> %s" % part)
+    for spec in ("flood-7f4", "", "idle,bogus", "wrong-250k", "wrong-1m",
+                 "idle,wrong-1m"):
         try:
             listen_arm_keys(spec)
             ok = False
@@ -6196,6 +6197,39 @@ def self_test():
                   "" if want is True else "can-fail: ", what,
                   verdict_word(ok) if ok in (True, False, FAULT) else ok,
                   ln[0] if ln else ""))
+
+    # 2026-11-27: every listen window expects the node's frames to complete
+    # (no wrong-rate window suspends the stall rule any more)
+    class _RB(_SB):
+        def __init__(self):
+            self.cmds = []
+
+        def cmd(self, c, *a):
+            self.cmds.append(c)
+            return "@OK"
+
+    class _RN(_SN):
+        def __init__(self, log):
+            _SN.__init__(self, log)
+            self.expects = []
+
+        def expect_acks(self, on, **kw):
+            self.expects.append((on, kw))
+    seen = []
+    for name, cmds in listen_subs(listen_arm_keys("all")):
+        rb, rn = _RB(), _RN(slog)
+        try:
+            listen_window(rb, _SW([(s_pre, None), (s_cut, good),
+                                   (s_drain, good)]), rn, 0.0, name, cmds)
+            seen.append((name, rn.expects, rb.cmds[:1]))
+        except Exception as exc:                           # noqa: BLE001
+            seen.append((name, fail_text(exc), []))
+    check(seen and all(e == [(True, {})] for _, e, _c in seen),
+          "each listen window expects the node's frames to complete, and "
+          "only that -> %s" % [(n, e) for n, e, _c in seen])
+    check(all(c == ["BITRATE 500k"] for n, _e, c in seen if n != "idle"),
+          "each listen window with commands sends BITRATE 500k first -> %s"
+          % [(n, c) for n, _e, c in seen])
     # the stamp map (reviewer, 2026-11-11): stamps on an epoch clock 470
     # ppm fast, as the PCAN's are on Linux but off rate, the windows cut on
     # this process's clock. S(h): the stamp of host time h.
@@ -6416,9 +6450,20 @@ MUTANTS = [
     ("given order kept",
      "    return [k for k in LISTEN_ARMS if k in keys]",
      "    return keys"),
-    ("wrong-rate windows always run",
-     "        if k in keys:\n            subs.append((\"bitrate %s + flood 7F4\"",
-     "        if True:\n            subs.append((\"bitrate %s + flood 7F4\""),
+    # 2026-11-27: the wrong-rate arms gone; their mutant "wrong-rate windows
+    # always run" went with them
+    ("a flood listen window at a wrong bit rate",
+     "            subs.append((\"flood %X\" % i, (\"BITRATE 500k\", \"FLOOD %X\" % i)))",
+     "            subs.append((\"flood %X\" % i, (\"BITRATE 1M\", \"FLOOD %X\" % i)))"),
+    ("a listen window suspends the stall rule",
+     "    expect(True)\n    rows, sent = window(board, wit, node, secs, cmds[1] if cmds else None,",
+     "    expect(False, wrong_rate=True)\n    rows, sent = window(board, wit, node, secs, cmds[1] if cmds else None,"),
+    ("a listen window with commands skips its BITRATE",
+     "    if cmds:\n        board.cmd(cmds[0])\n    expect(True)",
+     "    expect(True)"),
+    ("the wrong-rate arms accepted again",
+     "LISTEN_ARMS = (\"no-ack\", \"idle\", \"flood-7F4\", \"flood-649\", \"stall\")",
+     "LISTEN_ARMS = (\"no-ack\", \"idle\", \"wrong-250k\", \"wrong-1m\", \"flood-7F4\", \"flood-649\", \"stall\")"),
     ("flood arms always run",
      "        if \"flood-%X\" % i in keys:",
      "        if True:"),
@@ -6803,6 +6848,8 @@ MUTANTS += [
     # reads after every send, refused ones too (read_after_send, default
     # True, passed by kvaser_link and checked in kvaser_link_test), so the
     # read is can-tools' code now and held_flush_cases pass without it.
+    # The two poll(0.0) lines themselves went 2026-11-27, at bench_vport's
+    # next change (the reviewer, 2026-11-23).
     ("the node takes error frames",
      "    bus = kvaser_link.open_bus(receive_own_messages=True, error_frames=False)",
      "    bus = kvaser_link.open_bus(receive_own_messages=True)"),
