@@ -927,6 +927,15 @@ same folder.
   projects means that a copy never finds its canre folder by its own
   location. gen-inhibit's host-suite runner sets `CANRE_DIR` when it moves
   to the shared tool.
+- **Install only into the worktree** (user, 2026-11-27, in the gen-inhibit
+  reviewer's session): the sentence "If `CANRE_DIR` is set, it names
+  canre's folder instead" could be read to mean that install also writes
+  into `CANRE_DIR`. It does not. `vtrux_pins` (shared/main `4eed8ee4`)
+  installs only into the worktree and reads `CANRE_DIR` only to find the
+  folder that it checks and loads, as the interposer's `canre_pin.py` did.
+  So a copy with no git does not install canre. Its harness copies in the
+  folder installed in the worktree, as gen-inhibit's `gi_host_run.sh`
+  copies `scratch/`.
 - **Status:** validated.
 
 ### R36. Pins on outside images

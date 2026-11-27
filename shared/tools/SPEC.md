@@ -396,7 +396,9 @@ unless the code hash changes, which the reproducible test (R19) shows.
     `scratch/canre/<commit>/` in that worktree. If `CANRE_DIR` is set, it
     names canre's folder instead, as an absolute path. Outside a git
     worktree, only `CANRE_DIR` names the folder, and canre is refused if it
-    is not set.
+    is not set. Install writes canre only into `scratch/canre/<commit>/` in
+    the git worktree, never into the `CANRE_DIR` folder (added 2026-11-27,
+    user).
   - Each file is checked against the pinned commit. canbench is checked by
     git blob hash. canre is checked by the hashes in its `RECORD` and the
     commit in its `direct_url.json`.
