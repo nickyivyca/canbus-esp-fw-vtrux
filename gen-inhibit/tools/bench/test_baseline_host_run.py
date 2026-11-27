@@ -67,7 +67,10 @@ tools/bench/gi_scratch_core.py, byte for byte shared/bench's vtrux_bench/scratch
 pin its own shared_pins.json gives, and gi_scratch_core.json, which names that pin and the
 file's sha256; the copy's gi_paths, with no git, removes a folder through it. A commit
 whose gi_paths has its own removal (GI_TEST_OLD_GP_COMMIT, default 4c3afb4d) ships
-gi_paths.py and neither file.
+gi_paths.py and neither file. The stage does not hang on how git writes (2026-11-27,
+found by the whole tools test set on d9c087b5): with a git first on PATH that writes
+gi_paths.py in two parts with a pause, the copy still holds both files. Under pipefail,
+"git show | grep -q" was false about 1 time in 4, and the stage was skipped.
 
     python3.13 -B gen-inhibit/tools/bench/test_baseline_host_run.py
     python3.13 -B gen-inhibit/tools/bench/test_baseline_host_run.py --mutants
@@ -371,6 +374,51 @@ def scratch_core_checks(tmp, names, bench):
           (r.returncode, r.stdout[-200:], r.stderr[-300:]))
 
 
+# A git first on PATH whose "git show <C>:.../gi_paths.py" writes the blob in two parts, with a
+# pause after the first line that names gi_scratch_core.json. Every other call is the real
+# git's. A reader that stops at the first match (grep -q) has gone when the second part is
+# written, so this git dies of SIGPIPE (exit 141) every time, as the real one did about 1 time
+# in 4 on 2026-11-27.
+SPLIT_GIT = r'''#!/bin/bash
+REAL="__REAL__"
+case "$*" in
+  *" show "*gi_paths.py*) ;;
+  *) exec "$REAL" "$@" ;;
+esac
+f="$(mktemp)" || exit 2
+trap 'rm -f "$f"' EXIT
+"$REAL" "$@" > "$f" || exit $?
+k="$(grep -n -m1 gi_scratch_core.json "$f" | cut -d: -f1)"
+if [ -z "$k" ]; then cat "$f"; exit $?; fi
+head -n "$k" "$f"
+sleep 1
+tail -n "+$((k + 1))" "$f"
+'''
+
+
+def split_git_checks(script_dir, tmp):
+    """The record test does not hang on how git writes (2026-11-27): under pipefail,
+    "git show | grep -q" was false about 1 time in 4 on madhouse-debian, and the stage was
+    skipped. With SPLIT_GIT first on PATH, the copy of DECODE_COMMIT still holds both staged
+    files."""
+    sub = os.path.join(tmp, "split_git")
+    gbin = os.path.join(sub, "gitbin")
+    os.makedirs(gbin)
+    with open(os.path.join(gbin, "git"), "w", newline="\n") as fh:
+        fh.write(SPLIT_GIT.replace("__REAL__", fw(shutil.which("git") or "git")))
+    os.chmod(os.path.join(gbin, "git"), 0o755)
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = fw(gbin) + os.pathsep + old_path
+    try:
+        rc, s, out = remote_script(script_dir, sub, tag="splitgit", commit=DECODE_COMMIT)
+    finally:
+        os.environ["PATH"] = old_path
+    check("a git that writes gi_paths.py in two parts, with a pause (the SIGPIPE race, 2026-11-27): "
+          "the script runs to the end", rc == 0 and s, (rc, out[-300:]))
+    got = [tar_member(sub, "splitgit", f) is not None for f in STAGED]
+    check("... and the copy still holds %s and %s" % STAGED, got == [True, True], (got, out[-300:]))
+
+
 def checks(script_dir):
     want_sha = hashlib.sha256(CAPTURE_BODY).hexdigest()
     with tempfile.TemporaryDirectory(prefix="gi-host-run-", dir=gi_paths.scratch("tmp", run=False)) as tmp:
@@ -439,6 +487,7 @@ def checks(script_dir):
         check("... and canre_pin imports from the copy's tools/bench/ alone",
               r_imp.returncode == 0 and r_imp.stdout.strip() == "imported", (r_imp.returncode, r_imp.stderr[-300:]))
         scratch_core_checks(tmp, names, bench)
+        split_git_checks(script_dir, tmp)
         check("the canre_install step comes before replays_regen and the long-arm fixture",
               0 <= s4.find("step canre_install") < s4.find("step replays_regen") < s4.find("step longarm_fixture"),
               (s4.find("step canre_install"), s4.find("step replays_regen")))
@@ -651,7 +700,10 @@ MUTANTS = [
      '      $LOCAL_PY -B "$TOP/gen-inhibit/tools/bench/gi_paths.py" --stage-scratch "$STAGE/$BENCH_AT" --at "$C" >/dev/null || exit 2\n',
      ""),
     ("the shared scratch helper staged for every commit with gi_paths",
-     'if git -C "$TOP" show "$C:$BENCH/gi_paths.py" | grep -q gi_scratch_core.json; then', "if true; then"),
+     'if grep -q gi_scratch_core.json "$STAGE/$BENCH_AT/gi_paths.py"; then', "if true; then"),
+    ("the record test reads git show through grep -q (the SIGPIPE race, 2026-11-27)",
+     'if grep -q gi_scratch_core.json "$STAGE/$BENCH_AT/gi_paths.py"; then',
+     'if git -C "$TOP" show "$C:$BENCH/gi_paths.py" | grep -q gi_scratch_core.json; then'),
     ("the canre_install step dropped",
      "if [ $CANRE = 1 ]; then step canre_install $PY -B $BENCH_AT/canre_pin.py install; fi\n", ""),
     ("the canre_install step for every commit", "if [ $CANRE = 1 ]; then step canre_install",

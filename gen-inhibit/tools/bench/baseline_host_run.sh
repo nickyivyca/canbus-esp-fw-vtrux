@@ -110,8 +110,11 @@ if tree "$BENCH/canre_pin.py"; then
     # names gi_scratch_core.json) loads it, in a copy with no git, only from the staged
     # gi_scratch_core.py whose sha256 its record gives. So this tree's gi_paths stages both,
     # from git at the shared/bench pin of C's own shared_pins.json. An earlier commit has its
-    # own removal and gets neither.
-    if git -C "$TOP" show "$C:$BENCH/gi_paths.py" | grep -q gi_scratch_core.json; then
+    # own removal and gets neither. The test reads the gi_paths.py just staged, with no pipe
+    # (2026-11-27): under pipefail, "git show | grep -q" was false about 1 time in 4 here,
+    # since grep -q exits at the first match and git show then dies of SIGPIPE (exit 141), so
+    # the stage was skipped.
+    if grep -q gi_scratch_core.json "$STAGE/$BENCH_AT/gi_paths.py"; then
       $LOCAL_PY -B "$TOP/gen-inhibit/tools/bench/gi_paths.py" --stage-scratch "$STAGE/$BENCH_AT" --at "$C" >/dev/null || exit 2
     fi
   fi
