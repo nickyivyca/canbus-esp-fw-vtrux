@@ -160,6 +160,14 @@ Requirements are numbered T1 to T13. The numbers are stable.
   (user, 2026-11-01). Its results are evidence for this component version,
   citable by both projects.
 
+  It also measures the following on a bus where no node acknowledges, in
+  the error-active and error-passive states (gen-inhibit tracker F5, added
+  2026-11-27, user):
+  - what the status register's TS bit reads between the controller's
+    automatic resends;
+  - what the abort command does to the frame during an attempt and in the
+    idle between attempts.
+
 **Not in this spec** (stage (b)): the interposer's register-level mode switch
 with the driver kept installed, REC handling, and counting frames held or
 discarded at a switch.
