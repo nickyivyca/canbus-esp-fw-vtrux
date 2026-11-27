@@ -2049,8 +2049,6 @@ Delete each line as it is implemented.
     boot, since no skip-validate option is set in `sdkconfig`. So measure
     cold power-on to live once on the auto-arm INHIBIT image, and compare
     it with the restart figure.
-- **Not written** (adopted 2026-10-04, user):
-  - a WiCAN truck bring-up procedure.
 
 **Known to differ from spec 7, trip 6's count** (*added 2026-10-21, user;
 tracker B6*). Trip 6 counts the controller's bus-error interrupts, and these
