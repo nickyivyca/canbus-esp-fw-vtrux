@@ -10401,6 +10401,35 @@ from `3d9ab7cc`: `ff2e2531`, then two merges of gen-inhibit/main (`f1c3fe77`, an
     defect. Run alone, one tip after the other: 59 pass, 0 fail on each of `f1c3fe77`,
     `729a6014` and `6b944055`. The 57 mutant files exit 0.
 
+**Port step 4 item 4: `interlock_bench`'s slice read-back on the core's
+`procs.cgroup_slice` -- tester, 2026-11-25 to 2026-11-27, madhouse-debian. Result:
+accepted by the stacked run on the stack tip `6b944055` (items 2, 4 and 3; see item 2's
+entry above).** The gen-inhibit reviewer's batch of 2026-11-25 (port plan, order of work
+step 4). `interlock_bench.in_bench_slice` reads the slice with the pinned core's
+`vtrux_bench.run.procs.cgroup_slice`: the innermost slice of the unified `0::` line, as
+the core's own placement read-back reads it. It counts `bench.slice`, or a child that
+systemd names `bench-<name>.slice`. Its own line parser is removed, and cgroup v1 lines
+are no longer read. With no core, the run records "not in bench.slice (<why>)" and goes
+on. The product code did not change. On `gen-inhibit/tester/slice-readback`, from
+`3d9ab7cc`: `1195d9c8`, then merges of item 1 and item 2 (`729a6014` as run; `3081186e`
+and the entry's merge after the run).
+- **On the bench,** in `gen-inhibit-bench_20261127T010627_c0ed`: B20 PASS, 28 of 28 AS
+  SPECIFIED. Each of its 28 interlock run files records `process_priority` as
+  `bench.slice`.
+- **The emulated suite** `gen-inhibit-emulated_20261126T040520_c878`: as in item 2's
+  entry.
+- **The harness's own tests** on `1195d9c8`:
+  - `test_interlock_judge.py`: 182 checks. The v1-only file now reads "not in
+    bench.slice". New files: a v1 line beside the unified line in bench.slice, and
+    build.slice inside bench.slice. Also the reason with no core, and that the parse is
+    the pinned core's.
+  - Its mutants, in `test_raw_http_probe_mutants.py` (`interlock_bench.py`): 23 of 23
+    killed, every control passing.
+  - The whole tools test set on `729a6014` (build.slice): the same as on `f1c3fe77` (item
+    2's entry). 133 of 135 test files exit 0. `bench/test_only_inert.py` exits 2, as
+    before. `test_gi_vbus.py` exits 1 only in the set, from the tester's scheduling, and
+    passes alone. The 57 mutant files exit 0.
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical
