@@ -2042,19 +2042,13 @@ is done.
 `$REVERSE_IT_DIR/projects/vtrux/notes/gen-inhibit-review-2026-09-22.md`.
 Delete each line as it is implemented.
 
-- **Bench, an existing harness lacks the case:**
-  - SoC back at 22 % stays latched; the 21.00 % boundary; two 0x10
-    episodes in one power cycle; the live flag clearing on a latched
-    release; the 6.2 BMS-wake and pre-close rows (6.4);
-  - gate refusal with `0x440` reading open; trip 5 for each signal;
-    trip 8 (7).
-- **Truck, at bring-up:**
+- **Bench, waits on the switched 12 V supply** (moved from the truck list
+  2026-11-26, user):
   - only what a restart skips: the 12 V supply ramp and any start-up that
     runs only at power-on. In this build, image validation runs on every
-    boot, since no skip-validate option is set in `sdkconfig`. So on the
-    truck, measure power-on to live once and compare it with the bench figure.
-- **Not written** (adopted 2026-10-04, user):
-  - a WiCAN truck bring-up procedure.
+    boot, since no skip-validate option is set in `sdkconfig`. So measure
+    cold power-on to live once on the auto-arm INHIBIT image, and compare
+    it with the restart figure.
 
 **Known to differ from spec 7, trip 6's count** (*added 2026-10-21, user;
 tracker B6*). Trip 6 counts the controller's bus-error interrupts, and these

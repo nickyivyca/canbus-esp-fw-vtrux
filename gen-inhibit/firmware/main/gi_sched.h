@@ -479,6 +479,14 @@ typedef struct
     bool       aborting;
     int64_t    abort_since;
     uint32_t   abort_cmds_this;
+    /*
+     * A WITHDRAWN INHIBIT OUTLIVED THE 1 MS BOUND (spec 5.2 item 5, user
+     * 2026-11-26). The bound has been counted once for this abort; the loop
+     * stays open and turns on every later pass until the buffer is free, with
+     * nothing handed over behind it. See gs_tick() step 3. Cleared by
+     * begin_abort().
+     */
+    bool       abort_past_bound;
 
     /*
      * WHICH CLASS'S COMPLETIONS ARE TIMED (spec 11, user 2026-10-12).

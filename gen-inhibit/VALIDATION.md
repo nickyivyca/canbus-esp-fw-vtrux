@@ -1354,6 +1354,16 @@ cleared is the user's decision, 2026-09-20.
   section 10's correction. R2 does not blank `project_name`, so a build of
   another variant no longer counts as code-identical; the auto-arm build is
   tested in full in any case (the same entry's "Arming").
+- **Changed 2026-11-26 (user, tracker F2 and F3):** the "Bench, an
+  existing harness lacks the case" entry is deleted, because
+  `interlock_bench.py` (B20) covers every case in it and passes 28 of 28
+  on every full bench run in `VERIFICATION.md`. The truck power-on-to-live
+  item moves to the bench: the switched 12 V supply makes a cold power-on
+  on the bench, so the truck no longer has to measure it. The "not
+  written: a WiCAN truck bring-up procedure" line is deleted: the user's
+  two-phase framing of 2026-11-26 is the bring-up framework, and no
+  prescriptive procedure is written. The user runs the bring-up; the
+  reviewer session helps, to catch obvious missed steps.
 - **Added 2026-11-26 (user, tracker F6):** the re-review line. The user
   ruled that the adversarial review of `4c3afb4d` is the fresh-session
   re-review the gate waits on, and that the missing bench capabilities
