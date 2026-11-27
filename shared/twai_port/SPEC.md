@@ -10,7 +10,10 @@ the gen-inhibit reviewer for port step 1c. As
 a shared component's spec this follows port plan goal 20: the reviewer whose
 project needs a change drafts it, the user rules in that reviewer's session,
 and the other project's reviewer reads it before it merges into
-`shared/main`.
+`shared/main`. T14, T15 and T17 to T19 approved by the user on 2026-11-27,
+in the charge-interposer reviewer's session, and drafted that day by the
+charge-interposer reviewer for the interposer's stage (b), after the
+gen-inhibit reviewer's read. T16 is held (see T16).
 
 - **Why** each requirement is written as it is: `VALIDATION.md`, beside
   this file.
@@ -22,7 +25,7 @@ and the other project's reviewer reads it before it merges into
   split"), `shared/can_port/SPEC.md` and
   `shared/boards/SPEC.md`.
 
-Requirements are numbered T1 to T13. The numbers are stable.
+Requirements are numbered T1 to T19. The numbers are stable.
 
 - **T1. One component.** `shared/twai_port/` is one ESP-IDF component,
   `vtrux/twai_port`, in C on ESP-IDF APIs only (port plan goal 15). It is
@@ -145,7 +148,12 @@ Requirements are numbered T1 to T13. The numbers are stable.
   and whether it entered reset mode. It is in IRAM, takes no lock,
   allocates nothing and logs nothing. It is register-level, in T8's file
   per chip; only the C3's is measured (gen-inhibit spec 3). On any other
-  chip it reports "not supported" and touches nothing.
+  chip it reports "not supported" and touches nothing. On a chip with two
+  cores where the stop is supported, such as the S3 once measured (T19),
+  it first stalls the other core, before the steps
+  above, so that nothing on that core loads a frame during the wait. The
+  other core is not started again: the restart follows (added 2026-11-27,
+  user).
 - **T13. The test app.** `twai_port/test_app/` holds the transmit-abort
   probe, moved from gen-inhibit's `gi_txabort_probe.c`: a measurement of
   what the chip's abort command does to a frame awaiting arbitration, to
@@ -168,6 +176,50 @@ Requirements are numbered T1 to T13. The numbers are stable.
   - what the abort command does to the frame during an attempt and in the
     idle between attempts.
 
-**Not in this spec** (stage (b)): the interposer's register-level mode switch
-with the driver kept installed, REC handling, and counting frames held or
-discarded at a switch.
+- **T14. The kept-driver switch.** A project may choose it (T2) for a port
+  that installs in normal mode. In place of T4's teardown and install, a
+  change between normal and listen-only then keeps the driver installed,
+  so no queue is discarded by the switch. The driver's mode is fixed at
+  install and gates every send, so the port installs in normal mode and
+  reaches listen-only only through the controller's registers. In
+  listen-only the port's own flag refuses every send, counted as
+  `tx_refused` (T6). A change to or from no-ACK self-test is still T4's.
+  The switch is register-level code in T8's file per chip, and is
+  available on a chip only once measured there. On any other chip, setting
+  up a port with it fails as "not supported".
+- **T15. The error counters at a switch.** The switch writes the receive
+  error counter in reset mode: 128 on the way into listen-only, as the
+  driver's listen-only errata workaround does at start, and 0 on the way
+  out, as the driver does at stop. A listen-only controller is then
+  error-passive and sends no active error flag. After each switch the port
+  reads the register back and reports it. On a port that chose T14, T7's
+  error counters come from the registers in every mode, not from the
+  driver's values, which read 0 in listen-only.
+- **T16. The switch's placement in the inter-frame gap.** Held (user,
+  2026-11-27). It is written once T13's measurements on a bus where no node
+  acknowledges have reported on the C3 and on the S3 (T19). The number is
+  kept for it.
+- **T17. Frames held at a switch to listen-only.** The frame in
+  transmission and the frames queued behind it cannot be sent in
+  listen-only. The switch removes them, and for each one the project can
+  tell which frame it was: the frame itself, or a tag the project gave at
+  the send. The port cannot tell a bridged frame from the project's own
+  frames, so the project books them. T7 counts them as a new counter,
+  frames discarded at a switch, apart from T4's teardown discards. Each
+  frame is counted once: a frame the switch aborts is not also counted as
+  `tx_failed`.
+- **T18. The bus-error count is exact up to the switch.** Before a T14
+  switch, the port polls its alerts once more after the controller stops
+  sending, so T7's bus-error count includes every bus error up to the
+  switch.
+- **T19. T8 and T12 on the S3.** T8's file for the ESP32-S3 names the
+  ESP-IDF version it was checked against (v5.4.2) and is measured on the
+  S3 before it reports itself supported: the transmit abort and buffer
+  state (T8), the restart stop (T12) and the kept-driver switch (T14-T18).
+  It also runs T13's measurements on a bus where no node acknowledges,
+  since T16's wait and T17's abort depend on what TS reads between
+  automatic resends. The measurement is a test app as T13's, built for the
+  X2 and started by a serial command, since the X2 has no URI hook. It is
+  compiled in only when its build switch is set, and never into a release
+  image (`shared/tools` R20). Its results are evidence for this component
+  version.
