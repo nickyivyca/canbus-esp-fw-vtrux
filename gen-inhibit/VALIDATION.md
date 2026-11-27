@@ -201,6 +201,11 @@ missing.
   into `shared/wican`; the move changed none of the rules the hooks carry
   out, and the refusal bodies were unchanged by it. The CAN port: port
   step 1b (user, 2026-10-31), including the bring-up failure rule.
+- **Corrected 2026-11-26 (user, tracker F1):** the CAN port's mode outside
+  OBSERVE read "normal otherwise". It now reads "the stored `can_mode`
+  otherwise (3.2)", as section 3 and 3.2 already said. An adversarial
+  review found the difference. The reason: a device configured as silent
+  stays silent and cannot inhibit, which fails safe.
 - **Status:** validated.
 
 ## 4. The inhibit frame
@@ -487,6 +492,18 @@ hardware after emulated)"*.
   was not the cause and is not to be rebuilt (user, 2026-10-03).
   Emulation replays traffic for its stimulus, not for bus load: user,
   2026-10-03.
+- **A withdrawn frame held past the bound** (added 2026-11-26, user,
+  tracker F5). The adversarial review for the first truck deployment
+  exposed it. After a trip, an inhibit frame that no node acknowledges can
+  stay in the controller once the 1 ms loop ends, and nothing aborts it
+  again. When a node returns, one stale `0x051` goes out while the device
+  is latched. That breaks item 5's "is never sent" and the 12.4
+  no-other-node row. The realistic cause is the device's CAN wires losing
+  contact while its power stays on. The worst effect is one zero-torque
+  frame with an out-of-date counter, so the user ruled it rare but worth
+  the fix. It is tested in emulation only, at the retry pattern the bench
+  measured (262-274 us, `VERIFICATION.md` 12.4 "a bus with no other
+  node"), with no bench run (user, 2026-11-26).
 - **Status:** validated.
 
 ## 6. Conditions that disable the inhibit
@@ -1337,6 +1354,20 @@ cleared is the user's decision, 2026-09-20.
   section 10's correction. R2 does not blank `project_name`, so a build of
   another variant no longer counts as code-identical; the auto-arm build is
   tested in full in any case (the same entry's "Arming").
+- **Changed 2026-11-26 (user, tracker F2 and F3):** the "Bench, an
+  existing harness lacks the case" entry is deleted, because
+  `interlock_bench.py` (B20) covers every case in it and passes 28 of 28
+  on every full bench run in `VERIFICATION.md`. The truck power-on-to-live
+  item moves to the bench: the switched 12 V supply makes a cold power-on
+  on the bench, so the truck no longer has to measure it. The "not
+  written: a WiCAN truck bring-up procedure" line is deleted: the user's
+  two-phase framing of 2026-11-26 is the bring-up framework, and no
+  prescriptive procedure is written. The user runs the bring-up; the
+  reviewer session helps, to catch obvious missed steps.
+- **Added 2026-11-26 (user, tracker F6):** the re-review line. The user
+  ruled that the adversarial review of `4c3afb4d` is the fresh-session
+  re-review the gate waits on, and that the missing bench capabilities
+  come before the prod build's suite and the truck.
 - **Status:** validated.
 
 ## 14. Open questions

@@ -221,6 +221,30 @@ int main(void)
     expect_v("A5: the later diag frame never completed", nn_a5_not_held(2, false, false), "NOT-AS-SPECIFIED");
     expect_v("A5: a frame completed in the silence", nn_a5_not_held(2, true, true), "VOID");
 
+    /* the withdrawn frame stuck in the controller (2026-11-26): latch at 1000 ms, traffic back at 3000 ms */
+    expect_v("W1: removed by an abort 5 ms after the latch",
+             nn_w1_freed(1000 * MS, true, 1005 * MS, 3000 * MS, 9, 6, 3, 400, 3), "PASS");
+    expect_v("W1: removed by an abort in the latch's pass, before the poll saw the latch",
+             nn_w1_freed(1000 * MS, false, 1000 * MS - 40, 3000 * MS, 2, 1, 1, 30, 1), "PASS");
+    expect_v("W1: never removed", nn_w1_freed(1000 * MS, true, -1, 3000 * MS, 2, 2, 1, 12, 0), "NOT-AS-SPECIFIED");
+    expect_v("W1: removed only after traffic returned",
+             nn_w1_freed(1000 * MS, true, 3000 * MS + 300, 3000 * MS, 40, 30, 20, 900, 10), "NOT-AS-SPECIFIED");
+    expect_v("W1: removed at the instant traffic returned",
+             nn_w1_freed(1000 * MS, true, 3000 * MS, 3000 * MS, 4, 3, 2, 50, 1), "NOT-AS-SPECIFIED");
+    expect_v("W1: no latch", nn_w1_freed(-1, true, -1, 3000 * MS, 0, 0, 0, 0, 0), "VOID");
+    expect_v("W1: the frame was gone before the latch, by no abort",
+             nn_w1_freed(1000 * MS, false, -1, 3000 * MS, 0, 0, 0, 0, 0), "VOID");
+    expect_v("W2: never on the wire", nn_w2_never_completes(-1), "PASS");
+    expect_v("W2: on the wire when traffic returned", nn_w2_never_completes(3000 * MS + 500), "NOT-AS-SPECIFIED");
+    expect_v("W2: on the wire at time 0", nn_w2_never_completes(0), "NOT-AS-SPECIFIED");
+    expect_v("W3: no 0x051 after the return", nn_w3_no_051_on_return(0), "PASS");
+    expect_v("W3: one 0x051 after the return", nn_w3_no_051_on_return(1), "NOT-AS-SPECIFIED");
+    expect_v("W4: two waiting, both sent and on the wire", nn_w4_telemetry_out(false, 2, 5, 5), "PASS");
+    expect_v("W4: two waiting, one sent", nn_w4_telemetry_out(false, 2, 1, 5), "NOT-AS-SPECIFIED");
+    expect_v("W4: two waiting, one on the wire", nn_w4_telemetry_out(false, 2, 5, 1), "NOT-AS-SPECIFIED");
+    expect_v("W4: none waiting", nn_w4_telemetry_out(false, 0, 5, 5), "VOID");
+    expect_v("W4: a frame completed in the silence", nn_w4_telemetry_out(true, 2, 5, 5), "VOID");
+
     printf("\n%d ok, %d FAIL\n", g_ok, g_fail);
     return g_fail ? 1 : 0;
 }
