@@ -1304,16 +1304,14 @@ def test_the_hold_reports_its_own_setpoint_in_the_diagnostics():
        "the status frame reports state %d, HOLD" % status[2])
     ok(status[5] == 15,
        "and 1.50 A as 15 in the 0.1 A field (%d)" % status[5])
-    # The schema is a literal because 4 IS the published wire layout, and a
+    # The schema is a literal because 5 IS the published wire layout, and a
     # case that read it from the module could not break on a layout change.
-    # The firmware version is not a layout: it moves with every behaviour
-    # change (8 since the 0.28 s step gate), and what this case needs from
-    # byte 1 is that it carries the firmware version rather than the schema.
-    # The two values differ, so a swap of the two bytes still fails here.
-    ok((status[0], status[1]) == (4, M.DIAG_FW_VER),
-       "under diag schema 4 -- which is what the new state code and this "
-       "field's new meaning are published as -- with the firmware version "
-       "beside it (%d/%d)" % (status[0], status[1]))
+    # HOLD and this field's meaning were published at schema 4; schema 5
+    # (user, 2026-11-23) retired the firmware version, so byte 1 is
+    # reserved and 0, and a swap of the two bytes still fails here.
+    ok((status[0], status[1]) == (5, 0),
+       "under diag schema 5, with byte 1 reserved and 0 (%d/%d)"
+       % (status[0], status[1]))
     line = b.core.diag_line(b.t, 0, 0)
     ok("HOLD" in line, "the human diag line says HOLD too")
     ok("1.5" in line, "and carries the same setpoint (%s)" % line)
@@ -2298,7 +2296,8 @@ def test_diag_frames_carry_state_and_evap():
     b.arm(vmax=3.340, chg_max=300.0, soc=80.0)
     frames = dict(b.core.diag_frames(1000))
     st = frames[M.DIAG_STATUS_ID]
-    ok(st[0] == M.DIAG_SCHEMA_VER and st[1] == M.DIAG_FW_VER, "versions on the wire")
+    ok(st[0] == M.DIAG_SCHEMA_VER and st[1] == 0,
+       "schema on the wire, byte 1 reserved (schema 5)")
     ok(st[2] == M.S_MONITOR, "state on the wire")
     obs = frames[M.DIAG_OBSERVED_ID]
     ok(obs[4] == 160, "soc half-percent on the wire")
@@ -2312,6 +2311,101 @@ def test_diag_frames_carry_state_and_evap():
        "serial diag line carries the flag and the schema")
     cnt = frames[M.DIAG_COUNTERS_ID]
     ok(cnt[4] == 0 and cnt[5] == 0, "synth counter reads 0 before any repeat")
+
+
+def test_diag_schema_5_retires_the_firmware_version():
+    """Spec 8.2 and 8.3, schema 5 (user, 2026-11-23): 0x7F4 B1 and 0x7F7
+    B4-B5 are reserved and sent 0, the schema byte is 5 at 0x7F4 B0 and
+    0x7F7 B6, the build id goes out little-endian with the hash's first byte
+    most significant (a hash starting 7f197bfd sends fd 7b 19 7f), and the
+    serial line's fw=<n> is build=<8 hex>, the hash's first bytes in order."""
+    ok(not hasattr(M, "DIAG_FW_VER"), "DIAG_FW_VER is gone from machine.py")
+    ok(M.DIAG_SCHEMA_VER == 5, "schema 5 (%d)" % M.DIAG_SCHEMA_VER)
+    b = Bench()
+    b.arm(vmax=3.340, chg_max=300.0, soc=80.0)
+    frames = b.core.diag_frames(1000, build_id=0x7F197BFD, uptime_ms=3 * 60000)
+    ok([f for f, _d in frames] == [M.DIAG_STATUS_ID, M.DIAG_OBSERVED_ID,
+                                   M.DIAG_COUNTERS_ID, M.DIAG_BUILD_ID],
+       "the four frames in their order")
+    ok(all(len(d) == 8 for _f, d in frames), "eight bytes each")
+    fr = dict(frames)
+    st, bd = fr[M.DIAG_STATUS_ID], fr[M.DIAG_BUILD_ID]
+    ok(st[0] == 5 and st[1] == 0, "0x7F4: B0 schema 5, B1 reserved 0 (%r)" % st[:2])
+    ok(bytes(bd[:4]) == b"\xfd\x7b\x19\x7f",
+       "0x7F7 B0-B3 carry the build id little-endian (%s)" % bytes(bd[:4]).hex())
+    ok(bd[4] == 0 and bd[5] == 0, "0x7F7 B4-B5 reserved 0 (%r)" % bd[4:6])
+    ok(bd[6] == 5 and bd[7] == 3, "0x7F7 B6 schema 5, B7 uptime 3 min (%r)" % bd[6:])
+    line = b.core.diag_line(1000, build_id=0x7F197BFD)
+    ok(line.endswith(" build=7f197bfd schema=5"),
+       "the serial line ends build=7f197bfd schema=5 (%s)" % line)
+    ok(" fw=" not in line, "and has no fw= field")
+    ok(b.core.diag_line(1000).endswith(" build=00000000 schema=5"),
+       "a core given no build id prints build=00000000")
+    ok(b.core.diag_misfits == 0, "no misfit (%d)" % b.core.diag_misfits)
+
+
+def test_diag_values_are_bounded_at_their_source():
+    """Spec 8.2, schema 5: no diag value may overflow its signal -- each is
+    capped where it is taken, so the packer's misfit count stays 0 and a
+    field saturates rather than going to 0. Every input here is past its
+    signal's range."""
+    b = Bench()
+    b.arm(vmax=3.340, chg_max=300.0, soc=80.0)
+    c = b.core
+    c.vmax = 10 ** 9
+    c.chg_max = -5
+    c.soc_half = 999
+    c.chg_state = 300
+    c.vcu_mode = 0x1F
+    c.stats["modified"] = 2 ** 40
+    c.stats["synth"] = 10 ** 7
+    fr = dict(c.diag_frames(c.t_enter + 10 ** 9, rx_overflow=1000, tx_fail=-3,
+                            uptime_ms=10 ** 12, build_id=2 ** 33))
+    obs, cnt, bd = fr[M.DIAG_OBSERVED_ID], fr[M.DIAG_COUNTERS_ID], fr[M.DIAG_BUILD_ID]
+    st = fr[M.DIAG_STATUS_ID]
+    ok(c.diag_misfits == 0, "no misfit (%d)" % c.diag_misfits)
+    ok(st[6:8] == b"\xff\xff", "seconds in state saturate at 65535")
+    ok(obs[0:2] == b"\xff\xff" and obs[2:4] == b"\x00\x00",
+       "vmax saturates at 65535, a negative chg_max reads 0")
+    ok(obs[4] == 255 and obs[5] == 255, "SoC and charger state saturate at 255")
+    ok(obs[7] & 0x0F == 0x0F and not (obs[7] & 0x30),
+       "the VCU mode is its low nibble; bits 4-5 stay 0")
+    ok(cnt[0:4] == b"\xff\xff\xff\xff" and cnt[4:6] == b"\xff\xff",
+       "modified and synth saturate")
+    ok(cnt[6] == 255 and cnt[7] == 0, "rx overflow saturates, tx_fail floors at 0")
+    ok(bd[0:4] == b"\xff\xff\xff\xff" and bd[7] == 255,
+       "the build id caps at 32 bits, uptime at 255 min")
+
+
+def test_the_status_frames_come_from_the_generated_table():
+    """Spec 8.2, schema 5 (shared/diag D3, D4): the Python core packs with
+    intp_diag_table.py, the table generated from the DBC, through
+    shared/diag's twin -- the same table the firmware compiles. The table
+    is the DBC's schema, and every status frame's signal is in it."""
+    import intp_diag_table as T
+    ok(T.SCHEMA_VERSION == M.DIAG_SCHEMA_VER,
+       "the table is schema %d" % T.SCHEMA_VERSION)
+    names = {m["name"]: m for m in T.MESSAGES}
+    for name, arb in (("INTP_Status", M.DIAG_STATUS_ID), ("INTP_Observed", M.DIAG_OBSERVED_ID),
+                      ("INTP_Counters", M.DIAG_COUNTERS_ID), ("INTP_Build", M.DIAG_BUILD_ID)):
+        ok(name in names and names[name]["id"] == arb and names[name]["dlc"] == 8,
+           "%s is 0x%X, DLC 8, in the table" % (name, arb))
+    sigs = [s["name"] for s in names["INTP_Status"]["signals"]]
+    ok("intp_reserved_b1" in sigs and "intp_fw_ver" not in sigs,
+       "0x7F4 B1 is intp_reserved_b1 in the table")
+    sigs = [s["name"] for s in names["INTP_Build"]["signals"]]
+    ok("intp_reserved16" in sigs and "intp_fw_ver16" not in sigs,
+       "0x7F7 B4-B5 is intp_reserved16 in the table")
+    import json
+    import os
+    with open(os.path.join(os.path.dirname(os.path.abspath(M.__file__)),
+                           "firmware", "shared_pins.json")) as f:
+        tag = json.load(f)["shared/diag"]["tag"]
+    P, msgs = M._diag_packing()
+    where = P.__file__.replace("\\", "/")
+    ok(where.endswith("/shared-%s/shared/diag/python/diag_pack.py" % tag),
+       "the twin is the pinned checkout's, %s (%s)" % (tag, where))
+    ok(msgs["INTP_Status"] is names["INTP_Status"], "packed with the generated table")
 
 
 def test_trip_codes_match_the_board_enum():

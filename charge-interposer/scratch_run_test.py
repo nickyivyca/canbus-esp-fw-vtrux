@@ -202,6 +202,11 @@ chmod +x "$out"
 """
 PY3 = r"""#!/bin/sh
 { printf 'PY'; for a in "$@"; do printf '\t%s' "$a"; done; printf '\n'; } >> "$STUB_LOG"
+# shared_pin.py where shared/diag: the stand-in shared/diag (schema 5;
+# l2_build.sh and host_diff/runner_build.sh look it up)
+case "${2:-} ${3:-}" in
+  "where shared/diag") echo "$STUB_WHERE_DG" ;;
+esac
 exit 0
 """
 # read by bash before the script (BASH_ENV); each logs to STUB_LOG.
@@ -709,11 +714,19 @@ def case_writers(base):
         p = os.path.normpath(os.path.join(fake, rel))
         os.makedirs(os.path.dirname(p), exist_ok=True)
         open(p, "w").close()
+    # and the stand-in shared/diag (schema 5), from the stand-in python3's
+    # `where shared/diag`
+    dg = os.path.join(base, "co", "shared", "diag")
+    for rel in ("diag_pack.c", "diag_build_id.c", "include/diag_pack.h",
+                "include/diag_build_id.h"):
+        p = os.path.join(dg, *rel.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "w").close()
     for n, (rel, (tool, args)) in enumerate(sorted(WRITERS.items())):
         r = Run(os.path.join(base, "w%02d" % n))
         linux_only = rel == "stop_all.sh"
         env = r.env({"REVERSE_IT_DIR": fwd(rid), "L3_STIMULUS": "unused",
-                     "TWAI_FAKE_DIR": fwd(fake)},
+                     "TWAI_FAKE_DIR": fwd(fake), "STUB_WHERE_DG": fwd(dg)},
                     stubs=not linux_only)
         argv = [bash(), fwd(os.path.join(ci, rel))] + [
             fwd(trace) if a == "{trace}" else a for a in args]

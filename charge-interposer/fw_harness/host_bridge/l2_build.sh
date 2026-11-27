@@ -26,13 +26,21 @@
 #                           HB_CP  can_port: HB_SH/../../can_port (the same
 #                                  checkout, so the same tag), or the pinned
 #                                  one (where shared/can_port)
+#                           HB_DG  shared/diag, the status frames' packer
+#                                  and build-id read (diag schema 5, spec
+#                                  8.2, user 2026-11-23): the pinned one
+#                                  (where shared/diag), at its own tag
 #                           HB_INC_SHARED  their include folders, after a
 #                                  build's own (-I <host_bridge> -I <main>)
 #                           HB_C_SRCS  name:path of each C source
 #   hb_c_objs OBJ HB FW     each C source compiled once, as C (gcc -std=c11),
 #                           to OBJ/<name>.o, with HB and FW first on the
-#                           include path; prints "<name> (C, <path>) DID NOT
-#                           BUILD" for one that does not and returns 1
+#                           include path, and FW's intp_diag_table.c, the
+#                           table generated from the DBC (schema 5), to
+#                           OBJ/intp_diag_table.o; prints "<name> (C,
+#                           <path>) DID NOT BUILD" for one that does not and
+#                           returns 1. A copy of main/ for FW holds its .c
+#                           files too.
 #   HB_FW_L2                main/'s sources of the whole bridge, as
 #                           test_l2_bridge links them (main/CMakeLists.txt's
 #                           bridge variant)
@@ -91,12 +99,29 @@ hb_shared() {
       return 2
     fi
   done
+  # shared/diag at its own tag (schema 5), always the pinned checkout's:
+  # TWAI_FAKE_DIR names only the fake's checkout
+  HB_DG="$(python3 "$pin" where shared/diag)" || {
+    echo "no shared diag (create the pinned checkout: shared_pin.py where" \
+         "shared/diag)" >&2
+    return 2
+  }
+  for f in "$HB_DG/diag_pack.c" "$HB_DG/diag_build_id.c" \
+           "$HB_DG/include/diag_pack.h" "$HB_DG/include/diag_build_id.h"; do
+    if [ ! -f "$f" ]; then
+      echo "$f is missing from the pinned shared/diag" >&2
+      return 2
+    fi
+  done
   HB_INC_SHARED=(-I "$HB_SH/include" -I "$HB_SH/host" -I "$HB_SH/cpp"
-                 -I "$HB_TP/include" -I "$HB_CP/include")
+                 -I "$HB_TP/include" -I "$HB_CP/include" -I "$HB_DG/include")
   # The S3's register file is the unsupported one (twai_port T8).
+  # diag_build_id.c reads esp_app_get_description(), which this folder's
+  # esp_app_desc.cpp gives (HOST_L2_BUILD_ID).
   HB_C_SRCS=("twai_fake:$HB_SH/twai_fake.c" "twai_port:$HB_TP/twai_port.c"
              "twai_port_ll:$HB_TP/twai_port_ll_unsupported.c"
-             "can_port:$HB_CP/can_port.c")
+             "can_port:$HB_CP/can_port.c" "diag_pack:$HB_DG/diag_pack.c"
+             "diag_build_id:$HB_DG/diag_build_id.c")
   return 0
 }
 
@@ -111,6 +136,14 @@ hb_c_objs() {
       rc=1
     fi
   done
+  # main/'s generated table (schema 5), from FW, so a copy of main/ builds
+  # its own
+  rm -f "$obj/intp_diag_table.o"
+  if ! gcc -std=c11 -O2 -Wall -Wextra -I "$hb" -I "$fw" "${HB_INC_SHARED[@]}" \
+       -c -o "$obj/intp_diag_table.o" "$fw/intp_diag_table.c"; then
+    echo "intp_diag_table (C, $fw/intp_diag_table.c) DID NOT BUILD"
+    rc=1
+  fi
   return $rc
 }
 
@@ -130,6 +163,10 @@ hb_test_inputs() {
   # The vehicle port's C components, which the tests that build the bridge
   # link.
   local port_objs=("$obj/twai_port.o" "$obj/twai_port_ll.o" "$obj/can_port.o")
+  # What machine.cpp packs the status frames with (schema 5), and main.cpp's
+  # build-id read
+  local diag_objs=("$obj/diag_pack.o" "$obj/intp_diag_table.o"
+                   "$obj/diag_build_id.o")
   # The vehicle port's firmware side (port step 2b): vehicle_port.cpp sets
   # twai_port up and registers it with can_port, port_view.cpp is how the
   # bridge reaches a port by its index, and charger_port.cpp registers the
@@ -168,7 +205,7 @@ hb_test_inputs() {
     # of Arduino.h, which only HOST_SERIAL_CAPTURE compiles in.
     test_event_layout)
       HB_T_SRCS+=("${ports[@]}" "$fw/machine.cpp")
-      HB_T_OBJS+=("${port_objs[@]}")
+      HB_T_OBJS+=("${port_objs[@]}" "${diag_objs[@]}")
       HB_T_DEFS+=(-DHOST_SERIAL_CAPTURE=1)
       ;;
     # L2 is the whole bridge: main.cpp itself, both ports and the core.
@@ -177,7 +214,7 @@ hb_test_inputs() {
     # `intp_serial` bit reads 0 on the wire.
     test_l2_bridge)
       for f in "${HB_FW_L2[@]}"; do HB_T_SRCS+=("$fw/$f"); done
-      HB_T_OBJS+=("${port_objs[@]}")
+      HB_T_OBJS+=("${port_objs[@]}" "${diag_objs[@]}")
       HB_T_DEFS+=(-DINTP_NO_SERIAL=1)
       ;;
   esac

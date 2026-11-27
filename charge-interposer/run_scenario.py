@@ -1956,7 +1956,8 @@ else:
 
 
 # Spec 9: "Every scenario decodes the diagnostic CAN frames -- not the serial
-# text -- and checks state and firmware version". Rev 1 asked for it in 8 of
+# text -- and checks state and schema version" (firmware version until
+# schema 5, user 2026-11-23). Rev 1 asked for it in 8 of
 # 19 scenarios. Applied here to every one, so a scenario added later cannot
 # leave it out (tester, 2026-10-07). Likewise every termination scenario --
 # every one that asks for released_into_hold() -- checks that nothing was
@@ -2462,11 +2463,18 @@ def run_one(sc, args, outdir):
         import diag_cadence
         order = witness_fault_flow_order(
             diag_cadence.read_witness(str(witness_path)))
+    # Spec 8.2, schema 5: the packer's misfit count, on an emulated run
+    # whose core is driven (a board prints no count; a bypass core packs
+    # nothing)
+    misfits = None
+    if not args.external_interposer and "--bypass" not in sc.interposer:
+        misfits = diag_misfits_check(int_log.read_text(errors="replace"))
     return evaluate(sc, veh_log, chg_log, int_log, timed_out, l1, inv,
                     order=order, hold=hold, diag82=diag82, reset=reset,
                     acker_first=acker_first, stimulus=stimulus, vstim=vstim,
                     hold_wire=hold_wire, wrows=wrows, prio=prio,
-                    witness_void=witness_void, board_start=board_start)
+                    witness_void=witness_void, board_start=board_start,
+                    misfits=misfits)
 
 
 def board_tap(args, int_log, platform=None):
@@ -2746,12 +2754,20 @@ def _released_into_hold(chg_text, intp_text):
 BURST_FRAMES = 20
 BURST_MS = BURST_FRAMES * 50
 
-# Spec 8.2 and the schema doc's version table (bae9948312c38cb1): firmware
-# version 9 is the spec of 2026-10-13 (2.3, 2.1, 8, 8.2) -- the vehicle
-# port listens only while the charger is silent (8 was the hold's 0.28 s
-# step gate) -- schema 4. Literals for the same reason.
-SPEC_FW_VER = 9
-SPEC_SCHEMA_VER = 4
+# Spec 8.2 and the schema doc at schema 5 (user, 2026-11-23): schema 5, the
+# hand-kept firmware version retired, so 0x7F4 B1 and 0x7F7 B4-B5
+# (intp_fw_ver and intp_fw_ver16 through schema 4, last value 9) are
+# reserved and sent 0. Spec 9 asks every scenario for state and schema
+# version. Literals for the same reason; diag_schema_check.py checks this
+# value against the DBC's DiagSchemaVersion.
+SPEC_SCHEMA_VER = 5
+# (byte, its field through schema 4) of each reserved byte, per frame id
+SPEC_RESERVED = {0x7F4: ((1, "intp_reserved_b1"),),
+                 0x7F7: ((4, "intp_reserved16"), (5, "intp_reserved16"))}
+
+# Spec 8.2, schema 5: interposer_sim's line with the core's misfit count
+# over the run (machine.py diag_misfits), on an emulated run
+DIAG_MISFITS = re.compile(r"diag misfits=(\d+) \(spec 8\.2")
 
 # A timestamped REPEAT, and the vehicle-side markers of the VCU changing
 # page 00: a mode command, or the energy-flow bit going to 0. "VCU: charger
@@ -3120,12 +3136,13 @@ VPORT_DROPPED = re.compile(r"vport: .*?(\d+) frame\(s\) toward the vehicle "
 
 
 def _diag_frames_ok(diag, fstate, intp="", veh="", at_stop=None):
-    """-> (ok, why). Every frame carries the schema and firmware version the
-    harness was built against, and the last 0x7F4 agrees with the core's
-    state when it was sent: at_stop, a board run's (state, when) from
-    board_state_at_vehicle_stop(), else the final state. A wrong version is
-    the one error a decoder cannot otherwise see: the fields are all in
-    range and all mean something else."""
+    """-> (ok, why). Every frame carries the schema version the harness was
+    built against (schema 5) and 0 in each reserved byte (SPEC_RESERVED),
+    and the last 0x7F4 agrees with the core's state when it was sent:
+    at_stop, a board run's (state, when) from board_state_at_vehicle_stop(),
+    else the final state. A wrong version is the one error a decoder cannot
+    otherwise see: the fields are all in range and all mean something
+    else."""
     if not diag:
         return (False, "none seen on the vehicle segment")
     by_id = {}
@@ -3139,17 +3156,20 @@ def _diag_frames_ok(diag, fstate, intp="", veh="", at_stop=None):
         if body[0] != SPEC_SCHEMA_VER:
             return (False, "0x7F4 schema %d, spec %d"
                     % (body[0], SPEC_SCHEMA_VER))
-        if body[1] != SPEC_FW_VER:
-            return (False, "0x7F4 firmware %d, spec %d"
-                    % (body[1], SPEC_FW_VER))
     # Reading 15 (tracker F): the version in EVERY decoded 0x7F7, not the
     # last one only.
     for b in by_id[0x7F7]:
-        fw16 = b[4] | (b[5] << 8)
-        if fw16 != SPEC_FW_VER or b[6] != SPEC_SCHEMA_VER:
-            return (False, "0x7F7 reports fw %d schema %d, spec fw %d "
-                           "schema %d" % (fw16, b[6], SPEC_FW_VER,
-                                          SPEC_SCHEMA_VER))
+        if b[6] != SPEC_SCHEMA_VER:
+            return (False, "0x7F7 reports schema %d, spec %d"
+                    % (b[6], SPEC_SCHEMA_VER))
+    # Schema 5: the reserved bytes are 0 in every frame
+    for fid, spots in sorted(SPEC_RESERVED.items()):
+        for i, body in enumerate(by_id[fid]):
+            for byte, name in spots:
+                if body[byte] != 0:
+                    return (False, "0x%03X #%d B%d (%s) = %d; schema 5: "
+                                   "reserved, sent 0" % (fid, i + 1, byte,
+                                                         name, body[byte]))
 
     # Schema 4 (7c866acd6f804161), 0x7F4: B4 bit 5 override_active is "1
     # while the core is rewriting the VCU's commands: OVERRIDE ... and HOLD"
@@ -3206,9 +3226,24 @@ def _diag_frames_ok(diag, fstate, intp="", veh="", at_stop=None):
         if d:
             extra += (", %s frame(s) toward the vehicle dropped in "
                       "listen-only" % d.group(1))
-    return (True, "%d frames, fw %d schema %d, last 0x7F4 %s (%s %s)%s"
-            % (len(diag), SPEC_FW_VER, SPEC_SCHEMA_VER, last_state,
-               "the core's state", when, extra))
+    return (True, "%d frames, schema %d, reserved bytes 0, last 0x7F4 %s "
+                  "(%s %s)%s" % (len(diag), SPEC_SCHEMA_VER, last_state,
+                                 "the core's state", when, extra))
+
+
+def diag_misfits_check(intp):
+    """-> (ok, why). Spec 8.2, schema 5 (user, 2026-11-23): "the packer's
+    misfit count is always 0, and a misfit is a defect". Read from
+    interposer_sim's last DIAG_MISFITS line, on an emulated run; a log
+    without the line fails, so a sim that stops printing it cannot pass."""
+    found = DIAG_MISFITS.findall(intp or "")
+    if not found:
+        return (False, "no 'diag misfits=' line in interposer_sim's log")
+    n = int(found[-1])
+    if n:
+        return (False, "the packer reported %d misfit(s); spec 8.2: always "
+                       "0, a misfit is a defect" % n)
+    return (True, "0 over the run (interposer_sim, machine.py)")
 
 
 def _no_rewrite_after_terminated(diag):
@@ -4150,7 +4185,7 @@ def _wsl_path(p):
 def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
              order=None, hold=None, diag82=None, reset=None, acker_first=None,
              stimulus=None, vstim=None, hold_wire=None, wrows=None,
-             prio=None, witness_void=None, board_start=None):
+             prio=None, witness_void=None, board_start=None, misfits=None):
     veh = veh_log.read_text(errors="replace")
     chg = chg_log.read_text(errors="replace")
     intp = int_log.read_text(errors="replace")
@@ -4302,6 +4337,10 @@ def evaluate(sc, veh_log, chg_log, int_log, timed_out, l1=None, inv=None,
             ok, why = _diag_check(sc, diag, fstate, intp=intp, veh=veh,
                                   at_stop=at_stop)
             results.append((ok, "diag frames: %s" % why))
+            # spec 8.2, schema 5: run() gives it on an emulated run
+            if misfits is not None:
+                results.append((misfits[0], "diag packer misfits: %s"
+                                % misfits[1]))
         elif kind == "fault_or_flow_first":
             ok, why = _fault_or_flow_first(intp, veh, chg, diag, val,
                                            order, intp_wall=intp_wall)

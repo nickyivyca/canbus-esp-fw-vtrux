@@ -40,7 +40,9 @@ scratch_run hold-mutations || exit 2
 WORK="$SCRATCH_RUN"
 mkdir -p "$WORK/fw" "$WORK/obj"
 cp "$HB"/*.cpp "$HB"/*.h "$WORK"/
-cp "$SRC"/*.cpp "$SRC"/*.h "$WORK/fw"/
+# main/'s .c files too: hb_c_objs builds the generated intp_diag_table.c
+# from the fw folder (schema 5)
+cp "$SRC"/*.cpp "$SRC"/*.h "$SRC"/*.c "$WORK/fw"/
 cd "$WORK" || exit 2
 if ! hb_c_objs "$WORK/obj" "$WORK" "$WORK/fw" > "$WORK/build.txt" 2>&1; then
   head -5 "$WORK/build.txt"

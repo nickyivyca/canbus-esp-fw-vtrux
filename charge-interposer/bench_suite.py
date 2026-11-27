@@ -359,6 +359,11 @@ HARNESS_LOCAL = [
     # charge-interposer-harness_20261103T175908_7d3c: all three refused there)
     ("shared-pin-test", ["{interposer_code}/shared_pin_test.py"]),
     ("shared-pin-test-canfail", ["{interposer_code}/shared_pin_test.py", "--can-fail"]),
+    # diag schema 5 (spec 8.2, user 2026-11-23): the DBC's schema and hash,
+    # the reserved fields, and the generated tables against the pinned
+    # shared/diag generator; the check runs in the emulated suite (m-host)
+    ("diag-schema-check-canfail",
+     ["{interposer_code}/diag_schema_check.py", "--can-fail"]),
     ("refusal-pairs-test", ["{interposer_code}/refusal_pairs_test.py"]),
     ("refusal-pairs-test-canfail",
      ["{interposer_code}/refusal_pairs_test.py", "--can-fail"]),
@@ -1104,6 +1109,9 @@ def emulated(settings):
         b.mbash("host-diff", ["bash", "fw_harness/host_diff/diff_all.sh"],
                 cls="build", timeout_s=7200),
         b.mpy("check-port", ["fw_harness/host_diff/check_port.py"]),
+        # diag schema 5 (spec 8.2): the DBC and the generated tables; its
+        # can-fail is in the harness suite (HARNESS_LOCAL)
+        b.mpy("diag-schema-check", ["diag_schema_check.py"]),
         b.mpy("regress-all", ["regress.py", "--all"], cls="build", timeout_s=7200),
     ] + [b.mpy(t[:-3].replace("_", "-"), [t], cls="build", timeout_s=3600)
          for t in LOGIC_PY_TESTS])

@@ -51,7 +51,9 @@ scratch_run rx-order-prefix-control || exit 2
 WORK="$SCRATCH_RUN"
 mkdir -p "$WORK/fw"
 cp "$HB"/*.cpp "$HB"/*.h "$WORK"/
-cp "$SRC"/*.cpp "$SRC"/*.h "$WORK/fw"/
+# main/'s .c files too: hb_c_objs builds the generated intp_diag_table.c
+# from the fw folder (schema 5)
+cp "$SRC"/*.cpp "$SRC"/*.h "$SRC"/*.c "$WORK/fw"/
 cd "$WORK" || exit 2
 
 # test_l2_bridge from the copy, as run.sh builds it (l2_build.sh).

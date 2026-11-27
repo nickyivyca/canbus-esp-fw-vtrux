@@ -38,7 +38,9 @@ TRACES="unit_hold_cadence_298_302 unit_hold_cadence_290"
 fail=0
 for v in control gate300; do
   mkdir -p "$WORK/$v"
-  cp "$FW/main/machine.cpp" "$FW/main/machine.h" "$WORK/$v/"
+  # with the generated table machine.cpp packs from (schema 5)
+  cp "$FW/main/machine.cpp" "$FW/main/machine.h" "$FW/main/intp_diag_table.c" \
+     "$FW/main/intp_diag_table.h" "$WORK/$v/"
   if [ "$v" = gate300 ]; then
     before="$(md5sum < "$WORK/$v/machine.cpp")"
     sed -i 's|c\.hold_step_min_ms = 280;|c.hold_step_min_ms = 300; /* MUTATION */|' "$WORK/$v/machine.cpp"
@@ -47,8 +49,8 @@ for v in control gate300; do
       fail=1; continue
     fi
   fi
-  if ! g++ -std=c++11 -O2 -I "$WORK/$v" -o "$WORK/$v/hr" \
-       "$HD/host_runner.cpp" "$WORK/$v/machine.cpp" 2>"$WORK/$v/err"; then
+  # host_runner as diff_all.sh builds it (runner_build.sh, schema 5)
+  if ! bash "$HD/runner_build.sh" "$WORK/$v/hr" "$WORK/$v" >"$WORK/$v/err" 2>&1; then
     echo "=== $v: BUILD FAILED"; head -5 "$WORK/$v/err"; fail=1; continue
   fi
   echo "=== $v ==="

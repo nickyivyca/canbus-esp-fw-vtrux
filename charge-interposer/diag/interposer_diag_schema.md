@@ -9,8 +9,11 @@ hand-maintained schema, an on-wire schema version as the decoder's guard.
 
 This doc is the source of truth. The DBC (`vtrux-interposer-diag.dbc`, beside
 this file), the Python bench (`interposer_sim.py`) and the firmware (`main.cpp`)
-are hand-kept in sync with it. Behavioural spec: the charge interposer spec,
-section 8.
+are hand-kept in sync with it. From schema 5 (user, 2026-11-23) the
+firmware and the Python core pack `0x7F4`-`0x7F7` from a table that
+shared/diag's generator makes from the DBC (shared/diag D3, D4), so the
+layout is no longer kept by hand in either core; this doc and the DBC still
+change together. Behavioural spec: the charge interposer spec, section 8.
 
 Everything here is best-effort: a frame that cannot be queued is dropped and
 counted (`diag_tx_fail`); bridged traffic is never delayed or reordered for it.
@@ -47,8 +50,8 @@ WiCAN's `0x7F0-0x7F3`; nothing on the truck consumes the `0x7Fx` range.
 ### 0x7F4 -- INTP_Status
 | Byte | Field | Meaning |
 |---|---|---|
-| B0 | intp_schema_ver | on-wire schema version (currently **4**) |
-| B1 | intp_fw_ver | firmware build number (table in section 4) |
+| B0 | intp_schema_ver | on-wire schema version (currently **5**) |
+| B1 | intp_reserved_b1 | reserved, sent 0 (schema 5). Through schema 4 `intp_fw_ver`, the firmware revision (table in section 4, last value 9) |
 | B2 | intp_state | 0 PASSTHROUGH, 1 MONITOR, 2 OVERRIDE, 4 TERMINATED, 5 SAFE, 6 HOLD (`machine.py` STATE_NAMES); 3 reserved (was RELEASING, removed in schema 2). HOLD (schema 4, spec 5.2): after the release, page 00 forwarded, our page-01 setpoint; TERMINATED stays transparent |
 | B3 | intp_trip_reason | 0 none; otherwise the `TripReason` enum of `machine.h`: 1 vmax over hard ceiling, 2 cell_overvolt, 3 **retired** (was cell_undervolt; never emitted from fw 4 -- spec 6, B-7a), 4 BMS EPO, 5 BMS alarm TYPE3, 6 HVIL open, 7 contactors not closed, 8 charger fault, 9 charger out of state 12, 10 BMS frames stale -- *which* message is in the event log, not in this byte, 11 charger frames stale, 12 override exceeded the 6 h cap |
 | B4 | intp_flags | bit0 bms_seen, bit1 chg_seen_charging, bit2 mainc_closed, bit3 evse_cap_known, bit4 vcu_flow, bit5 override_active (1 while the core is rewriting the VCU's commands: OVERRIDE, pages 00/01/03, and HOLD, page 01; schema 4), bit6 bridge_ok (see below), bit7 serial_attached |
@@ -207,7 +210,7 @@ are always the bench. `vehicle_sim` already respects this -- it reads
 | Byte | Field | Meaning |
 |---|---|---|
 | B0-B3 | intp_build_id | first 4 bytes of the application ELF's SHA-256, from the ESP-IDF app descriptor. The same sources give the same id on the same host OS; a different host OS gives a different id for the same flashed code (spec 8.2, 2026-10-08). **BYTE ORDER, added 2026-10-06 because this row did not state it and a decoder got it backwards:** decode as the Intel u32 the DBC declares (`0|32@1+`) and print `%08x` to get the hash's first four bytes the same way round as `elf_sha256` -- e.g. `7f197bfd`. **The raw payload is the reverse**: the firmware packs `sha[0]` as the u32's most significant byte (`main.cpp buildId()`) and then writes it little-endian (`machine.cpp put32()`), so B0-B3 carry `sha[3],sha[2],sha[1],sha[0]` = `fd 7b 19 7f`. Joining the payload bytes in order gives `fd7b197f`, which matches no manifest row and surfaces as an unknown build on a healthy board -- live in `build_lookup.build_id_from_payload` until 2026-10-06, where its own docstring warned of exactly that outcome while causing it. **Look it up in `charge-interposer/firmware/builds/manifest.json`** (repo `canbus-esp-fw-vtrux`, branch `charge-interposer/main`; `tools/interposer/firmware/builds/` until 2026-10-08), which every build updates and which maps this back to an image, environment and toolchain; `charge-interposer/build_lookup.py` does that from the wire and refuses rather than guessing. The manifest's `elf_sha256` is itself read from `esptool image-info <bin>` -> `ELF file SHA256`, which remains the way to check a file by hand before flashing. **fw_ver 1-2 carried `intp_git_hash` here instead**, which was always `fnv1a("unknown")` = 2608177081 |
-| B4-B5 | intp_fw_ver16 | firmware build number, u16 |
+| B4-B5 | intp_reserved16 | reserved, sent 0 (schema 5). Through schema 4 `intp_fw_ver16`, the firmware revision as u16 |
 | B6 | intp_schema_ver_build | schema version (echoed for a build-only decoder) |
 | B7 | intp_uptime_min | minutes since boot, u8 (saturates) |
 
@@ -217,15 +220,20 @@ The event lines (`[t_ms] STATE event a= b= c=`) and the periodic status line
 are unchanged. One line per second is added:
 
 ```
-diag st=<state> trip=<n> flags=0x<xx> ilim=<A> vmax=<mV> chgmax=<cA> soc=<%> evap=<0|1> chg=<n> mod=<n> synth=<n> ovf=<n> txf=<n> silent=<0|1> fw=<n> schema=<n>
+diag st=<state> trip=<n> flags=0x<xx> ilim=<A> vmax=<mV> chgmax=<cA> soc=<%> evap=<0|1> chg=<n> mod=<n> synth=<n> ovf=<n> txf=<n> silent=<0|1> build=<8 hex> schema=<n>
 ```
+
+`build=` is the build id as `0x7F7` B0-B3 carries it, printed as the hash's
+first four bytes in order (`build=7f197bfd`), so it matches the image's
+`ELF file SHA256` and the manifest without a CAN tap. Through schema 4 that
+field was `fw=<n>`, the firmware revision (spec 8.3, user, 2026-11-23).
 
 with the same values as the four frames, so a bench run can be judged without
 a CAN tap. `run_scenario.py` reads either.
 
 ## 4. Versions
 
-`intp_schema_ver` = **4**. Bump on any layout change, and update the DBC, the
+`intp_schema_ver` = **5**. Bump on any layout change, and update the DBC, the
 bench and this doc together. Every layout keeps the schema byte at `0x7F4` B0
 and `0x7F7` B6 (user, 2026-10-19), so a decoder can choose the DBC by it. The
 DBC states its schema as the `DiagSchemaVersion` attribute, with
@@ -244,6 +252,12 @@ frame gets a plausible number and no warning.
 | 2 | 2026-09-19: state 3 (RELEASING) removed; trip codes renumbered (cell temperature trips removed, spec 6); OBSERVED B7 bit 7 carries the evap flag; `synth` counts the spec 4.1 repeats |
 | 3 | 2026-10-03 (spec 2.2; B-2, B-3): OBSERVED B7 bit 6 = charger silent while expected; COUNTERS B7 redefined from "every transmit failure on both ports since boot" to "failures toward the charger while the VCU's flow bit is 1"; STATUS B4 bit 6 `bridge_ok` now covers the interval since the previous status frame and counts bus-off entries. **Trip codes are deliberately NOT renumbered**: code 3 (cell_undervolt) is retired in place rather than removed, so every other code means the same thing at schema 2 and 3 and a log from either decodes identically |
 | 4 | 2026-10-08 (spec 5.2, user): `intp_state` 6 = HOLD, the hold after the release (page 00 forwarded, our page-01 setpoint); its page-01 frames are mirrored; STATUS B5 in HOLD carries the hold setpoint; STATUS B4 bit 5 `override_active` is also set in HOLD (user, 2026-10-09). No byte moved |
+| 5 | 2026-11-23 (spec 8.2, 8.3, user; port plan step 4): the hand-kept firmware revision retired, as gen-inhibit's at its schema 9. STATUS B1 `intp_fw_ver` becomes `intp_reserved_b1` and BUILD B4-B5 `intp_fw_ver16` becomes `intp_reserved16`, both sent 0, each with `RenamedFrom`; the serial diag line's `fw=<n>` becomes `build=<8 hex>`. The frames are packed from the table shared/diag generates from the DBC. No other byte moved |
+
+**Retired at schema 5 (user, 2026-11-23):** the table below is history,
+closed at 9, and `DIAG_FW_VER` is gone from both cores. A tool that gated on
+`intp_fw_ver` gates on `intp_schema_ver`; `intp_build_id` names the binary.
+Through schema 4 the rule was:
 
 `intp_fw_ver` (build number). Bump **`DIAG_FW_VER` in `machine.h`** -- and
 the matching `DIAG_FW_VER` in `machine.py`, which `check_port.py` compares --

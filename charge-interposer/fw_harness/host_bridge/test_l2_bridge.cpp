@@ -63,6 +63,11 @@ uint32_t intpDiagReports();
 // 5f925bd), readable across clearEvents() -- the event buffer cannot show
 // a collapse, because the board empties it every pass.
 uint32_t intpBoundaryLogs();
+// Spec 8.2, schema 5 (user, 2026-11-23): "the packer's misfit count is
+// always 0, and a misfit is a defect". main.cpp's sum of the packer's
+// misfits since boot (implementor, 404a6932); every case ends by checking
+// it is 0 (main()).
+uint32_t intpDiagMisfits();
 
 using mcpfake::Mcp2515Fake;
 using twaifake::fake;
@@ -262,12 +267,18 @@ void caseFields() {
   std::printf("  --  0x7F4 = %02X %02X %02X %02X %02X %02X %02X %02X\n",
               st->data[0], st->data[1], st->data[2], st->data[3],
               st->data[4], st->data[5], st->data[6], st->data[7]);
-  // interposer_diag_schema.md (bae9948312c38cb1): schema 4, and its
-  // section 4 table's intp_fw_ver 9 (the spec of 2026-10-13: the vehicle
-  // port listens only while the charger is silent; 8 was the hold's 0.28 s
-  // step gate).
-  check(st->data[0] == 4, "schema version 4 in 0x7F4 byte 0");
-  check(st->data[1] == 9, "firmware version 9 in 0x7F4 byte 1");
+  std::printf("  --  0x7F7 = %02X %02X %02X %02X %02X %02X %02X %02X\n",
+              bd->data[0], bd->data[1], bd->data[2], bd->data[3],
+              bd->data[4], bd->data[5], bd->data[6], bd->data[7]);
+  // Spec 8.2 and interposer_diag_schema.md at schema 5 (user, 2026-11-23):
+  // schema 5 in 0x7F4 B0 and 0x7F7 B6; the firmware version is retired,
+  // and 0x7F4 B1 and 0x7F7 B4-B5 (intp_fw_ver and intp_fw_ver16 through
+  // schema 4, last value 9) are reserved and sent 0.
+  check(st->data[0] == 5, "schema version 5 in 0x7F4 byte 0");
+  check(st->data[1] == 0, "0x7F4 byte 1 reserved, sent 0 (schema 5)");
+  check(bd->data[6] == 5, "schema version 5 in 0x7F7 byte 6");
+  check(bd->data[4] == 0 && bd->data[5] == 0,
+        "0x7F7 bytes 4-5 reserved, sent 0 (schema 5)");
   check(st->len == 8, "the status frame is 8 bytes");
   check(!st->ext, "diagnostics are STANDARD ids, not extended");
 
@@ -3104,6 +3115,11 @@ int main(int argc, char** argv) {
     if (want != kCases[i].name) continue;
     std::printf("--- l2: %s ---\n", kCases[i].name);
     kCases[i].fn();
+    // Spec 8.2, schema 5: no diag value overflows its signal, in any case.
+    std::printf("  --  diag reports %u, packer misfits %u\n",
+                intpDiagReports(), intpDiagMisfits());
+    check(intpDiagMisfits() == 0,
+          "the diag packer's misfit count is 0 (spec 8.2, schema 5)");
     if (failures) {
       std::printf("\n%d failure(s) in %s\n", failures, kCases[i].name);
       return 1;

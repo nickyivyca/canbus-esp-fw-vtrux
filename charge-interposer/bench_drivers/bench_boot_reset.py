@@ -159,7 +159,8 @@ BANNER = ["ESP-ROM:esp32s3-20210327", "Build:Mar 27 2021",
           "Saved PC:0x40379222", "SPIWP:0xee", "mode:DIO, clock div:1",
           "load:0x3fce2820,len:0x1150", "entry 0x403c88b8"]
 APP = ["", "Vtrux charge interposer", "bitrate 500000, tick 10 ms",
-       "diag st=PASSTHROUGH trip=0 flags=0xc0 ilim=- vmax=0 fw=9 schema=4"]
+       "diag st=PASSTHROUGH trip=0 flags=0xc0 ilim=- vmax=0 build=7f197bfd "
+       "schema=5"]
 # the pre-fix bridge (run 40e6's build), tracker I step 1, trimmed
 PANIC_BOOT = ["=0 flags=0x40 ilim=- vmax=0 fw=9 schema=4",
               "diag st=PASSTHROUGH tESP-ROM:esp32s3-20210327", "Build:Mar 27 2021",

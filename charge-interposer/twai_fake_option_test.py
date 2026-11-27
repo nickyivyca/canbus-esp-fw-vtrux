@@ -82,8 +82,17 @@ GIT_BASH = r"C:\Program Files\Git\bin\bash.exe"
 C_SRCS = {"twai_fake": ("fake", "twai_fake.c"),
           "twai_port": ("tp", "twai_port.c"),
           "twai_port_ll": ("tp", "twai_port_ll_unsupported.c"),
-          "can_port": ("cp", "can_port.c")}
+          "can_port": ("cp", "can_port.c"),
+          # diag schema 5 (spec 8.2): shared/diag's packer and build-id
+          # read, and main/'s generated table
+          "diag_pack": ("dg", "diag_pack.c"),
+          "diag_build_id": ("dg", "diag_build_id.c"),
+          "intp_diag_table": ("main", "intp_diag_table.c")}
 PORT_OBJS = ("twai_port.o", "twai_port_ll.o", "can_port.o")
+# the objects machine.cpp packs the status frames with, and main.cpp's
+# build-id read (schema 5), linked by the tests that compile machine.cpp
+DIAG_OBJS = ("diag_pack.o", "intp_diag_table.o", "diag_build_id.o")
+DIAG_TESTS = ("test_event_layout", "test_l2_bridge")
 # main/'s sources of the two tests that build the bridge
 L2_FW = ("main.cpp", "port_mcp2515.cpp", "vehicle_port.cpp", "port_view.cpp",
          "charger_port.cpp", "machine.cpp")
@@ -179,6 +188,7 @@ case "${2:-} ${3:-}" in
   "idf-match ") exit "${STUB_IDF_RC:-0}" ;;
   "where shared/twai_port") [ -n "${STUB_WHERE_TP:-}" ] || exit 1; echo "$STUB_WHERE_TP" ;;
   "where shared/can_port") [ -n "${STUB_WHERE_CP:-}" ] || exit 1; echo "$STUB_WHERE_CP" ;;
+  "where shared/diag") [ -n "${STUB_WHERE_DG:-}" ] || exit 1; echo "$STUB_WHERE_DG" ;;
 esac
 exit 0
 """
@@ -289,8 +299,15 @@ def run_sh(ctx, work, env, args=()):
     e = dict(os.environ)
     for k in ("TWAI_FAKE", "TWAI_FAKE_DIR", "INTERPOSER_CODE", "STUB_GPP_FAIL",
               "STUB_GCC_FAIL", "STUB_RM_FAIL", "STUB_MKTEMP_RACE", "STUB_IDF_RC",
-              "STUB_WHERE_TP", "STUB_WHERE_CP"):
+              "STUB_WHERE_TP", "STUB_WHERE_CP", "STUB_WHERE_DG"):
         e.pop(k, None)
+    # the stand-in shared/diag (schema 5): unless the case names one, the
+    # stand-in checkout's, beside its twai_port (fake_dir writes it)
+    if "STUB_WHERE_DG" not in env:
+        if env.get("TWAI_FAKE_DIR"):
+            e["STUB_WHERE_DG"] = env["TWAI_FAKE_DIR"] + "/../../diag"
+        elif env.get("STUB_WHERE_TP"):
+            e["STUB_WHERE_DG"] = env["STUB_WHERE_TP"] + "/../diag"
     e.update(PATH=bindir + os.pathsep + e.get("PATH", ""), STUB_LOG=fwd(log),
              TMPDIR=fwd(tmp), L3_STIMULUS="unused", BASH_ENV=fwd(rm_env),
              STUB_RACE_COUNT=fwd(os.path.join(work, "race_count")),
@@ -338,6 +355,11 @@ def fake_dir(work, extra=None, name="co"):
         os.path.join(sh, "twai_port", "include", "twai_port.h"): "// h\n",
         os.path.join(sh, "can_port", "can_port.c"): "// can\n",
         os.path.join(sh, "can_port", "include", "can_port.h"): "// h\n",
+        # shared/diag (schema 5)
+        os.path.join(sh, "diag", "diag_pack.c"): "// pack\n",
+        os.path.join(sh, "diag", "diag_build_id.c"): "// id\n",
+        os.path.join(sh, "diag", "include", "diag_pack.h"): "// h\n",
+        os.path.join(sh, "diag", "include", "diag_build_id.h"): "// h\n",
     }
     for p, text in files.items():
         os.makedirs(os.path.dirname(p), exist_ok=True)
@@ -350,6 +372,9 @@ def fake_dir(work, extra=None, name="co"):
 NEEDED = ("twai_fake.c", "cpp/twai_fake.cpp", "../twai_port.c",
           "../twai_port_ll_unsupported.c", "../include/twai_port.h",
           "../../can_port/can_port.c", "../../can_port/include/can_port.h")
+# the four the pinned shared/diag must hold (schema 5), relative to it
+DIAG_NEEDED = ("diag_pack.c", "diag_build_id.c", "include/diag_pack.h",
+               "include/diag_build_id.h")
 
 
 def tests_of(folder=HB):
@@ -374,7 +399,14 @@ def test_refusals(ctx, work):
     good = fwd(fake_dir(work, name="good"))
     cases = [({"TWAI_FAKE_DIR": good}, ("--x",)), ({}, ()),
              ({"STUB_WHERE_TP": "/nowhere"}, ()),
-             ({"TWAI_FAKE_DIR": good, "STUB_IDF_RC": "1"}, ())]
+             ({"TWAI_FAKE_DIR": good, "STUB_IDF_RC": "1"}, ()),
+             # schema 5: no pinned shared/diag
+             ({"TWAI_FAKE_DIR": good, "STUB_WHERE_DG": ""}, ())]
+    # schema 5: the pinned shared/diag lacking one of its four files
+    for i, rel in enumerate(DIAG_NEEDED):
+        fd = fake_dir(work, name="d%d" % i)
+        os.remove(os.path.normpath(os.path.join(fd, "../../diag", rel)))
+        cases.append(({"TWAI_FAKE_DIR": fwd(fd)}, ()))
     for i, rel in enumerate(NEEDED):
         fd = fake_dir(work, name="m%d" % i)
         os.remove(os.path.normpath(os.path.join(fd, rel)))
@@ -387,13 +419,13 @@ def test_refusals(ctx, work):
         all_removed(ctx, tmp)
 
 
-def check_build(ctx, calls, py, outp, tmp, fd, tp, cp):
+def check_build(ctx, calls, py, outp, tmp, fd, tp, cp, dg):
     """The build as the module says, with the fake's folder fd and the
-    components tp and cp."""
+    components tp, cp and dg (shared/diag, schema 5)."""
     hb_copy = os.path.dirname(ctx["run_sh"])
     main = os.path.join(ctx["root"], "charge-interposer", "firmware", "main")
     inc = [hb_copy, main, fd + "/include", fd + "/host", fd + "/cpp",
-           tp + "/include", cp + "/include"]
+           tp + "/include", cp + "/include", dg + "/include"]
     idf_first(py)
     cc = [c for c in calls if c["tool"] == "gcc"]
     cxx = [c for c in calls if c["tool"] == "g++"]
@@ -407,7 +439,8 @@ def check_build(ctx, calls, py, outp, tmp, fd, tp, cp):
         name = os.path.basename(out_of(c))[:-2]
         assert name in C_SRCS and name not in objs, (name, sorted(objs))
         comp, f = C_SRCS[name]
-        want = {"fake": fd, "tp": tp, "cp": cp}[comp] + "/" + f
+        want = {"fake": fd, "tp": tp, "cp": cp, "dg": dg,
+                "main": main}[comp] + "/" + f
         assert same(a[-1], want), (a[-1], want)
         objs[name] = out_of(c)
         got = [a[i + 1] for i, x in enumerate(a) if x == "-I"]
@@ -431,6 +464,9 @@ def check_build(ctx, calls, py, outp, tmp, fd, tp, cp):
                 assert any(same(s, os.path.join(hb_copy, f)) for s in srcs), (name, f)
         assert any(same(s, objs["twai_fake"]) for s in srcs), (name, srcs)
         port = [o for o in PORT_OBJS if any(os.path.basename(s) == o for s in srcs)]
+        dobj = [o for o in DIAG_OBJS if any(os.path.basename(s) == o for s in srcs)]
+        assert sorted(dobj) == (sorted(DIAG_OBJS) if name in DIAG_TESTS
+                                else []), (name, dobj)
         fw = [os.path.basename(s) for s in srcs if same(os.path.dirname(s), main)]
         if name == "test_l2_bridge":
             assert sorted(port) == sorted(PORT_OBJS), (name, port)
@@ -470,7 +506,8 @@ def test_build(ctx, work):
     fd = fwd(fake_dir(work))
     rc, outp, calls, py, tmp = run_sh(ctx, work, {"TWAI_FAKE_DIR": fd})
     assert rc == 0, (rc, outp[-300:])
-    check_build(ctx, calls, py, outp, tmp, fd, fd + "/..", fd + "/../../can_port")
+    check_build(ctx, calls, py, outp, tmp, fd, fd + "/..", fd + "/../../can_port",
+                fd + "/../../diag")
 
 
 def test_pinned(ctx, work):
@@ -481,12 +518,14 @@ def test_pinned(ctx, work):
     tp = fwd(os.path.dirname(fd))
     other = fake_dir(work, name="b")
     cp = fwd(os.path.join(os.path.dirname(os.path.dirname(other)), "can_port"))
-    rc, outp, calls, py, tmp = run_sh(ctx, work, {"STUB_WHERE_TP": tp, "STUB_WHERE_CP": cp})
+    dg = fwd(os.path.join(os.path.dirname(os.path.dirname(other)), "diag"))
+    rc, outp, calls, py, tmp = run_sh(ctx, work, {"STUB_WHERE_TP": tp, "STUB_WHERE_CP": cp,
+                                                  "STUB_WHERE_DG": dg})
     assert rc == 0, (rc, outp[-300:])
     wh = [p[1:] for p in py if p != "CC"]
-    assert wh[:3] == [["idf-match"], ["where", "shared/twai_port"],
-                      ["where", "shared/can_port"]], wh
-    check_build(ctx, calls, py, outp, tmp, tp + "/test", tp, cp)
+    assert wh[:4] == [["idf-match"], ["where", "shared/twai_port"],
+                      ["where", "shared/can_port"], ["where", "shared/diag"]], wh
+    check_build(ctx, calls, py, outp, tmp, tp + "/test", tp, cp, dg)
 
 
 def test_c_source_fails(ctx, work):
@@ -625,7 +664,8 @@ def test_race_retried(ctx, work):
     assert race_log(work) == THREE_TRIES, race_log(work)
     assert rc == 0, (rc, outp[-300:])
     assert "mktemp" not in outp and "No such file" not in outp, outp[-300:]
-    check_build(ctx, calls, py, outp, tmp, fd, fd + "/..", fd + "/../../can_port")
+    check_build(ctx, calls, py, outp, tmp, fd, fd + "/..", fd + "/../../can_port",
+                fd + "/../../diag")
     w = os.path.join(work, "plain")
     os.makedirs(w)
     rc, outp, calls, _py, tmp = run_sh(ctx, w, {"TWAI_FAKE_DIR": fd})
@@ -893,7 +933,31 @@ MUTANTS = [
     ("l2_build.sh", "idf-match not run", '  python3 "$pin" idf-match >&2 || {', "  true || {"),
     ("l2_build.sh", "idf-match after the folders",
      '  python3 "$pin" idf-match >&2 || {\n', "  { false; } && {\n"),
-    ("l2_build.sh", "no shared file checked", '    if [ ! -f "$f" ]; then', "    if false; then"),
+    ("l2_build.sh", "no shared file checked",
+     '"$HB_CP/can_port.c" "$HB_CP/include/can_port.h"; do\n    if [ ! -f "$f" ]; then',
+     '"$HB_CP/can_port.c" "$HB_CP/include/can_port.h"; do\n    if false; then'),
+    # shared/diag (diag schema 5, spec 8.2; tester, 2026-11-24)
+    ("l2_build.sh", "no shared/diag file checked",
+     '"$HB_DG/include/diag_build_id.h"; do\n    if [ ! -f "$f" ]; then',
+     '"$HB_DG/include/diag_build_id.h"; do\n    if false; then'),
+    ("l2_build.sh", "shared/diag from beside twai_port",
+     '  HB_DG="$(python3 "$pin" where shared/diag)" || {',
+     '  HB_DG="$HB_TP/../diag" || {'),
+    ("l2_build.sh", "shared/diag's include left out",
+     ' -I "$HB_CP/include" -I "$HB_DG/include")', ' -I "$HB_CP/include")'),
+    ("l2_build.sh", "diag_pack.c not compiled",
+     ' "diag_pack:$HB_DG/diag_pack.c"\n', '\n'),
+    ("l2_build.sh", "the generated table not compiled from main/",
+     '"$obj/intp_diag_table.o" "$fw/intp_diag_table.c"',
+     '"$obj/intp_diag_table.o" "$hb/intp_diag_table.c"'),
+    ("l2_build.sh", "the bridge without the diag objects",
+     '      HB_T_OBJS+=("${port_objs[@]}" "${diag_objs[@]}")\n'
+     '      HB_T_DEFS+=(-DINTP_NO_SERIAL=1)\n',
+     '      HB_T_OBJS+=("${port_objs[@]}")\n      HB_T_DEFS+=(-DINTP_NO_SERIAL=1)\n'),
+    ("l2_build.sh", "the event layout without the diag objects",
+     '      HB_T_OBJS+=("${port_objs[@]}" "${diag_objs[@]}")\n'
+     '      HB_T_DEFS+=(-DHOST_SERIAL_CAPTURE=1)\n',
+     '      HB_T_OBJS+=("${port_objs[@]}")\n      HB_T_DEFS+=(-DHOST_SERIAL_CAPTURE=1)\n'),
     ("l2_build.sh", "can_port from beside twai_port when pinned",
      '      HB_CP="$(python3 "$pin" where shared/can_port)" || {',
      '      HB_CP="$HB_TP/../can_port" || {'),
@@ -906,13 +970,15 @@ MUTANTS = [
     ("l2_build.sh", "the C3's register file",
      '"twai_port_ll:$HB_TP/twai_port_ll_unsupported.c"',
      '"twai_port_ll:$HB_TP/twai_port_ll_esp32c3.c"'),
-    ("l2_build.sh", "can_port.c not compiled", '\n             "can_port:$HB_CP/can_port.c")',
-     ")"),
+    ("l2_build.sh", "can_port.c not compiled",
+     '             "can_port:$HB_CP/can_port.c" "diag_pack:',
+     '             "diag_pack:'),
     ("l2_build.sh", "the fake's includes out of order",
      'HB_INC_SHARED=(-I "$HB_SH/include" -I "$HB_SH/host" -I "$HB_SH/cpp"',
      'HB_INC_SHARED=(-I "$HB_SH/host" -I "$HB_SH/include" -I "$HB_SH/cpp"'),
-    ("l2_build.sh", "can_port's include left out", '\n                 -I "$HB_TP/include" -I "$HB_CP/include")',
-     '\n                 -I "$HB_TP/include")'),
+    ("l2_build.sh", "can_port's include left out",
+     '\n                 -I "$HB_TP/include" -I "$HB_CP/include" -I "$HB_DG/include")',
+     '\n                 -I "$HB_TP/include" -I "$HB_DG/include")'),
     ("l2_build.sh", "a failed C source not reported",
      '      echo "${c%%:*} (C, ${c#*:}) DID NOT BUILD"\n', ""),
     # Not a mutant: hb_c_objs's "rc=1" taken out. As "|| fail=1" above, a
@@ -932,11 +998,13 @@ MUTANTS = [
      "    case \"$(basename \"$f\")\" in test_*|idf_host.cpp) continue ;; esac\n    HB_T_SRCS+="),
     ("l2_build.sh", "the bridge without the port objects",
      '      for f in "${HB_FW_L2[@]}"; do HB_T_SRCS+=("$fw/$f"); done\n'
-     '      HB_T_OBJS+=("${port_objs[@]}")\n',
-     '      for f in "${HB_FW_L2[@]}"; do HB_T_SRCS+=("$fw/$f"); done\n'),
+     '      HB_T_OBJS+=("${port_objs[@]}" "${diag_objs[@]}")\n',
+     '      for f in "${HB_FW_L2[@]}"; do HB_T_SRCS+=("$fw/$f"); done\n'
+     '      HB_T_OBJS+=("${diag_objs[@]}")\n'),
     ("l2_build.sh", "the bridge with serial",
-     '      HB_T_OBJS+=("${port_objs[@]}")\n      HB_T_DEFS+=(-DINTP_NO_SERIAL=1)\n',
-     '      HB_T_OBJS+=("${port_objs[@]}")\n'),
+     '      HB_T_OBJS+=("${port_objs[@]}" "${diag_objs[@]}")\n'
+     '      HB_T_DEFS+=(-DINTP_NO_SERIAL=1)\n',
+     '      HB_T_OBJS+=("${port_objs[@]}" "${diag_objs[@]}")\n'),
     ("l2_build.sh", "the event layout without the vehicle port's setup",
      'local ports=("$fw/port_mcp2515.cpp" "$fw/vehicle_port.cpp" "$fw/port_view.cpp"',
      'local ports=("$fw/port_mcp2515.cpp" "$fw/port_view.cpp"'),

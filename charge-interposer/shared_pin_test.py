@@ -62,6 +62,9 @@ executable and, off Windows, a symbolic link to a file.
      twai_port or can_port at another version, no can_port in the
      manifest, can_port's block without a version (the next block's is
      not taken), and the two pins at different tags; main() exits 0 and 1.
+     The diag pin (schema 5) at its own tag: it passes at a tag that is
+     not the other two's, and is refused at another version than the
+     manifest's vtrux/diag, or with no vtrux/diag in the manifest.
 
     py -3.14 -B charge-interposer/shared_pin_test.py
     py -3.14 -B charge-interposer/shared_pin_test.py --can-fail
@@ -169,7 +172,8 @@ def fixture(base):
                 "shared/bench/README.md": "readme\n",
                 "shared/bench/run.sh": "#!/bin/sh\necho run\n",
                 "shared/twai_port/test/twai_fake.c": "int fake;\n",
-                "shared/can_port/can_port.c": "int port;\n"})
+                "shared/can_port/can_port.c": "int port;\n",
+                "shared/diag/diag_pack.c": "int pack;\n"})
     if UNIX:
         os.symlink("tests/test_x.py", os.path.join(src, "shared", "bench", "link.py"))
     git(src, "add", "-A")
@@ -561,22 +565,30 @@ def checks():
         # 8. idf-match: the twai_port and can_port pins against the
         # firmware's idf_component.yml (port step 2b)
         ydir = os.path.join(base, "yml")
-        good_yml = YML % {"can": "T1", "twai": "T1"}
+        good_yml = YML % {"can": "T1", "twai": "T1", "diag": "T1"}
         write(ydir, {"good.yml": good_yml})
         yml = os.path.join(ydir, "good.yml")
         got = P.idf_versions(yml)
         check("8 idf_versions reads each dependency's own version",
-              got == {"vtrux/can_port": "T1", "vtrux/twai_port": "T1"}, repr(got))
+              got == {"vtrux/can_port": "T1", "vtrux/twai_port": "T1",
+                      "vtrux/diag": "T1"}, repr(got))
         try:
             check("8 pins at the versions the manifest takes pass",
                   P.idf_match(fx["pins"], yml) == "T1")
         except P.SharedPinError as e:
             check("8 pins at the versions the manifest takes pass", False, str(e))
         for label, text, has in (
-                ("twai_port at another version", YML % {"can": "T1", "twai": "T2"},
+                ("twai_port at another version",
+                 YML % {"can": "T1", "twai": "T2", "diag": "T1"},
                  "takes vtrux/twai_port at T2"),
-                ("can_port at another version", YML % {"can": "T2", "twai": "T1"},
+                ("can_port at another version",
+                 YML % {"can": "T2", "twai": "T1", "diag": "T1"},
                  "takes vtrux/can_port at T2"),
+                ("diag at another version (schema 5)",
+                 YML % {"can": "T1", "twai": "T1", "diag": "T2"},
+                 "takes vtrux/diag at T2"),
+                ("no diag in the manifest (schema 5)", YML_NO_DIAG,
+                 "names no version for vtrux/diag"),
                 ("no can_port in the manifest", YML_NO_CAN,
                  "names no version for vtrux/can_port"),
                 ("can_port's block without a version (the next one's not taken)",
@@ -589,9 +601,21 @@ def checks():
         t2 = {"tag": "T2", "commit": fx["b"],
               "digest": P.git_digest(two, fx["b"], "shared/twai_port")}
         set_pins(fx, dict(good, **{"shared/twai_port": t2}))
-        write(ydir, {"split.yml": YML % {"can": "T1", "twai": "T2"}})
+        write(ydir, {"split.yml": YML % {"can": "T1", "twai": "T2", "diag": "T1"}})
         refused("8 the two pins at different tags", P.idf_match, fx["pins"],
                 os.path.join(ydir, "split.yml"), has="different tags")
+        # the diag pin at its own tag (schema 5): not held to the other two's
+        d2 = {"tag": "T2", "commit": fx["b"],
+              "digest": P.git_digest(two, fx["b"], "shared/diag")}
+        set_pins(fx, dict(good, **{"shared/diag": d2}))
+        write(ydir, {"own.yml": YML % {"can": "T1", "twai": "T1", "diag": "T2"}})
+        try:
+            check("8 the diag pin at a tag of its own passes",
+                  P.idf_match(fx["pins"], os.path.join(ydir, "own.yml")) == "T1")
+        except P.SharedPinError as e:
+            check("8 the diag pin at a tag of its own passes", False, str(e))
+        refused("8 the diag pin at its own tag, the manifest at the others'",
+                P.idf_match, fx["pins"], yml, has="takes vtrux/diag at T1")
         set_pins(fx, good)
         r = child(fx, "P.IDF_YML = %r\nsys.exit(P.main(['idf-match']))" % yml)
         check("8 idf-match exits 0 on a match", r.returncode == 0 and
@@ -621,12 +645,12 @@ def checks():
     # the real files by this test's own tree (under --can-fail the module is
     # a copy elsewhere, whose own defaults name nothing)
     try:
-        check("7 the real twai_port and can_port pins are the firmware's versions "
+        check("7 the real twai_port, can_port and diag pins are the firmware's versions "
               "(idf-match)", bool(P.idf_match(
                   os.path.join(HERE, "firmware", "shared_pins.json"),
                   os.path.join(HERE, "firmware", "main", "idf_component.yml"))))
     except P.SharedPinError as e:
-        check("7 the real twai_port and can_port pins are the firmware's versions "
+        check("7 the real twai_port, can_port and diag pins are the firmware's versions "
               "(idf-match)", False, str(e))
     return FAILS
 
@@ -650,16 +674,33 @@ dependencies:
     git: https://example.invalid/r.git
     path: shared/twai_port
     version: "%(twai)s"   # the vehicle port
+  # the diag packer, at its own tag (schema 5)
+  vtrux/diag:
+    git: https://example.invalid/r.git
+    path: shared/diag
+    version: "%(diag)s"
   idf:
     version: "5.4.2"
 """
 YML_NO_CAN = """dependencies:
   vtrux/twai_port:
     version: "T1"
+  vtrux/diag:
+    version: "T1"
+  idf:
+    version: "5.4.2"
+"""
+YML_NO_DIAG = """dependencies:
+  vtrux/twai_port:
+    version: "T1"
+  vtrux/can_port:
+    version: "T1"
   idf:
     version: "5.4.2"
 """
 YML_CAN_NO_VERSION = """dependencies:
+  vtrux/diag:
+    version: "T1"
   vtrux/twai_port:
     version: "T1"
   vtrux/can_port:
@@ -761,8 +802,15 @@ MUTANTS = [
     # idf-match (port step 2b)
     ("a pin not compared with its version", "        if tag != vers[dep]:",
      "        if False:"),
-    ("only twai_port compared", "    for name, dep in IDF_DEPS:\n        tag = read",
-     "    for name, dep in IDF_DEPS[:1]:\n        tag = read"),
+    ("only twai_port compared",
+     "    for name, dep in IDF_OWN_TAG + IDF_DEPS:\n        tag = read",
+     "    for name, dep in IDF_OWN_TAG + IDF_DEPS[:1]:\n        tag = read"),
+    ("the diag pin not compared (schema 5)",
+     "    for name, dep in IDF_OWN_TAG + IDF_DEPS:\n        tag = read",
+     "    for name, dep in IDF_DEPS:\n        tag = read"),
+    ("the diag pin held to the other two's tag (schema 5)",
+     "        if (name, dep) in IDF_DEPS:\n            tags.add(tag)",
+     "        if True:\n            tags.add(tag)"),
     ("pins at different tags accepted", "    if len(tags) != 1:", "    if False:"),
     ("a missing version not refused", "        if dep not in vers:", "        if False:"),
     ("a version from past the dependency's block",

@@ -449,6 +449,19 @@ dependencies:
       path: shared/can_port
       type: git
     version: 5b03505f515cff8fbdd8826aa97fd2626028578a
+  vtrux/diag:
+    component_hash: 59da8b276d2b6f55f6d12c8812717e93d5a0508a1478dfb45a1601b3dd0e3aa9
+    dependencies:
+    - name: idf
+      version: '>=5.4'
+    source:
+      git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+      path: shared/diag
+      type: git
+    targets:
+    - esp32c3
+    - esp32s3
+    version: 2a7ab8be056a57a20a7cdc33730c9d9b9ce8c35d
   vtrux/twai_port:
     component_hash: ca63b1023762c56eb91c278e74ae9488cf432a0251358268ee4ac8c35dc31e9d
     dependencies:
@@ -483,8 +496,9 @@ direct_dependencies:
 - idf
 - joltwallet/littlefs
 - vtrux/can_port
+- vtrux/diag
 - vtrux/twai_port
 - vtrux/x2
-manifest_hash: 1e0808e78e47c7c7da97175801432c788efa6c8c4377626ac924417943fdb9a8
+manifest_hash: dcc139b5b71199046f20435baf2ff2756c0f718956fb8c150e9e6ab2e9e876c3
 target: esp32s3
 version: 2.0.0

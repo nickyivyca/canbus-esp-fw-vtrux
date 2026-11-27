@@ -65,10 +65,45 @@ SPI_N_RE = re.compile(rb"(?:^|[\r\n\x07])N" + _SPI_ID)
 # (re.M): the 1 Hz diag line, its fw/schema tail, the mode lines and the
 # loss summary. 2026-10-18: without re.M, "^diag st=" matched only at the
 # very start of a reply, and the loss summary matched nothing (the 00:30
-# trial's two HELLO? replies, now in bench_suite_test).
-PRODUCT_RE = re.compile(r"serial>.*\b(MODE|spec 2\.3)|^diag st=|\bfw=\d+ schema=\d+"
+# trial's two HELLO? replies, now in bench_suite_test). The diag line's tail
+# is `build=<8 hex> schema=<n>` from schema 5 (spec 8.3, user 2026-11-23)
+# and was `fw=<n> schema=<n>` through schema 4; both are the product, since
+# this names what a board runs before anything is flashed.
+PRODUCT_RE = re.compile(r"serial>.*\b(MODE|spec 2\.3)|^diag st="
+                        r"|\b(?:build=[0-9a-f]{8}|fw=\d+) schema=\d+"
                         r"|\bLOSS veh\(|bridged frames that missed the vehicle",
                         re.M)
+
+
+# Spec 8.3 at schema 5 (user, 2026-11-23): the serial diag line's
+# build=<8 hex> is the build id "as 0x7F7 carries it, printed as the hash's
+# first four bytes in order"
+SERIAL_BUILD_RE = re.compile(r"^diag st=\w+ .*\bbuild=([0-9a-f]{8}) "
+                             r"schema=(\d+)\s*$", re.M)
+SERIAL_DIAG_RE = re.compile(r"^diag st=\w+ .* schema=\d+\s*$", re.M)
+
+
+def serial_build_check(ids, schemas, serial):
+    """-> ([serial build ids], why), why starting "MISMATCH" when the boot's
+    serial and its 0x7F7 disagree (spec 8.3, schema 5): a whole diag line's
+    build= that is not the 0x7F7 build id, or, with 0x7F7 at schema 5 or
+    later, whole diag lines on serial and none with build=. A board that
+    prints no diag line (the truck image, spec 8.3) is not judged here;
+    identify's expected id (the image's ELF hash) is judged by the runner.
+    ids and schemas: the boot's 0x7F7 build ids (8 hex) and schema bytes."""
+    sids = [m.group(1) for m in SERIAL_BUILD_RE.finditer(serial or "")]
+    if not ids:
+        return sids, "no 0x7F7 to compare"
+    if any(s != ids[0] for s in sids):
+        return sids, ("MISMATCH: serial build= %s, 0x7F7 %s"
+                      % (",".join(sorted(set(sids))), ids[0]))
+    diag_lines = len(SERIAL_DIAG_RE.findall(serial or ""))
+    if not sids and diag_lines and schemas and min(schemas) >= 5:
+        return sids, ("MISMATCH: %d serial diag line(s) and no build= in any, "
+                      "0x7F7 at schema %d" % (diag_lines, min(schemas)))
+    if not sids:
+        return sids, "no serial diag line with build="
+    return sids, "%d serial build= equal the 0x7F7 id" % len(sids)
 
 
 class IdentifyError(RuntimeError):
@@ -114,21 +149,32 @@ def read_7f7(settings, logdir, tag):
     db = cantools.database.load_file(paths.diag_dbc())
     m = db.get_message_by_frame_id(0x7F7)
     ids = []
+    schemas = []
     for wf in witness:
         with open(wf, encoding="utf-8", errors="replace") as f:
             for ln in f:
                 p = ln.split()
                 if len(p) >= 5 and p[2] == "7F7":
-                    d = m.decode(bytes.fromhex(p[4]))
+                    d = m.decode(bytes.fromhex(p[4]), decode_choices=False)
                     ids.append("%08x" % d["intp_build_id"])
+                    schemas.append(int(d["intp_schema_ver_build"]))
     product = bool(PRODUCT_RE.search(text))
+    # the same boot's serial (spec 8.3, schema 5: build= is the 0x7F7 id)
+    serial = ""
+    for sf in sorted(glob.glob(os.path.join(out, "serial_ack_0*.log"))):
+        with open(sf, encoding="utf-8", errors="replace") as f:
+            serial += f.read()
+    sids, why = serial_build_check(ids, schemas, serial)
     with open(os.path.join(logdir, "identify_%s.txt" % tag), "w") as f:
-        f.write("0x7F7 build ids read: %s; product serial lines: %s\n"
-                % (ids or "none", product))
+        f.write("0x7F7 build ids read: %s; product serial lines: %s; serial "
+                "build= ids: %s (%s)\n" % (ids or "none", product,
+                                            sids or "none", why))
     if not ids:
         return None, product
     if len(set(ids)) != 1:
         return "inconsistent:" + ",".join(sorted(set(ids))), product
+    if why.startswith("MISMATCH"):
+        return "inconsistent:0x7F7 %s, %s" % (ids[0], why), product
     return ids[0], product
 
 

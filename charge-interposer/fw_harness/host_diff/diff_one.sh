@@ -33,8 +33,10 @@ TRACE="$1"
 . "$FW/../scratch_run.sh" || exit 2
 scratch_run host-diff-one || exit 2
 BIN="$SCRATCH_RUN/hr_l1"
-g++ -std=c++11 -O2 -I "$FW/main" -o "$BIN" \
-    "$HERE/host_runner.cpp" "$FW/main/machine.cpp" || exit 2
+# host_runner with shared/diag's packer and the generated table (schema 5;
+# runner_build.sh)
+. "$HERE/runner_build.sh" || exit 2
+hr_build "$BIN" "$FW/main" >&2 || exit 2
 
 PY="${PYTHON:-python3}"
 if "$BIN" "$TRACE" | diff -q - <("$PY" "$HERE/regen_golden.py" --stdout "$TRACE") >/dev/null; then

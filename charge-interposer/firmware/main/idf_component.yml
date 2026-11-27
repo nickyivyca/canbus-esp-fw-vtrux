@@ -45,6 +45,16 @@ dependencies:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/twai_port
     version: "2026.11.08"
+  # The diag frames' packer and build-id read (shared/diag D2-D4; spec 8.2,
+  # schema 5, user 2026-11-23): 0x7F4-0x7F7 are packed from
+  # intp_diag_table.c, generated from diag/vtrux-interposer-diag.dbc by this
+  # tag's tools/diag_table_gen.py, with the fit checks (D6) in its header.
+  # Its own tag, the one shared_pins.json pins as "shared/diag", apart from
+  # the three above.
+  vtrux/diag:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/diag
+    version: "2026.11.23.5"
   # ESP-IDF v5.4.2 exactly (user, 2026-11-03): arduino-esp32 3.2.1 does not
   # compile on 5.4.1, gen-inhibit's IDF, and the baseline's prebuilt Arduino
   # libraries were built on 5.4.2. Exact, so a shell exported for the wrong

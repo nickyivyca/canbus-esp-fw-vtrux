@@ -15,12 +15,18 @@
 # EVERY VARIANT reads the partition table in ESP-IDF's core startup stage,
 # boot_partitions.c (spec 9, the X2 settings, core dumps; user, 2026-11-18).
 # Nothing references it, so the -u below keeps it in the link.
+#
+# THE STATUS FRAMES (spec 8.2, schema 5; user, 2026-11-23) are packed by
+# vtrux/diag (shared/diag, idf_component.yml) from intp_diag_table.c, the
+# table its generator makes from diag/vtrux-interposer-diag.dbc
+# (charge-interposer/diag_table.py writes and checks it). Only the bridge's
+# three images send them.
 set(vehicle vehicle_port.cpp port_view.cpp)
 set(ports ${vehicle} port_mcp2515.cpp charger_port.cpp)
 set(boot boot_partitions.c)
 if(INTP_VARIANT STREQUAL "bridge" OR INTP_VARIANT STREQUAL "witness"
    OR INTP_VARIANT STREQUAL "truck")
-    set(srcs main.cpp machine.cpp ${ports} ${boot})
+    set(srcs main.cpp machine.cpp intp_diag_table.c ${ports} ${boot})
 elseif(INTP_VARIANT STREQUAL "selftest")
     set(srcs selftest_main.cpp ${ports} ${boot})
 elseif(INTP_VARIANT STREQUAL "diag")
