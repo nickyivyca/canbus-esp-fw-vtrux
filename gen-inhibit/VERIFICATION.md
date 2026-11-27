@@ -10237,7 +10237,8 @@ verdicts as `8047`. On `gen-inhibit/tester/bench-pin`, from `4c3afb4d`. Desk rec
 
 **A withdrawn inhibit frame stuck in the controller, emulated -- tester, 2026-11-26, the
 mock-HAL shim on `madhouse-debian` (gcc 14.2.0). Result: NOT AS SPECIFIED on
-gen-inhibit/main `54e1ea13` (the can-fail) and on the implementor's fix `8b991a45`. In
+gen-inhibit/main `54e1ea13` (the can-fail), on the implementor's fix `8b991a45` and on
+gen-inhibit/main `12b0ae60`, which holds the fix and F7's `412f0624`. In
 `withdrawn_262` the frame is never removed, and it reaches the wire when traffic
 returns.** Spec 12.4 row "a bus with no other node, emulated", its withdrawn-frame part
 (added 2026-11-26, user; emulated only, no bench run); spec 5.2 item 5, "A withdrawn frame
@@ -10285,6 +10286,12 @@ held past the bound" (tracker F5).
     register 14 times: once or twice per pass, every 200 ms, with the two reads 3 us apart.
     Every read showed TS set. The device issued no abort command and made no busy-wait
     call.
+- **Observed on `12b0ae60`** (the same run at `3f65bf86`, a merge of gen-inhibit/main
+  `12b0ae60` into the topic branch):
+  - The verdicts are the same as on `8b991a45`, line for line.
+  - W1: 14 status reads while the frame was held, every one with TS set, and no abort
+    command. Traffic returned 1.8 s after the latch, and one `0x051` then reached the
+    wire.
 - **The harness's own tests** on `988c95ff`:
   - `judge_test`: 88 ok. W1-W4 are each shown to pass and to fail.
   - `layer_stuck` and `layer_stuck_back` PASS. They check TS over 6 ms against the model,
