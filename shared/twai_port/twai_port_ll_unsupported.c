@@ -61,3 +61,8 @@ void twai_port_ll_counters(uint32_t *tec, uint32_t *rec)
     *tec = 0;
     *rec = 0;
 }
+
+/* R20's build marks (twai_port_ll.h): no test-only switch here. */
+void twai_port_ll_build_marks(void)
+{
+}
