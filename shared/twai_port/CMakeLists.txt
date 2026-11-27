@@ -52,6 +52,7 @@ if(TWAI_PORT_TXABORT_PROBE)
         set(twai_port_probe_ll "test_app/twai_port_probe_ll_unsupported.c")
     endif()
     list(APPEND twai_port_srcs "test_app/twai_port_txabort_probe.c"
+                               "test_app/twai_port_txabort_http.c"
                                "test_app/twai_port_unacked.c"
                                "test_app/twai_port_unacked_esp.c"
                                "${twai_port_probe_ll}")

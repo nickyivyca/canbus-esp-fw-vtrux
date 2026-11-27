@@ -8,7 +8,9 @@ R20). Moved at port step 1c from gen-inhibit's `gi_txabort_probe.c` and
 
 | File | What |
 |---|---|
-| `twai_port_txabort_probe.c` | `POST /gi_txabort`: what the chip's abort command does to a frame awaiting arbitration, to one being transmitted and to an empty buffer, what the driver reports afterwards, and how long the buffer takes to come free (gen-inhibit spec 5.2 item 9). It writes the abort command register directly, so it is a measurement build's only. Phases `m1`, `m2` and `m3` go to `twai_port_unacked.c` |
+| `twai_port_txabort_probe.c` | the probe's parse, run and answer, with no transport: what the chip's abort command does to a frame awaiting arbitration, to one being transmitted and to an empty buffer, what the driver reports afterwards, and how long the buffer takes to come free (gen-inhibit spec 5.2 item 9). It writes the abort command register directly, so it is a measurement build's only. Phases `m1`, `m2` and `m3` go to `twai_port_unacked.c` |
+| `twai_port_txabort_run.h` | private: `twai_port_txabort_run()`, which takes the arguments through a getter, gives the answer through an emitter, and returns the URI's status code with the refusal's body. The URI and the X2's serial commands (T19) both call it. It was split from the URI's handler for T19 (charge-interposer reviewer, 2026-11-27); the arguments, the refusals and the answer did not change |
+| `twai_port_txabort_http.c` | `POST /gi_txabort`: the query string's own check, the HTTP getter and emitter, the refusals as HTTP errors, and `twai_port_txabort_register()` |
 | `include/twai_port_txabort_probe.h` | what the project calls: `twai_port_txabort_register()`, from its URI hook (`shared/wican` W8), with its check of whether it owns the bus, while which the probe refuses, and the body of that refusal |
 | `twai_port_unacked.c`, `twai_port_unacked.h` | the no-acknowledge modes, m1-m3 (below): their arguments, trials and answer, chip-neutral |
 | `twai_port_unacked_esp.c` | what m1-m3 call on the target: the driver, the CPU cycle counter and `esp_timer` |
