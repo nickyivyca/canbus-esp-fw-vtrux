@@ -910,3 +910,41 @@ same folder.
   - Never moved or deleted: pins and run records name tags, and a pin's
     digest (R7) would refuse a moved tag anyway.
 - **Status:** validated.
+
+### R35. Pins on outside packages
+- **Basis:** user, 2026-11-26, in the gen-inhibit reviewer's session, on
+  the draft put to the user on 2026-11-25 (port plan step 4 item 6). The
+  rules are the ones both projects' copies already share: gen-inhibit's
+  `tools/can_tools_pin.py` and `tools/bench/canre_pin.py`, and the
+  interposer's `can_tools_pin.py` and `canre_pin.py`. The gen-inhibit
+  implementor compared the copies on 2026-11-25. The charge-interposer
+  reviewer's keep-list, relayed on 2026-11-25, asks for the same rules.
+- **Other keys in the pins file** (user, 2026-11-26): gen-inhibit keeps its
+  package pins beside its input-file pins in `tools/bench/pins.json`.
+- **Only `CANRE_DIR` outside a git worktree** (user, 2026-11-26): the
+  interposer used `CANRE_DIR`. gen-inhibit's host-suite copy, which has no
+  git, found canre from the location of its own files. One rule for both
+  projects means that a copy never finds its canre folder by its own
+  location. gen-inhibit's host-suite runner sets `CANRE_DIR` when it moves
+  to the shared tool.
+- **Status:** validated.
+
+### R36. Pins on outside images
+- **Basis:** user, 2026-11-26, in the gen-inhibit reviewer's session, on
+  the draft put to the user on 2026-11-25 (port plan step 4 item 7). The
+  rules are the ones both projects' copies already share: gen-inhibit's
+  `tools/x2_pin.py` and `tools/x2_pin.json`, and the interposer's
+  `wican_pin.py` and `wican_pin.json`. The charge-interposer reviewer's
+  keep-list, relayed on 2026-11-25, asks for the same rules.
+- **The file layout** (user, 2026-11-26): gen-inhibit's layout, with plain
+  file names. The interposer's WiCAN files, which had names with
+  sub-folders, move into it.
+- **Both hashes required and compared** (user, 2026-11-26): the interposer
+  recorded its WiCAN image's code hash but did not compare it with the
+  file. gen-inhibit's X2 pin has no code hash. Bench results carry by the
+  code hash (R3), so the pin compares it with the file. gen-inhibit's X2
+  pin moves to this check only after it is re-pinned to ESP-IDF builds.
+  Until then the X2 pin stays on gen-inhibit's own check: the user ruled on
+  2026-11-26 to keep the current X2 images until one of them needs a
+  change.
+- **Status:** validated.

@@ -23,7 +23,10 @@ Requirements are numbered R1 to R33. The numbers are stable: the two evidence
 documents cite them. R31 to R33 were added 2026-11-03 (user, in the
 gen-inhibit reviewer's session), for gen-inhibit's port step 1d. R23 was
 changed 2026-11-17 (user, in the charge-interposer reviewer's session): the
-pinned checkout is checked through git, not kept read-only.
+pinned checkout is checked through git, not kept read-only. R35 and R36
+were added 2026-11-26 (user, in the gen-inhibit reviewer's session), for
+gen-inhibit's port step 4 items 6 and 7. R34 is not used: the user withdrew
+the check it was drafted for on 2026-11-25.
 
 ## Terms
 
@@ -47,6 +50,8 @@ It covers:
 - the image-reading library: the app descriptor parser and the image hash
   read from a `.bin`;
 - the dev build command (R31) and the IDF environment check (R32);
+- the pin tools: the check of every pinned shared checkout (R23), and the
+  pins of outside packages (R35) and outside images (R36);
 - the comparison tool of goal 6, which the tester owns. Its requirements are
   not written yet (section 8).
 
@@ -376,6 +381,40 @@ unless the code hash changes, which the reproducible test (R19) shows.
   it, by the reviewer of that project, after the pre-push check. A tag is
   never moved and never deleted. Its checkout is `../shared-<tag>/`
   (R23).
+- **R35. Pins on outside packages** (added 2026-11-26, user). The tooling
+  pins two outside Python packages that a project's harness imports:
+  `canbench`, from the can-tools repo, and `canre`, from the public
+  reverse-engineering repo.
+  - One pins file, which the caller names, holds each package's repo and
+    full commit. canre's entry also holds its version. The file may hold
+    other keys, and the tooling ignores them.
+  - canbench is written from the pinned commit's git blobs into
+    `scratch/can-tools/<commit>/`, in the git worktree that holds the pins
+    file. It is loaded by file and never put on `sys.path`. Outside a git
+    worktree, canbench is refused.
+  - canre is installed by pip, with no dependencies, into
+    `scratch/canre/<commit>/` in that worktree. If `CANRE_DIR` is set, it
+    names canre's folder instead, as an absolute path. Outside a git
+    worktree, only `CANRE_DIR` names the folder, and canre is refused if it
+    is not set.
+  - Each file is checked against the pinned commit. canbench is checked by
+    git blob hash. canre is checked by the hashes in its `RECORD` and the
+    commit in its `direct_url.json`.
+  - A package is refused if a file is missing, changed or added, or if a
+    copy of it was already imported from anywhere else.
+  - Install never replaces a target that is already there.
+- **R36. Pins on outside images** (added 2026-11-26, user). An image pin
+  names the files of the firmware images that a project's bench flashes but
+  does not build.
+  - The pin is a committed file. For each image it names each file's flash
+    offset, size, sha256 and md5, and the image's image hash (R1) and code
+    hash (R2). Each image must have both hashes.
+  - The files stay outside git, in a folder that the local settings name.
+    Each file is at `<folder>/<pin>/<image>/<name>`, and its name is a
+    plain file name.
+  - The check compares every file with the pin. It also compares each app
+    file's image hash and code hash with the pin.
+  - Nothing in the settings can change what the pin names.
 
 ## 7. Not in this spec
 
