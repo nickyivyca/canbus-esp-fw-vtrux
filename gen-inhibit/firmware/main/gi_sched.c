@@ -19,6 +19,10 @@
  * rather than an operating parameter. Reaching it is counted, and the spec says
  * the inhibit then stays at the head of its class and the scheduler keeps
  * trying -- so the bound ends the LOOP, not the attempt.
+ *
+ * EXCEPT FOR A WITHDRAWN INHIBIT (spec 5.2 item 5, user 2026-11-26): its loop
+ * does not end at the bound. The bound is counted once, and the loop turns on
+ * every later pass until the buffer is free (gs_tick() step 3).
  */
 #define GS_ABORT_BOUND_US   1000
 
@@ -151,6 +155,7 @@ void gs_rearm(gs_t *s, const gs_hal_t *hal, gs_class_t timed)
     const bool       aborting   = s->aborting;
     const int64_t    abort_since = s->abort_since;
     const uint32_t   abort_cmds_this = s->abort_cmds_this;
+    const bool       abort_past_bound = s->abort_past_bound;
     const bool       held_booked = s->held_booked;
 
     gs_init(s, hal);
@@ -164,6 +169,7 @@ void gs_rearm(gs_t *s, const gs_hal_t *hal, gs_class_t timed)
     s->aborting = aborting;
     s->abort_since = abort_since;
     s->abort_cmds_this = abort_cmds_this;
+    s->abort_past_bound = abort_past_bound;
     s->held_booked = held_booked;
     /*
      * SPEC 5.2 ITEM 6 (2026-09-29): declare the carried-over frame, because this
@@ -498,6 +504,7 @@ static void begin_abort(gs_t *s, int64_t now)
     s->aborting = true;
     s->abort_since = now;
     s->abort_cmds_this = 0;
+    s->abort_past_bound = false;
     s->st.aborts++;
 
     /*
@@ -548,7 +555,11 @@ static bool abort_step(gs_t *s, int64_t now)
     }
     /* GS_BUF_TRANSMITTING: no command was issued. Wait for TS to fall. */
 
-    if (now - s->abort_since >= GS_ABORT_BOUND_US)
+    /*
+     * Past the bound already (a withdrawn inhibit, gs_tick() step 3): the bound
+     * was counted when it was reached, and only a free buffer ends this loop.
+     */
+    if (!s->abort_past_bound && now - s->abort_since >= GS_ABORT_BOUND_US)
     {
         s->st.abort_bound_hit++;
         return true;
@@ -710,8 +721,35 @@ void gs_tick(gs_t *s, int64_t now)
         }
         else if (s->held)
         {
-            /* The bound was reached and the frame is still there. Item 4: keep
-             * trying. Nothing is handed over, and the next tick starts again. */
+            /*
+             * The bound was reached and the frame is still there. Nothing is
+             * handed over.
+             *
+             * A lower class: step 2 starts a new abort on a later pass, while
+             * an inhibit waits and the buffer reads AWAITING (item 4).
+             *
+             * A WITHDRAWN INHIBIT STAYS IN THE LOOP (spec 5.2 item 5, user
+             * 2026-11-26). An inhibit is here only to be withdrawn, at its
+             * deadline or as a stand-down, and nothing else would abort it
+             * again: step 2 aborts lower classes only, a stand-down calls
+             * gs_withdraw_inhibits() once, on the falling edge of the live
+             * flag, and a frame already booked is not booked again at the next
+             * deadline. On a bus with no other node the controller retries it
+             * unacknowledged, so a single read every 200 ms may never land
+             * between retries; it then stayed in the controller for good and
+             * went out, stale, when a node came back. So the loop stays open,
+             * and the abort is issued again on every later pass until the
+             * buffer is free. Telemetry waits behind it.
+             *
+             * Keeping `aborting` set also keeps the departure out of step 1
+             * and gs_command_received(): step 3 books it `withdrawn`, never
+             * `sent` (item 6).
+             */
+            if (s->held_class == GS_CLASS_INHIBIT)
+            {
+                s->aborting = true;
+                s->abort_past_bound = true;
+            }
             return;
         }
     }
@@ -821,6 +859,9 @@ void gs_tick(gs_t *s, int64_t now)
  *              even if in-tick resolution stopped happening. The bound is a cap,
  *              not an observed event. It is evaluated only when gs_tick() runs,
  *              so the real cap is 1 ms plus the wait for the next tick.
+ *              (2026-11-26: no longer for a withdrawn inhibit. Spec 5.2 item 5
+ *              keeps its loop open past the bound until the buffer is free;
+ *              see gs_tick() step 3.)
  *
  * THE CAP DOES NOT COVER THE SKIP REGIME, and an earlier revision of this
  * comment wrongly said it did. The cap limits how OLD an abort can get. The
@@ -967,7 +1008,16 @@ gs_deadline_t gs_command_received(gs_t *s, int64_t now)
     }
     s->st.skip_window = skips_in_window(s, now);
 
-    if (!s->inhibit_outstanding)
+    /*
+     * `held_booked`: the held inhibit was already given up at an earlier
+     * deadline, and the item 4 loop is still removing it (spec 5.2 item 5,
+     * 2026-11-26: past the bound it stays in the loop until the buffer is
+     * free). It is one skip, booked then; booking it again here would count
+     * one frame twice in `skipped` and in trip 7's window, and break
+     * withdrawn + dropped == skipped + standdown (item 6). A stand-down has
+     * already cleared `inhibit_outstanding`.
+     */
+    if (!s->inhibit_outstanding || s->held_booked)
     {
         return (purged > 0) ? GS_DEADLINE_SKIPPED : GS_DEADLINE_OK;
     }
