@@ -39,8 +39,22 @@ set(twai_port_priv_requires log soc esp_rom
 # release image carrying it is refused by the build-switch check (rows in
 # vtrux_checks.json). The project registers it from its URI hook (W8),
 # passing its check of whether it owns the bus.
+#
+# Its no-acknowledge modes, m1-m3, read the controller through a register
+# file of their own, one per chip and chosen as T8's is: only the C3's
+# exists, and any other chip builds the unsupported one, where m1-m3 answer
+# "not supported". It is not in T8's file because that file is in release
+# images and its abort is the abort-if-awaiting only.
 if(TWAI_PORT_TXABORT_PROBE)
-    list(APPEND twai_port_srcs "test_app/twai_port_txabort_probe.c")
+    if(IDF_TARGET STREQUAL "esp32c3")
+        set(twai_port_probe_ll "test_app/twai_port_probe_ll_esp32c3.c")
+    else()
+        set(twai_port_probe_ll "test_app/twai_port_probe_ll_unsupported.c")
+    endif()
+    list(APPEND twai_port_srcs "test_app/twai_port_txabort_probe.c"
+                               "test_app/twai_port_unacked.c"
+                               "test_app/twai_port_unacked_esp.c"
+                               "${twai_port_probe_ll}")
     list(APPEND twai_port_includes "test_app/include")
 endif()
 
