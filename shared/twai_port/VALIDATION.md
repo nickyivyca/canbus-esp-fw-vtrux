@@ -238,4 +238,14 @@ verification"; charge-interposer reviewer, 2026-10-31).
   as `shared/restart_guard` G5. The ownership check is a hook because the
   probe's refusal while armed is gen-inhibit's rule (spec 3.2, "Exempt"),
   and the shared probe cannot call gen-inhibit.
+- **A bus where no node acknowledges** (user, 2026-11-27, in the
+  gen-inhibit reviewer's session, gen-inhibit tracker F5): gen-inhibit's
+  emulated test of a withdrawn inhibit frame assumes that TS reads 0 in
+  the idle between automatic resends (6 us error active, 22 us error
+  passive, from CAN bit timing). Nobody has measured this on the C3. The
+  earlier measurement covered TS falling when a frame loses arbitration,
+  which is a different event. The fix for F5 depends on it: if TS stays
+  at 1 across resends, an abort issued only while TS = 0 never removes the
+  frame. The user ruled that these measurements come before the fix is
+  chosen.
 - **Status:** validated.
