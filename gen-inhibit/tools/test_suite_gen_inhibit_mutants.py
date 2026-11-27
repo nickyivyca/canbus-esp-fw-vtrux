@@ -102,6 +102,16 @@ MUTANTS = [
     ("capture: B21 still hands its judge the wire join's files",
      '"B21_client_multipart_%s.txt" % C, "B21_client_image_%s.txt" % C], 3600),',
      '"B21_wire_multipart_%s.txt" % C, "B21_wire_image_%s.txt" % C], 3600),'),
+    # F4 (2026-11-27): the RESPOND entry measurement
+    ("F4: the arms left out of man_app",
+     '            chk("F4arms", "baseline_b_hand.sh", ["F4"], None, timeout=3600),\n', ""),
+    ("F4: the desk step reads the B3 arms' folder",
+     'desk("F4", "F4", ["man_app/F4arms"], None,', 'desk("F4", "F4", ["man_app/B3arms"], None,'),
+    ("F4: the arms judged as B3",
+     'chk("F4arms", "baseline_b_hand.sh", ["F4"], None, timeout=3600)',
+     'chk("F4arms", "baseline_b_hand.sh", ["F4"], judged("B3"), timeout=3600)'),
+    ("F4: the desk step's profile not declared",
+     'None, ["F4_respond_entry_profile.txt", "F4_mode_entry_analysis.txt"]),', 'None, ["F4_mode_entry_analysis.txt"]),'),
     ("capture: B11raw's arms skipped again",
      '        if judge:\n            kw["judge"] = judge\n        return Check(**kw)',
      '        if judge:\n            kw["judge"] = judge\n        if cid in ("B11rawarms", "B11raw", "B21"):\n'

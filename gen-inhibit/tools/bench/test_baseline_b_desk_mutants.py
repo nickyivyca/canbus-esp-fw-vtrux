@@ -61,6 +61,12 @@ MUTANTS = [   # (name, step, old, new)
      '[ -n "$r" ] && [ -f "$recs/$r" ] || continue'),
     ("B21client: the two bodies' judgements under one name", "B21client",
      '> "$D/B21_client_$1_${C}.txt" 2>&1; rc=$?', '> "$D/B21_client_${C}.txt" 2>&1; rc=$?'),
+    # F4 (2026-11-27)
+    ("F4: the provenance files read as records", "F4",
+     '"${1:?F4 dir}"/F4_e4_respond_entry_${C}_*_arm[0-9].json', '"${1:?F4 dir}"/F4_e4_respond_entry_${C}_*.json'),
+    ("F4: exit 0 with a record counted out", "F4", '[ "$rc" -eq 0 ] || exit 1 ;;', 'true ;;'),
+    ("F4: no input is analysed anyway", "F4",
+     '_*_arm[0-9].json; need "$@"', '_*_arm[0-9].json'),
     ("B24: B3's arms left out", "B24",
      'set -- "$app"/B2_e4_presence_*_${C}_x2app.json "$b3"/B3_e4_golive_*_${C}_*.json; need "$@"',
      'set -- "$app"/B2_e4_presence_*_${C}_x2app.json; need "$@"'),

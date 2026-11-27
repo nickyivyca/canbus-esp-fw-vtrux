@@ -30,7 +30,9 @@ BASH = os.environ.get("GI_BASH") or shutil.which("bash")
 C = "e3d9437"
 STEPS = ["B2", "B3", "B24", "B25", "B11", "B11raw", "B13", "B5", "B21client", "B19present"]
 NDIRS = {"B2": 2, "B3": 1, "B24": 2, "B25": 1, "B11": 1, "B11raw": 1, "B13": 3, "B5": 2, "B21client": 2,
-         "B19present": 4}
+         "B19present": 4, "F4": 1}
+# Steps with no e3d9437 files, tested on synthetic records only (section 5): F4 (2026-11-27)
+SYNTH = ["F4"]
 # B21client writes the half of B21 the client judges (topic (E), 2026-11-19); B21's own judge also reads
 # the guard steps' files, so this step is checked on its two files, not through the index: each the
 # baseline folder's byte for byte, VOID with 20 of 20 whole 403s (the reviewer's readings (t), (w)).
@@ -77,7 +79,7 @@ def written(out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steps", default=",".join(STEPS))
+    ap.add_argument("--steps", default=",".join(STEPS + SYNTH))
     a = ap.parse_args()
     steps = [s for s in a.steps.split(",") if s]
     base = os.environ.get("GI_BASELINE_DIR")
@@ -99,6 +101,8 @@ def main():
         # judges report the new ones since 551dc655 (suite_judges.RENAMED, new -> old).
         new_name = {old: new for new, old in SJ.RENAMED.items()}
         for s in steps:
+            if s in SYNTH:
+                continue
             out = os.path.join(tmp, "real", s)
             dirs = [bench, runs] if s in ("B5", "B21client") else [runs if s == "B25" else bench] * NDIRS[s]
             rc, log = desk(s, dirs, out)
@@ -243,6 +247,40 @@ def main():
             some("B2_e4_presence_respond_%s_x2app.json" % C, 1, noheld)
             rc, log = desk("B13", [bench, noheld, noheld], os.path.join(tmp, "b13noheld_out"))
             check("B13: no held RESPOND arm exits 2", rc == 2, (rc, log[-200:]))
+        if "F4" in steps:
+            # 5. F4 on synthetic records (2026-11-27): the arms' records only, never the
+            # _provenance.json files beside them; exit 0 and both files when every record gives its
+            # figures; exit 1 when the profile counts one out
+            def f4rec(path, mode="respond"):
+                s = [[100.0 + 5.0 + t, 0, rx, 2, None, 0] for t, rx in ((-0.5, None), (0.5, 3), (20.0, 3))]
+                a = {"arm_after_s": 5.0, "post_s": [5.0, 5.03], "post_http": 200, "poll_hz": 2.0,
+                     "queue_series": s, "perf_base": 100.0, "void": False, "void_reasons": [],
+                     "device": {"ctr_bad": 0, "drv": {"rx_missed": 3}}}
+                with open(path, "w", encoding="ascii") as f:
+                    json.dump({"mode": mode, "arms": {"idle": a}}, f)
+            good = os.path.join(tmp, "f4good")
+            os.makedirs(good)
+            for v in ("p2hz_a_arm1", "p2hz_b_arm1"):
+                f4rec(os.path.join(good, "F4_e4_respond_entry_%s_%s.json" % (C, v)))
+            f4rec(os.path.join(good, "F4_e4_respond_entry_%s_p2hz_a_arm1_idle_provenance.json" % C), mode="none")
+            out = os.path.join(tmp, "f4good_out")
+            rc, log = desk("F4", [good], out)
+            check("F4: two good records exit 0, the profile and the mode entry analysis written",
+                  rc == 0 and written(out) == ["F4_mode_entry_analysis.txt", "F4_respond_entry_profile.txt"],
+                  (rc, written(out), log[-300:]))
+            prof = open(os.path.join(out, "F4_respond_entry_profile.txt"), encoding="utf-8").read() \
+                if os.path.isfile(os.path.join(out, "F4_respond_entry_profile.txt")) else ""
+            check("F4: the profile reads the two arms' records, not the provenance file beside them",
+                  prof.splitlines()[-1:] == ["2 record(s), 0 counted out"] and "provenance" not in prof, prof[-300:])
+            bad = os.path.join(tmp, "f4bad")
+            os.makedirs(bad)
+            f4rec(os.path.join(bad, "F4_e4_respond_entry_%s_p2hz_a_arm1.json" % C))
+            f4rec(os.path.join(bad, "F4_e4_respond_entry_%s_unpolled_arm1.json" % C), mode="inhibit")
+            out = os.path.join(tmp, "f4bad_out")
+            rc, log = desk("F4", [bad], out)
+            check("F4: a record the profile counts out exits 1, the profile naming it",
+                  rc == 1 and "COUNTED OUT" in open(os.path.join(out, "F4_respond_entry_profile.txt"),
+                                                    encoding="utf-8").read(), (rc, log[-300:]))
         if "B11raw" in steps:
             # 4. a run folder with a space in its path judges the same: the step hands each
             # record to the judge as its own word. The e3d9437 folder had spaces on Windows

@@ -23,6 +23,8 @@
 #   B21client <B21 dir> <records dir>  ota_guard_client_judge on B21's two probe records, into
 #                                  B21_client_<body>_<commit>.txt (topic (E), 2026-11-19)
 #   B19present <rt dir> <txabort dir> <abortwin dir> <rxq dir>   copy the four in
+#   F4      <F4 dir>               respond_entry_profile and mode_entry_analysis over the F4
+#                                  arms (2026-11-27); exit 1 when the profile counts one out
 #
 # Run from the reverse-it root. A step whose inputs are missing says so and exits 2:
 # an analysis of nothing is not a result.
@@ -121,6 +123,15 @@ case $s in
       echo "B21client $1 exit $rc"
       shift 2
     done ;;
+  F4)
+    # F4 (2026-11-27): RESPOND's receive loss over time from the mode POST, a measurement. The
+    # arms' records only (<name>_arm<n>.json), not the _provenance.json files e4 writes beside
+    # them. Exit 1 when the profile counted a record out; mode_entry_analysis always exits 0.
+    set -- "${1:?F4 dir}"/F4_e4_respond_entry_${C}_*_arm[0-9].json; need "$@"
+    $PY -B $A/respond_entry_profile.py "$@" > "$D/F4_respond_entry_profile.txt" 2>&1; rc=$?
+    echo "profile exit $rc"
+    $PY -B $A/mode_entry_analysis.py "$@" > "$D/F4_mode_entry_analysis.txt" 2>&1; echo "mode entry exit $?"
+    [ "$rc" -eq 0 ] || exit 1 ;;
   B19present)
     [ $# -eq 4 ] || { echo "B19present: 4 dirs, got $#"; exit 2; }
     for t in rt txabort abortwin rxq; do
