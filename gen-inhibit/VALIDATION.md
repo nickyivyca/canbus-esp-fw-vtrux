@@ -492,6 +492,18 @@ hardware after emulated)"*.
   was not the cause and is not to be rebuilt (user, 2026-10-03).
   Emulation replays traffic for its stimulus, not for bus load: user,
   2026-10-03.
+- **A withdrawn frame held past the bound** (added 2026-11-26, user,
+  tracker F5). The adversarial review for the first truck deployment
+  exposed it. After a trip, an inhibit frame that no node acknowledges can
+  stay in the controller once the 1 ms loop ends, and nothing aborts it
+  again. When a node returns, one stale `0x051` goes out while the device
+  is latched. That breaks item 5's "is never sent" and the 12.4
+  no-other-node row. The realistic cause is the device's CAN wires losing
+  contact while its power stays on. The worst effect is one zero-torque
+  frame with an out-of-date counter, so the user ruled it rare but worth
+  the fix. It is tested in emulation only, at the retry pattern the bench
+  measured (262-274 us, `VERIFICATION.md` 12.4 "a bus with no other
+  node"), with no bench run (user, 2026-11-26).
 - **Status:** validated.
 
 ## 6. Conditions that disable the inhibit
