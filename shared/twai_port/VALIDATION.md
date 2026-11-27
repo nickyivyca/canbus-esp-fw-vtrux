@@ -249,3 +249,95 @@ verification"; charge-interposer reviewer, 2026-10-31).
   frame. The user ruled that these measurements come before the fix is
   chosen.
 - **Status:** validated.
+
+### Stage (b): T14 to T19
+- **Basis for all six:** the charge-interposer review tracker
+  (`$REVERSE_IT_DIR/projects/vtrux/notes/charge-interposer/charge-interposer-review.md`),
+  row "Vehicle frames lost at the vehicle port's mode switch", its
+  requirements (a) to (f) (charge-interposer implementor, 2026-10-16, from
+  IDF v5.4.1; user, 2026-10-16 and 2026-10-22), and row "A software restart
+  leaves the controllers on their buses"; the interposer spec, 2.3 ("A
+  switch loses no frame", "No restart leaves the vehicle-side controller on
+  its bus") and 8.2 (`bridge_ok`); port plan, Layer 2, `twai_port` "Stage
+  (b)". The user ruled on 2026-11-07, in the charge-interposer reviewer's
+  session, that the loss is fixed at stage (b) in `twai_port`. The user
+  approved the text on 2026-11-27, in the same session, after the
+  gen-inhibit reviewer's read.
+- **Two switch paths** (user, 2026-11-27, in the gen-inhibit reviewer's
+  session): T14 and T4's teardown both stay in the port. gen-inhibit stays
+  on the teardown switch.
+
+### T14. The kept-driver switch
+- **Basis:** the interposer's bench lost 1 or 2 vehicle-side frames at every
+  switch of the vehicle port, in both directions: 44 over 41 switches at
+  2,000 fps, and 0 of 171,810 in a control with no switches (charge-interposer
+  tester, 2026-10-15). The switch was a full teardown and reinstall, the only
+  route the public TWAI API offers, and it left the controller deaf for
+  longer than the bus's idle gap. Requirement (c): the driver's mode is
+  fixed at install (`twai.c:481`) and gates `twai_transmit` (`:666`), so a
+  port installed in listen-only could never send.
+- **Status:** validated.
+
+### T15. The error counters at a switch
+- **Basis:** requirement (a): the errata workaround's REC = 128 is set only
+  in `twai_hal_start` (`twai_hal.c:76-85`), and `twai_hal_stop` (`:98`) sets
+  it back to 0. Without the write, a controller switched through the
+  registers is listen-only and error-active. Requirement (d):
+  `twai_get_status_info` reads both counters as 0 while the driver believes
+  it is in listen-only (`:848`). The register read after the driver's own
+  listen-only start: REC 128 in 18 of 18 reads (charge-interposer tester,
+  vport_bench `f404111`, 2026-10-16).
+- **The last sentence** (gen-inhibit reviewer, 2026-11-27): limited to a
+  port that chose T14, so gen-inhibit's counters are unchanged.
+- **Status:** validated.
+
+### T16. The switch's placement in the inter-frame gap
+- **Basis:** requirement (b): `twai_ll_set_mode` needs reset mode
+  (`twai_ll.h:202`), which halts a frame in transmission and misses one
+  arriving, so the switch is placed in the gap, found and not assumed.
+- **Held** (user, 2026-11-27): the drafted text waited for TS = 0 and RS = 0,
+  bounded at 1 ms, and switched anyway when the wait ran out. If TS stays
+  at 1 between unacknowledged resends, every such wait runs out. A faulty
+  or full bus can also stop the gap from coming. The user ruled that the
+  bound and the action on timeout wait for T13's measurements on a bus
+  where no node acknowledges, on the C3 and on the S3.
+- **Status:** basis pending: T13's no-acknowledge measurements on the C3
+  and the S3 (T19).
+
+### T17. Frames held at a switch to listen-only
+- **Basis:** requirement (e) (user, 2026-10-16): every bridged frame the
+  driver still holds at a switch to listen-only is booked toward the
+  interposer spec 8.2's "bridged frame that failed to reach the vehicle",
+  which also meets 2.3's "either sent or counted". With nothing on the
+  vehicle segment acknowledging, the head frame retries forever and up to
+  32 frames queue behind it. The teardown switch then discarded them
+  uncounted (charge-interposer implementor, 2026-10-16). The interposer's
+  host_bridge checks `bridge-ok-veh-failed` and `bridge-ok-switch-discard`
+  are known FAILs on the baseline that the ported image must pass.
+- **Counted once:** an aborted frame raises a transmit failure, so the
+  switch's count and `tx_failed` would otherwise both book it.
+- **Status:** validated.
+
+### T18. The bus-error count is exact up to the switch
+- **Basis:** requirement (f) (user, 2026-10-22, from the interposer's
+  powerup-round-noack run): the vehicle-side error count books every bus
+  error up to the switch, including one raised after the loop's last alert
+  read. On the kept-driver switch the latched alert survives, since nothing
+  uninstalls.
+- **Limited to T14** (gen-inhibit reviewer, 2026-11-27): the teardown path
+  is unchanged.
+- **Status:** validated.
+
+### T19. T8 and T12 on the S3
+- **Basis:** T8 and T12 report "not supported" on any chip with no measured
+  file, so `shared/restart_guard` does nothing on the X2, and the
+  interposer spec 2.3 restart requirement is unmet there. The implementor's
+  reading of IDF v5.4.1 (2026-10-16, not measured): on the S3 a software
+  restart leaves TWAI on the bus at half rate. T12's validation names this
+  measurement as the interposer's stage (b) work.
+- **A serial command:** the X2 runs no WiCAN web server, so `shared/wican`
+  W8's URI hook does not exist there.
+- **The no-acknowledge modes** (charge-interposer reviewer, 2026-11-27, on
+  the gen-inhibit reviewer's question): T16's wait and T17's abort depend
+  on what TS reads between resends on the S3.
+- **Status:** validated.
