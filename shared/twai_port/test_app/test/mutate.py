@@ -5,9 +5,10 @@ The implementor's (SPEC.md T11, T13), beside the host tests it scores. Each
 mutant below undoes one behaviour in a copy of twai_port_unacked.c, a
 probe register file (twai_port_probe_ll_esp32c3.c,
 twai_port_probe_ll_esp32s3.c, twai_port_probe_ll_unsupported.c), the T19
-command line (twai_port_t19_parse.c), or the URI handler or the run
+command line (twai_port_t19_parse.c), the T19 app's switch commands
+(twai_port_t19.c), or the URI handler or the run
 (twai_port_txabort_http.c, twai_port_txabort_probe.c: their stack use
-only), and builds and runs the five host test binaries and test_stack.py
+only), and builds and runs the six host test binaries and test_stack.py
 against the copy. The run passes only if the unmutated build passes
 and every mutant builds and fails. A mutant that does not build is not a
 catch, and one whose text does not occur exactly once ran nothing; either
@@ -31,15 +32,21 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", "..", "..", ".."))
-COPY = "shared/twai_port/test_app"
+# What each copy holds: test_app/, and what test_t19 builds against outside
+# it (the port's headers, the unit tests' mock/, can_port's dispatch).
+COPY = ("shared/twai_port/test_app", "shared/twai_port/include",
+        "shared/twai_port/unit/mock", "shared/twai_port/twai_port_ll.h",
+        "shared/can_port/include", "shared/can_port/can_port.c",
+        "shared/can_port/can_port_priv.h")
 TEST = "shared/twai_port/test_app/test"
 BINS = ("test_unacked", "test_probe_ll_c3", "test_probe_ll_s3", "test_probe_ll_unsupported",
-        "test_t19_parse")
+        "test_t19_parse", "test_t19")
 TIMEOUT_S = 120
 UN = "shared/twai_port/test_app/twai_port_unacked.c"
 C3 = "shared/twai_port/test_app/twai_port_probe_ll_esp32c3.c"
 S3 = "shared/twai_port/test_app/twai_port_probe_ll_esp32s3.c"
 T19 = "shared/twai_port/test_app/twai_port_t19_parse.c"
+APP = "shared/twai_port/test_app/twai_port_t19.c"
 NS = "shared/twai_port/test_app/twai_port_probe_ll_unsupported.c"
 HT = "shared/twai_port/test_app/twai_port_txabort_http.c"
 PR = "shared/twai_port/test_app/twai_port_txabort_probe.c"
@@ -227,6 +234,25 @@ MUTANTS = [
     ("t19: control characters raw", T19, "else if (c < 0x20)", "else if (c < 0x09)"),
     ("t19: string one past the buffer", T19,
      "if (o + k + 2 > dn)", "if (o + k + 1 > dn)"),
+    ("app: switch through the stock setter", APP,
+     "    *err = can_port_set_mode(0, to_lom ? CAN_PORT_MODE_LISTEN_ONLY\n"
+     "                                       : CAN_PORT_MODE_NORMAL);",
+     "    can_set_silent(to_lom ? 1 : 0);\n    *err = ESP_OK;"),
+    ("app: set-mode result not answered", APP,
+     "(long long)sw_us, (int)sw_err, mode_name", "(long long)sw_us, 0, mode_name"),
+    ("app: from listen-only not back to normal first", APP,
+     "    if (twai_port_mode() == CAN_PORT_MODE_LISTEN_ONLY)\n    {\n"
+     "        (void)can_port_set_mode(0, CAN_PORT_MODE_NORMAL);\n    }\n"
+     "    if (twai_port_mode() != CAN_PORT_MODE_NORMAL)",
+     "    if (twai_port_mode() != CAN_PORT_MODE_NORMAL)"),
+    ("app: switchloop shows a stale report", APP,
+     "        if (twai_port_last_switch(&s_loop[i].r) != ESP_OK\n"
+     "            || s_loop[i].r.seq == seq)",
+     "        if (twai_port_last_switch(&s_loop[i].r) != ESP_OK)"),
+    ("app: odd switchloop left in listen-only", APP,
+     "        /* an odd k ends in listen-only: back to normal */\n"
+     "        (void)can_port_set_mode(0, CAN_PORT_MODE_NORMAL);",
+     "        /* an odd k ends in listen-only: back to normal */"),
 ]
 
 
@@ -288,7 +314,13 @@ def fresh_copy(run_dir):
     copy = os.path.join(run_dir, "copy")
     if not remove_tree(copy):
         sys.exit("the last mutant's copy is still there (above)")
-    shutil.copytree(os.path.join(ROOT, COPY), os.path.join(copy, COPY))
+    for c in COPY:
+        src, dst = os.path.join(ROOT, c), os.path.join(copy, c)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
     return copy
 
 
