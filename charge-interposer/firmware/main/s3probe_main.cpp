@@ -14,9 +14,19 @@
 // Every command runs here, on the Arduino loop task, so the TWAI driver is
 // installed, and its interrupt runs, on that task's core; each answer names
 // the core.
+//
+// IDENTITY OFF THE WIRE (the charge-interposer tester, 2026-11-28): the line
+// "HELLO?" is answered here, never passed to the T19 app, with one line
+// "@HELLO s3probe version=<v> elf_sha256=<64 lowercase hex> idf=<v>" from
+// the app descriptor, the form the standalone test images use and
+// bench_identify.py's HELLO_RE reads. The same line is printed at boot.
 #include <Arduino.h>
 
 #include <stdio.h>
+#include <string.h>
+
+#include "esp_app_desc.h"
+#include "esp_idf_version.h"
 
 #include "board_ports.h"
 #include "restart_guard.h"
@@ -40,6 +50,16 @@ bool emit(void *ctx, const char *s, size_t n) {
 }
 
 void flush() { Serial.flush(); }
+
+void hello() {
+  const esp_app_desc_t *d = esp_app_get_description();
+  char sha[65];
+  for (int i = 0; i < 32; i++) {
+    snprintf(sha + 2 * i, 3, "%02x", d->app_elf_sha256[i]);
+  }
+  Serial.printf("@HELLO s3probe version=%s elf_sha256=%s idf=%s\n",
+                d->version, sha, esp_get_idf_version());
+}
 
 // G4's record as one JSON value (restart_guard.h), or null.
 bool restartRecord(char *buf, size_t n) {
@@ -84,6 +104,7 @@ void setup() {
   const esp_err_t e = twai_port_t19_init(&c);
   Serial.printf("{\"s3probe\":\"MEASUREMENT BUILD, never for the truck\","
                 "\"init\":%d}\n", static_cast<int>(e));
+  hello();
 }
 
 void loop() {
@@ -95,7 +116,11 @@ void loop() {
     if (ch == '\r' || ch == '\n') {
       if (s_len > 0 || s_too_long) {
         s_line[s_len] = '\0';
-        twai_port_t19_line(s_line, s_too_long);
+        if (!s_too_long && strcmp(s_line, "HELLO?") == 0) {
+          hello();
+        } else {
+          twai_port_t19_line(s_line, s_too_long);
+        }
       }
       s_len = 0;
       s_too_long = false;
