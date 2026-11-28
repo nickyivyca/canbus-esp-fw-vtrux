@@ -10,14 +10,14 @@
     "digest": "a55aba79a23bb07af25f66ef7ca3b918020ec08d4d7bd10126f796e32698277f"
   },
   "shared/twai_port": {
-    "tag": "2026.11.08",
-    "commit": "5b03505f515cff8fbdd8826aa97fd2626028578a",
-    "digest": "f9d2311fca036f29eb78a069a88a50336a8187c7f8f506f982c9cb053586dc80"
+    "tag": "2026.11.27.2",
+    "commit": "7ce07f75f4a5764bba5be920f31b46e466995e95",
+    "digest": "946f90eaf44a90334558ffb3f28c27d72fba9e544bfea54444547daac9bd2e71"
   },
   "shared/can_port": {
-    "tag": "2026.11.08",
-    "commit": "5b03505f515cff8fbdd8826aa97fd2626028578a",
-    "digest": "1fc65f35a3cc4d803f86e8b1e5051096504722554eda5d59e8f200ff76e46a4e"
+    "tag": "2026.11.27.2",
+    "commit": "7ce07f75f4a5764bba5be920f31b46e466995e95",
+    "digest": "40e90da18b273f14eb38c344a1654e9cb97d414d3695b071f34b2e4062f92917"
   },
   "shared/diag": {
     "tag": "2026.11.23.5",
