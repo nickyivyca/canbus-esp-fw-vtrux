@@ -90,3 +90,44 @@ with each build's R1 image hash).
 | `TWAI_PORT_TXABORT_PROBE`, symbols row | PASS | Fails on s3probe: the ELF defines `twai_port_txabort_run`. Passes on bridge and on truck. | `positive_bridge.txt`, `positive_truck.txt` |
 | The component's scope, whole R20 check | PASS | On bridge and on truck, no failure in the component's scope: no symbol unlisted, none stale, every refusal rule passes. | `positive_bridge.txt`, `positive_truck.txt` |
 | Can-fail on real builds | PASS | OFF and ON swapped (s3probe as OFF, the bridge build as the s3probe ON): FAIL 11, exit 1, each on its own check. | `negative_swapped.txt` (`6bab0fc7...c2c375`) |
+
+## T19 on the X2's S3: the kept-driver switch, tag 2026.11.27.6 (charge-interposer tester, 2026-11-27 PST)
+
+**What it is evidence for:** T19's measurement on the ESP32-S3 of the
+kept-driver switch (T14, T15, T17). The arms for the restart stop (T12) and
+for reset mode on a frame left in the buffer did not run (see the table).
+T13's measurements on a bus where no node acknowledges (`txabort`, m1-m3)
+are not in this check. They wait for the probe analysis to move into this
+component (charge-interposer reviewer, 2026-11-27).
+**Code tested:** the component at tag 2026.11.27.6 (`a34d5a73`), in the
+s3probe dev build of charge-interposer `1d4221c9`, made at `7ab0151b` on
+`charge-interposer/tester/switch-checks` (a merge of `1d4221c9` with no
+product change): ELF sha256 `d66b2890...242e37eb`, app sha256
+`c175685a...`, ESP-IDF v5.4.2. The runner flashed it (4 writes verified)
+and read its `@HELLO` `elf_sha256` off the wire at 23:42:49.
+**Check:** `charge-interposer/bench_drivers/bench_t19.py` at `7ab0151b`
+(written in `53396ed2`, unchanged since), check `b-s3probe/t19-s3probe` of
+`charge-interposer/bench_suite.py:bench`, run by the shared/bench chain
+runner (tag 2026.11.20) from a clean tracked tree. The runner's premise
+was a passing emulated run on the same product digest
+(`emulated_sc_1d4221c9`, digest `c4fb8191...`). Its test and can-fail:
+`bench_t19.py`'s self-test (OK) and can-fail (31 of 31 caught). **Rig:**
+the X2's CAN1 on the vehicle segment with the Kvaser and the PCAN, nothing
+else; "ack" is the Kvaser up at 500k, "noack" is the Kvaser down and the
+PCAN closed. **Host:** madhouse-debian, in `bench.slice`, the runner
+holding the bench lock. **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/runs/bench_t19_1d4221c9/`,
+the runner's record (`record.json`, `f7dcc7e0...76e2e7`; `index.txt`,
+`bbc29b70...9d39d0`).
+
+The runner's verdict is FAIL (the driver's exit 3, `RESULT: VOID`).
+
+| Arm | Result | What was tested and observed | Run file (sha256) |
+|---|---|---|---|
+| `info` (the premise) | PASS | `info` answers build `7ab0151b`, idf v5.4.2 (the version T19 names), no driver installed at boot (`port_core` -1); `regs` answers. | `b-s3probe/t19-s3probe/t19-s3probe.txt` (`32e20a7e...07b37a`) |
+| `switch`, T14 | FAIL | Ack rig. `switch to=lom` answers status 200, `report.result` 0, `switch_us` 1. After it, `mode` is "normal", and `regs` reads the LOM bit 0 with the driver installed (`drv.state` 1). `report` is `seq` 0, `to` "normal". T14 wants listen-only reached through the controller's registers, with the driver kept installed. | `t19-s3probe.txt` |
+| `switch`, T15 | FAIL | After `switch to=lom`: `rec_written` 0 and `rec_read_back` 0. T15 wants 128 written and read back on the way into listen-only. | `t19-s3probe.txt` |
+| `held`, T17 | FAIL | Noack rig. `switch to=lom n=8`: `queued` 8, then `report.held` 0, `head_aborted` false, `hook` empty (`hook_lost` 0), `tx_discarded_switch` +0, `mtx_after` 8, `mode` "normal". T17 wants the 8 frames removed, each given to the project once (ID 0x7FD, tags 0x7100 to 0x7107) and counted once as discarded at the switch. In the 0.5 s after the following `switch to=normal` on the ack rig, the Kvaser saw no 0x7FD frame. | `t19-s3probe.txt` |
+| `switchloop`, T14, T15 | VOID: no answer | Ack rig, the PCAN sending 0x5A6 (5727 frames). `switchloop k=20 period_ms=100` gave no answer in 12 s. The resource record over 23:42:50 to 23:43:25 is clean (`bench.slice` CPU pressure 0.2 %, no memory or IO pressure, longest gap 5 s), so this is not starvation. The driver stops at a VOID arm. | `t19-s3probe.txt`, `b-s3probe/t19-s3probe/check.log` (`5c0a70ba...f44129`) |
+| `resetprobe`, 6 arms (measured) | NOT RUN | The driver stopped after `switchloop`. No RELEASED WITHOUT AN INTERRUPT line. | |
+| `restart`, 6 arms, T12 | NOT RUN | The driver stopped after `switchloop`. | |
