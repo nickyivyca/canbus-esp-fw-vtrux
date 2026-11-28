@@ -223,6 +223,29 @@ def main():
     b = U.group_copies([(0.0, ""), (270.0, ""), (540.0, ""), (30_540.0, ""), (30_810.0, "")])
     check("copies split into one burst per trial at a quiet gap", [len(x) for x in b] == [3, 2], b)
 
+    # 8b. resends across which TS stayed 1 (bench run 403a): the error-active part shows only TEC steps
+    ev = [[0, TS, 0, 0]]
+    tec, now = 0, 0
+    for k in range(16):                      # 16 active resends, TS held at 1, TEC 0 -> 128
+        now += 260_000
+        tec += 8
+        ev.append([now, TS, tec, 0])
+    for k in range(6):                       # then passive ones, each with a TS = 0 span (TEC stays 128)
+        now += 260_000
+        ev.append([now, 0, 128, 0])
+        ev.append([now + 16_000, TS, 128, 0])
+    held = U.held_resends({"events": ev})
+    check("16 active resends with TS held at 1, none passive", held == {"active": 16, "passive": 0}, held)
+    tr_ok, _ = make_trial(20)
+    check("resends with a TS = 0 between: none held", U.held_resends(tr_ok) == {"active": 0, "passive": 0},
+          U.held_resends(tr_ok))
+    s_h = U.trial_summary({"t": 1, "events": ev, "end_ns": now + 100_000}, [])
+    check("the M1 table sums the held resends per state", U.m1_table([s_h])["active"]["resends_ts_held"] == 16,
+          U.m1_table([s_h])["active"])
+    ev2 = [[0, TS, 0, 0], [100, 0, 0, 0], [260_000, TS, 8, 0]]   # a TS = 0 before the step: not held
+    check("a TS = 0 since the last step: not a held resend", U.held_resends({"events": ev2})["active"] == 0,
+          U.held_resends({"events": ev2}))
+
     # 9. a TEC change inside an idle: the latest holds
     tr = {"t": 1, "events": [[0, 0, 0, 0], [1000, TS, 0, 0], [5000, 0, 120, 0], [5500, 0, 128, 0],
                              [30000, TS, 128, 0]], "end_ns": 40000}
@@ -267,6 +290,12 @@ MUTANTS = [
     ("the device's view never compared", "r[\"device\"][\"tx_success\"] != r[\"out\"]\n", "False\n"),
     ("cleared 'hold' read as freed", "    held = trial.get(\"cleared\") not in (\"tbs\", \"tbs_tcs\")\n",
      "    held = trial.get(\"cleared\") not in (\"tbs\", \"tbs_tcs\", \"hold\")\n"),
+    ("held resends: a TS = 0 since the last step ignored", "        if ts == 0:\n            zero_since = True\n",
+     "        if ts == 0:\n            pass\n"),
+    ("held resends: the state from the new TEC", "                out[state_of(prev_tec)] += 1\n",
+     "                out[state_of(tec)] += 1\n"),
+    ("the M1 table drops the held resends", '"resends_ts_held": sum((s.get("held_resends") or {}).get(st, 0) for s in summaries)}',
+     '"resends_ts_held": 0}'),
     ("bursts never split", "        if last is not None and c[0] - last > gap_us:\n", "        if False:\n"),
     ("the abort's TS read from TBS", "int(bool(trial[\"ab_st_before\"] & TS))", "int(bool(trial[\"ab_st_before\"] & TBS))"),
     ("no-abort reason dropped", "    out[\"no_abort\"] = [(s[\"t\"], s.get(\"no_abort_reason\") or s[\"skip\"]) for s in summaries if not s[\"abort\"]]\n",

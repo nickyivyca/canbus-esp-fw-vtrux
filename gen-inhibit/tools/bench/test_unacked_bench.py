@@ -149,7 +149,11 @@ def main():
     check("an M1 query has no hold", "hold_ms" not in B.query(m1), B.query(m1))
     ans = {k: m3[k] for k in B.ECHO if k in m3}
     ans["label"] = m3["label"]
-    check("an answer echoing every argument: no mismatch", B.echo_mismatch(m3, ans) == [], B.echo_mismatch(m3, ans))
+    ans["settle_ms"] = ans.pop("settle")      # the answer's name for it (bench run 403a)
+    check("an answer echoing every argument, settle as settle_ms: no mismatch", B.echo_mismatch(m3, ans) == [],
+          B.echo_mismatch(m3, ans))
+    check("settle_ms missing: a mismatch", B.echo_mismatch(m3, {k: v for k, v in ans.items() if k != "settle_ms"}) != [],
+          "settle")
     check("a different hold_ms is a mismatch", B.echo_mismatch(m3, dict(ans, hold_ms=0)) != [], "hold")
     check("a different label is a mismatch", B.echo_mismatch(m3, dict(ans, label="x")) != [], "label")
 
@@ -169,10 +173,15 @@ def main():
     h = row.get("hold") or {}
     check("the control: summary and hold, as expected", "summary" in row and "hold" in row and h.get("void") is None
           and h.get("held") and h.get("as_expected"), h)
-    row2 = B.process_call(ctl, {"trials": [t]}, msgs, node_at(end_w + 400_000, end_w + 1_600_000,
+    row2 = B.process_call(ctl, {"trials": [t]}, msgs, node_at(end_w + 400_000, end_w + 2_100_000,
                                                               [end_w + 400_300]))
     h2 = row2.get("hold") or {}
-    check("the node still up after the hold ended: void", "after the hold ended" in str(h2.get("void")), h2)
+    check("the node still up after the hold ended (hold_ms 2000): void", "after the hold ended" in str(h2.get("void")), h2)
+    t98 = dict(t, hold_ns=98_548_450)    # bench run 403a: hold_ns 98.5 ms for a 2000 ms hold
+    h98 = B.process_call(ctl, {"trials": [t98]}, msgs, node_at(end_w + 400_000, end_w + 1_600_000,
+                                                               [end_w + 400_300])).get("hold") or {}
+    check("the hold's end from hold_ms, not hold_ns: a node down at +1.6 s is inside it",
+          h98.get("void") is None and h98.get("hold_ns_answered") == 98_548_450, h98)
     short_node = node_at(end_w + 400_000, end_w + 1_100_000, [end_w + 1_099_000])
     short_node["opened"] = short_node["closed"] - 0.05      # the open came back 50 ms before the close
     h5 = B.process_call(ctl, {"trials": [t]}, msgs, short_node).get("hold") or {}
@@ -213,6 +222,24 @@ def main():
     check("an M2 aimed passive whose abort read TEC 40 is listed as a missed aim",
           B.tables([r_m2])["aim_missed"] == [m2["label"]], B.tables([r_m2])["aim_missed"])
 
+    # 5b. the rejudge: answered rows judged again from the saved answer, witness and node; the rest kept
+    saved_w = [m[:6] for m in msgs]                       # the record keeps six fields per message
+    ans_ok = {"trials": [t], "stack_free_min": 900, "label": ctl["label"],
+              **{B.ECHO_AS.get(k, k): ctl[k] for k in B.ECHO if k in ctl}}
+    rec = {"rows": [{"label": ctl["label"], "kind": "control", "call": ctl, "answer": ans_ok, "witness": saved_w,
+                     "node": node_at(end_w + 400_000, end_w + 1_100_000, [end_w + 400_300]), "t_send": 1.0,
+                     "error": "echo: settle: sent 20, answered None"},
+                    {"label": "M2x", "kind": "M2", "call": m2, "error": "HTTP None: timed out", "recovery": {"x": 1}}]}
+    nr = B.rejudge_record(rec)
+    check("rejudge: both rows kept", len(nr["rows"]) == 2, len(nr["rows"]))
+    r0, r1 = (nr["rows"] + [{}, {}])[:2]
+    check("rejudge: the answered row judged again, its old echo error gone, the hold as expected",
+          "summary" in r0 and "error" not in r0 and (r0.get("hold") or {}).get("as_expected") is True
+          and r0.get("t_send") == 1.0, (r0.get("error"), r0.get("hold")))
+    check("rejudge: the row with no answer kept as it was", r1 == rec["rows"][1], r1)
+    check("rejudge: tables and the control from the rows", nr["control"] == "passed"
+          and nr["tables"]["control_hold"]["held: must go out"]["as_expected"] == 1, nr.get("control"))
+
     # 6. start refusals
     good = {"x2_pins_start": "pins: TX (GPIO7) recessive -- read", "kvaser_link_start": {"down": True},
             "quiet_frames": 0}
@@ -241,6 +268,13 @@ MUTANTS = [
     ("the open's time taken as fast", "NODE_OPEN_S = 1.2 ", "NODE_OPEN_S = 0.1 "),
     ("the close not waiting for the open", "    return max(t_send + NODE_DOWN_S, opened + NODE_MIN_UP_S)\n",
      "    return t_send + NODE_DOWN_S\n"),
+    ("settle echoed under its own name", 'ECHO_AS = {"settle": "settle_ms"}', "ECHO_AS = {}"),
+    ("the hold's end from hold_ns", "                hold_end_w = tr[\"end_ns\"] / 1000.0 + hold_ms * 1000.0 + s[\"witness\"][\"offset_us\"]\n",
+     "                hold_end_w = (tr[\"end_ns\"] + (tr.get(\"hold_ns\") or 0)) / 1000.0 + s[\"witness\"][\"offset_us\"]\n"),
+    ("the rejudge keeps the old error", '        nr = process_call(row["call"], row["answer"], row.get("witness") or [], row.get("node"))\n',
+     '        nr = dict(process_call(row["call"], row["answer"], row.get("witness") or [], row.get("node")), error=row.get("error"))\n'),
+    ("the rejudge drops unanswered rows", '        if "answer" not in row:\n            out["rows"].append(row)\n            continue\n',
+     '        if "answer" not in row:\n            continue\n'),
     ("the stack mark at 256 B", "STACK_LOW_B = 512 ", "STACK_LOW_B = 256 "),
     ("a missing stack figure not flagged", '    row["stack_low"] = sfm is None or (', '    row["stack_low"] = sfm is not None and ('),
     ("the low calls not listed", '"stack_low": [(r["label"], r.get("stack_free_min")) for r in rows if r.get("stack_low")],',

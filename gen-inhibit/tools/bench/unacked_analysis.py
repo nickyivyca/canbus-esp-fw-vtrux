@@ -79,6 +79,27 @@ def ts_profile(trial):
     return attempts, idles
 
 
+def held_resends(trial):
+    """Resends across which TS stayed 1, per error state: each TEC step (each failed attempt raises it, up to
+    128) recorded with TS = 1 and no TS = 0 recorded since the last step; its state is the TEC before the step.
+    Bench run 403a (2026-11-27): in the error-active part TS never read 0 between resends, so the attempts there
+    show only as TEC steps, never as TS rises."""
+    out = {"active": 0, "passive": 0}
+    ev = trial.get("events") or []
+    prev_tec, zero_since = None, False
+    for e in ev:
+        st, tec = e[1], e[2]
+        ts = 1 if st & TS else 0
+        if ts == 0:
+            zero_since = True
+        if prev_tec is not None and tec > prev_tec:
+            if ts == 1 and not zero_since:
+                out[state_of(prev_tec)] += 1
+            zero_since = False
+        prev_tec = tec
+    return out
+
+
 def span_stats(xs):
     if not xs:
         return None
@@ -134,6 +155,7 @@ def trial_summary(trial, copies):
         in_trace = copies
     s = {"t": trial.get("t"), "skip": trial.get("skip") or "", "attempts": attempts, "idles": idles,
          "device_attempts": trial.get("attempts"), "witness": j, "copies_in_trace": len(in_trace),
+         "held_resends": held_resends(trial),
          "witness_vs_rises": len(in_trace) - j["rises"], "gaps": trial.get("gaps"),
          "max_gap_ns": trial.get("max_gap_ns"), "ev_lost": trial.get("ev_lost"),
          "cleared": trial.get("cleared"), "clear_ns": trial.get("clear_ns")}
@@ -233,7 +255,8 @@ def m1_table(summaries):
     for st in ("active", "passive"):
         clean = [i["ns"] / 1000.0 for s in summaries for i in s["idles"] if i["state"] == st and not i["gap"]]
         gapped = [i for s in summaries for i in s["idles"] if i["state"] == st and i["gap"]]
-        out[st] = {"idles_us": span_stats(clean), "idles_with_gap": len(gapped)}
+        out[st] = {"idles_us": span_stats(clean), "idles_with_gap": len(gapped),
+                   "resends_ts_held": sum((s.get("held_resends") or {}).get(st, 0) for s in summaries)}
     out["trials"] = len(summaries)
     out["more_copies_than_rises"] = [s["t"] for s in summaries if s["witness_vs_rises"] > 0]
     out["joins_unsure"] = [s["t"] for s in summaries if not s["witness"]["sure"]]

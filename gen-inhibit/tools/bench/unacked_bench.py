@@ -100,6 +100,9 @@ PLANS = {   # kind -> trials: the reviewer's minimums (M1 >= 5, M2 >= 50 per sta
     "smoke": {"m1_off": 1, "m1_on": 1, "control": 1, "m2": 1, "m3": 1},
 }
 ECHO = ("phase", "reps", "settle", "fresh", "irq", "window_us", "wait_att", "delay_us", "hold_ms")
+# the answer's name for an argument where it differs (bench run 403a, 2026-11-27: `settle` is echoed as `settle_ms`,
+# as the older phases do; wican_txabort_bench.ECHO_KEYS)
+ECHO_AS = {"settle": "settle_ms"}
 
 
 def plan(name="full", seed=0):
@@ -166,8 +169,9 @@ def echo_mismatch(call, ans):
     """The arguments the answer does not echo as sent (README: "the arguments as run")."""
     bad = []
     for k in ECHO:
-        if k in call and str(ans.get(k)) != str(call[k]):
-            bad.append("%s: sent %s, answered %s" % (k, call[k], ans.get(k)))
+        a = ECHO_AS.get(k, k)
+        if k in call and str(ans.get(a)) != str(call[k]):
+            bad.append("%s: sent %s, answered %s as %s" % (k, call[k], ans.get(a), a))
     if ans.get("label") != call["label"]:
         bad.append("label: sent %s, answered %s" % (call["label"], ans.get("label")))
     return bad
@@ -241,9 +245,12 @@ def process_call(call, ans, msgs, node):
             row["hold"] = {"void": "no node window or no witness clock", "held": None, "as_expected": None}
         else:
             h = U.hold_check(s, tr, copies, nw["up_us"], nw["down_us"], nw["rx_us"])
-            hold_ns = tr.get("hold_ns")
-            if h["void"] is None and s["witness"]["offset_us"] is not None and hold_ns is not None and hold_ns >= 0:
-                hold_end_w = (tr["end_ns"] + hold_ns) / 1000.0 + s["witness"]["offset_us"]
+            # the hold's end at its earliest: the trace's end plus hold_ms (README step 9: the hold lasts at least
+            # hold_ms). Not hold_ns: in bench run 403a it read 98.5 ms for a 2000 ms hold, with clk_us 2.01 s
+            hold_ms = call.get("hold_ms")
+            h["hold_ns_answered"] = tr.get("hold_ns")
+            if h["void"] is None and s["witness"]["offset_us"] is not None and hold_ms:
+                hold_end_w = tr["end_ns"] / 1000.0 + hold_ms * 1000.0 + s["witness"]["offset_us"]
                 h["hold_end_us"] = round(hold_end_w, 3)
                 if nw["down_us"] >= hold_end_w:
                     h["void"] = "the node was still up %.1f us after the hold ended" % (nw["down_us"] - hold_end_w)
@@ -371,7 +378,43 @@ def run_call(call, wit, inno):
     return ans, st, body[:300].decode("utf-8", "replace"), msgs, node, t_send
 
 
+def rejudge_record(rec):
+    """Every answered row judged again from its saved answer, witness messages and node record (the harness's
+    judging as it now is); a row with no answer kept as it was. Returns the new record."""
+    out = dict(rec, rows=[])
+    for row in rec.get("rows") or []:
+        if "answer" not in row:
+            out["rows"].append(row)
+            continue
+        nr = process_call(row["call"], row["answer"], row.get("witness") or [], row.get("node"))
+        bad = echo_mismatch(row["call"], row["answer"])
+        if bad:
+            nr["error"] = "echo: " + "; ".join(bad)
+        for k in ("answer", "t_send", "witness", "node", "recovery"):
+            if k in row:
+                nr[k] = row[k]
+        out["rows"].append(nr)
+    out["tables"] = tables(out["rows"])
+    out["control"] = "FAILED" if control_failed(out["tables"]) else "passed"
+    return out
+
+
+def rejudge(path):
+    """--rejudge <record>: writes <record>_rejudged.json beside it and prints the tables."""
+    rec = json.load(open(path, encoding="utf-8"))
+    new = rejudge_record(rec)
+    new["rejudged_from"] = os.path.basename(path)
+    dst = path[:-5] + "_rejudged.json" if path.endswith(".json") else path + "_rejudged.json"
+    with open(dst, "w", encoding="utf-8") as fh:
+        json.dump(new, fh, indent=1, default=str)
+    print(json.dumps(new["tables"], indent=1, default=str))
+    print("control: %s; wrote %s" % (new["control"], dst))
+    return 0
+
+
 def main():
+    if sys.argv[1:2] == ["--rejudge"]:
+        return rejudge(sys.argv[2])
     ap = argparse.ArgumentParser()
     ap.add_argument("--plan", choices=sorted(PLANS), default="full")
     ap.add_argument("--seed", type=int, default=20261127)
