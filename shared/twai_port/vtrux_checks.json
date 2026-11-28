@@ -22,18 +22,27 @@
     },
     "TWAI_PORT_S3_PROBE": {
       "class": "test-only",
-      "reason": "T19's measurement build for the X2 (the s3probe variant): twai_port_ll_esp32s3.c reports T8, T12 and the kept-driver switch supported before the measurement has passed. The row's symbol is the implementor's mark, defined only under this switch (shared/twai_port/t19-s3-app b2240441; it reaches shared/main with T19's code); the serial test app's symbols and command strings join it when that code lands",
+      "reason": "T19's measurement build for the X2 (the s3probe variant): twai_port_ll_esp32s3.c reports T8, T12 and the kept-driver switch supported before the measurement has passed; with TWAI_PORT_TXABORT_PROBE on the S3 it also compiles the T19 serial app (test_app/twai_port_t19*.c). The rows: the implementor's mark twai_port_s3_probe_build, defined only under this switch (b2240441), the app's entry points twai_port_t19_init and twai_port_t19_line, and three strings only the app has: two of its command names and its refusal of an unknown command (e33430ed)",
       "refusal": [
         {
           "elf_symbols_absent": [
-            "twai_port_s3_probe_build"
+            "twai_port_s3_probe_build",
+            "twai_port_t19_init",
+            "twai_port_t19_line"
+          ]
+        },
+        {
+          "bin_strings_absent": [
+            "resetprobe",
+            "switchloop",
+            "unknown command; the commands are info"
           ]
         }
       ]
     },
     "TWAI_PORT_TXABORT_PROBE": {
       "class": "test-only",
-      "reason": "T13's transmit-abort measurement build: CMakeLists.txt adds test_app/twai_port_txabort_probe.c, which writes the abort command register from outside the driver and answers at /gi_txabort, which a project registers from its URI hook",
+      "reason": "T13's transmit-abort measurement build: CMakeLists.txt adds test_app/twai_port_txabort_probe.c, which writes the abort command register from outside the driver and gives the answer (its \"probe\" string), and test_app/twai_port_txabort_http.c, which answers at /gi_txabort (txab_handler, txab_uri, twai_port_txabort_register), which a project registers from its URI hook; split in a7674f0b, the strings and symbols unchanged",
       "refusal": [
         {
           "bin_strings_absent": [

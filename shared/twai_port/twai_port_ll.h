@@ -66,4 +66,47 @@ void twai_port_ll_switch_leave(bool listen_only, uint32_t rec,
 /* T15: the two error counters, from the registers. */
 void twai_port_ll_counters(uint32_t *tec, uint32_t *rec);
 
+/*
+ * THE BUILD MARKS (shared/tools R20). twai_port_setup() calls this in every
+ * build, so the linker keeps each mark a test-only switch defines. The
+ * tester's rows in vtrux_checks.json then judge the image, not the flag:
+ *   twai_port_s3_probe_build     the S3 file, with TWAI_PORT_S3_PROBE
+ *   twai_port_host_switch_build  the S3 file, with TWAI_PORT_HOST_SWITCH
+ *                                (host builds only: see above)
+ * With neither switch it does nothing, and every other chip's file defines
+ * it empty.
+ */
+void twai_port_ll_build_marks(void);
+
+#if defined(TWAI_PORT_S3_PROBE) && TWAI_PORT_S3_PROBE
+/*
+ * T19, THE STALL RECORD OF THE S3'S RESTART STOP: the measurement build only
+ * (charge-interposer reviewer, 2026-11-27). G4's record and T12's report do
+ * not change. The stop reads the other core's two stall-code fields as it
+ * enters, with register reads only, and writes this record to RTC no-init
+ * memory only after T12's steps are done, so the stop measured differs from
+ * the release stop by as little as it can. It survives the restart, and the
+ * T19 app reads it after the reboot.
+ */
+typedef struct {
+    uint32_t magic;             /* TWAI_PORT_S3_STALL_MAGIC when written */
+    uint32_t core;              /* the core the stop ran on */
+    uint32_t other;             /* the core it stalls */
+    uint32_t options0;          /* RTC_CNTL_OPTIONS0_REG at entry (C0 fields) */
+    uint32_t sw_cpu_stall;      /* RTC_CNTL_SW_CPU_STALL_REG at entry (C1 fields) */
+    uint32_t stalled_at_entry;  /* the other core already held the stall code */
+    uint32_t stall_called;      /* esp_cpu_stall() was called */
+    uint32_t entered_reset;     /* the stop's report: reset mode entered */
+    uint32_t check;             /* the fields above XORed with the magic */
+} twai_port_s3_stall_record_t;
+
+#define TWAI_PORT_S3_STALL_MAGIC 0x53A11C0Du
+
+/* A copy of the record; true if it is one the stop wrote and not yet cleared. */
+bool twai_port_ll_s3_stall_record(twai_port_s3_stall_record_t *out);
+
+/* Mark it read: the next read is false until the stop writes it again. */
+void twai_port_ll_s3_stall_record_clear(void);
+#endif
+
 #endif

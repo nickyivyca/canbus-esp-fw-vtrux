@@ -27,6 +27,7 @@ typedef struct {
     bool mode_set_in_reset;     /* the last mode write was in reset mode */
     int rec_writes;
     bool rec_set_in_reset;      /* the last REC write was in reset mode */
+    void (*on_enter_reset)(void);   /* the case's look at that moment, or NULL */
 } twai_dev_t;
 extern twai_dev_t stub_twai_dev;
 extern int stub_delays;         /* esp_rom_delay_us() calls so far */
@@ -45,6 +46,10 @@ static inline void twai_ll_enter_reset_mode(twai_dev_t *hw)
     hw->status_at_enter = hw->status;
     hw->delays_at_enter = stub_delays;
     hw->reset_mode = true;
+    if (hw->on_enter_reset != 0)
+    {
+        hw->on_enter_reset();
+    }
 }
 static inline void twai_ll_exit_reset_mode(twai_dev_t *hw)
 {

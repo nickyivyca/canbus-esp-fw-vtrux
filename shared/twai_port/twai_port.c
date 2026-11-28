@@ -272,6 +272,7 @@ void twai_port_config_defaults(twai_port_config_t *cfg)
 esp_err_t twai_port_setup(const twai_port_config_t *cfg)
 {
     twai_mode_t m;
+    twai_port_ll_build_marks();     /* R20: keep the test-only switches' marks */
     if (cfg == NULL || cfg->rx_queue_len == 0 || !mode_to_twai(cfg->mode, &m))
     {
         return ESP_ERR_INVALID_ARG;

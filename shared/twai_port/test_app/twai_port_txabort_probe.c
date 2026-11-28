@@ -111,20 +111,20 @@
 #include "hal/twai_ll.h"
 
 #include "can.h"
-#include "twai_port_txabort_probe.h"
+#include "twai_port_txabort_run.h"
 #include "twai_port_probe_ll.h"
 #include "twai_port_unacked.h"
 
 static const char *TAG = "gi_txabort";
 
 /*
- * The project's check of whether it owns the bus, and the body of the
- * refusal while it does (twai_port_txabort_register()). Set once, before the
- * URI is registered.
+ * THE TRANSPORT IS THE CALLER'S (twai_port_txabort_run.h). The URI's handler
+ * is in twai_port_txabort_http.c and the X2's serial commands are in the T19
+ * front end; both pass a getter for the arguments, an emitter for the answer
+ * and the project's check of whether it owns the bus. Split from the handler
+ * for T19 (charge-interposer reviewer, 2026-11-27), with the arguments, the
+ * refusals and the answer unchanged.
  */
-#define TXAB_OWNED_BODY "the project owns the bus; release it first"
-static bool (*s_owns_bus)(void);
-static const char *s_owned_body = TXAB_OWNED_BODY;
 
 /*
  * The trial frame's ID. Lowest-priority region, clear of every ID
@@ -755,7 +755,7 @@ static const char *skip_name(uint8_t s)
     }
 }
 
-static esp_err_t send_rec(httpd_req_t *req, const txab_rec_t *r, bool first)
+static bool send_rec(const txab_io_t *io, const txab_rec_t *r, bool first)
 {
     /*
      * 800, because every field added to the record adds to this line and the
@@ -814,26 +814,31 @@ static esp_err_t send_rec(httpd_req_t *req, const txab_rec_t *r, bool first)
         skip_name(r->skip));
     if (n < 0 || n >= (int)sizeof(b))
     {
-        return ESP_FAIL;
+        return false;
     }
-    return httpd_resp_send_chunk(req, b, n);
+    return io->emit(io->emit_ctx, b, (size_t)n);
 }
 
 /*
- * Fetch one query argument, or say why not.
+ * Fetch one argument, or say why not: the caller's getter (txab_io_t).
  *
  * Returns 1 found, 0 absent, -1 present but unusable. The -1 case is the whole
  * point: httpd_query_key_value() returns ESP_ERR_HTTPD_RESULT_TRUNC rather than
  * ESP_OK when the value does not fit, so testing `== ESP_OK` treats an over-long
  * value exactly like an absent one and runs the DEFAULT. That is a guard whose
- * bypass path is indistinguishable from its ordinary path.
+ * bypass path is indistinguishable from its ordinary path. Every getter keeps
+ * the three answers apart.
  */
-static int arg_get(const char *query, const char *key, char *val, size_t vn)
+static int arg_get(const txab_io_t *io, const char *key, char *val, size_t vn)
 {
-    const esp_err_t e = httpd_query_key_value(query, key, val, vn);
-    if (e == ESP_OK)              { return 1; }
-    if (e == ESP_ERR_NOT_FOUND)   { return 0; }
-    return -1;
+    return io->get(io->get_ctx, key, val, vn);
+}
+
+/* A refusal: the message into `err`, nothing emitted. */
+static int refuse(int status, char *err, size_t errn, const char *msg)
+{
+    snprintf(err, errn, "%s", msg);
+    return status;
 }
 
 /*
@@ -867,16 +872,6 @@ static int phase_from(const char *s)
 
 /* ------------------------------------------- the no-acknowledge modes -- */
 
-static int txp_get(void *ctx, const char *key, char *val, size_t vn)
-{
-    return arg_get((const char *)ctx, key, val, vn);
-}
-
-static bool txp_emit(void *ctx, const char *s, size_t n)
-{
-    return httpd_resp_send_chunk((httpd_req_t *)ctx, s, (ssize_t)n) == ESP_OK;
-}
-
 static txp_run_t s_txp_run;
 
 /*
@@ -885,29 +880,26 @@ static txp_run_t s_txp_run;
  * the older phases do, run at their priority, answer. The arguments and the
  * answer are in test_app/README.md.
  */
-static esp_err_t txp_handler(httpd_req_t *req, const char *query,
-                             const char *phase)
+static int txp_phase_run(const txab_io_t *io, const char *phase,
+                         char *err, size_t errn)
 {
     txp_params_t p;
-    char err[200];
 
-    if (!txp_parse(phase, txp_get, (void *)query, &p, err, sizeof(err)))
+    if (!txp_parse(phase, io->get, io->get_ctx, &p, err, errn))
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, err);
         ESP_LOGE(TAG, "refused: %s", err);
-        return ESP_FAIL;
+        return TXAB_BAD;
     }
     if (!txp_ll_supported())
     {
-        httpd_resp_send_err(req, HTTPD_501_METHOD_NOT_IMPLEMENTED,
-                            "m1, m2 and m3 are not supported on this chip: no "
-                            "probe register file (twai_port_probe_ll_<chip>.c)");
-        return ESP_FAIL;
+        return refuse(TXAB_UNSUPPORTED, err, errn,
+                      "m1, m2 and m3 are not supported on this chip: no "
+                      "probe register file (twai_port_probe_ll_<chip>.c)");
     }
-    if (s_owns_bus == NULL || s_owns_bus())
+    if (io->owns_bus == NULL || io->owns_bus())
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, s_owned_body);
-        return ESP_FAIL;
+        return refuse(TXAB_BAD, err, errn,
+                      io->owned_body != NULL ? io->owned_body : TXAB_OWNED_BODY);
     }
     if (!can_is_enabled())
     {
@@ -917,21 +909,16 @@ static esp_err_t txp_handler(httpd_req_t *req, const char *query,
     }
     if (!can_is_enabled())
     {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "CAN bus would not come up");
-        return ESP_FAIL;
+        return refuse(TXAB_FAILED, err, errn, "CAN bus would not come up");
     }
     if (can_is_silent())
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "bus is listen-only; nothing can be transmitted");
-        return ESP_FAIL;
+        return refuse(TXAB_BAD, err, errn,
+                      "bus is listen-only; nothing can be transmitted");
     }
     if (twai_reconfigure_alerts(TWAI_ALERT_ALL, NULL) != ESP_OK)
     {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "alerts would not enable");
-        return ESP_FAIL;
+        return refuse(TXAB_FAILED, err, errn, "alerts would not enable");
     }
 
     const int64_t t_run0 = esp_timer_get_time();
@@ -942,9 +929,8 @@ static esp_err_t txp_handler(httpd_req_t *req, const char *query,
     vTaskPrioritySet(self, prio0);
     if (!ran)
     {
-        httpd_resp_send_err(req, HTTPD_501_METHOD_NOT_IMPLEMENTED,
-                            "m1, m2 and m3 are not supported on this chip");
-        return ESP_FAIL;
+        return refuse(TXAB_UNSUPPORTED, err, errn,
+                      "m1, m2 and m3 are not supported on this chip");
     }
 
     const txp_head_t h = {
@@ -954,19 +940,17 @@ static esp_err_t txp_handler(httpd_req_t *req, const char *query,
         .id = TXAB_ID,
         .dlc = TXAB_DLC,
     };
-    httpd_resp_set_type(req, "application/json");
-    if (!txp_write_json(&p, &s_txp_run, &h, txp_emit, req))
+    if (!txp_write_json(&p, &s_txp_run, &h, io->emit, io->emit_ctx))
     {
-        return ESP_FAIL;
+        return TXAB_EMIT_FAILED;
     }
     ESP_LOGW(TAG, "measurement run: phase=%s label=%s trials=%d -- "
                   "THIS IS NOT A SHIPPING BUILD", phase, p.label, s_txp_run.n);
-    return httpd_resp_send_chunk(req, NULL, 0);
+    return TXAB_OK;
 }
 
-static esp_err_t txab_handler(httpd_req_t *req)
+int twai_port_txabort_run(const txab_io_t *io, char *err, size_t errn)
 {
-    char query[256];
     char val[40];
     char phase_s[16] = "abort";
     char gate_s[8] = "off";
@@ -977,29 +961,11 @@ static esp_err_t txab_handler(httpd_req_t *req)
     int d0 = 0, d1 = 0, step = 20, settle_ms = 2;
 
     /*
-     * THE QUERY STRING ITSELF FIRST. A query over sizeof(query) returns
-     * RESULT_TRUNC, and the old `== ESP_OK` test then skipped ALL parsing and ran
-     * the whole measurement on defaults -- the worst version of this failure,
-     * because every argument is wrong at once and nothing says so.
+     * The query string itself was checked by the caller: one too long for it
+     * is refused there, before any parsing (twai_port_txabort_http.c), so a
+     * cut-off query never runs on defaults.
      */
-    bool have_query = false;
-    {
-        const esp_err_t qe = httpd_req_get_url_query_str(req, query,
-                                                         sizeof(query));
-        if (qe == ESP_OK)
-        {
-            have_query = true;
-        }
-        else if (qe != ESP_ERR_NOT_FOUND)
-        {
-            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                                "the query string did not fit and would have "
-                                "been truncated -- refused, because every "
-                                "argument would silently have taken its default");
-            ESP_LOGE(TAG, "refused: query string too long (%d)", (int)qe);
-            return ESP_FAIL;
-        }
-    }
+    const bool have_query = io->have_query;
 
     /*
      * THE NO-ACKNOWLEDGE MODES, m1-m3 (T13, gen-inhibit tracker F5), have
@@ -1008,10 +974,10 @@ static esp_err_t txab_handler(httpd_req_t *req)
      */
     if (have_query)
     {
-        const int g = arg_get(query, "phase", val, sizeof(val));
+        const int g = arg_get(io, "phase", val, sizeof(val));
         if (g > 0 && txp_phase_from(val) != 0)
         {
-            return txp_handler(req, query, val);
+            return txp_phase_run(io, val, err, errn);
         }
     }
 
@@ -1024,22 +990,22 @@ static esp_err_t txab_handler(httpd_req_t *req)
          */
         int g;
 
-        g = arg_get(query, "phase", val, sizeof(val));
+        g = arg_get(io, "phase", val, sizeof(val));
         if (g < 0 || (g > 0 && !copy_arg(phase_s, sizeof(phase_s), val)))
         {
             bad = "phase";
         }
-        g = arg_get(query, "gate", val, sizeof(val));
+        g = arg_get(io, "gate", val, sizeof(val));
         if (g < 0 || (g > 0 && !copy_arg(gate_s, sizeof(gate_s), val)))
         {
             bad = "gate";
         }
-        g = arg_get(query, "label", val, sizeof(val));
+        g = arg_get(io, "label", val, sizeof(val));
         if (g < 0 || (g > 0 && !copy_arg(label, sizeof(label), val)))
         {
             bad = "label";
         }
-        g = arg_get(query, "retry", val, sizeof(val));
+        g = arg_get(io, "retry", val, sizeof(val));
         if (g < 0 || (g > 0 && !copy_arg(retry_s, sizeof(retry_s), val)))
         {
             bad = "retry";
@@ -1061,7 +1027,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
         };
         for (unsigned i = 0; i < sizeof(nums) / sizeof(nums[0]); i++)
         {
-            g = arg_get(query, nums[i].key, val, sizeof(val));
+            g = arg_get(io, nums[i].key, val, sizeof(val));
             if (g < 0
                 || (g > 0 && !arg_int(val, nums[i].lo, nums[i].hi,
                                       nums[i].dst)))
@@ -1089,9 +1055,8 @@ static esp_err_t txab_handler(httpd_req_t *req)
                  "query argument '%s' was supplied but is unusable (too long, "
                  "not a whole number, or out of range) -- refused rather than "
                  "run with a different configuration than was asked for", bad);
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, msg);
         ESP_LOGE(TAG, "refused: argument '%s' unusable", bad);
-        return ESP_FAIL;
+        return refuse(TXAB_BAD, err, errn, msg);
     }
 
     const int phase = phase_from(phase_s);
@@ -1099,19 +1064,16 @@ static esp_err_t txab_handler(httpd_req_t *req)
     const int retry = (strcmp(retry_s, "1") == 0) ? 1 : 0;
     if (phase < 0)
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "phase must be abort|control|noabort|m1|m2|m3");
-        return ESP_FAIL;
+        return refuse(TXAB_BAD, err, errn,
+                      "phase must be abort|control|noabort|m1|m2|m3");
     }
     if (strcmp(gate_s, "rs") != 0 && strcmp(gate_s, "off") != 0)
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "gate must be off|rs");
-        return ESP_FAIL;
+        return refuse(TXAB_BAD, err, errn, "gate must be off|rs");
     }
     if (strcmp(retry_s, "0") != 0 && strcmp(retry_s, "1") != 0)
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "retry must be 0|1");
-        return ESP_FAIL;
+        return refuse(TXAB_BAD, err, errn, "retry must be 0|1");
     }
     if (d1 < d0)
     {
@@ -1122,10 +1084,9 @@ static esp_err_t txab_handler(httpd_req_t *req)
          * by the reviewing session, 2026-09-27, as another instance of the
          * silent-default class.
          */
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "d1 is below d0, which would have silently become "
-                            "a single-step sweep at d0 -- say what you mean");
-        return ESP_FAIL;
+        return refuse(TXAB_BAD, err, errn,
+                      "d1 is below d0, which would have silently become "
+                      "a single-step sweep at d0 -- say what you mean");
     }
     /*
      * settle >= 1 ms IS NOT TIDINESS. Each trial busy-polls for up to
@@ -1145,10 +1106,9 @@ static esp_err_t txab_handler(httpd_req_t *req)
      */
     if ((long)(((d1 - d0) / step) + 1) * reps > TXAB_MAX_TRIALS)
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "steps x reps exceeds the record budget -- refused "
-                            "rather than silently truncating the sweep");
-        return ESP_FAIL;
+        return refuse(TXAB_BAD, err, errn,
+                      "steps x reps exceeds the record budget -- refused "
+                      "rather than silently truncating the sweep");
     }
 
     /*
@@ -1158,10 +1118,10 @@ static esp_err_t txab_handler(httpd_req_t *req)
      * project's own transmits would also be aborted. With no check passed at
      * registration, it refuses every run: the probe cannot tell.
      */
-    if (s_owns_bus == NULL || s_owns_bus())
+    if (io->owns_bus == NULL || io->owns_bus())
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, s_owned_body);
-        return ESP_FAIL;
+        return refuse(TXAB_BAD, err, errn,
+                      io->owned_body != NULL ? io->owned_body : TXAB_OWNED_BODY);
     }
 
     /*
@@ -1179,15 +1139,12 @@ static esp_err_t txab_handler(httpd_req_t *req)
     }
     if (!can_is_enabled())
     {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "CAN bus would not come up");
-        return ESP_FAIL;
+        return refuse(TXAB_FAILED, err, errn, "CAN bus would not come up");
     }
     if (can_is_silent())
     {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
-                            "bus is listen-only; nothing can be transmitted");
-        return ESP_FAIL;
+        return refuse(TXAB_BAD, err, errn,
+                      "bus is listen-only; nothing can be transmitted");
     }
 
     /*
@@ -1197,9 +1154,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
      */
     if (twai_reconfigure_alerts(TWAI_ALERT_ALL, NULL) != ESP_OK)
     {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "alerts would not enable");
-        return ESP_FAIL;
+        return refuse(TXAB_FAILED, err, errn, "alerts would not enable");
     }
 
     const int steps = ((d1 - d0) / step) + 1;
@@ -1276,44 +1231,24 @@ static esp_err_t txab_handler(httpd_req_t *req)
 
     if (n < 0 || n >= (int)sizeof(head))
     {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "header did not fit");
-        return ESP_FAIL;
+        return refuse(TXAB_FAILED, err, errn, "header did not fit");
     }
-    httpd_resp_set_type(req, "application/json");
-    if (httpd_resp_send_chunk(req, head, n) != ESP_OK)
+    if (!io->emit(io->emit_ctx, head, (size_t)n))
     {
-        return ESP_FAIL;
+        return TXAB_EMIT_FAILED;
     }
     for (int i = 0; i < s_n; i++)
     {
-        if (send_rec(req, &s_rec[i], i == 0) != ESP_OK)
+        if (!send_rec(io, &s_rec[i], i == 0))
         {
-            return ESP_FAIL;
+            return TXAB_EMIT_FAILED;
         }
     }
-    if (httpd_resp_send_chunk(req, "]}", 2) != ESP_OK)
+    if (!io->emit(io->emit_ctx, "]}", 2))
     {
-        return ESP_FAIL;
+        return TXAB_EMIT_FAILED;
     }
     ESP_LOGW(TAG, "measurement run: phase=%s gate=%s label=%s trials=%d -- "
                   "THIS IS NOT A SHIPPING BUILD", phase_s, gate_s, label, s_n);
-    return httpd_resp_send_chunk(req, NULL, 0);
-}
-
-static const httpd_uri_t txab_uri = {
-    .uri = "/gi_txabort", .method = HTTP_POST,
-    .handler = txab_handler, .user_ctx = NULL
-};
-
-esp_err_t twai_port_txabort_register(httpd_handle_t server,
-                                     bool (*owns_bus)(void),
-                                     const char *owned_body)
-{
-    s_owns_bus = owns_bus;
-    s_owned_body = (owned_body != NULL) ? owned_body : TXAB_OWNED_BODY;
-    ESP_LOGW(TAG, "MEASUREMENT BUILD: /gi_txabort is registered. This image "
-                  "writes the TWAI abort command register directly and must "
-                  "never be flashed to the truck.");
-    return httpd_register_uri_handler(server, &txab_uri);
+    return TXAB_OK;
 }
