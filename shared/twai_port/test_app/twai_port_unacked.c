@@ -138,20 +138,25 @@ bool txp_parse(const char *phase, txp_get_fn get, void *ctx,
         p->irq_off = (strcmp(val, "off") == 0);
     }
 
-    const struct { const char *key; int *dst; long lo, hi; unsigned modes; } nums[] = {
-        { "reps",      &p->reps,      1,   TXP_MAX_REPS, M_ALL },
-        { "settle",    &p->settle_ms, 1,   1000,         M_ALL },
-        { "sample_us", &p->sample_us, 0,   100,          M_ALL },
-        { "window_us", &p->window_us, 100, 50000,        M_ALL },
-        { "trail_us",  &p->trail_us,  0,   5000,         M_ALL },
-        { "wait_us",   &p->wait_us,   0,   50000,        M_23 },
-        { "wait_att",  &p->wait_att,  1,   255,          M_23 },
-        { "bound_us",  &p->bound_us,  10,  20000,        M_23 },
-        { "delay_us",  &p->delay_us,  0,   5000,         MB(TXP_M3) },
-        { "hold_ms",   &p->hold_ms,   0,   2000,         M_ALL },
+    /* Static, so the table is not built on the caller's stack (the answer's
+     * buffers, below, say why the stack matters here). */
+#define P_OFF(f) offsetof(txp_params_t, f)
+    static const struct { const char *key; size_t off; long lo, hi; unsigned modes; } nums[] = {
+        { "reps",      P_OFF(reps),      1,   TXP_MAX_REPS, M_ALL },
+        { "settle",    P_OFF(settle_ms), 1,   1000,         M_ALL },
+        { "sample_us", P_OFF(sample_us), 0,   100,          M_ALL },
+        { "window_us", P_OFF(window_us), 100, 50000,        M_ALL },
+        { "trail_us",  P_OFF(trail_us),  0,   5000,         M_ALL },
+        { "wait_us",   P_OFF(wait_us),   0,   50000,        M_23 },
+        { "wait_att",  P_OFF(wait_att),  1,   255,          M_23 },
+        { "bound_us",  P_OFF(bound_us),  10,  20000,        M_23 },
+        { "delay_us",  P_OFF(delay_us),  0,   5000,         MB(TXP_M3) },
+        { "hold_ms",   P_OFF(hold_ms),   0,   2000,         M_ALL },
     };
+#undef P_OFF
     for (unsigned i = 0; i < sizeof(nums) / sizeof(nums[0]); i++)
     {
+        int *const dst = (int *)(void *)((char *)p + nums[i].off);
         g = get(ctx, nums[i].key, val, sizeof(val));
         if (g == 0)
         {
@@ -161,7 +166,7 @@ bool txp_parse(const char *phase, txp_get_fn get, void *ctx,
         {
             return refuse(err, errn, nums[i].key, "is not used by this phase");
         }
-        if (g < 0 || !whole(val, nums[i].lo, nums[i].hi, nums[i].dst))
+        if (g < 0 || !whole(val, nums[i].lo, nums[i].hi, dst))
         {
             return refuse(err, errn, nums[i].key,
                           "is too long, not a whole number, or out of range");
@@ -638,18 +643,40 @@ static bool put(txp_emit_fn emit, void *ctx, const char *b, int n, size_t cap)
     return emit(ctx, b, (size_t)n);
 }
 
+/*
+ * THE ANSWER'S BUFFERS ARE STATIC, NOT ON THE STACK (gen-inhibit
+ * VERIFICATION.md 12.4, "The probe's no-acknowledge modes on the bench",
+ * 2026-11-28: every m1-m3 call panicked the WiCAN). The URI handler runs on
+ * the httpd task, whose stack gen-inhibit sets to 5120 bytes. The handler and
+ * twai_port_txabort_run() already hold about 2.6 KB of it, and httpd and the
+ * socket send about 1 KB more. With these buffers on the stack,
+ * txp_write_json() took 3520 bytes on top, so every answer overflowed the
+ * stack. One request runs at a time (one httpd task; the T19 app's one
+ * command loop), the rule s_txp_run and txp_events already rest on.
+ * test/test_stack.py holds every frame in this file to 512 bytes on the host.
+ */
+#define ANS_B 1400
+#define ANS_D 160
+static struct {
+    char b[ANS_B];
+    char d[5][ANS_D];   /* the driver views: pre, mid, after, end, hold */
+} s_ans;
+
 static bool trial_json(const txp_run_t *run,
                        const txp_trial_t *r, bool first,
                        txp_emit_fn emit, void *ctx)
 {
-    char d0[160], d1[160], d2[160], d3[160];
-    char b[1400];
+    char *const d0 = s_ans.d[0];
+    char *const d1 = s_ans.d[1];
+    char *const d2 = s_ans.d[2];
+    char *const d3 = s_ans.d[3];
+    char *const b = s_ans.b;
     int n;
 
-    if (drv_json(d0, sizeof(d0), r->have_pre, &r->drv_pre) >= (int)sizeof(d0)
-        || drv_json(d1, sizeof(d1), r->have_mid, &r->drv_mid) >= (int)sizeof(d1)
-        || drv_json(d2, sizeof(d2), r->have_after, &r->drv_after) >= (int)sizeof(d2)
-        || drv_json(d3, sizeof(d3), r->have_end, &r->drv_end) >= (int)sizeof(d3))
+    if (drv_json(d0, ANS_D, r->have_pre, &r->drv_pre) >= ANS_D
+        || drv_json(d1, ANS_D, r->have_mid, &r->drv_mid) >= ANS_D
+        || drv_json(d2, ANS_D, r->have_after, &r->drv_after) >= ANS_D
+        || drv_json(d3, ANS_D, r->have_end, &r->drv_end) >= ANS_D)
     {
         return false;
     }
@@ -665,7 +692,7 @@ static bool trial_json(const txp_run_t *run,
         snprintf(before, sizeof(before), "null");
     }
 
-    n = snprintf(b, sizeof(b),
+    n = snprintf(b, ANS_B,
         "%s{\"t\":%u,\"skip\":\"%s\",\"reinstalled\":%u,"
         "\"st_pre\":%lu,\"tec_pre\":%lu,\"drv_pre\":%s,\"tx_call_ns\":%lld,"
         "\"samples\":%lu,\"max_gap_ns\":%lld,\"gaps\":%lu,\"ev_lost\":%lu,"
@@ -701,7 +728,7 @@ static bool trial_json(const txp_run_t *run,
         (unsigned long)r->st_end, d3,
         (r->st_end & TXP_ST_TBS) ? 1u : 0u,
         (unsigned long)r->clk_cyc, (long long)r->clk_us);
-    if (!put(emit, ctx, b, n, sizeof(b)))
+    if (!put(emit, ctx, b, n, ANS_B))
     {
         return false;
     }
@@ -709,12 +736,12 @@ static bool trial_json(const txp_run_t *run,
     /* The hold, in a chunk of its own; -1 and null with no hold. */
     if (r->held)
     {
-        char dh[160];
-        if (drv_json(dh, sizeof(dh), r->have_hold, &r->drv_hold) >= (int)sizeof(dh))
+        char *const dh = s_ans.d[4];
+        if (drv_json(dh, ANS_D, r->have_hold, &r->drv_hold) >= ANS_D)
         {
             return false;
         }
-        n = snprintf(b, sizeof(b),
+        n = snprintf(b, ANS_B,
             "\"hold_ns\":%lld,\"hold_st\":%lu,\"hold_tec\":%lu,"
             "\"hold_tbs\":%u,\"hold_tcs\":%u,\"alerts_hold\":%lu,"
             "\"drv_hold\":%s,\"events\":[",
@@ -726,12 +753,12 @@ static bool trial_json(const txp_run_t *run,
     }
     else
     {
-        n = snprintf(b, sizeof(b),
+        n = snprintf(b, ANS_B,
             "\"hold_ns\":-1,\"hold_st\":-1,\"hold_tec\":-1,"
             "\"hold_tbs\":-1,\"hold_tcs\":-1,\"alerts_hold\":null,"
             "\"drv_hold\":null,\"events\":[");
     }
-    if (!put(emit, ctx, b, n, sizeof(b)))
+    if (!put(emit, ctx, b, n, ANS_B))
     {
         return false;
     }
@@ -741,16 +768,16 @@ static bool trial_json(const txp_run_t *run,
     for (uint32_t i = 0; i < r->ev_n; i++)
     {
         const txp_event_t *e = &txp_events[r->ev_first + i];
-        const int m = snprintf(b + n, sizeof(b) - (size_t)n,
+        const int m = snprintf(b + n, ANS_B - (size_t)n,
                                "%s[%lld,%u,%u,%u]", i == 0 ? "" : ",",
                                to_ns(run, e->t), (unsigned)e->st,
                                (unsigned)e->tec, (unsigned)e->gap);
-        if (m < 0 || (size_t)m >= sizeof(b) - (size_t)n)
+        if (m < 0 || (size_t)m >= ANS_B - (size_t)n)
         {
             return false;
         }
         n += m;
-        if ((size_t)n > sizeof(b) - 64)
+        if ((size_t)n > ANS_B - 64)
         {
             if (!emit(ctx, b, (size_t)n))
             {
@@ -774,8 +801,8 @@ static const char *phase_name(int m)
 bool txp_write_json(const txp_params_t *p, const txp_run_t *run,
                     const txp_head_t *h, txp_emit_fn emit, void *ctx)
 {
-    char b[900];
-    const int n = snprintf(b, sizeof(b),
+    char *const b = s_ans.b;
+    const int n = snprintf(b, ANS_B,
         "{\"probe\":\"gi_txabort\",\"git\":\"%s\",\"phase\":\"%s\","
         "\"label\":\"%s\",\"id\":\"0x%03X\",\"dlc\":%d,\"tag\":\"AB7E trial\","
         "\"single_shot\":false,"
@@ -799,7 +826,7 @@ bool txp_write_json(const txp_params_t *p, const txp_run_t *run,
         TXP_ST_TBS, TXP_ST_TCS, TXP_ST_RS, TXP_ST_TS, TXP_ST_ES, TXP_ST_BS,
         TXP_EVENTS, (unsigned long)run->events_used,
         run->n, h->run_us, h->uptime_us);
-    if (!put(emit, ctx, b, n, sizeof(b)))
+    if (!put(emit, ctx, b, n, ANS_B))
     {
         return false;
     }
@@ -810,5 +837,9 @@ bool txp_write_json(const txp_params_t *p, const txp_run_t *run,
             return false;
         }
     }
-    return emit(ctx, "]}", 2);
+    /* The calling task's least free stack so far, the last chunk's send not
+     * included: the margin the bench can read with no console. */
+    const int m = snprintf(b, ANS_B, "],\"stack_free_min\":%lu}",
+                           (unsigned long)txp_env_stack_free());
+    return put(emit, ctx, b, m, ANS_B);
 }

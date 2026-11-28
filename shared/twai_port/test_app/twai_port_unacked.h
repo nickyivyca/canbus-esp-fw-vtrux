@@ -205,5 +205,7 @@ void     txp_env_flush_rx(void);
 void     txp_env_settle(int ms);
 void     txp_env_hold(int ms);      /* block at least ms, interrupts on, the
                                      * driver running */
+uint32_t txp_env_stack_free(void);  /* the calling task's least free stack
+                                     * so far, in bytes */
 
 #endif /* TWAI_PORT_UNACKED_H */

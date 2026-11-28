@@ -138,6 +138,12 @@ void txp_env_settle(int ms)
  * rounds down, so it waits tick by tick until esp_timer says ms have passed:
  * at least the hold asked for, never less. The caller times it in cycles.
  */
+/* FreeRTOS's high-water mark; in ESP-IDF a stack word is one byte. */
+uint32_t txp_env_stack_free(void)
+{
+    return (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+}
+
 void txp_env_hold(int ms)
 {
     const int64_t end = esp_timer_get_time() + (int64_t)ms * 1000;

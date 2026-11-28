@@ -154,6 +154,13 @@ One JSON object, sent in chunks. The head:
 | `events_max`, `events_used` | the change records: 2048 for the whole call, and how many were used |
 | `n`, `run_us`, `uptime_us` | trials, the call's length, the uptime at the answer |
 | `trials` | one object per trial |
+| `stack_free_min` | after `trials`, the last field: the calling task's least free stack in bytes, from the task's start to just before the last chunk is sent (FreeRTOS's high-water mark). On gen-inhibit that task is the httpd task, with a 5120-byte stack |
+
+The answer's buffers are static, not on the stack, because the httpd
+task's stack is small. At shared/main 3bb6c945 they were on the stack, and
+every m1-m3 call overflowed it and panicked at its answer (gen-inhibit
+`VERIFICATION.md` 12.4, 2026-11-28). `test/test_stack.py` holds every
+frame in `twai_port_unacked.c` to a small size on the host.
 
 Each trial (times in ns from the send; -1: never, or not used by the
 phase):
