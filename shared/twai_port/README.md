@@ -26,6 +26,7 @@ code to test.
 | `unit/` | the port's unit tests and their scripted stub (`unit/README.md`) |
 | `test/` | the one host fake of the TWAI driver (T10), its own tests, and the real port built on it (`test/README.md`) |
 | `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) |
+| `SPEC.md`, `VALIDATION.md`, `VERIFICATION.md` | the spec, why each requirement is worded as it is, and the test evidence |
 | `.gitignore` | `__pycache__/`, so a host test's bytecode is never committed |
 
 A project takes it from git at its pinned `shared/main` tag, with
@@ -43,6 +44,6 @@ port index, all before `wican_init()`.
 | `unit/`'s scripted stub of the driver API | part of the unit tests: each case sets the driver's returns and checks the port's calls; it models no controller behaviour (no states, alerts or arbitration of its own) | the implementor, as the unit tests (gen-inhibit reviewer, 2026-10-31) |
 | `unit/mutate.py` | the unit tests' mutants: one behaviour of `twai_port.c` or the C3 register file broken at a time, each of which the unit tests must fail. Not `test/mutate.py`, which mutates the fake | the implementor, as the unit tests (gen-inhibit reviewer, 2026-11-01) |
 | `test/`'s fake of the TWAI driver | T10: what the controller does, in its states, recovery and per-chip behaviour | the tester of the project that needs the change (user, 2026-10-31, in both reviewers' sessions) |
-| the rest of `test/`: the real port built on the fake (`test_port_on_fake.c`, `host_platform.c`), its stand-ins and can-fails (`t12_standin.c`, `mutate.py`, `test_mutate.py`), the fake's own tests and the C++ interface (`cpp/`) | harness: the port tested on the fake against T2 to T9 and T12 | the tester of the project that needs the change (gen-inhibit reviewer, 2026-11-02) |
+| the rest of `test/`: the real port built on the fake (`test_port_on_fake.c`, `host_platform.c`), its stand-ins and can-fails (`t12_standin.c`, `mutate.py`, `test_mutate.py`), the fake's own tests and the C++ interface (`cpp/`) | harness: the port tested on the fake against T2 to T9, T12 and T14 to T18 | the tester of the project that needs the change (gen-inhibit reviewer, 2026-11-02) |
 | `VERIFICATION.md` | test evidence | the tester |
 | `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) | the tester of the project that needs the change |
