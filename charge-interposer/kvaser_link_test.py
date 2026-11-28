@@ -149,6 +149,8 @@ class FakeLayer:
         self.b, self.fail = bench, dict(fail or {})
         self.restart_ms = 0             # the netdev's restart-ms (0 after a usbreset)
         self.restart_back = None        # set: the read-back's restart-ms, whatever was asked
+        self.bitrate = 500000           # the netdev's bitrate, as the last link_up set it
+        self.bitrate_back = None        # set: the read-back's bitrate, whatever was asked
         self.counters = {"netdev": NETDEV, "state": "ERROR-ACTIVE", "bus_off": 2, "restarts": 2,
                          "error_passive": 3, "error_warning": 3, "bus_error": 900,
                          "arbitration_lost": 0, "tx_dropped": 40, "tx_aborted_errors": 0,
@@ -161,12 +163,14 @@ class FakeLayer:
             raise LayerError(self.fail[step])
         flags = int(open(self.b.flags).read().strip(), 16)
         self.b.set_flags(flags | 1 if up else flags & ~1)
-        return {"up": up, "bitrate": 500000 if up else None,
+        rate = self.bitrate if self.bitrate_back is None else self.bitrate_back
+        return {"up": up, "bitrate": rate if up else None,
                 "restart_ms": self.restart_ms if self.restart_back is None else self.restart_back}
 
     def link_up(self, role, bitrate, restart_ms=None):
         if restart_ms is not None and "link_up" not in self.fail:
             self.restart_ms = restart_ms
+        self.bitrate = bitrate
         return self._do("link_up", "link_up %s %s%s" % (
             role, bitrate, " restart-ms %s" % restart_ms if restart_ms is not None else ""), True)
 
@@ -333,6 +337,29 @@ def case_restart_ms(M, work):
     assert b.calls() == ["link_up kvaser 500000"], b.calls()
 
 
+def case_bitrate(M, work):
+    """bench_lom_errflag's node at a wrong rate (2026-11-28): set_link's
+    bitrate is passed to the layer and read back here too, on the line; a
+    read-back at another rate is LinkError even when the layer took it;
+    none asked is BITRATE and its read-back is the layer's alone, as
+    before; recover still comes up at BITRATE."""
+    b = Bench(M, os.path.join(work, "a"), up=False)
+    line = M.set_link(True, b.net, "linux", restart_ms=100, bitrate=250000)
+    assert b.calls() == ["link_up kvaser 250000 restart-ms 100"], b.calls()
+    assert "read back UP at 250000 restart-ms 100" in line, line
+    b = Bench(M, os.path.join(work, "b"), up=False)
+    b.layer.bitrate_back = 500000
+    e = _raises(M.LinkError, M.set_link, True, b.net, "linux", bitrate=1000000)
+    assert "bitrate read back 500000, asked 1000000" in e, e
+    b = Bench(M, os.path.join(work, "c"), up=False)
+    b.layer.bitrate_back = 250000
+    M.set_link(True, b.net, "linux")
+    assert b.calls() == ["link_up kvaser 500000"], b.calls()
+    b = Bench(M, os.path.join(work, "d"), up=True)
+    ok, line = M.recover(b.net, {}, "linux", restart_ms=100)
+    assert ok and b.calls()[-1] == "link_up kvaser 500000 restart-ms 100", (line, b.calls())
+
+
 def case_counters(M, work):
     """link_counters (the reviewer's ruling Q1, 2026-11-20): the layer's
     read for role kvaser; its failure, or a counter missing, is LinkError,
@@ -350,6 +377,15 @@ def case_counters(M, work):
     b.layer.counters["tx_dropped"] = 0
     e = _raises(M.LinkError, M.counter_growth, c0, M.link_counters())
     assert "went back" in e and "tx_dropped 40 -> 0" in e, e
+    # keys= (bench_lom_errflag, 2026-11-28): other counters the layer gives,
+    # each growth its own; a key missing from either read is LinkError
+    b.layer.counters.update(tx_dropped=213, error_passive=5, bus_error=1000)
+    c1 = M.link_counters()
+    g = M.counter_growth(c0, c1, keys=("error_passive", "bus_off"))
+    assert g == {"error_passive": 2, "bus_off": 1}, g
+    del c1["error_passive"]
+    e = _raises(M.LinkError, M.counter_growth, c0, c1, ("error_passive",))
+    assert "lack error_passive" in e, e
     b.layer.fail["link_counters"] = "ip: no such device"
     e = _raises(M.LinkError, M.link_counters)
     assert "ip: no such device" in e, e
@@ -1113,7 +1149,7 @@ def case_scan(M, work):
     assert [int(h.split(":")[1].split()[0]) for h in hits] == [1, 2], hits
 
 
-CASES = [case_link_state, case_set_up, case_restart_ms, case_counters, case_self_test_guard, case_set_down, case_not_taken, case_open_bus,
+CASES = [case_link_state, case_set_up, case_restart_ms, case_bitrate, case_counters, case_self_test_guard, case_set_down, case_not_taken, case_open_bus,
          case_echo_watch, case_suspend, case_threads, case_watched_bus, case_canbench, case_no_read,
          case_kernel_lines, case_recover, case_stall_lines, case_scan]
 
@@ -1177,8 +1213,8 @@ MUTANTS = [
     ("the key not canbench's", "    return ew().key_of(m)",
      "    return (m.arbitration_id, bytes(m.data))"),
     # restart-ms (the reviewer's ruling Q1, 2026-11-20)
-    ("restart-ms not passed to the layer", "    got = L.link_up(ROLE, BITRATE, restart_ms=restart_ms)",
-     "    got = L.link_up(ROLE, BITRATE)"),
+    ("restart-ms not passed to the layer", "    got = L.link_up(ROLE, rate, restart_ms=restart_ms)",
+     "    got = L.link_up(ROLE, rate)"),
     ("restart-ms not read back here", "    if restart_ms is not None and (not isinstance(got, dict)",
      "    if False and (not isinstance(got, dict)"),
     ("recover: restart-ms not asked", "            _recover_step(_layer(), step, restart_ms)",
@@ -1191,8 +1227,8 @@ MUTANTS = [
      "    if False:\n        raise LinkError(\"bench_layer.link_counters"),
     ("counter_growth: a counter gone back accepted", "    if back:\n        raise LinkError(",
      "    if False:\n        raise LinkError("),
-    ("counter_growth: the wrong way round", "    return dict((k, c1[k] - c0[k]) for k in COUNTER_KEYS)",
-     "    return dict((k, c1[k]) for k in COUNTER_KEYS)"),
+    ("counter_growth: the wrong way round", "    return dict((k, c1[k] - c0[k]) for k in keys)",
+     "    return dict((k, c1[k]) for k in keys)"),
     ("stall_lines: restart-ms not asked", "    ok, line = recover(root, environ, restart_ms=restart_ms)",
      "    ok, line = recover(root, environ)"),
     ("frames other than echoes not handed on",
@@ -1220,11 +1256,24 @@ MUTANTS = [
      "        raise LinkError(\"bench_layer.%s %s failed: %s: %s\" % (step, ROLE, type(e).__name__, e))",
      "        got = None"),
     ("set_link: down for up",
-     "        got = _link_up(L, restart_ms) if up else L.link_down(ROLE)",
+     "        got = _link_up(L, restart_ms, bitrate) if up else L.link_down(ROLE)",
      "        got = L.link_down(ROLE)"),
     ("set_link: another bitrate",
-     "        got = _link_up(L, restart_ms) if up else L.link_down(ROLE)",
+     "        got = _link_up(L, restart_ms, bitrate) if up else L.link_down(ROLE)",
      "        got = L.link_up(ROLE, 250000) if up else L.link_down(ROLE)"),
+    # bitrate= (bench_lom_errflag's wrong-rate node, 2026-11-28)
+    ("set_link: the bitrate asked not passed on",
+     "        got = _link_up(L, restart_ms, bitrate) if up else L.link_down(ROLE)",
+     "        got = _link_up(L, restart_ms) if up else L.link_down(ROLE)"),
+    ("_link_up: the bitrate asked ignored", "    rate = BITRATE if bitrate is None else int(bitrate)",
+     "    rate = BITRATE"),
+    ("_link_up: the bitrate not read back here",
+     "    if bitrate is not None and (not isinstance(got, dict) or got.get(\"bitrate\") != rate):",
+     "    if False:"),
+    ("counter_growth: a missing key taken", "    if lack:\n        raise LinkError(\"the %s link's counters lack",
+     "    if False:\n        raise LinkError(\"the %s link's counters lack"),
+    ("counter_growth: keys ignored", "    return dict((k, c1[k] - c0[k]) for k in keys)",
+     "    return dict((k, c1[k] - c0[k]) for k in COUNTER_KEYS)"),
     ("set_link: from a self-test", "    why = self_test_refusal()\n    if why:\n        raise LinkError(why)\n",
      ""),
     ("the layer not adapter_roles'", "    import adapter_roles\n    return adapter_roles.layer()",
