@@ -91,6 +91,36 @@ with each build's R1 image hash).
 | The component's scope, whole R20 check | PASS | On bridge and on truck, no failure in the component's scope: no symbol unlisted, none stale, every refusal rule passes. | `positive_bridge.txt`, `positive_truck.txt` |
 | Can-fail on real builds | PASS | OFF and ON swapped (s3probe as OFF, the bridge build as the s3probe ON): FAIL 11, exit 1, each on its own check. | `negative_swapped.txt` (`6bab0fc7...c2c375`) |
 
+## Refusal rows on interposer images, tag 2026.11.28 (charge-interposer tester, 2026-11-28 PST)
+
+**What it is evidence for:** shared/tools R20 for the component's table on
+interposer images, as in the entry for tag 2026.11.27.5, after the table's
+change `c6624601` (the `S3_PROBE_BUILD` row, "not a switch", in place of
+`S3_SUPPORTED`; charge-interposer reviewer, 2026-11-27).
+**Code tested:** the component at tag 2026.11.28 (`e9f123a4`), in the dev
+builds of charge-interposer `78e019b8` (charge-interposer/main, the re-pin
+to that tag), made at `78e019b8`: bridge and truck (without the switches)
+and s3probe (with `TWAI_PORT_S3_PROBE` and `TWAI_PORT_TXABORT_PROBE`). Each
+build's table is its own copy of the component's, read by `collect()`.
+**Check:** `charge-interposer/fw_harness/refusal_pairs.py --component
+vtrux__twai_port` at `78e019b8`, clean tracked tree, with the pinned
+shared/tools (tag 2026.11.17.4) `vtrux_checks.switches`. Its test and
+can-fail: `charge-interposer/refusal_pairs_test.py` (21 of 21 pass at
+`78e019b8`; 34 of 34 mutants caught at `53396ed2`, and neither file has
+changed since). **Host:** madhouse-debian, ESP-IDF v5.4.2, in
+`build.slice`. **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/runs/shared_twai_port_r20_pairs_78e019b8/`
+(`SHA256SUMS` hashes the three files; the folder's `README.md` lists them,
+with each build's R1 image hash).
+
+| Check | Result | What was tested | Run file (sha256) |
+|---|---|---|---|
+| `TWAI_PORT_S3_PROBE`, both rows | PASS | Each row fails on s3probe (the 3 symbols and the 3 strings) and passes on bridge and on truck. | `positive_bridge.txt` (`3c12663f...e366a4e`), `positive_truck.txt` (`2d842d4f...eeb6e274`) |
+| `TWAI_PORT_TXABORT_PROBE`, strings row | PASS | Fails on s3probe. Passes on bridge and on truck. | `positive_bridge.txt`, `positive_truck.txt` |
+| `TWAI_PORT_TXABORT_PROBE`, symbols row | PASS | Fails on s3probe. Passes on bridge and on truck. | `positive_bridge.txt`, `positive_truck.txt` |
+| The component's scope, whole R20 check | PASS | On bridge and on truck, no failure in the component's scope: no symbol unlisted, none stale (`S3_PROBE_BUILD` listed, `S3_SUPPORTED` no longer tested in an `#if`), every refusal rule passes. | `positive_bridge.txt`, `positive_truck.txt` |
+| Can-fail on real builds | PASS | OFF and ON swapped (s3probe as OFF, the bridge build as the s3probe ON): FAIL 11, exit 1, each on its own check. | `negative_swapped.txt` (`0cb281c2...8a25da`) |
+
 ## T19 on the X2's S3: the kept-driver switch, tag 2026.11.27.6 (charge-interposer tester, 2026-11-27 PST)
 
 **What it is evidence for:** T19's measurement on the ESP32-S3 of the
