@@ -20,9 +20,9 @@
       "reason": "ESP-IDF's esp_attr.h defines it (the T19 stall record's section, twai_port_ll_esp32s3.c); the file defines it empty only for a host build whose esp_attr.h lacks it, never under ESP_PLATFORM",
       "kind": "library macro"
     },
-    "S3_SUPPORTED": {
+    "S3_PROBE_BUILD": {
       "class": "not a switch",
-      "reason": "twai_port_ll_esp32s3.c defines it itself, 1 when TWAI_PORT_S3_PROBE is set and 0 otherwise, and its #if blocks hold the T19 stall record and the S3 probe mark; TWAI_PORT_S3_PROBE's row refuses what they add",
+      "reason": "twai_port_ll_esp32s3.c defines it itself, 1 when TWAI_PORT_S3_PROBE is set and 0 otherwise, and its #if blocks hold the T19 stall record and the S3 probe mark; TWAI_PORT_S3_PROBE's row refuses what they add. It took this place from S3_SUPPORTED in 1f246cc4, which defines S3_SUPPORTED from it and no longer tests S3_SUPPORTED in any #if, so S3_SUPPORTED has no row",
       "kind": "computed value"
     },
     "TWAI_PORT_HOST_SWITCH": {
