@@ -311,4 +311,22 @@ checked on a read that issued the command (F7). The F7 mutant that removed
 the AWAITING branch's `return false` is now equivalent, so this one replaces
 it. The "loop ends at the bound" mutant now targets `abort_step()`. Step 3's
 inhibit branch is reached only when the buffer reads EMPTY before the
-driver's count falls, which `fake_buf` does not model.
+driver's count falls, which `fake_buf` did not model then (see below).
+
+### 2026-11-27: the driver's count lags the buffer (tracker F5)
+
+On the device the abort reads the controller's registers, and `outstanding()`
+reads the driver's `tx_pending`, which falls only when the transmit interrupt
+has run. A pass in between sees the buffer EMPTY while the frame is still
+counted. For a withdrawn inhibit, `gs_tick()` step 3 keeps the loop open then.
+Without that branch, step 1 would book the frame `sent` on the next pass.
+
+`fb_set_count_lag(us)` models it (reviewer, 2026-11-27): each time the buffer
+frees, `outstanding()` stays true for `us` more. `fb_counted_now()` reads that
+value with no side effects; `fb_outstanding_now()` still reads the buffer only.
+
+`case_withdrawn_inhibit_count_lag`: a contended bus, so the answer waits
+AWAITING. The withdrawal's abort frees the buffer, and a pass inside the
+50 us lag keeps the frame held, books nothing and hands over nothing. The next
+pass books it `withdrawn`, never `sent`, and the page queued behind it goes
+out. The mutant that removes step 3's inhibit branch is caught.

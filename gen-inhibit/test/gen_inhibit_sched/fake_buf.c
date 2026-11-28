@@ -79,6 +79,10 @@ static struct
     int64_t  last_cmd_at;       /* -1: no command yet */
     int64_t  gap_began_at;      /* the last retry gap's start; -1: none */
 
+    /* the driver's count falls this long after the buffer frees */
+    int64_t  count_lag_us;
+    int64_t  counted_until;     /* outstanding() reads true before this */
+
     fb_frame_t wire[FB_MAX];
     int        wire_n;
     fb_frame_t sub[FB_MAX];
@@ -128,6 +132,16 @@ void fb_set_unacked(bool on, int64_t gap_us)
 }
 
 int fb_abort_reads(void) { return g.abort_reads; }
+
+void fb_set_count_lag(int64_t us) { g.count_lag_us = us; }
+
+/* The buffer has just freed: the driver's count stays up for the lag. */
+static void fb_freed(void)
+{
+    g.occupied = false;
+    g.transmitting = false;
+    g.counted_until = g.now + g.count_lag_us;
+}
 
 /* How long the current frame will transmit for. */
 static int64_t fb_air(void)
@@ -190,8 +204,7 @@ void fb_advance(int64_t us)
              * completion, which is the whole point of spec 5.2 item 5.
              */
             g.abort_pending = false;
-            g.occupied = false;
-            g.transmitting = false;
+            fb_freed();
             continue;
         }
 
@@ -241,8 +254,7 @@ void fb_advance(int64_t us)
             /* IT REACHED THE WIRE. This is the only path that appends to the
              * wire log; an abort never does. */
             if (g.wire_n < FB_MAX) { g.wire[g.wire_n++] = g.f; }
-            g.occupied = false;
-            g.transmitting = false;
+            fb_freed();
             continue;
         }
     }
@@ -344,7 +356,8 @@ static bool fb_outstanding(void *ctx)
         g.rx_waiting += g.arrive_on_free;
         g.arrive_on_free = 0;
     }
-    return g.occupied;
+    /* The buffer, or the driver's count while it lags (fb_set_count_lag()). */
+    return g.occupied || g.now < g.counted_until;
 }
 
 static uint32_t fb_rx_waiting_read(void *ctx)
@@ -405,4 +418,5 @@ int fb_abort_cmds(void) { return g.abort_cmds; }
 int fb_aborts_with_no_effect(void) { return g.aborts_no_effect; }
 int fb_abort_cmds_while_transmitting(void) { return g.abort_cmds_while_tx; }
 bool fb_outstanding_now(void) { return g.occupied; }
+bool fb_counted_now(void) { return g.occupied || g.now < g.counted_until; }
 gs_buf_t fb_state_now(void) { return fb_state(NULL); }

@@ -108,6 +108,18 @@ void fb_stick_transmitting(int64_t us);
  */
 void fb_set_unacked(bool on, int64_t gap_us);
 
+/*
+ * THE DRIVER'S COUNT LAGS THE BUFFER (reviewer, 2026-11-27). On the device,
+ * abort_if_awaiting() and buf_state() read the controller's registers, while
+ * outstanding() reads the driver's tx_pending, which falls only when the
+ * transmit interrupt has run. With a lag set, every time the buffer frees
+ * (an abort, or a frame that reached the wire) outstanding() stays true for
+ * `us` more, while the buffer already reads EMPTY. 0, the default, is no lag.
+ * This is the only way to reach gs_tick() step 3's branch that keeps a
+ * withdrawn inhibit's loop open.
+ */
+void fb_set_count_lag(int64_t us);
+
 /* How many times the scheduler has called abort_if_awaiting(): every turn of
  * item 4's loop reads the buffer this way, with or without a command. */
 int fb_abort_reads(void);
@@ -162,8 +174,12 @@ int fb_aborts_with_no_effect(void);
  */
 int fb_abort_cmds_while_transmitting(void);
 
-/* Is anything still in the buffer? (the HAL's `outstanding`) */
+/* Is anything still in the buffer? The buffer itself: a count lag
+ * (fb_set_count_lag()) is not included. */
 bool     fb_outstanding_now(void);
+/* What the HAL's outstanding() would return now, the lag included; it has no
+ * side effects. */
+bool     fb_counted_now(void);
 gs_buf_t fb_state_now(void);
 
 /* ------------------------------------------------------ the receive queue -- */
