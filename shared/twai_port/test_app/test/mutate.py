@@ -133,7 +133,18 @@ MUTANTS = [
      "    if (p->irq_off)\n    {\n        txp_env_irq_on();\n    }\n",
      "    if (p->irq_off && p->hold_ms > 0)\n    {\n        hold(p, r);\n    }\n    if (p->irq_off)\n    {\n        txp_env_irq_on();\n    }\n"),
     ("parse: hold_ms past 2000 allowed", UN,
-     "{ \"hold_ms\",   &p->hold_ms,   0,   2000,", "{ \"hold_ms\",   &p->hold_ms,   0,   20000,"),
+     "{ \"hold_ms\",   P_OFF(hold_ms),   0,   2000,", "{ \"hold_ms\",   P_OFF(hold_ms),   0,   20000,"),
+    ("answer: trial buffer on the stack", UN,
+     "    char *const b = s_ans.b;\n    int n;", "    char b[ANS_B];\n    int n;"),
+    ("answer: head buffer on the stack", UN,
+     "    char *const b = s_ans.b;\n    const int n = snprintf(b, ANS_B,",
+     "    char b[ANS_B];\n    const int n = snprintf(b, ANS_B,"),
+    ("answer: driver views on the stack", UN,
+     "    char *const d0 = s_ans.d[0];\n    char *const d1 = s_ans.d[1];\n"
+     "    char *const d2 = s_ans.d[2];\n    char *const d3 = s_ans.d[3];\n",
+     "    char d0[ANS_D], d1[ANS_D], d2[ANS_D], d3[ANS_D];\n"),
+    ("answer: stack margin not reported", UN,
+     "(unsigned long)txp_env_stack_free());", "0ul);"),
     ("answer: hold_ns given with no hold", UN,
      "            \"\\\"hold_ns\\\":-1,", "            \"\\\"hold_ns\\\":0,"),
     ("answer: hold TCS from TBS", UN,
@@ -239,6 +250,10 @@ def score(cc, copy, out):
             return "fail (timed out)"
         if rc != 0:
             return "fail"
+    rc, _ = run([sys.executable, "-B", os.path.join(TEST, "test_stack.py"),
+                 os.path.join(out, "stack_unacked.su")], copy, timeout=TIMEOUT_S)
+    if rc != 0:
+        return "fail"
     return "pass"
 
 

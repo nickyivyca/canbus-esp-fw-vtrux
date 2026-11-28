@@ -283,6 +283,8 @@ void txp_env_settle(int ms)
     S.sent = false;      /* between trials the last frame is gone */
 }
 
+uint32_t txp_env_stack_free(void) { return 1234; }
+
 /* The hold: the clock jumps by ms. With ack_back, a frame still in the
  * buffer at the hold's start goes out 100 us into it. */
 void txp_env_hold(int ms)
@@ -1022,7 +1024,9 @@ static void test_json(void)
     int brackets = 0;
     for (const char *c = strstr(J, "\"events\":["); *c; c++) { brackets += (*c == '['); }
     CHECK(brackets == (int)R.trials[0].ev_n + 1);
-    CHECK(JN >= 4 && strcmp(J + JN - 4, "]}]}") == 0);
+    /* the end: the trials closed, then the stack margin */
+    const char *end = "]}],\"stack_free_min\":1234}";
+    CHECK(JN >= strlen(end) && strcmp(J + JN - strlen(end), end) == 0);
 
     printf("the answer, with no driver reads and skips\n");
     script_default();
@@ -1053,14 +1057,14 @@ static void test_json(void)
     CHECK(strstr(J, want) != NULL);
     CHECK(strstr(J, "\"hold_tbs\":1,\"hold_tcs\":1,\"alerts_hold\":2,"
                     "\"drv_hold\":{\"state\":0,\"mtx\":0,") != NULL);
-    CHECK(JN >= 4 && strcmp(J + JN - 4, "]}]}") == 0);
+    CHECK(JN >= strlen(end) && strcmp(J + JN - strlen(end), end) == 0);
 
     printf("the answer stops when a chunk fails\n");
     script_default();
     p = params(TXP_M1);
     p.window_us = 2000;
     CHECK(txp_run(&p, &R));
-    for (int at = 1; at <= 5; at++)
+    for (int at = 1; at <= 6; at++)
     {
         JN = 0;
         g_emit_fail_at = at;

@@ -10,10 +10,17 @@ CC     ?= gcc
 OUT    ?= ../../../../scratch/twai_port-probe-test
 CFLAGS ?= -std=c11 -O1 -g -Wall -Wextra -Werror -Imock
 
+PYTHON ?= python3
+
 BINS := $(OUT)/test_unacked $(OUT)/test_probe_ll_c3 $(OUT)/test_probe_ll_s3 \
         $(OUT)/test_probe_ll_unsupported $(OUT)/test_t19_parse
 
-all: $(BINS)
+all: $(BINS) $(OUT)/stack_unacked.su
+
+# m1-m3's frames, for test_stack.py: gcc's -fstack-usage of the core.
+$(OUT)/stack_unacked.su: ../twai_port_unacked.c ../twai_port_unacked.h ../twai_port_probe_ll.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -fstack-usage -c -o $(OUT)/stack_unacked.o ../twai_port_unacked.c
 
 # The T19 app's command line (chip-neutral).
 $(OUT)/test_t19_parse: test_t19_parse.c ../twai_port_t19_parse.c ../twai_port_t19_parse.h
@@ -47,8 +54,9 @@ run: all
 	$(OUT)/test_probe_ll_s3
 	$(OUT)/test_probe_ll_unsupported
 	$(OUT)/test_t19_parse
+	$(PYTHON) -B test_stack.py $(OUT)/stack_unacked.su
 
 clean:
-	rm -f $(BINS)
+	rm -f $(BINS) $(OUT)/stack_unacked.o $(OUT)/stack_unacked.su
 
 .PHONY: all asan run clean
