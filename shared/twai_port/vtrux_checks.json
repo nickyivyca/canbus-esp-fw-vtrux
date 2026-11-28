@@ -52,7 +52,7 @@
     },
     "TWAI_PORT_TXABORT_PROBE": {
       "class": "test-only",
-      "reason": "T13's transmit-abort measurement build: CMakeLists.txt adds test_app/twai_port_txabort_probe.c, which writes the abort command register from outside the driver and gives the answer (its \"probe\" string), and test_app/twai_port_txabort_http.c, which answers at /gi_txabort (txab_handler, txab_uri, twai_port_txabort_register), which a project registers from its URI hook; split in a7674f0b, the strings and symbols unchanged",
+      "reason": "T13's transmit-abort measurement build: CMakeLists.txt adds test_app/twai_port_txabort_probe.c, which writes the abort command register from outside the driver and gives the answer (its \"probe\" string), and test_app/twai_port_txabort_http.c, which answers at /gi_txabort (txab_handler, txab_uri, twai_port_txabort_register), which a project registers from its URI hook; split in a7674f0b, the strings and symbols unchanged. The symbols row also names twai_port_txabort_run, the split's entry point in twai_port_txabort_probe.c that the URI and T19's serial app both call: an image without the URI, such as s3probe, defines it but not the URI's symbols, so the row fails there too (charge-interposer reviewer, 2026-11-27)",
       "refusal": [
         {
           "bin_strings_absent": [
@@ -62,6 +62,7 @@
         },
         {
           "elf_symbols_absent": [
+            "twai_port_txabort_run",
             "twai_port_txabort_register",
             "txab_handler",
             "txab_uri"
