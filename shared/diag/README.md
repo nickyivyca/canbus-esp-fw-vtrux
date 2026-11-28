@@ -58,6 +58,7 @@ needs the change; writing a file first does not make a project its owner.
 | `python/diag_pack.py` | the packer's Python twin (D4), over the generated Python table. Stdlib only | the same |
 | `tools/diag_table_gen.py` | the table generator (D3, D4, D6): one DBC to a C header and source and a Python module, with the build-time fit checks | the same |
 | `CMakeLists.txt`, `idf_component.yml` | the component's build | the same |
+| `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20): every symbol the component's files test, with its class. A project that names `vtrux/diag` in its `shared_components` fails R20 without it | the tester of the project that needs the change (charge-interposer reviewer, 2026-11-27) |
 | `unit/` | the implementor's unit tests of the packers and the generator, self-checks; see `unit/README.md` | the same |
 | `test/` | the testers' checks of D2-D4 against cantools, on a fixture DBC and both projects' diag DBCs; their checks of D6, which compile pass and fail cases in C and C++; and the can-fails of both; see `test/README.md` | the testers |
 

@@ -1,0 +1,9 @@
+{
+  "build_switches": {
+    "__cplusplus": {
+      "class": "not a switch",
+      "reason": "compiler-defined; the extern \"C\" wrappers in include/diag_pack.h and include/diag_build_id.h",
+      "kind": "library macro"
+    }
+  }
+}
