@@ -262,27 +262,35 @@ def _readback(got):
                                  if got.get("up") and got.get("restart_ms") is not None else "")
 
 
-def _link_up(L, restart_ms):
-    """The layer's link_up at BITRATE, with restart_ms when one is asked
-    (None: the link keeps the restart-ms it has), and its restart-ms read
-    back here too, not left to the layer alone (the charge-interposer
-    reviewer's ruling Q1, 2026-11-20). -> the read-back."""
-    got = L.link_up(ROLE, BITRATE, restart_ms=restart_ms)
+def _link_up(L, restart_ms, bitrate=None):
+    """The layer's link_up at bitrate (None: BITRATE), with restart_ms when
+    one is asked (None: the link keeps the restart-ms it has), and its
+    restart-ms read back here too, not left to the layer alone (the
+    charge-interposer reviewer's ruling Q1, 2026-11-20). A bitrate other
+    than BITRATE is read back here too (bench_lom_errflag's node at a wrong
+    rate, 2026-11-28). -> the read-back."""
+    rate = BITRATE if bitrate is None else int(bitrate)
+    got = L.link_up(ROLE, rate, restart_ms=restart_ms)
     if restart_ms is not None and (not isinstance(got, dict)
                                    or got.get("restart_ms") != restart_ms):
         raise LinkError("restart-ms read back %s, asked %d" % (
             got.get("restart_ms") if isinstance(got, dict) else "nothing", restart_ms))
+    if bitrate is not None and (not isinstance(got, dict) or got.get("bitrate") != rate):
+        raise LinkError("bitrate read back %s, asked %d" % (
+            got.get("bitrate") if isinstance(got, dict) else "nothing", rate))
     return got
 
 
-def set_link(up, root=None, platform=None, restart_ms=None):
+def set_link(up, root=None, platform=None, restart_ms=None, bitrate=None):
     """Bring the link up at BITRATE (an ACK check) or take it down (a no-ACK
     check) through the bench-role layer (link_up / link_down: canctl, then
     the read-back). restart_ms: the bus-off restart the link comes up with,
     read back (bench_vport's node: NODE_RESTART_MS); None leaves it as the
-    link has it. -> a line saying so; LinkError if the layer refuses or
-    fails, or the read-back is not what was asked. root is not read (the
-    layer reads the link back itself); it stays for the callers."""
+    link has it. bitrate: another rate to come up at, read back here
+    (bench_lom_errflag's wrong-rate node); None is BITRATE. -> a line saying
+    so; LinkError if the layer refuses or fails, or the read-back is not
+    what was asked. root is not read (the layer reads the link back
+    itself); it stays for the callers."""
     if not linux(platform):
         raise LinkError("the Kvaser is opened on Linux only (role %s, canctl): the bench "
                         "host is madhouse-debian from port step 3" % ROLE)
@@ -292,7 +300,7 @@ def set_link(up, root=None, platform=None, restart_ms=None):
     step = "link_up" if up else "link_down"
     try:
         L = _layer()
-        got = _link_up(L, restart_ms) if up else L.link_down(ROLE)
+        got = _link_up(L, restart_ms, bitrate) if up else L.link_down(ROLE)
     except Exception as e:                              # noqa: BLE001
         raise LinkError("bench_layer.%s %s failed: %s: %s" % (step, ROLE, type(e).__name__, e))
     return "%s link %s (bench_layer.%s, %s)" % (ROLE, "up" if up else "down", step,
@@ -319,16 +327,21 @@ def link_counters():
     return got
 
 
-def counter_growth(c0, c1):
-    """Two link_counters reads -> {key: growth} for COUNTER_KEYS. LinkError
-    when a counter went back (the netdev was made again in between, as a
-    usbreset does), so the growth is not known."""
-    back = [k for k in COUNTER_KEYS if c1[k] < c0[k]]
+def counter_growth(c0, c1, keys=COUNTER_KEYS):
+    """Two link_counters reads -> {key: growth} for keys (COUNTER_KEYS, or
+    others link_counters gives, such as error_passive: bench_lom_errflag,
+    2026-11-28). LinkError when a key is missing from either read (never a
+    0 in its place), or a counter went back (the netdev was made again in
+    between, as a usbreset does), so the growth is not known."""
+    lack = [k for k in keys if not isinstance(c0.get(k), int) or not isinstance(c1.get(k), int)]
+    if lack:
+        raise LinkError("the %s link's counters lack %s" % (ROLE, ", ".join(lack)))
+    back = [k for k in keys if c1[k] < c0[k]]
     if back:
         raise LinkError("the %s link's counters went back (%s): the netdev was made again "
                         "in between" % (ROLE, ", ".join("%s %d -> %d" % (k, c0[k], c1[k])
                                                          for k in back)))
-    return dict((k, c1[k] - c0[k]) for k in COUNTER_KEYS)
+    return dict((k, c1[k] - c0[k]) for k in keys)
 
 
 def check_channel(channel):

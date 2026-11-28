@@ -10,7 +10,7 @@ before and after the ESP-IDF port. **It never goes on the truck.**
 
 | File | What |
 |---|---|
-| `main/vport_bench.cpp` | the console protocol (one command per line, one `@` reply per line, each ending `mode=<normal\|listen> bitrate=<...>`): `HELLO?`, `MODE normal\|listen`, `BITRATE 125k\|250k\|500k\|1M`, `SEND <hexid> [n]`, `FLOOD <hexid>` / `STOP`, `STALL <n>`, `DOMINANT <us> [reps]`, `STATUS`, `RESET`, `AUTORECOVER on\|off`. Its header describes each |
+| `main/vport_bench.cpp` | the console protocol (one command per line, one `@` reply per line, each ending `mode=<normal\|listen> bitrate=<...>`): `HELLO?`, `MODE normal\|listen`, `BITRATE 125k\|250k\|500k\|1M`, `SEND <hexid> [n]`, `FLOOD <hexid>` / `STOP`, `STALL <n>`, `DOMINANT <us> [reps]`, `STATUS`, `RESET`, `AUTORECOVER on\|off`, `LOMREG rec\|norec\|off`. Its header describes each |
 | `main/CMakeLists.txt` | the component: `vport_bench.cpp` only |
 | `CMakeLists.txt`, `sdkconfig.defaults` | the project: esp32s3, 8 MB flash, console on USB Serial/JTAG, 1 kHz tick, logs at WARN, task watchdog off (STALL blocks a task forever on purpose) |
 | `.gitignore` | `build/`, `sdkconfig` |
@@ -43,7 +43,18 @@ What each command is for (spec 9's list):
   max). The can-fail is a pulse shorter than the timeout (500 us), which
   must report RXD following TXD back high after the release (`by=txd`);
 - listen-only under each of the above: `MODE listen`, then the same
-  commands.
+  commands;
+- listen-only by register, the driver kept installed in normal mode, as
+  shared/twai_port's kept-driver switch makes it (T14, T15; 2026-11-28):
+  `LOMREG rec` writes REC 128 on the way in, as T15 requires; `LOMREG
+  norec` writes no REC, so the controller is listen-only and error-active
+  (the LISTEN_ONLY_DOM errata). That form is the can-fail of the
+  interposer's check that listen-only puts no dominant error flag on the
+  bus after a provoked error (stage (b) batch 1 step 3, check (c);
+  `bench_drivers/bench_lom_errflag.py`). `LOMREG off` goes back to normal
+  with REC 0. Each reply reads REC back (`rec_reg=`) and `STATUS` shows
+  `lomreg=`; `MODE`, `BITRATE` and `RESET` reinstall the driver, which
+  ends it.
 
 The host side is `bench_vport.py` in SeaDrive
 `projects/vtrux/notes/artifacts/interposer-firmware/`. It drives this image,

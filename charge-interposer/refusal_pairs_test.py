@@ -20,6 +20,11 @@ truck's name; a bridge release that came out truck; a new test-only switch
 no label expects; a rule EXPECT names that the table does not have; a
 test-only entry with no rules.
 
+The --component form (2026-11-28) is tested the same way on twai_port's real
+table, read from the shared-<tag> checkout the pins name: a bridge or truck
+OFF and an s3probe with both switches' marks PASS, and each wrong build FAILs
+on its own check (test_component_*).
+
 --can-fail runs the tests on mutants of refusal_pairs.py's text, each of
 which must make a test fail, and on the unmutated text, which must pass.
 """
@@ -211,10 +216,148 @@ def test_table_vs_expect(M, SW):
     assert fails_on(M.checks(t4, off, ons, SW.judge_rule), "INTP_TX_TRACE has refusal rules")
 
 
+# ---- a shared component's table (--component) -------------------------------
+SCOPE = "vtrux__twai_port"
+
+
+def twai_table():
+    """twai_port's real table, from the shared-<tag> checkout of the tag
+    firmware/shared_pins.json pins (beside this worktree)."""
+    with open(os.path.join(HERE, "firmware", "shared_pins.json"), encoding="utf-8") as f:
+        tag = json.load(f)["shared/twai_port"]["tag"]
+    top = os.path.dirname(HERE)
+    p = os.path.join(os.path.dirname(top), "shared-" + tag, "shared", "twai_port", "vtrux_checks.json")
+    with open(p, encoding="utf-8") as f:
+        return json.load(f)["build_switches"]
+
+
+def comp_build(variant, probe=False, txabort_strings=False, txabort_symbols=False, comp=None):
+    """A build's facts as read_build() gives them: twai_port's table (comp,
+    or the real one) and the project's, and outputs carrying what each
+    switch puts there."""
+    t = twai_table() if comp is None else comp
+    img, syms = b"\0app\0", {"app_main", "twai_port_send"}
+    if probe:
+        img += b"\0".join(s.encode() for s in _rule(t, "TWAI_PORT_S3_PROBE", "bin_strings_absent")) + b"\0"
+        syms |= set(_rule(t, "TWAI_PORT_S3_PROBE", "elf_symbols_absent"))
+    if txabort_strings:
+        img += b"\0".join(s.encode() for s in _rule(t, "TWAI_PORT_TXABORT_PROBE", "bin_strings_absent")) + b"\0"
+    if txabort_symbols:
+        syms |= set(_rule(t, "TWAI_PORT_TXABORT_PROBE", "elf_symbols_absent"))
+    return {"outputs": {"image": img, "elf_symbols": syms, "project_name": "interposer_" + variant,
+                        "image_hash": "0" * 64},
+            "tables": {SCOPE: t, "the project": table()}}
+
+
+def comp_right():
+    """(off, ons) of the right builds: a bridge without the switches, s3probe
+    with both"""
+    off = dict(comp_build("bridge"), bad=[])
+    return off, {"s3probe": comp_build("s3probe", probe=True, txabort_strings=True,
+                                       txabort_symbols=True)}
+
+
+def test_component_control(M, SW):
+    off, ons = comp_right()
+    res = M.component_checks(SCOPE, off, ons, SW.judge_rule)
+    assert failed(res) == [], failed(res)
+    names = [n for n, _ok, _d in res]
+    for s, rs in M.test_only_rules(twai_table()).items():
+        for rid, _r in rs:
+            assert "OFF: %s rule %s passes" % (s, rid) in names, (s, rid)
+            assert "ON s3probe: %s rule %s fails" % (s, rid) in names, (s, rid)
+    assert "ON s3probe carries OFF's %s table" % SCOPE in names
+    # truck is an OFF too; other scopes' R20 failures are not this component's
+    off = dict(comp_build("truck"), bad=[("the project", "INTP_NO_SERIAL", "refusal", "x")])
+    assert failed(M.component_checks(SCOPE, off, ons, SW.judge_rule)) == []
+
+
+def test_component_off_with_switch(M, SW):
+    off, ons = comp_right()
+    off = dict(comp_build("bridge", probe=True), bad=[])
+    res = M.component_checks(SCOPE, off, ons, SW.judge_rule)
+    assert fails_on(res, "OFF: TWAI_PORT_S3_PROBE rule elf_symbols_absent passes"), failed(res)
+    assert fails_on(res, "OFF: TWAI_PORT_S3_PROBE rule bin_strings_absent passes"), failed(res)
+    off = dict(comp_build("bridge", txabort_symbols=True), bad=[])
+    assert fails_on(M.component_checks(SCOPE, off, ons, SW.judge_rule),
+                    "OFF: TWAI_PORT_TXABORT_PROBE rule elf_symbols_absent passes")
+
+
+def test_component_on_without(M, SW):
+    """an s3probe without one switch's marks: each missing rule FAILs on its
+    own check (the TXABORT symbols alone missing, too)"""
+    off, _ons = comp_right()
+    for kw, want in ((dict(probe=False, txabort_strings=True, txabort_symbols=True),
+                      "ON s3probe: TWAI_PORT_S3_PROBE rule elf_symbols_absent fails"),
+                     (dict(probe=True, txabort_strings=False, txabort_symbols=True),
+                      "ON s3probe: TWAI_PORT_TXABORT_PROBE rule bin_strings_absent fails"),
+                     (dict(probe=True, txabort_strings=True, txabort_symbols=False),
+                      "ON s3probe: TWAI_PORT_TXABORT_PROBE rule elf_symbols_absent fails")):
+        res = M.component_checks(SCOPE, off, {"s3probe": comp_build("s3probe", **kw)}, SW.judge_rule)
+        assert fails_on(res, want), (kw, failed(res))
+        assert len(failed(res)) in (1, 2), (kw, failed(res))
+
+
+def test_component_off_whole_check(M, SW):
+    off, ons = comp_right()
+    off["bad"] = [(SCOPE, "TWAI_PORT_NEW", "unlisted", "twai_port.c")]
+    assert fails_on(M.component_checks(SCOPE, off, ons, SW.judge_rule), "OFF passes the whole R20 check")
+    off, ons = comp_right()
+    del off["bad"]
+    assert fails_on(M.component_checks(SCOPE, off, ons, SW.judge_rule), "OFF passes the whole R20 check")
+
+
+def test_component_tables(M, SW):
+    off, ons = comp_right()
+    off["tables"] = {"the project": table()}
+    res = M.component_checks(SCOPE, off, ons, SW.judge_rule)
+    assert fails_on(res, "OFF build carries %s's table" % SCOPE), failed(res)
+    off, ons = comp_right()
+    t2 = copy.deepcopy(twai_table())
+    t2["TWAI_PORT_S3_PROBE"]["reason"] += " (another commit)"
+    ons["s3probe"]["tables"][SCOPE] = t2
+    assert fails_on(M.component_checks(SCOPE, off, ons, SW.judge_rule),
+                    "ON s3probe carries OFF's %s table" % SCOPE)
+    off, ons = comp_right()
+    del ons["s3probe"]["tables"][SCOPE]
+    assert fails_on(M.component_checks(SCOPE, off, ons, SW.judge_rule),
+                    "ON s3probe carries OFF's %s table" % SCOPE)
+    off, ons = comp_right()
+    assert fails_on(M.component_checks("vtrux__can_port", off, ons, SW.judge_rule),
+                    "component vtrux__can_port has expectations")
+    # a new test-only switch in the component no label expects
+    t3 = copy.deepcopy(twai_table())
+    t3["TWAI_PORT_NEW_PROBE"] = {"class": "test-only", "reason": "x",
+                                 "refusal": [{"elf_symbols_absent": ["twai_new_probe"]}]}
+    off = dict(comp_build("bridge", comp=t3), bad=[])
+    ons = {"s3probe": comp_build("s3probe", probe=True, txabort_strings=True, txabort_symbols=True, comp=t3)}
+    assert fails_on(M.component_checks(SCOPE, off, ons, SW.judge_rule),
+                    "TWAI_PORT_NEW_PROBE rule elf_symbols_absent is expected to fail")
+
+
+def test_component_names_and_labels(M, SW):
+    off, ons = comp_right()
+    off["outputs"]["project_name"] = "interposer_s3probe"
+    assert fails_on(M.component_checks(SCOPE, off, ons, SW.judge_rule),
+                    "OFF is interposer_bridge or interposer_truck")
+    off, ons = comp_right()
+    ons["s3probe"]["outputs"]["project_name"] = "interposer_bridge"
+    assert fails_on(M.component_checks(SCOPE, off, ons, SW.judge_rule), "ON s3probe is interposer_s3probe")
+    off, ons = comp_right()
+    assert fails_on(M.component_checks(SCOPE, off, {}, SW.judge_rule), "ON build s3probe given")
+    off, ons = comp_right()
+    ons["s3probe"] = {"error": "no ELF"}
+    assert fails_on(M.component_checks(SCOPE, off, ons, SW.judge_rule), "ON s3probe read")
+    assert fails_on(M.component_checks(SCOPE, {"error": "no ELF"}, comp_right()[1], SW.judge_rule),
+                    "OFF build read")
+
+
 TESTS = [test_control, test_label_left_out, test_unknown_label, test_truck_as_witness,
          test_bridge_as_off, test_witness_symbols_in_off, test_unreadable,
          test_off_whole_check, test_trace_named_truck, test_release_came_out_truck,
-         test_table_vs_expect]
+         test_table_vs_expect, test_component_control, test_component_off_with_switch,
+         test_component_on_without, test_component_off_whole_check, test_component_tables,
+         test_component_names_and_labels]
 
 
 # ---- the runner's fixture (refusal_pairs_runs.py) --------------------------
@@ -430,8 +573,33 @@ MUTANTS = [
      "        add(\"OFF build read\", True, off.get(\"error\", \"no outputs\"))"),
     ("ON project names not checked", "        add(\"ON %s is %s\" % (lb, name), o.get(\"project_name\") == name,",
      "        add(\"ON %s is %s\" % (lb, name), True,"),
-    ("OFF's project name not checked", "        add(\"OFF is %s\" % name, o.get(\"project_name\") == name,",
-     "        add(\"OFF is %s\" % name, True,"),
+    ("OFF's project name not checked",
+     "        add(\"OFF is %s\" % \" or \".join(names), o.get(\"project_name\") in names,",
+     "        add(\"OFF is %s\" % \" or \".join(names), True,"),
+    ("OFF's project name only the first variant",
+     "        add(\"OFF is %s\" % \" or \".join(names), o.get(\"project_name\") in names,",
+     "        add(\"OFF is %s\" % \" or \".join(names), o.get(\"project_name\") == names[0],"),
+    ("other scopes' R20 failures held against the component",
+     "        offc[\"bad\"] = [b for b in off[\"bad\"] if b[0] == scope]",
+     "        offc[\"bad\"] = list(off[\"bad\"])"),
+    ("an ON build's component table not compared",
+     "            table is not None and (b.get(\"tables\") or {}).get(scope) == table,",
+     "            True,"),
+    ("an OFF build without the component's table not reported",
+     "        add(\"OFF build carries %s's table\" % scope, table is not None,",
+     "        add(\"OFF build carries %s's table\" % scope, True,"),
+    ("a component with no expectations passes",
+     "    add(\"component %s has expectations\" % scope, expect, \"not in COMPONENT_EXPECT\")",
+     "    add(\"component %s has expectations\" % scope, True, \"not in COMPONENT_EXPECT\")"),
+    ("the component's OFF held to the project's truck",
+     "    return out + checks(table or {}, offc, ons, judge_rule, expect, COMPONENT_OFF)",
+     "    return out + checks(table or {}, offc, ons, judge_rule, expect)"),
+    ("the TXABORT symbols not expected on s3probe",
+     "                                \"TWAI_PORT_TXABORT_PROBE\": [STRINGS, SYMBOLS]}),",
+     "                                \"TWAI_PORT_TXABORT_PROBE\": [STRINGS]}),"),
+    ("the S3_PROBE strings not expected on s3probe",
+     "        \"s3probe\": (\"s3probe\", {\"TWAI_PORT_S3_PROBE\": [SYMBOLS, STRINGS],",
+     "        \"s3probe\": (\"s3probe\", {\"TWAI_PORT_S3_PROBE\": [SYMBOLS],"),
     ("a rule no label expects passes", "            add(\"%s rule %s is expected to fail on an ON build\" % (s, rid),\n                where,",
      "            add(\"%s rule %s is expected to fail on an ON build\" % (s, rid),\n                True,"),
     ("an EXPECT rule not in the table passes", "                    rid in known, \"not a test-only rule of %s\" % s)",

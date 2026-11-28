@@ -45,6 +45,21 @@
 //   AUTORECOVER on|off     bus-off -> recovery -> start again, by itself
 //                          (default on, as the product does, B-7c, so the
 //                          wrong-bit-rate bursts can repeat)
+//   LOMREG rec|norec|off   listen-only by register, the driver kept
+//                          installed in normal mode (shared/twai_port T14,
+//                          T15): reset mode, the mode register, REC, then
+//                          out of reset mode. `rec` writes REC 128 on the
+//                          way in (the errata workaround, T15); `norec`
+//                          writes no REC, so the controller is listen-only
+//                          and error-active, the LISTEN_ONLY_DOM errata:
+//                          the can-fail of the error-flag check
+//                          (bench_lom_errflag.py). `off` goes back to
+//                          normal with REC 0. Refused unless the driver is
+//                          installed in normal mode. The reply reads REC
+//                          back (rec_reg=) and says whether the controller
+//                          was out of reset mode after (reset=0). MODE,
+//                          BITRATE and RESET reinstall, which ends it
+//                          (STATUS lomreg=0)
 //
 // POWER-UP STATE: LISTEN-ONLY at 500 kbit/s. The image puts nothing on the
 // bus until the host asks for normal mode, so flashing it onto a bench that
@@ -106,6 +121,9 @@ bool listen_only = true;
 int rate_idx = 2;  // 500k
 bool installed = false;
 bool autorecover = true;
+// LOMREG: 0 off, 1 listen-only by register with REC 128, 2 without the REC
+// write. A reinstall clears it: twai_hal_start sets the mode register again.
+int lomreg = 0;
 
 // Counters this image keeps (the controller's own are in STATUS).
 volatile uint32_t rx_frames = 0;
@@ -163,6 +181,7 @@ esp_err_t installLocked() {
     return e;
   }
   installed = true;
+  lomreg = 0;
   return ESP_OK;
 }
 
@@ -482,6 +501,45 @@ void cmdDominant(const char* args) {
   }
 }
 
+// LOMREG: the register-level switch, as shared/twai_port T14/T15 make it,
+// with the driver left installed in normal mode. Interrupts stay on: the
+// steps run in a few microseconds between this task's register writes, and
+// the driver's ISR touches neither the mode nor REC.
+void cmdLomreg(const char* a) {
+  int want;
+  if (strcmp(a, "rec") == 0) {
+    want = 1;
+  } else if (strcmp(a, "norec") == 0) {
+    want = 2;
+  } else if (strcmp(a, "off") == 0) {
+    want = 0;
+  } else {
+    reply("@ERR LOMREG rec|norec|off");
+    return;
+  }
+  xSemaphoreTake(drv, portMAX_DELAY);
+  if (!installed || listen_only) {
+    xSemaphoreGive(drv);
+    reply("@ERR LOMREG needs the driver installed in normal mode (MODE normal)");
+    return;
+  }
+  const uint32_t rec_before = twai_ll_get_rec(&TWAI) & 0xFF;
+  twai_ll_enter_reset_mode(&TWAI);
+  twai_ll_set_mode(&TWAI, want ? TWAI_MODE_LISTEN_ONLY : TWAI_MODE_NORMAL);
+  if (want == 1) twai_ll_set_rec(&TWAI, 128);
+  if (want == 0) twai_ll_set_rec(&TWAI, 0);
+  const uint32_t rec_in_reset = twai_ll_get_rec(&TWAI) & 0xFF;
+  twai_ll_exit_reset_mode(&TWAI);
+  const bool still_reset = twai_ll_is_in_reset_mode(&TWAI);
+  const uint32_t rec_after = twai_ll_get_rec(&TWAI) & 0xFF;
+  lomreg = want;
+  xSemaphoreGive(drv);
+  reply("@LOMREG %s lomreg=%d rec_before=%lu rec_in_reset=%lu rec_reg=%lu "
+        "reset=%d", a, want, (unsigned long)rec_before,
+        (unsigned long)rec_in_reset, (unsigned long)rec_after,
+        still_reset ? 1 : 0);
+}
+
 void cmdStatus() {
   twai_status_info_t s = {};
   uint32_t rec_raw = 0, tec_raw = 0;
@@ -503,7 +561,8 @@ void cmdStatus() {
         "rec_reg=%lu tec_raw=0x%08lx rec_raw=0x%08lx tx_failed=%lu "
         "bus_err=%lu arb_lost=%lu msgs_to_tx=%lu msgs_to_rx=%lu "
         "rx_missed=%lu rx_overrun=%lu rx_frames=%lu recoveries=%lu "
-        "autorecover=%d flood=%d flood_queued=%lu flood_refused=%lu",
+        "autorecover=%d flood=%d flood_queued=%lu flood_refused=%lu "
+        "lomreg=%d",
         stateName(s.state), (unsigned long)s.tx_error_counter,
         (unsigned long)s.rx_error_counter, (unsigned long)(tec_raw & 0xFF),
         (unsigned long)(rec_raw & 0xFF), (unsigned long)tec_raw,
@@ -513,7 +572,7 @@ void cmdStatus() {
         (unsigned long)s.rx_missed_count, (unsigned long)s.rx_overrun_count,
         (unsigned long)rx_frames, (unsigned long)recoveries,
         autorecover ? 1 : 0, flood_run ? 1 : 0,
-        (unsigned long)flood_queued, (unsigned long)flood_refused);
+        (unsigned long)flood_queued, (unsigned long)flood_refused, lomreg);
 }
 
 }  // namespace
@@ -584,6 +643,8 @@ extern "C" void app_main(void) {
       }
       autorecover = strcmp(a, "on") == 0;
       reply("@AUTORECOVER %s", a);
+    } else if (strncmp(cmd, "LOMREG ", 7) == 0) {
+      cmdLomreg(cmd + 7);
     } else {
       reply("@ERR unknown command: %s", cmd);
     }
