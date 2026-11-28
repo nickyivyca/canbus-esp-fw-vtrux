@@ -189,7 +189,7 @@ MUTANTS = [
      "    const twai_port_buf_t seen = twai_port_ll_abort_if_awaiting();",
      "    const twai_port_buf_t seen = twai_port_abort_if_awaiting();"),
     ("S3 supported without the switch", S3,
-     "#define S3_SUPPORTED 0      /* not measured yet (T19) */", "#define S3_SUPPORTED 1"),
+     "#define S3_SUPPORTED S3_PROBE_BUILD     /* not measured yet (T19) */", "#define S3_SUPPORTED 1"),
     ("S3 abort while transmitting", S3,
      "    if (seen == TWAI_PORT_BUF_AWAITING)\n    {\n        twai_ll_set_cmd_abort_tx(hw);",
      "    if (seen != TWAI_PORT_BUF_EMPTY)\n    {\n        twai_ll_set_cmd_abort_tx(hw);"),

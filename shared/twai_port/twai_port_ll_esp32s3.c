@@ -64,11 +64,17 @@
 #include "soc/rtc_cntl_reg.h"
 #include "esp_cpu.h"
 
+/* Two switches, kept apart. S3_PROBE_BUILD: the T19 measurement build, which
+ * alone has the stall record and its R20 mark. S3_SUPPORTED: T8, T12 and the
+ * switch act. Until T19's measurement passes, only the measurement build is
+ * supported; when it passes, S3_SUPPORTED becomes 1 in every build, and the
+ * stall record stays in the measurement build only. */
 #if defined(TWAI_PORT_S3_PROBE) && TWAI_PORT_S3_PROBE
-#define S3_SUPPORTED 1      /* the T19 measurement build only */
+#define S3_PROBE_BUILD 1
 #else
-#define S3_SUPPORTED 0      /* not measured yet (T19) */
+#define S3_PROBE_BUILD 0
 #endif
+#define S3_SUPPORTED S3_PROBE_BUILD     /* not measured yet (T19) */
 
 /* The host-only switch (twai_port_ll.h, which stops an ESP-IDF compile
  * that sets it). */
@@ -144,7 +150,7 @@ static IRAM_ATTR bool core_stalled(int core)
            && ((REG_READ(RTC_CNTL_SW_CPU_STALL_REG) >> c1_s) & 0x3Fu) == 0x21u;
 }
 
-#if S3_SUPPORTED
+#if S3_PROBE_BUILD
 /*
  * T19, THE STALL RECORD (twai_port_ll.h): the measurement build only. What
  * the probe build adds to the stop: two register reads at entry, before the
@@ -211,7 +217,7 @@ const char twai_port_host_switch_build[] =
  */
 void twai_port_ll_build_marks(void)
 {
-#if S3_SUPPORTED
+#if S3_PROBE_BUILD
     __asm__ volatile("" : : "r"(twai_port_s3_probe_build) : "memory");
 #endif
 #if defined(TWAI_PORT_HOST_SWITCH) && TWAI_PORT_HOST_SWITCH
