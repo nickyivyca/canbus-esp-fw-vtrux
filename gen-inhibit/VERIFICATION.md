@@ -10529,6 +10529,69 @@ and the entries' merge) and `8ff2429c`.
     check refused again. Run again alone at 12:46 on 2026-11-27, with the card at 23-70
     packets per second: 59 pass, 0 fail.
 
+**The probe's no-acknowledge modes on the bench (F5, M1-M3) -- tester, 2026-11-27
+15:59-16:35, on gen-inhibit/main `1b3182de` `_txabort`. Result: NO MEASUREMENT. Every
+call that reached the device ended with the device restarting, with reset reason PANIC
+where the page could be read, and no call answered.** Spec 12.4 row "abort behaviour of
+the C3 TWAI"; shared/twai_port T13, the 2026-11-27 addition (gen-inhibit tracker F5);
+the probe's interface is shared/twai_port `test_app/README.md`, "The no-acknowledge
+modes", at tag `2026.11.27`, which says "The call answers only after its last trial".
+- **Code.** Built by the tester from a clean worktree detached at `1b3182de`, ESP-IDF
+  v5.4.2, `baseline_builds --bench`: `_txabort` (`-DTWAI_PORT_TXABORT_PROBE=1`), image
+  hash `18e984c7...`, code hash `70602576...`, as the implementor gave. The normal build's
+  code hash is `d310d427...`, unchanged. The image was read back from the device as
+  `18e984c7...` at the start and the end of each run. The X2 was held in ROM download
+  mode (`x2_hold.py pins`: TX not driven), read at the start and the end.
+- **Harness.** `gen-inhibit/tester/f5-unacked`: run 1 on `0fe51036`, run 2 on `395cc7bf`
+  (`bench/unacked_bench.py`, the chain suite's `txabort_held/F5unacked`). The bus is as
+  NONODE's: the Kvaser's link down (read back), the PCAN passive as the witness, the X2
+  held, and canmain opened only inside each call's hold as the acknowledging node. In
+  1 s of quiet before the first call, the witness heard no frame.
+- **Run 1** (`runs/chain/gen-inhibit-bench_20261127T155633_797b`, FAIL rc 1): only 2 of
+  238 calls reached the device. The other 236 found no route to the hotspot. In both
+  calls the trial frame went on the wire, the HTTP answer did not come within 30 s, and
+  the host then lost the hotspot. The harness did not join the hotspot again, so it had
+  no figures and could not say whether the device restarted. The harness then gained a
+  join after each call with no answer, and a page read after it.
+- **Run 2** (`runs/chain/gen-inhibit-bench_20261127T163140_f8d5`, FAIL rc 1, stopped by
+  its rule after 10 calls with no answer). The page before the first call read uptime
+  60,406 ms, reset reason SW, mode 0. One call of each kind ran first:
+
+| Call | Aim | Trial copies on the witness (276-277 us apart) | Page after the join |
+|---|---|---|---|
+| M1, irq off | m1, 10 ms | 22, over 5.8 ms | not read |
+| M1, irq on | m1, 10 ms | 22, over 5.8 ms | not read |
+| control | m1, 10 ms, hold 1500 ms | 4,826, over 1.33 s; canmain received the frame once, at +1.359 s | PANIC, uptime 12,734 ms |
+| M2 active | attempt 9 | 8 | not read |
+| M2 passive | attempt 23 | 5,459, over 1.51 s; canmain received nothing | PANIC, uptime 11,727 ms |
+| M3 active | attempt 11, 20 us | 10 | PANIC, uptime 12,743 ms |
+| M3 passive | attempt 17, 200 us | 16 | PANIC, uptime 12,732 ms |
+| M2 active | attempt 7 | 6 | not read |
+| M3 active | attempt 7, 200 us | 6 | PANIC, uptime 11,698 ms |
+| M2 passive | attempt 19 | 17 | PANIC, uptime 12,729 ms |
+
+  - No call answered within 10 s. The join after each succeeded. Where the page answered
+    after it (7 of 10), it read reset reason PANIC and an uptime of 11.7-12.7 s, so the
+    device had restarted. The image read `18e984c7...` and the mode 0 each time.
+  - In the M1 calls, the copies stopped after 22 attempts, 5.8 ms after the first, inside
+    the 10 ms trace window. In the four M2 and M3 calls with an active aim, they stopped
+    one short of the aimed attempt; with the passive aims 17 and 19, one and two short.
+    In the control and the passive aim 23, they went on for 1.3-1.5 s.
+  - The resource record (`resource-log window`, 16:33:30-16:35:20) is clean for
+    bench.slice: no pressure on it. So this is not a starved run.
+- **Observed vs the probe's README:** the calls do not answer after their last trial;
+  the device restarts with reset reason PANIC in each call that could be read. Every
+  kind of call shows it: M1 with irq on and with irq off, the control, M2 and M3, both
+  states.
+- **A harness timing to fix before the next run** (the tester's): canmain's open took
+  0.73-1.20 s from its call. So in the control the node was up only from about +1.36 s,
+  and it took the frame at +1.359 s, as soon as it was up. The positive control did
+  what it must. But the node's window was a few ms, not the 0.7 s planned, and the hold
+  check timed the node from the open's call.
+- **Run files** (in each run folder, `txabort_held/F5unacked/`): `F5_unacked_bench.txt`,
+  `unacked_bench_20261127T155920.json` (run 1) and `unacked_bench_20261127T163235.json` (run 2),
+  `kvaser_opens.jsonl`, and the X2 pins records.
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical
