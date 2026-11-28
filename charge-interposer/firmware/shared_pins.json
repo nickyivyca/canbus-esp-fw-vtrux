@@ -10,18 +10,18 @@
     "digest": "a55aba79a23bb07af25f66ef7ca3b918020ec08d4d7bd10126f796e32698277f"
   },
   "shared/twai_port": {
-    "tag": "2026.11.27.3",
-    "commit": "9d1dc134c2b3765a93b3a4d936d0c4a673458b9a",
-    "digest": "7e1e44fbe3ec256cc6244ba6247d43980b7aadb8049685ad677770ff885b3c29"
+    "tag": "2026.11.27.5",
+    "commit": "cf75bcfe6cd5e266f70d4e5605ca712646184482",
+    "digest": "c27337438024441cc1892286e9cca90a5c4fc420dff273084d1bd57339467c97"
   },
   "shared/can_port": {
-    "tag": "2026.11.27.3",
-    "commit": "9d1dc134c2b3765a93b3a4d936d0c4a673458b9a",
+    "tag": "2026.11.27.5",
+    "commit": "cf75bcfe6cd5e266f70d4e5605ca712646184482",
     "digest": "40e90da18b273f14eb38c344a1654e9cb97d414d3695b071f34b2e4062f92917"
   },
   "shared/diag": {
-    "tag": "2026.11.23.5",
-    "commit": "2a7ab8be056a57a20a7cdc33730c9d9b9ce8c35d",
-    "digest": "5d938353c42dd2b983c338e57c3bdf11cb42614dfa084321a596b2719c111077"
+    "tag": "2026.11.27.5",
+    "commit": "cf75bcfe6cd5e266f70d4e5605ca712646184482",
+    "digest": "d5e53cc14310e1e5f7cad9c77715acc549971e168b068931ba80a228010c5b3b"
   }
 }

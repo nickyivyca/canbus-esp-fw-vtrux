@@ -21,7 +21,7 @@ dependencies:
   joltwallet/littlefs:
     version: "1.20.0"
   # THE SHARED COMPONENTS, ALL FOUR AT ONE shared/main TAG (spec 2.4, port
-  # step 2b; 2026.11.27.3 from stage (b) batch 1's T13 answer fix): the
+  # step 2b; 2026.11.27.5 from stage (b) batch 1's T13 answer fix): the
   # board, the CAN port interface, the vehicle port's driver and the restart
   # guard.
   # vtrux/twai_port is taken "with vtrux/can_port and its board at the same
@@ -37,19 +37,19 @@ dependencies:
   vtrux/x2:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/boards/x2
-    version: "2026.11.27.3"
+    version: "2026.11.27.5"
   # The CAN port interface both ports present (can_port C1), with a backend
   # registered per port index.
   vtrux/can_port:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/can_port
-    version: "2026.11.27.3"
+    version: "2026.11.27.5"
   # The vehicle port (twai_port T1), the S3's TWAI controller on board port 0.
   # The s3probe variant's two switches (../CMakeLists.txt) add its T19 app.
   vtrux/twai_port:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/twai_port
-    version: "2026.11.27.3"
+    version: "2026.11.27.5"
   # Every software restart, a crash included, takes the CAN ports off the bus
   # first (restart_guard G1, G2: a link-time wrap, in every variant; the
   # reviewer, 2026-11-28, the start of stage (b) step 3). Until T19's
@@ -60,17 +60,18 @@ dependencies:
   vtrux/restart_guard:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/restart_guard
-    version: "2026.11.27.3"
+    version: "2026.11.27.5"
   # The diag frames' packer and build-id read (shared/diag D2-D4; spec 8.2,
   # schema 5, user 2026-11-23): 0x7F4-0x7F7 are packed from
   # intp_diag_table.c, generated from diag/vtrux-interposer-diag.dbc by this
   # tag's tools/diag_table_gen.py, with the fit checks (D6) in its header.
-  # Its own tag, the one shared_pins.json pins as "shared/diag", apart from
-  # the three above.
+  # The tag shared_pins.json pins as "shared/diag"; at 2026.11.27.5, the
+  # four above's tag, from 2026.11.23.5, with no build input changed
+  # (vtrux_checks.json, README.md, VERIFICATION.md and test/ only).
   vtrux/diag:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/diag
-    version: "2026.11.23.5"
+    version: "2026.11.27.5"
   # ESP-IDF v5.4.2 exactly (user, 2026-11-03): arduino-esp32 3.2.1 does not
   # compile on 5.4.1, gen-inhibit's IDF, and the baseline's prebuilt Arduino
   # libraries were built on 5.4.2. Exact, so a shell exported for the wrong
