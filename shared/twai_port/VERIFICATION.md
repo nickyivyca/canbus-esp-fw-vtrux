@@ -59,3 +59,34 @@ with each build's R1 image hash).
 | `TWAI_PORT_TXABORT_PROBE`, symbols row | FAIL | Not shown failing on any interposer image. On s3probe, built with the switch, the ELF defines none of `twai_port_txabort_register`, `txab_handler` and `txab_uri`, so the row passes there. It passes on bridge and on truck. | `positive_bridge.txt`, `positive_truck.txt` |
 | The component's scope, whole R20 check | FAIL | On bridge and on truck, the scope has two symbols that the table does not list: `RTC_NOINIT_ATTR` (twai_port_ll_esp32s3.c:154) and `S3_SUPPORTED` (twai_port_ll_esp32s3.c:147, :214). | `positive_bridge.txt`, `positive_truck.txt` |
 | Can-fail on real builds | PASS | OFF and ON swapped (s3probe as OFF, the bridge build as the s3probe ON): FAIL 10, exit 1, each on its own check. | `negative_swapped.txt` (`c0ce3071...d8c639`) |
+
+## Refusal rows on interposer images, tag 2026.11.27.5 (charge-interposer tester, 2026-11-27 PST)
+
+**What it is evidence for:** shared/tools R20 for the component's table on
+interposer images, as in the entry for tag 2026.11.27.2, after the table's
+changes `80d85fc7` (`RTC_NOINIT_ATTR` and `S3_SUPPORTED`, "not a switch")
+and `a2cab7de` (the `TWAI_PORT_TXABORT_PROBE` symbols row names
+`twai_port_txabort_run`; charge-interposer reviewer, 2026-11-27). Both
+failures of that entry are gone.
+**Code tested:** the component at tag 2026.11.27.5 (`cf75bcfe`), in
+charge-interposer `88396fce`'s dev builds, made at `53396ed2` (harness
+commits only after `88396fce`): bridge and truck (without the switches) and
+s3probe (with `TWAI_PORT_S3_PROBE` and `TWAI_PORT_TXABORT_PROBE`).
+**Check:** `charge-interposer/fw_harness/refusal_pairs.py --component
+vtrux__twai_port` at `53396ed2` on `charge-interposer/tester/switch-checks`,
+clean tracked tree, with the pinned shared/tools (tag 2026.11.17.4)
+`vtrux_checks.switches`. Its test and can-fail:
+`charge-interposer/refusal_pairs_test.py` (21 of 21 pass; 34 of 34 mutants
+caught). **Host:** madhouse-debian, ESP-IDF v5.4.2, in `build.slice`.
+**Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/runs/shared_twai_port_r20_pairs_53396ed2/`
+(`SHA256SUMS` hashes the three files; the folder's `README.md` lists them,
+with each build's R1 image hash).
+
+| Check | Result | What was tested | Run file (sha256) |
+|---|---|---|---|
+| `TWAI_PORT_S3_PROBE`, both rows | PASS | Each row fails on s3probe (the 3 symbols and the 3 strings) and passes on bridge and on truck. | `positive_bridge.txt` (`1dd286db...cd6e6b`), `positive_truck.txt` (`a2cf2921...8df379`) |
+| `TWAI_PORT_TXABORT_PROBE`, strings row | PASS | Fails on s3probe (`"probe":"gi_txabort"`). Passes on bridge and on truck. | `positive_bridge.txt`, `positive_truck.txt` |
+| `TWAI_PORT_TXABORT_PROBE`, symbols row | PASS | Fails on s3probe: the ELF defines `twai_port_txabort_run`. Passes on bridge and on truck. | `positive_bridge.txt`, `positive_truck.txt` |
+| The component's scope, whole R20 check | PASS | On bridge and on truck, no failure in the component's scope: no symbol unlisted, none stale, every refusal rule passes. | `positive_bridge.txt`, `positive_truck.txt` |
+| Can-fail on real builds | PASS | OFF and ON swapped (s3probe as OFF, the bridge build as the s3probe ON): FAIL 11, exit 1, each on its own check. | `negative_swapped.txt` (`6bab0fc7...c2c375`) |
