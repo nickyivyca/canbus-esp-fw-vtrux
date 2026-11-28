@@ -41,6 +41,25 @@ one label, every label must be given, and each ON build's project name must
 be the variant its label says. A build that cannot be read (no ELF, no
 image) is a failure of the proof, never a pass.
 
+A shared component's own table (tester, 2026-11-28, the charge-interposer
+reviewer's stage (b) batch 1: the TWAI_PORT_S3_PROBE row on the s3probe
+image against a bridge image):
+
+    python3.13 -B charge-interposer/fw_harness/refusal_pairs.py \
+        --component vtrux__twai_port --off <build folder> \
+        --on <label>=<build folder> [--on ...]
+
+The scope is the component's managed_components/ folder name, as shared/tools'
+collect() names it, and the table is the one collect() read from the OFF
+build's copy of the component. OFF is any interposer build without the
+component's test-only switches (COMPONENT_OFF: bridge or truck; a dev build
+counts, since the component's rules judge only the image and the ELF). On it
+the component's scope must pass the whole R20 check, and every refusal rule of
+every test-only switch of the component must pass. COMPONENT_EXPECT says, per
+ON label, the variant and which of the component's rules must FAIL; each ON
+build must carry the same component table as OFF (both builds of the same
+pinned component). The other checks are the project form's.
+
 Exit 0 only if every check holds; the last line is PASS or FAIL: <count>.
 refusal_pairs_test.py tests the judging on synthetic builds (--can-fail).
 """
@@ -78,6 +97,18 @@ EXPECT = {
 }
 OFF_VARIANT = "truck"
 
+# shared components' tables: scope -> {label: (variant, {switch: [rule id]})}.
+# s3probe has both of twai_port's test-only switches on, by the table's own
+# TWAI_PORT_S3_PROBE reason ("with TWAI_PORT_TXABORT_PROBE on the S3 it also
+# compiles the T19 serial app"), so every rule of both is expected to fail there.
+COMPONENT_EXPECT = {
+    "vtrux__twai_port": {
+        "s3probe": ("s3probe", {"TWAI_PORT_S3_PROBE": [SYMBOLS, STRINGS],
+                                "TWAI_PORT_TXABORT_PROBE": [STRINGS, SYMBOLS]}),
+    },
+}
+COMPONENT_OFF = ("bridge", "truck")
+
 
 def rule_id(rule):
     """A rule's id in EXPECT: its kind, and for a name token its token."""
@@ -97,13 +128,15 @@ def test_only_rules(table):
     return out
 
 
-def checks(table, off, ons, judge_rule, expect=None):
+def checks(table, off, ons, judge_rule, expect=None, off_variants=(OFF_VARIANT,)):
     """The checks, [(name, ok, detail)]. Pure: no files.
 
-    table      the project's {switch: entry}
-    off        {"outputs": ..., "bad": [R20 failures]} or {"error": text}
-    ons        {label: {"outputs": ...} or {"error": text}}
-    judge_rule shared/tools' (rule, outputs) -> (ok, detail)
+    table        the project's (or one component's) {switch: entry}
+    off          {"outputs": ..., "bad": [R20 failures]} or {"error": text}
+    ons          {label: {"outputs": ...} or {"error": text}}
+    judge_rule   shared/tools' (rule, outputs) -> (ok, detail)
+    expect       EXPECT's form; EXPECT when None
+    off_variants the variants the OFF build's project name may say
     """
     expect = EXPECT if expect is None else expect
     out = []
@@ -136,8 +169,8 @@ def checks(table, off, ons, judge_rule, expect=None):
         add("OFF build read", False, off.get("error", "no outputs"))
     else:
         o = off["outputs"]
-        name = "interposer_%s" % OFF_VARIANT
-        add("OFF is %s" % name, o.get("project_name") == name,
+        names = ["interposer_%s" % v for v in off_variants]
+        add("OFF is %s" % " or ".join(names), o.get("project_name") in names,
             "its project name is %r" % o.get("project_name"))
         bad = off.get("bad")
         add("OFF passes the whole R20 check", bad == [],
@@ -169,6 +202,39 @@ def checks(table, off, ons, judge_rule, expect=None):
     return out
 
 
+def component_checks(scope, off, ons, judge_rule, expect=None):
+    """The checks of one shared component's table, [(name, ok, detail)].
+    Pure: no files.
+
+    scope  the component's managed_components/ folder name
+    off    {"tables": {scope: table or None}, "outputs": ..., "bad": [the
+           whole R20 check's failures, every scope]} or {"error": text}
+    ons    {label: {"tables": ..., "outputs": ...} or {"error": text}}
+    expect COMPONENT_EXPECT[scope]'s form; COMPONENT_EXPECT's when None
+    """
+    expect = COMPONENT_EXPECT.get(scope, {}) if expect is None else expect
+    out = []
+
+    def add(name, ok, detail=""):
+        out.append((name, bool(ok), str(detail)[:160]))
+
+    add("component %s has expectations" % scope, expect, "not in COMPONENT_EXPECT")
+    table = (off.get("tables") or {}).get(scope)
+    if "error" not in off and "outputs" in off:
+        add("OFF build carries %s's table" % scope, table is not None,
+            "no %s scope with a table in the OFF build" % scope)
+    offc = dict(off)
+    if "bad" in off:
+        offc["bad"] = [b for b in off["bad"] if b[0] == scope]
+    for lb, b in sorted(ons.items()):
+        if "error" in b or "outputs" not in b:
+            continue                              # checks() reports it
+        add("ON %s carries OFF's %s table" % (lb, scope),
+            table is not None and (b.get("tables") or {}).get(scope) == table,
+            "its %s table differs from OFF's, or is absent" % scope)
+    return out + checks(table or {}, offc, ons, judge_rule, expect, COMPONENT_OFF)
+
+
 # ---- reading real builds through the pinned shared/tools ------------------
 def load_switches():
     """vtrux_checks.switches from the pinned shared/tools, after the pin's
@@ -194,7 +260,8 @@ def read_build(SW, build, whole=False):
         facts = SW.collect(build)
     except Exception as e:                       # noqa: BLE001
         return {"error": "%s: %s: %s" % (build, type(e).__name__, e)}
-    r = {"outputs": facts["outputs"], "root": facts["root"]}
+    r = {"outputs": facts["outputs"], "root": facts["root"],
+         "tables": {s: sc["table"] for s, sc in facts["scopes"].items()}}
     if whole:
         r["bad"] = SW.judge(facts)
     return r
@@ -209,11 +276,13 @@ def project_table(SW, root):
 
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
-    off, ons = None, {}
+    off, ons, scope = None, {}, None
     while args:
         a = args.pop(0)
         if a == "--off" and args:
             off = args.pop(0)
+        elif a == "--component" and args:
+            scope = args.pop(0)
         elif a == "--on" and args and "=" in args[0]:
             lb, path = args.pop(0).split("=", 1)
             if lb in ons:
@@ -229,6 +298,13 @@ def main(argv=None):
         print("  FAIL OFF build read  -- %s" % offb.get("error"))
         print("FAIL: 1")
         return 1
+    if scope is not None:
+        print("component table: %s" % os.path.join(
+            offb["root"], "managed_components", scope, SW.DATA_FILE))
+        res = component_checks(scope, offb,
+                               {lb: read_build(SW, p) for lb, p in ons.items()},
+                               SW.judge_rule)
+        return report(res)
     try:
         table = project_table(SW, offb["root"])
     except SW.SwitchesError as e:
@@ -239,6 +315,11 @@ def main(argv=None):
     res = checks(table, offb,
                  {lb: read_build(SW, p) for lb, p in ons.items()},
                  SW.judge_rule)
+    return report(res)
+
+
+def report(res):
+    """Print each check and the verdict line; the exit code."""
     fails = 0
     for name, ok, detail in res:
         print("  %-4s %s%s" % ("ok" if ok else "FAIL", name,
