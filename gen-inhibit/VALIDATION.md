@@ -504,6 +504,34 @@ hardware after emulated)"*.
   the fix. It is tested in emulation only, at the retry pattern the bench
   measured (262-274 us, `VERIFICATION.md` 12.4 "a bus with no other
   node"), with no bench run (user, 2026-11-26).
+- **The re-read for up to 1 ms on each pass** (added 2026-11-27, user,
+  tracker F5, option A). The emulated case failed on the first fix: the
+  scheduler reads the controller once per worker pass, and with no other
+  node a pass comes only every 200 ms, so a single read seldom lands where
+  TS = 0. The user ruled that the C3 be measured before the fix was chosen.
+  The measurement (`VERIFICATION.md` 12.4, "The rerun on the stack fix
+  (F5, M1-M3)", on `gen-inhibit/tester/f5-unacked` `312855a1`; the
+  shared/twai_port T13 probe at tag `2026.11.27.3`):
+  - error active: TS never read 0 between resends;
+  - error passive: TS read 0 for 15.4-16.4 us before each resend, 276 us
+    apart (frame 0x7FE, DLC 8);
+  - an abort issued at TS = 0 in error passive freed the buffer 7.9 us
+    later, and the frame never went out again, even when a node returned.
+
+  A trip latches about 200 ms after the nodes go, long after the
+  controller is error passive (about 16 resends, 4.4 ms). 1 ms of reads
+  about 2 us apart covers at least three 16 us windows. Option B, an
+  abort while TS = 1, was not chosen: it changes item 4's rule, and its
+  effect in error active is not measured.
+- **Known limit** (put to the user with option A, 2026-11-27): while the controller is error
+  active, TS never reads 0, so the frame cannot be removed. A frame
+  withdrawn within about 4.4 ms of the nodes going goes out if they return
+  in that time. It is a stand-down, which item 6 counts whether or not it
+  reached the wire. Once the controller is error passive, the next pass
+  removes it.
+- **The emulated TS model** (user, 2026-11-27): it follows the C3's
+  measurement above. The earlier model took TS = 0 from CAN bit timing
+  (6 us error active, 22 us error passive), and neither figure held.
 - **Status:** validated.
 
 ## 6. Conditions that disable the inhibit
