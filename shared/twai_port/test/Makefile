@@ -23,17 +23,23 @@ CFLAGS ?= -std=c11 -O1 -g $(WARN) -fsanitize=address,undefined -fno-omit-frame-p
 INC    := -Iinclude -Ihost -I. -I../include -I../../can_port/include
 
 FAKE := twai_fake.c twai_fake.h include/driver/twai.h include/hal/twai_ll.h \
-        $(wildcard include/soc/*.h) host/esp_rom_sys.h host/esp_cpu.h
+        $(wildcard include/soc/*.h) host/esp_rom_sys.h host/esp_timer.h host/esp_cpu.h
 PORT := ../twai_port.c ../include/twai_port.h ../../can_port/include/can_port.h \
         $(wildcard host/*.h host/*/*.h) host_platform.c
 
 PORT_BUILDS := test_port_on_fake_c3 test_port_on_fake_s3 test_port_on_fake_other test_port_on_fake_s3probe
 
-all: $(OUT)/test_twai_fake $(addprefix $(OUT)/,$(PORT_BUILDS)) $(OUT)/test_switch_on_fake
+all: $(OUT)/test_twai_fake $(OUT)/test_esp_timer_strong $(addprefix $(OUT)/,$(PORT_BUILDS)) \
+     $(OUT)/test_switch_on_fake
 
 $(OUT)/test_twai_fake: test_twai_fake.c $(FAKE)
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $(INC) -o $@ test_twai_fake.c twai_fake.c
+
+# a build with its own esp_timer_get_time keeps it: the fake's is weak
+$(OUT)/test_esp_timer_strong: test_esp_timer_strong.c $(FAKE)
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) $(INC) -o $@ test_esp_timer_strong.c twai_fake.c
 
 $(OUT)/test_port_on_fake_c3: test_port_on_fake.c $(FAKE) $(PORT) ../twai_port_ll_esp32c3.c
 	mkdir -p $(OUT)
@@ -72,6 +78,7 @@ $(OUT)/test_switch_on_fake: test_switch_on_fake.c $(FAKE) $(PORT) ../twai_port_l
 # value of its unmeasured knobs.
 run: all
 	$(OUT)/test_twai_fake
+	$(OUT)/test_esp_timer_strong
 	@fail=0; for b in $(PORT_BUILDS) test_switch_on_fake; do \
 	    for c in $$($(OUT)/$$b); do $(OUT)/$$b $$c || fail=1; done; \
 	done; test $$fail -eq 0 && echo "test_port_on_fake: every case passed on every build"
@@ -178,7 +185,7 @@ cxx-test: cxx
 	$(OUT)/test_cpp_wrapper
 
 clean:
-	rm -f $(OUT)/test_twai_fake $(OUT)/test_port_on_fake_c3 $(OUT)/test_port_on_fake_s3 \
+	rm -f $(OUT)/test_twai_fake $(OUT)/test_esp_timer_strong $(OUT)/test_port_on_fake_c3 $(OUT)/test_port_on_fake_s3 \
 	    $(OUT)/test_port_on_fake_t12 $(OUT)/twai_fake_cxx.o $(OUT)/twai_fake_cpp.o $(OUT)/test_cpp_wrapper
 
 .PHONY: all run t12-standins mutants mutate-test cxx cxx-test clean host-switch-refused

@@ -18,6 +18,7 @@
 #include "soc/system_reg.h"
 #include "soc/rtc_cntl_reg.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "esp_cpu.h"
 
 #include <stdlib.h>
@@ -207,6 +208,10 @@ static uint32_t g_rec_log[RECLOGMAX];
 static int      g_n_rec_log;
 static uint32_t g_delay_calls;
 static int64_t  g_delay_total;
+/* the microseconds of busy waits the clock did not see: with a clock
+ * adapter and no wait hook, or a hook that gave up short of the deadline
+ * (esp_timer_get_time) */
+static int64_t  g_timer_unseen;
 
 /* Two cores: the one the code under test runs on (wiring), which are
  * stalled, and the sender on the other one. */
@@ -228,6 +233,20 @@ static uint32_t g_oc_sent;
 int64_t twai_fake_now(void)
 {
     return g_clock ? g_clock(g_clock_ctx) : g_own_now;
+}
+
+/*
+ * esp_timer_get_time() (host/esp_timer.h): the fake's clock plus every busy
+ * wait the clock did not see, so it moves by each esp_rom_delay_us() in every
+ * mode and never goes back within one; with the fake's own clock, or a wait
+ * hook that reaches each deadline, it is twai_fake_now(). Weak, so a build
+ * that defines its own keeps it (gen-inhibit's gen_inhibit_shim does). For
+ * twai_port's switch, whose abort wait is timed on it (T17; the implementor
+ * and the charge-interposer tester, 2026-11-27).
+ */
+__attribute__((weak)) int64_t esp_timer_get_time(void)
+{
+    return twai_fake_now() + g_timer_unseen;
 }
 
 static void catch_up(void);
@@ -1296,6 +1315,11 @@ void esp_rom_delay_us(uint32_t us)
     {
         const int64_t deadline = twai_fake_now() + (int64_t)us;
         while (twai_fake_now() < deadline && g_wait(deadline, g_wait_ctx)) { }
+        if (twai_fake_now() < deadline) { g_timer_unseen += deadline - twai_fake_now(); }
+    }
+    else
+    {
+        g_timer_unseen += us;
     }
     catch_up();
     other_core_run();
@@ -1685,6 +1709,7 @@ void twai_fake_reset(void)
     g_oc_sent = 0;
     g_delay_calls = 0;
     g_delay_total = 0;
+    g_timer_unseen = 0;
 }
 
 /* --------------------------------------------------- what this rests on -- */

@@ -235,6 +235,18 @@ MUTANTS = [
     ("delay ignores the wait hook",
      "while (twai_fake_now() < deadline && g_wait(deadline, g_wait_ctx)) { }",
      "(void)deadline;"),
+    # esp_timer_get_time (2026-11-27, for the switch's abort wait, T17).
+    ("esp_timer: the clock alone",
+     "    return twai_fake_now() + g_timer_unseen;", "    return twai_fake_now();"),
+    ("esp_timer: a delay with no hook not counted",
+     "    else\n    {\n        g_timer_unseen += us;\n    }\n", ""),
+    ("esp_timer: a hook that gave up not counted",
+     "        if (twai_fake_now() < deadline) { g_timer_unseen += deadline - twai_fake_now(); }\n",
+     ""),
+    ("esp_timer: reset keeps the unseen waits", "    g_timer_unseen = 0;\n", ""),
+    ("esp_timer: strong, a build's own clashes",
+     "__attribute__((weak)) int64_t esp_timer_get_time(void)",
+     "int64_t esp_timer_get_time(void)"),
     # The register-level switch (twai_port T14-T18).
     ("install leaves the mode register",
      "    g_hw_mode = TWAI_MODE_LISTEN_ONLY;\n    g_tec = g_rec = 0;",
@@ -390,13 +402,22 @@ def run(cmd):
 
 
 def build_and_run(cc, src, out, name):
+    """test_twai_fake.c on src: "did not build", "fail" or "pass". Then, if
+    it passed, test_esp_timer_strong.c on src: a build with its own
+    esp_timer_get_time must link and keep its own, so a fake whose
+    definition clashes or wins is "fail" (2026-11-27)."""
     exe = os.path.join(out, name)
-    rc = run([cc, "-std=c11", "-O1", "-w", "-I" + os.path.join(HERE, "include"),
-              "-I" + os.path.join(HERE, "host"), "-I" + HERE, "-o", exe,
-              os.path.join(HERE, "test_twai_fake.c"), src])
+    flags = [cc, "-std=c11", "-O1", "-w", "-I" + os.path.join(HERE, "include"),
+             "-I" + os.path.join(HERE, "host"), "-I" + HERE]
+    rc = run(flags + ["-o", exe, os.path.join(HERE, "test_twai_fake.c"), src])
     if rc != 0:
         return "did not build"
-    return "pass" if run([exe]) == 0 else "fail"
+    if run([exe]) != 0:
+        return "fail"
+    strong = exe + "_strong"
+    if run(flags + ["-o", strong, os.path.join(HERE, "test_esp_timer_strong.c"), src]) != 0:
+        return "fail"
+    return "pass" if run([strong]) == 0 else "fail"
 
 
 def main(argv=None):
