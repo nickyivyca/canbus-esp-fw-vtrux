@@ -15,6 +15,16 @@
       "reason": "CMakeLists.txt picks T8's register file by chip: twai_port_ll_esp32c3.c on the C3, twai_port_ll_esp32s3.c on the S3, twai_port_ll_unsupported.c elsewhere; ESP-IDF sets it from the board's target, which R21 checks",
       "kind": "a value the build injects"
     },
+    "RTC_NOINIT_ATTR": {
+      "class": "not a switch",
+      "reason": "ESP-IDF's esp_attr.h defines it (the T19 stall record's section, twai_port_ll_esp32s3.c); the file defines it empty only for a host build whose esp_attr.h lacks it, never under ESP_PLATFORM",
+      "kind": "library macro"
+    },
+    "S3_SUPPORTED": {
+      "class": "not a switch",
+      "reason": "twai_port_ll_esp32s3.c defines it itself, 1 when TWAI_PORT_S3_PROBE is set and 0 otherwise, and its #if blocks hold the T19 stall record and the S3 probe mark; TWAI_PORT_S3_PROBE's row refuses what they add",
+      "kind": "computed value"
+    },
     "TWAI_PORT_HOST_SWITCH": {
       "class": "not a switch",
       "reason": "the testers' host builds on the T10 fake only: twai_port_ll_esp32s3.c reports the kept-driver switch (T14) supported before T19's measurement, so the port's switch runs on the fake. CMakeLists.txt stops any ESP-IDF build that sets it (FATAL_ERROR) and twai_port_ll.h stops the compile (#error under ESP_PLATFORM), so no image can carry it and it needs no image row (charge-interposer reviewer, 2026-11-27). VERIFICATION.md records an ESP-IDF configure refused with it set",
