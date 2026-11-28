@@ -298,13 +298,17 @@ def main(argv=None):
         print("  FAIL OFF build read  -- %s" % offb.get("error"))
         print("FAIL: 1")
         return 1
+    onb = {lb: read_build(SW, p) for lb, p in ons.items()}
+    for what, path, b in [("OFF", off, offb)] + [
+            ("ON " + lb, ons[lb], onb[lb]) for lb in sorted(onb)]:
+        o = b.get("outputs") or {}
+        print("%s: %s  project %s, image %s" % (
+            what, os.path.abspath(path), o.get("project_name", "(not read)"),
+            o.get("image_hash", "(not read)")))
     if scope is not None:
         print("component table: %s" % os.path.join(
             offb["root"], "managed_components", scope, SW.DATA_FILE))
-        res = component_checks(scope, offb,
-                               {lb: read_build(SW, p) for lb, p in ons.items()},
-                               SW.judge_rule)
-        return report(res)
+        return report(component_checks(scope, offb, onb, SW.judge_rule))
     try:
         table = project_table(SW, offb["root"])
     except SW.SwitchesError as e:
@@ -312,10 +316,7 @@ def main(argv=None):
         print("FAIL: 1")
         return 1
     print("table: %s" % os.path.join(offb["root"], SW.DATA_FILE))
-    res = checks(table, offb,
-                 {lb: read_build(SW, p) for lb, p in ons.items()},
-                 SW.judge_rule)
-    return report(res)
+    return report(checks(table, offb, onb, SW.judge_rule))
 
 
 def report(res):
