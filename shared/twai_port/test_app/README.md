@@ -28,6 +28,124 @@ register file is, but it is not in T8's file: that file is in every image,
 and its only abort is the abort-if-awaiting (gen-inhibit spec 12.4). The
 abort here is issued in any state, so it is compiled only with the probe.
 
+## The older phases: control, noabort and abort
+
+These measure what the abort command does to a frame on a bus where a node
+**acknowledges** (gen-inhibit spec 5.2 item 9). The probe cannot see which
+frames reached the wire, so a witness adapter on the bus records that. The
+bench analysis is the tester's `../probe_analysis/txabort_analysis.py`. It
+joins the witness's frames to the trials by the trial number in the frame.
+
+    POST /gi_txabort[?<argument>=<value>&...]
+
+With no arguments, `phase=abort` runs with the defaults.
+
+### Arguments
+
+| Argument | Range | Default | What |
+|---|---|---|---|
+| `phase` | abort, control, noabort | abort | `m1`, `m2` and `m3` go to the no-acknowledge modes (below) |
+| `gate` | off, rs | off | rs: each trial first waits for RS to read 0, then for RS to read 1 (another node's frame starts), at most 50 ms for each wait. Then it sends. abort and noabort only |
+| `retry` | 0, 1 | 0 | abort only. 1: after the first abort, the probe issues the abort again at each read with TBS = 0 and TS = 0, until TBS = 1 or for 2 ms |
+| `label` | up to 31 characters | empty | echoed in the answer. It is not escaped: a `"`, a `\` or a control character in it makes the answer invalid JSON |
+| `reps` | 1-128 | 3 | trials at each delay |
+| `d0`, `d1` | 0-20000 us | 0, 0 | the first and the last abort delay from the send. `d1` below `d0` is refused |
+| `step` | 1-20000 us | 20 | the step between two delays |
+| `settle` | 1-1000 ms | 2 | the pause after each trial |
+
+The run has `steps` = (`d1` - `d0`) / `step` + 1 delays (whole-number
+division) and `steps` x `reps` trials, at most 128. Trial `i` has the
+delay `d0` + (`i` / `reps`) x `step`. Every phase runs the same trials and
+reports each delay as `req`, but only abort waits for it.
+
+A value that is too long, not a whole number or out of range is refused
+with 400, with the argument named. **A key these phases do not know is
+ignored, and the default runs.** The analysis's echo check
+(`verify_echo()`) catches it: every argument sent must come back unchanged
+in the head.
+
+### What each trial does
+
+All times are `esp_timer` microseconds, not the cycle counter that m1-m3
+use. The run is at priority 18.
+
+1. The receive queue is emptied and the alerts are cleared.
+2. If the driver holds a frame to send, the trial cleans the buffer first,
+   as in step 9, and sets `pre_cleanup`. If the driver still holds one, the
+   trial is skipped.
+3. abort and noabort: if TBS = 0, the trial is skipped. control is not
+   skipped for this.
+4. **control:** nothing is sent. In one critical section the probe reads
+   the status, issues the abort on the empty buffer, and reads the status
+   again. Time 0 is just before that section.
+5. **abort and noabort:** with `gate=rs`, the gate's two waits. Then one
+   frame is sent with `twai_transmit()`: ID 0x7FE, DLC 8, single-shot off.
+   Its data is the trial number (bytes 0-1, little-endian), `AB 7E`, the
+   delay `req` (bytes 4-5, little-endian), `00 00`.
+   - **noabort:** no abort. Time 0 is when `twai_transmit()` returns.
+   - **abort:** the probe spins until `req` from the send, reads the
+     driver's msgs_to_tx, and then, in one critical section, reads the
+     status, issues the abort and reads the status again. Time 0 is the
+     abort. With `retry=1`, the retry loop follows.
+6. The poll, from time 0: it reads the status, msgs_to_tx and the alerts.
+   It ends 2 ms after TBS = 1, msgs_to_tx = 0 and a TX alert have all been
+   seen, or at 20 ms.
+7. The driver's counters are read.
+8. The follow-up frame: the trial's frame with `AB 7F` in bytes 2-3, sent
+   with `twai_transmit()` and a 10 ms wait. The probe then waits at most
+   20 ms for msgs_to_tx = 0.
+9. If the driver still holds a frame, the cleanup: the driver's queue is
+   cleared and one abort is issued. Then it waits at most 5 ms for
+   msgs_to_tx = 0 and TBS = 1.
+10. The driver's counters are read again.
+
+### The answer
+
+One JSON object, sent in chunks: the head, one object per trial in
+`trials`, then `]}`. It has no `stack_free_min`. The head:
+
+| Field | What |
+|---|---|
+| `probe`, `git`, `phase`, `gate`, `label`, `retry` | `"gi_txabort"`, the app version, and the arguments as run. `retry` is the string `"0"` or `"1"` |
+| `id`, `dlc`, `tag` | `"0x7FE"`, 8, `"AB7E trial, AB7F follow-up"` |
+| `reps`, `d0`, `d1`, `step`, `steps`, `settle_ms` | the arguments as run, and the count of delays |
+| `query_given` | true if arguments were given: on the URI a query string, on T19 any argument |
+| `n`, `run_us`, `uptime_us` | the trials; the time from just before the first trial to the head, the pauses included; the uptime |
+| `silent` | the bus is listen-only. Always false, because the probe refuses a listen-only bus |
+| `alerts_enabled` | `"TWAI_ALERT_ALL"` |
+| `rx_queue_len`, `filter_narrowed` | the receive queue's length and whether the acceptance filter is narrowed, from `can.h`. The probe does not go through the project's arming path, so it reports them |
+| `end` | after the last trial, as `twai_get_status_info()` gives them: `state`, `tx_failed`, `bus_error`, `arb_lost`, `rx_missed`, `rx_overrun`, `tec`, `rec`. The counters are totals. `state` -1 and every counter 0 if the read failed |
+| `trials` | one object per trial |
+
+Each trial (times in microseconds from time 0; -1: never, or not used by
+the phase):
+
+| Field | What |
+|---|---|
+| `t`, `req`, `act` | the trial number, from 0; the delay asked for; the delay achieved, from the send to the abort. `act` is 0 for control and -1 for noabort |
+| `gate_us`, `edge_us` | with `gate=rs`: from the gate's start to the RS edge; abort only, from the edge to the abort. -1 without the gate |
+| `st_pre`, `st_before`, `st_after` | the whole status register, with the bits of m1-m3's `st_bits` (TBS 4, TCS 8, RS 16, TS 32, ES 64, BS 128) and also RBS 1, DOS 2 and MS 256. Read before the send, or at the RS edge with the gate; just before and just after the abort, in one critical section. noabort: `st_before` is read just after the send, and `st_after` is the same value |
+| `tbs_b`, `ts_b`, `rs_b`, `tcs_b`, `es_b`, `bs_b` | `st_before`'s bits, 1 or 0 |
+| `tbs_a`, `ts_a`, `rs_a`, `tcs_a` | `st_after`'s bits. There is no `es_a` or `bs_a` |
+| `mtx_b`, `mtx_a` | abort: msgs_to_tx before the abort, and after it (after the retry loop); 255 if the read failed. noabort: both are set to 1, not read. control: both 0, not read |
+| `free_us`, `mtx0_us` | in the poll: to TBS = 1; to msgs_to_tx = 0 |
+| `alert_us`, `alerts` | in the poll: to the first alert of any kind, and every alert seen. Received frames raise `RX_DATA`, so these follow the bus's traffic |
+| `txalert_us`, `txalerts` | the same for the TX alerts only: `TX_IDLE`, `TX_SUCCESS`, `TX_FAILED`, `ARB_LOST`, `BUS_ERROR`, `TX_RETRIED` (mask 0x8683) |
+| `d_tx_failed`, `d_bus_err`, `d_arb_lost` | the driver's counters, from before the send (after any cleanup in step 2) to the poll's end, at most 255; 0 if a read failed |
+| `d_tx_failed_trial`, `d_bus_err_trial`, `d_arb_lost_trial` | the same to the trial's end, the follow-up and the cleanup included |
+| `tx_err` | 1: `twai_transmit()` refused the trial's frame |
+| `next_tx_err`, `next_done_us` | the follow-up: 1 if `twai_transmit()` refused it; the time from its send to msgs_to_tx = 0 |
+| `cleanup`, `cleanup_us`, `cleanup_mtx`, `pre_cleanup` | the cleanup at the trial's end ran; its time to a free buffer (-1: not within 5 ms); msgs_to_tx when it ended (0 if it freed the buffer, 255 if the read failed); the cleanup in step 2 ran. If both ran, `cleanup_us` and `cleanup_mtx` are the second one's |
+| `att`, `ts1`, `tbs_us`, `retry_bound_hit` | abort: the abort commands issued, the first included (1 with `retry=0`). With `retry=1`: the reads that found TS = 1, where no abort was issued; the time from the first abort to TBS = 1; 1 if the 2 ms bound ended the loop. Otherwise 0 and -1 |
+| `skip` | empty, or why the trial was skipped: `driver busy (msgs_to_tx != 0)`, `buffer occupied (TBS clear)`, `twai_transmit refused`, `no RS 0->1 edge (bus quiet)`, `RS never fell (bus continuously busy)` |
+
+### Refusals
+
+| Status | When |
+|---|---|
+| 400 | an argument is unusable; `phase`, `gate` or `retry` is not one of its values; `d1` is below `d0`; `steps` x `reps` is over 128; the project owns the bus; the bus is listen-only. On the URI also: the query string is over 255 characters |
+| 500 | the bus would not come up, the alerts would not enable, or the head did not fit |
+
 ## The no-acknowledge modes: m1, m2 and m3
 
 These measure the controller on a bus where **no node acknowledges**
@@ -252,7 +370,8 @@ tag 2026.11.27.6 it did, and no switch ran (`../VERIFICATION.md`, T19 run
 Spaces separate the words. A line holds at most 255 characters and 16
 arguments. A token with no `=`, an empty key, a key the command does not
 take, a value that does not fit and a number out of range are each refused
-with 400. Every answer is one JSON line:
+with 400. `txabort` is the exception: it gives its arguments to the probe,
+which checks them as it does on the URI. Every answer is one JSON line:
 
     {"cmd":"<the line>","core":N,"t0_us":T,"status":200, ... ,"t1_us":T}
 
