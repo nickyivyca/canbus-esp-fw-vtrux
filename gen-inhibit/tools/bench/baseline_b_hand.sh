@@ -8,7 +8,10 @@
 #   GI_PW_IMAGE="image e3d9437 _man (md5 95977df0, elf 25f50ac0)" GI_WICAN_POWER=<how the WiCAN is powered> \
 #   [GI_OUT=<dir>] \
 #   bash baseline_b_hand.sh <step> ...
-#   steps: B1 B2app B2held B9 B10 B14 B15 B16 B17a B18 B20 NONODE
+#   steps: B1 B2app B2held B9 B10 B14 B15 B16 B17a B18 B20 NONODE F4
+#
+# F4 (2026-11-27) is the RESPOND entry measurement: nine e4 arms, RESPOND POSTed into live
+# traffic, six of them polled at 2 Hz. It needs the X2 on its own image.
 #
 # NONODE (2026-10-20) is nonode_bench.py, spec 12.4 "a bus with no other node"; it
 # needs GI_TERMINATION and GI_MAN_SHA, and writes its record beside its .txt.
@@ -107,8 +110,22 @@ for s in "$@"; do
       GI_RUNS_DIR=$D $PY -B $A/nonode_bench.py --termination "$GI_TERMINATION" --man-sha "$GI_MAN_SHA" \
         > "$D/NONODE_nonode_bench.txt" 2>&1; echo "NONODE exit $?"
       red "$D/NONODE_nonode_bench.txt" ;;
+    F4)   # F4 (gen-inhibit reviewer, 2026-11-26; tester, 2026-11-27): RESPOND entered from OFF into
+          # live traffic, one POST per arm (phase 1: one POST per truck wake), 5 s into the replay,
+          # then 60 s of it. Six arms poll the page at 2 Hz (rx_missed and ctr_bad over time from the
+          # POST); three are unpolled, since polling may change the loss (2026-10-10: 1 Hz arms 0, 0, 0
+          # against 15, 0, 0 unpolled). Interleaved. A measurement: respond_entry_profile.py and
+          # mode_entry_analysis.py read them (baseline_b_desk.sh F4).
+      for n in 1 2 3; do
+        for v in p2hz_a p2hz_b unpolled; do
+          case $v in p2hz*) poll="--poll-hz 2" ;; *) poll="" ;; esac
+          e4 F4_e4_respond_entry_${C}_${v}_arm$n --capture "$GD/runs/scottsvalley_armable_300s.log" \
+            --window-start 20 --seconds 65 --mode respond --arm-after 5 $poll
+        done
+      done
+      red "$D"/F4_e4_respond_entry_${C}_*.txt ;;
     *) echo "unknown step $s"; exit 2 ;;
   esac
 done
 echo "== $(date +%H:%M:%S) done"
-[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED B2 arm(s) exited non-zero"; exit 1; }
+[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED B2 or F4 arm(s) exited non-zero"; exit 1; }

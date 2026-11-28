@@ -551,6 +551,86 @@ answers every command once live; RESPOND drops frames in both entry orders.**
     `test_mode_entry_analysis.py` (6 checks, 2 mutants);
   - provenance now also returns each replayed frame's wire time.
 
+### RESPOND entry into live traffic, over time (tester, 2026-11-27, `3f274ba4` `_man`)
+
+**RESPOND receive loss after the POST, over 60 s -- tester, 2026-11-27
+14:47-15:01, on `3f274ba4` `_man`. Result (a measurement, no verdict): no
+receive loss in any of nine arms. `rx_missed` 0 and `ctr_bad` 0 at every read
+and at the end.**
+- **Question (gen-inhibit reviewer, tracker F4):** how do `drv.rx_missed` and
+  `ctr_bad` change over time from each `POST /gen_inhibit_set` of RESPOND, in
+  live traffic, on the current image? On the truck, phase 1 makes one POST
+  per truck wake. The 2026-10-10 figures above are on `cc34c80`.
+- **Code.** Built by the tester from clean worktrees detached at `3f274ba4`
+  (gen-inhibit/main), ESP-IDF v5.4.2: the bench set with `baseline_builds
+  --bench`, and the prod stand-in with the shared tooling's release build (32
+  rows ok). The stand-in's image hash is `0942aa08...`, code hash
+  `d310d427...`. The flashed `_man` image read back as `0942aa08...`, the same
+  image. The X2 ran `x2_app` `756d6714` (pin `36edf3e55552`), read off the
+  wire at the start and the end.
+- **Harness.** `gi_tools` is the detached worktree
+  `gen-inhibit-tester-tools-dd1323b2`, at `gen-inhibit/tester/f4-respond-entry`
+  `dd1323b2`, clean. Its pinned can-tools `f19d04b` and canre `ffbe029` are
+  installed. The shared core is the checkout of shared/main tag `2026.11.26`.
+  Settings `chain_settings_madhouse-debian.json` (`gi_*` moved to `3f274ba4`
+  and `dd1323b2` for this run).
+- **Run.** The chain runner's subset `--check man_app/F4arms --check
+  man_app/F4`: `runs/chain/gen-inhibit-bench_20261127T144353_249f`, PASS 2
+  (each check judged on its exit code only). It requires the emulated run
+  `gen-inhibit-emulated_20261127T143647_c0c1` on the same commit: PASS 3
+  (H, B15host, C2scan), NOT-RUN 2 (C1C7 and C3, declared skips).
+- **Each arm** (`baseline_b_hand.sh F4`, through `e4_device_calibration.py`):
+  - The replay is `scottsvalley_armable_300s.log` from 20 s, for 65 s, at
+    2,354.9 frames/s, offset 500. The device starts in OFF.
+  - The RESPOND POST goes 5.0 s into the replay (`--arm-after 5`). All nine
+    POSTs returned HTTP 200.
+  - Six arms read the status page at 2 Hz (130 reads, 10 before the POST).
+    Three arms make no request apart from the POST and the read after the
+    replay. The order is polled, polled, unpolled, three times over. Polling
+    may change the loss, so both kinds are measured.
+  - Fidelity: back-to-back fraction 0.756-0.785 in the 200 ms after the POST,
+    against 0.766-0.767 for the rest.
+- **Receive loss** (`respond_entry_profile.py`):
+  - In all six polled arms, each of the 120 reads after the POST gave
+    `rx_missed` 0, `ctr_bad` 0 and `msgs_to_rx` 0. The counts added by 1, 5,
+    15, 30 and 60 s after the POST were 0 / 0 in every arm.
+  - In all nine arms, the page read after the replay gave `rx_missed` 0 and
+    `ctr_bad` 0.
+  - In OFF, the page gives no `drv` block, so `rx_missed` reads null before
+    the POST. The profile counts it from 0 and says so for each arm.
+- **The POST on the wire** (`mode_entry_analysis.py`). "Unanswered" means no
+  `0x7F0` before the next command. It also counts late probes.
+
+| Arms | First answer after the POST | Unanswered after the POST (before the first answer) | Unanswered after the first answer | Class queued = `tx_ok` |
+|---|---|---|---|---|
+| polled, 6 | 35.5-55.0 ms | 3, 3, 3, 5, 4, 3 | 0 in each | 5,993-5,995 |
+| unpolled, 3 | 35.6-55.0 ms | 4, 5, 3 | 0 in each | 5,993-5,995 |
+
+  - Provenance: as specified in all nine. There were no device answers before
+    the POST, and 5,998 commands after it.
+  - There were no transmit failures: the page after the replay read
+    `tx_fail` 0, `drv.tx_failed` 0 and `sched.tx_failed` 0 in every arm.
+- **Against the 2026-10-10 figures** (`cc34c80`; the arms above this entry):
+  - RESPOND entered into traffic then read `rx_missed` 5, 2 and 0 over 35 s.
+    At quiet-bus entry it read 13, 16 and 0. Now it reads 0 in nine of nine
+    arms over 60 s, polled or not.
+  - The 2026-10-10 RESPOND arms had unanswered commands in clusters mid-arm,
+    with `tx_fail` 12, 4 and 6. Now there are none after the first answer, and
+    `tx_fail` is 0.
+  - The capture is the same, from the same window start (20 s). This run is
+    longer (65 s against 35 s), and the arms are on a different build. So
+    this is a comparison of builds and runs. It does not give a cause.
+- **Run files** (in the run folder): `man_app/F4arms/F4_e4_respond_entry_3f274ba4_{p2hz_a,p2hz_b,unpolled}_arm{1,2,3}.{json,txt}`,
+  each with its witness log; `man_app/F4/F4_respond_entry_profile.txt` and
+  `man_app/F4/F4_mode_entry_analysis.txt`; `index.txt` and `record.json`.
+- **Harness:** `respond_entry_profile.py`, tested by
+  `test_respond_entry_profile.py` (19 checks; 10 of 10 mutants killed);
+  `e4_device_calibration.py`'s `ctr_bad` field and `perf_base`, tested by
+  `test_e4_stimulus_split.py` (23 checks; 11 of 11); the F4 step of
+  `baseline_b_hand.sh` (`test_arms_exit.py`, 32 ok; 14 of 14) and of
+  `baseline_b_desk.sh` (`test_baseline_b_desk.py`; 19 of 19); the suite's
+  F4 checks (`test_suite_gen_inhibit.py`, 461 ok; 165 of 165).
+
 ### Receive backlog, measured directly (bench, 2026-09-26)
 
 > **Implementor self-test, not tester evidence.** Produced by the implementing session while it was testing its own work, before the tester role existed (user, 2026-10-07). It closes nothing and is expected to go stale; the tester replaces it with its own result.

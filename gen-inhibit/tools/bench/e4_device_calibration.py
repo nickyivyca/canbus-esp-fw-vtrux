@@ -635,7 +635,11 @@ class Hammer(threading.Thread):
         # Either way every answered page's driver RX queue depth and loss counter are
         # kept, so a drop can be placed against the queue depth around it (reviewer).
         self.period = period
-        self.series = []          # [host perf time, msgs_to_rx, rx_missed, mode, self_off]
+        # [host perf time, msgs_to_rx, rx_missed, mode, self_off, ctr_bad]. ctr_bad is the
+        # sixth field from 2026-11-27 (F4: rx_missed and ctr_bad over time from a POST);
+        # the time is the request's send, and the arm's perf_base puts it on the replay's
+        # clock, beside post_s.
+        self.series = []
 
     def run(self):
         while not self.stop.is_set():
@@ -643,7 +647,8 @@ class Hammer(threading.Thread):
             st, txt = gi("/gen_inhibit", timeout=4.0)
             if st == 200:
                 self.n += 1
-                self.series.append([round(t0, 4)] + page_queue_fields(txt) + page_state_fields(txt))
+                self.series.append([round(t0, 4)] + page_queue_fields(txt) + page_state_fields(txt)
+                                   + page_counter_fields(txt))
             else:
                 self.errors += 1
             if self.period > 0:
@@ -813,6 +818,16 @@ def page_queue_fields(txt):
         return [drv.get("msgs_to_rx"), drv.get("rx_missed")]
     except Exception:
         return [None, None]
+
+
+def page_counter_fields(txt):
+    """[ctr_bad] from a status page body (spec 10: /gen_inhibit reports ctr_bad); None when it
+    is absent or the page is cut (F4, 2026-11-27)."""
+    try:
+        d, _ = json.JSONDecoder().raw_decode(txt.lstrip())
+        return [d.get("ctr_bad")]
+    except Exception:
+        return [None]
 
 
 def wait_for_wire_quiet(w, cmd_id=CMD_ID, quiet_s=0.2, cap_s=6.0,
@@ -1266,6 +1281,9 @@ def run_arm(name, frames, hammer_on, out, mode=3, flood=False,
         "post_raw_timeout_s": POST_RAW_TIMEOUT,
         "post_chain": POST_CHAIN,
         "base_epoch": base_epoch,
+        # the replay's base on the host's perf clock: queue_series times less this are on the
+        # replay's clock, as post_s is (F4, 2026-11-27)
+        "perf_base": round(base, 4),
         **ledger.fields(),
         "pre": pre,
         **arm_post_fields(poster, post_index),

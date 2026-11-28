@@ -357,6 +357,23 @@ def test_suites(settings, shas):
           nn[0].env.get("GI_TERMINATION") == "{gi_can1_termination}" and
           nn[0].env.get("GI_MAN_SHA") == bench.images["wican_man"].expect and nn[0].argv[-1] == "NONODE",
           nn and nn[0].env)
+    # F4 (2026-11-27): the RESPOND entry measurement in man_app, the X2 on its own image; the arms, then
+    # the desk step over their folder; neither judged (a measurement)
+    app = [g for g in bench.groups if g.name == "man_app"]
+    ids = [c.id for c in app[0].checks] if app else []
+    f4 = {c.id: c for c in (app[0].checks if app else []) if c.id in ("F4arms", "F4")}
+    check("bench: F4arms then F4, last in man_app, with the X2 on its own image",
+          ids[-2:] == ["F4arms", "F4"] and app[0].image_list == ["wican_man", "x2_app"], (ids, app and app[0].image_list))
+    a4, d4 = f4.get("F4arms"), f4.get("F4")
+    exit_judge = lambda c: getattr(c.judge, "__name__", None) == "exit_code_judge"   # the core's default
+    check("bench: F4arms is baseline_b_hand.sh's F4 step, wall-clock, judged on its exit only",
+          a4 is not None and a4.argv[1].endswith("/baseline_b_hand.sh") and a4.argv[2:] == ["F4"]
+          and a4.cls == "wallclock" and exit_judge(a4), a4 and (a4.argv, a4.cls, a4.judge))
+    check("bench: F4 is the desk step over man_app/F4arms, light, judged on its exit only, its two files declared",
+          d4 is not None and d4.argv[1].endswith("/baseline_b_desk.sh")
+          and d4.argv[2:] == ["F4", "{run_dir}/man_app/F4arms"] and d4.cls == "light" and exit_judge(d4)
+          and {"F4_respond_entry_profile.txt", "F4_mode_entry_analysis.txt"} <= set(d4.outputs),
+          d4 and (d4.argv, d4.cls, d4.judge, d4.outputs))
     # Reproducible builds (step 0b) make _man2 byte-identical to _man (reviewer, 2026-10-25): no
     # man2 image or group; B17b runs in rxq after B26, on the board already on rxq; the control
     # image (--other) of B17a and of the prod page is rxq.
@@ -409,7 +426,8 @@ def test_suites(settings, shas):
     check("reads: B13's desk step reads B13's arms and both B2 halves",
           rd.get("man_held/B13") == ["man_app/B13arms", "man_app/B2app", "man_held/B2held"], rd.get("man_held/B13"))
     check("reads: a check with no desk inputs reads nothing", rd.get("man_app/B1") == [], rd.get("man_app/B1"))
-    check("reads: the eight desk checks, and only they, read folders", len([f for f, v in rd.items() if v]) == 8,
+    check("reads: the nine desk checks (F4's since 2026-11-27), and only they, read folders",
+          len([f for f, v in rd.items() if v]) == 9,
           sorted(f for f, v in rd.items() if v))
     # bench_compare chain's first run on this suite: run 092639_858a's selection (2026-11-01)
     # without man_app/B2app gave "B2: no input files"
