@@ -10592,6 +10592,85 @@ modes", at tag `2026.11.27`, which says "The call answers only after its last tr
   `unacked_bench_20261127T155920.json` (run 1) and `unacked_bench_20261127T163235.json` (run 2),
   `kvaser_opens.jsonl`, and the X2 pins records.
 
+**The rerun on the stack fix (F5, M1-M3) -- tester, 2026-11-27 17:17-17:25, on
+gen-inhibit/implementor/f5-measure-pin `35a5b563` `_txabort` (never merged; can_port and
+twai_port at shared tag `2026.11.27.3`). Result: a partial measurement. 130 of 140 calls
+answered. The positive control passed 5 of 5. Every answer's `stack_free_min` was 44-108 B,
+and 10 calls had no answer, 6 of them with a PANIC restart.** Same rows as the entry above.
+- **Code.** Built by the tester from a clean worktree detached at `35a5b563`, ESP-IDF
+  v5.4.2: `_txabort` code hash `e5fc0c99...` and version `35a5b563`, as the implementor
+  gave; image hash `9054f45b...`, read back from the device at the start and the end. The
+  normal build's code hash is `9d64fca6...`: tag `2026.11.27.3` changes twai_port's
+  release code too.
+- **Harness.** Run on `gen-inhibit/tester/f5-unacked` `326b4838`
+  (`runs/chain/gen-inhibit-bench_20261127T171351_403a`, FAIL rc 1). Judged again from the
+  saved answers, witness messages and node records on `1cdfb577`
+  (`unacked_bench.py --rejudge`, `unacked_bench_20261127T171718_rejudged.json`), after two
+  harness errors found in this run: the answer echoes `settle` as `settle_ms`, so every
+  answered call carried an echo error; and the hold's end came from `hold_ns`, so every
+  control trial was void. The rejudge takes the hold's end as the trace's end plus
+  `hold_ms`. The bus and the setup are as in the entry above.
+- **The plan stopped at call 140 of 238** after 10 calls with no answer. After each, the
+  join succeeded. Where the page answered (6 of 10), it read reset reason PANIC.
+- **Stack:** `stack_free_min` was 44 B in most answers and 108 B at most, so all 130
+  answers are flagged under 512 B.
+- **The positive control** (m1 with the hold, 5 trials): the frame was still held at the
+  hold's start in all 5, and the node received it as soon as it was up. The device agreed
+  in each: TX_SUCCESS in `alerts_hold`, TBS 1 and TCS 1 at the hold's end, `cleared`
+  `hold`. So the hold check can fail, and it saw the frame go out.
+- **M1, TS between the resends** (6 trials: 5 with irq off, 1 with irq on; 10 ms):
+  - Error active (TEC 0 to 120, the first 16 attempts): no TS = 0 was read between the
+    resends. All 96 resends (16 in each trial) show only as a TEC step of 8 with TS = 1.
+  - Error passive (TEC 128): each resend had a TS = 0 span of 15.41-16.44 us (132 spans,
+    none after a sampling gap). The device's TS rises were 275.8-276.2 us apart, and the
+    witness's copies 276.0 us apart.
+- **The two readings of run 2, explained by these records:**
+  - "M1's resends stop at about 6 ms": they did not stop. The device's TS rises go on to
+    the trace's end (the last at 9,971 us), and the witness's last copy lines up at the
+    same time. The witness delivers no copy of an error-active attempt. Its first copy
+    is attempt 16 at about 3.9 ms, so its copies span only the passive part, about
+    5.8 ms.
+  - "M2/M3 stop one copy short of the aim": the probe counts attempts as TS rises plus
+    a first sample that reads TS = 1 (the first attempt began inside `twai_transmit()`,
+    which took 21-22 us). In the error-active part TS does not fall, so attempt k (k of 2
+    or more) is wire attempt 16 + (k - 1), in the passive state. The witness's copies
+    begin at wire attempt 16, so it counts k - 1 copies up to the abort.
+  - `cpu_hz` and `cpu_hz_end` read 160 MHz in every answer. The trace's cycle-counter
+    times agree with the wire (the rise spacing above). Across a hold, they do not:
+    `clk_cyc` was 17.5 M cycles (0.11 s) and `hold_ns` 98.5 ms, against `clk_us` 2.01 s
+    for a 2000 ms hold.
+- **M2, the abort at the first TS = 0 read:**
+  - Error passive (35 trials, by the TEC at the abort; 22 of them aimed at the active
+    state): the buffer came free in the trace in all 35, 7.9 us after the abort, and the
+    witness saw no later copy. In the 33 holds not void, nothing went out.
+  - Error active: only 1 trial. It was aimed at attempt 1, and its first TS = 0 read
+    came at TEC 72. The buffer came free and nothing later was seen. The other 22
+    answered aims at attempts 1-15 reached the abort at TEC 128.
+  - Aims at attempts 23-31 found no abort before the 10 ms window ended (`wait_timeout`):
+    the probe counted 23-25 attempts in the window. Their frames were still held, and in
+    the 19 holds not void each went out when the node returned.
+- **M3, the abort while TS = 1:**
+  - Error passive: the buffer came free in the trace in all trials: 11 at 20 us, 23 at
+    100 us and 15 at 200 us, 238, 158 and 59 us after the abort. The witness saw no later
+    copy, and nothing went out in a hold.
+  - Error active: 6 trials (1 at 20 us, 3 at 100 us, 2 at 200 us), 5 of them aimed at
+    attempt 1 and 1 at attempt 3 (TEC 104). All came free. The witness has no copy of an
+    error-active attempt, so it cannot show a later one there.
+- **Void hold checks (9):** trials with no witness copy at all, so the node's window
+  could not be lined up with the device's trace (the record has no time for the answer's
+  arrival).
+- **Observed vs the spec and the README:**
+  - The plan's error-active M2 and M3 trials (at least 50 and 20 per cell) cannot be
+    reached with the probe as it is: its attempt count needs a TS rise, and TS does not
+    fall between error-active resends. In the error-active state an abort that waits for
+    TS = 0 met it once in 23 answered aims at attempts 1-15.
+  - `stack_free_min` was 44-108 B in every answer, and 10 of 140 calls ended without an
+    answer, 6 with a PANIC restart seen on the page.
+  - `hold_ns` is not the hold's length: 98.5 ms for a 2000 ms hold.
+- **Run files:** in `runs/chain/gen-inhibit-bench_20261127T171351_403a/txabort_held/F5unacked/`:
+  `F5_unacked_bench.txt`, `unacked_bench_20261127T171718.json` and its
+  `_rejudged.json`, `kvaser_opens.jsonl`, and the X2 pins records.
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical
