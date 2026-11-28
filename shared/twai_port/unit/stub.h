@@ -67,6 +67,12 @@ typedef struct {
     int status_change_at;
     uint32_t status_after;
     uint32_t delay_us_total;
+    /* esp_timer_get_time(): delay_us_total plus timer_extra_us, which grows
+     * by timer_per_read_us at every read: time spent outside the waits, such
+     * as an interrupt or another task between steps. */
+    uint32_t timer_per_read_us;
+    int64_t timer_extra_us;
+    int timer_reads;
 } stub_t;
 
 extern stub_t stub;

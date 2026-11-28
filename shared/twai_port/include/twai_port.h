@@ -211,7 +211,10 @@ typedef struct {
     /* T17 */
     uint32_t held;              /* frames removed and counted */
     bool head_aborted;          /* the frame in the transmit buffer was aborted */
-    uint32_t abort_wait_us;     /* until the driver had let that frame go */
+    uint32_t abort_wait_us;     /* until the driver had let that frame go:
+                                 * elapsed time from esp_timer, from just
+                                 * after the abort to the status read that
+                                 * saw it gone, or to the last one */
     bool abort_timed_out;       /* it had not within the bound */
     bool driver_tx_stuck;       /* afterwards the buffer read empty while the
                                  * driver still counted a frame to transmit */
