@@ -7,8 +7,11 @@ The product image's form (the board in listen-only through its own
 kept-driver switch) joins it with the ported image.
 
 THE STIMULUS. The Kvaser, the only sender, sends at a wrong bit rate
-(250k, then 1M) on the 500k vehicle segment. A 500k receiver sees its
-frames as bus errors. A wrong rate here is a stimulus only, not a claim
+(250k, then 125k) on the 500k vehicle segment. A 500k receiver sees its
+frames as bus errors. Slower rates only: at 1M the error-active can-fail
+gave the Kvaser no bus-off (run ht_ce_a08d8bd5, 2026-11-27: 0 bus-offs at
+1M against 31 at 250k), so 1M cannot show a dominant error flag and was
+dropped. A wrong rate here is a stimulus only, not a claim
 about the product, whose port stays at 500k (the reviewer's tracker row
 "Vehicle frames lost at the vehicle port's mode switch"). It is not spec
 9's wrong-rate listen-only cases, which put the board at a wrong rate.
@@ -76,7 +79,7 @@ sys.path.insert(0, HERE)
 import kvaser_link                 # noqa: E402  (the Kvaser on kvaser_usb)
 
 NODE_ID = 0x5A5
-WRONG_RATES = (250000, 1000000)
+WRONG_RATES = (250000, 125000)
 WINDOW_S = 5.0
 SEND_PERIOD_S = 0.02
 RESTART_MS = 100
