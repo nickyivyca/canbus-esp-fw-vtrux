@@ -59,8 +59,9 @@ Where the m-* groups run, settings m_lanes_host (M_LANES_HOSTS):
             another.
 
 The X2's images: bridge (its idle-safe image, X2_IDLE_SAFE), witness,
-truck, c12_bench, vport_bench (X2_IDLE_UNSAFE marks the three not safe to
-leave idle). The interposer's images (port step 2a: ESP-IDF builds) are
+truck, c12_bench, vport_bench, s3probe (X2_IDLE_UNSAFE marks the four not
+safe to leave idle). s3probe, shared/twai_port T19's image, owns no bus at
+boot, so identify reads its @HELLO, not 0x7F7 (2026-11-27). The interposer's images (port step 2a: ESP-IDF builds) are
 taken from images_dir/<images_src>/<variant>/, as their build's
 flasher_args.json gives them; each application's own descriptor must name
 it (interposer_<variant>, version images_src, ESP-IDF v5.4.2), and
@@ -231,8 +232,9 @@ M_LANES_HOSTS = ("madhouse", "local")
 # charger-silent; accepted at 2b, b467). The truck image differs from the
 # bench build only by serial output (spec 9 C2b), so the same holds. The
 # witness (the witness switch), c12_bench and vport_bench (bench targets
-# outside the spec) have no such evidence, so they are marked.
-X2_IDLE_UNSAFE = ("witness", "c12_bench", "vport_bench")
+# outside the spec) have no such evidence, so they are marked; so is s3probe,
+# shared/twai_port T19's measurement image (no bridge; 2026-11-27).
+X2_IDLE_UNSAFE = ("witness", "c12_bench", "vport_bench", "s3probe")
 X2_IDLE_SAFE = {"x2": "bridge"}
 
 # Mutation / can-fail scripts in harness_checks/, run in the m-lanes: on
@@ -273,6 +275,9 @@ SELF_TESTS = [
     # 2026-11-28, stage (b) batch 1 step 3, check (c): no dominant error flag
     # in listen-only after a provoked error, the judge and its can-fail
     "bench_lom_errflag",
+    # 2026-11-27 (PST), stage (b) batch 1 step 2: shared/twai_port T19 on
+    # the S3, the commands with no gen-inhibit counterpart
+    "bench_t19",
 ]
 # Bench drivers whose --can-fail runs their self-test against each of their
 # MUTANTS (script_can_fail.py), run locally (test_script_coverage).
@@ -306,6 +311,8 @@ CAN_FAILS = [
     "bench_offer", "bench_charger_witness", "bench_innomaker_clock",
     # 2026-11-28, stage (b) batch 1 step 3, check (c)
     "bench_lom_errflag",
+    # 2026-11-27 (PST), stage (b) batch 1 step 2, T19
+    "bench_t19",
 ]
 # A can-fail's timeout when it is not CAN_FAIL_TIMEOUT_S. bench_vport's ran
 # past 3600 s in run 69d8 (2026-11-21) after 83 of its 149 mutants: about
@@ -764,7 +771,7 @@ def _sha256(path):
     return h.hexdigest()
 
 
-def _interposer_image(variant, settings):
+def _interposer_image(variant, settings, hello=None):
     """An ESP-IDF image of the interposer (port step 2a), from the folder
     images_dir/<images_src>/<variant>/, which holds the build's
     flasher_args.json and the files it names at their paths (the build's
@@ -790,7 +797,12 @@ def _interposer_image(variant, settings):
     sha256, so the bytes flashed, and the build id identify reads back,
     are those of the build the acceptance record names (the
     charge-interposer reviewer, 2026-11-04). The image's note names the
-    build and its ELF sha256, for the nested run's record."""
+    build and its ELF sha256, for the nested run's record.
+
+    With hello (the s3probe variant, shared/twai_port T19's image, which
+    owns no bus at boot and so sends no 0x7F7), identify reads the image
+    from its @HELLO line instead: the expect is "<hello>:<ELF sha256>", as
+    bench_identify.read_hello gives it (2026-11-27)."""
     import build_lookup
     builds = settings.get("interposer_builds")
     pin = None
@@ -845,7 +857,8 @@ def _interposer_image(variant, settings):
                                                 pin["elf_sha256"][:16]))
         build_note = "; list build %s, ELF sha256 %s" % (pin["build"],
                                                          pin["elf_sha256"])
-    return Image(variant, "esptool", board="x2", expect=sha[:8],
+    expect = "%s:%s" % (hello, sha) if hello else sha[:8]
+    return Image(variant, "esptool", board="x2", expect=expect,
                  params={"files": [[o, p] for o, p in files],
                          "md5": {p: _md5(p) for _o, p in files},
                          "chip": _x2_chip(settings)},
@@ -1188,6 +1201,7 @@ def bench(settings):
         "truck": _interposer_image("truck", settings),
         "c12_bench": _idf_image("c12_bench", settings),
         "vport_bench": _idf_image("vport_bench", settings),
+        "s3probe": _interposer_image("s3probe", settings, hello="s3probe"),
     }
     board_args = ["--external-interposer", "--serial-port", "{serial_port}",
                   "--vehicle-transport", "kvaser", "--vehicle-channel",
@@ -1205,7 +1219,7 @@ def bench(settings):
                    + ([] if image == "truck" else ["--app-line", BANNER_LINE])
                    + ["--out", "{outdir}/boot_reset_%s.txt" % image])
 
-    # In image order: bridge, witness, truck, c12_bench, vport_bench. The
+    # In image order: bridge, witness, truck, c12_bench, vport_bench, s3probe. The
     # core restores nothing at the end; it loads the bridge only if the X2
     # is left on an image marked not idle-safe (X2_IDLE_UNSAFE).
     b_bridge = Group("b-bridge", needs_lock=True, image="bridge", checks=[
@@ -1393,7 +1407,18 @@ def bench(settings):
             ["--board", "vport", "--port", "{serial_port}", "--elf",
              "{images_dir}/idf/vport_bench/vport_bench.elf", "--out", "{outdir}"])])
 
-    truck_only = Group("truck-only", checks=[
+    # stage (b) batch 1 step 2 (the reviewer, 2026-11-27/28): shared/twai_port
+    # T19 on the S3, the s3probe image's commands with no gen-inhibit
+    # counterpart (T12, T14, T15, T17 judged; resetprobe measured); the
+    # txabort phases and m1-m3 wait for the shared probe analysis. The image
+    # is identified by its @HELLO, and the driver checks it again by the
+    # same ELF sha256; exit 0 PASS, 1 FAIL, 3 VOID
+    b_s3probe = Group("b-s3probe", needs_lock=True, image="s3probe", checks=[
+        bpy("t19-s3probe", "bench_t19.py",
+            ["--port", "{serial_port}", "--elf-sha256",
+             images["s3probe"].expect.split(":", 1)[1], "--out", "{outdir}"])])
+
+    truck_only =Group("truck-only", checks=[
         Check("spec10-item%d" % i, ["-"], skip=(
             "spec 10 item %d: only the truck can answer" % i))
         for i in range(1, 10)] + [
@@ -1409,7 +1434,7 @@ def bench(settings):
     # at every release and free_paused (shared/bench SPEC.md section 6).
     wican = bench_wican.make(settings)
     images[bench_wican.IMAGE] = wican["image"]
-    for g in (b_bridge, b_witness, b_truck, b_c12, b_vport):
+    for g in (b_bridge, b_witness, b_truck, b_c12, b_vport, b_s3probe):
         g.image = [g.image, bench_wican.IMAGE]
     # the core flasher's esptool for a driver that runs esptool itself, and
     # where a check that met a Kvaser TX stall it could not recover from
@@ -1419,7 +1444,7 @@ def bench(settings):
     # opened by its role (adapter_roles; SPEC section 8, 2026-11-18)
     env = dict(esptool_env(settings))
     env[KVASER_STOP_ENV] = "{run_dir}/STOP"
-    for g in (b_bridge, b_witness, b_truck, b_c12, b_vport, truck_only):
+    for g in (b_bridge, b_witness, b_truck, b_c12, b_vport, b_s3probe, truck_only):
         for c in g.checks:
             c.env.update(env)
 
@@ -1445,7 +1470,7 @@ def bench(settings):
 
     return Suite(
         name="charge-interposer-bench", role=ROLE,
-        groups=[b_bridge, b_witness, b_truck, b_c12, b_vport, truck_only],
+        groups=[b_bridge, b_witness, b_truck, b_c12, b_vport, b_s3probe, truck_only],
         images=images,
         idle_safe_images=dict(X2_IDLE_SAFE),
         flashers={bench_wican.FLASHER: wican["flasher"]},

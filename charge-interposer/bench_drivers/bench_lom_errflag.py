@@ -372,10 +372,12 @@ class _FakeLink(object):
         self.calls.append(("open", receive_own_messages, error_frames))
         link = self
 
-        class Bus(object):
+        # not named Bus: adapter_roles_test's scan reads any Bus(...) call as
+        # a python-can open with no interface= (2026-11-27)
+        class _Stub(object):
             def shutdown(self):
                 link.calls.append(("shutdown",))
-        return Bus()
+        return _Stub()
 
     def counter_growth(self, c0, c1, keys):
         return kvaser_link.counter_growth(c0, c1, keys)
