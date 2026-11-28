@@ -11,9 +11,14 @@ OUT    ?= ../../../../scratch/twai_port-probe-test
 CFLAGS ?= -std=c11 -O1 -g -Wall -Wextra -Werror -Imock
 
 BINS := $(OUT)/test_unacked $(OUT)/test_probe_ll_c3 $(OUT)/test_probe_ll_s3 \
-        $(OUT)/test_probe_ll_unsupported
+        $(OUT)/test_probe_ll_unsupported $(OUT)/test_t19_parse
 
 all: $(BINS)
+
+# The T19 app's command line (chip-neutral).
+$(OUT)/test_t19_parse: test_t19_parse.c ../twai_port_t19_parse.c ../twai_port_t19_parse.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -o $@ test_t19_parse.c ../twai_port_t19_parse.c
 
 $(OUT)/test_unacked: test_unacked.c ../twai_port_unacked.c ../twai_port_unacked.h ../twai_port_probe_ll.h
 	mkdir -p $(OUT)
@@ -41,6 +46,7 @@ run: all
 	$(OUT)/test_probe_ll_c3
 	$(OUT)/test_probe_ll_s3
 	$(OUT)/test_probe_ll_unsupported
+	$(OUT)/test_t19_parse
 
 clean:
 	rm -f $(BINS)

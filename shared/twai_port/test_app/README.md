@@ -18,7 +18,10 @@ R20). Moved at port step 1c from gen-inhibit's `gi_txabort_probe.c` and
 | `twai_port_probe_ll_esp32c3.c` | that layer on the C3, checked against ESP-IDF v5.4.2 |
 | `twai_port_probe_ll_esp32s3.c` | that layer on the S3 (T19), checked against ESP-IDF v5.4.2, whose S3 calls and status bits are the C3's. Its critical section masks the driver's interrupt only on the core that installed the driver, so the T19 app runs the modes on that core |
 | `twai_port_probe_ll_unsupported.c` | that layer on any other chip: m1-m3 answer 501 "not supported" and touch no register |
-| `test/` | the host tests of m1-m3 and of the register files, and their mutants (`test/README.md`) |
+| `include/twai_port_t19.h`, `twai_port_t19.c` | T19, the S3 app: serial commands over the probe, the kept-driver switch, reset mode and the restart stop, one JSON line per answer (below). Compiled only with `TWAI_PORT_TXABORT_PROBE` and `TWAI_PORT_S3_PROBE` on the S3 |
+| `twai_port_t19_parse.c`, `twai_port_t19_parse.h` | private: the app's command line, chip-neutral: split, arguments, numbers, JSON strings |
+| `twai_port_t19_ll.h`, `twai_port_t19_ll_esp32s3.c` | private: the app's own register reads and writes on the S3, checked against ESP-IDF v5.4.2: the whole status and mode registers, both error counters, the bus timing, and reset mode entered and left, a mode set and an abort for `resetprobe` |
+| `test/` | the host tests of m1-m3, of the register files and of the T19 command line, and their mutants (`test/README.md`) |
 
 The register layer is a file per chip, chosen by `IDF_TARGET` as T8's
 register file is, but it is not in T8's file: that file is in every image,
@@ -188,3 +191,49 @@ counters are totals, not deltas. Alerts are `TWAI_ALERT_*` bit masks.
 | 400 | an argument is unusable, or the project owns the bus, or the bus is listen-only |
 | 501 | the chip has no probe register file (any chip but the C3 and the S3) |
 | 500 | the bus would not come up, or the alerts would not enable |
+
+## The T19 app on the S3: serial commands
+
+`SPEC.md` T19: the S3 measurement of T8, T12, T14-T18 and T13's
+no-acknowledge modes, started by serial commands, since the X2 has no URI
+hook. The project (the charge interposer's `s3probe` variant) passes each
+line to `twai_port_t19_line()` and sends the answer. It runs every command on
+one task, so the driver is installed, and its interrupt runs, on that task's
+core. The commands and fields were set with the interposer tester
+(2026-11-27).
+
+The bus is can_port's port 0, driven by the stock CAN calls as the probe
+drives it: twai_port with the kept-driver switch (T14), 500 kbit/s, accept
+all, RX queue 64, TX queue 32. Nothing is installed at boot. Each command
+brings the bus up in normal mode when it needs it. `resetprobe` takes it
+down at its end.
+
+### The line and the answer
+
+    <command> [<key>=<value> ...]
+
+Spaces separate the words. A line holds at most 255 characters and 16
+arguments. A token with no `=`, an empty key, a key the command does not
+take, a value that does not fit and a number out of range are each refused
+with 400. Every answer is one JSON line:
+
+    {"cmd":"<the line>","core":N,"t0_us":T,"status":200, ... ,"t1_us":T}
+
+`core` is the core the command ran on, and `t0_us` and `t1_us` are
+`esp_timer` at its start and end. A refusal has `"status"` 400, 500 or 501
+and `"error"`. Statuses and times are numbers; status registers are the
+chip's bits, as in the probe's `st_*` fields (TBS 4, TCS 8, RS 16, TS 32,
+ES 64, BS 128).
+
+### The commands
+
+| Command | Arguments | What it does and answers |
+|---|---|---|
+| `info` | none | `build` (the app version), `idf`, `port_core` (the core the driver was installed on, -1 while not installed), `installed`, `mode`, `reset_reason`; with the clock on: `btr0`, `btr1` and their fields `brp`, `sjw`, `tseg1`, `tseg2`, `sam`, and `tec`, `rec`. `clock` false: the controller's registers were not read |
+| `regs` | none | changes nothing. `st` and its bits `tbs`, `tcs`, `rs`, `ts`, `es`, `bs`; `mode_reg` and `rm`, `lom`, `stm`; `tec`, `rec`; `drv` the driver's `state`, `mtx` (msgs_to_tx) and `mrx` (msgs_to_rx), or null when not installed |
+| `txabort` | the URI's query arguments, as key=value | the probe, every phase (abort, control, noabort, m1-m3), with the URI's arguments, refusals (status and body) and answer, which is in `"answer"`. The project owns nothing, so the probe never refuses for that |
+| `switch` | `to=lom\|normal`, `n=0..32` (default 0) | one kept-driver switch, through the stock call. With `n`, that many frames are queued first with `twai_port_send_tagged()`: ID 0x7FD, data `i 0 AB 7D`, tag 0x7100 + i. Answers `queued`, `queue_refused`, `switch_us` (the whole switch), `mode`, `report` (every field of `twai_port_last_switch()`), `hook` (the T17 hook's frames in order, each `[id, tag]`), `hook_lost` (beyond 64), `st_after`, `mtx_after`, `tx_discarded_switch`, `tx_failed`. The port gives no time per step inside the switch: `report.abort_wait_us` is the only inner time |
+| `switchloop` | `k=1..200` (10), `period_ms=1..10000` (100) | from normal, `k` switches, listen-only then normal by turns, one every `period_ms`, receiving between them. `switches`: one `[t_us, to_lom, switch_us, result, held, rec_read_back, status_at_reset, head_aborted, driver_tx_stuck]` per switch, `t_us` from the start. `rx_windows`: frames received in each of the `k` + 1 windows. Then the port's deltas over the run: `rx_frames`, `rx_lost`, `rx_lost_queue_full`, `rx_lost_overrun`, `rx_lost_restart`, `bus_errors`, `tx_discarded_switch`. An odd `k` is switched back to normal at the end |
+| `resetprobe` | `at=ts0\|ts1` (ts0), `att=1..255` (1), `delay_us=0..5000` (0, ts1 only), `leave=normal\|lom` (normal), `wait_us=0..100000` (1000), `abort=0\|1` (0, lom only), `window_us=100..50000` (10000) | reset mode on a frame left in the buffer, apart from the port's switch. Sends one frame (ID 0x7FC, data `0 0 AB 7C`) on a bus where no node acknowledges, counts attempts by TS rises, and enters reset mode: `ts0` at the first read with TS = 0 and TBS = 0 from attempt `att`, in one critical section; `ts1` `delay_us` after attempt `att`'s TS rise. In reset mode: `st_reset`, `mtx_reset`. Then the mode is set and reset mode is left; with `abort=1`, an abort (`ab_st_before`, `ab_st_after`). After `wait_us`: `st_wait`, `mtx_wait`, `tx_alerts` (success, failed, both, none) and `alerts_wait`. Then a second frame (data `1 0 AB 7B`) with `twai_transmit()` and a 10 ms wait: `second_tx_err` and `second` within 10 ms, `alerts_second`. Also `attempts`, `entered`, `freed_before`, `wait_timeout`, `enter_us`, `st_before` and `st_after_enter`. The bus is taken down at the end (`cleanup`) |
+| `restart` | `how=restart\|panic`, `load=idle\|noack\|queued\|flood\|core` (idle), `n=1..32` (queued only, 4), `period_us=50..100000` (core only, 1000) | brings the bus up in normal mode and sets the load: `noack` one frame (ID 0x7FA) for a bus where no node acknowledges, `queued` `n` frames, `flood` nothing (the bench floods), `core` a task pinned to the other core sending a frame (ID 0x7FB) every `period_us`, running 50 ms first. Answers `how`, `load`, `port_core` and `restart_at_us` (`esp_timer` just before the call), sends the line, then calls `esp_restart()` or `abort()` (a panic) |
+| `g4` | `clear=0\|1` (0) | after a restart: `reset_reason`; `g4`, the guard's record (`shared/restart_guard` G4) as the project gives it, or null; `stall`, the S3 stop's record of the other core (`valid`, `core`, `other`, `options0`, `sw_cpu_stall`, `stalled_at_entry`, `stall_called`, `entered_reset`; twai_port_ll.h). `clear=1` clears the stall record after the answer |

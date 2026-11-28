@@ -4,8 +4,9 @@
 The implementor's (SPEC.md T11, T13), beside the host tests it scores. Each
 mutant below undoes one behaviour in a copy of twai_port_unacked.c or a
 probe register file (twai_port_probe_ll_esp32c3.c,
-twai_port_probe_ll_esp32s3.c, twai_port_probe_ll_unsupported.c), and builds
-and runs the four host test binaries against the copy. The run passes only if the unmutated build passes
+twai_port_probe_ll_esp32s3.c, twai_port_probe_ll_unsupported.c) or the T19
+command line (twai_port_t19_parse.c), and builds and runs the five host test
+binaries against the copy. The run passes only if the unmutated build passes
 and every mutant builds and fails. A mutant that does not build is not a
 catch, and one whose text does not occur exactly once ran nothing; either
 fails the run. A test binary that runs past TIMEOUT_S is stopped and counts
@@ -30,11 +31,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", "..", "..", ".."))
 COPY = "shared/twai_port/test_app"
 TEST = "shared/twai_port/test_app/test"
-BINS = ("test_unacked", "test_probe_ll_c3", "test_probe_ll_s3", "test_probe_ll_unsupported")
+BINS = ("test_unacked", "test_probe_ll_c3", "test_probe_ll_s3", "test_probe_ll_unsupported",
+        "test_t19_parse")
 TIMEOUT_S = 120
 UN = "shared/twai_port/test_app/twai_port_unacked.c"
 C3 = "shared/twai_port/test_app/twai_port_probe_ll_esp32c3.c"
 S3 = "shared/twai_port/test_app/twai_port_probe_ll_esp32s3.c"
+T19 = "shared/twai_port/test_app/twai_port_t19_parse.c"
 NS = "shared/twai_port/test_app/twai_port_probe_ll_unsupported.c"
 
 # (name, file, text, its replacement). Each text occurs once in its file.
@@ -166,6 +169,26 @@ MUTANTS = [
     ("unsupported: says supported", NS,
      "bool txp_ll_supported(void)\n{\n    return false;", "bool txp_ll_supported(void)\n{\n    return true;"),
     ("unsupported: abort reported issued", NS, "    out->issued = false;", "    out->issued = true;"),
+    ("t19: long line not refused", T19,
+     "    if (len > T19_LINE_MAX)\n    {", "    if (len > T19_LINE_MAX + 1)\n    {"),
+    ("t19: empty key taken", T19, "if (eq == NULL || eq == tok)", "if (eq == NULL)"),
+    ("t19: one argument too many taken", T19,
+     "if (out->n >= T19_ARGS_MAX)", "if (out->n >= T19_ARGS_MAX + 1 && out->n > 99)"),
+    ("t19: value that does not fit taken", T19,
+     "if (vn == 0 || len >= vn)", "if (vn == 0 || len > vn)"),
+    ("t19: last of two keys found", T19,
+     "            memcpy(val, l->val[i], len + 1);\n            return 1;",
+     "            memcpy(val, l->val[i], len + 1);\n            if (i + 1 < l->n && strcmp(l->key[l->n - 1], key) == 0) { memcpy(val, l->val[l->n - 1], strlen(l->val[l->n - 1]) + 1); }\n            return 1;"),
+    ("t19: unknown key passed", T19, "            return l->key[i];", "            (void)0;"),
+    ("t19: number over the range taken", T19,
+     "v < lo || v > hi", "v < lo || v > hi + 1"),
+    ("t19: trailing characters taken", T19,
+     "if (end == s || *end != '\\0' ||", "if (end == s ||"),
+    ("t19: quote not escaped", T19,
+     "if (c == '\"' || c == '\\\\')", "if (c == '\\\\')"),
+    ("t19: control characters raw", T19, "else if (c < 0x20)", "else if (c < 0x09)"),
+    ("t19: string one past the buffer", T19,
+     "if (o + k + 2 > dn)", "if (o + k + 1 > dn)"),
 ]
 
 
