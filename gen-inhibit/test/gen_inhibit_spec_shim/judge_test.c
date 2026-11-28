@@ -32,6 +32,20 @@ static void expect_b(const char *name, int cond, const char *detail)
 static const int64_t CHK[] = { 200 * MS + 30, 400 * MS + 60, 600 * MS + 90, 800 * MS + 120, 1000 * MS + 150 };
 static int64_t E[64];
 
+/* W5's reads (2026-11-27): `reads` reads from `start`, `gap` us apart, the last
+ * one TS = 0 if `last_clear`; appended at n, returns the new count. */
+static int64_t RT[4096];
+static bool    RC[4096];
+static int w5_pass(int n, int64_t start, int reads, int64_t gap, bool last_clear)
+{
+    for (int i = 0; i < reads; i++)
+    {
+        RT[n + i] = start + i * gap;
+        RC[n + i] = last_clear && i == reads - 1;
+    }
+    return n + reads;
+}
+
 static nn_obs_t obs(const int64_t *errs, int n, int region)
 {
     nn_obs_t o;
@@ -244,6 +258,65 @@ int main(void)
     expect_v("W4: two waiting, one on the wire", nn_w4_telemetry_out(false, 2, 5, 1), "NOT-AS-SPECIFIED");
     expect_v("W4: none waiting", nn_w4_telemetry_out(false, 0, 5, 5), "VOID");
     expect_v("W4: a frame completed in the silence", nn_w4_telemetry_out(true, 2, 5, 5), "VOID");
+
+    /* W5 (2026-11-27): withdrawal at 1000 ms; passes every 200 ms */
+    const int64_t W = 1000 * MS;
+    int n = w5_pass(0, W + 200 * MS, 80, 3, true);
+    expect_v("W5: the pass at +200 ms re-reads every 3 us and reaches TS = 0", nn_w5_dense(W, RT, RC, n), "PASS");
+    n = w5_pass(0, W + 200 * MS, 334, 3, false);
+    expect_v("W5: a pass re-reads every 3 us for 1 ms with no TS = 0", nn_w5_dense(W, RT, RC, n), "PASS");
+    n = w5_pass(0, W + 200 * MS, 1, 3, false);
+    n = w5_pass(n, W + 400 * MS, 80, 3, true);
+    expect_v("W5: one read at +200 ms, the dense pass only at +400 ms (fix A 709b69ff)", nn_w5_dense(W, RT, RC, n),
+             "NOT-AS-SPECIFIED");
+    n = w5_pass(0, W + 200 * MS, 40, 9, true);
+    expect_v("W5: reads 9 us apart", nn_w5_dense(W, RT, RC, n), "NOT-AS-SPECIFIED");
+    n = w5_pass(0, W + 200 * MS, 40, 8, true);
+    expect_v("W5: reads 8 us apart (the limit)", nn_w5_dense(W, RT, RC, n), "PASS");
+    n = w5_pass(0, W + 200 * MS, 301, 3, false);
+    expect_v("W5: 900 us of reads, no TS = 0", nn_w5_dense(W, RT, RC, n), "NOT-AS-SPECIFIED");
+    n = w5_pass(0, W + 200 * MS, 332, 3, false);
+    expect_v("W5: 993 us of reads, no TS = 0 (at the limit, 1000 - 8 = 992)", nn_w5_dense(W, RT, RC, n), "PASS");
+    n = w5_pass(0, W + 200 * MS, 330, 3, false);
+    expect_v("W5: 987 us of reads, no TS = 0", nn_w5_dense(W, RT, RC, n), "NOT-AS-SPECIFIED");
+    n = w5_pass(0, W + 200 * MS, 5, 3, true);
+    expect_v("W5: a short pass that ends on TS = 0", nn_w5_dense(W, RT, RC, n), "PASS");
+    n = w5_pass(0, W + 500, 1, 3, false);
+    expect_v("W5: one read 0.5 ms after the withdrawal is not judged", nn_w5_dense(W, RT, RC, n), "PASS");
+    n = w5_pass(0, W + 1000, 1, 3, false);
+    expect_v("W5: one read 1 ms after the withdrawal is judged", nn_w5_dense(W, RT, RC, n), "NOT-AS-SPECIFIED");
+    n = w5_pass(0, W + 200 * MS, 334, 3, false);
+    n = w5_pass(n, W + 400 * MS, 1, 3, false);
+    expect_v("W5: a good pass, then a pass of one read", nn_w5_dense(W, RT, RC, n), "NOT-AS-SPECIFIED");
+    n = w5_pass(0, W + 200 * MS, 334, 3, false);
+    n = w5_pass(n, W + 400 * MS, 80, 3, true);
+    expect_v("W5: two good passes 200 ms apart", nn_w5_dense(W, RT, RC, n), "PASS");
+    expect_v("W5: no read at all", nn_w5_dense(W, RT, RC, 0), "PASS");
+    expect_v("W5: no latch", nn_w5_dense(-1, RT, RC, n), "VOID");
+
+    /* W6 (2026-11-27): the latch seen at 1000 ms, not yet at 999.9 ms */
+    const int64_t LU = W - 100;
+    n = w5_pass(0, W - 40, 80, 3, true);
+    expect_v("W6: reads on the latch's pass, before the poll saw the latch", nn_w6_on_latch_pass(LU, W, true, RT, n),
+             "PASS");
+    n = w5_pass(0, W + 200 * MS, 80, 3, true);
+    expect_v("W6: the first read a pass later, at +200 ms (bac24de0)", nn_w6_on_latch_pass(LU, W, true, RT, n),
+             "NOT-AS-SPECIFIED");
+    expect_v("W6: no read at all, the frame held", nn_w6_on_latch_pass(LU, W, true, RT, 0), "NOT-AS-SPECIFIED");
+    n = w5_pass(0, LU - 1, 1, 3, false);
+    expect_v("W6: a read only before the last poll that saw no latch", nn_w6_on_latch_pass(LU, W, true, RT, n),
+             "NOT-AS-SPECIFIED");
+    n = w5_pass(0, LU, 1, 3, false);
+    expect_v("W6: a read at the last poll that saw no latch", nn_w6_on_latch_pass(LU, W, true, RT, n), "PASS");
+    n = w5_pass(0, W + 1000, 1, 3, false);
+    expect_v("W6: a read 1 ms after the latch", nn_w6_on_latch_pass(LU, W, true, RT, n), "PASS");
+    n = w5_pass(0, W + 1001, 1, 3, false);
+    expect_v("W6: a read 1.001 ms after the latch", nn_w6_on_latch_pass(LU, W, true, RT, n), "NOT-AS-SPECIFIED");
+    expect_v("W6: no latch", nn_w6_on_latch_pass(LU, -1, true, RT, n), "VOID");
+    expect_v("W6: no read, the frame gone at the latch", nn_w6_on_latch_pass(LU, W, false, RT, 0), "VOID");
+    n = w5_pass(0, W + 200 * MS, 1, 3, false);
+    expect_v("W6: the frame gone at the latch, a read only at +200 ms", nn_w6_on_latch_pass(LU, W, false, RT, n),
+             "NOT-AS-SPECIFIED");
 
     printf("\n%d ok, %d FAIL\n", g_ok, g_fail);
     return g_fail ? 1 : 0;

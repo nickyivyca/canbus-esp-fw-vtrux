@@ -219,6 +219,65 @@ nn_verdict_t nn_w1_freed(int64_t t_latch, bool held_at_latch, int64_t removed_at
                    (long long)(t_return - t_latch), aborts, aborts_in_attempt, passes, status_reads, reads_ts_clear);
 }
 
+nn_verdict_t nn_w5_dense(int64_t t_withdraw, const int64_t *read_t, const bool *read_clear, int n_reads)
+{
+    if (t_withdraw < 0) return verdict(VOID, "no latch: nothing withdrew the frame");
+    int judged = 0, early = 0, bad = 0;
+    char first[200] = "none";
+    for (int s = 0; s < n_reads;)
+    {
+        int e = s + 1;
+        while (e < n_reads && read_t[e] - read_t[e - 1] <= NN_W5_SPLIT_US) e++;
+        if (read_t[s] < t_withdraw + NN_W5_BOUND_US)
+        {
+            early++;
+            s = e;
+            continue;
+        }
+        judged++;
+        int64_t widest = 0;
+        bool clear = false;
+        for (int k = s; k < e; k++)
+        {
+            if (k > s && read_t[k] - read_t[k - 1] > widest) widest = read_t[k] - read_t[k - 1];
+            if (read_clear[k]) clear = true;
+        }
+        const int64_t span = read_t[e - 1] - read_t[s];
+        const bool ok = widest <= NN_W5_GAP_US && (clear || span >= NN_W5_BOUND_US - NN_W5_GAP_US);
+        if (!ok && bad++ == 0)
+            snprintf(first, sizeof(first), "at %+.3f ms from the withdrawal: %d read(s) over %lld us, widest gap "
+                     "%lld us, a TS = 0 read %d", (double)(read_t[s] - t_withdraw) / 1000.0, e - s, (long long)span,
+                     (long long)widest, clear);
+        s = e;
+    }
+    return verdict(bad == 0 ? PASS : NAS, "%d pass(es) starting 1 ms or more after the withdrawal while the frame was "
+                   "held, %d of them off (a gap over %d us, or no TS = 0 read and under %d us of reads); first off: %s; "
+                   "%d earlier pass(es) not judged", judged, bad, NN_W5_GAP_US, NN_W5_BOUND_US - NN_W5_GAP_US, first,
+                   early);
+}
+
+nn_verdict_t nn_w6_on_latch_pass(int64_t t_unlatched, int64_t t_latch, bool held_at_latch, const int64_t *read_t,
+                                 int n_reads)
+{
+    if (t_latch < 0) return verdict(VOID, "no latch: nothing withdrew the frame");
+    int in_pass = 0;
+    int64_t first_after = -1;
+    for (int i = 0; i < n_reads; i++)
+    {
+        if (read_t[i] >= t_unlatched && read_t[i] <= t_latch + NN_W5_BOUND_US) in_pass++;
+        if (read_t[i] >= t_unlatched && first_after < 0) first_after = read_t[i];
+    }
+    if (in_pass == 0 && first_after < 0 && !held_at_latch)
+        return verdict(VOID, "no read, and the latch at %lld us found the frame no longer in the controller",
+                       (long long)t_latch);
+    char first[64];
+    if (first_after >= 0) snprintf(first, sizeof(first), "%+.3f ms from the latch", (double)(first_after - t_latch) / 1000.0);
+    else snprintf(first, sizeof(first), "never");
+    return verdict(in_pass > 0 ? PASS : NAS, "%d status read(s) while the frame was held on the latch's pass (from "
+                   "the last poll before the latch, %lld us before it, to 1 ms after it); the first read from that "
+                   "poll on: %s", in_pass, (long long)(t_latch - t_unlatched), first);
+}
+
 nn_verdict_t nn_w2_never_completes(int64_t on_wire_at)
 {
     char when[64];

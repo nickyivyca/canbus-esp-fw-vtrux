@@ -90,7 +90,34 @@ nn_verdict_t nn_a5_not_held(int diag_handed_after, bool any_done_in_silence, boo
  *   W3  no 0x051 reaches the wire when traffic returns;
  *   W4  the queued telemetry then goes out: every telemetry frame waiting
  *       when traffic returned is sent, and that many diag pages reach the
- *       wire; VOID if none was waiting, or a frame completed in the silence. */
+ *       wire; VOID if none was waiting, or a frame completed in the silence;
+ *   W5  (spec 5.2 item 5's last sentence, added 2026-11-27, user; judged
+ *       from 2026-11-27, reviewer) on each pass that starts 1 ms or more
+ *       after the withdrawal while the frame is held, the scheduler re-reads
+ *       the controller about every 2 us, for up to 1 ms, and aborts at the
+ *       first read with TS = 0. "The 1 ms limit is reached" is a time, 1 ms
+ *       after the withdrawal (reviewer, 2026-11-27). The reads are the status
+ *       reads the layer saw while the frame was held; reads more than
+ *       NN_W5_SPLIT_US apart are separate passes. A judged pass fails if two
+ *       of its reads are more than NN_W5_GAP_US apart, or if it ends with no
+ *       read of TS = 0 and less than 1 ms of reads (its span under
+ *       NN_W5_BOUND_US - NN_W5_GAP_US). The withdrawal's time is the latch as
+ *       the case's poll saw it (up to one poll after the latch). PASS with no
+ *       judged pass; VOID with no latch. */
+#define NN_W5_BOUND_US 1000     /* the 1 ms limit, and how long a pass re-reads */
+#define NN_W5_GAP_US   8        /* "about every 2 us": the device's 2-3 us, plus one 3 us turn of the shim, plus 2 */
+#define NN_W5_SPLIT_US 1000     /* reads further apart than this are in separate passes */
+nn_verdict_t nn_w5_dense(int64_t t_withdraw, const int64_t *read_t, const bool *read_clear, int n_reads);
+/*   W6  (spec 5.2 item 5, "a trip that lands ... withdraws it": the withdrawal
+ *       comes on the latch's own pass; reviewer's ruling, 2026-11-27) the
+ *       withdrawal's first read of the controller comes on the pass on which
+ *       the latch lands: a status read while the frame is held, at or after
+ *       the last poll that saw no latch (t_unlatched) and no later than 1 ms
+ *       (one pass's re-read) after the first poll that saw it (t_latch). VOID
+ *       with no latch, or with no read and the frame no longer held at the
+ *       latch (the stimulus did not land). */
+nn_verdict_t nn_w6_on_latch_pass(int64_t t_unlatched, int64_t t_latch, bool held_at_latch, const int64_t *read_t,
+                                 int n_reads);
 nn_verdict_t nn_w1_freed(int64_t t_latch, bool held_at_latch, int64_t removed_at, int64_t t_return, int aborts,
                          int aborts_in_attempt, int passes, int status_reads, int reads_ts_clear);
 nn_verdict_t nn_w2_never_completes(int64_t on_wire_at);
