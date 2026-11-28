@@ -270,8 +270,8 @@ is error active, where TS never reads 0, and gap 16 is error passive.
 
 - `case_standdown_held_past_bound` and `case_deadline_skip_held_past_bound`:
   their passes past the bound run in error active. Each one re-reads for
-  exactly 1 ms, 501 reads, and issues no abort. The pass that reaches the
-  bound reads once. Then one pass in error passive meets a gap inside its
+  exactly 1 ms, 501 reads, and issues no abort. On 709b69ff the pass that
+  reached the bound read once (corrected below). Then one pass in error passive meets a gap inside its
   1 ms, issues the abort at the first read in it and ends there. The next
   pass books the frame `withdrawn`.
 - `case_reread_bounded_by_the_span`: resends 1.5 ms apart. A pass that starts
@@ -285,3 +285,30 @@ break the re-read, each caught: no re-read, a re-read for every class, a
 re-read before the bound, a span of 2 ms, a span of 0.5 ms, reads 8 us
 apart, reads 4 us apart, and a re-read that goes on after the read that
 issued the command.
+
+### 2026-11-27: the re-read on the pass that reaches the bound (tracker F5)
+
+Spec 5.2 item 5 reads the limit as a time: every pass that starts more than
+1 ms after the withdrawal re-reads, while the frame is held (reviewer,
+2026-11-27, from the tester's emulation). On 709b69ff the pass that reached
+the bound read once, and only set the past-bound state. On a quiet bus that
+pass comes 200 ms after the withdrawal, so the re-read began at 400 ms.
+`abort_step()` now checks the bound at the pass's first read, when it is
+TRANSMITTING. For a withdrawn inhibit it sets the past-bound state and
+re-reads on that same pass. A lower class still ends the loop at the bound.
+
+- `bound_reached_on_a_retry()`: a pass before the bound reads once. The pass
+  that reaches the bound re-reads for 1 ms, 501 reads, and in error active
+  issues nothing.
+- `case_first_pass_past_bound_rereads`: the tester's emulation. Error passive;
+  the withdrawal's own pass does not re-read. The next pass, 200 ms on,
+  reaches the bound, re-reads and issues the abort at the first read in a gap.
+  The pass after it books the frame `withdrawn`.
+
+The cases fail on 709b69ff's `gi_sched.c` (14 assertions). New mutants, each
+caught: the pass that reaches the bound does not re-read, and the bound
+checked on a read that issued the command (F7). The F7 mutant that removed
+the AWAITING branch's `return false` is now equivalent, so this one replaces
+it. The "loop ends at the bound" mutant now targets `abort_step()`. Step 3's
+inhibit branch is reached only when the buffer reads EMPTY before the
+driver's count falls, which `fake_buf` does not model.

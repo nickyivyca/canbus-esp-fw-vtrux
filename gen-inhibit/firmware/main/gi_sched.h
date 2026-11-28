@@ -495,8 +495,9 @@ typedef struct
      * A WITHDRAWN INHIBIT OUTLIVED THE 1 MS BOUND (spec 5.2 item 5, user
      * 2026-11-26). The bound has been counted once for this abort; the loop
      * stays open and turns on every later pass until the buffer is free, with
-     * nothing handed over behind it, and each of those passes re-reads the
-     * buffer for up to 1 ms (2026-11-27). See gs_tick() step 3 and
+     * nothing handed over behind it. Set by abort_step() on the pass that
+     * reaches the bound; that pass and each later one re-reads the buffer for
+     * up to 1 ms (2026-11-27). See abort_step(), gs_tick() step 3 and
      * reread_past_bound(). Cleared by begin_abort().
      */
     bool       abort_past_bound;

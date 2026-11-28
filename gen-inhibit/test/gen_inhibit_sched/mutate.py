@@ -303,20 +303,25 @@ static void see_departure(gs_t *s, int64_t now, bool at_deadline)
 
     # F5 (spec 5.2 item 5, user 2026-11-26): a withdrawn inhibit held past
     # the 1 ms bound is aborted again on every later pass.
+    # Since the fix to the first pass past the bound (reviewer, 2026-11-27)
+    # abort_step() makes this decision. Step 3's inhibit branch, which this
+    # mutant first targeted, is now reached only when the buffer reads EMPTY
+    # before the driver's count falls, which the fake does not model.
     ("F5: the loop ends at the bound for a withdrawn inhibit too",
      "gi_sched.c",
-     """            if (s->held_class == GS_CLASS_INHIBIT)
-            {
-                s->aborting = true;""",
-     """            if (s->held_class == GS_CLASS_INHIBIT)
-            {
-                s->aborting = false;""",
+     """        if (!(s->held && s->held_class == GS_CLASS_INHIBIT))
+        {
+            return true;
+        }""",
+     """        return true;""",
      "F5: a stand-down held past the bound is aborted on every pass"),
 
     ("F5: the bound is counted on every pass past it",
      "gi_sched.c",
-     """    if (!s->abort_past_bound && now - s->abort_since >= GS_ABORT_BOUND_US)""",
-     """    if (now - s->abort_since >= GS_ABORT_BOUND_US)""",
+     """    if (b == GS_BUF_TRANSMITTING && !s->abort_past_bound
+        && now - s->abort_since >= GS_ABORT_BOUND_US)""",
+     """    if (b == GS_BUF_TRANSMITTING
+        && now - s->abort_since >= GS_ABORT_BOUND_US)""",
      "F5: a stand-down held past the bound is aborted on every pass"),
 
     ("F5: a new abort keeps the last one's past-bound state",
@@ -333,14 +338,16 @@ static void see_departure(gs_t *s, int64_t now, bool at_deadline)
      "F5: a deadline skip held past the bound is aborted, booked once"),
 
     # F7 (spec 5.2 item 6, user 2026-11-26): the bound ends the loop only on
-    # a read that issued no command.
-    ("F7: the bound ends the loop on the read that issued the command",
+    # a read that issued no command. Since the fix to the first pass past the
+    # bound (reviewer, 2026-11-27) the bound is checked at the pass's first
+    # read, only when it is TRANSMITTING; the mutant that removed the AWAITING
+    # branch's `return false` is now equivalent, and this one replaces it.
+    ("F7: the bound is checked on a read that issued the command",
      "gi_sched.c",
-     """         * result instead: EMPTY books it aborted and requeued (step 3).
-         */
-        return false;""",
-     """         * result instead: EMPTY books it aborted and requeued (step 3).
-         */""",
+     """    if (b == GS_BUF_TRANSMITTING && !s->abort_past_bound
+        && now - s->abort_since >= GS_ABORT_BOUND_US)""",
+     """    if (!s->abort_past_bound
+        && now - s->abort_since >= GS_ABORT_BOUND_US)""",
      "F7: a page aborted on the bound's read is requeued, not sent"),
 
     # F5 option A (spec 5.2 item 5, user 2026-11-27): each pass past the bound
@@ -351,6 +358,21 @@ static void see_departure(gs_t *s, int64_t now, bool at_deadline)
      """        b = reread_past_bound(s);""",
      """        (void)reread_past_bound;""",
      "F5: a stand-down held past the bound is aborted on every pass"),
+
+    # 709b69ff's defect (reviewer, 2026-11-27): the pass that reaches the
+    # bound only set the past-bound state; the re-read began a pass later.
+    ("F5A: no re-read on the pass that reaches the bound",
+     "gi_sched.c",
+     """            return true;
+        }
+        s->abort_past_bound = true;
+    }""",
+     """            return true;
+        }
+        s->abort_past_bound = true;
+        return false;
+    }""",
+     "F5: the pass that finds the bound passed re-reads on that pass"),
 
     ("F5A: the re-read for every class, not only a withdrawn inhibit",
      "gi_sched.c",
