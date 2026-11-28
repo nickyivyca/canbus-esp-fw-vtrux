@@ -448,7 +448,7 @@ dependencies:
       git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
       path: shared/can_port
       type: git
-    version: a34d5a73fbc50dfb03165967d44ff12bc05b03ae
+    version: e9f123a4535707cd2c90b6d50e39646da54a928f
   vtrux/diag:
     component_hash: 80e1f2569f10358b03ad2b664821575d2b1f1bad551c325ce77c7c8cd9ee9c1e
     dependencies:
@@ -461,7 +461,7 @@ dependencies:
     targets:
     - esp32c3
     - esp32s3
-    version: a34d5a73fbc50dfb03165967d44ff12bc05b03ae
+    version: e9f123a4535707cd2c90b6d50e39646da54a928f
   vtrux/restart_guard:
     component_hash: c8788d5510280438cf18e2484e7cbbf03b7013eecc2912bbf62983bd1ff98e7b
     dependencies:
@@ -474,9 +474,9 @@ dependencies:
     targets:
     - esp32c3
     - esp32s3
-    version: a34d5a73fbc50dfb03165967d44ff12bc05b03ae
+    version: e9f123a4535707cd2c90b6d50e39646da54a928f
   vtrux/twai_port:
-    component_hash: 589190a91269296b1fa09929d85c37a50d9984ca1c7ad069a5ad8b72bf34118e
+    component_hash: ab6a7c5af7912bc7df113a28b51909f4fddd28dd90e2342e532312e59bd5b099
     dependencies:
     - name: idf
       version: '>=5.4'
@@ -487,7 +487,7 @@ dependencies:
     targets:
     - esp32c3
     - esp32s3
-    version: a34d5a73fbc50dfb03165967d44ff12bc05b03ae
+    version: e9f123a4535707cd2c90b6d50e39646da54a928f
   vtrux/x2:
     component_hash: addd71bce143d762264756b264e28c18391382be939d1e1c10bc824913b9e0b6
     dependencies:
@@ -499,7 +499,7 @@ dependencies:
       type: git
     targets:
     - esp32s3
-    version: a34d5a73fbc50dfb03165967d44ff12bc05b03ae
+    version: e9f123a4535707cd2c90b6d50e39646da54a928f
 direct_dependencies:
 - espressif/arduino-esp32
 - espressif/esp_modem
@@ -513,6 +513,6 @@ direct_dependencies:
 - vtrux/restart_guard
 - vtrux/twai_port
 - vtrux/x2
-manifest_hash: 165c5da12c366c2674f3b7ef9f79442be96eff4bde0470a6581a62c394b0e38f
+manifest_hash: 6d3e33b62125c428c0029aa379075c03fc1bab88aa45ec45fdbe6592e04d53f9
 target: esp32s3
 version: 2.0.0
