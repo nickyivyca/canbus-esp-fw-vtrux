@@ -15,12 +15,28 @@ PYTHON ?= python3
 BINS := $(OUT)/test_unacked $(OUT)/test_probe_ll_c3 $(OUT)/test_probe_ll_s3 \
         $(OUT)/test_probe_ll_unsupported $(OUT)/test_t19_parse
 
-all: $(BINS) $(OUT)/stack_unacked.su
+# The probe's call path from the URI handler, for test_stack.py: gcc's
+# -fcallgraph-info=su (frames and calls) of the handler, the run and m1-m3's
+# core, compiled only, against mock/'s stand-ins for the IDF headers. Its own
+# flags, never CFLAGS: the sanitisers' redzones (`asan`) grow every frame.
+STACK_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -Imock
+STACK := $(OUT)/stack_http.ci $(OUT)/stack_probe.ci $(OUT)/stack_unacked.ci
+STACK_DEPS := ../twai_port_txabort_run.h ../twai_port_unacked.h ../twai_port_probe_ll.h \
+              ../include/twai_port_txabort_probe.h $(wildcard mock/*.h mock/*/*.h)
 
-# m1-m3's frames, for test_stack.py: gcc's -fstack-usage of the core.
-$(OUT)/stack_unacked.su: ../twai_port_unacked.c ../twai_port_unacked.h ../twai_port_probe_ll.h
+all: $(BINS) $(STACK)
+
+$(OUT)/stack_http.ci: ../twai_port_txabort_http.c $(STACK_DEPS)
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -fstack-usage -c -o $(OUT)/stack_unacked.o ../twai_port_unacked.c
+	$(CC) $(STACK_CFLAGS) -I../include -fcallgraph-info=su -c -o $(OUT)/stack_http.o $<
+
+$(OUT)/stack_probe.ci: ../twai_port_txabort_probe.c $(STACK_DEPS)
+	mkdir -p $(OUT)
+	$(CC) $(STACK_CFLAGS) -I../include -fcallgraph-info=su -c -o $(OUT)/stack_probe.o $<
+
+$(OUT)/stack_unacked.ci: ../twai_port_unacked.c $(STACK_DEPS)
+	mkdir -p $(OUT)
+	$(CC) $(STACK_CFLAGS) -fcallgraph-info=su -c -o $(OUT)/stack_unacked.o $<
 
 # The T19 app's command line (chip-neutral).
 $(OUT)/test_t19_parse: test_t19_parse.c ../twai_port_t19_parse.c ../twai_port_t19_parse.h
@@ -54,9 +70,9 @@ run: all
 	$(OUT)/test_probe_ll_s3
 	$(OUT)/test_probe_ll_unsupported
 	$(OUT)/test_t19_parse
-	$(PYTHON) -B test_stack.py $(OUT)/stack_unacked.su
+	$(PYTHON) -B test_stack.py $(STACK)
 
 clean:
-	rm -f $(BINS) $(OUT)/stack_unacked.o $(OUT)/stack_unacked.su
+	rm -f $(BINS) $(STACK) $(STACK:.ci=.o) $(OUT)/stack_unacked.su
 
 .PHONY: all asan run clean

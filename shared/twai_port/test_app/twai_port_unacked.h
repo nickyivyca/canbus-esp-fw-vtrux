@@ -124,7 +124,9 @@ typedef struct {
 
     /* The hold (hold_ms), read at its end. */
     uint8_t  held;
-    uint32_t hold_cyc;          /* the hold's length */
+    int64_t  hold_us;           /* the hold's length, in esp_timer us: the
+                                 * hold blocks, and the CPU cycle counter
+                                 * stops while the CPU idles */
     uint32_t hold_st, hold_tec;
     uint32_t alerts_hold;
     bool     have_hold;
@@ -141,7 +143,9 @@ typedef struct {
     bool     have_end;
     txp_drv_t drv_end;
 
-    /* The clock check: the CPU cycle count against esp_timer over the trial. */
+    /* The clock check: the CPU cycle count against esp_timer over the busy
+     * part, from just before the send to the trace's end (trail included).
+     * Nothing in it blocks, so both clocks run. 0 when the trial skipped. */
     uint32_t clk_cyc;
     int64_t  clk_us;
 } txp_trial_t;

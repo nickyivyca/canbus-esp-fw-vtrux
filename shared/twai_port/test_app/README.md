@@ -125,11 +125,24 @@ read is not made: the ISR has not run yet, so there is nothing to split.
 
 ### Timing
 
-Times come from the CPU cycle counter (`esp_cpu_get_cycle_count()`) and
-are reported in nanoseconds, converted with the CPU frequency read at the
-start of the call (`cpu_hz`). `cpu_hz_end` is read at the end. Each trial
-also gives its length in cycles (`clk_cyc`) and in `esp_timer`
-microseconds (`clk_us`), so a frequency change shows.
+The probe uses two clocks:
+- **The CPU cycle counter** (`esp_cpu_get_cycle_count()`) times the busy
+  parts, where the CPU never idles: the trace and everything in it
+  (`tx_call_ns`, `max_gap_ns`, `end_ns`, `clear_ns`, `met_ns`, `anchor_ns`,
+  `abort_ns`, `free_after_abort_ns`, `snap_ns`, the events' times) and the
+  cleanup (`cleanup_ns`). These are reported in nanoseconds, converted with
+  the CPU frequency read at the start of the call (`cpu_hz`). `cpu_hz_end`
+  is read at the end. The head's `timing` names this clock.
+- **`esp_timer`** times every span with a block in it: the hold
+  (`hold_ns`, from microseconds), and the call (`run_us`, `uptime_us`).
+  The cycle counter stops while the CPU idles in a block: on the C3 a
+  2000 ms hold read 98.5 ms in cycles (gen-inhibit `VERIFICATION.md` 12.4,
+  "The rerun on the stack fix", 2026-11-27).
+
+The clock check, `clk_cyc` and `clk_us`, gives the same span on both
+clocks: from just before the send to the trace's end, the trail included.
+Nothing in it blocks, so the two agree unless the CPU frequency changed.
+It does not cover the hold or the cleanup. Both are 0 for a skipped trial.
 
 A change is timed at the sample that saw it, so it happened between that
 sample and the one before. With `sample_us=1` that is within about 1 us,
@@ -156,11 +169,20 @@ One JSON object, sent in chunks. The head:
 | `trials` | one object per trial |
 | `stack_free_min` | after `trials`, the last field: the calling task's least free stack in bytes, from the task's start to just before the last chunk is sent (FreeRTOS's high-water mark). On gen-inhibit that task is the httpd task, with a 5120-byte stack |
 
-The answer's buffers are static, not on the stack, because the httpd
-task's stack is small. At shared/main 3bb6c945 they were on the stack, and
-every m1-m3 call overflowed it and panicked at its answer (gen-inhibit
-`VERIFICATION.md` 12.4, 2026-11-28). `test/test_stack.py` holds every
-frame in `twai_port_unacked.c` to a small size on the host.
+Every buffer on the probe's call path is static, not on the stack, because
+the httpd task's stack is small: the URI handler's query and refusal
+message, the run's arguments, refusal text and lines, and the answer's.
+The older phases run in their own function, so their frame is not under
+m1-m3. On gen-inhibit (gen-inhibit `VERIFICATION.md` 12.4):
+- at shared/main 3bb6c945 the answer's buffers were on the stack, and
+  every m1-m3 call overflowed it and panicked at its answer (2026-11-28);
+- at 9d1dc134 the handler's and the run's were, and `stack_free_min`
+  read 44-108 bytes, with 10 of 140 calls ending in a restart
+  (2026-11-27).
+
+`test/test_stack.py` holds the frames of the handler, the run and
+`twai_port_unacked.c`, and the deepest call path from the handler, to a
+budget on the host.
 
 Each trial (times in ns from the send; -1: never, or not used by the
 phase):
@@ -180,10 +202,10 @@ phase):
 | `free_after_abort_ns` | from the abort to TBS = 1 |
 | `alerts_before`, `drv_mid`, `snap_ns` | m2, m3: the driver's alerts and view read before the abort, and how long that read took; `null` and -1 with `irq=off` |
 | `alerts_after`, `drv_after` | the driver's alerts and view after the trace: m1 the whole window, m2 and m3 the abort and after |
-| `hold_ns`, `hold_st`, `hold_tec`, `hold_tbs`, `hold_tcs`, `alerts_hold`, `drv_hold` | the hold: its length; at its end the status, the TEC, TBS and TCS (1 or 0), the driver's alerts in the hold and the driver's view. -1 and `null` with no hold |
+| `hold_ns`, `hold_st`, `hold_tec`, `hold_tbs`, `hold_tcs`, `alerts_hold`, `drv_hold` | the hold: its length (`esp_timer`, to 1 us); at its end the status, the TEC, TBS and TCS (1 or 0), the driver's alerts in the hold and the driver's view. -1 and `null` with no hold |
 | `cleanup`, `cleanup_ns`, `cleanup_aborts`, `alerts_cleanup` | the cleanup: whether it ran, its time to TBS = 1 (-1: never), abort commands issued, the alerts after it |
 | `st_end`, `drv_end`, `free_end` | the status, the driver's view and TBS at the end of the trial |
-| `clk_cyc`, `clk_us` | the trial's length in cycles and in `esp_timer` microseconds |
+| `clk_cyc`, `clk_us` | the clock check (Timing): from just before the send to the trace's end, in cycles and in `esp_timer` microseconds; 0 for a skipped trial |
 | `events` | the changes, each `[t_ns, st, tec, gap]`: the time, the status bits (`st_bits`), the TEC (capped at 255), and 1 if a gap came before it. The first sample is always recorded |
 
 The driver's view, `drv_*`: `state` (`twai_state_t`), `mtx` (frames the

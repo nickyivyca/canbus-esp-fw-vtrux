@@ -350,8 +350,11 @@ static int txab_drain(twai_dev_t *hw, uint32_t *mtx_out)
     return out;
 }
 
-static void txab_trial(int phase, int gate, int retry, uint16_t trial,
-                       uint16_t req_us, txab_rec_t *r)
+/* Not inlined: its locals then sit in their own frame, not in
+ * txab_old_run()'s for the whole call (test/test_stack.py). */
+static void __attribute__((noinline))
+txab_trial(int phase, int gate, int retry, uint16_t trial,
+           uint16_t req_us, txab_rec_t *r)
 {
     twai_dev_t *hw = TWAI_LL_GET_HW(0);
     twai_status_info_t s0, s1;
@@ -755,17 +758,56 @@ static const char *skip_name(uint8_t s)
     }
 }
 
-static bool send_rec(const txab_io_t *io, const txab_rec_t *r, bool first)
+/*
+ * THE REQUEST'S BUFFERS ARE STATIC, NOT ON THE STACK (gen-inhibit
+ * VERIFICATION.md 12.4, "The rerun on the stack fix", 2026-11-27: with only
+ * the answer's buffers static, stack_free_min read 44-108 bytes and 10 of 140
+ * m1-m3 calls ended in a restart). The caller runs on the httpd task, whose
+ * stack gen-inhibit sets to 5120 bytes. On the C3 that stack holds httpd
+ * (about 460 bytes), the URI handler, this file's frames, the answer's, and
+ * newlib's snprintf() at the top (about 1330 bytes), with an interrupt's
+ * 128 bytes on any of it. These buffers held about 2 KB of it, in
+ * twai_port_txabort_run()'s frame. One request runs at a time (one httpd
+ * task; the T19 app's one command loop), as s_rec rests on.
+ * test/test_stack.py holds this file's frames, and the call path from the
+ * URI handler through it, to a budget on the host.
+ */
+#define REQ_VAL     40
+#define REQ_PHASE   16
+#define REQ_GATE    8
+#define REQ_LABEL   32
+#define REQ_RETRY   8
+/* 256, because the fixed text alone is 155 bytes and `bad` is a key name on
+ * top -- at 160 this was a -Werror=format-truncation error, and the compiler
+ * was right: a refusal that silently loses its own explanation is the same
+ * class of defect as the truncation it is refusing. */
+#define REQ_MSG     256
+#define REQ_HEAD    640
+/* 800, because every field added to the record adds to this line and the
+ * compiler counts. It has been enlarged twice now; -Werror=format-truncation
+ * catches it each time, which is the right outcome -- a record silently
+ * losing its last few fields would be a measurement quietly missing the
+ * columns most recently thought worth adding. */
+#define REQ_REC     800
+static struct {
+    char val[REQ_VAL];
+    char phase[REQ_PHASE];
+    char gate[REQ_GATE];
+    char label[REQ_LABEL];
+    char retry[REQ_RETRY];
+    char msg[REQ_MSG];
+    char head[REQ_HEAD];
+    char rec[REQ_REC];
+    txp_params_t p;         /* m1-m3's arguments */
+} s_req;
+
+/* Not inlined: its snprintf()'s argument spill then sits in its own frame,
+ * not on top of the head's in txab_old_run()'s (test/test_stack.py). */
+static bool __attribute__((noinline))
+send_rec(const txab_io_t *io, const txab_rec_t *r, bool first)
 {
-    /*
-     * 800, because every field added to the record adds to this line and the
-     * compiler counts. It has been enlarged twice now; -Werror=format-truncation
-     * catches it each time, which is the right outcome -- a record silently
-     * losing its last few fields would be a measurement quietly missing the
-     * columns most recently thought worth adding.
-     */
-    char b[800];
-    int n = snprintf(b, sizeof(b),
+    char *const b = s_req.rec;
+    int n = snprintf(b, REQ_REC,
         "%s{\"t\":%u,\"req\":%u,\"act\":%d,\"gate_us\":%d,"
         "\"edge_us\":%d,"
         "\"st_pre\":%u,\"st_before\":%u,\"st_after\":%u,"
@@ -812,7 +854,7 @@ static bool send_rec(const txab_io_t *io, const txab_rec_t *r, bool first)
         (unsigned)r->d_tx_failed_trial, (unsigned)r->d_bus_err_trial,
         (unsigned)r->d_arb_lost_trial,
         skip_name(r->skip));
-    if (n < 0 || n >= (int)sizeof(b))
+    if (n < 0 || n >= REQ_REC)
     {
         return false;
     }
@@ -883,9 +925,9 @@ static txp_run_t s_txp_run;
 static int txp_phase_run(const txab_io_t *io, const char *phase,
                          char *err, size_t errn)
 {
-    txp_params_t p;
+    txp_params_t *const p = &s_req.p;
 
-    if (!txp_parse(phase, io->get, io->get_ctx, &p, err, errn))
+    if (!txp_parse(phase, io->get, io->get_ctx, p, err, errn))
     {
         ESP_LOGE(TAG, "refused: %s", err);
         return TXAB_BAD;
@@ -925,7 +967,7 @@ static int txp_phase_run(const txab_io_t *io, const char *phase,
     TaskHandle_t self = xTaskGetCurrentTaskHandle();
     const UBaseType_t prio0 = uxTaskPriorityGet(self);
     vTaskPrioritySet(self, 18);
-    const bool ran = txp_run(&p, &s_txp_run);
+    const bool ran = txp_run(p, &s_txp_run);
     vTaskPrioritySet(self, prio0);
     if (!ran)
     {
@@ -940,23 +982,35 @@ static int txp_phase_run(const txab_io_t *io, const char *phase,
         .id = TXAB_ID,
         .dlc = TXAB_DLC,
     };
-    if (!txp_write_json(&p, &s_txp_run, &h, io->emit, io->emit_ctx))
+    if (!txp_write_json(p, &s_txp_run, &h, io->emit, io->emit_ctx))
     {
         return TXAB_EMIT_FAILED;
     }
     ESP_LOGW(TAG, "measurement run: phase=%s label=%s trials=%d -- "
-                  "THIS IS NOT A SHIPPING BUILD", phase, p.label, s_txp_run.n);
+                  "THIS IS NOT A SHIPPING BUILD", phase, p->label, s_txp_run.n);
     return TXAB_OK;
 }
 
-int twai_port_txabort_run(const txab_io_t *io, char *err, size_t errn)
+/*
+ * The older phases: abort, control and noabort. NOT INLINED, so that their
+ * frames are not on m1-m3's path. On the C3 they are this function's 320
+ * bytes (the head's arguments), txab_trial()'s 256 and send_rec()'s 304;
+ * inlined into twai_port_txabort_run(), they made its frame 592 bytes.
+ */
+static int __attribute__((noinline))
+txab_old_run(const txab_io_t *io, char *err, size_t errn)
 {
-    char val[40];
-    char phase_s[16] = "abort";
-    char gate_s[8] = "off";
-    char label[32] = "";
-    char retry_s[8] = "0";
+    char *const val = s_req.val;
+    char *const phase_s = s_req.phase;
+    char *const gate_s = s_req.gate;
+    char *const label = s_req.label;
+    char *const retry_s = s_req.retry;
     const char *bad = NULL;
+    /* The defaults, set again for each request: the buffers are static. */
+    strcpy(phase_s, "abort");
+    strcpy(gate_s, "off");
+    label[0] = '\0';
+    strcpy(retry_s, "0");
     int reps = 3;
     int d0 = 0, d1 = 0, step = 20, settle_ms = 2;
 
@@ -967,20 +1021,6 @@ int twai_port_txabort_run(const txab_io_t *io, char *err, size_t errn)
      */
     const bool have_query = io->have_query;
 
-    /*
-     * THE NO-ACKNOWLEDGE MODES, m1-m3 (T13, gen-inhibit tracker F5), have
-     * their own arguments and answer (twai_port_unacked.c), so they leave
-     * here, before the older phases' parsing, which is unchanged.
-     */
-    if (have_query)
-    {
-        const int g = arg_get(io, "phase", val, sizeof(val));
-        if (g > 0 && txp_phase_from(val) != 0)
-        {
-            return txp_phase_run(io, val, err, errn);
-        }
-    }
-
     if (have_query)
     {
         /*
@@ -990,23 +1030,23 @@ int twai_port_txabort_run(const txab_io_t *io, char *err, size_t errn)
          */
         int g;
 
-        g = arg_get(io, "phase", val, sizeof(val));
-        if (g < 0 || (g > 0 && !copy_arg(phase_s, sizeof(phase_s), val)))
+        g = arg_get(io, "phase", val, REQ_VAL);
+        if (g < 0 || (g > 0 && !copy_arg(phase_s, REQ_PHASE, val)))
         {
             bad = "phase";
         }
-        g = arg_get(io, "gate", val, sizeof(val));
-        if (g < 0 || (g > 0 && !copy_arg(gate_s, sizeof(gate_s), val)))
+        g = arg_get(io, "gate", val, REQ_VAL);
+        if (g < 0 || (g > 0 && !copy_arg(gate_s, REQ_GATE, val)))
         {
             bad = "gate";
         }
-        g = arg_get(io, "label", val, sizeof(val));
-        if (g < 0 || (g > 0 && !copy_arg(label, sizeof(label), val)))
+        g = arg_get(io, "label", val, REQ_VAL);
+        if (g < 0 || (g > 0 && !copy_arg(label, REQ_LABEL, val)))
         {
             bad = "label";
         }
-        g = arg_get(io, "retry", val, sizeof(val));
-        if (g < 0 || (g > 0 && !copy_arg(retry_s, sizeof(retry_s), val)))
+        g = arg_get(io, "retry", val, REQ_VAL);
+        if (g < 0 || (g > 0 && !copy_arg(retry_s, REQ_RETRY, val)))
         {
             bad = "retry";
         }
@@ -1027,7 +1067,7 @@ int twai_port_txabort_run(const txab_io_t *io, char *err, size_t errn)
         };
         for (unsigned i = 0; i < sizeof(nums) / sizeof(nums[0]); i++)
         {
-            g = arg_get(io, nums[i].key, val, sizeof(val));
+            g = arg_get(io, nums[i].key, val, REQ_VAL);
             if (g < 0
                 || (g > 0 && !arg_int(val, nums[i].lo, nums[i].hi,
                                       nums[i].dst)))
@@ -1044,14 +1084,9 @@ int twai_port_txabort_run(const txab_io_t *io, char *err, size_t errn)
          * measurement whose configuration was quietly altered is worse than no
          * measurement, because the results look like an answer.
          */
-        /*
-         * 256, because the fixed text alone is 155 bytes and `bad` is a key name
-         * on top -- at 160 this was a -Werror=format-truncation error, and the
-         * compiler was right: a refusal that silently loses its own explanation
-         * is the same class of defect as the truncation it is refusing.
-         */
-        char msg[256];
-        snprintf(msg, sizeof(msg),
+        /* REQ_MSG says why 256. */
+        char *const msg = s_req.msg;
+        snprintf(msg, REQ_MSG,
                  "query argument '%s' was supplied but is unusable (too long, "
                  "not a whole number, or out of range) -- refused rather than "
                  "run with a different configuration than was asked for", bad);
@@ -1197,8 +1232,8 @@ int twai_port_txabort_run(const txab_io_t *io, char *err, size_t errn)
      * assumed.
      */
 
-    char head[640];
-    int n = snprintf(head, sizeof(head),
+    char *const head = s_req.head;
+    int n = snprintf(head, REQ_HEAD,
         "{\"probe\":\"gi_txabort\",\"git\":\"%s\",\"phase\":\"%s\","
         "\"gate\":\"%s\",\"label\":\"%s\",\"retry\":\"%s\","
         "\"id\":\"0x%03X\",\"dlc\":%d,\"tag\":\"AB7E trial, AB7F follow-up\","
@@ -1229,7 +1264,7 @@ int twai_port_txabort_run(const txab_io_t *io, char *err, size_t errn)
         (unsigned long)(have_s ? send_s.tx_error_counter : 0),
         (unsigned long)(have_s ? send_s.rx_error_counter : 0));
 
-    if (n < 0 || n >= (int)sizeof(head))
+    if (n < 0 || n >= REQ_HEAD)
     {
         return refuse(TXAB_FAILED, err, errn, "header did not fit");
     }
@@ -1251,4 +1286,22 @@ int twai_port_txabort_run(const txab_io_t *io, char *err, size_t errn)
     ESP_LOGW(TAG, "measurement run: phase=%s gate=%s label=%s trials=%d -- "
                   "THIS IS NOT A SHIPPING BUILD", phase_s, gate_s, label, s_n);
     return TXAB_OK;
+}
+
+int twai_port_txabort_run(const txab_io_t *io, char *err, size_t errn)
+{
+    /*
+     * THE NO-ACKNOWLEDGE MODES, m1-m3 (T13, gen-inhibit tracker F5), have
+     * their own arguments and answer (twai_port_unacked.c), so they leave
+     * here, before the older phases' parsing, which is unchanged.
+     */
+    if (io->have_query)
+    {
+        const int g = arg_get(io, "phase", s_req.val, REQ_VAL);
+        if (g > 0 && txp_phase_from(s_req.val) != 0)
+        {
+            return txp_phase_run(io, s_req.val, err, errn);
+        }
+    }
+    return txab_old_run(io, err, errn);
 }
