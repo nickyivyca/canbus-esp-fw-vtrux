@@ -363,12 +363,17 @@ static bool wait_for(smp_t *s, const txp_params_t *p, uint32_t cpm)
  * interrupts on; nothing is aborted, cleared or recorded, so resends do not
  * use up the change records. Its end is read: the status first, as close to
  * the end as it can be, then the TEC, the alerts and the driver's view.
+ *
+ * TIMED WITH esp_timer, NOT CYCLES. The hold blocks, and the CPU cycle
+ * counter stops while the CPU idles: in cycles a 2000 ms hold read 98.5 ms
+ * on the C3 (gen-inhibit VERIFICATION.md 12.4, "The rerun on the stack fix",
+ * 2026-11-27).
  */
 static void hold(const txp_params_t *p, txp_trial_t *r)
 {
-    const uint32_t c = txp_env_cycles();
+    const int64_t u = txp_env_timer_us();
     txp_env_hold(p->hold_ms);
-    r->hold_cyc = txp_env_cycles() - c;
+    r->hold_us = txp_env_timer_us() - u;
     r->held = 1;
     r->hold_st = txp_ll_status();
     r->hold_tec = txp_ll_tec();
@@ -414,8 +419,6 @@ static void trial(const txp_params_t *p, txp_run_t *run, uint16_t idx)
 {
     txp_trial_t *r = &run->trials[run->n++];
     const uint32_t cpm = run->cpu_hz / 1000000u;
-    const uint32_t c_start = txp_env_cycles();
-    const int64_t u_start = txp_env_timer_us();
     smp_t s;
 
     memset(r, 0, sizeof(*r));
@@ -455,6 +458,10 @@ static void trial(const txp_params_t *p, txp_run_t *run, uint16_t idx)
     s.prev_st = r->st_pre;
     s.last_rise = -1;
 
+    /* The clock check spans only the busy part, from here to the trace's
+     * end: a block stops the cycle counter, so a span with one in it, such
+     * as the hold, compares nothing. */
+    const int64_t u_start = txp_env_timer_us();
     const uint32_t c0 = txp_env_cycles();
     if (!txp_env_send(idx))
     {
@@ -539,6 +546,8 @@ static void trial(const txp_params_t *p, txp_run_t *run, uint16_t idx)
             sample(&s);
         }
     }
+    r->clk_cyc = txp_env_cycles() - c0;
+    r->clk_us = txp_env_timer_us() - u_start;
 
     if (p->irq_off)
     {
@@ -563,8 +572,6 @@ static void trial(const txp_params_t *p, txp_run_t *run, uint16_t idx)
 done:
     r->st_end = txp_ll_status();
     r->have_end = txp_env_driver(&r->drv_end);
-    r->clk_cyc = txp_env_cycles() - c_start;
-    r->clk_us = txp_env_timer_us() - u_start;
 }
 
 bool txp_run(const txp_params_t *p, txp_run_t *run)
@@ -647,13 +654,14 @@ static bool put(txp_emit_fn emit, void *ctx, const char *b, int n, size_t cap)
  * THE ANSWER'S BUFFERS ARE STATIC, NOT ON THE STACK (gen-inhibit
  * VERIFICATION.md 12.4, "The probe's no-acknowledge modes on the bench",
  * 2026-11-28: every m1-m3 call panicked the WiCAN). The URI handler runs on
- * the httpd task, whose stack gen-inhibit sets to 5120 bytes. The handler and
- * twai_port_txabort_run() already hold about 2.6 KB of it, and httpd and the
- * socket send about 1 KB more. With these buffers on the stack,
- * txp_write_json() took 3520 bytes on top, so every answer overflowed the
- * stack. One request runs at a time (one httpd task; the T19 app's one
- * command loop), the rule s_txp_run and txp_events already rest on.
- * test/test_stack.py holds every frame in this file to 512 bytes on the host.
+ * the httpd task, whose stack gen-inhibit sets to 5120 bytes. With these
+ * buffers on the stack, txp_write_json() took 3520 bytes of it, so every
+ * answer overflowed the stack. Under the answer the stack also holds httpd,
+ * the URI handler and twai_port_txabort_run(), and on top of it newlib's
+ * snprintf() (about 1330 bytes on the C3). One request runs at a time (one
+ * httpd task; the T19 app's one command loop), the rule s_txp_run and
+ * txp_events already rest on. test/test_stack.py holds this file's frames,
+ * and the probe's call path from the URI handler, to a budget on the host.
  */
 #define ANS_B 1400
 #define ANS_D 160
@@ -745,7 +753,7 @@ static bool trial_json(const txp_run_t *run,
             "\"hold_ns\":%lld,\"hold_st\":%lu,\"hold_tec\":%lu,"
             "\"hold_tbs\":%u,\"hold_tcs\":%u,\"alerts_hold\":%lu,"
             "\"drv_hold\":%s,\"events\":[",
-            to_ns(run, r->hold_cyc), (unsigned long)r->hold_st,
+            (long long)r->hold_us * 1000, (unsigned long)r->hold_st,
             (unsigned long)r->hold_tec,
             (r->hold_st & TXP_ST_TBS) ? 1u : 0u,
             (r->hold_st & TXP_ST_TCS) ? 1u : 0u,

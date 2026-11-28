@@ -5,10 +5,12 @@
  * twai_port_probe_ll_<chip>.c.
  *
  * TIMING SOURCE: the CPU cycle counter, esp_cpu_get_cycle_count(), a CSR
- * read, cheap enough for a sample about every microsecond. It is converted
- * with esp_clk_cpu_freq(), read at the start and the end of each call; each
- * trial also reports its cycle count against esp_timer's microseconds, so a
- * frequency change inside a trial shows.
+ * read, cheap enough for a sample about every microsecond, for the busy
+ * trace. It is converted with esp_clk_cpu_freq(), read at the start and the
+ * end of each call; each trial also reports the trace's cycle count against
+ * esp_timer's microseconds, so a frequency change inside it shows. The
+ * counter stops while the CPU idles, so a span that blocks, such as the
+ * hold, is timed with esp_timer (test_app/README.md, "Timing").
  */
 #include "twai_port_unacked.h"
 

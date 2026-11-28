@@ -50,12 +50,23 @@ static bool http_emit(void *ctx, const char *s, size_t n)
     return httpd_resp_send_chunk((httpd_req_t *)ctx, s, (ssize_t)n) == ESP_OK;
 }
 
+/*
+ * The query and the refusal message are static, not on the httpd task's
+ * 5120-byte stack: they were 512 of the 576 bytes of this handler's frame on
+ * the C3, under twai_port_txabort_run() and the answer (gen-inhibit
+ * VERIFICATION.md 12.4, "The rerun on the stack fix", 2026-11-27). One
+ * request runs at a time: there is one httpd task.
+ */
+#define TXAB_QUERY_MAX 256
+static char s_query[TXAB_QUERY_MAX];
+static char s_err[TXAB_ERR_MAX];
+
 static esp_err_t txab_handler(httpd_req_t *req)
 {
-    char query[256];
+    char *const query = s_query;
 
     /*
-     * THE QUERY STRING ITSELF FIRST. A query over sizeof(query) returns
+     * THE QUERY STRING ITSELF FIRST. A query over TXAB_QUERY_MAX returns
      * RESULT_TRUNC, and the old `== ESP_OK` test then skipped ALL parsing and ran
      * the whole measurement on defaults -- the worst version of this failure,
      * because every argument is wrong at once and nothing says so.
@@ -63,7 +74,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
     bool have_query = false;
     {
         const esp_err_t qe = httpd_req_get_url_query_str(req, query,
-                                                         sizeof(query));
+                                                         TXAB_QUERY_MAX);
         if (qe == ESP_OK)
         {
             have_query = true;
@@ -85,7 +96,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
      */
     httpd_resp_set_type(req, "application/json");
 
-    char err[TXAB_ERR_MAX];
+    char *const err = s_err;
     const txab_io_t io = {
         .have_query = have_query,
         .get = http_get,
@@ -95,7 +106,7 @@ static esp_err_t txab_handler(httpd_req_t *req)
         .owns_bus = s_owns_bus,
         .owned_body = s_owned_body,
     };
-    const int st = twai_port_txabort_run(&io, err, sizeof(err));
+    const int st = twai_port_txabort_run(&io, err, TXAB_ERR_MAX);
     switch (st)
     {
     case TXAB_OK:

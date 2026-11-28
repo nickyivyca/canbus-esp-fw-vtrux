@@ -31,8 +31,11 @@ static int g_fail;
 enum { RULE_TS0_REMOVES = 0, RULE_NONE };
 
 static struct {
-    /* clock */
+    /* clock: cyc is the time, which esp_timer reads (cyc / CPM); the CPU
+     * cycle counter reads cyc - lost, since it stops while the CPU idles in
+     * a block (the hold) */
     uint32_t cyc;
+    uint32_t lost;
     uint32_t stall_at, stall_len;   /* one jump, as an ISR would make */
     bool     stalled;
     /* timeline, cycles from the send */
@@ -217,7 +220,7 @@ uint32_t txp_env_cycles(void)
         S.stalled = true;
         S.cyc += S.stall_len;
     }
-    return S.cyc;
+    return S.cyc - S.lost;
 }
 uint32_t txp_env_cpu_hz(void) { return HZ; }
 int64_t txp_env_timer_us(void) { return S.cyc / CPM; }
@@ -285,7 +288,9 @@ void txp_env_settle(int ms)
 
 uint32_t txp_env_stack_free(void) { return 1234; }
 
-/* The hold: the clock jumps by ms. With ack_back, a frame still in the
+/* The hold: the time jumps by ms, but the CPU cycle counter by only a
+ * twentieth of it, as on the C3, where it stops while the CPU idles (a
+ * 2000 ms hold read 98.5 ms in cycles). With ack_back, a frame still in the
  * buffer at the hold's start goes out 100 us into it. */
 void txp_env_hold(int ms)
 {
@@ -302,7 +307,9 @@ void txp_env_hold(int ms)
         S.complete_at = (int64_t)now_rel() + 100 * CPM;
         S.sent_in_hold = true;
     }
-    S.cyc += (uint32_t)ms * 1000u * CPM;
+    const uint32_t len = (uint32_t)ms * 1000u * CPM;
+    S.cyc += len;
+    S.lost += len - len / 20u;
 }
 
 /* ------------------------------------------------------------ arguments -- */
@@ -503,10 +510,13 @@ static void test_m1_trace(void)
     CHECK(S.clear_tx == 1);
     CHECK(r->clear_t < 0 && r->abort_t < 0 && !r->ab_issued);
     CHECK(r->have_after && r->have_end && (r->st_end & TXP_ST_TBS));
-    CHECK(r->clk_cyc > 0 && r->clk_us > 0);
+    /* the clock check: the busy part only, from just before the send to the
+     * trace's end, and the two clocks agree over it */
+    CHECK(r->clk_cyc >= r->end_cyc && r->clk_cyc < r->end_cyc + 2 * CPM);
+    CHECK(near(r->clk_cyc, (uint32_t)r->clk_us * CPM, CPM));
     CHECK(S.settles == 1 && S.settle_ms == 20);
     /* no hold by default */
-    CHECK(S.holds == 0 && !r->held && r->hold_cyc == 0);
+    CHECK(S.holds == 0 && !r->held && r->hold_us == 0);
 }
 
 static void test_m1_tec_change_alone(void)
@@ -893,7 +903,11 @@ static void test_hold_m1_positive(void)
     CHECK(r->samples == samples0 && r->ev_n == ev0 && R.events_used == used0);
     CHECK(r->end_cyc < 1002 * CPM);
     /* its length, and its end */
-    CHECK(r->hold_cyc >= 100000 * CPM && r->hold_cyc < 100001 * CPM);
+    /* in esp_timer us: the cycle counter ran for only a twentieth of it */
+    CHECK(r->hold_us == 100000);
+    /* the clock check leaves the hold out, so the two clocks still agree */
+    CHECK(r->clk_cyc >= r->end_cyc && r->clk_cyc < r->end_cyc + 2 * CPM);
+    CHECK(near(r->clk_cyc, (uint32_t)r->clk_us * CPM, CPM));
     CHECK(S.sent_in_hold);
     CHECK((r->hold_st & (TXP_ST_TBS | TXP_ST_TCS)) == (TXP_ST_TBS | TXP_ST_TCS));
     CHECK(r->hold_tec == 128);      /* the script's TEC, error-passive by then */
@@ -975,6 +989,8 @@ static void test_hold_irq_and_skip(void)
     p.reps = 1;
     CHECK(txp_run(&p, &R));
     CHECK(S.holds == 0 && !R.trials[0].held);
+    /* and no clock check: nothing busy was timed */
+    CHECK(R.trials[0].clk_cyc == 0 && R.trials[0].clk_us == 0);
 }
 
 /* ----------------------------------------------------------------- JSON -- */
@@ -1052,8 +1068,9 @@ static void test_json(void)
     CHECK(strstr(J, "\"delay_us\":-1,\"hold_ms\":10,") != NULL);
     CHECK(strstr(J, "\"cleared\":\"hold\",\"clear_ns\":-1") != NULL);
     CHECK(strstr(J, "\"cleanup\":0,") != NULL);
-    snprintf(want, sizeof(want), "\"hold_ns\":%lld,\"hold_st\":12,\"hold_tec\":128,",
-             (long long)R.trials[0].hold_cyc * 1000 / 160);
+    CHECK(strstr(J, "\"hold_ns\":10000000,\"hold_st\":12,\"hold_tec\":128,") != NULL);
+    snprintf(want, sizeof(want), "\"clk_cyc\":%lu,\"clk_us\":%lld,",
+             (unsigned long)R.trials[0].clk_cyc, (long long)R.trials[0].clk_us);
     CHECK(strstr(J, want) != NULL);
     CHECK(strstr(J, "\"hold_tbs\":1,\"hold_tcs\":1,\"alerts_hold\":2,"
                     "\"drv_hold\":{\"state\":0,\"mtx\":0,") != NULL);

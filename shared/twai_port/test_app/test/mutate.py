@@ -2,11 +2,13 @@
 """Break the probe's no-acknowledge modes one behaviour at a time; the host tests must fail on each.
 
 The implementor's (SPEC.md T11, T13), beside the host tests it scores. Each
-mutant below undoes one behaviour in a copy of twai_port_unacked.c or a
+mutant below undoes one behaviour in a copy of twai_port_unacked.c, a
 probe register file (twai_port_probe_ll_esp32c3.c,
-twai_port_probe_ll_esp32s3.c, twai_port_probe_ll_unsupported.c) or the T19
-command line (twai_port_t19_parse.c), and builds and runs the five host test
-binaries against the copy. The run passes only if the unmutated build passes
+twai_port_probe_ll_esp32s3.c, twai_port_probe_ll_unsupported.c), the T19
+command line (twai_port_t19_parse.c), or the URI handler or the run
+(twai_port_txabort_http.c, twai_port_txabort_probe.c: their stack use
+only), and builds and runs the five host test binaries and test_stack.py
+against the copy. The run passes only if the unmutated build passes
 and every mutant builds and fails. A mutant that does not build is not a
 catch, and one whose text does not occur exactly once ran nothing; either
 fails the run. A test binary that runs past TIMEOUT_S is stopped and counts
@@ -39,6 +41,9 @@ C3 = "shared/twai_port/test_app/twai_port_probe_ll_esp32c3.c"
 S3 = "shared/twai_port/test_app/twai_port_probe_ll_esp32s3.c"
 T19 = "shared/twai_port/test_app/twai_port_t19_parse.c"
 NS = "shared/twai_port/test_app/twai_port_probe_ll_unsupported.c"
+HT = "shared/twai_port/test_app/twai_port_txabort_http.c"
+PR = "shared/twai_port/test_app/twai_port_txabort_probe.c"
+STACK = ("stack_http.ci", "stack_probe.ci", "stack_unacked.ci")
 
 # (name, file, text, its replacement). Each text occurs once in its file.
 MUTANTS = [
@@ -121,9 +126,17 @@ MUTANTS = [
     ("freed in the hold not reported", UN,
      "        r->cleared = TXP_CLR_HOLD;\n", ""),
     ("hold end read before the hold", UN,
-     "    txp_env_hold(p->hold_ms);\n    r->hold_cyc = txp_env_cycles() - c;\n    r->held = 1;\n    r->hold_st = txp_ll_status();",
-     "    r->hold_st = txp_ll_status();\n    txp_env_hold(p->hold_ms);\n    r->hold_cyc = txp_env_cycles() - c;\n    r->held = 1;"),
-    ("hold not timed", UN, "    r->hold_cyc = txp_env_cycles() - c;", "    r->hold_cyc = 0;\n    (void)c;"),
+     "    txp_env_hold(p->hold_ms);\n    r->hold_us = txp_env_timer_us() - u;\n    r->held = 1;\n    r->hold_st = txp_ll_status();",
+     "    r->hold_st = txp_ll_status();\n    txp_env_hold(p->hold_ms);\n    r->hold_us = txp_env_timer_us() - u;\n    r->held = 1;"),
+    ("hold not timed", UN, "    r->hold_us = txp_env_timer_us() - u;", "    r->hold_us = 0;\n    (void)u;"),
+    ("hold timed in cycles", UN,
+     "    const int64_t u = txp_env_timer_us();\n    txp_env_hold(p->hold_ms);\n    r->hold_us = txp_env_timer_us() - u;",
+     "    const uint32_t u = txp_env_cycles();\n    txp_env_hold(p->hold_ms);\n"
+     "    r->hold_us = (int64_t)((txp_env_cycles() - u) / (txp_env_cpu_hz() / 1000000u));"),
+    ("clock check spans the hold", UN,
+     "    if (r->cleared == TXP_CLR_NONE)\n    {\n        cleanup(r, cpm);",
+     "    r->clk_cyc = txp_env_cycles() - c0;\n    r->clk_us = txp_env_timer_us() - u_start;\n"
+     "    if (r->cleared == TXP_CLR_NONE)\n    {\n        cleanup(r, cpm);"),
     ("hold TEC not read", UN, "    r->hold_tec = txp_ll_tec();", "    r->hold_tec = 0;"),
     ("hold alerts not read", UN, "    r->alerts_hold = txp_env_alerts();", "    r->alerts_hold = 0;"),
     ("hold before the driver reads", UN,
@@ -149,6 +162,20 @@ MUTANTS = [
      "            \"\\\"hold_ns\\\":-1,", "            \"\\\"hold_ns\\\":0,"),
     ("answer: hold TCS from TBS", UN,
      "            (r->hold_st & TXP_ST_TCS) ? 1u : 0u,", "            (r->hold_st & TXP_ST_TBS) ? 1u : 0u,"),
+    ("handler: query on the stack", HT,
+     "    char *const query = s_query;", "    char query[TXAB_QUERY_MAX];\n    (void)s_query;"),
+    ("handler: refusal message on the stack", HT,
+     "    char *const err = s_err;", "    char err[TXAB_ERR_MAX];\n    (void)s_err;"),
+    ("run: older phases' head on the stack", PR,
+     "    char *const head = s_req.head;", "    char head[REQ_HEAD];"),
+    ("run: record line on the stack", PR,
+     "    char *const b = s_req.rec;", "    char b[REQ_REC];"),
+    ("run: refusal text on the stack", PR,
+     "    char *const msg = s_req.msg;", "    char msg[REQ_MSG];"),
+    ("run: older phases on m1-m3's path", PR,
+     "static int __attribute__((noinline))\ntxab_old_run", "static inline int\ntxab_old_run"),
+    ("run: record line inlined", PR,
+     "static bool __attribute__((noinline))\nsend_rec", "static inline bool\nsend_rec"),
     ("c3: if-TS0 ignores TBS", C3,
      "|| (before & (TXP_ST_TBS | TXP_ST_TS)) == 0;", "|| (before & TXP_ST_TS) == 0;"),
     ("c3: TS read from RS", C3,
@@ -250,8 +277,8 @@ def score(cc, copy, out):
             return "fail (timed out)"
         if rc != 0:
             return "fail"
-    rc, _ = run([sys.executable, "-B", os.path.join(TEST, "test_stack.py"),
-                 os.path.join(out, "stack_unacked.su")], copy, timeout=TIMEOUT_S)
+    rc, _ = run([sys.executable, "-B", os.path.join(TEST, "test_stack.py")]
+                + [os.path.join(out, f) for f in STACK], copy, timeout=TIMEOUT_S)
     if rc != 0:
         return "fail"
     return "pass"
