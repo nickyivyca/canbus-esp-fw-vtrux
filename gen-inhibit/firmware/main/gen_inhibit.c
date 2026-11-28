@@ -37,6 +37,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"     /* esp_rom_delay_us(): the re-read's wait, spec 5.2 item 5 */
 #include "esp_system.h"      /* esp_reset_reason(), spec 11 */
 #include "esp_app_desc.h"    /* the image hash, spec 11 */
 #include "diag_build_id.h"   /* shared/diag D2: 0x7F3's build id, spec 10 */
@@ -1038,12 +1039,33 @@ static uint32_t dev_rx_waiting(void *ctx)
     return can_msgs_to_rx();
 }
 
+/*
+ * The re-read past the bound's clock and busy-wait (spec 5.2 item 5, user
+ * 2026-11-27; gi_sched.c reread_past_bound()). The wait is the ROM's busy
+ * loop, so the worker keeps the CPU for the whole re-read, at most 1 ms a
+ * pass, and only while a withdrawn inhibit is held past the bound. On the
+ * host, twai_port's fake times both on its clock (twai_fake.h, "Busy waits").
+ */
+static int64_t dev_now_us(void *ctx)
+{
+    (void)ctx;
+    return esp_timer_get_time();
+}
+
+static void dev_spin_us(void *ctx, uint32_t us)
+{
+    (void)ctx;
+    esp_rom_delay_us(us);
+}
+
 static const gs_hal_t DEV_HAL = {
     .submit = dev_submit,
     .abort_if_awaiting = dev_abort_if_awaiting,
     .buf_state = dev_buf_state,
     .outstanding = dev_outstanding,
     .rx_waiting = dev_rx_waiting,
+    .now_us = dev_now_us,
+    .spin_us = dev_spin_us,
     .ctx = NULL,
 };
 

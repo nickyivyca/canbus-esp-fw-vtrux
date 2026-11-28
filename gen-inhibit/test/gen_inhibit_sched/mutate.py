@@ -342,6 +342,63 @@ static void see_departure(gs_t *s, int64_t now, bool at_deadline)
      """         * result instead: EMPTY books it aborted and requeued (step 3).
          */""",
      "F7: a page aborted on the bound's read is requeued, not sent"),
+
+    # F5 option A (spec 5.2 item 5, user 2026-11-27): each pass past the bound
+    # re-reads about every 2 us, for up to 1 ms, and issues the abort at the
+    # first read with TS = 0.
+    ("F5A: no re-read past the bound",
+     "gi_sched.c",
+     """        b = reread_past_bound(s);""",
+     """        (void)reread_past_bound;""",
+     "F5: a stand-down held past the bound is aborted on every pass"),
+
+    ("F5A: the re-read for every class, not only a withdrawn inhibit",
+     "gi_sched.c",
+     """    if (s->abort_past_bound && b == GS_BUF_TRANSMITTING)""",
+     """    if (b == GS_BUF_TRANSMITTING)""",
+     "R1: the 1 ms abort bound is reached and counted"),
+
+    ("F5A: the re-read before the bound too",
+     "gi_sched.c",
+     """    if (s->abort_past_bound && b == GS_BUF_TRANSMITTING)""",
+     """    if ((s->abort_past_bound || s->held_class == GS_CLASS_INHIBIT)
+        && b == GS_BUF_TRANSMITTING)""",
+     "F5: a stand-down held past the bound is aborted on every pass"),
+
+    ("F5A: the re-read spans 2 ms",
+     "gi_sched.c",
+     """#define GS_REREAD_SPAN_US   1000""",
+     """#define GS_REREAD_SPAN_US   2000""",
+     "F5: a stand-down held past the bound is aborted on every pass"),
+
+    ("F5A: the re-read spans 0.5 ms",
+     "gi_sched.c",
+     """#define GS_REREAD_SPAN_US   1000""",
+     """#define GS_REREAD_SPAN_US   500""",
+     "F5: the re-read stops at 1 ms, and meets a window inside it"),
+
+    ("F5A: the reads 8 us apart",
+     "gi_sched.c",
+     """#define GS_REREAD_GAP_US    2""",
+     """#define GS_REREAD_GAP_US    8""",
+     "F5: a stand-down held past the bound is aborted on every pass"),
+
+    ("F5A: the re-read goes on after the read that issued the command",
+     "gi_sched.c",
+     """    while (b == GS_BUF_TRANSMITTING
+           && h->now_us(h->ctx) - t0 < GS_REREAD_SPAN_US)""",
+     """    while (b != GS_BUF_EMPTY
+           && h->now_us(h->ctx) - t0 < GS_REREAD_SPAN_US)""",
+     "F5: a stand-down held past the bound is aborted on every pass"),
+
+    ("F5A: two waits between reads (4 us apart)",
+     "gi_sched.c",
+     """        h->spin_us(h->ctx, GS_REREAD_GAP_US);
+        b = h->abort_if_awaiting(h->ctx);""",
+     """        h->spin_us(h->ctx, GS_REREAD_GAP_US);
+        h->spin_us(h->ctx, GS_REREAD_GAP_US);
+        b = h->abort_if_awaiting(h->ctx);""",
+     "F5: a stand-down held past the bound is aborted on every pass"),
 ]
 
 
