@@ -161,3 +161,46 @@ The runner's verdict is FAIL (the driver's exit 3, `RESULT: VOID`).
 | `switchloop`, T14, T15 | VOID: no answer | Ack rig, the PCAN sending 0x5A6 (5727 frames). `switchloop k=20 period_ms=100` gave no answer in 12 s. The resource record over 23:42:50 to 23:43:25 is clean (`bench.slice` CPU pressure 0.2 %, no memory or IO pressure, longest gap 5 s), so this is not starvation. The driver stops at a VOID arm. *Correction (charge-interposer tester, 2026-11-28): the "no answer" is a harness defect, not a board result. The driver's reader took the serial library's part line at its 0.2 s timeout as a line. The app sends this answer in pieces (its start before the work, the rest after), so neither piece parsed. Fixed in `bench_t19.py` at charge-interposer `b4dbf413`. The arm has no result on this image.* | `t19-s3probe.txt`, `b-s3probe/t19-s3probe/check.log` (`5c0a70ba...f44129`) |
 | `resetprobe`, 6 arms (measured) | NOT RUN | The driver stopped after `switchloop`. No RELEASED WITHOUT AN INTERRUPT line. | |
 | `restart`, 6 arms, T12 | NOT RUN | The driver stopped after `switchloop`. | |
+
+## T19 on the X2's S3: the kept-driver switch, tag 2026.11.28 (charge-interposer tester, 2026-11-28 PST)
+
+**What it is evidence for:** T19's measurement on the ESP32-S3 of the
+kept-driver switch (T14, T15, T17), the whole check run again on the fixed
+s3probe (charge-interposer reviewer, 2026-11-28: re-run whole, no split).
+The arms for reset mode on a frame left in the buffer and for the restart
+stop (T12) did not run (see the table). T13's measurements on a bus where
+no node acknowledges (`txabort`, m1-m3) are not in this check.
+**Code tested:** the component at tag 2026.11.28 (`e9f123a4`), in the
+s3probe dev build of charge-interposer `78e019b8` (charge-interposer/main,
+the re-pin to that tag), made at `78e019b8`: ELF sha256
+`bf0894e8...5a6e8476`, app sha256 `fa17fa51...2fd6ced5`,
+ESP-IDF v5.4.2. The runner flashed it (4 writes verified) and read its
+`@HELLO` `elf_sha256` off the wire.
+**Check:** `charge-interposer/bench_drivers/bench_t19.py` at `78e019b8`
+(last changed in `b4dbf413`), check `b-s3probe/t19-s3probe` of
+`charge-interposer/bench_suite.py:bench`, run by the shared/bench chain
+runner (tag 2026.11.20) from a clean tracked tree. The runner's premise
+was a passing emulated run on the same product digest
+(`emulated_sc_78e019b8`, digest `0b7595d6...`). Its test and can-fail:
+`bench_t19.py`'s self-test (OK) and can-fail (33 of 33 caught, at
+`b4dbf413`). **Rig:** as in the entry for tag 2026.11.27.6. **Host:**
+madhouse-debian, in `bench.slice`, the runner holding the bench lock.
+**Resource record:** clean over 05:11:50 to 05:12:40 (`bench.slice` CPU
+pressure 0.2 %, no memory or IO pressure, no major faults, longest gap
+5 s). **Run files:**
+`$REVERSE_IT_DIR/projects/vtrux/notes/artifacts/interposer-firmware/runs/bench_t19_78e019b8/`,
+the runner's record (`record.json`, `4b1082f7...74977de3`; `index.txt`,
+`f9ced076...5e9514eb`).
+
+The runner's verdict is FAIL (the driver's exit 3, `RESULT: VOID`).
+
+| Arm | Result | What was tested and observed | Run file (sha256) |
+|---|---|---|---|
+| `info` (the premise) | PASS | `info` answers build `78e019b8`, idf v5.4.2, no driver installed at boot (`port_core` -1); `regs` answers. | `b-s3probe/t19-s3probe/t19-s3probe.txt` (`2f5454ae...4dac35bd`) |
+| `switch`, T14 | PASS | Ack rig. `switch to=lom` answers status 200, `report.result` 0, `switch_us` 85, `mode` "listen_only". `regs` then reads the LOM bit 1 with the driver installed (`drv.state` 1). `switch to=normal` answers `mode` "normal". | `t19-s3probe.txt` |
+| `switch`, T15 | PASS | Into listen-only: `rec_written` 128, `rec_read_back` 128, and `regs` reads REC 128. Out: `rec_written` 0, `rec_read_back` 0. | `t19-s3probe.txt` |
+| `held`, T17 | FAIL | Noack rig. `switch to=lom n=8`: `queued` 8, `report.held` 8, `hook` 8 entries, each once (ID 0x7FD, tags 0x7100 to 0x7107; `hook_lost` 0), `tx_discarded_switch` 8, `tx_failed` 0, `mode` "listen_only". But `status_at_reset` 32 (TS), `buf_at_reset` 1, `head_aborted` false, `abort_wait_us` 1004, `abort_timed_out` true, `driver_tx_stuck` true (the buffer read empty while the driver still counted a frame), and `mtx_after` 1. After the following `switch to=normal` on the ack rig, 4.2 s later, `mtx_after` is still 1. T17 wants the frame in transmission and the frames behind it removed, so the driver holds no frame after the switch. | `t19-s3probe.txt` |
+| `switchloop`, T14, T15 | FAIL | Ack rig, the PCAN sending 0x5A6 (1065 frames). The arm ran after `held`, with `mtx_after` 1 left. 20 switches, each `result` 0. Each switch to listen-only: `held` 1, `rec_read_back` 128, `status_at_reset` 4, `head_aborted` 0, `driver_tx_stuck` 1, `switch_us` 1029 to 1060. Each switch to normal: `rec_read_back` 0, `driver_tx_stuck` 0, `switch_us` 12 or 13. 1030 frames received, every window non-empty, `rx_lost` 0, `bus_errors` 0. `tx_discarded_switch` 10 over the run, with no frame sent by the loop. | `t19-s3probe.txt` |
+| `resetprobe-ts0-a1` | VOID | Noack rig. `resetprobe at=ts0 att=1` answers status 400, "the buffer or the driver holds a frame". The driver stops at a VOID arm. | `t19-s3probe.txt`, `b-s3probe/t19-s3probe/check.log` (`231f1849...7f7e9f59`) |
+| `resetprobe`, the other 5 arms | NOT RUN | The driver stopped after `resetprobe-ts0-a1`. No RELEASED WITHOUT AN INTERRUPT line. | |
+| `restart`, 6 arms, T12 | NOT RUN | The driver stopped after `resetprobe-ts0-a1`. | |
