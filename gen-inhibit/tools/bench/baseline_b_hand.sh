@@ -8,14 +8,17 @@
 #   GI_PW_IMAGE="image e3d9437 _man (md5 95977df0, elf 25f50ac0)" GI_WICAN_POWER=<how the WiCAN is powered> \
 #   [GI_OUT=<dir>] \
 #   bash baseline_b_hand.sh <step> ...
-#   steps: B1 B2app B2held B9 B10 B14 B15 B16 B17a B18 B20 NONODE F4
+#   steps: B1 B2app B2held B9 B10 B14 B15 B16 B17a B18 B20 NONODE F4 F5
 #
 # F4 (2026-11-27) is the RESPOND entry measurement: nine e4 arms, RESPOND POSTed into live
 # traffic, six of them polled at 2 Hz. It needs the X2 on its own image.
 #
 # NONODE (2026-10-20) is nonode_bench.py, spec 12.4 "a bus with no other node"; it
 # needs GI_TERMINATION and GI_MAN_SHA, and writes its record beside its .txt.
-# The X2's state is not changed here: B2held, B9, B10, B14 and NONODE need it held in ROM
+# F5 (2026-11-27) is unacked_bench.py, the probe's no-acknowledge modes (shared/twai_port
+# T13), on the _txabort image with the X2 held; GI_F5_PLAN picks its plan (default full).
+# Its exit (0, 1 control failed or a call failed, 2 refused) is the script's.
+# The X2's state is not changed here: B2held, B9, B10, B14, NONODE and F5 need it held in ROM
 # (x2_hold.py), the rest need it on its own image, and the runner sees to that. The
 # power line says which. GI_WICAN_SSID is read from firmware/bench-holder.md when
 # unset (that file is its only home) and redacted from this script's .txt outputs.
@@ -124,8 +127,13 @@ for s in "$@"; do
         done
       done
       red "$D"/F4_e4_respond_entry_${C}_*.txt ;;
+    F5)    # unacked_bench.py: the probe's no-acknowledge modes (F5, 2026-11-27); no judge, so its exit is the script's
+      GI_RUNS_DIR=$D $PY -B $A/unacked_bench.py ${GI_F5_PLAN:+--plan "$GI_F5_PLAN"} \
+        > "$D/F5_unacked_bench.txt" 2>&1; F5_RC=$?; echo "F5 exit $F5_RC"
+      red "$D/F5_unacked_bench.txt" ;;
     *) echo "unknown step $s"; exit 2 ;;
   esac
 done
 echo "== $(date +%H:%M:%S) done"
 [ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED B2 or F4 arm(s) exited non-zero"; exit 1; }
+[ "${F5_RC:-0}" -eq 0 ] || { echo "F5 exited $F5_RC"; exit "$F5_RC"; }

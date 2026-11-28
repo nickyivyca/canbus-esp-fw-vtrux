@@ -10674,6 +10674,148 @@ and the entries' merge) and `8ff2429c`.
     check refused again. Run again alone at 12:46 on 2026-11-27, with the card at 23-70
     packets per second: 59 pass, 0 fail.
 
+**The probe's no-acknowledge modes on the bench (F5, M1-M3) -- tester, 2026-11-27
+15:59-16:35, on gen-inhibit/main `1b3182de` `_txabort`. Result: NO MEASUREMENT. Every
+call that reached the device ended with the device restarting, with reset reason PANIC
+where the page could be read, and no call answered.** Spec 12.4 row "abort behaviour of
+the C3 TWAI"; shared/twai_port T13, the 2026-11-27 addition (gen-inhibit tracker F5);
+the probe's interface is shared/twai_port `test_app/README.md`, "The no-acknowledge
+modes", at tag `2026.11.27`, which says "The call answers only after its last trial".
+- **Code.** Built by the tester from a clean worktree detached at `1b3182de`, ESP-IDF
+  v5.4.2, `baseline_builds --bench`: `_txabort` (`-DTWAI_PORT_TXABORT_PROBE=1`), image
+  hash `18e984c7...`, code hash `70602576...`, as the implementor gave. The normal build's
+  code hash is `d310d427...`, unchanged. The image was read back from the device as
+  `18e984c7...` at the start and the end of each run. The X2 was held in ROM download
+  mode (`x2_hold.py pins`: TX not driven), read at the start and the end.
+- **Harness.** `gen-inhibit/tester/f5-unacked`: run 1 on `0fe51036`, run 2 on `395cc7bf`
+  (`bench/unacked_bench.py`, the chain suite's `txabort_held/F5unacked`). The bus is as
+  NONODE's: the Kvaser's link down (read back), the PCAN passive as the witness, the X2
+  held, and canmain opened only inside each call's hold as the acknowledging node. In
+  1 s of quiet before the first call, the witness heard no frame.
+- **Run 1** (`runs/chain/gen-inhibit-bench_20261127T155633_797b`, FAIL rc 1): only 2 of
+  238 calls reached the device. The other 236 found no route to the hotspot. In both
+  calls the trial frame went on the wire, the HTTP answer did not come within 30 s, and
+  the host then lost the hotspot. The harness did not join the hotspot again, so it had
+  no figures and could not say whether the device restarted. The harness then gained a
+  join after each call with no answer, and a page read after it.
+- **Run 2** (`runs/chain/gen-inhibit-bench_20261127T163140_f8d5`, FAIL rc 1, stopped by
+  its rule after 10 calls with no answer). The page before the first call read uptime
+  60,406 ms, reset reason SW, mode 0. One call of each kind ran first:
+
+| Call | Aim | Trial copies on the witness (276-277 us apart) | Page after the join |
+|---|---|---|---|
+| M1, irq off | m1, 10 ms | 22, over 5.8 ms | not read |
+| M1, irq on | m1, 10 ms | 22, over 5.8 ms | not read |
+| control | m1, 10 ms, hold 1500 ms | 4,826, over 1.33 s; canmain received the frame once, at +1.359 s | PANIC, uptime 12,734 ms |
+| M2 active | attempt 9 | 8 | not read |
+| M2 passive | attempt 23 | 5,459, over 1.51 s; canmain received nothing | PANIC, uptime 11,727 ms |
+| M3 active | attempt 11, 20 us | 10 | PANIC, uptime 12,743 ms |
+| M3 passive | attempt 17, 200 us | 16 | PANIC, uptime 12,732 ms |
+| M2 active | attempt 7 | 6 | not read |
+| M3 active | attempt 7, 200 us | 6 | PANIC, uptime 11,698 ms |
+| M2 passive | attempt 19 | 17 | PANIC, uptime 12,729 ms |
+
+  - No call answered within 10 s. The join after each succeeded. Where the page answered
+    after it (7 of 10), it read reset reason PANIC and an uptime of 11.7-12.7 s, so the
+    device had restarted. The image read `18e984c7...` and the mode 0 each time.
+  - In the M1 calls, the copies stopped after 22 attempts, 5.8 ms after the first, inside
+    the 10 ms trace window. In the four M2 and M3 calls with an active aim, they stopped
+    one short of the aimed attempt; with the passive aims 17 and 19, one and two short.
+    In the control and the passive aim 23, they went on for 1.3-1.5 s.
+  - The resource record (`resource-log window`, 16:33:30-16:35:20) is clean for
+    bench.slice: no pressure on it. So this is not a starved run.
+- **Observed vs the probe's README:** the calls do not answer after their last trial;
+  the device restarts with reset reason PANIC in each call that could be read. Every
+  kind of call shows it: M1 with irq on and with irq off, the control, M2 and M3, both
+  states.
+- **A harness timing to fix before the next run** (the tester's): canmain's open took
+  0.73-1.20 s from its call. So in the control the node was up only from about +1.36 s,
+  and it took the frame at +1.359 s, as soon as it was up. The positive control did
+  what it must. But the node's window was a few ms, not the 0.7 s planned, and the hold
+  check timed the node from the open's call.
+- **Run files** (in each run folder, `txabort_held/F5unacked/`): `F5_unacked_bench.txt`,
+  `unacked_bench_20261127T155920.json` (run 1) and `unacked_bench_20261127T163235.json` (run 2),
+  `kvaser_opens.jsonl`, and the X2 pins records.
+
+**The rerun on the stack fix (F5, M1-M3) -- tester, 2026-11-27 17:17-17:25, on
+gen-inhibit/implementor/f5-measure-pin `35a5b563` `_txabort` (never merged; can_port and
+twai_port at shared tag `2026.11.27.3`). Result: a partial measurement. 130 of 140 calls
+answered. The positive control passed 5 of 5. Every answer's `stack_free_min` was 44-108 B,
+and 10 calls had no answer, 6 of them with a PANIC restart.** Same rows as the entry above.
+- **Code.** Built by the tester from a clean worktree detached at `35a5b563`, ESP-IDF
+  v5.4.2: `_txabort` code hash `e5fc0c99...` and version `35a5b563`, as the implementor
+  gave; image hash `9054f45b...`, read back from the device at the start and the end. The
+  normal build's code hash is `9d64fca6...`: tag `2026.11.27.3` changes twai_port's
+  release code too.
+- **Harness.** Run on `gen-inhibit/tester/f5-unacked` `326b4838`
+  (`runs/chain/gen-inhibit-bench_20261127T171351_403a`, FAIL rc 1). Judged again from the
+  saved answers, witness messages and node records on `1cdfb577`
+  (`unacked_bench.py --rejudge`, `unacked_bench_20261127T171718_rejudged.json`), after two
+  harness errors found in this run: the answer echoes `settle` as `settle_ms`, so every
+  answered call carried an echo error; and the hold's end came from `hold_ns`, so every
+  control trial was void. The rejudge takes the hold's end as the trace's end plus
+  `hold_ms`. The bus and the setup are as in the entry above.
+- **The plan stopped at call 140 of 238** after 10 calls with no answer. After each, the
+  join succeeded. Where the page answered (6 of 10), it read reset reason PANIC.
+- **Stack:** `stack_free_min` was 44 B in most answers and 108 B at most, so all 130
+  answers are flagged under 512 B.
+- **The positive control** (m1 with the hold, 5 trials): the frame was still held at the
+  hold's start in all 5, and the node received it as soon as it was up. The device agreed
+  in each: TX_SUCCESS in `alerts_hold`, TBS 1 and TCS 1 at the hold's end, `cleared`
+  `hold`. So the hold check can fail, and it saw the frame go out.
+- **M1, TS between the resends** (6 trials: 5 with irq off, 1 with irq on; 10 ms):
+  - Error active (TEC 0 to 120, the first 16 attempts): no TS = 0 was read between the
+    resends. All 96 resends (16 in each trial) show only as a TEC step of 8 with TS = 1.
+  - Error passive (TEC 128): each resend had a TS = 0 span of 15.41-16.44 us (132 spans,
+    none after a sampling gap). The device's TS rises were 275.8-276.2 us apart, and the
+    witness's copies 276.0 us apart.
+- **The two readings of run 2, explained by these records:**
+  - "M1's resends stop at about 6 ms": they did not stop. The device's TS rises go on to
+    the trace's end (the last at 9,971 us), and the witness's last copy lines up at the
+    same time. The witness delivers no copy of an error-active attempt. Its first copy
+    is attempt 16 at about 3.9 ms, so its copies span only the passive part, about
+    5.8 ms.
+  - "M2/M3 stop one copy short of the aim": the probe counts attempts as TS rises plus
+    a first sample that reads TS = 1 (the first attempt began inside `twai_transmit()`,
+    which took 21-22 us). In the error-active part TS does not fall, so attempt k (k of 2
+    or more) is wire attempt 16 + (k - 1), in the passive state. The witness's copies
+    begin at wire attempt 16, so it counts k - 1 copies up to the abort.
+  - `cpu_hz` and `cpu_hz_end` read 160 MHz in every answer. The trace's cycle-counter
+    times agree with the wire (the rise spacing above). Across a hold, they do not:
+    `clk_cyc` was 17.5 M cycles (0.11 s) and `hold_ns` 98.5 ms, against `clk_us` 2.01 s
+    for a 2000 ms hold.
+- **M2, the abort at the first TS = 0 read:**
+  - Error passive (35 trials, by the TEC at the abort; 22 of them aimed at the active
+    state): the buffer came free in the trace in all 35, 7.9 us after the abort, and the
+    witness saw no later copy. In the 33 holds not void, nothing went out.
+  - Error active: only 1 trial. It was aimed at attempt 1, and its first TS = 0 read
+    came at TEC 72. The buffer came free and nothing later was seen. The other 22
+    answered aims at attempts 1-15 reached the abort at TEC 128.
+  - Aims at attempts 23-31 found no abort before the 10 ms window ended (`wait_timeout`):
+    the probe counted 23-25 attempts in the window. Their frames were still held, and in
+    the 19 holds not void each went out when the node returned.
+- **M3, the abort while TS = 1:**
+  - Error passive: the buffer came free in the trace in all trials: 11 at 20 us, 23 at
+    100 us and 15 at 200 us, 238, 158 and 59 us after the abort. The witness saw no later
+    copy, and nothing went out in a hold.
+  - Error active: 6 trials (1 at 20 us, 3 at 100 us, 2 at 200 us), 5 of them aimed at
+    attempt 1 and 1 at attempt 3 (TEC 104). All came free. The witness has no copy of an
+    error-active attempt, so it cannot show a later one there.
+- **Void hold checks (9):** trials with no witness copy at all, so the node's window
+  could not be lined up with the device's trace (the record has no time for the answer's
+  arrival).
+- **Observed vs the spec and the README:**
+  - The plan's error-active M2 and M3 trials (at least 50 and 20 per cell) cannot be
+    reached with the probe as it is: its attempt count needs a TS rise, and TS does not
+    fall between error-active resends. In the error-active state an abort that waits for
+    TS = 0 met it once in 23 answered aims at attempts 1-15.
+  - `stack_free_min` was 44-108 B in every answer, and 10 of 140 calls ended without an
+    answer, 6 with a PANIC restart seen on the page.
+  - `hold_ns` is not the hold's length: 98.5 ms for a 2000 ms hold.
+- **Run files:** in `runs/chain/gen-inhibit-bench_20261127T171351_403a/txabort_held/F5unacked/`:
+  `F5_unacked_bench.txt`, `unacked_bench_20261127T171718.json` and its
+  `_rejudged.json`, `kvaser_opens.jsonl`, and the X2 pins records.
+
 ## 13 Known not to be implemented
 
 **What a cross-host IDF 5.4.1 build differs in, for the code-identical

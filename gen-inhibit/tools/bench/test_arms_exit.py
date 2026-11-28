@@ -17,6 +17,8 @@ the script exit 1 once the rest have run, and every arm still runs.
   baseline_b_noX2.sh B4       not an arm: B4's own exit is judged from its output, not counted
   baseline_b_hand.sh B2app    3 arms: all 0 -> exit 0; arm 2 fails -> exit 1
   baseline_b_hand.sh F4       9 arms (2026-11-27): all 0 -> exit 0; arm 5 fails -> exit 1
+  baseline_b_hand.sh F5       no judge (2026-11-27): unacked_bench.py's exit 0, 1 or 2 is the
+                              script's; GI_F5_PLAN passes --plan; with B2app, a failed arm still 1
 
 The fakes are test_baseline_capture_stop.py's (a fake `py` first on PATH, a fake dumpcap
 through GI_DUMPCAP_PRE), with the e4 fake failing on the call FAKE_E4_FAIL_AT names and
@@ -40,7 +42,8 @@ E4_OLD = """  e4_device_calibration.py) sleep 1; echo '{}' > "$(arg --out "$@")"
 E4_NEW = """  e4_device_calibration.py) n=$(( $(cat "$FAKE_E4_COUNT" 2>/dev/null || echo 0) + 1 )); echo $n > "$FAKE_E4_COUNT"
     [ -z "${FAKE_E4_ARGS:-}" ] || echo "$*" >> "$FAKE_E4_ARGS"
     echo '{}' > "$(arg --out "$@")"; [ "$n" = "${FAKE_E4_FAIL_AT:-0}" ] && exit 2; exit 0 ;;
-  skip_method_bench.py) exit "${FAKE_B4_RC:-0}" ;;"""
+  skip_method_bench.py) exit "${FAKE_B4_RC:-0}" ;;
+  unacked_bench.py) [ -z "${FAKE_F5_ARGS:-}" ] || echo "$*" > "$FAKE_F5_ARGS"; exit "${FAKE_F5_RC:-0}" ;;"""
 assert T.FAKE_PY.count(E4_OLD) == 1
 FAKE_PY = T.FAKE_PY.replace(E4_OLD, E4_NEW)
 DC_OLD = "    sys.exit(0)\n"
@@ -115,6 +118,22 @@ def main():
         check("F4: each arm its own record, named by variant and round", outs == want, outs)
         rc, n, text = case(tmp, "B4", "baseline_b_noX2.sh", ["B4"], 0, FAKE_B4_RC="1")
         check("B4: its own exit 1 is not an arm's -> exit 0", rc == 0 and "B4 exit 1" in text, (rc, text))
+        # F5 (2026-11-27): unacked_bench.py has no judge, so its exit is the script's
+        for f5rc in (0, 1, 2):
+            rc, n, text = case(tmp, "F5", "baseline_b_hand.sh", ["F5"], 0, FAKE_F5_RC=str(f5rc))
+            check("F5: unacked_bench exits %d -> the script exits %d" % (f5rc, f5rc), rc == f5rc
+                  and "F5 exit %d" % f5rc in text, (rc, text))
+        argf = os.path.join(tmp, "f5_args")
+        rc, n, text = case(tmp, "F5 plan", "baseline_b_hand.sh", ["F5"], 0, FAKE_F5_ARGS=T.fw(argf), GI_F5_PLAN="smoke")
+        args = open(argf).read() if os.path.exists(argf) else ""
+        check("F5: GI_F5_PLAN=smoke passes --plan smoke", "--plan smoke" in args, args)
+        if os.path.exists(argf):
+            os.remove(argf)
+        rc, n, text = case(tmp, "F5 default", "baseline_b_hand.sh", ["F5"], 0, FAKE_F5_ARGS=T.fw(argf))
+        args = open(argf).read() if os.path.exists(argf) else "(not run)"
+        check("F5: no GI_F5_PLAN, no --plan (the full plan)", args != "(not run)" and "--plan" not in args, args)
+        rc, n, text = case(tmp, "B2app F5", "baseline_b_hand.sh", ["B2app", "F5"], 3, fail_at=2)
+        check("B2app then F5 passing: a failed B2 arm still exits 1", rc == 1, (rc, text))
     finally:
         gi_paths.remove_tree(tmp)
     print("\n%d ok, %d FAIL" % (oks, len(fails)))

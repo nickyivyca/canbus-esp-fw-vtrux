@@ -365,6 +365,15 @@ MUTANTS = [
     # the core's (procs.DEFAULT_WALLCLOCK_PATTERNS), and its own tests carry it.
     ("example: no IDF_TOOLS_PATH for C2scan", ',\n              "IDF_TOOLS_PATH": "<that install\'s tools folder>"', '',
      EXAMPLE),
+    # F5 (2026-11-27): the probe's no-acknowledge modes
+    ("F5: the X2 on its app, so it may ACK", 'Group("txabort_held", needs_lock=True, image=["wican_txabort", "x2_held"]',
+     'Group("txabort_held", needs_lock=True, image=["wican_txabort", "x2_app"]'),
+    ("F5: run on _man", 'Group("txabort_held", needs_lock=True, image=["wican_txabort", "x2_held"]',
+     'Group("txabort_held", needs_lock=True, image=["wican_man", "x2_held"]'),
+    ("F5: its output not declared", '["F5"], None, ["F5_unacked_bench.txt"], 1800, "wican_txabort")',
+     '["F5"], None, [], 1800, "wican_txabort")'),
+    ("F5: the hand step NONODE instead", 'chk("F5unacked", "baseline_b_hand.sh", ["F5"]',
+     'chk("F5unacked", "baseline_b_hand.sh", ["NONODE"]'),
 ]
 
 

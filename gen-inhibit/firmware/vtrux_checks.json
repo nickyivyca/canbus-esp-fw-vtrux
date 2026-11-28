@@ -83,7 +83,7 @@
     },
     "TWAI_PORT_TXABORT_PROBE": {
       "class": "test-only",
-      "reason": "TX-abort measurement build (twai_port T13, port step 1c); writes the abort register from outside the driver and exposes /gi_txabort. The project tests it to register the probe from its URI hook; vtrux/twai_port's own table lists it too",
+      "reason": "TX-abort measurement build (twai_port T13, port step 1c); writes the abort register from outside the driver and exposes /gi_txabort. The project tests it to register the probe from its URI hook; vtrux/twai_port's own table lists it too. From twai_port 2026.11.27 (T13's no-acknowledge modes, gen-inhibit tracker F5) the probe build also has the txp_ symbols (24 read by nm on 1b3182de's _txabort, none on its other builds or its release stand-in)",
       "refusal": [
         {
           "bin_strings_absent": [
@@ -96,6 +96,11 @@
             "twai_port_txabort_register",
             "txab_handler",
             "txab_uri"
+          ]
+        },
+        {
+          "elf_symbol_prefixes_absent": [
+            "txp_"
           ]
         }
       ]
