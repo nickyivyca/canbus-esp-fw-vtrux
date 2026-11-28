@@ -29,7 +29,17 @@ TEC 0), so the error state is chosen by the attempt the abort is aimed at (`wait
             node returns (the positive control: it shows the hold check can fail)
   M2        phase=m2, wait_att from ACTIVE_AIMS or PASSIVE_AIMS, with the hold
   M3        phase=m3, delay_us 20, 100 and 200, the same aims, with the hold
-The plan's order is shuffled (--seed), so no state or kind runs as one block.
+The plan's order is shuffled (--seed), so no state or kind runs as one block, except that one call of
+each kind (M1 irq off, M1 irq on, control, M2 active, M2 passive, M3 active, M3 passive) runs first.
+
+THE HOTSPOT (bench run 797b, 2026-11-27: the first call's trial went on the wire, its answer never
+came, and the host had no route to the hotspot for the rest of the run, so 236 calls failed). The
+run joins the hotspot at its start through gi_wifi (GI_OTA_SETTINGS, the core's Wi-Fi backend that
+settings.ota chooses) and reads the status page. After a call with no HTTP answer (CALL_TIMEOUT_S),
+it joins again and reads the page: the row's `recovery` gives the join, the page's uptime_ms,
+reset_reason and mode, and whether the device restarted (restart_seen: the uptime more than
+RESTART_SLACK_MS below the last read's uptime plus the time between). The plan stops after
+MAX_FAILED_CALLS calls with no answer (`stopped`, exit 1).
 
 THE HOLD (README step 9; the reviewer's answer (b)). hold_ms=HOLD_MS. The POST is sent from a
 thread; canmain opens NODE_UP_S after the POST's send and closes NODE_DOWN_S after it. The open's
@@ -65,7 +75,9 @@ QUIET_S = 1.0
 HOLD_MS = 1500
 NODE_UP_S = 0.5              # from the POST's send
 NODE_DOWN_S = 1.2
-CALL_TIMEOUT_S = 30.0
+CALL_TIMEOUT_S = 10.0       # a call answers in about 2 s with the hold
+MAX_FAILED_CALLS = 10        # the plan stops after this many calls with no answer
+RESTART_SLACK_MS = 5000      # an uptime this far below the elapsed time is a restart
 ACTIVE_AIMS = tuple(range(1, 16, 2))      # 1, 3, ..., 15
 PASSIVE_AIMS = tuple(range(17, 32, 2))    # 17, 19, ..., 31
 M3_DELAYS = (20, 100, 200)
@@ -97,7 +109,35 @@ def plan(name="full", seed=0):
                 calls.append(dict(base, phase="m3", irq="off", wait_att=aims[k % len(aims)], delay_us=d,
                                   hold_ms=HOLD_MS, kind="M3", state=st, label="M3%s%d_%02d" % (st[0], d, k)))
     random.Random(seed).shuffle(calls)
-    return calls
+    # one call of each kind first (bench run 797b, 2026-11-27: a failing kind must not hide the others behind
+    # the stop rule), in this order, then the rest as shuffled
+    key = lambda x: (x["kind"], x["state"] if x["kind"] in ("M2", "M3") else x["irq"])   # noqa: E731
+    first = []
+    for want in (("M1", "off"), ("M1", "on"), ("control", "off"), ("M2", "active"), ("M2", "passive"),
+                 ("M3", "active"), ("M3", "passive")):
+        c = next((x for x in calls if x not in first and key(x) == want), None)
+        if c is not None:
+            first.append(c)
+    return first + [x for x in calls if x not in first]
+
+
+def restart_seen(before, t_before, after, t_after):
+    """Whether the device restarted between two page reads: its uptime_ms after is more than RESTART_SLACK_MS
+    below the uptime before plus the time between the reads (host perf s). None when either read is missing."""
+    try:
+        b, a = float(before["uptime_ms"]), float(after["uptime_ms"])
+    except (TypeError, KeyError, ValueError):
+        return None
+    return a < b + (t_after - t_before) * 1000.0 - RESTART_SLACK_MS
+
+
+def page_brief(p):
+    return None if not p else {k: p.get(k) for k in ("uptime_ms", "reset_reason", "mode", "elf_sha256")}
+
+
+def stop_now(failed_calls, limit=MAX_FAILED_CALLS):
+    """The plan stops once this many calls had no answer."""
+    return failed_calls >= limit
 
 
 def query(call):
@@ -216,6 +256,8 @@ def http_post(path, timeout=CALL_TIMEOUT_S):
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
+    except (urllib.error.URLError, OSError) as e:     # no route, refused, timed out: recorded, no status
+        return None, ("%s: %s" % (type(e).__name__, getattr(e, "reason", e))).encode()
 
 
 class Node(threading.Thread):
@@ -321,11 +363,39 @@ def main():
             rec["verdict"] = "REFUSED: %s" % refused
             rc = 2
         else:
+            import gi_wifi as GW                 # the hotspot through the core's Wi-Fi, as settings.ota chooses
+            import lowid_flood_skip_bench as LF  # the status page (uptime_ms, reset_reason)
+            try:
+                wcfg = GW.from_env()
+                wbe = GW.backend(wcfg)
+            except GW.Refused as e:
+                wcfg = wbe = None
+                rec["wifi"] = "no rejoin: %s" % e
+            if wcfg is not None:
+                ok, why = GW.join(wcfg, be=wbe)
+                rec["wifi"] = "join at the start: %s, %s" % ("ok" if ok else "FAILED", why)
+            last_page, t_page = LF.page(), time.perf_counter()
+            rec["page_start"] = page_brief(last_page)
+            failed_calls = 0
             for i, call in enumerate(calls):
                 ans, st, head, msgs, node, t_send = run_call(call, wit, inno)
                 if ans is None:
                     row = {"label": call["label"], "kind": call["kind"], "call": call,
                            "error": "HTTP %s: %s" % (st, head)}
+                    if st is None:
+                        # no answer at all (bench run 797b: the answer never came and the hotspot link was gone):
+                        # rejoin, then read the page to see whether the device restarted
+                        failed_calls += 1
+                        rv = {}
+                        if wcfg is not None:
+                            ok, why = GW.join(wcfg, be=wbe)
+                            rv["join"] = "%s, %s" % ("ok" if ok else "FAILED", why)
+                        p, tp = LF.page(), time.perf_counter()
+                        rv["page"] = page_brief(p)
+                        rv["restart"] = restart_seen(last_page, t_page, p, tp)
+                        row["recovery"] = rv
+                        if p:
+                            last_page, t_page = p, tp
                 else:
                     row = process_call(call, ans, msgs, node)
                     bad = echo_mismatch(call, ans)
@@ -336,9 +406,13 @@ def main():
                 row["witness"] = [(round(p, 6), round(hw, 1), i_, d, h, e) for p, hw, i_, d, h, e, _ep in msgs]
                 row["node"] = node
                 rec["rows"].append(row)
-                print("%3d/%d %-12s %s" % (i + 1, len(calls), call["label"],
-                                           row.get("error") or _line(row)))
+                print("%3d/%d %-12s %s%s" % (i + 1, len(calls), call["label"], row.get("error") or _line(row),
+                                             ("; recovery %s" % row["recovery"]) if "recovery" in row else ""))
                 sys.stdout.flush()
+                if stop_now(failed_calls):
+                    rec["stopped"] = "after %d calls with no answer, at call %d of %d" % (failed_calls, i + 1, len(calls))
+                    print("STOPPED: %s" % rec["stopped"])
+                    break
                 time.sleep(0.05)
             wit.stop.set()
             wit.join(3)
@@ -346,7 +420,8 @@ def main():
             rec["tables"] = tables(rec["rows"])
             failed = control_failed(rec["tables"])
             rec["control"] = "FAILED" if failed else "passed"
-            rc = 1 if failed or rec["tables"]["errors"] else 0
+            rec["page_end"] = page_brief(LF.page())
+            rc = 1 if failed or rec["tables"]["errors"] or rec.get("stopped") else 0
     finally:
         if pc is not None:
             try:

@@ -97,10 +97,40 @@ def main():
     check("one fresh trial per call", all(x["reps"] == 1 and x["fresh"] == 1 for x in calls), "reps/fresh")
     check("the node's window inside the hold", 0 < B.NODE_UP_S < B.NODE_DOWN_S < B.HOLD_MS / 1000.0,
           (B.NODE_UP_S, B.NODE_DOWN_S, B.HOLD_MS))
-    kinds10 = {x["kind"] for x in calls[:12]}
-    check("shuffled: the first 12 calls are not one kind", len(kinds10) > 1, kinds10)
+    k2 = lambda x: (x["kind"], x["state"] if x["kind"] in ("M2", "M3") else x["irq"], x.get("delay_us"))  # noqa: E731
+    kinds10 = {k2(x) for x in calls[7:17]}
+    check("shuffled: the ten calls after the first seven are of at least four kinds", len(kinds10) >= 4, kinds10)
     check("the same seed gives the same order", [x["label"] for x in B.plan("full", 1)] == [x["label"] for x in calls],
           "order")
+
+    key = lambda x: (x["kind"], x["state"] if x["kind"] in ("M2", "M3") else x["irq"])   # noqa: E731
+    check("one call of each kind first, in order", [key(x) for x in calls[:7]] ==
+          [("M1", "off"), ("M1", "on"), ("control", "off"), ("M2", "active"), ("M2", "passive"),
+           ("M3", "active"), ("M3", "passive")], [key(x) for x in calls[:7]])
+    check("no call lost or doubled by the reorder", sorted(x["label"] for x in calls)
+          == sorted(x["label"] for x in B.plan("full", 2)) and len({x["label"] for x in calls}) == len(calls), "labels")
+
+    # 1b. the hotspot's recovery: a restart from the uptime, the stop rule, a call with no route
+    check("uptime below the last read plus the time between: a restart",
+          B.restart_seen({"uptime_ms": 600_000}, 100.0, {"uptime_ms": 3_000}, 140.0) is True, "restart")
+    check("uptime grown 10 s in 100 s: a restart (it restarted 10 s ago)",
+          B.restart_seen({"uptime_ms": 600_000}, 100.0, {"uptime_ms": 610_000}, 200.0) is True, "short growth")
+    check("uptime grown with the time: no restart",
+          B.restart_seen({"uptime_ms": 600_000}, 100.0, {"uptime_ms": 639_500}, 140.0) is False, "no restart")
+    check("uptime 4 s short of the time between (inside the slack): no restart",
+          B.restart_seen({"uptime_ms": 600_000}, 100.0, {"uptime_ms": 636_000}, 140.0) is False, "slack")
+    check("no page after: unknown, not a restart", B.restart_seen({"uptime_ms": 1}, 0.0, None, 1.0) is None, "none")
+    check("the plan stops at 10 calls with no answer, not at 9",
+          B.stop_now(10) and not B.stop_now(9), (B.stop_now(9), B.stop_now(10)))
+    host = B.HOST
+    try:
+        B.HOST = "127.0.0.1:9"       # nothing listens: refused, as a missing route is
+        st, body = B.http_post("/gi_txabort?phase=m1", timeout=2.0)
+    except Exception as e:          # noqa: BLE001  the check below fails on it, not the test
+        st, body = "raised", str(e)
+    finally:
+        B.HOST = host
+    check("a call that cannot connect gives no status and its reason, no exception", st is None and body, (st, body))
 
     # 2. query and echo
     m3 = next(x for x in calls if x["kind"] == "M3")
@@ -192,6 +222,13 @@ MUTANTS = [
     ("missed aims not listed", "and r[\"summary\"][\"abort\"][\"state\"] != r[\"state_aimed\"]]", "and False]"),
     ("a frame in the quiet not refused", "    if rec.get(\"quiet_frames\"):\n", "    if False:\n"),
     ("the Kvaser not checked", "    if kl.get(\"down\") is not True:\n", "    if False:\n"),
+    ("no call of each kind first", "    return first + [x for x in calls if x not in first]\n", "    return calls\n"),
+    ("the restart slack ignored", "    return a < b + (t_after - t_before) * 1000.0 - RESTART_SLACK_MS\n",
+     "    return a < b + (t_after - t_before) * 1000.0\n"),
+    ("the time between ignored", "    return a < b + (t_after - t_before) * 1000.0 - RESTART_SLACK_MS\n",
+     "    return a < b - RESTART_SLACK_MS\n"),
+    ("the stop one call late", "    return failed_calls >= limit\n", "    return failed_calls > limit\n"),
+    ("a refused call raises", "    except (urllib.error.URLError, OSError) as e:", "    except urllib.error.HTTPError as e:"),
 ]
 
 
