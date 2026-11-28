@@ -222,6 +222,24 @@ def main():
     check("an M2 aimed passive whose abort read TEC 40 is listed as a missed aim",
           B.tables([r_m2])["aim_missed"] == [m2["label"]], B.tables([r_m2])["aim_missed"])
 
+    # 5a. the hold on the host clock when the witness has no copy (bench run 403a: trials ending in error active)
+    ta1, _ = trial(1)
+    ta1["cleared"] = "cleanup"
+    def hnode(open_called, opened, closed, rx=()):
+        return {"open_called": open_called, "opened": opened, "closed": closed,
+                "rx": [(p, "0000ab7e00000000") for p in rx], "error": None}
+    hh = B.process_call(ctl, {"trials": [ta1]}, [], hnode(100.25, 101.2, 101.6, [101.3]), 100.0, 102.06).get("hold") or {}
+    check("no witness copy, arrival known: the hold checked on the host clock, held and out as expected",
+          hh.get("void") is None and hh.get("held") and hh.get("as_expected") and "host" in str(hh.get("clock")), hh)
+    hv = B.process_call(ctl, {"trials": [ta1]}, [], hnode(100.03, 101.0, 101.4), 100.0, 102.06).get("hold") or {}
+    check("host clock: the open called before the trace's latest end (arrival minus hold): void",
+          hv.get("void") is not None and "before the trace ended" in str(hv.get("void")), hv)
+    hl = B.process_call(ctl, {"trials": [ta1]}, [], hnode(100.25, 101.2, 102.1, [101.3]), 100.0, 102.2).get("hold") or {}
+    check("host clock: the node up past the hold's earliest end (send plus hold): void",
+          "earliest end" in str(hl.get("void")), hl)
+    hn = B.process_call(ctl, {"trials": [ta1]}, [], hnode(100.25, 101.2, 101.6, [101.3]), 100.0, None).get("hold") or {}
+    check("no witness copy and no arrival time: void as before", "no node window" in str(hn.get("void")), hn)
+
     # 5b. the rejudge: answered rows judged again from the saved answer, witness and node; the rest kept
     saved_w = [m[:6] for m in msgs]                       # the record keeps six fields per message
     ans_ok = {"trials": [t], "stack_free_min": 900, "label": ctl["label"],
@@ -268,11 +286,17 @@ MUTANTS = [
     ("the open's time taken as fast", "NODE_OPEN_S = 1.2 ", "NODE_OPEN_S = 0.1 "),
     ("the close not waiting for the open", "    return max(t_send + NODE_DOWN_S, opened + NODE_MIN_UP_S)\n",
      "    return t_send + NODE_DOWN_S\n"),
+    ("no host-clock hold check", '        if node is not None and s["witness"]["offset_us"] is None and t_send is not None and t_recv is not None:\n',
+     "        if False:\n"),
+    ("the trace's latest end without the hold", '    s_host = dict(s, witness=dict(s["witness"], offset_us=(t_recv - hold_s) * 1e6 - tr["end_ns"] / 1000.0))\n',
+     '    s_host = dict(s, witness=dict(s["witness"], offset_us=t_send * 1e6 - tr["end_ns"] / 1000.0))\n'),
+    ("the hold's earliest end from the arrival", '    if h["void"] is None and node["closed"] >= t_send + hold_s:\n',
+     '    if h["void"] is None and node["closed"] >= t_recv:\n'),
     ("settle echoed under its own name", 'ECHO_AS = {"settle": "settle_ms"}', "ECHO_AS = {}"),
     ("the hold's end from hold_ns", "                hold_end_w = tr[\"end_ns\"] / 1000.0 + hold_ms * 1000.0 + s[\"witness\"][\"offset_us\"]\n",
      "                hold_end_w = (tr[\"end_ns\"] + (tr.get(\"hold_ns\") or 0)) / 1000.0 + s[\"witness\"][\"offset_us\"]\n"),
-    ("the rejudge keeps the old error", '        nr = process_call(row["call"], row["answer"], row.get("witness") or [], row.get("node"))\n',
-     '        nr = dict(process_call(row["call"], row["answer"], row.get("witness") or [], row.get("node")), error=row.get("error"))\n'),
+    ("the rejudge keeps the old error", '                          row.get("t_send"), row.get("t_recv"))\n',
+     '                          row.get("t_send"), row.get("t_recv"))\n        nr["error"] = row.get("error")\n'),
     ("the rejudge drops unanswered rows", '        if "answer" not in row:\n            out["rows"].append(row)\n            continue\n',
      '        if "answer" not in row:\n            continue\n'),
     ("the stack mark at 256 B", "STACK_LOW_B = 512 ", "STACK_LOW_B = 256 "),

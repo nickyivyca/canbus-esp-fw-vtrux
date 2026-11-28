@@ -210,8 +210,25 @@ def node_window_w(node, off_s):
             "rx_us": [w(p) for p, hexd in node["rx"] if hexd[4:8] == TAG]}
 
 
-def process_call(call, ans, msgs, node):
-    """One call: its trial's summary, and for a call with a hold, the hold check. Returns the row."""
+def hold_check_host(s, tr, call, node, t_send, t_recv):
+    """The hold check on the host clock, for a trial with no witness copy to line the device up with (bench run
+    403a: 9 trials that ended in the error-active part, which the witness does not deliver). The trace ended no
+    later than the answer's arrival minus hold_ms (the hold lasts at least hold_ms, and the answer comes after it),
+    so the node is up after the trace when its open was called after that. The hold ended no earlier than the
+    POST's send plus hold_ms, so the node is down in time when its close returned before that."""
+    hold_s = call["hold_ms"] / 1000.0
+    s_host = dict(s, witness=dict(s["witness"], offset_us=(t_recv - hold_s) * 1e6 - tr["end_ns"] / 1000.0))
+    rx = [p * 1e6 for p, hexd in node["rx"] if hexd[4:8] == TAG]
+    h = U.hold_check(s_host, tr, [], node["open_called"] * 1e6, node["closed"] * 1e6, rx)
+    h["clock"] = "host (no witness copy): the trace's end at the latest, the hold's end at the earliest"
+    if h["void"] is None and node["closed"] >= t_send + hold_s:
+        h["void"] = "the node was up %.3f s after the hold's earliest end" % (node["closed"] - t_send - hold_s)
+    return h
+
+
+def process_call(call, ans, msgs, node, t_send=None, t_recv=None):
+    """One call: its trial's summary, and for a call with a hold, the hold check (on the witness clock, or on the
+    host clock when the witness has no copy and the send and arrival times are known). Returns the row."""
     row = {"label": call["label"], "kind": call["kind"], "state_aimed": call["state"], "call": call}
     # the httpd task's least free stack (README: the answer's last field, from tag 2026.11.27.3; the panics of
     # bench run f8d5 were that stack overflowing), flagged under STACK_LOW_B (the gen-inhibit reviewer, 2026-11-27)
@@ -241,7 +258,12 @@ def process_call(call, ans, msgs, node):
     if call.get("hold_ms"):
         off = clock_offset(msgs)
         nw = node_window_w(node, off)
-        if nw is None:
+        if node is not None and s["witness"]["offset_us"] is None and t_send is not None and t_recv is not None:
+            row["hold"] = hold_check_host(s, tr, call, node, t_send, t_recv)
+            short = node_short(node)
+            if row["hold"]["void"] is None and short is not None:
+                row["hold"]["void"] = "the node was up only %.3f s from its open's return" % short
+        elif nw is None:
             row["hold"] = {"void": "no node window or no witness clock", "held": None, "as_expected": None}
         else:
             h = U.hold_check(s, tr, copies, nw["up_us"], nw["down_us"], nw["rx_us"])
@@ -352,11 +374,16 @@ class Node(threading.Thread):
 
 def run_call(call, wit, inno):
     """One POST; for a call with a hold, canmain up and down inside it. Returns (answer or None, status,
-    body head, the witness's messages for the call, the node record or None)."""
+    body head, the witness's messages for the call, the node record or None, the send's time, the answer's
+    arrival time or None; host perf s)."""
     mark = wit.mark()
     box = {}
     t_send = time.perf_counter()
-    th = threading.Thread(target=lambda: box.update(r=http_post(query(call))), daemon=True)
+
+    def post():
+        box["r"] = http_post(query(call))
+        box["t"] = time.perf_counter()     # the answer's arrival (bench run 403a: none recorded, 9 holds void)
+    th = threading.Thread(target=post, daemon=True)
     th.start()
     node = None
     if call.get("hold_ms"):
@@ -375,7 +402,7 @@ def run_call(call, wit, inno):
             ans = json.loads(body)
         except ValueError:
             ans = None
-    return ans, st, body[:300].decode("utf-8", "replace"), msgs, node, t_send
+    return ans, st, body[:300].decode("utf-8", "replace"), msgs, node, t_send, box.get("t")
 
 
 def rejudge_record(rec):
@@ -386,11 +413,12 @@ def rejudge_record(rec):
         if "answer" not in row:
             out["rows"].append(row)
             continue
-        nr = process_call(row["call"], row["answer"], row.get("witness") or [], row.get("node"))
+        nr = process_call(row["call"], row["answer"], row.get("witness") or [], row.get("node"),
+                          row.get("t_send"), row.get("t_recv"))
         bad = echo_mismatch(row["call"], row["answer"])
         if bad:
             nr["error"] = "echo: " + "; ".join(bad)
-        for k in ("answer", "t_send", "witness", "node", "recovery"):
+        for k in ("answer", "t_send", "t_recv", "witness", "node", "recovery"):
             if k in row:
                 nr[k] = row[k]
         out["rows"].append(nr)
@@ -470,7 +498,7 @@ def main():
             rec["page_start"] = page_brief(last_page)
             failed_calls = 0
             for i, call in enumerate(calls):
-                ans, st, head, msgs, node, t_send = run_call(call, wit, inno)
+                ans, st, head, msgs, node, t_send, t_recv = run_call(call, wit, inno)
                 if ans is None:
                     row = {"label": call["label"], "kind": call["kind"], "call": call,
                            "error": "HTTP %s: %s" % (st, head)}
@@ -489,12 +517,13 @@ def main():
                         if p:
                             last_page, t_page = p, tp
                 else:
-                    row = process_call(call, ans, msgs, node)
+                    row = process_call(call, ans, msgs, node, t_send, t_recv)
                     bad = echo_mismatch(call, ans)
                     if bad:
                         row["error"] = "echo: " + "; ".join(bad)
                     row["answer"] = ans
                 row["t_send"] = t_send
+                row["t_recv"] = t_recv
                 row["witness"] = [(round(p, 6), round(hw, 1), i_, d, h, e) for p, hw, i_, d, h, e, _ep in msgs]
                 row["node"] = node
                 rec["rows"].append(row)
