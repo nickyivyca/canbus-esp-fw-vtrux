@@ -2815,6 +2815,78 @@ static void case_withdrawn_inhibit_count_lag(void)
 }
 
 /*
+ * THE WITHDRAWAL READS THE BUFFER AT THE CALL (spec 5.2 item 5; reviewer
+ * ruling, 2026-11-27: a release or trip withdraws the answer on the latch's own
+ * pass). gen_inhibit.c calls gs_withdraw_inhibits() on that pass; this is the
+ * scheduler's half: the call itself makes the first abort-if-awaiting read,
+ * with no wait and no gs_tick(), and the 1 ms bound is counted from it. The
+ * tester's emulated case holds the answer TRANSMITTING (no other node), so that
+ * comes first; then AWAITING, where that read issues the abort.
+ */
+static void case_withdrawal_reads_at_the_call(void)
+{
+    g_case = "item 5: the withdrawal's first read is made at the call";
+    fb_reset();
+    fb_set_unacked(true, 0);    /* error active: TS stays 1 */
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    (void)gs_command_received(&s, fb_now());
+    queue_marked_inhibit(&s, 1);
+    run(&s, 20, 10);
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
+          "PRECONDITION: the answer is in the controller");
+    until_state(GS_BUF_TRANSMITTING);
+
+    const int64_t t0 = fb_now();
+    const int r0 = fb_abort_reads();
+    const int spins = fb_spins();
+    gs_withdraw_inhibits(&s, t0);
+    ck_eq(fb_abort_reads() - r0, 1, "THE WITHDRAWAL READ THE BUFFER AT THE CALL");
+    ck_eq(fb_now(), t0, "with no wait");
+    ck_eq(fb_abort_cmds(), 0, "and issued nothing on a transmitting buffer");
+
+    /* The bound is counted from that read: 999 us on, not reached. */
+    const gs_stats_t *st = gs_stats(&s);
+    fb_advance(999);
+    gs_tick(&s, fb_now());
+    ck_eq(st->abort_bound_hit, 0, "999 us after the call the bound is not reached");
+    ck_eq(fb_spins() - spins, 0, "so the pass did not re-read");
+    fb_advance(1);
+    gs_tick(&s, fb_now());
+    ck_eq(st->abort_bound_hit, 1, "1000 us after the call it is");
+    ck(fb_spins() - spins > 0, "and that pass re-read");
+
+    fb_set_unacked(false, 0);
+    run(&s, 5000, 10);
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "the loop ended");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
+
+    /* AWAITING: the read at the call issues the abort. */
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: the answer waits AWAITING */
+    gs_init(&s, fb_hal());
+    (void)gs_command_received(&s, fb_now());
+    queue_marked_inhibit(&s, 2);
+    gs_tick(&s, fb_now());
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
+          "PRECONDITION: the second answer is in the controller");
+    ck(fb_state_now() == GS_BUF_AWAITING, "PRECONDITION: and awaiting");
+    const int64_t t1 = fb_now();
+    gs_withdraw_inhibits(&s, t1);
+    ck_eq(fb_abort_cmds(), 1, "THE READ AT THE CALL ISSUED THE ABORT");
+    ck_eq(fb_last_cmd_at(), t1, "at the call");
+
+    fb_set_contended(false);
+    run(&s, 5000, 10);
+    ck_eq(wire_count_id(ID_INHIBIT), 0, "THE WITHDRAWN INHIBIT NEVER REACHED THE WIRE");
+    ck_eq(st->cls[GS_CLASS_INHIBIT].withdrawn, 1, "booked `withdrawn`");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
+    wire_log_sane();
+}
+
+/*
  * THE RE-READ IS BOUNDED AT 1 MS A PASS (spec 5.2 item 5, user 2026-11-27): it
  * does not wait for a window that comes later. The resends here are 1.5 ms
  * apart, longer than the span (the C3's are 276 us apart), so where the pass
@@ -2994,6 +3066,7 @@ int main(void)
     case_deadline_skip_held_past_bound();
     case_first_pass_past_bound_rereads();
     case_withdrawn_inhibit_count_lag();
+    case_withdrawal_reads_at_the_call();
     case_reread_bounded_by_the_span();
     case_page_aborted_at_the_bound_is_requeued();
 

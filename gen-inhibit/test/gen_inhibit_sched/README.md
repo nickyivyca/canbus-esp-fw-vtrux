@@ -330,3 +330,27 @@ AWAITING. The withdrawal's abort frees the buffer, and a pass inside the
 50 us lag keeps the frame held, books nothing and hands over nothing. The next
 pass books it `withdrawn`, never `sent`, and the page queued behind it goes
 out. The mutant that removes step 3's inhibit branch is caught.
+
+### 2026-11-28: the withdrawal at the latch (spec 5.2 item 5)
+
+A release or trip withdraws the answer on the latch's own pass (reviewer
+ruling, 2026-11-27). `gen_inhibit.c` now calls `gs_withdraw_inhibits()` on
+that pass, and its shim cases 69 and 70 check it (`../gen_inhibit_shim/`).
+`case_withdrawal_reads_at_the_call` is the scheduler's half: the call itself
+makes the first abort-if-awaiting read, with no wait and no `gs_tick()`.
+- With the answer TRANSMITTING (error active), the read issues nothing, and
+  the 1 ms bound counts from it. A pass 999 us later does not reach the bound;
+  a pass 1000 us later reaches it and re-reads.
+- With the answer AWAITING (contended bus), the read issues the abort at the
+  call. The frame is booked `withdrawn` and never reaches the wire.
+
+The mutant that removes `begin_abort()`'s read is caught.
+
+A correction to the 2026-11-27 section above: in the tester's emulation
+(gen-inhibit/tester/sl-retry-c3 11004015), the dense re-read at 400 ms after
+the latch had another cause. The emulation shows the same 400 ms on 709b69ff
+and on 3d6e36cf, whose scheduler is 03a90fd0's. The withdrawal came a pass late, 200 ms after the latch. On
+709b69ff, the pass that reached the bound was followed 3 us later by
+`dispatch_emits()`'s tick for that pass's page, and that tick re-read. The
+unit model has no such tick, so there the re-read on 709b69ff began a pass
+later.

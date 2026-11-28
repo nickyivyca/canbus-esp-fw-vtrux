@@ -1070,6 +1070,44 @@ static const gs_hal_t DEV_HAL = {
 };
 
 /*
+ * D7: THE MOMENT THE CORE STOPS BEING LIVE, EVERY INHIBIT GOES, queued or in
+ * the controller (spec 5.2 item 5).
+ *
+ * Without this a refused inhibit stays queued for a retry, the core latches off
+ * on the refusal, and the retry on the next tick succeeds -- putting an inhibit
+ * frame on the wire AFTER the trip that was supposed to stop us transmitting.
+ * The same shape applies to any trip landing while an inhibit sits behind an
+ * abort loop. Found by the reviewing session, 2026-09-27; verified in the source
+ * before fixing: a refused submit returns with the frame still in its queue.
+ *
+ * On the falling edge only, so a device that is simply not live does not re-run
+ * the purge every tick and pile up skips it never had.
+ *
+ * AT THE LATCH, ON THE LATCH'S OWN PASS (spec 5.2 item 5: a release or trip
+ * "that lands while an answer is queued or still in the controller withdraws
+ * it"; reviewer ruling, 2026-11-27). Three callers: the end of
+ * sched_advance(), for a trip the scheduler's own events make, and the worker
+ * loop right after dispatch_emits() on the gi_tick() and the gi_on_frame()
+ * paths. Until 2026-11-27 only the first existed, so a latch inside gi_tick()
+ * was withdrawn by the next pass's sched_advance(): on a quiet bus 200 ms
+ * later, after the receive timeout. The withdrawal's first read
+ * (gs_withdraw_inhibits(), begin_abort()) came on that pass, and the first
+ * dense re-read past the 1 ms bound 200 ms after it (the tester's W5 and W6,
+ * 2026-11-27).
+ *
+ * Returns true once, on the falling edge, and the caller withdraws. The
+ * worker's two callers read the clock only then, so a pass with no edge costs
+ * no clock read.
+ */
+static bool live_fell(void)
+{
+    const bool live_now = s_core.inhibit_live;
+    const bool fell = s_was_live && !live_now;
+    s_was_live = live_now;
+    return fell;
+}
+
+/*
  * Turn the scheduler's monotonic counters into the core's events.
  *
  * WHY COUNTERS AND NOT A CALLBACK: gi_sched is platform-free and hands out no
@@ -1161,7 +1199,8 @@ static void sched_advance(int64_t now, gi_events_t *ev)
      * reported, so diag pages keep their cadence after a release or a trip.
      *
      * Read HERE, on the next pass, and not straight after gs_withdraw_inhibits()
-     * at the bottom of this function: when a refusal trips, dispatch_emits()
+     * (on live_fell(), at the bottom of this function and after
+     * the worker's dispatch_emits()): when a refusal trips, dispatch_emits()
      * reports the frame as queued AFTER this function returns, and that sets the
      * wait again. Reporting on the next pass ends it after that, and it still
      * comes before any new inhibit, because the core queues one only through
@@ -1244,25 +1283,11 @@ static void sched_advance(int64_t now, gi_events_t *ev)
         }
     }
 
-    /*
-     * D7: THE MOMENT THE CORE STOPS BEING LIVE, EVERY QUEUED INHIBIT GOES.
-     *
-     * Without this a refused inhibit stays queued for a retry, the core latches off
-     * on the refusal, and the retry on the next tick succeeds -- putting an inhibit
-     * frame on the wire AFTER the trip that was supposed to stop us transmitting.
-     * The same shape applies to any trip landing while an inhibit sits behind an
-     * abort loop. Found by the reviewing session, 2026-09-27; verified in the source
-     * before fixing: a refused submit returns with the frame still in its queue.
-     *
-     * On the falling edge only, so a device that is simply not live does not re-run
-     * the purge every tick and pile up skips it never had.
-     */
-    const bool live_now = s_core.inhibit_live;
-    if (s_was_live && !live_now)
+    /* D7: a trip from a refusal or a failed transmit, reported above. */
+    if (live_fell())
     {
         gs_withdraw_inhibits(&s_sched, now);
     }
-    s_was_live = live_now;
 }
 
 static void dispatch_emits(const gi_emit_t *em, gi_events_t *ev)
@@ -2244,6 +2269,14 @@ static void gen_inhibit_task(void *arg)
             bus_snapshot(&bus);
             gi_tick(&s_core, esp_timer_get_time(), &bus, &em, &ev);
             dispatch_emits(&em, &ev);
+            /*
+             * A trip gi_tick() latched is withdrawn on this pass, not after the
+             * receive below (spec 5.2 item 5; live_fell()).
+             */
+            if (live_fell())
+            {
+                gs_withdraw_inhibits(&s_sched, esp_timer_get_time());
+            }
             report_events(&ev);
         }
 
@@ -2376,6 +2409,11 @@ static void gen_inhibit_task(void *arg)
             gi_on_frame(&s_core, rx.identifier, rx.data_length_code, rx.data,
                         t_rx, &em, &ev);
             dispatch_emits(&em, &ev);
+            /* The same for a release or a trip gi_on_frame() latched. */
+            if (live_fell())
+            {
+                gs_withdraw_inhibits(&s_sched, esp_timer_get_time());
+            }
             report_events(&ev);
         }
     }

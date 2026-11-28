@@ -596,8 +596,12 @@ static bool abort_step(gs_t *s, int64_t now)
      * A WITHDRAWN INHIBIT STAYS IN THE LOOP, and this same pass re-reads (spec
      * 5.2 item 5, user 2026-11-27): the limit is a time, so every pass that
      * starts past it re-reads, the first one too. 709b69ff set the past-bound
-     * state in step 3 and returned, so the re-read began a pass later, 200 ms
-     * on a quiet bus (reviewer, from the tester's emulation, 2026-11-27).
+     * state in step 3 and returned, so the re-read began on the next
+     * gs_tick(), up to 200 ms later on a quiet bus. (In the tester's emulation,
+     * 2026-11-27, that next gs_tick() came 3 us later, from dispatch_emits()'s
+     * tick for the pass's page. Its dense pass at +400 ms from the latch had
+     * another cause: the latch's withdrawal came a pass late, at +200 ms.
+     * gen_inhibit.c live_fell() says why.)
      */
     if (b == GS_BUF_TRANSMITTING && !s->abort_past_bound
         && now - s->abort_since >= GS_ABORT_BOUND_US)

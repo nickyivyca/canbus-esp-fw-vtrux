@@ -6460,6 +6460,123 @@ static void case_tt_probe_not_among_them(void)
     case_end();
 }
 
+/*
+ * CASES 69 AND 70 -- THE WITHDRAWAL COMES ON THE LATCH'S OWN PASS (spec 5.2
+ * item 5: a release or trip "that lands while an answer is queued or still in
+ * the controller withdraws it"; reviewer ruling, 2026-11-27).
+ *
+ * The answer is held in the controller, AWAITING (ft_stall_id), so the
+ * withdrawal's first abort-if-awaiting read issues the abort. Each case feeds
+ * ONE frame and runs the worker until it next blocks in its receive, with no
+ * receive timeout in between: that is one pass, and the latch lands in it. The
+ * read must come in it, at or after the frame's delivery.
+ *
+ * Case 69 latches in gi_tick() (trip 6, the tester's W5 case). On 3d6e36cf the
+ * falling edge was seen only at the end of sched_advance(), which comes before
+ * gi_tick() on the pass, so the withdrawal waited for the next pass: no read on
+ * this one, and on a quiet bus the next is 200 ms later. Case 70 latches in
+ * gi_on_frame() (M mode). There the next sched_advance() is the loop top's, a
+ * few microseconds later with nothing blocking between, so 3d6e36cf meets
+ * case 70 too; it guards the gi_on_frame() call site.
+ */
+static void wl_hold_the_answer(uint8_t *ctr, const char *which)
+{
+    setup();
+    go_live();
+    keep_alive(100000, ctr);
+    CHECK(json_has("\"inhibit_live\":true"),
+          "%s PRECONDITION: the device is not live, so nothing can withdraw: %s",
+          which, stats());
+    ft_stall_id(0x051, 1);
+    uint8_t cmd[6];
+    memcpy(cmd, VCM, sizeof(cmd));
+    cmd[5] = (uint8_t)((*ctr)++ & 0x0F);
+    feed(0x051, cmd, 6, 1000);
+    CHECK(cls_num("inhibit", "held") == 1,
+          "%s PRECONDITION: the answer is not in the controller: %s",
+          which, stats());
+}
+
+/* Feed the latching frame, one pass, and check the read came on that pass. */
+static void wl_latch_pass(const char *which, uint32_t id, const uint8_t *d,
+                          const char *latched)
+{
+    const int reads = ft_abort_reads();
+    const int aborts = ft_ll_aborts();
+    const int64_t t0 = ft_now();
+    feed(id, d, 8, 1000);
+    const int64_t t1 = ft_now();
+    CHECK(ft_in_receive() && ft_rx_pending() == 0,
+          "%s PRECONDITION: the worker did not finish the pass: %s", which,
+          stats());
+    CHECK(json_has(latched) && json_has("\"inhibit_live\":false"),
+          "%s PRECONDITION: the latch did not land on this pass: %s", which,
+          stats());
+    CHECK(ft_abort_reads() > reads,
+          "%s: THE LATCH'S PASS MADE NO ABORT-IF-AWAITING READ. The answer in "
+          "the controller waits for the next pass, 200 ms later on a quiet bus "
+          "(spec 5.2 item 5): %s", which, stats());
+    const int64_t at = ft_abort_read_at(reads);
+    CHECK(at >= t0 && at <= t1,
+          "%s: the withdrawal's first read at %lld us, outside the latch's pass "
+          "(%lld to %lld us)", which, (long long)at, (long long)t0,
+          (long long)t1);
+    CHECK(ft_abort_read_state(reads) == TWAI_PORT_BUF_AWAITING
+          && ft_ll_aborts() == aborts + 1,
+          "%s: the first read found state %d and %d abort(s) were issued; "
+          "AWAITING and 1 expected", which, ft_abort_read_state(reads),
+          ft_ll_aborts() - aborts);
+}
+
+/* After the latch: one stand-down, booked withdrawn, never on the wire. */
+static void wl_after(const char *which, int wire_051_before, uint8_t *ctr)
+{
+    keep_alive(300000, ctr);
+    CHECK(json_need("\"standdown\":") == 1,
+          "%s: the withdrawn answer is not ONE stand-down: %s", which, stats());
+    CHECK(cls_num("inhibit", "withdrawn") == 1 && cls_num("inhibit", "held") == 0,
+          "%s: the answer was not booked `withdrawn`: %s", which, stats());
+    CHECK(ft_wire_count_id(0x051) == wire_051_before,
+          "%s: the withdrawn answer reached the wire", which);
+}
+
+static void case_withdrawn_on_a_gi_tick_latch(void)
+{
+    case_begin("case 69: a trip gi_tick() latches withdraws the answer in the "
+               "controller on the same pass (spec 5.2 item 5)");
+    static const uint8_t KEY[8] = { 0x10 };
+    uint8_t ctr = 0x50;
+    ft_set_bus_errors(0);
+    wl_hold_the_answer(&ctr, "case 69");
+    const int wire_051_before = ft_wire_count_id(0x051);
+
+    /*
+     * err_min_trip error frames in one read. The next gi_tick() records them
+     * and trips (spec 7 trip 6); 0x592 is a frame gi_on_frame() latches nothing
+     * on, so the latch is gi_tick()'s, on the pass after its receive.
+     */
+    ft_set_bus_errors(10);
+    wl_latch_pass("case 69", 0x592, KEY,
+                  "\"abort_reason\":\"error-frame rate exceeded\"");
+    wl_after("case 69", wire_051_before, &ctr);
+    teardown();
+    case_end();
+    ft_set_bus_errors(0);
+}
+
+static void case_withdrawn_on_a_gi_on_frame_latch(void)
+{
+    case_begin("case 70: a release gi_on_frame() latches withdraws the answer "
+               "in the controller on the same pass (spec 5.2 item 5)");
+    uint8_t ctr = 0x60;
+    wl_hold_the_answer(&ctr, "case 70");
+    const int wire_051_before = ft_wire_count_id(0x051);
+    wl_latch_pass("case 70", 0x639, MMODE, "\"disable_reason\":\"m_mode\"");
+    wl_after("case 70", wire_051_before, &ctr);
+    teardown();
+    case_end();
+}
+
 #if !SHIM_AUTOARM_BUILD
 int main(int argc, char **argv)
 {
@@ -6550,6 +6667,8 @@ int main(int argc, char **argv)
     case_tt_arrival_between_reads_is_counted();
     case_tt_probe_counted_command();
     case_tt_probe_not_among_them();
+    case_withdrawn_on_a_gi_tick_latch();
+    case_withdrawn_on_a_gi_on_frame_latch();
 
     printf("\n%s\n", g_fail ? "FAILURES" : "all shim cases pass");
     return g_fail ? 1 : 0;

@@ -344,6 +344,15 @@ static void see_departure(gs_t *s, int64_t now, bool at_deadline)
      """    s->abort_cmds_this = 0;""",
      "F5: a stand-down held past the bound is aborted on every pass"),
 
+    # Spec 5.2 item 5 (reviewer ruling, 2026-11-27): the withdrawal is made on
+    # the latch's own pass, and its first read is gs_withdraw_inhibits()'s own,
+    # in begin_abort(). Without it the first read waits for the next gs_tick().
+    ("item 5: the withdrawal makes no read of its own",
+     "gi_sched.c",
+     """    if (s->hal->abort_if_awaiting(s->hal->ctx) == GS_BUF_AWAITING)""",
+     """    if (0)""",
+     "item 5: the withdrawal's first read is made at the call"),
+
     ("F5: a later deadline books the held skip again",
      "gi_sched.c",
      """    if (!s->inhibit_outstanding || s->held_booked)""",
