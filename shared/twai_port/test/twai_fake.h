@@ -291,6 +291,13 @@ uint32_t twai_fake_isr_held(void);
  * the fake's own clock by `us`. With a clock adapter it calls the wait
  * hook with a deadline `us` from now until the clock gets there (the
  * project's scheduler moves its clock), and with no hook it only counts.
+ *
+ * esp_timer_get_time() (host/esp_timer.h) is the fake's too, weak, so a
+ * build that defines its own keeps it: twai_fake_now() plus the microseconds
+ * of every busy wait the clock did not see (with an adapter and no hook, or
+ * a hook that gave up short of the deadline). It moves by each delay in
+ * every mode, so a wait bounded on it ends; a register read moves it not at
+ * all. twai_fake_reset() clears the unseen part (2026-11-27).
  */
 uint32_t twai_fake_delay_calls(void);
 int64_t  twai_fake_delay_us_total(void);

@@ -1,6 +1,7 @@
 /* The scripted stub; see stub.h. */
 #include "stub.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "soc/soc.h"
 #include "soc/system_reg.h"
 #include "soc/rtc_cntl_reg.h"
@@ -47,6 +48,13 @@ void esp_rom_delay_us(uint32_t us)
     {
         stub_twai_dev.status = stub.status_after;
     }
+}
+
+int64_t esp_timer_get_time(void)
+{
+    stub.timer_reads++;
+    stub.timer_extra_us += stub.timer_per_read_us;
+    return (int64_t)stub.delay_us_total + stub.timer_extra_us;
 }
 
 static void call(const char *name)

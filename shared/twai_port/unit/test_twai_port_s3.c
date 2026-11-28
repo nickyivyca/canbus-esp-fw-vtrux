@@ -332,6 +332,55 @@ static void case_switch_abort_never_seen(void)
     CHECK(twai_port_status(&s) == ESP_OK && s.tx_failed == 1);
 }
 
+/* The abort wait is elapsed time from esp_timer, not the sum of its 10 us
+ * steps: 90 us pass outside the waits at each clock read (an interrupt or
+ * another task between steps), and both the report and the 1 ms bound count
+ * them. Read just after each status read, from just after the abort. */
+static void case_switch_abort_wait_elapsed(void)
+{
+    /* Never let go: the bound is reached after 11 reads, 1090 us elapsed,
+     * with only 10 waits (100 us) made. The clock reads at i-th status read:
+     * 100 i - 10 us from the abort. */
+    up(CAN_PORT_MODE_NORMAL);
+    send_ids(0x50, 1);
+    clear_log();
+    const twai_status_info_t stuck[] = { st(TWAI_STATE_RUNNING, 1) };
+    stub_status(1, stuck);
+    stub_twai_dev.status = ST_TBS;
+    stub.timer_per_read_us = 90;
+    CHECK(twai_port_set_mode(CAN_PORT_MODE_LISTEN_ONLY) == ESP_OK);
+    twai_port_switch_report_t r = last();
+    CHECK(r.abort_timed_out && r.driver_tx_stuck);
+    CHECK(r.abort_wait_us == 1090);
+    CHECK(stub.delay_us_total == 100);
+    CHECK(stub.timer_reads == 12);      /* t0, then one per status read */
+}
+
+/* As above, let go at the second read in the wait: 190 us, one 10 us wait. */
+static void case_switch_abort_wait_elapsed_freed(void)
+{
+    up(CAN_PORT_MODE_NORMAL);
+    send_ids(0x58, 2);
+    clear_log();
+    const twai_status_info_t freed[] = {
+        st(TWAI_STATE_RUNNING, 2),
+        st(TWAI_STATE_RUNNING, 2),
+        st(TWAI_STATE_RUNNING, 1),
+        st(TWAI_STATE_RUNNING, 0),
+    };
+    stub_status(4, freed);
+    stub.status[3].tx_failed_count = 1;
+    stub_twai_dev.status = 0;
+    stub.alerts_then = TWAI_ALERT_TX_FAILED;
+    stub.timer_per_read_us = 90;
+    CHECK(twai_port_set_mode(CAN_PORT_MODE_LISTEN_ONLY) == ESP_OK);
+    const twai_port_switch_report_t r = last();
+    CHECK(r.head_aborted && !r.abort_timed_out && !r.driver_tx_stuck);
+    CHECK(r.abort_wait_us == 190);
+    CHECK(stub.delay_us_total == SWITCH_ABORT_WAIT_STEP_US);
+    CHECK(stub.timer_reads == 3);
+}
+
 /* Back to normal: reset mode, normal, REC 0 read back, sends taken again. */
 static void case_switch_to_normal(void)
 {
@@ -615,6 +664,8 @@ int main(void)
         { "switch_keeps_earlier_failure", case_switch_keeps_earlier_failure },
         { "switch_driver_stuck", case_switch_driver_stuck },
         { "switch_abort_never_seen", case_switch_abort_never_seen },
+        { "switch_abort_wait_elapsed", case_switch_abort_wait_elapsed },
+        { "switch_abort_wait_elapsed_freed", case_switch_abort_wait_elapsed_freed },
         { "switch_to_normal", case_switch_to_normal },
         { "switch_refused_bus_off", case_switch_refused_bus_off },
         { "no_ack_is_t4", case_no_ack_is_t4 },
