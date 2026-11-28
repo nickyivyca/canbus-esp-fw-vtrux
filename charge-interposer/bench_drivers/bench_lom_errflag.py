@@ -7,11 +7,12 @@ The product image's form (the board in listen-only through its own
 kept-driver switch) joins it with the ported image.
 
 THE STIMULUS. The Kvaser, the only sender, sends at a wrong bit rate
-(250k, then 125k) on the 500k vehicle segment. A 500k receiver sees its
-frames as bus errors. Slower rates only: at 1M the error-active can-fail
-gave the Kvaser no bus-off (run ht_ce_a08d8bd5, 2026-11-27: 0 bus-offs at
-1M against 31 at 250k), so 1M cannot show a dominant error flag and was
-dropped. A wrong rate here is a stimulus only, not a claim
+(250k) on the 500k vehicle segment. A 500k receiver sees its frames as
+bus errors. 250k only (the charge-interposer reviewer, 2026-11-28): the
+error-active can-fail gave the Kvaser no bus-off at 1M (run ht_ce_a08d8bd5,
+2026-11-27: 0 bus-offs against 31 at 250k) or at 125k (run
+bench_t19_1d4221c9, 2026-11-27: 0 against 31 at 250k), so neither can show
+a dominant error flag, and both were dropped. A wrong rate here is a stimulus only, not a claim
 about the product, whose port stays at 500k (the reviewer's tracker row
 "Vehicle frames lost at the vehicle port's mode switch"). It is not spec
 9's wrong-rate listen-only cases, which put the board at a wrong rate.
@@ -79,7 +80,10 @@ sys.path.insert(0, HERE)
 import kvaser_link                 # noqa: E402  (the Kvaser on kvaser_usb)
 
 NODE_ID = 0x5A5
-WRONG_RATES = (250000, 125000)
+# 250k only (the charge-interposer reviewer, 2026-11-28): the can-fail
+# separates there and nowhere else tried (run bench_t19_1d4221c9: 31
+# bus-offs at 250k, 0 at 125k; run ht_ce_a08d8bd5: 0 at 1M)
+WRONG_RATES = (250000,)
 WINDOW_S = 5.0
 SEND_PERIOD_S = 0.02
 RESTART_MS = 100
@@ -484,7 +488,9 @@ def self_test():
     check(rc == 0 and lines[0].startswith("PASS"), "a passive board, a loud can-fail "
           "-> PASS: %s" % lines)
     ups = [c for c in L.calls if c[0] == "up"]
-    check([u[1] for u in ups] == [WRONG_RATES[0]] * 4 + [WRONG_RATES[1]] * 4
+    check(WRONG_RATES == (250000,),
+          "the wrong rates are 250k only (reviewer, 2026-11-28): %s" % (WRONG_RATES,))
+    check([u[1] for u in ups] == [r for r in WRONG_RATES for _a in VPORT_ARMS]
           and all(u[2] == RESTART_MS for u in ups),
           "each window's link up at its wrong rate with restart-ms %d" % RESTART_MS)
     seq = [c[0] for c in L.calls]
@@ -495,7 +501,7 @@ def self_test():
           "the link down before the first board command")
     check(all(c[1] is False and c[2] is False for c in L.calls if c[0] == "open"),
           "the sender's socket takes no echoes and no error frames")
-    check(B.cmds.count("LOMREG norec") == 2, "the can-fail at each rate")
+    check(B.cmds.count("LOMREG norec") == len(WRONG_RATES), "the can-fail at each rate")
 
     L = _FakeLink(lambda calls: dict(quiet, bus_off=0))
     rc, lines = verdict(run_arms(_FakeBoard(), L, lambda s: None, sender=L.sent, seconds=0))
@@ -604,6 +610,7 @@ MUTANTS = [
      "        if cmd.startswith(\"LOMREG \") and field(r, \"reset\") != \"0\":", "        if False:"),
     ("state: a failed MODE accepted",
      "        if cmd.startswith(\"MODE \") and field(r, \"driver\") != \"ESP_OK\":", "        if False:"),
+    ("rates: 125k back in", "WRONG_RATES = (250000,)", "WRONG_RATES = (250000, 125000)"),
     ("run: the window at 500k", "restart_ms=RESTART_MS, bitrate=rate)",
      "restart_ms=RESTART_MS)"),
     ("run: no restart-ms", "link.set_link(True, restart_ms=RESTART_MS, bitrate=rate)",
