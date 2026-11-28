@@ -567,7 +567,7 @@ def _idf_build(images, variant, sha, project=None, version=IMG_SRC,
 
 
 IMG_SHA = {"bridge": "c7c98adc" + "1" * 56, "witness": "a538710a" + "2" * 56,
-           "truck": "5e1f00d0" + "3" * 56}
+           "truck": "5e1f00d0" + "3" * 56, "s3probe": "53b0be19" + "4" * 56}
 
 
 def _settings():
@@ -838,7 +838,10 @@ def test_suites():
     #      cf.bench-lom-errflag (stage (b) batch 1 step 3, check (c): no
     #      dominant error flag in listen-only after a provoked error, its
     #      judge and can-fail; the reviewer, 2026-11-28)
-    assert len(seen) == 324, "checks across the suites: %d" % len(seen)
+    # 327: b-s3probe/t19-s3probe, st.bench-t19 and cf.bench-t19 (stage (b)
+    #      batch 1 step 2: shared/twai_port T19 on the S3, the commands with
+    #      no gen-inhibit counterpart; the reviewer, 2026-11-27/28)
+    assert len(seen) == 327, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
@@ -946,7 +949,15 @@ def test_interposer_images():
     for v, sha in IMG_SHA.items():
         im = su["bench"].images[v]
         d = os.path.join(s["images_dir"], IMG_SRC, v)
-        assert im.expect == sha[:8], (v, im.expect)
+        # s3probe (T19's image) owns no bus at boot: identified by its
+        # @HELLO, as read_hello gives it (2026-11-27)
+        want = "s3probe:" + sha if v == "s3probe" else sha[:8]
+        assert im.expect == want, (v, im.expect)
+        if v == "s3probe":
+            g = [g for g in su["bench"].groups if g.name == "b-s3probe"][0]
+            argv = g.checks[0].argv
+            assert g.image == ["s3probe", B.bench_wican.IMAGE] and \
+                argv[argv.index("--elf-sha256") + 1] == sha, (g.image, argv)
         files = im.params["files"]
         assert [o for o, _p in files] == ["0x0", "0x8000", "0xe000",
                                           "0x10000"], files
@@ -1034,7 +1045,8 @@ def test_list_build_images():
     for v, sha in IMG_SHA.items():
         im = su.images[v]
         d = t["interposer_builds"][v]["dir"]
-        assert im.expect == sha[:8], (v, im.expect)
+        want = "s3probe:" + sha if v == "s3probe" else sha[:8]
+        assert im.expect == want, (v, im.expect)
         assert dict(im.params["files"])["0x10000"] == os.path.join(
             d, "interposer_%s.bin" % v), im.params["files"]
         assert all(p.startswith(d) for _o, p in im.params["files"]), im.params["files"]
@@ -1252,7 +1264,7 @@ def test_wican_board():
     b = B.bench(s)
     W = B.bench_wican
     locked = [g for g in b.groups if g.needs_lock]
-    assert len(locked) == 5, [g.name for g in locked]
+    assert len(locked) == 6, [g.name for g in locked]      # b-s3probe, 2026-11-27
     for g in locked:
         il = g.image_list
         assert len(il) == 2 and [b.images[x].board for x in il] == [
@@ -1491,7 +1503,8 @@ def test_idle_safe():
     assert b.standing_image is None and b.standing_images is None, \
         (b.standing_image, b.standing_images)
     unsafe = {n for n, im in b.images.items() if not im.idle_safe}
-    assert unsafe == {"witness", "c12_bench", "vport_bench"} == set(B.X2_IDLE_UNSAFE), unsafe
+    assert unsafe == {"witness", "c12_bench", "vport_bench", "s3probe"} \
+        == set(B.X2_IDLE_UNSAFE), unsafe
     assert b.idle_safe_images == {"x2": "bridge"}, b.idle_safe_images
     for n in ("bridge", "truck", B.bench_wican.IMAGE):
         assert b.images[n].idle_safe, n
@@ -1916,7 +1929,7 @@ def test_x2_test_image_flash_first():
     s, wroot = _wican_usb(s, "flash-first-wican")
     b = B.bench(s)
     x2_images = sorted(n for n, im in b.images.items() if im.board == "x2")
-    assert len(x2_images) == 5, x2_images
+    assert len(x2_images) == 6, x2_images                  # s3probe, 2026-11-27
     # this call's own run folders (--can-fail runs the test once per mutant)
     runs = os.path.join(TMP, "flash-first")
     scratch_dir.remove(runs)
