@@ -504,6 +504,79 @@ static void case_s3_restart_stop(void)
     CHECK(r.timed_out && r.wait_us == RESTART_WAIT_MAX_US && r.entered_reset);
 }
 
+/* T19's stall record (twai_port_ll.h): the fields read at entry, written
+ * only after T12's steps. */
+static uint32_t s_magic_at_reset;
+static void look_at_reset(void)
+{
+    s_magic_at_reset = s_stall_rec.magic;
+}
+
+static void case_s3_stall_record(void)
+{
+    twai_port_s3_stall_record_t s;
+    can_port_restart_report_t r;
+    twai_port_ll_s3_stall_record_clear();
+    CHECK(!twai_port_ll_s3_stall_record(&s));
+
+    /* Running from core 1, core 0 not stalled: not yet written as reset
+     * mode is entered, written after it, with the raw fields as read. */
+    stub.core_id = 1;
+    stub.clk_en0 = SYSTEM_TWAI_CLK_EN;
+    stub.rtc_options0 = 0x1u << 2;
+    stub.rtc_sw_stall = 0x5u << 26;
+    stub_twai_dev.status = ST_TBS;
+    stub_twai_dev.on_enter_reset = look_at_reset;
+    s_magic_at_reset = 1;
+    CHECK(twai_port_restart_stop(&r) == ESP_OK);
+    CHECK(r.entered_reset && stub_twai_dev.enter_reset_cmds == 1);
+    CHECK(s_magic_at_reset == 0);
+    CHECK(twai_port_ll_s3_stall_record(&s));
+    CHECK(s.magic == TWAI_PORT_S3_STALL_MAGIC && s.core == 1 && s.other == 0);
+    CHECK(s.options0 == (0x1u << 2) && s.sw_cpu_stall == (0x5u << 26));
+    CHECK(s.stalled_at_entry == 0 && s.stall_called == 1 && s.entered_reset == 1);
+    CHECK(stub.stalls == 1 && stub.stalled_core == 0);
+
+    /* Cleared: not read again. */
+    twai_port_ll_s3_stall_record_clear();
+    CHECK(!twai_port_ll_s3_stall_record(&s));
+
+    /* From core 0, core 1 already stalled, clock off: written at that
+     * return too, with no stall called and no reset mode. */
+    stub.core_id = 0;
+    stub.clk_en0 = 0;
+    stub.rtc_options0 = 0x2u << 0;
+    stub.rtc_sw_stall = 0x21u << 20;
+    CHECK(twai_port_restart_stop(&r) == ESP_OK);
+    CHECK(twai_port_ll_s3_stall_record(&s));
+    CHECK(s.core == 0 && s.other == 1);
+    CHECK(s.options0 == (0x2u << 0) && s.sw_cpu_stall == (0x21u << 20));
+    CHECK(s.stalled_at_entry == 1 && s.stall_called == 0 && s.entered_reset == 0);
+    CHECK(stub.stalls == 1);
+
+    /* Held in reset: written at that return as well. */
+    twai_port_ll_s3_stall_record_clear();
+    stub.clk_en0 = SYSTEM_TWAI_CLK_EN;
+    stub.rst_en0 = SYSTEM_TWAI_RST;
+    CHECK(twai_port_restart_stop(&r) == ESP_OK);
+    CHECK(twai_port_ll_s3_stall_record(&s) && s.entered_reset == 0);
+
+    /* A field changed after the write: the check refuses the record. */
+    s_stall_rec.stall_called ^= 1u;
+    CHECK(!twai_port_ll_s3_stall_record(&s));
+
+    /* A NULL report: nothing done, nothing written. */
+    twai_port_ll_s3_stall_record_clear();
+    CHECK(twai_port_restart_stop(NULL) == ESP_ERR_INVALID_ARG);
+    CHECK(!twai_port_ll_s3_stall_record(&s));
+}
+
+/* R20's mark for the measurement build (twai_port_ll.h). */
+static void case_s3_probe_mark(void)
+{
+    CHECK(strstr(twai_port_s3_probe_build, "S3 probe build") != NULL);
+}
+
 #else   /* !TWAI_PORT_S3_PROBE */
 
 /* Not measured: T8 and T12 unsupported, touching nothing (with the host
@@ -521,6 +594,14 @@ static void case_s3_unsupported(void)
     CHECK(stub_twai_dev.enter_reset_cmds == 0 && stub.stalls == 0);
 }
 
+#endif
+
+#if TWAI_PORT_HOST_SWITCH
+/* R20's mark for the host-only switch (twai_port_ll.h). */
+static void case_host_switch_mark(void)
+{
+    CHECK(strstr(twai_port_host_switch_build, "host switch build") != NULL);
+}
 #endif
 
 int main(void)
@@ -545,8 +626,13 @@ int main(void)
 #if TWAI_PORT_S3_PROBE
         { "s3_abort", case_s3_abort },
         { "s3_restart_stop", case_s3_restart_stop },
+        { "s3_stall_record", case_s3_stall_record },
+        { "s3_probe_mark", case_s3_probe_mark },
 #else
         { "s3_unsupported", case_s3_unsupported },
+#endif
+#if TWAI_PORT_HOST_SWITCH
+        { "host_switch_mark", case_host_switch_mark },
 #endif
     };
     for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)

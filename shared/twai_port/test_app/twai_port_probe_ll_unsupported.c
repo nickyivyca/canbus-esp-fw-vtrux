@@ -1,9 +1,8 @@
 /*
- * twai_port_probe_ll on a chip with no register file here (the S3 among
- * them) -- MEASUREMENT-ONLY (SPEC.md T13). The no-acknowledge modes refuse
- * with "not supported", as T8 and T12 do, and nothing touches a register. A
- * chip gets its own file, twai_port_probe_ll_<chip>.c; the S3's comes with
- * the charge interposer's T19 work.
+ * twai_port_probe_ll on a chip with no register file here (any chip but the
+ * C3 and the S3) -- MEASUREMENT-ONLY (SPEC.md T13). The no-acknowledge modes
+ * refuse with "not supported", as T8 and T12 do, and nothing touches a
+ * register. A chip gets its own file, twai_port_probe_ll_<chip>.c.
  */
 #include "twai_port_probe_ll.h"
 

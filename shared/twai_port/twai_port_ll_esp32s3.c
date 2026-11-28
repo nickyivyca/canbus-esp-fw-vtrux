@@ -144,6 +144,81 @@ static IRAM_ATTR bool core_stalled(int core)
            && ((REG_READ(RTC_CNTL_SW_CPU_STALL_REG) >> c1_s) & 0x3Fu) == 0x21u;
 }
 
+#if S3_SUPPORTED
+/*
+ * T19, THE STALL RECORD (twai_port_ll.h): the measurement build only. What
+ * the probe build adds to the stop: two register reads at entry, before the
+ * stall check, and one write of this record after T12's steps, at each
+ * return after the stall. Nothing else in the stop differs.
+ */
+#if !defined(RTC_NOINIT_ATTR) && !defined(ESP_PLATFORM)
+#define RTC_NOINIT_ATTR     /* host builds whose esp_attr.h lacks it */
+#endif
+static RTC_NOINIT_ATTR twai_port_s3_stall_record_t s_stall_rec;
+
+static IRAM_ATTR uint32_t stall_check(const twai_port_s3_stall_record_t *s)
+{
+    return s->magic ^ s->core ^ s->other ^ s->options0 ^ s->sw_cpu_stall
+           ^ s->stalled_at_entry ^ s->stall_called ^ s->entered_reset
+           ^ TWAI_PORT_S3_STALL_MAGIC;
+}
+
+#define STALL_CAPTURE()                                                     \
+    const uint32_t cap_options0 = REG_READ(RTC_CNTL_OPTIONS0_REG);          \
+    const uint32_t cap_sw_stall = REG_READ(RTC_CNTL_SW_CPU_STALL_REG)
+
+#define STALL_RECORD(core_, other_, stalled_, called_, entered_)            \
+    do {                                                                    \
+        s_stall_rec.magic = TWAI_PORT_S3_STALL_MAGIC;                       \
+        s_stall_rec.core = (uint32_t)(core_);                               \
+        s_stall_rec.other = (uint32_t)(other_);                             \
+        s_stall_rec.options0 = cap_options0;                                \
+        s_stall_rec.sw_cpu_stall = cap_sw_stall;                            \
+        s_stall_rec.stalled_at_entry = (stalled_) ? 1u : 0u;                \
+        s_stall_rec.stall_called = (called_) ? 1u : 0u;                     \
+        s_stall_rec.entered_reset = (entered_) ? 1u : 0u;                   \
+        s_stall_rec.check = stall_check(&s_stall_rec);                      \
+    } while (0)
+
+bool twai_port_ll_s3_stall_record(twai_port_s3_stall_record_t *out)
+{
+    *out = s_stall_rec;
+    return out->magic == TWAI_PORT_S3_STALL_MAGIC
+           && out->check == stall_check(out);
+}
+
+void twai_port_ll_s3_stall_record_clear(void)
+{
+    s_stall_rec.magic = 0;
+    s_stall_rec.check = 0;
+}
+
+const char twai_port_s3_probe_build[] =
+    "vtrux/twai_port S3 probe build (T19 measurement only)";
+#else
+#define STALL_CAPTURE()                                     do { } while (0)
+#define STALL_RECORD(core_, other_, stalled_, called_, entered_) do { } while (0)
+#endif
+
+#if defined(TWAI_PORT_HOST_SWITCH) && TWAI_PORT_HOST_SWITCH
+const char twai_port_host_switch_build[] =
+    "vtrux/twai_port host switch build (T10 fake only)";
+#endif
+
+/*
+ * THE BUILD MARKS (twai_port_ll.h): the address of each mark goes into an
+ * empty asm, so the compiler must make it and the linker keeps the mark.
+ */
+void twai_port_ll_build_marks(void)
+{
+#if S3_SUPPORTED
+    __asm__ volatile("" : : "r"(twai_port_s3_probe_build) : "memory");
+#endif
+#if defined(TWAI_PORT_HOST_SWITCH) && TWAI_PORT_HOST_SWITCH
+    __asm__ volatile("" : : "r"(twai_port_host_switch_build) : "memory");
+#endif
+}
+
 /*
  * T12, THE RESTART STOP: the C3's steps, bounds and order (see
  * twai_port_ll_esp32c3.c for why each step is there), with the abort inline.
@@ -161,8 +236,11 @@ IRAM_ATTR esp_err_t twai_port_restart_stop(can_port_restart_report_t *r)
 
     /* First, THE OTHER CORE STALLED, and not started again (T12; see THE
      * SECOND CORE above). */
-    const int other = (esp_cpu_get_core_id() == 0) ? 1 : 0;
-    if (!core_stalled(other))
+    STALL_CAPTURE();
+    const int core = esp_cpu_get_core_id();
+    const int other = (core == 0) ? 1 : 0;
+    const bool stalled_at_entry = core_stalled(other);
+    if (!stalled_at_entry)
     {
         esp_cpu_stall(other);
     }
@@ -181,6 +259,7 @@ IRAM_ATTR esp_err_t twai_port_restart_stop(can_port_restart_report_t *r)
 
     if (!r->clock_on || r->held_in_reset)
     {
+        STALL_RECORD(core, other, stalled_at_entry, !stalled_at_entry, false);
         return ESP_OK;
     }
 
@@ -211,6 +290,7 @@ IRAM_ATTR esp_err_t twai_port_restart_stop(can_port_restart_report_t *r)
     r->status_at_reset = twai_ll_get_status(hw);
     twai_ll_enter_reset_mode(hw);
     r->entered_reset   = true;
+    STALL_RECORD(core, other, stalled_at_entry, !stalled_at_entry, true);
     return ESP_OK;
 }
 
