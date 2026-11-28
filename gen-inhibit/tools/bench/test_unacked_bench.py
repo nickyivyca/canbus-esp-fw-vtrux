@@ -177,6 +177,22 @@ def main():
     short_node["opened"] = short_node["closed"] - 0.05      # the open came back 50 ms before the close
     h5 = B.process_call(ctl, {"trials": [t]}, msgs, short_node).get("hold") or {}
     check("the node up only 50 ms from its open's return: void", "up only" in str(h5.get("void")), h5)
+    # the stack and the timing (the reviewer's go for the rerun, 2026-11-27)
+    rs = {v: B.process_call(ctl, {"trials": [t], "stack_free_min": v, "cpu_hz": 160_000_000,
+                                  "cpu_hz_end": 160_000_000}, msgs, None) for v in (400, 512, 1500)}
+    r_none = B.process_call(ctl, {"trials": [t]}, msgs, None)
+    check("stack_free_min recorded; under 512 B flagged, 512 and over not",
+          rs[400]["stack_free_min"] == 400 and rs[400]["stack_low"] and not rs[512]["stack_low"]
+          and not rs[1500]["stack_low"], [(v, r["stack_low"]) for v, r in rs.items()])
+    check("no stack_free_min in the answer is flagged too", r_none["stack_low"] is True, r_none["stack_low"])
+    tb_s = B.tables([rs[400], rs[1500], r_none])
+    check("the tables list the low and missing calls, and the figures",
+          [x[1] for x in tb_s["stack_low"]] == [400, None] and tb_s["stack_free_min"]["min"] == 400, tb_s["stack_low"])
+    tm = rs[1500].get("timing") or {}
+    check("timing: the clock, the trial's lengths, the send, the counts both sides and the first records",
+          tm.get("cpu_hz") == 160_000_000 and tm.get("rises") == 30 and tm.get("copies") == 30
+          and tm.get("attempts") == 30 and tm.get("first_sample_ts") is False and len(tm.get("events_head") or []) == 6
+          and "clk_us" in tm and "tx_call_ns" in tm, tm)
     row3 = B.process_call(ctl, {"trials": [t, t]}, msgs, None)
     check("an answer of two trials is an error", "error" in row3, row3)
     row4 = B.process_call(ctl, {"trials": [t]}, msgs, node_at(end_w + 400_000, end_w + 1_100_000, []))
@@ -225,6 +241,12 @@ MUTANTS = [
     ("the open's time taken as fast", "NODE_OPEN_S = 1.2 ", "NODE_OPEN_S = 0.1 "),
     ("the close not waiting for the open", "    return max(t_send + NODE_DOWN_S, opened + NODE_MIN_UP_S)\n",
      "    return t_send + NODE_DOWN_S\n"),
+    ("the stack mark at 256 B", "STACK_LOW_B = 512 ", "STACK_LOW_B = 256 "),
+    ("a missing stack figure not flagged", '    row["stack_low"] = sfm is None or (', '    row["stack_low"] = sfm is not None and ('),
+    ("the low calls not listed", '"stack_low": [(r["label"], r.get("stack_free_min")) for r in rows if r.get("stack_low")],',
+     '"stack_low": [],'),
+    ("the first sample's TS not given", '    row["timing"]["first_sample_ts"] = bool(s["attempts"] and s["attempts"][0].get("first_sample"))\n',
+     ""),
     ("a short node window not voided", "            if h[\"void\"] is None and short is not None:\n",
      "            if False:\n"),
     ("the hold not echoed", 'ECHO = ("phase", "reps", "settle", "fresh", "irq", "window_us", "wait_att", "delay_us", "hold_ms")',

@@ -32,6 +32,14 @@ TEC 0), so the error state is chosen by the attempt the abort is aimed at (`wait
 The plan's order is shuffled (--seed), so no state or kind runs as one block, except that one call of
 each kind (M1 irq off, M1 irq on, control, M2 active, M2 passive, M3 active, M3 passive) runs first.
 
+THE STACK AND THE TIMING (the gen-inhibit reviewer's go for the rerun, 2026-11-27). Run f8d5's
+panics were the answer overflowing the httpd task's 5120-byte stack (fixed at shared tag
+2026.11.27.3). Each row records the answer's `stack_free_min`, and a call under STACK_LOW_B, or
+with none, is listed in the tables' `stack_low` (recorded, not judged). Each row's `timing` gives
+what the witness's copies are lined up against: cpu_hz, cpu_hz_end, clk_us, clk_cyc, tx_call_ns,
+end_ns, the device's attempts and ab_attempt, the rises counted here and whether the first sample
+read TS = 1, the copies, and the first change records.
+
 THE HOTSPOT (bench run 797b, 2026-11-27: the first call's trial went on the wire, its answer never
 came, and the host had no route to the hotspot for the rest of the run, so 236 calls failed). The
 run joins the hotspot at its start through gi_wifi (GI_OTA_SETTINGS, the core's Wi-Fi backend that
@@ -82,6 +90,7 @@ NODE_MIN_UP_S = 0.3          # it stays up at least this long after its open ret
 NODE_DOWN_S = 1.6            # and is not closed before this long after the POST's send
 CALL_TIMEOUT_S = 10.0       # a call answers in about 2 s with the hold
 MAX_FAILED_CALLS = 10        # the plan stops after this many calls with no answer
+STACK_LOW_B = 512            # a call whose stack_free_min is below this, or missing, is flagged
 RESTART_SLACK_MS = 5000      # an uptime this far below the elapsed time is a restart
 ACTIVE_AIMS = tuple(range(1, 16, 2))      # 1, 3, ..., 15
 PASSIVE_AIMS = tuple(range(17, 32, 2))    # 17, 19, ..., 31
@@ -200,6 +209,12 @@ def node_window_w(node, off_s):
 def process_call(call, ans, msgs, node):
     """One call: its trial's summary, and for a call with a hold, the hold check. Returns the row."""
     row = {"label": call["label"], "kind": call["kind"], "state_aimed": call["state"], "call": call}
+    # the httpd task's least free stack (README: the answer's last field, from tag 2026.11.27.3; the panics of
+    # bench run f8d5 were that stack overflowing), flagged under STACK_LOW_B (the gen-inhibit reviewer, 2026-11-27)
+    sfm = ans.get("stack_free_min")
+    row["stack_free_min"] = sfm
+    row["stack_low"] = sfm is None or (isinstance(sfm, (int, float)) and sfm < STACK_LOW_B)
+    row["clock"] = {k: ans.get(k) for k in ("cpu_hz", "cpu_hz_end")}
     trials = ans.get("trials") or []
     if len(trials) != 1:
         row["error"] = "the answer has %d trials, want 1" % len(trials)
@@ -208,6 +223,16 @@ def process_call(call, ans, msgs, node):
     copies = trial_copies(msgs)
     s = U.trial_summary(tr, copies)
     row["summary"] = s
+    # what lines the witness's copies up against the device's count (the reviewer's request, 2026-11-27): the
+    # clock, the trial's length both ways, the send's own time, the device's attempts and the first change records
+    row["timing"] = dict(row["clock"], **{k: tr.get(k) for k in ("clk_us", "clk_cyc", "tx_call_ns", "end_ns", "samples",
+                                                                   "max_gap_ns", "gaps", "attempts", "ab_attempt",
+                                                                   "met_ns", "anchor_ns", "abort_ns")})
+    row["timing"]["rises"] = len(s["attempts"])
+    row["timing"]["first_sample_ts"] = bool(s["attempts"] and s["attempts"][0].get("first_sample"))
+    row["timing"]["copies"] = len(copies)
+    row["timing"]["copies_in_trace"] = s["copies_in_trace"]
+    row["timing"]["events_head"] = (tr.get("events") or [])[:6]
     row["t"] = call["label"]
     if call.get("hold_ms"):
         off = clock_offset(msgs)
@@ -239,7 +264,10 @@ def tables(rows):
            "control_hold": U.hold_table([{"t": r["label"], "hold": r["hold"]} for r in ok
                                          if r["kind"] == "control" and "hold" in r]),
            "M2_hold": U.hold_table([{"t": r["label"], "hold": r["hold"]} for r in ok if r["kind"] == "M2" and "hold" in r]),
-           "errors": [(r["label"], r["error"]) for r in rows if "error" in r]}
+           "errors": [(r["label"], r["error"]) for r in rows if "error" in r],
+           "stack_low": [(r["label"], r.get("stack_free_min")) for r in rows if r.get("stack_low")],
+           "stack_free_min": U.span_stats([r["stack_free_min"] for r in rows
+                                           if isinstance(r.get("stack_free_min"), (int, float))])}
     for d in M3_DELAYS:
         sel = [r for r in ok if r["kind"] == "M3" and r["call"].get("delay_us") == d]
         out["M3_%d" % d] = U.abort_table([r["summary"] for r in sel])
@@ -466,7 +494,9 @@ def _line(row):
     s = row.get("summary") or {}
     ab = s.get("abort")
     h = row.get("hold")
-    bits = ["attempts %s, copies %s" % (len(s.get("attempts") or []), s.get("copies_in_trace"))]
+    bits = ["attempts %s (device %s), copies %s, stack %s%s" % (
+        len(s.get("attempts") or []), s.get("device_attempts"), s.get("copies_in_trace"), row.get("stack_free_min"),
+        " LOW" if row.get("stack_low") else "")]
     if ab:
         bits.append("abort %s TEC %s freed %s after %s" % (ab["state"], ab["tec"], ab["freed"], ab["copies_after"]))
     if h:
