@@ -26,6 +26,18 @@
  */
 #define GS_ABORT_BOUND_US   1000
 
+/*
+ * THE RE-READ ON EACH PASS PAST THE BOUND (spec 5.2 item 5, user 2026-11-27,
+ * tracker F5 option A): "re-read the controller about every 2 us, for up to
+ * 1 ms, and issue the abort at the first read with TS = 0". The C3 measured
+ * about 16 us of TS = 0 before each resend in error passive, 276 us apart
+ * (VALIDATION.md 5.2), so 1 ms of reads 2 us apart meets at least three of
+ * those windows. The 2 us is a busy-wait between two reads (gs_hal_t.spin_us),
+ * so the reads are 2 us plus one read's own time apart.
+ */
+#define GS_REREAD_GAP_US    2
+#define GS_REREAD_SPAN_US   1000
+
 /* Trip 7: 3 skips within 1 s (spec 7 trip 7, amended 2026-09-27). */
 #define GS_SKIP_WINDOW_US   1000000
 #define GS_SKIP_TRIP_N      3
@@ -521,6 +533,42 @@ static void begin_abort(gs_t *s, int64_t now)
 }
 
 /*
+ * A WITHDRAWN INHIBIT PAST THE BOUND, re-read densely (spec 5.2 item 5, user
+ * 2026-11-27). Called with the pass's first read TRANSMITTING. Reads again
+ * through abort_if_awaiting() (T8, unchanged) every GS_REREAD_GAP_US, for up to
+ * GS_REREAD_SPAN_US from the first, and stops at the first read that is not
+ * TRANSMITTING:
+ *   - AWAITING: that read issued the command. The buffer frees some
+ *     microseconds later, so the next pass reads the result (F7: a read that
+ *     issued the command never ends the loop).
+ *   - EMPTY: the frame is gone.
+ * Returns the last read's state; TRANSMITTING when the span ran out.
+ *
+ * WHY A BUSY-WAIT IN THE PASS. With no other node a pass comes only every
+ * 200 ms, at the worker's receive timeout, so one read per pass seldom lands
+ * in the C3's 16 us of TS = 0 between resends. While the controller is error
+ * active TS never reads 0 (VALIDATION.md 5.2, "Known limit"), and the pass
+ * then spends the whole 1 ms and issues nothing.
+ *
+ * THE WAIT AND THE CLOCK ARE THE HAL'S (gs_hal_t.spin_us, now_us), so the host
+ * builds time them on their own clocks.
+ */
+static gs_buf_t reread_past_bound(gs_t *s)
+{
+    const gs_hal_t *h = s->hal;
+    const int64_t t0 = h->now_us(h->ctx);
+    gs_buf_t b = GS_BUF_TRANSMITTING;
+
+    while (b == GS_BUF_TRANSMITTING
+           && h->now_us(h->ctx) - t0 < GS_REREAD_SPAN_US)
+    {
+        h->spin_us(h->ctx, GS_REREAD_GAP_US);
+        b = h->abort_if_awaiting(h->ctx);
+    }
+    return b;
+}
+
+/*
  * One turn of item 4's loop. Returns true when the abort is finished with --
  * either the buffer is free, or the bound was reached.
  *
@@ -528,7 +576,8 @@ static void begin_abort(gs_t *s, int64_t now)
  * measurement showed has no effect (7 of 8 under contention), and repeating it
  * there would burn the bound on a no-op instead of waiting for the window where
  * the abort works -- which is the instant the frame loses arbitration and TS
- * falls to 0.
+ * falls to 0. Past the bound, for a withdrawn inhibit, it waits for that
+ * window by re-reading for up to 1 ms (reread_past_bound()).
  */
 static bool abort_step(gs_t *s, int64_t now)
 {
@@ -537,7 +586,39 @@ static bool abort_step(gs_t *s, int64_t now)
      * window here for the controller to enter arbitration between deciding and
      * acting. What it returns is the state it actually acted on.
      */
-    const gs_buf_t b = s->hal->abort_if_awaiting(s->hal->ctx);
+    gs_buf_t b = s->hal->abort_if_awaiting(s->hal->ctx);
+
+    /*
+     * THE BOUND (item 4), checked at the pass's first read, and only while no
+     * command could be issued. It is counted once, on the pass that reaches it.
+     * A lower class ends the loop here; gs_tick() step 2 opens a new one later.
+     *
+     * A WITHDRAWN INHIBIT STAYS IN THE LOOP, and this same pass re-reads (spec
+     * 5.2 item 5, user 2026-11-27): the limit is a time, so every pass that
+     * starts past it re-reads, the first one too. 709b69ff set the past-bound
+     * state in step 3 and returned, so the re-read began on the next
+     * gs_tick(), up to 200 ms later on a quiet bus. (In the tester's emulation,
+     * 2026-11-27, that next gs_tick() came 3 us later, from dispatch_emits()'s
+     * tick for the pass's page. Its dense pass at +400 ms from the latch had
+     * another cause: the latch's withdrawal came a pass late, at +200 ms.
+     * gen_inhibit.c live_fell() says why.)
+     */
+    if (b == GS_BUF_TRANSMITTING && !s->abort_past_bound
+        && now - s->abort_since >= GS_ABORT_BOUND_US)
+    {
+        s->st.abort_bound_hit++;
+        if (!(s->held && s->held_class == GS_CLASS_INHIBIT))
+        {
+            return true;
+        }
+        s->abort_past_bound = true;
+    }
+
+    /* Past the bound, a withdrawn inhibit only (spec 5.2 item 5): see above. */
+    if (s->abort_past_bound && b == GS_BUF_TRANSMITTING)
+    {
+        b = reread_past_bound(s);
+    }
 
     if (b == GS_BUF_EMPTY)
     {
@@ -564,17 +645,10 @@ static bool abort_step(gs_t *s, int64_t now)
          */
         return false;
     }
-    /* GS_BUF_TRANSMITTING: no command was issued. Wait for TS to fall. */
-
     /*
-     * Past the bound already (a withdrawn inhibit, gs_tick() step 3): the bound
-     * was counted when it was reached, and only a free buffer ends this loop.
+     * GS_BUF_TRANSMITTING: no command was issued. Wait for TS to fall. Past the
+     * bound (a withdrawn inhibit), only a free buffer ends this loop.
      */
-    if (!s->abort_past_bound && now - s->abort_since >= GS_ABORT_BOUND_US)
-    {
-        s->st.abort_bound_hit++;
-        return true;
-    }
     return false;
 }
 
@@ -733,11 +807,18 @@ void gs_tick(gs_t *s, int64_t now)
         else if (s->held)
         {
             /*
-             * The bound was reached and the frame is still there. Nothing is
+             * The loop ended and the driver still counts the frame. Nothing is
              * handed over.
              *
-             * A lower class: step 2 starts a new abort on a later pass, while
-             * an inhibit waits and the buffer reads AWAITING (item 4).
+             * A lower class: the bound was reached. Step 2 starts a new abort
+             * on a later pass, while an inhibit waits and the buffer reads
+             * AWAITING (item 4).
+             *
+             * An inhibit gets here only when the buffer read EMPTY before the
+             * driver's count fell: abort_step() never ends a withdrawn
+             * inhibit's loop at the bound, and from the pass that reaches it
+             * re-reads on that pass and every later one. The loop is kept
+             * open, as below, and the next pass reads the result.
              *
              * A WITHDRAWN INHIBIT STAYS IN THE LOOP (spec 5.2 item 5, user
              * 2026-11-26). An inhibit is here only to be withdrawn, at its
@@ -750,7 +831,11 @@ void gs_tick(gs_t *s, int64_t now)
              * between retries; it then stayed in the controller for good and
              * went out, stale, when a node came back. So the loop stays open,
              * and the abort is issued again on every later pass until the
-             * buffer is free. Telemetry waits behind it.
+             * buffer is free. Telemetry waits behind it. The pass that reaches
+             * the bound, and each later one, re-reads the buffer for up to
+             * 1 ms (abort_step(),
+             * reread_past_bound(); user 2026-11-27), since one read a pass
+             * seldom lands in the 16 us of TS = 0 the C3 has between resends.
              *
              * Keeping `aborting` set also keeps the departure out of step 1
              * and gs_command_received(): step 3 books it `withdrawn`, never

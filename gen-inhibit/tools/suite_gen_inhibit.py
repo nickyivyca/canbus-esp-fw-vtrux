@@ -886,6 +886,11 @@ def suite(settings):
             chk("B21", "baseline_b21.sh", [man_bin], judged("B21"),
                 ["B21_bench_flash_guard.txt", "B21_bench_ota_guard.txt",
                  "B21_client_multipart_%s.txt" % C, "B21_client_image_%s.txt" % C], 3600),
+            # F4 (gen-inhibit reviewer, 2026-11-26; tester, 2026-11-27): RESPOND's receive loss over
+            # time from the mode POST, into live traffic. A measurement, so no judge: the arms pass on
+            # their exit, the desk step on the profile's (1 when it counts a record out).
+            chk("F4arms", "baseline_b_hand.sh", ["F4"], None, timeout=3600),
+            desk("F4", "F4", ["man_app/F4arms"], None, ["F4_respond_entry_profile.txt", "F4_mode_entry_analysis.txt"]),
         ]),
         Group("man_held", needs_lock=True, image=["wican_man", "x2_held"], checks=[
             chk("B2held", "baseline_b_hand.sh", ["B2held"], None, timeout=1200),

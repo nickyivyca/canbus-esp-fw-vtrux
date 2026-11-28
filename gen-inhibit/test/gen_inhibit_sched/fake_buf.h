@@ -94,17 +94,49 @@ void fb_stick_transmitting(int64_t us);
  * works only if it is issued in a gap. Turning it off is a node coming back:
  * the next retry completes and reaches the wire.
  *
- * NOT CALIBRATED. The bench measured one retry every 262-274 us (spec 12.4,
- * "a bus with no other node"), but not how long TS reads 0 between retries.
- * The cases pick the phase of each read on purpose, so the gap's length
+ * `gap_us` 0 is ERROR ACTIVE: each retry follows the last at once, and TS
+ * never reads 0.
+ *
+ * CALIBRATION (VALIDATION.md 5.2, "The re-read for up to 1 ms on each pass";
+ * the C3 measured with shared/twai_port's T13 probe, 2026-11-27): in error
+ * active TS never read 0 between resends; in error passive it read 0 for
+ * 15.4-16.4 us before each resend, 276 us apart. A case that models error
+ * passive gives `gap_us` 16, with the frame's air time of 249 us here. The
+ * earlier cases pick the phase of each read on purpose, so the gap's length
  * decides nothing they assert. The tester's emulated case replays the
  * measured pattern.
  */
 void fb_set_unacked(bool on, int64_t gap_us);
 
+/*
+ * THE DRIVER'S COUNT LAGS THE BUFFER (reviewer, 2026-11-27). On the device,
+ * abort_if_awaiting() and buf_state() read the controller's registers, while
+ * outstanding() reads the driver's tx_pending, which falls only when the
+ * transmit interrupt has run. With a lag set, every time the buffer frees
+ * (an abort, or a frame that reached the wire) outstanding() stays true for
+ * `us` more, while the buffer already reads EMPTY. 0, the default, is no lag.
+ * This is the only way to reach gs_tick() step 3's branch that keeps a
+ * withdrawn inhibit's loop open.
+ */
+void fb_set_count_lag(int64_t us);
+
 /* How many times the scheduler has called abort_if_awaiting(): every turn of
  * item 4's loop reads the buffer this way, with or without a command. */
 int fb_abort_reads(void);
+
+/*
+ * THE RE-READ PAST THE BOUND (spec 5.2 item 5, 2026-11-27): the HAL's busy-wait
+ * (spin_us), which moves the model's time as fb_advance() does, and its clock
+ * (now_us), which reads it. Counted, with the wait's total.
+ */
+int     fb_spins(void);
+int64_t fb_spin_us_total(void);
+int     fb_clock_reads(void);
+
+/* When the last abort command was issued, and when the last retry gap (TS = 0)
+ * began; -1 for none. */
+int64_t fb_last_cmd_at(void);
+int64_t fb_gap_began_at(void);
 
 /* The HAL the scheduler is given. */
 const gs_hal_t *fb_hal(void);
@@ -142,8 +174,12 @@ int fb_aborts_with_no_effect(void);
  */
 int fb_abort_cmds_while_transmitting(void);
 
-/* Is anything still in the buffer? (the HAL's `outstanding`) */
+/* Is anything still in the buffer? The buffer itself: a count lag
+ * (fb_set_count_lag()) is not included. */
 bool     fb_outstanding_now(void);
+/* What the HAL's outstanding() would return now, the lag included; it has no
+ * side effects. */
+bool     fb_counted_now(void);
 gs_buf_t fb_state_now(void);
 
 /* ------------------------------------------------------ the receive queue -- */

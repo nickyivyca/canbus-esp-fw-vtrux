@@ -36,7 +36,13 @@ MUTANTS = [
      '    echo "  exit $r"\n    [ $r -eq 0 ] || { echo "exited non-zero"; exit 1; }'),
     ("hand: a B2 arm is not counted", HAND, '  echo "$n exit $r"\n  ' + COUNT, '  echo "$n exit $r"\n  true'),
     ("hand: no exit at the end", HAND,
-     '[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED B2 arm(s) exited non-zero"; exit 1; }', ""),
+     '[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED B2 or F4 arm(s) exited non-zero"; exit 1; }', ""),
+    # F4 (2026-11-27): nine arms through the same e4 function
+    ("hand: F4 stops after its first round of three arms", HAND, "      for n in 1 2 3; do\n",
+     "      for n in 1; do\n"),
+    ("hand: F4's unpolled arms polled too", HAND, '*) poll="" ;;', '*) poll="--poll-hz 2" ;;'),
+    ("hand: F4 POSTs at the replay's start", HAND, "--mode respond --arm-after 5 $poll", "--mode respond $poll"),
+    ("hand: F4's replay 35 s, as B3's", HAND, "--window-start 20 --seconds 65", "--window-start 20 --seconds 35"),
     ("hand: stops at the first failed arm", HAND, '  echo "$n exit $r"\n  ' + COUNT,
      '  echo "$n exit $r"\n  [ $r -eq 0 ] || { echo "exited non-zero"; exit 1; }'),
     # F5 (2026-11-27): unacked_bench.py's exit is the script's
@@ -44,7 +50,7 @@ MUTANTS = [
     ("hand: F5's exit flattened to 1", HAND, 'echo "F5 exited $F5_RC"; exit "$F5_RC"; }', 'echo "F5 exited $F5_RC"; exit 1; }'),
     ("hand: GI_F5_PLAN not passed", HAND, ' ${GI_F5_PLAN:+--plan "$GI_F5_PLAN"}', ""),
     ("hand: F5 before the B2 check, a failed arm lost", HAND,
-     '[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED B2 arm(s) exited non-zero"; exit 1; }\n[ "${F5_RC:-0}" -eq 0 ] || { echo "F5 exited $F5_RC"; exit "$F5_RC"; }',
+     '[ "$ARMS_FAILED" -eq 0 ] || { echo "$ARMS_FAILED B2 or F4 arm(s) exited non-zero"; exit 1; }\n[ "${F5_RC:-0}" -eq 0 ] || { echo "F5 exited $F5_RC"; exit "$F5_RC"; }',
      '[ "${F5_RC:-0}" -eq 0 ] || { echo "F5 exited $F5_RC"; exit "$F5_RC"; }\nexit 0'),
 ]
 

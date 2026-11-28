@@ -108,6 +108,9 @@ call at every step, are left out. This places a delivery the fake already
 makes. It injects no fault, so it is not the fake's to add. It is in
 `deliver_at_count.c`, which only this folder's Makefile links. The tester's
 spec shim compiles `shim_harness.c` without these `--wrap` flags.
+`abort_reads.c` is linked the same way. It wraps
+`twai_port_abort_if_awaiting()` to log when each read came and what it
+returned (cases 69 and 70, "The negative control").
 
 Determinism: virtual time, and the worker thread never runs concurrently with
 the test. Two runs of the same script produce the same trace. **It therefore
@@ -330,7 +333,7 @@ BASE=~/gi_review python3 mutate.py
 ```
 
 Every mutation must come back `rc=1` except the expected survivors, N3, K21,
-V08 and V09, each with its reason at its entry in `mutate.py` (N3's measured
+V08, V09 and L2, each with its reason at its entry in `mutate.py` (N3's measured
 on the 1b code, 2026-11-01). M7 survived until 2026-11-01 and is caught by
 case 61 since. A mutation whose anchor does not
 match is listed and the run exits 3.
@@ -372,6 +375,26 @@ spec 11's probe on the same path), on `gi_sched.c` and the worker:
 - T4 waits for one frame more than counted (the dequeue limit). Case 64.
 - T5 keys the wait on the inhibit class, not the timed class. Case 67.
 - T6 never reports a dequeue to the scheduler. Cases 62-64.
+
+**Cases 69 and 70, L1 and L2** (2026-11-28; spec 5.2 item 5, reviewer ruling
+2026-11-27: a release or trip withdraws the answer on the latch's own pass).
+The answer is held AWAITING in the controller, and each case feeds one frame
+and runs the worker until it next blocks: one pass, with the latch in it. The
+withdrawal's first abort-if-awaiting read must come on that pass and issue the
+abort.
+- 69: trip 6, latched in `gi_tick()`. On `3d6e36cf` the falling edge was seen
+  only at the end of `sched_advance()`, before `gi_tick()`, so the read waited
+  for the next pass and three checks fail there. L1 removes the check after
+  `gi_tick()`'s `dispatch_emits()`; case 69 catches it.
+- 70: M mode, latched in `gi_on_frame()`. It passes on `3d6e36cf` too: the loop
+  top's `sched_advance()` withdraws a few microseconds later, with nothing
+  blocking in between. So L2, which removes the check after `gi_on_frame()`'s
+  `dispatch_emits()`, survives as an equivalent mutant.
+
+The read times come from `abort_reads.c`, which wraps
+`twai_port_abort_if_awaiting()` (`ft_abort_reads()`, `ft_abort_read_at()`,
+`ft_abort_read_state()`). `ft_ll_aborts()` counts only the reads that issued
+the command. Like `deliver_at_count.c`, only this folder's Makefile links it.
 
 **The host suites score in every copy since 2026-11-23.** Each copy is made in
 `scratch/`, with no pinned checkout beside it, so the host build failed in
