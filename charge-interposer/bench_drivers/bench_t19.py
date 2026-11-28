@@ -459,12 +459,19 @@ class Board(object):
 
     def __init__(self, ser, log):
         self.ser, self.log, self.hellos = ser, log, []
+        self.buf = b""
 
     def _line(self):
-        b = self.ser.readline()
-        if not b:
+        """One whole line, or None. pyserial's readline() returns a part line
+        when its timeout runs out, and the app sends a long command's answer
+        in pieces (switchloop: its start, then the rest after the work), so
+        the bytes are kept until the newline (test_app/README.md; run
+        bench_t19_1d4221c9's switchloop had no answer from this)."""
+        self.buf += self.ser.readline()
+        if b"\n" not in self.buf:
             return None
-        ln = b.decode("ascii", "replace").rstrip("\r\n")
+        b, self.buf = self.buf.split(b"\n", 1)
+        ln = b.decode("ascii", "replace").rstrip("\r")
         h = hello_fields(ln)
         if h is not None:
             self.hellos.append((time.monotonic(), h))
@@ -1003,6 +1010,32 @@ def self_test():
     check(hello_fields("@HELLO s3probe elf_sha256=ab")["elf_sha256"] == "ab",
           "hello_fields reads elf_sha256")
 
+    # Board reads to the newline: pyserial's readline() gives a part line at
+    # its timeout, and the app sends a long answer in pieces
+    class _PieceSer(object):
+        def __init__(self, parts):
+            self.parts = list(parts)
+
+        def write(self, b):
+            pass
+
+        def flush(self):
+            pass
+
+        def readline(self):
+            return self.parts.pop(0) if self.parts else b""
+    ans = '{"cmd":"switchloop k=2","status":200,"switches":[]}'
+    pb = Board(_PieceSer([ans[:20].encode("ascii"), b"", b"",
+                          ans[20:].encode("ascii") + b"\r\n"]), lambda s: None)
+    got = pb.ask("switchloop k=2", timeout=0.5)
+    check(got is not None and got.get("status") == 200,
+          "Board.ask: an answer sent in pieces is read whole: %s" % got)
+    pb = Board(_PieceSer([b"@HELLO s3probe elf_sha256=ab\r\n" + ans.encode("ascii") + b"\r\n"]),
+               lambda s: None)
+    got = pb.ask("switchloop k=2", timeout=0.5)
+    check(got is not None and len(pb.hellos) == 1,
+          "Board.ask: two lines in one read are both taken: %s, %d hello(s)" % (got, len(pb.hellos)))
+
     # measure_resetprobe premise
     check(measure_resetprobe({"status": 200, "entered": True, "attempts": 0}, 1)[0] == VOID,
           "resetprobe with fewer attempts than att -> VOID")
@@ -1013,6 +1046,13 @@ def self_test():
 
 # --can-fail (script_can_fail.py): each edit must make --self-test fail
 MUTANTS = [
+    ("board: a part line taken as a line",
+     "        if b\"\\n\" not in self.buf:\n            return None\n"
+     "        b, self.buf = self.buf.split(b\"\\n\", 1)\n",
+     "        b, self.buf = self.buf, b\"\"\n        if not b:\n            return None\n"),
+    ("board: the rest of a read dropped",
+     "        b, self.buf = self.buf.split(b\"\\n\", 1)\n",
+     "        b, self.buf = self.buf.split(b\"\\n\", 1)[0], b\"\"\n"),
     ("info: the IDF not checked", "    if not str(info.get(\"idf\", \"\")).startswith(IDF):",
      "    if False:"),
     ("switch: the LOM bit not checked", "        if regs.get(\"lom\") not in (1, True):",
