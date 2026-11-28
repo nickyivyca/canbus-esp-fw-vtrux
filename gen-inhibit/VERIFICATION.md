@@ -10393,6 +10393,71 @@ held past the bound" (tracker F5).
     - The 60 mutant files exit 0.
 - **Run files.** `runs/f5_withdrawn_988c95ff/` (`README.md` there).
 
+**A withdrawn inhibit frame stuck in the controller, emulated, the model after the C3
+measurement -- tester, 2026-11-27 and 2026-11-28, the mock-HAL shim on `madhouse-debian` (gcc
+14.2.0). Result: AS SPECIFIED on gen-inhibit/main `e7245395` (tracker F5). NOT AS SPECIFIED
+on `e9bfa300` and on `80e4c6f9` (fix A), the can-fails. The emulated suite on `e7245395`
+passes; `e7245395` holds F7's `ee15d255` (tracker F7).** Spec 12.4 row "a bus with no other
+node, emulated", as `e9bfa300` words it: between retries TS stays 1 in error active, and in
+error passive it reads 0 for about 16 us before each retry. Spec 5.2 item 5: its last
+sentence (re-read about every 2 us for up to 1 ms, abort at the first read with TS = 0), and
+the withdrawal on the latch's own pass (reviewer ruling, 2026-11-27). The 2026-11-26 entry
+above used the layer model from before the C3 measurement.
+- **Harness.** `gen-inhibit/tester/sl-retry-c3` `11004015` (`test/gen_inhibit_spec_shim/`,
+  README "The withdrawn frame stuck in the controller" and "The phase"):
+  - The layer's model follows the 12.4 row. In error active, TS stays set between retries
+    and an abort does nothing. From TEC 128, TS reads clear for 16 us before each retry
+    (F5 run `gen-inhibit-bench_20261127T171351_403a`: 15.41-16.44 us). The retry period is
+    the bench row's pattern.
+  - Six cases: `withdrawn_262` (246 us, then 262 us), `withdrawn_262_15` (the same with a
+    15 us idle time), `withdrawn_274` (258 us, then 274 us), and `withdrawn_274_q1`, `_q2`
+    and `_q3`: the first retry delayed by 1/4, 1/2 and 3/4 of the 274 us period (reviewer
+    option (b), 2026-11-27).
+  - While the frame is held, the cases step in 3 us turns (reviewer, 2026-11-27).
+  - New verdicts. W5: each pass that starts 1 ms or more after the withdrawal, while the
+    frame is held, re-reads about every 2-3 us (no gap over 8 us) until TS = 0 or 1 ms has
+    passed. W6: the withdrawal's first status read comes on the pass on which the latch
+    lands (reviewer rulings, 2026-11-27). W1-W4 and the other verdicts as in the entry
+    above.
+  - The shim builds twai_port from the `2026.11.23.3` checkout. `e7245395` pins twai_port
+    `2026.11.27`. Between the two tags, `twai_port.c` is the same, and `CMakeLists.txt`
+    adds only the test app's probe sources.
+- **Observed on `e7245395`** (`run_spec_shim.py --local --base e7245395` at `2185bdd5`, the
+  topic branch `gen-inhibit/tester/f5-verify`: `11004015` with `e7245395` merged in; the
+  product tree is `e7245395`'s, nothing modified): 248 RESULT lines, all PASS. In each of
+  the six withdrawn cases, W1-W6 PASS.
+- **The can-fails:**
+  - `e9bfa300` (`run_spec_shim.py --local --base e9bfa300` at `11004015`): 248 RESULT lines,
+    20 not PASS. W1, W2 and W3 are NOT AS SPECIFIED and A4 is VOID on `withdrawn_274` and
+    `withdrawn_274_q1`. W5 and W6 are NOT AS SPECIFIED on all six withdrawn cases.
+  - `80e4c6f9` (fix A as merged; the same run at `df88d45b`, branch
+    `gen-inhibit/tester/f5-canfail-80e4c6f9`: `80e4c6f9` with `11004015` merged in; the
+    product tree is `80e4c6f9`'s): 248 RESULT lines, 12 not PASS. W5 and W6 are NOT AS
+    SPECIFIED on all six withdrawn cases. W1-W4 PASS.
+- **The emulated suite on `e7245395`:** `gen-inhibit-emulated_20261128T003346_28b2`
+  (2026-11-28 00:33:46-00:41:28, build.slice). `gi_fw` is the detached worktree
+  `gen-inhibit-tester-e7245395`, at `e7245395`, clean. `gi_tools` is
+  `gen-inhibit-tester-tools-2185bdd5`, at `2185bdd5`, clean. shared/bench is at tag
+  `2026.11.26`. H PASS (25 steps, 81 goldens passed, 0 failed), B15host PASS, C2scan PASS 4
+  of 4, C1C7 and C3 NOT-RUN (the declared skips): the same verdicts as `c878`. This is the
+  whole-suite run on a commit that holds F7's `ee15d255` (tracker F7, reviewer 2026-11-27).
+- **The harness's own tests** on `11004015`:
+  - `judge_test`: 113 ok, with 15 W5 rows and 10 W6 rows.
+  - `layer_stuck`, `layer_stuck_15` and `layer_stuck_back` PASS. The ts check reads TS
+    every 1 us over 6 ms: the 262 us period is even, so reads every 2 us cannot tell a
+    15 us idle time from 16 us.
+  - `mutate.py --local` against `e9bfa300`: the control has 194 lines, 20 not PASS (the set
+    above), and 120 of 120 mutants are caught, 0 errors.
+  - The whole tools test set at `11004015`'s files:
+    - 134 of the 135 test files exit 0. `test_only_inert.py` exits 2, as on earlier
+      commits: it is a bench script that needs its arguments.
+    - `test_refusal_pairs_runs.py` first exited 1: this machine had no checkout of shared
+      tag `2026.11.27`, which `11004015` pins for twai_port. With the checkout made, it
+      exits 0.
+    - The 57 mutant files exit 0.
+- **Run files.** `runs/f5_slretry_11004015/` and `runs/f5_verify_2185bdd5/` (a `README.md`
+  in each).
+
 **Port step 4 item 2: the OTA flasher on shared/bench's `ota`, `ota_wire` and `wican_http`
 -- tester, 2026-11-25 to 2026-11-27, madhouse-debian. Result: accepted by one stacked run
 on the stack tip `6b944055` (items 2, 4 and 3). 38 of the 39 bench checks have the same
