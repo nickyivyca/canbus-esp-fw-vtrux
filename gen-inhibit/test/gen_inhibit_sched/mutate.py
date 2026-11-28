@@ -316,6 +316,19 @@ static void see_departure(gs_t *s, int64_t now, bool at_deadline)
      """        return true;""",
      "F5: a stand-down held past the bound is aborted on every pass"),
 
+    # The branch that keeps a withdrawn inhibit's loop open when the buffer
+    # reads EMPTY before the driver's count falls (reviewer, 2026-11-27).
+    ("F5: no branch for a withdrawn inhibit freed before the count falls",
+     "gi_sched.c",
+     """            if (s->held_class == GS_CLASS_INHIBIT)
+            {
+                s->aborting = true;
+                s->abort_past_bound = true;
+            }
+            return;""",
+     """            return;""",
+     "F5: a withdrawn inhibit freed before the driver's count falls"),
+
     ("F5: the bound is counted on every pass past it",
      "gi_sched.c",
      """    if (b == GS_BUF_TRANSMITTING && !s->abort_past_bound

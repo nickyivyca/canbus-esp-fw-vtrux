@@ -2756,6 +2756,65 @@ static void case_first_pass_past_bound_rereads(void)
 }
 
 /*
+ * THE DRIVER'S COUNT LAGS THE BUFFER (reviewer, 2026-11-27). On the device the
+ * abort reads the controller's registers, and outstanding() reads the driver's
+ * tx_pending, which falls only when the transmit interrupt has run. A pass in
+ * between sees the buffer EMPTY with the frame still counted. For a withdrawn
+ * inhibit, gs_tick() step 3 keeps the loop open there, so the departure stays
+ * step 3's: booked `withdrawn` on the next pass, never `sent` by step 1.
+ */
+static void case_withdrawn_inhibit_count_lag(void)
+{
+    g_case = "F5: a withdrawn inhibit freed before the driver's count falls";
+    fb_reset();
+    fb_set_contended(true);     /* STRESS: the answer waits AWAITING */
+    fb_set_count_lag(50);
+    gs_t s;
+    gs_init(&s, fb_hal());
+
+    (void)gs_command_received(&s, fb_now());
+    queue_marked_inhibit(&s, 1);
+    gs_tick(&s, fb_now());
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1,
+          "PRECONDITION: the answer is in the controller");
+    ck(fb_state_now() == GS_BUF_AWAITING, "PRECONDITION: and awaiting");
+
+    gs_withdraw_inhibits(&s, fb_now());
+    ck_eq(fb_abort_cmds(), 1, "the withdrawal issued the abort");
+    gi_frame_t d = mk(ID_DIAG, GI_TX_DIAG);
+    gs_queue_frame(&s, GS_CLASS_TELEMETRY, &d, fb_now());
+    const int subs = fb_submit_count();
+
+    /* The buffer has freed; the driver still counts the frame. */
+    fb_advance(10);
+    ck(fb_state_now() == GS_BUF_EMPTY, "PRECONDITION: the buffer reads EMPTY");
+    ck(fb_counted_now(), "PRECONDITION: the driver still counts it");
+    gs_tick(&s, fb_now());
+    const gs_class_stats_t *c = &s.st.cls[GS_CLASS_INHIBIT];
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 1, "THE LOOP STAYED OPEN: still held");
+    ck_eq(c->sent, 0, "not booked as sent");
+    ck_eq(c->withdrawn, 0, "not booked yet");
+    ck_eq(fb_submit_count(), subs, "nothing handed over behind it");
+
+    /* The count has fallen. */
+    fb_advance(50);
+    ck(!fb_counted_now(), "PRECONDITION: the count has fallen");
+    gs_tick(&s, fb_now());
+    ck_eq(held_in(&s, GS_CLASS_INHIBIT), 0, "THE NEXT PASS BOOKED IT");
+    ck_eq(c->withdrawn, 1, "AS `withdrawn`");
+    ck_eq(c->sent, 0, "NEVER AS SENT");
+
+    run(&s, 5000, 10);
+    ck_eq(wire_count_id(ID_INHIBIT), 0, "THE WITHDRAWN INHIBIT NEVER REACHED THE WIRE");
+    ck_eq(wire_count_id(ID_DIAG), 1, "the page went out after it");
+    ck_eq(c->sent, 0, "and is still not booked as sent");
+    ck_eq(residual(&s, GS_CLASS_INHIBIT), 0, "the balance closes");
+    ck_eq(residual(&s, GS_CLASS_TELEMETRY), 0, "so does telemetry's");
+    ck_standdown_identity(&s, "withdrawn + dropped == skipped + standdown");
+    wire_log_sane();
+}
+
+/*
  * THE RE-READ IS BOUNDED AT 1 MS A PASS (spec 5.2 item 5, user 2026-11-27): it
  * does not wait for a window that comes later. The resends here are 1.5 ms
  * apart, longer than the span (the C3's are 276 us apart), so where the pass
@@ -2934,6 +2993,7 @@ int main(void)
     case_standdown_held_past_bound();
     case_deadline_skip_held_past_bound();
     case_first_pass_past_bound_rereads();
+    case_withdrawn_inhibit_count_lag();
     case_reread_bounded_by_the_span();
     case_page_aborted_at_the_bound_is_requeued();
 
