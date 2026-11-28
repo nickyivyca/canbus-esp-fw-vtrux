@@ -12,6 +12,7 @@
 #include "soc/system_reg.h"
 #include "soc/rtc_cntl_reg.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "esp_cpu.h"
 
 #include <stdio.h>
@@ -751,6 +752,61 @@ static void case_delay_us(void)
     twai_fake_set_clock(NULL, NULL);
 }
 
+static bool ext_wait_gives_up(int64_t deadline, void *ctx)
+{
+    (void)ctx;
+    (void)deadline;
+    g_ext_clock += 10;          /* moves a little, then gives up */
+    return false;
+}
+
+static void case_esp_timer(void)
+{
+    twai_status_info_t s;
+    int64_t t;
+    g_case = "esp_timer_get_time: the fake's own clock, moved by advance and by delays";
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    t = esp_timer_get_time();
+    CHECK(t == twai_fake_now());
+    twai_fake_advance(5);
+    esp_rom_delay_us(10);
+    CHECK(esp_timer_get_time() == t + 15 && esp_timer_get_time() == twai_fake_now());
+
+    g_case = "esp_timer_get_time: a register read or a status read moves it not at all";
+    t = esp_timer_get_time();
+    (void)twai_get_status_info(&s);
+    CHECK(esp_timer_get_time() == t);
+
+    g_case = "esp_timer_get_time: an adapter whose hook reaches the deadline: the adapter's time";
+    twai_fake_set_clock(ext_clock, NULL);
+    g_ext_clock = 1000;
+    up(TWAI_MODE_NORMAL, 5, 5, 0, true);
+    twai_fake_set_wait_hook(ext_wait, NULL);
+    CHECK(esp_timer_get_time() == 1000);
+    esp_rom_delay_us(50);
+    CHECK(g_ext_clock == 1050 && esp_timer_get_time() == 1050);
+
+    g_case = "esp_timer_get_time: an adapter and no hook: it moves by each delay, the clock does not";
+    twai_fake_set_wait_hook(NULL, NULL);
+    esp_rom_delay_us(50);
+    esp_rom_delay_us(30);
+    CHECK(g_ext_clock == 1050 && twai_fake_now() == 1050 && esp_timer_get_time() == 1130);
+    g_ext_clock = 1100;                         /* the project's clock moves on */
+    CHECK(esp_timer_get_time() == 1180);
+
+    g_case = "esp_timer_get_time: a hook that gives up short of the deadline: the rest counted";
+    twai_fake_set_wait_hook(ext_wait_gives_up, NULL);
+    esp_rom_delay_us(40);                       /* the hook moves 10, gives up 30 short */
+    CHECK(g_ext_clock == 1110 && esp_timer_get_time() == 1110 + 80 + 30);
+
+    g_case = "esp_timer_get_time: twai_fake_reset() clears the unseen waits";
+    twai_fake_set_wait_hook(NULL, NULL);
+    twai_fake_reset();
+    CHECK(esp_timer_get_time() == g_ext_clock);
+    twai_fake_set_clock(NULL, NULL);
+    twai_fake_reset();
+}
+
 static void case_periph_s3(void)
 {
     twai_dev_t *hw = TWAI_LL_GET_HW(0);
@@ -1172,6 +1228,7 @@ int main(void)
     case_status_rs_es();
     case_counter_registers();
     case_delay_us();
+    case_esp_timer();
     case_periph_s3();
     case_mode_register();
     case_ll_switch();
