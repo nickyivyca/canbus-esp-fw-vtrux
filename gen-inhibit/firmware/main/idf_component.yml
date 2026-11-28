@@ -12,17 +12,19 @@ dependencies:
     path: shared/debug_logs
     version: "2026.11.23.3"
   # Port 0 (spec 3.3, port step 1b): the CAN port interface, whose stock calls
-  # vtrux/wican's files make, and the TWAI port behind it. The TWAI port is at
-  # 2026.11.27 for T13's no-acknowledge modes (gen-inhibit tracker F5); its
-  # release-image code is the same as at 2026.11.23.3.
+  # vtrux/wican's files make, and the TWAI port behind it.
+  # FOR THE F5 MEASUREMENT BUILD ONLY; THIS BRANCH IS NEVER MERGED. Both are
+  # at 2026.11.27.3 for the T13 probe's answer-stack fix (gen-inhibit tracker
+  # F5). That tag also changes twai_port's release code, which needs can_port
+  # from the same commit, so gen-inhibit/main stays at 2026.11.27.
   vtrux/can_port:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/can_port
-    version: "2026.11.23.3"
+    version: "2026.11.27.3"
   vtrux/twai_port:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/twai_port
-    version: "2026.11.27"
+    version: "2026.11.27.3"
   # Every software restart takes port 0 off the bus first (spec 3, port step
   # 1c): the guard sets its own link-time wrap, so depending on it is enough.
   vtrux/restart_guard:
