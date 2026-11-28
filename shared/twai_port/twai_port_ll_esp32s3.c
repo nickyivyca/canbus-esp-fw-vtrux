@@ -151,6 +151,9 @@ static IRAM_ATTR bool core_stalled(int core)
  * stall check, and one write of this record after T12's steps, at each
  * return after the stall. Nothing else in the stop differs.
  */
+#if !defined(RTC_NOINIT_ATTR) && !defined(ESP_PLATFORM)
+#define RTC_NOINIT_ATTR     /* host builds whose esp_attr.h lacks it */
+#endif
 static RTC_NOINIT_ATTR twai_port_s3_stall_record_t s_stall_rec;
 
 static IRAM_ATTR uint32_t stall_check(const twai_port_s3_stall_record_t *s)
