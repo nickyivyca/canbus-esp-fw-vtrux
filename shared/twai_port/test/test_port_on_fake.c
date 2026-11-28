@@ -2,9 +2,12 @@
  * The real twai_port, compiled as shipped, on the fake (SPEC.md T10: "Both
  * projects' host builds compile the real twai_port on it").
  *
- * Built twice: with the C3's register file on the fake's C3, and with the
- * unsupported register file on the fake's S3 (-DPORT_ON_S3). The cases are
- * written from SPEC.md T2 to T9 and T12 and the fake's model of the driver,
+ * Built four times: with the C3's register file on the fake's C3; and on the
+ * fake's S3 (-DPORT_ON_S3) with the S3's file as shipped, with the
+ * unsupported file, and with the S3's file as the T19 measurement build
+ * compiles it (-DPORT_S3_PROBE -DTWAI_PORT_S3_PROBE=1), where T8 and T12 are
+ * supported and the two-core T12 cases run. The cases are
+ * written from SPEC.md T2 to T9, T12 and T14 and the fake's model of the driver,
  * not from the port's code: they show the port runs on the fake and does
  * what the spec says there. They are harness self-checks. What counts for
  * twai_port's VERIFICATION.md is the acceptance run on a build the
@@ -22,11 +25,20 @@
 #include "twai_port.h"
 #include "twai_fake.h"
 #include "hal/twai_ll.h"
+#include "esp_cpu.h"
 
 #include <stdio.h>
 #include <string.h>
 
 extern int host_error_checks, host_standby, host_log_e, host_log_w;
+
+/* Whether the build's register file is measured for T8 and T12: the C3's,
+ * and the S3's in its T19 measurement build (TWAI_PORT_S3_PROBE). */
+#if !defined(PORT_ON_S3) || defined(PORT_S3_PROBE)
+#define REGFILE_SUPPORTED 1
+#else
+#define REGFILE_SUPPORTED 0
+#endif
 
 #ifdef T12_STANDIN
 esp_err_t t12_standin_restart_stop(can_port_restart_report_t *out);
@@ -274,7 +286,7 @@ static void case_register_file(void)
     fresh(&cfg);
     CHECK(twai_port_setup(&cfg) == ESP_OK);
     CHECK(twai_port_install() == ESP_OK);
-#ifdef PORT_ON_S3
+#if !REGFILE_SUPPORTED
     CHECK(twai_port_buf_state() == TWAI_PORT_BUF_UNSUPPORTED);
     twai_fake_stall_next(1);
     CHECK(twai_port_send(&m, 0) == ESP_OK);
@@ -295,6 +307,20 @@ static void case_register_file(void)
     CHECK(twai_fake_ll_aborts() == 1 && twai_fake_ll_removed() == 1);
     CHECK(twai_port_buf_state() == TWAI_PORT_BUF_EMPTY);
     CHECK(twai_fake_wire_count() == 1);
+#endif
+}
+
+static void case_t14_refused(void)
+{
+    twai_port_config_t cfg;
+    fresh(&cfg);
+    cfg.kept_driver_switch = true;
+#ifndef PORT_S3_PROBE
+    g_case = "T14: setup with the kept-driver switch refused, ESP_ERR_NOT_SUPPORTED, on a chip not measured for it";
+    CHECK(twai_port_setup(&cfg) == ESP_ERR_NOT_SUPPORTED);
+#else
+    g_case = "T14: the T19 measurement build takes the kept-driver switch";
+    CHECK(twai_port_setup(&cfg) == ESP_OK);
 #endif
 }
 
@@ -429,7 +455,7 @@ static void up(twai_port_config_t *cfg)
     twai_fake_set_air_time_us(300);
 }
 
-#ifndef PORT_ON_S3
+#if REGFILE_SUPPORTED
 /* A stop that touched nothing: every field but the clock and reset bits 0. */
 static bool untouched(const can_port_restart_report_t *r)
 {
@@ -634,6 +660,76 @@ static void case_t12_null(void)
     CHECK(RESTART_STOP(NULL) == ESP_ERR_INVALID_ARG);
     CHECK(!twai_fake_in_reset_mode() && twai_fake_ll_reset_entries() == 0);
 }
+
+#ifndef PORT_ON_S3
+static void case_t12_one_core(void)
+{
+    twai_port_config_t cfg;
+    g_case = "T12: on the C3, one core: the stop stalls nothing";
+    up(&cfg);
+    (void)stop(ESP_OK);
+    CHECK(twai_fake_stall_calls() == 0 && twai_fake_stall_misused() == 0);
+}
+#else
+/*
+ * T12 on a chip with two cores (added 2026-11-27, user): the other core
+ * stalled first, before any of T12's steps, and never started again. The
+ * driver was installed from the other core, so its interrupt runs there,
+ * and a task there sends every 100 us. Interrupts are off on the stop's own
+ * core, as on the restart path.
+ */
+static void two_core_bus(twai_port_config_t *cfg)
+{
+    twai_message_t o = msg(0x300);
+    twai_message_t m = msg(0x100);
+    fresh(cfg);
+    twai_fake_set_core(1);                          /* install from core 1 */
+    CHECK(twai_port_setup(cfg) == ESP_OK);
+    CHECK(twai_port_install() == ESP_OK);
+    twai_fake_set_core(0);
+    CHECK(twai_fake_isr_core() == 1);
+    twai_fake_set_air_time_us(300);
+    CHECK(twai_port_send(&m, 0) == ESP_OK);
+    twai_fake_set_other_core_sender(&o, 100);
+    twai_fake_advance(150);                         /* our frame on the wire, two queued behind */
+    twai_fake_set_interrupts_off(true);
+}
+
+static void case_t12_two_cores(void)
+{
+    twai_port_config_t cfg;
+    can_port_restart_report_t r;
+    int ll0;
+    uint32_t sent;
+    g_case = "T12 (two cores): the other core stalled before any step, never started again; "
+             "with it sending, no frame cut";
+    two_core_bus(&cfg);
+    ll0 = twai_fake_ll_calls();
+    r = stop(ESP_OK);
+    CHECK(twai_fake_stall_calls() == 1 && twai_fake_core_stalled(1));
+    CHECK(twai_fake_ll_calls_at_stall() == ll0);
+    CHECK(twai_fake_unstall_calls() == 0 && twai_fake_restalls() == 0 && twai_fake_stall_misused() == 0);
+    CHECK(r.entered_reset && !r.timed_out);
+    CHECK(twai_fake_tx_cut_by_reset() == 0);
+    sent = twai_fake_other_core_sent();
+    twai_fake_advance(10000);
+    CHECK(twai_fake_other_core_sent() == sent && twai_fake_core_stalled(1));
+}
+
+static void case_t12_already_stalled(void)
+{
+    twai_port_config_t cfg;
+    can_port_restart_report_t r;
+    g_case = "T12 (two cores): a core already stalled (a panic) is not stalled again";
+    two_core_bus(&cfg);
+    esp_cpu_stall(1);                               /* the panic handler's */
+    r = stop(ESP_OK);
+    CHECK(twai_fake_stall_calls() == 1 && twai_fake_restalls() == 0);
+    CHECK(twai_fake_stall_reg_reads() >= 2);        /* both fields read */
+    CHECK(twai_fake_core_stalled(1) && r.entered_reset);
+    CHECK(twai_fake_tx_cut_by_reset() == 0);
+}
+#endif
 #else
 static void case_t12_unsupported(void)
 {
@@ -665,7 +761,8 @@ static const struct { const char *name; void (*fn)(void); } CASES[] = {
     {"flush", case_flush},
     {"receive_wait", case_receive_wait},
     {"install_hook", case_install_hook},
-#ifndef PORT_ON_S3
+    {"t14_refused", case_t14_refused},
+#if REGFILE_SUPPORTED
     {"t12_idle", case_t12_idle},
     {"t12_transmitting", case_t12_transmitting},
     {"t12_receiving", case_t12_receiving},
@@ -677,6 +774,12 @@ static const struct { const char *name; void (*fn)(void); } CASES[] = {
     {"t12_no_port", case_t12_no_port},
     {"t12_already_reset", case_t12_already_reset},
     {"t12_null", case_t12_null},
+#ifndef PORT_ON_S3
+    {"t12_one_core", case_t12_one_core},
+#else
+    {"t12_two_cores", case_t12_two_cores},
+    {"t12_already_stalled", case_t12_already_stalled},
+#endif
 #else
     {"t12_unsupported", case_t12_unsupported},
 #endif

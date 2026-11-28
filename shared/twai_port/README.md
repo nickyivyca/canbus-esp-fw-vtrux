@@ -16,14 +16,17 @@ code to test.
 
 | File | What |
 |---|---|
-| `include/twai_port.h`, `twai_port.c` | the port: the project's choices (T2), install and teardown (T3, T4), mode changes, receive and the one send (T6), the one alert reader (T5), the counters and status (T7), and its `can_port` backend table, `twai_port_ops` |
-| `twai_port_ll_esp32c3.c` | T8 on the C3: the buffer state and the abort-if-awaiting, and T12's restart stop, register level, checked against ESP-IDF v5.4.1 and v5.4.2 (the headers it reads are byte-identical in the two) |
-| `twai_port_ll_unsupported.c` | T8 and T12 on any other chip: the buffer state, the abort and the restart stop report unsupported |
+| `include/twai_port.h`, `twai_port.c` | the port: the project's choices (T2), install and teardown (T3, T4), mode changes, the kept-driver switch (T14, T15, T17, T18, with T16's place marked and no wait), receive and the one send (T6), the one alert reader (T5), the counters and status (T7), and its `can_port` backend table, `twai_port_ops` |
+| `twai_port_ll.h` | private: the switch's register steps each chip's file gives (T14, T15) |
+| `twai_port_ll_esp32c3.c` | T8 on the C3: the buffer state and the abort-if-awaiting, and T12's restart stop, register level, checked against ESP-IDF v5.4.1 and v5.4.2 (the headers it reads are byte-identical in the two); T14 not supported (not measured) |
+| `twai_port_ll_esp32s3.c` | T19, the S3's register file: T8, T12 (stalling the other core first) and T14's steps, checked against ESP-IDF v5.4.2; every call reports unsupported until the S3 measurement passes, except in the measurement build (`TWAI_PORT_S3_PROBE`) |
+| `twai_port_ll_unsupported.c` | T8, T12 and T14 on any other chip: the buffer state, the abort and the restart stop report unsupported, and the switch is refused |
 | `test_app/` | T13: the transmit-abort probe, `POST /gi_txabort`, moved from gen-inhibit's `gi_txabort_probe.c` (`twai_port_txabort_probe.c`, `include/twai_port_txabort_probe.h`), compiled in only by `TWAI_PORT_TXABORT_PROBE`; the project registers it from its URI hook with its check of whether it owns the bus. Its no-acknowledge modes, m1-m3, have a register file per chip of their own (only the C3's exists), and host tests in `test_app/test/` (`test_app/README.md`) |
-| `CMakeLists.txt`, `idf_component.yml` | the component: the register file by target, the probe by its switch, and the project's one board component, found as `vtrux/wican` finds it |
+| `CMakeLists.txt`, `idf_component.yml` | the component: the register file by target, the probe and the S3 measurement build by their switches, and the project's one board component, found as `vtrux/wican` finds it |
 | `unit/` | the port's unit tests and their scripted stub (`unit/README.md`) |
 | `test/` | the one host fake of the TWAI driver (T10), its own tests, and the real port built on it (`test/README.md`) |
 | `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) |
+| `SPEC.md`, `VALIDATION.md`, `VERIFICATION.md` | the spec, why each requirement is worded as it is, and the test evidence |
 | `.gitignore` | `__pycache__/`, so a host test's bytecode is never committed |
 
 A project takes it from git at its pinned `shared/main` tag, with
@@ -41,6 +44,6 @@ port index, all before `wican_init()`.
 | `unit/`'s scripted stub of the driver API | part of the unit tests: each case sets the driver's returns and checks the port's calls; it models no controller behaviour (no states, alerts or arbitration of its own) | the implementor, as the unit tests (gen-inhibit reviewer, 2026-10-31) |
 | `unit/mutate.py` | the unit tests' mutants: one behaviour of `twai_port.c` or the C3 register file broken at a time, each of which the unit tests must fail. Not `test/mutate.py`, which mutates the fake | the implementor, as the unit tests (gen-inhibit reviewer, 2026-11-01) |
 | `test/`'s fake of the TWAI driver | T10: what the controller does, in its states, recovery and per-chip behaviour | the tester of the project that needs the change (user, 2026-10-31, in both reviewers' sessions) |
-| the rest of `test/`: the real port built on the fake (`test_port_on_fake.c`, `host_platform.c`), its stand-ins and can-fails (`t12_standin.c`, `mutate.py`, `test_mutate.py`), the fake's own tests and the C++ interface (`cpp/`) | harness: the port tested on the fake against T2 to T9 and T12 | the tester of the project that needs the change (gen-inhibit reviewer, 2026-11-02) |
+| the rest of `test/`: the real port built on the fake (`test_port_on_fake.c`, `host_platform.c`), its stand-ins and can-fails (`t12_standin.c`, `mutate.py`, `test_mutate.py`), the fake's own tests and the C++ interface (`cpp/`) | harness: the port tested on the fake against T2 to T9, T12 and T14 to T18 | the tester of the project that needs the change (gen-inhibit reviewer, 2026-11-02) |
 | `VERIFICATION.md` | test evidence | the tester |
 | `vtrux_checks.json` | the component's build-switch table (`shared/tools` R20) | the tester of the project that needs the change |

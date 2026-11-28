@@ -3,12 +3,15 @@
 # and its board at the same shared/main tag, and lists all three itself, as
 # it lists vtrux/debug_logs beside vtrux/wican.
 #
-# T8 AND T12, THE REGISTER FILE: one per chip, naming the ESP-IDF version it
-# was checked against. Only the C3's is measured; any other chip builds the
-# unsupported file, whose buffer state, abort and restart stop report
-# themselves unsupported.
+# T8, T12 AND T14, THE REGISTER FILE: one per chip, naming the ESP-IDF version
+# it was checked against. The C3's T8 and T12 are measured; its T14 is not.
+# The S3's (T19) reports itself unsupported until its measurement passes,
+# except in the measurement build below. Any other chip builds the
+# unsupported file.
 if(IDF_TARGET STREQUAL "esp32c3")
     set(twai_port_ll "twai_port_ll_esp32c3.c")
+elseif(IDF_TARGET STREQUAL "esp32s3")
+    set(twai_port_ll "twai_port_ll_esp32s3.c")
 else()
     set(twai_port_ll "twai_port_ll_unsupported.c")
 endif()
@@ -66,6 +69,27 @@ idf_component_register(SRCS ${twai_port_srcs}
 if(TWAI_PORT_TXABORT_PROBE)
     message(STATUS "vtrux/twai_port: TX ABORT probe ENABLED (measurement build) "
                    "-- writes the TWAI abort command register directly")
+endif()
+
+# TWAI_PORT_HOST_SWITCH IS FOR HOST BUILDS ON THE T10 FAKE ONLY
+# (twai_port_ll.h): no image may carry it.
+if(TWAI_PORT_HOST_SWITCH)
+    message(FATAL_ERROR "vtrux/twai_port: TWAI_PORT_HOST_SWITCH is for host "
+                        "builds on the T10 fake only; an ESP-IDF build must not set it")
+endif()
+
+# T19, THE S3 MEASUREMENT BUILD: never in a release image (shared/tools R20).
+#
+#   idf.py -B build-s3probe -DTWAI_PORT_S3_PROBE=1 build
+#
+# It makes the S3 register file report itself supported, so the measurement
+# can run T8, T12 and the kept-driver switch (T14 to T18) before they are
+# measured. The build-switch check refuses a release image with it (the
+# tester's row in vtrux_checks.json).
+if(TWAI_PORT_S3_PROBE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE TWAI_PORT_S3_PROBE=1)
+    message(STATUS "vtrux/twai_port: S3 PROBE ENABLED (measurement build) "
+                   "-- the unmeasured S3 register file reports itself supported")
 endif()
 
 # THE BOARD IS THE PROJECT'S (shared/boards B2, B5): the port takes its pins

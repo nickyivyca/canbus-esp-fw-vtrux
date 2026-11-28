@@ -6,4 +6,5 @@ and `hal/twai_ll.h`, and for the restart stop (T12) `soc/soc.h`,
 bits), laid out as ESP-IDF lays them out, so a source's `#include` lines
 resolve unchanged. What each holds, and where it came from, is in its header
 comment and in `../README.md`. Their ESP-IDF sources are byte-identical in
-v5.4.2 (`../README.md`, "ESP-IDF v5.4.2").
+v5.4.2 (`../README.md`, "ESP-IDF v5.4.2"). `soc/rtc_cntl_reg.h`, the S3's
+two stall-code registers for the restart stop on two cores, is from v5.4.2.

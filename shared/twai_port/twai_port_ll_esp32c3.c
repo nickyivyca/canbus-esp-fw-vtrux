@@ -40,6 +40,7 @@
  * v5.4.1's, with v5.4.2's after the slash where they moved.
  */
 #include "twai_port.h"
+#include "twai_port_ll.h"
 #include "hal/twai_ll.h"
 #include "esp_attr.h"
 #include "esp_rom_sys.h"
@@ -193,4 +194,45 @@ IRAM_ATTR esp_err_t twai_port_restart_stop(can_port_restart_report_t *r)
     twai_ll_enter_reset_mode(hw);
     r->entered_reset   = true;
     return ESP_OK;
+}
+
+/*
+ * T14, THE KEPT-DRIVER SWITCH: not measured on the C3 (T14's last sentence;
+ * charge-interposer reviewer, 2026-11-27), so twai_port_setup() refuses it
+ * here and the steps below are never called. They touch nothing.
+ */
+bool twai_port_ll_switch_supported(void)
+{
+    return false;
+}
+
+twai_port_buf_t twai_port_ll_buf_state(void)
+{
+    return TWAI_PORT_BUF_UNSUPPORTED;
+}
+
+twai_port_buf_t twai_port_ll_abort_if_awaiting(void)
+{
+    return TWAI_PORT_BUF_UNSUPPORTED;
+}
+
+void twai_port_ll_switch_enter(twai_port_ll_entry_t *out)
+{
+    out->status = 0;
+    out->buf = TWAI_PORT_BUF_UNSUPPORTED;
+}
+
+void twai_port_ll_switch_leave(bool listen_only, uint32_t rec,
+                               uint32_t *rec_back, uint32_t *tec_back)
+{
+    (void)listen_only;
+    (void)rec;
+    *rec_back = 0;
+    *tec_back = 0;
+}
+
+void twai_port_ll_counters(uint32_t *tec, uint32_t *rec)
+{
+    *tec = 0;
+    *rec = 0;
 }

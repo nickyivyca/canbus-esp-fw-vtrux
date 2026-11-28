@@ -1,11 +1,13 @@
 /*
  * Host stand-in for ESP-IDF 5.4.1's and 5.4.2's esp32c3 hal/twai_ll.h
- * (byte-identical in the two): the status register
- * is a value the case sets, and the abort command is recorded. No controller
- * behaviour: writing the command changes nothing the next read returns. For
- * the restart stop (T12): the reset-mode bit, the error counters and the
- * enter-reset command, recorded with the status it was written at; the
- * scripted 2 us wait (stub.c's esp_rom_delay_us) is what changes the status.
+ * (byte-identical in the two; the esp32s3 one has the same calls): the status
+ * register is a value the case sets, and the abort command is recorded. No
+ * controller behaviour: writing the command changes nothing the next read
+ * returns. For the restart stop (T12): the reset-mode bit, the error counters
+ * and the enter-reset command, recorded with the status it was written at;
+ * the scripted 2 us wait (stub.c's esp_rom_delay_us) is what changes the
+ * status. For the kept-driver switch (T14, T15): the mode written, the REC
+ * written and the exit from reset mode, each recorded.
  */
 #ifndef MOCK_TWAI_LL_H
 #define MOCK_TWAI_LL_H
@@ -19,6 +21,12 @@ typedef struct {
     int enter_reset_cmds;
     uint32_t status_at_enter;   /* the status when reset mode was entered */
     int delays_at_enter;        /* the waits made before it */
+    int exit_reset_cmds;
+    int mode;                   /* the last twai_ll_set_mode() */
+    int mode_writes;
+    bool mode_set_in_reset;     /* the last mode write was in reset mode */
+    int rec_writes;
+    bool rec_set_in_reset;      /* the last REC write was in reset mode */
 } twai_dev_t;
 extern twai_dev_t stub_twai_dev;
 extern int stub_delays;         /* esp_rom_delay_us() calls so far */
@@ -37,5 +45,22 @@ static inline void twai_ll_enter_reset_mode(twai_dev_t *hw)
     hw->status_at_enter = hw->status;
     hw->delays_at_enter = stub_delays;
     hw->reset_mode = true;
+}
+static inline void twai_ll_exit_reset_mode(twai_dev_t *hw)
+{
+    hw->exit_reset_cmds++;
+    hw->reset_mode = false;
+}
+static inline void twai_ll_set_mode(twai_dev_t *hw, int mode)
+{
+    hw->mode = mode;
+    hw->mode_writes++;
+    hw->mode_set_in_reset = hw->reset_mode;
+}
+static inline void twai_ll_set_rec(twai_dev_t *hw, uint32_t rec)
+{
+    hw->rec = rec;
+    hw->rec_writes++;
+    hw->rec_set_in_reset = hw->reset_mode;
 }
 #endif
