@@ -270,6 +270,9 @@ SELF_TESTS = [
     # 2026-11-23, the reviewer's pace ruling: the offer on can-tools' pace,
     # ended by time, and bench_charger_witness's offer and premise line
     "bench_offer", "bench_charger_witness",
+    # 2026-11-28, stage (b) batch 1 step 3, check (c): no dominant error flag
+    # in listen-only after a provoked error, the judge and its can-fail
+    "bench_lom_errflag",
 ]
 # Bench drivers whose --can-fail runs their self-test against each of their
 # MUTANTS (script_can_fail.py), run locally (test_script_coverage).
@@ -301,6 +304,8 @@ CAN_FAILS = [
     # 2026-11-23, the reviewer's pace ruling (bench_offer on can-tools' pace,
     # in place of bench_pacer) and sweep ruling on premise failures
     "bench_offer", "bench_charger_witness", "bench_innomaker_clock",
+    # 2026-11-28, stage (b) batch 1 step 3, check (c)
+    "bench_lom_errflag",
 ]
 # A can-fail's timeout when it is not CAN_FAIL_TIMEOUT_S. bench_vport's ran
 # past 3600 s in run 69d8 (2026-11-21) after 83 of its 149 mutants: about
@@ -1379,7 +1384,14 @@ def bench(settings):
         vport("vport-listen", "listen",
               ["--listen-arms", "no-ack,idle,flood-7F4,flood-649,stall"])] + [
         vport("vport-" + st, st)
-        for st in ("bitrate", "flood", "stall", "dominant", "recstart")])
+        for st in ("bitrate", "flood", "stall", "dominant", "recstart")] + [
+        # stage (b) batch 1 step 3, check (c) (the reviewer, 2026-11-28): the
+        # judge of "no dominant error flag in listen-only after a provoked
+        # error" and its can-fail, the register listen-only with no REC
+        # write (vport_bench LOMREG); exit 0 PASS, 1 FAIL, 3 VOID
+        bpy("lom-errflag-vport", "bench_lom_errflag.py",
+            ["--board", "vport", "--port", "{serial_port}", "--elf",
+             "{images_dir}/idf/vport_bench/vport_bench.elf", "--out", "{outdir}"])])
 
     truck_only = Group("truck-only", checks=[
         Check("spec10-item%d" % i, ["-"], skip=(

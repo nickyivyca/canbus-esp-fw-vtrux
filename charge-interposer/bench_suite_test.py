@@ -834,7 +834,11 @@ def test_suites():
     # 321: b-vport/vport-listen-wrong-rate gone (spec 9 leaves the wrong bit
     #      rate out of the listen-only cases; the reviewer, on the user's
     #      ruling, 2026-11-27)
-    assert len(seen) == 321, "checks across the suites: %d" % len(seen)
+    # 324: b-vport/lom-errflag-vport, st.bench-lom-errflag and
+    #      cf.bench-lom-errflag (stage (b) batch 1 step 3, check (c): no
+    #      dominant error flag in listen-only after a provoked error, its
+    #      judge and can-fail; the reviewer, 2026-11-28)
+    assert len(seen) == 324, "checks across the suites: %d" % len(seen)
     phased = sorted(c.id for g in su["bench"].groups for c in g.checks
                     if ".phase-" in c.id)
     assert phased == ["board.%s.phase-%dms" % (s, ms) for s in
