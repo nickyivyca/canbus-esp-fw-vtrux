@@ -24,8 +24,9 @@ set(twai_port_includes "include")
 # requirements in an early pass, a separate `cmake -P` that is given no -D
 # cache variables (IDF v5.4.1 tools/cmake/component.cmake,
 # __component_get_requirements), so a switch there changes nothing. It is
-# only a library edge: the port calls none of them, and the switches still
-# decide whether the probe's sources are compiled.
+# only a library edge: the port itself calls only esp_timer (the switch's
+# abort wait, T17), and the switches still decide whether the probe's
+# sources are compiled.
 set(twai_port_priv_requires log soc esp_rom
                             esp_http_server esp_timer esp_app_format
                             esp_system esp_hw_support)

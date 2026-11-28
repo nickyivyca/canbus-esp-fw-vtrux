@@ -56,6 +56,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "board.h"
 
 static const char *TAG = "twai_port";
@@ -592,6 +593,13 @@ static uint32_t switch_remove_held(void)
  * then counts a transmit failure, which is not counted again (s_tx_failed_skip),
  * and raises a transmit-failed alert, which is not passed up. Waits, bounded,
  * until the driver holds no frame.
+ *
+ * THE WAIT IS ELAPSED TIME, from esp_timer, not a sum of its steps: it runs
+ * on a task with interrupts on, so an interrupt or another task can run
+ * between steps, and the status read takes time of its own. abort_wait_us is
+ * T19's evidence for T16 and T17 (the charge-interposer reviewer,
+ * 2026-11-28), and the 1 ms bound is 1 ms of elapsed time. Both are read
+ * just after each status read, from just after the abort.
  */
 static void switch_abort_head(twai_port_switch_report_t *rep)
 {
@@ -610,11 +618,14 @@ static void switch_abort_head(twai_port_switch_report_t *rep)
     }
 
     twai_status_info_t st;
-    uint32_t waited = 0;
+    const int64_t t0 = esp_timer_get_time();
+    int64_t waited = 0;
     bool driver_holds = true;
     for (;;)
     {
-        if (read_status(&st) == ESP_OK && st.msgs_to_tx == 0)
+        const bool freed = read_status(&st) == ESP_OK && st.msgs_to_tx == 0;
+        waited = esp_timer_get_time() - t0;
+        if (freed)
         {
             driver_holds = false;
             break;
@@ -624,9 +635,10 @@ static void switch_abort_head(twai_port_switch_report_t *rep)
             break;
         }
         esp_rom_delay_us(SWITCH_ABORT_WAIT_STEP_US);
-        waited += SWITCH_ABORT_WAIT_STEP_US;
     }
-    rep->abort_wait_us = waited;
+    rep->abort_wait_us = (waited <= 0) ? 0u
+                       : (waited >= (int64_t)UINT32_MAX) ? UINT32_MAX
+                       : (uint32_t)waited;
     rep->abort_timed_out = driver_holds;
     rep->driver_tx_stuck = driver_holds
                            && twai_port_ll_buf_state() == TWAI_PORT_BUF_EMPTY;

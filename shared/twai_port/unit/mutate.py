@@ -176,6 +176,12 @@ MUTANTS = [
     ("no bound on the abort wait", TP,
      "        if (waited >= SWITCH_ABORT_WAIT_MAX_US)\n        {\n            break;\n        }",
      "        if (waited >= 100u * SWITCH_ABORT_WAIT_MAX_US)\n        {\n            break;\n        }"),
+    ("abort wait summed from its steps", TP,
+     "        waited = esp_timer_get_time() - t0;\n        if (freed)\n        {\n            driver_holds = false;\n            break;\n        }\n        if (waited >= SWITCH_ABORT_WAIT_MAX_US)\n        {\n            break;\n        }\n        esp_rom_delay_us(SWITCH_ABORT_WAIT_STEP_US);\n",
+     "        (void)t0;\n        if (freed)\n        {\n            driver_holds = false;\n            break;\n        }\n        if (waited >= SWITCH_ABORT_WAIT_MAX_US)\n        {\n            break;\n        }\n        esp_rom_delay_us(SWITCH_ABORT_WAIT_STEP_US);\n        waited += SWITCH_ABORT_WAIT_STEP_US;\n"),
+    ("abort wait from the first status read", TP,
+     "    const int64_t t0 = esp_timer_get_time();\n    int64_t waited = 0;\n    bool driver_holds = true;\n    for (;;)\n    {\n        const bool freed = read_status(&st) == ESP_OK && st.msgs_to_tx == 0;\n        waited = esp_timer_get_time() - t0;",
+     "    int64_t t0 = -1;\n    int64_t waited = 0;\n    bool driver_holds = true;\n    for (;;)\n    {\n        const bool freed = read_status(&st) == ESP_OK && st.msgs_to_tx == 0;\n        const int64_t now = esp_timer_get_time();\n        if (t0 < 0) { t0 = now; }\n        waited = now - t0;"),
     # The S3 register file (T19).
     ("host switch ignored", S3,
      "#define S3_SWITCH_SUPPORTED 1", "#define S3_SWITCH_SUPPORTED 0"),
