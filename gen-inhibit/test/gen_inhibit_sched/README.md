@@ -214,9 +214,10 @@ stale, when a node came back.
 
 `fake_buf` has a mode for it, `fb_set_unacked()`: the frame is retried with a
 gap between retries, TRANSMITTING during each retry and AWAITING in the gap.
-**The gap is not calibrated**: the bench measured the retry period (262-274 us),
+**The gap was not calibrated then**: the bench measured the retry period (262-274 us),
 not how long TS reads 0. The cases place each pass on a retry or in a gap on
-purpose, so the gap's length decides nothing they assert. `fb_abort_reads()`
+purpose, so the gap's length decides nothing they assert. (2026-11-27: the C3
+has since been measured; see the 2026-11-27 section below.) `fb_abort_reads()`
 counts the loop's reads of the buffer.
 
 * `case_standdown_held_past_bound` -- the stand-down route. The bound is
@@ -250,3 +251,37 @@ no effect (`fb_race_next()`), and the page retries unacknowledged
 (`fb_set_unacked()`) until the pass at the bound lands in a gap. It fails on
 a0c19825's `gi_sched.c` (4 assertions), and the mutant that ends the loop on
 that read again is caught.
+
+### 2026-11-27: the re-read for up to 1 ms on each pass (tracker F5, option A)
+
+Spec 5.2 item 5's new last sentence (user, 2026-11-27; gen-inhibit/main
+e9bfa300): "On each such pass, the scheduler must re-read the controller
+about every 2 us, for up to 1 ms, and issue the abort at the first read with
+TS = 0." On each pass past the bound, a withdrawn inhibit's loop reads the
+buffer through `abort_if_awaiting()` every 2 us for up to 1 ms, and stops at
+the first read that is not TRANSMITTING. A read that issued the command ends
+the pass, and the next pass reads the result (F7). The wait and the clock are
+two new HAL calls, `spin_us` and `now_us`. In `fake_buf` they move and read
+the model's time (`fb_spins()`, `fb_spin_us_total()`, `fb_clock_reads()`).
+
+`fb_set_unacked()` now follows the C3's measurement (VALIDATION.md 5.2): gap 0
+is error active, where TS never reads 0, and gap 16 is error passive.
+`fb_last_cmd_at()` and `fb_gap_began_at()` place the command in the gap.
+
+- `case_standdown_held_past_bound` and `case_deadline_skip_held_past_bound`:
+  their passes past the bound run in error active. Each one re-reads for
+  exactly 1 ms, 501 reads, and issues no abort. The pass that reaches the
+  bound reads once. Then one pass in error passive meets a gap inside its
+  1 ms, issues the abort at the first read in it and ends there. The next
+  pass books the frame `withdrawn`.
+- `case_reread_bounded_by_the_span`: resends 1.5 ms apart. A pass that starts
+  as a resend begins stops at 1 ms with no abort. One that starts 600 us in
+  issues the abort 900 us in.
+- `case_abort_bound_is_reached`: a page held past the bound is never re-read,
+  and the HAL's clock is not read.
+
+The cases fail on e9bfa300's `gi_sched.c` (38 assertions). Eight mutants
+break the re-read, each caught: no re-read, a re-read for every class, a
+re-read before the bound, a span of 2 ms, a span of 0.5 ms, reads 8 us
+apart, reads 4 us apart, and a re-read that goes on after the read that
+issued the command.

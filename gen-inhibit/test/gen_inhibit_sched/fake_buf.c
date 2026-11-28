@@ -72,6 +72,13 @@ static struct
     bool     in_retry_gap;
     int      abort_reads;
 
+    /* the re-read past the bound: the HAL's busy-wait and clock */
+    int      spins;
+    int64_t  spin_us_total;
+    int      clock_reads;
+    int64_t  last_cmd_at;       /* -1: no command yet */
+    int64_t  gap_began_at;      /* the last retry gap's start; -1: none */
+
     fb_frame_t wire[FB_MAX];
     int        wire_n;
     fb_frame_t sub[FB_MAX];
@@ -90,6 +97,8 @@ static struct
 void fb_reset(void)
 {
     memset(&g, 0, sizeof(g));
+    g.last_cmd_at = -1;
+    g.gap_began_at = -1;
 }
 
 int64_t fb_now(void) { return g.now; }
@@ -207,6 +216,14 @@ void fb_advance(int64_t us)
             g.t_start_tx = g.now;
             continue;
         }
+        if (g.occupied && g.transmitting && g.unacked && g.unacked_gap_us == 0
+            && g.now >= g.t_start_tx + fb_air())
+        {
+            /* NOT ACKNOWLEDGED, ERROR ACTIVE: the retry follows at once and TS
+             * never reads 0 (VALIDATION.md 5.2, the C3 measurement). */
+            g.t_start_tx = g.now;
+            continue;
+        }
         if (g.occupied && g.transmitting && g.unacked
             && g.now >= g.t_start_tx + fb_air())
         {
@@ -215,6 +232,7 @@ void fb_advance(int64_t us)
             g.transmitting = false;
             g.in_retry_gap = true;
             g.t_submitted = g.now;
+            g.gap_began_at = g.now;
             continue;
         }
         if (g.occupied && g.transmitting
@@ -280,6 +298,7 @@ static gs_buf_t fb_abort_if_awaiting(void *ctx)
      * has no effect. That is the outcome the measurement found on 7 of 8
      * contended trials, and the reason item 4 is a loop.
      */
+    g.last_cmd_at = g.now;
     if (g.race_armed)
     {
         g.race_armed = false;
@@ -335,14 +354,38 @@ static uint32_t fb_rx_waiting_read(void *ctx)
     return g.rx_waiting;
 }
 
+/* The re-read past the bound's clock and busy-wait: the model's own time. */
+static int64_t fb_now_us(void *ctx)
+{
+    (void)ctx;
+    g.clock_reads++;
+    return g.now;
+}
+
+static void fb_spin(void *ctx, uint32_t us)
+{
+    (void)ctx;
+    g.spins++;
+    g.spin_us_total += us;
+    fb_advance((int64_t)us);
+}
+
 static const gs_hal_t HAL = {
     .submit = fb_submit,
     .abort_if_awaiting = fb_abort_if_awaiting,
     .buf_state = fb_state,
     .outstanding = fb_outstanding,
     .rx_waiting = fb_rx_waiting_read,
+    .now_us = fb_now_us,
+    .spin_us = fb_spin,
     .ctx = NULL,
 };
+
+int     fb_spins(void) { return g.spins; }
+int64_t fb_spin_us_total(void) { return g.spin_us_total; }
+int     fb_clock_reads(void) { return g.clock_reads; }
+int64_t fb_last_cmd_at(void) { return g.last_cmd_at; }
+int64_t fb_gap_began_at(void) { return g.gap_began_at; }
 
 void fb_set_rx_waiting(uint32_t n) { g.rx_waiting = n; }
 void fb_arrive_on_free(uint32_t n) { g.arrive_on_free = n; }
