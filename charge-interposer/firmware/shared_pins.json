@@ -10,18 +10,18 @@
     "digest": "a55aba79a23bb07af25f66ef7ca3b918020ec08d4d7bd10126f796e32698277f"
   },
   "shared/twai_port": {
-    "tag": "2026.11.28",
-    "commit": "e9f123a4535707cd2c90b6d50e39646da54a928f",
-    "digest": "de83015d904119bc6fe8860ea119b7caf15c37c957e7d7bf650b85612826202a"
+    "tag": "2026.11.28.3",
+    "commit": "ae616f84f8efd3da2b4a8f31d1314ffce9963cf9",
+    "digest": "3a734a9bff42c7cfc8b27a21e3412d984cb0234992671fc2d1ddeda13cad99a0"
   },
   "shared/can_port": {
-    "tag": "2026.11.28",
-    "commit": "e9f123a4535707cd2c90b6d50e39646da54a928f",
+    "tag": "2026.11.28.3",
+    "commit": "ae616f84f8efd3da2b4a8f31d1314ffce9963cf9",
     "digest": "40e90da18b273f14eb38c344a1654e9cb97d414d3695b071f34b2e4062f92917"
   },
   "shared/diag": {
-    "tag": "2026.11.28",
-    "commit": "e9f123a4535707cd2c90b6d50e39646da54a928f",
+    "tag": "2026.11.28.3",
+    "commit": "ae616f84f8efd3da2b4a8f31d1314ffce9963cf9",
     "digest": "d5e53cc14310e1e5f7cad9c77715acc549971e168b068931ba80a228010c5b3b"
   }
 }
