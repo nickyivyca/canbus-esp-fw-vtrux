@@ -20,7 +20,7 @@ emulated"**.
 
 | File | What |
 |---|---|
-| `spec_layer.h`, `spec_layer.c` | The fault layer. With no other node: every frame never completes (the fake's ACK taken away, `twai_fake_set_acked(false)`, so a normal-mode frame is retransmitted for ever and the head reads as transmitting, as a frame retrying unacknowledged does); one error frame per retry period while a frame waits (`bus_error_count` through the harness's `ft_set_bus_errors`, the fake latching `TWAI_ALERT_BUS_ERROR`); TEC 8 per error to 128 (error passive, `ERR_PASS`, which the layer raises), REC 0, in the fake's counters; on request bus-off (the fake's, TEC 256), ended by the next install. Alerts latch only if enabled when they occur, as the driver's do. Logs every `twai_receive()` return with its virtual time (the device's check points) and every injected error; counts `twai_initiate_recovery()` calls through a wrap, then passes each to the fake. **The retry period and alert pattern are a guess** until the bench row measures them; then the layer replays the measured pattern (spec 12.4). **Ported to twai_port's host fake at port step 1b** (2026-10-31): before, it had its own counter, alert and bus-off model and wrapped `twai_driver_install`, which `shim_harness.c` now wraps; it sees an install by the fake's count. On WSL gcc 9.4 the ported cases gave the 1a2 run's 83 RESULT lines (`runs/step1a2_17ec04c/spec_shim/`) word for word, every figure included. **2026-11-26:** the withdrawn frame stuck in the controller (`sl_retry_stuck`, below "The cases"), through two more wraps, of `twai_ll_get_status` and `twai_ll_set_cmd_abort_tx`; with no frame armed they pass every call through, and every earlier case gave only PASS lines with them on main 54e1ea13. |
+| `spec_layer.h`, `spec_layer.c` | The fault layer. With no other node: every frame never completes (the fake's ACK taken away, `twai_fake_set_acked(false)`, so a normal-mode frame is retransmitted for ever and the head reads as transmitting, as a frame retrying unacknowledged does); one error frame per retry period while a frame waits (`bus_error_count` through the harness's `ft_set_bus_errors`, the fake latching `TWAI_ALERT_BUS_ERROR`); TEC 8 per error to 128 (error passive, `ERR_PASS`, which the layer raises), REC 0, in the fake's counters; on request bus-off (the fake's, TEC 256), ended by the next install. Alerts latch only if enabled when they occur, as the driver's do. Logs every `twai_receive()` return with its virtual time (the device's check points) and every injected error; counts `twai_initiate_recovery()` calls through a wrap, then passes each to the fake. **The retry period and alert pattern are a guess** until the bench row measures them; then the layer replays the measured pattern (spec 12.4). **Ported to twai_port's host fake at port step 1b** (2026-10-31): before, it had its own counter, alert and bus-off model and wrapped `twai_driver_install`, which `shim_harness.c` now wraps; it sees an install by the fake's count. On WSL gcc 9.4 the ported cases gave the 1a2 run's 83 RESULT lines (`runs/step1a2_17ec04c/spec_shim/`) word for word, every figure included. **2026-11-26:** the withdrawn frame stuck in the controller (`sl_retry_stuck`, below "The cases"), through two more wraps, of `twai_ll_get_status` and `twai_ll_set_cmd_abort_tx`; with no frame armed they pass every call through, and every earlier case gave only PASS lines with them on main 54e1ea13. **2026-11-27:** TS between the stuck frame's retries follows the C3's measurement (spec 12.4 row, user): set throughout while error active, clear for 16 us before each retry from TEC 128 (`sl_stuck_passive_idle()` for another value); `sl_stuck_first_delay()` moves the retries against the device's reads (the phase variants), and `sl_retry_started_at()` reads back when they started. Every case without a stuck frame gave only PASS lines on main e9bfa300. |
 | `nonode_judge.h`, `nonode_judge.c` | The row's verdicts as pure functions of what a case observed (R1-R7 below, and two checks on the layer). |
 | `judge_test.c` | The judge on made-up observations: each verdict shown to pass and to fail. No fakes, no product code. |
 | `build_id_test.c` | **Spec 12.4 "0x7F3 carries the build id" (host half) and "the page names the binary"** (port step 0c, diag schema 8; 2026-10-25). Built by `build.sh` with `NN_TEST=build_id_test.c`; one case, `build_id`. The stimulus is the fakes' app descriptor hash (`MOCK_ELF_SHA256`). Spec 10's rule gives B0-B3 = hash[3], hash[2], hash[1], hash[0] (a u32 with the hash's first byte most significant, sent little-endian), worked once more by hand for this descriptor (`fff00f00`). Over 4 s in INHIBIT, every 0x7F3 on the wire must carry those bytes, 8 in B6 (schema 8) and, printed `%08x`, the hash's first four bytes; the page's `elf_sha256` must be the descriptor's hash and start with that build id. 7 RESULT lines. WSL self-check on `ef553fa` merged with the tester's branch: 7 PASS; 6 of 6 mutants of the product's build id and page hash, in a scratch copy, caught (`scratch/step0c/mutate_build_id_test.py`). **2026-11-23 (stage (b) batch 2, schema 9):** B6 must read 9, and a new result, `reserved`, needs B4-B5 0 (spec 10: the retired revision, sent 0); 8 PASS on gen-inhibit/main db1bfeae. |
@@ -61,7 +61,9 @@ emulated"**.
 | `answer_stuck` | the nodes go before the answer to the last command completes; a retry every 150 ms | +1.5 s | trip 2 at the stale check; A1-A5 below |
 | `layer` | the layer's own mechanics on a live device | | |
 | `withdrawn_262`, `withdrawn_274` | as `answer_stuck`, at the bench's pattern (246 then 262 us; 258 then 274 us), the answer retried with TS set during each attempt (`sl_retry_stuck`) | about +2.5 ms after the answer is handed over | trip 6 at the first check after it; W1-W4 below |
-| `layer_stuck`, `layer_stuck_back` | the layer's stuck-frame model on its own (TS over 6 ms; an abort in an attempt and in the idle time; the nodes back mid-attempt) | | |
+| `withdrawn_262_15` | as `withdrawn_262`, with a 15 us idle time from TEC 128 (the C3's low end, 15.41 us, in whole us) | as `withdrawn_262` | as `withdrawn_262` |
+| `withdrawn_274_q1`, `_q2`, `_q3` | as `withdrawn_274`, with the first retry delayed by a quarter, a half and three quarters of the 274 us period (68, 137 and 205 us, `sl_stuck_first_delay`), so the device's reads land elsewhere in the period (reviewer, 2026-11-27: the fix must remove the frame whatever the phase of its reads) | as `withdrawn_274`, plus the delay | as `withdrawn_274`; one more `layer` line: the first error is the delay plus one active period after the retries start |
+| `layer_stuck`, `layer_stuck_15`, `layer_stuck_back` | the layer's stuck-frame model on its own (an abort while error active; TS read every 1 us over 6 ms, because the 262 us period is even and reads every 2 us cannot tell 15 us of TS clear from 16 us; an abort in an attempt and in the idle time; the nodes back mid-attempt); `layer_stuck_15` with the 15 us idle time | | |
 
 **The withdrawn frame stuck in the controller** (spec 12.4 row, added
 2026-11-26, user; spec 5.2 item 5, "A withdrawn frame held past the bound";
@@ -71,13 +73,43 @@ row's measured pattern and reports it transmitting during each retry. **The
 retries are the layer's model** (`spec_layer.h`, `sl_retry_stuck`, through
 wraps of `twai_ll_get_status` and `twai_ll_set_cmd_abort_tx`): TS set during
 each attempt, where an abort does nothing (the fake's abort of a transmitting
-frame, twai_port T8); TS clear in the bus idle time before the next attempt,
-where an abort removes the frame. The idle time is the intermission, 3 bit
-times (6 us), plus from TEC 128 the error-passive suspend transmission, 8 bit
-times (16 us): the bench's passive gaps are 16 us longer than its active ones.
-How long TS stays clear on the C3 is not measured. A frame still held when the
-nodes return completes at the end of the first attempt that starts after they
-return. Judged, besides R1-R4, R6, A2-A4 and the layer's two checks:
+frame, twai_port T8). Between attempts TS follows the C3's measurement (spec
+12.4 row, added 2026-11-27, user; F5 bench run
+`gen-inhibit-bench_20261127T171351_403a`, `VERIFICATION.md` 12.4). While error
+active (TEC < 128), TS stays set from one attempt to the next, so an abort
+does nothing at any time. From TEC 128 (error passive), TS reads clear for
+16 us before each attempt (the C3 measured 15.41-16.44 us;
+`sl_stuck_passive_idle()` sets another value, in whole us), and an abort then
+removes the frame. The retry period stays the bench row's pattern. Before
+2026-11-27 the layer used a model from the CAN protocol: 6 us of TS clear
+before each active attempt and 22 us before each passive one.
+
+**The test's step while the frame is held** (2026-11-27). The shim runs the
+worker only in the turns the test grants, and a wait of the device's
+(`esp_rom_delay_us()`, through the fake's wait hook) lasts until the end of the
+turn. At the case's 100 us step, a re-read "every 2 us" came 103 us apart. So
+while the stuck frame is held, the withdrawn cases grant 3 us turns (`FINE_US`,
+the device's estimated spacing; reviewer, 2026-11-27), and their waits last
+what they ask, to within one turn.
+
+**The phase.** The emulation is deterministic, so where the device's reads fall
+in the period is fixed by the case's timing. The phase variants move the
+retries against the reads. On gen-inhibit/main e9bfa300, which reads once or
+twice per pass, the 3 us turns moved its reads too: each pass now starts at
++199.984 ms, +399.988 ms and so on from the latch (at the 100 us step,
++200.026 ms and so on), and some passes read twice, 3 us apart. With that,
+the read at +1400.011 ms in `withdrawn_262`, `withdrawn_262_15` and
+`withdrawn_274_q2`, and the read at +599.993 ms in `withdrawn_274_q3`, land in
+the 16 us idle time, and those cases pass W1-W3 there. At the 100 us step,
+`withdrawn_262` failed them on e9bfa300 and `withdrawn_274` passed. With the
+3 us turns, `withdrawn_274` and `withdrawn_274_q1` fail them (the can-fail,
+reviewer, 2026-11-27), and W5 and W6 fail in all six.
+
+A frame still held when the nodes return completes at the end of the first
+attempt that starts after they return. Each withdrawn case prints a `NOTE`
+line, recorded and not judged: the status reads while the frame was held, per
+pass (the pass's start from the latch, its reads, their span and the widest
+gap). Judged, besides R1-R4, R6, A2-A4 and the layer's three checks:
 
 | | |
 |---|---|
@@ -85,6 +117,8 @@ return. Judged, besides R1-R4, R6, A2-A4 and the layer's two checks:
 | W2 | it never completes, traffic back included |
 | W3 | no `0x051` reaches the wire when traffic returns |
 | W4 | the queued telemetry then goes out: every telemetry frame waiting when traffic returned (`depth + held`) is sent, and that many diag pages reach the wire |
+| W5 | (spec 5.2 item 5's last sentence, added 2026-11-27, user; judged from 2026-11-27, reviewer) each pass that starts 1 ms or more after the withdrawal, while the frame is held, re-reads the controller about every 2 us until a read finds TS = 0 or 1 ms has passed. "The 1 ms limit is reached" is a time, 1 ms after the withdrawal (reviewer, 2026-11-27). The reads are the status reads the layer saw while the frame was held; reads more than 1 ms apart are separate passes. A pass fails with two reads more than 8 us apart (the device's 2-3 us, plus one 3 us turn, plus 2 us), or with no TS = 0 read and less than 992 us of reads. The withdrawal's time is the latch as the case's poll saw it. PASS with no such pass |
+| W6 | (spec 5.2 item 5, "a trip that lands ... withdraws it": the withdrawal comes on the latch's own pass; reviewer's ruling, 2026-11-27) the withdrawal's first read of the controller comes on the pass on which the latch lands: a status read while the frame is held, from the last poll that saw no latch to 1 ms after the first poll that saw it. VOID with no latch, or with no read and the frame no longer held at the latch |
 
 **The answer-stuck case** (reviewer, 2026-10-20; spec 5.2 items 5 and 6): the
 device's answer to the last VCM command is the frame stuck in the controller

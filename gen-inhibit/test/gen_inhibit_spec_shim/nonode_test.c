@@ -49,9 +49,17 @@
 
 #define MS       1000LL
 #define STEP_US  100            /* the test's polling step */
+/* The withdrawn cases' step while the stuck frame is held (2026-11-27). The
+ * worker runs only in the turns the test grants, so each wait of the device's
+ * (esp_rom_delay_us(), through the fake's wait hook) lasts until the end of the
+ * turn: at STEP_US a re-read "every 2 us" came 103 us apart. 3 us is the
+ * device's estimated spacing (reviewer, 2026-11-27). */
+#define FINE_US  3
 #define WATCH_US (2000 * MS)    /* how long the silence is watched */
 
 static int g_pass, g_bad, g_void;
+static int64_t g_rd_t[SL_MAX_READS];    /* W5's reads (2026-11-27) */
+static bool    g_rd_clear[SL_MAX_READS];
 
 static void report(const char *cs, const char *req, nn_verdict_t v)
 {
@@ -685,9 +693,11 @@ static int aborts_in_attempt(void)
 }
 
 /* Live, then the last VCM command with its answer held in the controller and
- * retried at the bench's pattern (sl_retry_stuck). Returns false (and reports
- * VOID) if that did not happen. */
-static bool live_and_stuck(const char *cs, int64_t active_us, int64_t passive_us, int64_t *t_last)
+ * retried at the bench's pattern (sl_retry_stuck), with `idle_us` of TS clear
+ * before each error-passive attempt and the first retry delayed by `delay_us`
+ * (the phase). Returns false (and reports VOID) if that did not happen. */
+static bool live_and_stuck(const char *cs, int64_t active_us, int64_t passive_us, int64_t idle_us, int64_t delay_us,
+                           int64_t *t_last)
 {
     gen_inhibit_set_mode(GEN_INHIBIT_INHIBIT, 500);
     traffic(KEY_ON, 1500 * MS);
@@ -700,6 +710,8 @@ static bool live_and_stuck(const char *cs, int64_t active_us, int64_t passive_us
     ft_stall_id(0x051, 1);
     sl_silence_measured(active_us, passive_us);
     sl_retry_stuck(0x051);
+    if (idle_us >= 0) sl_stuck_passive_idle(idle_us);   /* < 0: the layer's default */
+    sl_stuck_first_delay(delay_us);
     const int sent051 = ft_sent_count_id(0x051);
     uint8_t cmd[6];
     memcpy(cmd, VCM, sizeof(cmd));
@@ -733,16 +745,21 @@ static bool live_and_stuck(const char *cs, int64_t active_us, int64_t passive_us
  * answer is the inhibit frame in the controller. The 10th error comes about
  * 2.5 ms after it is handed over, so trip 6 latches at the first check after it
  * (region 1) and withdraws the answer as a stand-down. How the retries look to
- * the device is the layer's model (spec_layer.h, sl_retry_stuck): an abort
- * during an attempt does nothing; one in the idle time before the next attempt
- * removes the frame. If it is still held when the nodes return, it completes.
+ * the device is the layer's model (spec_layer.h, sl_retry_stuck), from the
+ * C3's measurement (2026-11-27): while error active TS stays set and an abort
+ * does nothing; from TEC 128 an abort in the `idle_us` of TS clear before each
+ * attempt removes the frame. The trip lands while the controller is still
+ * error active (TEC 80 at the 10th error). If the frame is still held when
+ * the nodes return, it completes. `delay_us` delays the first retry (the
+ * phase variants, 2026-11-27, reviewer: fix A must remove the frame whatever
+ * the phase of its reads within the period).
  */
-static void withdrawn_case(const char *cs, int64_t active_us, int64_t passive_us)
+static void withdrawn_case(const char *cs, int64_t active_us, int64_t passive_us, int64_t idle_us, int64_t delay_us)
 {
     char reason[160] = "", bal_first[160] = "", eq_first[160] = "";
     int64_t t_last;
     setup();
-    if (!live_and_stuck(cs, active_us, passive_us, &t_last)) { teardown(); return; }
+    if (!live_and_stuck(cs, active_us, passive_us, idle_us, delay_us, &t_last)) { teardown(); return; }
     /* read with the answer held and no trip yet: its stand-down is what A2 looks for */
     const long sd0 = sched_num(page(), "standdown"), sk0 = sched_num(page(), "skipped");
     const int wire_at_silence = ft_wire_count();
@@ -758,7 +775,12 @@ static void withdrawn_case(const char *cs, int64_t active_us, int64_t passive_us
     int reads = 0, bal_bad = 0, eq_checked = 0, eq_bad = 0;
     while (ft_now() < t_last + WATCH_US)
     {
-        ft_run(STEP_US);
+        /* while the frame is held, STEP_US in FINE_US turns, so the device's short waits last what they ask */
+        const int64_t t_step = ft_now();
+        if (sl_stuck_in_buffer())
+            while (ft_now() < t_step + STEP_US) ft_run(FINE_US);
+        else
+            ft_run(STEP_US);
         const char *p = page();
         if (p[0])
         {
@@ -810,6 +832,18 @@ static void withdrawn_case(const char *cs, int64_t active_us, int64_t passive_us
     }
     report(cs, "layer", nn_layer_reaches(err_n_max, sl_err_count()));
     report(cs, "layer", bench_pattern(active_us, passive_us));
+    {
+        /* the phase: the first error one active period after the delayed start (the start is the step after
+         * the hand-over: up to 1 us later, the fake's step) */
+        nn_verdict_t v;
+        const int64_t t0 = sl_retry_started_at();
+        const int64_t first = sl_err_count() > 0 && t0 >= 0 ? sl_err_time(0) - t0 : -1;
+        snprintf(v.detail, sizeof(v.detail), "the first error %lld us after the retries started (delay %lld us + "
+                 "%lld us), %lld us after the answer was handed over", (long long)first, (long long)delay_us,
+                 (long long)active_us, (long long)(t0 - answer_t));
+        v.v = (first == delay_us + active_us && t0 >= answer_t && t0 - answer_t <= 1) ? "PASS" : "NOT-AS-SPECIFIED";
+        report(cs, "layer", v);
+    }
     report(cs, "A2", nn_a2_standdown(sd1 - sd0, sk1 - sk0));
     report(cs, "A3", nn_a3_balance(reads, bal_bad, bal_first));
     report(cs, "A4", nn_a4_equality(eq_checked, eq_bad, eq_first));
@@ -830,6 +864,36 @@ static void withdrawn_case(const char *cs, int64_t active_us, int64_t passive_us
     const int st_reads = sl_stuck_status_reads(&st_clear);
     report(cs, "W1", nn_w1_freed(t_latch, held_at_latch, sl_stuck_removed_at(), t_return, sl_stuck_abort_count(),
                                  aborts_in_attempt(), abort_passes(), st_reads, st_clear));
+    {
+        /* recorded, not judged: the status reads while it was held, per pass (reads more than 1 ms apart) */
+        char line[512];
+        int len = snprintf(line, sizeof(line), "NOTE %s reads while held, per pass (start ms from the latch, reads, "
+                           "span us, widest gap us):", cs);
+        const int n = st_reads < SL_MAX_READS ? st_reads : SL_MAX_READS;
+        int start = 0, shown = 0;
+        for (int i = 1; i <= n && shown < 12; i++)
+            if (i == n || sl_stuck_read_time(i) - sl_stuck_read_time(i - 1) > 1000)
+            {
+                int64_t widest = 0;
+                for (int k = start + 1; k < i; k++)
+                    if (sl_stuck_read_time(k) - sl_stuck_read_time(k - 1) > widest)
+                        widest = sl_stuck_read_time(k) - sl_stuck_read_time(k - 1);
+                len += snprintf(line + len, sizeof(line) - (size_t)len, " [%+.3f, %d, %lld, %lld]",
+                                (double)(sl_stuck_read_time(start) - t_latch) / 1000.0, i - start,
+                                (long long)(sl_stuck_read_time(i - 1) - sl_stuck_read_time(start)), (long long)widest);
+                if (len >= (int)sizeof(line)) break;
+                start = i;
+                shown++;
+            }
+        printf("%s\n", line);
+        for (int i = 0; i < n; i++)
+        {
+            g_rd_t[i] = sl_stuck_read_time(i);
+            g_rd_clear[i] = sl_stuck_read_clear(i);
+        }
+        report(cs, "W5", nn_w5_dense(t_latch, g_rd_t, g_rd_clear, n));
+        report(cs, "W6", nn_w6_on_latch_pass(t_unlatched, t_latch, held_at_latch, g_rd_t, n));
+    }
     int64_t on_wire = sl_stuck_on_wire_at();
     int wire051_after = on_wire >= t_return ? 1 : 0;
     for (int i = 0; i < ft_wire_count(); i++)
@@ -851,50 +915,79 @@ static void withdrawn_case(const char *cs, int64_t active_us, int64_t passive_us
 /*
  * THE LAYER'S STUCK FRAME ON ITS OWN (spec_layer.h, sl_retry_stuck), on a live
  * device that is a bystander: nothing about it is judged. Before the device's
- * first check after the silence (up to 200 ms on), so before any trip:
- *   ts      over 6 ms, every 2 us, TS reads set except in the idle time before
- *           each error: 6 us while error active, 22 us from TEC 128; both seen;
+ * first check after the silence (up to 200 ms on), so before any trip. The
+ * model is the C3's measurement (2026-11-27):
+ *   active  while error active, an abort 3 us before an error (inside the
+ *           6 us idle time of the model before 2026-11-27) leaves the frame
+ *           held and is counted as during an attempt;
+ *   ts      over 6 ms, every 1 us, TS reads set except in the `idle` us
+ *           before each error from TEC 128; never clear while error active,
+ *           clear from TEC 128 (every 1 us: the 262 us period is even, so
+ *           reads every 2 us never see a 15 us idle time differ from 16 us);
  *   attempt an abort during an attempt leaves the frame held;
  *   gap     an abort in the idle time removes it, and it is never on the wire.
+ * layer_stuck_15 is layer_stuck with a 15 us idle time (sl_stuck_passive_idle).
  * layer_stuck_back instead brings the nodes back mid-attempt:
  *   back    an abort in the attempt in progress at the return does nothing;
  *           the frame completes at the end of the first attempt that starts
- *           after the return (240 us after a 22 us idle time), not before.
+ *           after the return (246 us after a 16 us idle time), not before.
  */
-static void layer_stuck_case(bool back)
+static void layer_stuck_case(const char *cs, bool back, int64_t set_idle)
 {
-    const char *cs = back ? "layer_stuck_back" : "layer_stuck";
     int64_t t_last;
     nn_verdict_t v;
     twai_dev_t *hw = twai_fake_ll_hw(0);
+    /* set_idle < 0: the layer's default, which must be the C3's 16 us (15.41-16.44 us, F5 run 403a) */
+    const int64_t idle = set_idle >= 0 ? set_idle : 16;
     setup();
-    if (!live_and_stuck(cs, 246, 262, &t_last)) { teardown(); return; }
+    if (!live_and_stuck(cs, 246, 262, set_idle, 0, &t_last)) { teardown(); return; }
 
     if (!back)
     {
+        /* error active: an abort where the old model had TS clear does nothing */
+        while (sl_err_count() < 2) ft_run(1);
+        const int64_t t_try = sl_err_time(sl_err_count() - 1) + 246 - 3;
+        while (ft_now() < t_try) ft_run(1);
+        const uint32_t tec_try = sl_tec();
+        const bool gap_try = sl_stuck_in_gap();
+        twai_ll_set_cmd_abort_tx(hw);
+        snprintf(v.detail, sizeof(v.detail), "an abort 3 us before an error at TEC %u (in the idle time %d): held %d, "
+                 "removed at %lld, counted as during an attempt %d", (unsigned)tec_try, gap_try, sl_stuck_in_buffer(),
+                 (long long)sl_stuck_removed_at(), sl_stuck_abort_count() >= 1 &&
+                 sl_stuck_abort_in_attempt(sl_stuck_abort_count() - 1));
+        v.v = (tec_try < 128 && !gap_try && sl_stuck_in_buffer() && sl_stuck_removed_at() < 0 &&
+               sl_stuck_abort_count() == 1 && sl_stuck_abort_in_attempt(0)) ? "PASS" : "NOT-AS-SPECIFIED";
+        report(cs, "active", v);
+
         const int64_t t0 = ft_now();
-        int samples = 0, bad = 0, clear_active = 0, clear_passive = 0;
+        int samples = 0, bad = 0, reads_active = 0, clear_active = 0, clear_passive = 0, rec_bad = 0;
         int64_t first_bad = -1;
         while (ft_now() < t0 + 6000)
         {
-            ft_run(2);
+            ft_run(1);
             const bool ts = (twai_ll_get_status(hw) & TWAI_LL_STATUS_TS) != 0;
             const int64_t now = ft_now();
+            /* the layer's record of this read (W5's input): its time and what it read */
+            const int nr = sl_stuck_status_reads(NULL);
+            if (sl_stuck_read_time(nr - 1) != now || sl_stuck_read_clear(nr - 1) != !ts) rec_bad++;
             /* the next error after now; k errors so far, so active while k < 16 */
             int k = 0;
             while (k < sl_err_count() && sl_err_time(k) <= now) k++;
             const int64_t next = k == 0 ? sl_stuck_handed_at() + 246 : sl_err_time(k - 1) + (k < 16 ? 246 : 262);
-            const int64_t idle = k < 16 ? 6 : 22;
-            const bool want_clear = now >= next - idle && now < next;
+            const int64_t want_idle = k < 16 ? 0 : idle;
+            const bool want_clear = now >= next - want_idle && now < next;
             samples++;
             if (want_clear == ts) { bad++; if (first_bad < 0) first_bad = now; }
+            if (k < 16) reads_active++;
             if (!ts && k < 16) clear_active++;
             if (!ts && k >= 16) clear_passive++;
         }
         snprintf(v.detail, sizeof(v.detail), "%d reads over 6 ms: %d off the model (first at %lld us); TS clear in "
-                 "%d reads while active, %d from TEC 128; %d errors", samples, bad, (long long)first_bad, clear_active,
-                 clear_passive, sl_err_count());
-        v.v = (bad == 0 && clear_active > 0 && clear_passive > 0 && sl_err_count() >= 20) ? "PASS" : "NOT-AS-SPECIFIED";
+                 "%d of %d reads while active, %d from TEC 128 (idle %lld us); %d errors; %d read(s) the layer "
+                 "recorded wrongly", samples, bad, (long long)first_bad, clear_active, reads_active, clear_passive,
+                 (long long)idle, sl_err_count(), rec_bad);
+        v.v = (bad == 0 && reads_active > 0 && clear_active == 0 && clear_passive > 0 && sl_err_count() >= 20 &&
+               rec_bad == 0) ? "PASS" : "NOT-AS-SPECIFIED";
         report(cs, "ts", v);
 
         while (sl_stuck_in_gap()) ft_run(1);
@@ -923,7 +1016,7 @@ static void layer_stuck_case(bool back)
     }
     else
     {
-        ft_run(6000);                               /* error passive: 22 us idle times */
+        ft_run(6000);                               /* error passive: `idle` us idle times */
         while (sl_stuck_in_gap()) ft_run(1);
         ft_run(50);                                 /* inside an attempt */
         sl_nodes_back();
@@ -943,7 +1036,7 @@ static void layer_stuck_case(bool back)
                  "%lld-%lld us; completed at %lld us (%+lld from the idle time's end), still held %d",
                  (long long)t_back, held_after_abort, (long long)gap_start, (long long)gap_end, (long long)done,
                  (long long)(done - gap_end), sl_stuck_in_buffer());
-        v.v = (held_after_abort && gap_start > t_back && gap_end - gap_start == 22 && done == gap_end + 240 &&
+        v.v = (held_after_abort && gap_start > t_back && gap_end - gap_start == idle && done == gap_end + 262 - idle &&
                !sl_stuck_in_buffer() && sl_stuck_removed_at() < 0) ? "PASS" : "NOT-AS-SPECIFIED";
         report(cs, "back", v);
     }
@@ -973,20 +1066,33 @@ int main(int argc, char **argv)
         for (size_t i = 0; i < n; i++) printf("%s\n", CASES[i].name);
         printf("answer_stuck\n");
         printf("layer_stuck\n");
+        printf("layer_stuck_15\n");
         printf("layer_stuck_back\n");
         printf("withdrawn_262\n");
         printf("withdrawn_274\n");
+        printf("withdrawn_262_15\n");
+        printf("withdrawn_274_q1\n");
+        printf("withdrawn_274_q2\n");
+        printf("withdrawn_274_q3\n");
         return 0;
     }
     bool found = false;
     if (strcmp(argv[1], "layer") == 0) { layer_case(); found = true; }
     if (strcmp(argv[1], "layer_bench") == 0) { layer_bench_case(); found = true; }
     if (strcmp(argv[1], "answer_stuck") == 0) { answer_case(); found = true; }
-    if (strcmp(argv[1], "layer_stuck") == 0) { layer_stuck_case(false); found = true; }
-    if (strcmp(argv[1], "layer_stuck_back") == 0) { layer_stuck_case(true); found = true; }
-    /* the bench's measured pattern (nonode_bench.py 2026-10-20 17:04), as bench_262 and bench_274 */
-    if (strcmp(argv[1], "withdrawn_262") == 0) { withdrawn_case(argv[1], 246, 262); found = true; }
-    if (strcmp(argv[1], "withdrawn_274") == 0) { withdrawn_case(argv[1], 258, 274); found = true; }
+    if (strcmp(argv[1], "layer_stuck") == 0) { layer_stuck_case(argv[1], false, -1); found = true; }
+    if (strcmp(argv[1], "layer_stuck_15") == 0) { layer_stuck_case(argv[1], false, 15); found = true; }
+    if (strcmp(argv[1], "layer_stuck_back") == 0) { layer_stuck_case(argv[1], true, -1); found = true; }
+    /* the bench's measured pattern (nonode_bench.py 2026-10-20 17:04), as bench_262 and bench_274; the idle
+     * time from TEC 128 is the C3's (F5 run 403a, 15.41-16.44 us): 16 us, and 15 us for the low end in whole us */
+    if (strcmp(argv[1], "withdrawn_262") == 0) { withdrawn_case(argv[1], 246, 262, SL_PASSIVE_IDLE_US, 0); found = true; }
+    if (strcmp(argv[1], "withdrawn_274") == 0) { withdrawn_case(argv[1], 258, 274, SL_PASSIVE_IDLE_US, 0); found = true; }
+    if (strcmp(argv[1], "withdrawn_262_15") == 0) { withdrawn_case(argv[1], 246, 262, 15, 0); found = true; }
+    /* the phase variants (reviewer, 2026-11-27): the first retry delayed by a quarter, a half and three
+     * quarters of the 274 us period, so the device's reads land elsewhere in the period */
+    if (strcmp(argv[1], "withdrawn_274_q1") == 0) { withdrawn_case(argv[1], 258, 274, SL_PASSIVE_IDLE_US, 274 / 4); found = true; }
+    if (strcmp(argv[1], "withdrawn_274_q2") == 0) { withdrawn_case(argv[1], 258, 274, SL_PASSIVE_IDLE_US, 274 / 2); found = true; }
+    if (strcmp(argv[1], "withdrawn_274_q3") == 0) { withdrawn_case(argv[1], 258, 274, SL_PASSIVE_IDLE_US, 3 * 274 / 4); found = true; }
     for (size_t i = 0; i < n && !found; i++)
         if (strcmp(argv[1], CASES[i].name) == 0) { run_case(&CASES[i]); found = true; }
     if (!found) { printf("RESULT %s - VOID no such case\n", argv[1]); return 2; }
