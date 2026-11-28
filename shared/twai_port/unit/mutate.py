@@ -203,7 +203,7 @@ MUTANTS = [
      "        esp_cpu_stall(other);", "        (void)other;"),
     ("S3 restart stop stalls a stalled core", S3,
      "    if (!stalled_at_entry)\n    {\n        esp_cpu_stall(other);",
-     "    if (1)\n    {\n        esp_cpu_stall(other);"),
+     "    if (stalled_at_entry || !stalled_at_entry)\n    {\n        esp_cpu_stall(other);"),
     ("S3 restart stop stalls its own core", S3,
      "    const int other = (core == 0) ? 1 : 0;",
      "    const int other = core;"),
