@@ -1,9 +1,13 @@
 /*
  * Host tests of the probe's register files (twai_port_probe_ll_*.c; SPEC.md
- * T13). Built twice: with the C3 file against mock/hal/twai_ll.h, and with
- * the unsupported file (-DPROBE_LL_UNSUPPORTED). Self-checks, not
- * verification.
+ * T13, T19). Built three times: with the C3 file and with the S3 file
+ * (-DCHIP='"s3"') against mock/hal/twai_ll.h, whose calls and bits are the
+ * same in the two chips' ESP-IDF v5.4.2 headers, and with the unsupported
+ * file (-DPROBE_LL_UNSUPPORTED). Self-checks, not verification.
  */
+#ifndef CHIP
+#define CHIP "c3"
+#endif
 #include "../twai_port_probe_ll.h"
 #include "hal/twai_ll.h"
 
@@ -27,7 +31,7 @@ static void reset(uint32_t status, uint32_t tec)
 
 static void test_bits(void)
 {
-    printf("c3: each status bit maps to its neutral bit, and nothing else\n");
+    printf(CHIP ": each status bit maps to its neutral bit, and nothing else\n");
     const struct { uint32_t ll, neutral; } map[] = {
         { TWAI_LL_STATUS_TBS, TXP_ST_TBS }, { TWAI_LL_STATUS_TCS, TXP_ST_TCS },
         { TWAI_LL_STATUS_RS, TXP_ST_RS },   { TWAI_LL_STATUS_TS, TXP_ST_TS },
@@ -51,7 +55,7 @@ static void test_abort(void)
 {
     txp_abort_t a;
 
-    printf("c3: if-TS0 issues only with a frame held and TS = 0\n");
+    printf(CHIP ": if-TS0 issues only with a frame held and TS = 0\n");
     const struct { uint32_t st; int issue; } cases[] = {
         { 0, 1 },
         { TWAI_LL_STATUS_RS | TWAI_LL_STATUS_ES | TWAI_LL_STATUS_TCS, 1 },
@@ -69,14 +73,14 @@ static void test_abort(void)
         CHECK(mock_twai_dev.in_critical == 0 && mock_twai_dev.abort_outside == 0);
     }
 
-    printf("c3: always issues, at TS = 1 too\n");
+    printf(CHIP ": always issues, at TS = 1 too\n");
     reset(TWAI_LL_STATUS_TS, 0);
     txp_ll_abort(TXP_ABORT_ALWAYS, &a);
     CHECK(a.issued && mock_twai_dev.abort_cmds == 1);
     CHECK(a.st_before == TXP_ST_TS);
     CHECK(mock_twai_dev.abort_outside == 0 && mock_twai_dev.in_critical == 0);
 
-    printf("c3: the reads are before and after the command\n");
+    printf(CHIP ": the reads are before and after the command\n");
     reset(0, 0);
     mock_twai_dev.set_after_abort = 1;
     mock_twai_dev.status_after_abort = TWAI_LL_STATUS_TBS | TWAI_LL_STATUS_TCS;
@@ -85,7 +89,7 @@ static void test_abort(void)
           && a.st_after == (TXP_ST_TBS | TXP_ST_TCS));
     CHECK(mock_twai_dev.status_at_abort == 0);
 
-    printf("c3: not issued: the after read is still taken\n");
+    printf(CHIP ": not issued: the after read is still taken\n");
     reset(TWAI_LL_STATUS_TS, 0);
     txp_ll_abort(TXP_ABORT_IF_TS0, &a);
     CHECK(!a.issued && a.st_before == TXP_ST_TS && a.st_after == TXP_ST_TS);

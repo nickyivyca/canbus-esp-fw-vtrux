@@ -4,8 +4,8 @@
 The implementor's (SPEC.md T11, T13), beside the host tests it scores. Each
 mutant below undoes one behaviour in a copy of twai_port_unacked.c or a
 probe register file (twai_port_probe_ll_esp32c3.c,
-twai_port_probe_ll_unsupported.c), and builds and runs the three host test
-binaries against the copy. The run passes only if the unmutated build passes
+twai_port_probe_ll_esp32s3.c, twai_port_probe_ll_unsupported.c), and builds
+and runs the four host test binaries against the copy. The run passes only if the unmutated build passes
 and every mutant builds and fails. A mutant that does not build is not a
 catch, and one whose text does not occur exactly once ran nothing; either
 fails the run. A test binary that runs past TIMEOUT_S is stopped and counts
@@ -30,10 +30,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", "..", "..", ".."))
 COPY = "shared/twai_port/test_app"
 TEST = "shared/twai_port/test_app/test"
-BINS = ("test_unacked", "test_probe_ll_c3", "test_probe_ll_unsupported")
+BINS = ("test_unacked", "test_probe_ll_c3", "test_probe_ll_s3", "test_probe_ll_unsupported")
 TIMEOUT_S = 120
 UN = "shared/twai_port/test_app/twai_port_unacked.c"
 C3 = "shared/twai_port/test_app/twai_port_probe_ll_esp32c3.c"
+S3 = "shared/twai_port/test_app/twai_port_probe_ll_esp32s3.c"
 NS = "shared/twai_port/test_app/twai_port_probe_ll_unsupported.c"
 
 # (name, file, text, its replacement). Each text occurs once in its file.
@@ -147,6 +148,21 @@ MUTANTS = [
      "    taskENTER_CRITICAL(&s_probe_lock);\n    const uint32_t before",
      "    const uint32_t before"),
     ("c3: TEC not read", C3, "return twai_ll_get_tec(TWAI_LL_GET_HW(0));", "return 0;"),
+    ("s3: if-TS0 ignores TBS", S3,
+     "|| (before & (TXP_ST_TBS | TXP_ST_TS)) == 0;", "|| (before & TXP_ST_TS) == 0;"),
+    ("s3: TS read from RS", S3,
+     "if (st & TWAI_LL_STATUS_TS)  { out |= TXP_ST_TS; }",
+     "if (st & TWAI_LL_STATUS_RS)  { out |= TXP_ST_TS; }"),
+    ("s3: ES not mapped", S3, "    if (st & TWAI_LL_STATUS_ES)  { out |= TXP_ST_ES; }\n", ""),
+    ("s3: after read before the command", S3,
+     "    if (issue)\n    {\n        twai_ll_set_cmd_abort_tx(hw);\n    }\n    const uint32_t after = to_neutral(twai_ll_get_status(hw));",
+     "    const uint32_t after = to_neutral(twai_ll_get_status(hw));\n    if (issue)\n    {\n        twai_ll_set_cmd_abort_tx(hw);\n    }"),
+    ("s3: command outside the critical section", S3,
+     "    taskENTER_CRITICAL(&s_probe_lock);\n    const uint32_t before",
+     "    const uint32_t before"),
+    ("s3: TEC not read", S3, "return twai_ll_get_tec(TWAI_LL_GET_HW(0));", "return 0;"),
+    ("s3: says unsupported", S3,
+     "bool txp_ll_supported(void)\n{\n    return true;", "bool txp_ll_supported(void)\n{\n    return false;"),
     ("unsupported: says supported", NS,
      "bool txp_ll_supported(void)\n{\n    return false;", "bool txp_ll_supported(void)\n{\n    return true;"),
     ("unsupported: abort reported issued", NS, "    out->issued = false;", "    out->issued = true;"),

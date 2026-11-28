@@ -16,7 +16,8 @@ R20). Moved at port step 1c from gen-inhibit's `gi_txabort_probe.c` and
 | `twai_port_unacked_esp.c` | what m1-m3 call on the target: the driver, the CPU cycle counter and `esp_timer` |
 | `twai_port_probe_ll.h` | m1-m3's register layer: the status bits, the TEC, and the abort command with the status read before and after it in one critical section |
 | `twai_port_probe_ll_esp32c3.c` | that layer on the C3, checked against ESP-IDF v5.4.2 |
-| `twai_port_probe_ll_unsupported.c` | that layer on any other chip: m1-m3 answer 501 "not supported" and touch no register. The S3's file comes with the charge interposer's T19 work |
+| `twai_port_probe_ll_esp32s3.c` | that layer on the S3 (T19), checked against ESP-IDF v5.4.2, whose S3 calls and status bits are the C3's. Its critical section masks the driver's interrupt only on the core that installed the driver, so the T19 app runs the modes on that core |
+| `twai_port_probe_ll_unsupported.c` | that layer on any other chip: m1-m3 answer 501 "not supported" and touch no register |
 | `test/` | the host tests of m1-m3 and of the register files, and their mutants (`test/README.md`) |
 
 The register layer is a file per chip, chosen by `IDF_TARGET` as T8's
@@ -185,5 +186,5 @@ counters are totals, not deltas. Alerts are `TWAI_ALERT_*` bit masks.
 | Status | When |
 |---|---|
 | 400 | an argument is unusable, or the project owns the bus, or the bus is listen-only |
-| 501 | the chip has no probe register file (any chip but the C3 today) |
+| 501 | the chip has no probe register file (any chip but the C3 and the S3) |
 | 500 | the bus would not come up, or the alerts would not enable |

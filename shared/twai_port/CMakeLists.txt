@@ -41,13 +41,15 @@ set(twai_port_priv_requires log soc esp_rom
 # passing its check of whether it owns the bus.
 #
 # Its no-acknowledge modes, m1-m3, read the controller through a register
-# file of their own, one per chip and chosen as T8's is: only the C3's
-# exists, and any other chip builds the unsupported one, where m1-m3 answer
-# "not supported". It is not in T8's file because that file is in release
-# images and its abort is the abort-if-awaiting only.
+# file of their own, one per chip and chosen as T8's is: the C3's and the
+# S3's (T19) exist, and any other chip builds the unsupported one, where
+# m1-m3 answer "not supported". It is not in T8's file because that file is
+# in release images and its abort is the abort-if-awaiting only.
 if(TWAI_PORT_TXABORT_PROBE)
     if(IDF_TARGET STREQUAL "esp32c3")
         set(twai_port_probe_ll "test_app/twai_port_probe_ll_esp32c3.c")
+    elseif(IDF_TARGET STREQUAL "esp32s3")
+        set(twai_port_probe_ll "test_app/twai_port_probe_ll_esp32s3.c")
     else()
         set(twai_port_probe_ll "test_app/twai_port_probe_ll_unsupported.c")
     endif()

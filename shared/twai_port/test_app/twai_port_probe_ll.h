@@ -5,12 +5,13 @@
  * chip, chosen as T8's register file is chosen (CMakeLists.txt, IDF_TARGET):
  *
  *   twai_port_probe_ll_esp32c3.c     the C3, checked against ESP-IDF v5.4.2
+ *   twai_port_probe_ll_esp32s3.c     the S3 (T19), checked against v5.4.2
  *   twai_port_probe_ll_unsupported.c any other chip: unsupported, touches
  *                                    nothing
  *
  * The modes' logic (twai_port_unacked.c) reads the controller only through
  * these calls, so the modes are the same on every chip and a chip gets them by
- * getting a file here. The S3's comes with the charge interposer's T19 work.
+ * getting a file here.
  *
  * Why a file of its own and not more calls in twai_port_ll_<chip>.c: that file
  * is in every image, release images included, and its abort is confined to
