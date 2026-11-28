@@ -204,7 +204,9 @@ class Board(object):
         self.ser, self.log = ser, log
 
     def cmd(self, line, timeout=10.0):
-        want = "@" + line.split()[0]
+        # the reply's tag is the command's word without its '?': HELLO? ->
+        # @HELLO (run ht_ce_e97f0e6a waited for "@HELLO?" and went VOID)
+        want = "@" + line.split()[0].rstrip("?")
         self.ser.write((line + "\n").encode("ascii"))
         self.ser.flush()
         end = time.monotonic() + timeout
@@ -540,6 +542,33 @@ def self_test():
     acc, ref = send_window(_Bus(), 1.0, clock, sleep, _Can)
     check(acc == 25 and ref == 25, "send_window: 50 sends in 1 s, refused ones counted "
           "-> %d taken, %d refused" % (acc, ref))
+    # Board.cmd on a stand-in port: each command's own reply, stale and
+    # other lines passed over (run ht_ce_e97f0e6a: HELLO? had no reply)
+    class _Ser(object):
+        def __init__(self, lines):
+            self.lines, self.sent = [ln.encode("ascii") + b"\r\n" for ln in lines], []
+
+        def write(self, b):
+            self.sent.append(b)
+
+        def flush(self):
+            pass
+
+        def readline(self):
+            return self.lines.pop(0) if self.lines else b""
+    got = []
+    bd = Board(_Ser(["boot noise", "@STATUS stale", "@HELLO vport_bench elf_sha256=ab mode=listen",
+                     "@LOMREG rec lomreg=1 rec_reg=128 reset=0 mode=normal"]), got.append)
+    h = bd.cmd("HELLO?", timeout=0.5)
+    check(h is not None and field(h, "elf_sha256") == "ab",
+          "Board.cmd: HELLO? answered by its @HELLO line, the others passed over -> %s" % h)
+    r = bd.cmd("LOMREG rec", timeout=0.5)
+    check(r is not None and r.startswith("@LOMREG"), "Board.cmd: LOMREG -> %s" % r)
+    bd = Board(_Ser(["@ERR LOMREG needs the driver"]), got.append)
+    check((bd.cmd("LOMREG norec", timeout=0.5) or "").startswith("@ERR"),
+          "Board.cmd: an @ERR is the reply")
+    check(Board(_Ser([]), got.append).cmd("STATUS", timeout=0.05) is None,
+          "Board.cmd: no reply -> None")
     pl = premise_line("the X2's port p", OSError("no device"))
     check(pl.startswith("VOID:"), "premise_line is a VOID line")
 
@@ -590,6 +619,11 @@ MUTANTS = [
      "receive_own_messages=True, error_frames=True)"),
     ("arms: the can-fail expected clean", "     \"can-fail\", [\"MODE normal\", \"LOMREG norec\"], True),",
      "     \"can-fail\", [\"MODE normal\", \"LOMREG norec\"], False),"),
+    ("board: the '?' kept in the reply's tag", "        want = \"@\" + line.split()[0].rstrip(\"?\")",
+     "        want = \"@\" + line.split()[0]"),
+    ("board: an @ERR not taken as the reply",
+     "            if ln.startswith(want) or ln.startswith(\"@ERR\"):",
+     "            if ln.startswith(want):"),
     ("send: a refused send raised", "        except Exception:                                  # noqa: BLE001\n            ref += 1",
      "        except ZeroDivisionError:\n            ref += 1"),
 ]
