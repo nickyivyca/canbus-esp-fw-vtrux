@@ -20,31 +20,46 @@ dependencies:
     version: "1.8.2"
   joltwallet/littlefs:
     version: "1.20.0"
-  # THE SHARED COMPONENTS, ALL THREE AT ONE shared/main TAG (spec 2.4, port
-  # step 2b): the board, the CAN port interface and the vehicle port's
-  # driver. vtrux/twai_port is taken "with vtrux/can_port and its board at
-  # the same shared/main tag" (its CMakeLists.txt), and both find the board
-  # by its include/board_pins.h. From git, never through override_path.
+  # THE SHARED COMPONENTS, ALL FOUR AT ONE shared/main TAG (spec 2.4, port
+  # step 2b; 2026.11.27.2 from stage (b) batch 1): the board, the CAN port
+  # interface, the vehicle port's driver and the restart guard.
+  # vtrux/twai_port is taken "with vtrux/can_port and its board at the same
+  # shared/main tag" (its CMakeLists.txt), and restart_guard "with
+  # vtrux/can_port, its CAN drivers and its board at the same tag" (its
+  # idf_component.yml); each finds the board by its include/board_pins.h.
+  # From git, never through override_path.
   #
   # The board (shared/boards SPEC B1 and B2): the one shared/boards/*
   # component. sdkconfig names its partition table by this dependency's
-  # managed_components/ folder, vtrux__x2. At 2026.11.08 since port step 2b;
-  # shared/boards/x2 has no file changed from 2026.11.03, its pin at 2a.
+  # managed_components/ folder, vtrux__x2. shared/boards/x2 has no file
+  # changed from 2026.11.08, its pin at port step 2b.
   vtrux/x2:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/boards/x2
-    version: "2026.11.08"
+    version: "2026.11.27.2"
   # The CAN port interface both ports present (can_port C1), with a backend
   # registered per port index.
   vtrux/can_port:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/can_port
-    version: "2026.11.08"
+    version: "2026.11.27.2"
   # The vehicle port (twai_port T1), the S3's TWAI controller on board port 0.
+  # The s3probe variant's two switches (../CMakeLists.txt) add its T19 app.
   vtrux/twai_port:
     git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
     path: shared/twai_port
-    version: "2026.11.08"
+    version: "2026.11.27.2"
+  # Every software restart, a crash included, takes the CAN ports off the bus
+  # first (restart_guard G1, G2: a link-time wrap, in every variant; the
+  # reviewer, 2026-11-28, the start of stage (b) step 3). Until T19's
+  # measurement passes, the S3's TWAI stop (twai_port T12) answers "not
+  # supported" outside the s3probe build, the MCP2515 port has no stop yet
+  # (can_port C7) and the X2 has no standby line, so the guard only writes
+  # its record (G4) and restarts.
+  vtrux/restart_guard:
+    git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+    path: shared/restart_guard
+    version: "2026.11.27.2"
   # The diag frames' packer and build-id read (shared/diag D2-D4; spec 8.2,
   # schema 5, user 2026-11-23): 0x7F4-0x7F7 are packed from
   # intp_diag_table.c, generated from diag/vtrux-interposer-diag.dbc by this

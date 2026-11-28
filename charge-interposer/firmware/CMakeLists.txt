@@ -17,14 +17,25 @@ cmake_minimum_required(VERSION 3.16)
 # profile's project_name rows (shared/tools R20) refuse a release named for
 # any other variant. Dev builds pass -D INTP_VARIANT with their own -B
 # folder, as above, and never rely on the default.
-# The same five are the dev-build variants of vtrux_build.json (shared/tools
+# The same six are the dev-build variants of vtrux_build.json (shared/tools
 # R31), each with its -D INTP_VARIANT; ../test_vtrux_tools.py reads the
 # INTP_VARIANTS line below and checks the two agree, so keep it on one line.
-set(INTP_VARIANTS bridge witness truck selftest diag)
+set(INTP_VARIANTS bridge witness truck selftest diag s3probe)
 set(INTP_VARIANT "truck" CACHE STRING
-    "the image to build: bridge, witness, truck, selftest or diag (spec 8.2)")
+    "the image to build: bridge, witness, truck, selftest, diag or s3probe (spec 8.2)")
 if(NOT INTP_VARIANT IN_LIST INTP_VARIANTS)
     message(FATAL_ERROR "INTP_VARIANT '${INTP_VARIANT}' is not one of: ${INTP_VARIANTS}")
+endif()
+
+# s3probe, THE T19 MEASUREMENT IMAGE (shared/twai_port SPEC.md T19; the
+# charge-interposer reviewer, 2026-11-27): a test image, never released. It
+# sets shared/twai_port's two test-only switches, which the components'
+# CMakeLists.txt read from here. shared/restart_guard is in every variant
+# (the reviewer, 2026-11-28: the start of stage (b) step 3's adoption); it
+# is a dependency of main, so no variant can leave it out.
+if(INTP_VARIANT STREQUAL "s3probe")
+    set(TWAI_PORT_TXABORT_PROBE 1)
+    set(TWAI_PORT_S3_PROBE 1)
 endif()
 
 # COMPILE FLAGS GO IN RESPONSE FILES. arduino-esp32 brings about forty managed

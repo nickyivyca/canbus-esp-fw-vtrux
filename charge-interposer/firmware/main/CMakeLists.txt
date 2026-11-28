@@ -1,5 +1,6 @@
 # main: the interposer's own code (port plan layers 3 and 4), built as one of
-# five variants (spec 8.2), chosen by the top CMakeLists.txt's INTP_VARIANT.
+# five variants (spec 8.2) or the s3probe test image, chosen by the top
+# CMakeLists.txt's INTP_VARIANT.
 #
 # Each variant has exactly one *_main.cpp: two would each define setup() and
 # loop(), and the link fails. The bridge's three images, bridge, witness and
@@ -31,6 +32,10 @@ elseif(INTP_VARIANT STREQUAL "selftest")
     set(srcs selftest_main.cpp ${ports} ${boot})
 elseif(INTP_VARIANT STREQUAL "diag")
     set(srcs diag_main.cpp ${ports} ${boot})
+elseif(INTP_VARIANT STREQUAL "s3probe")
+    # The T19 measurement image (s3probe_main.cpp): shared/twai_port's T19
+    # app on board port 0, and nothing of the bridge.
+    set(srcs s3probe_main.cpp ${boot})
 endif()
 
 idf_component_register(SRCS ${srcs}
