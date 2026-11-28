@@ -107,6 +107,9 @@ void sl_silence_measured(int64_t active_us, int64_t passive_us);
 
 /* The period the layer used (after the first frame waited). */
 int64_t sl_retry_us(void);
+/* When the layer saw the first frame wait in this silence (the retries' start,
+ * before any sl_stuck_first_delay()); -1: none yet. */
+int64_t sl_retry_started_at(void);
 
 /* The controller goes bus-off now (ft_bus_off); errors stop. */
 void sl_bus_off(void);
@@ -146,15 +149,19 @@ void sl_step(void);
  *   - during an attempt the status reads TS set (transmitting), and an abort
  *     does nothing, as the fake's abort of a transmitting frame does (T8);
  *     the call is counted;
- *   - in the bus idle time before the next attempt, TS reads clear and an
- *     abort goes to the fake, which removes the frame: never on the wire, and
- *     the driver reports TX_SUCCESS, as for a completion (spec 5.2 item 5).
- *     That idle time is the intermission, 3 bit times (6 us at 500 kbit/s),
- *     plus the suspend transmission an error-passive transmitter waits, 8 bit
- *     times (16 us), from TEC 128 on. The bench pattern carries the second:
- *     its passive gaps are 16 us longer than its active ones (262 - 246 and
- *     274 - 258). How long TS stays clear on the C3 is not measured; this is
- *     the layer's model, from the CAN protocol;
+ *   - between attempts TS follows the C3's measurement (spec 12.4 row, added
+ *     2026-11-27, user; the F5 bench run gen-inhibit-bench_20261127T171351_403a,
+ *     VERIFICATION.md 12.4): while error active (TEC < 128) TS stays set
+ *     from one attempt to the next, so there is no idle time and an abort
+ *     at any moment does nothing. From TEC 128 (error passive) TS reads
+ *     clear for an idle time before each attempt, 16 us by default (the
+ *     C3 measured 15.41-16.44 us; sl_stuck_passive_idle() sets another,
+ *     in whole us). An abort then goes to the fake, which removes the
+ *     frame: never on the wire, and the driver reports TX_SUCCESS, as for
+ *     a completion (spec 5.2 item 5). The retry period stays the bench
+ *     row's pattern. Before 2026-11-27 the layer had a model from the CAN
+ *     protocol instead: 6 us of TS clear before each active attempt, 22 us
+ *     before each passive one;
  *   - when the nodes return (sl_nodes_back) with the frame still held, the
  *     first attempt that starts after it is acknowledged: the frame completes
  *     at that attempt's end. The layer records it as on the wire then and
@@ -164,13 +171,21 @@ void sl_step(void);
  * Every other frame is as in the other cases. With no frame armed the two
  * wraps pass every call through unchanged.
  */
-#define SL_IFS_US      6        /* intermission: 3 bit times at 500 kbit/s */
-#define SL_SUSPEND_US  16       /* suspend transmission, error passive: 8 bit times */
+#define SL_PASSIVE_IDLE_US 16   /* TS clear before each error-passive attempt (C3: 15.41-16.44 us) */
 #define SL_MAX_ABORTS  4096
+#define SL_MAX_READS   65536
 
 /* The next frame of `id` the device hands over is the stuck one. Call after
  * ft_stall_id(id, 1) and sl_silence_measured(), before it is handed over. */
 void    sl_retry_stuck(uint32_t id);
+/* The error-passive idle time for this stuck frame, in us (after
+ * sl_retry_stuck(); SL_PASSIVE_IDLE_US until then). */
+void    sl_stuck_passive_idle(int64_t us);
+/* The phase (2026-11-27, reviewer): the stuck frame's first retry starts `us`
+ * later, so every error, and every idle time, moves `us` later against the
+ * device's passes. 0 (the default) is the pattern as before. Call after
+ * sl_retry_stuck(), before the frame is handed over. */
+void    sl_stuck_first_delay(int64_t us);
 bool    sl_stuck_in_buffer(void);           /* handed over, not yet removed or completed */
 int64_t sl_stuck_handed_at(void);           /* its t_queued; -1 before */
 int64_t sl_stuck_removed_at(void);          /* when an abort removed it; -1: not removed */
@@ -179,6 +194,10 @@ int64_t sl_stuck_on_wire_at(void);          /* when it completed on the wire; -1
 bool    sl_stuck_in_gap(void);
 /* Status register reads while it was held, and how many of them read TS clear. */
 int     sl_stuck_status_reads(int *ts_clear);
+/* The i-th of those reads' time (the first SL_MAX_READS); -1 outside them. And
+ * whether it read TS clear. */
+int64_t sl_stuck_read_time(int i);
+bool    sl_stuck_read_clear(int i);
 /* Every abort command issued while the stuck frame was in the buffer: its time
  * and whether it came during an attempt (and so did nothing). */
 int     sl_stuck_abort_count(void);

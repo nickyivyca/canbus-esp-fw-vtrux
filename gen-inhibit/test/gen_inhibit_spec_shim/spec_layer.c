@@ -59,7 +59,11 @@ static struct
     int64_t  back_start;        /* the first attempt that starts after they returned */
     int64_t  back_gap;          /* the idle time before that attempt */
     int64_t  back_done;         /* that attempt's end: the frame completes */
+    int64_t  passive_idle;      /* TS clear before each error-passive attempt, us */
+    int64_t  first_delay;       /* the first retry's start delayed by this, us (the phase) */
     int      n_reads, n_reads_clear;  /* status reads while it was held, and those that read TS clear */
+    int64_t  rd_t[SL_MAX_READS];      /* each read's time (2026-11-27) */
+    bool     rd_clr[SL_MAX_READS];    /* and whether it read TS clear */
     int      n_ab;
     int64_t  ab_t[SL_MAX_ABORTS];
     bool     ab_att[SL_MAX_ABORTS];
@@ -136,10 +140,11 @@ static bool stuck_held(void)
     return S.armed && S.idx >= 0 && S.removed_at < 0 && S.wire_at < 0;
 }
 
-/* The pattern's period now, and the idle time that ends it: the intermission,
- * and from TEC 128 (error passive) the suspend transmission too. */
+/* The pattern's period now, and the idle time that ends it (the C3's
+ * measurement, 2026-11-27): none while error active, TS stays set; from TEC
+ * 128 (error passive) the passive idle time. */
 static int64_t period_now(void) { return (L.passive_us > 0 && L.tec >= 128) ? L.passive_us : L.retry_us; }
-static int64_t idle_now(void)   { return (L.passive_us > 0 && L.tec >= 128) ? SL_IFS_US + SL_SUSPEND_US : SL_IFS_US; }
+static int64_t idle_now(void)   { return L.tec >= 128 ? S.passive_idle : 0; }
 
 /* TS clear: the frame is held and the bus is in its idle time before the next
  * attempt. In the silence the next attempt starts at the next error's time;
@@ -181,7 +186,7 @@ void sl_step(void)
                 if (L.retry_us < 1) L.retry_us = 1;
             }
             L.retries_this_wait = 0;
-            L.last_err_t = now;
+            L.last_err_t = now + (S.armed ? S.first_delay : 0);
         }
         if (L.retry_t0 >= 0)
         {
@@ -241,6 +246,7 @@ void sl_silence_measured(int64_t active_us, int64_t passive_us)
 }
 
 int64_t sl_retry_us(void) { return L.retry_us; }
+int64_t sl_retry_started_at(void) { return L.retry_t0; }
 
 void sl_bus_off(void)
 {
@@ -335,8 +341,14 @@ uint32_t __wrap_twai_ll_get_status(twai_dev_t *hw)
     uint32_t st = __real_twai_ll_get_status(hw);
     if (stuck_held())
     {
-        if (!stuck_gap()) st |= TWAI_LL_STATUS_TS;
+        const bool clear = stuck_gap();
+        if (!clear) st |= TWAI_LL_STATUS_TS;
         else S.n_reads_clear++;
+        if (S.n_reads < SL_MAX_READS)
+        {
+            S.rd_t[S.n_reads] = ft_now();
+            S.rd_clr[S.n_reads] = clear;
+        }
         S.n_reads++;
     }
     return st;
@@ -373,7 +385,11 @@ void sl_retry_stuck(uint32_t id)
     S.sent0 = twai_fake_sent_count();
     S.idx = -1;
     S.removed_at = S.wire_at = -1;
+    S.passive_idle = SL_PASSIVE_IDLE_US;
 }
+
+void sl_stuck_passive_idle(int64_t us) { S.passive_idle = us; }
+void sl_stuck_first_delay(int64_t us)  { S.first_delay = us; }
 
 bool    sl_stuck_in_buffer(void)  { return stuck_held(); }
 int64_t sl_stuck_handed_at(void)  { stuck_find(); return S.idx >= 0 ? twai_fake_sent(S.idx)->t_queued : -1; }
@@ -381,6 +397,8 @@ int64_t sl_stuck_removed_at(void) { return S.removed_at; }
 int64_t sl_stuck_on_wire_at(void) { return S.wire_at; }
 bool    sl_stuck_in_gap(void)     { sl_step(); return stuck_gap(); }
 int     sl_stuck_status_reads(int *ts_clear) { if (ts_clear) *ts_clear = S.n_reads_clear; return S.n_reads; }
+int64_t sl_stuck_read_time(int i) { return (i >= 0 && i < S.n_reads && i < SL_MAX_READS) ? S.rd_t[i] : -1; }
+bool    sl_stuck_read_clear(int i) { return i >= 0 && i < S.n_reads && i < SL_MAX_READS && S.rd_clr[i]; }
 int     sl_stuck_abort_count(void) { return S.n_ab < SL_MAX_ABORTS ? S.n_ab : SL_MAX_ABORTS; }
 int64_t sl_stuck_abort_time(int i) { return S.ab_t[i]; }
 bool    sl_stuck_abort_in_attempt(int i) { return S.ab_att[i]; }
