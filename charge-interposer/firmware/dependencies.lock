@@ -440,7 +440,7 @@ dependencies:
       type: service
     version: 1.20.0
   vtrux/can_port:
-    component_hash: bd1f765fa6ba8f6aff64632d1750e2d7f5e3369fb8b83f7c0959d06c0cafdf0c
+    component_hash: 8ea8ca2da01088c73618717ed50ee4623939826a9f350397149c83302891ab12
     dependencies:
     - name: idf
       version: '>=5.4'
@@ -448,7 +448,7 @@ dependencies:
       git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
       path: shared/can_port
       type: git
-    version: 5b03505f515cff8fbdd8826aa97fd2626028578a
+    version: 7ce07f75f4a5764bba5be920f31b46e466995e95
   vtrux/diag:
     component_hash: 59da8b276d2b6f55f6d12c8812717e93d5a0508a1478dfb45a1601b3dd0e3aa9
     dependencies:
@@ -462,8 +462,21 @@ dependencies:
     - esp32c3
     - esp32s3
     version: 2a7ab8be056a57a20a7cdc33730c9d9b9ce8c35d
+  vtrux/restart_guard:
+    component_hash: c8788d5510280438cf18e2484e7cbbf03b7013eecc2912bbf62983bd1ff98e7b
+    dependencies:
+    - name: idf
+      version: '>=5.4'
+    source:
+      git: https://github.com/nickyivyca/canbus-esp-fw-vtrux.git
+      path: shared/restart_guard
+      type: git
+    targets:
+    - esp32c3
+    - esp32s3
+    version: 7ce07f75f4a5764bba5be920f31b46e466995e95
   vtrux/twai_port:
-    component_hash: ca63b1023762c56eb91c278e74ae9488cf432a0251358268ee4ac8c35dc31e9d
+    component_hash: ad3f69329d6548d3f4975b18b9b54e1b2ec2e74fb1ec66c6b0709de20c837ae9
     dependencies:
     - name: idf
       version: '>=5.4'
@@ -474,7 +487,7 @@ dependencies:
     targets:
     - esp32c3
     - esp32s3
-    version: 5b03505f515cff8fbdd8826aa97fd2626028578a
+    version: 7ce07f75f4a5764bba5be920f31b46e466995e95
   vtrux/x2:
     component_hash: addd71bce143d762264756b264e28c18391382be939d1e1c10bc824913b9e0b6
     dependencies:
@@ -486,7 +499,7 @@ dependencies:
       type: git
     targets:
     - esp32s3
-    version: 5b03505f515cff8fbdd8826aa97fd2626028578a
+    version: 7ce07f75f4a5764bba5be920f31b46e466995e95
 direct_dependencies:
 - espressif/arduino-esp32
 - espressif/esp_modem
@@ -497,8 +510,9 @@ direct_dependencies:
 - joltwallet/littlefs
 - vtrux/can_port
 - vtrux/diag
+- vtrux/restart_guard
 - vtrux/twai_port
 - vtrux/x2
-manifest_hash: dcc139b5b71199046f20435baf2ff2756c0f718956fb8c150e9e6ab2e9e876c3
+manifest_hash: e2fb428fa9cf15fcd12daff4e70ce9e1be4f799215d96bb22658e05d793be548
 target: esp32s3
 version: 2.0.0

@@ -31,9 +31,9 @@ bench artifacts stayed there when this folder moved into
 
 | Path | What |
 |------|------|
-| `CMakeLists.txt` | The ESP-IDF project (port step 2a). Defines the variant option `INTP_VARIANT` (bridge, witness, truck, selftest, diag; spec 8.2), names the project `interposer_<variant>`, and sets the two fixed USB lines on the Arduino component. |
+| `CMakeLists.txt` | The ESP-IDF project (port step 2a). Defines the variant option `INTP_VARIANT` (bridge, witness, truck, selftest, diag, spec 8.2; and the test image s3probe, which alone sets shared/twai_port's two test-only switches), names the project `interposer_<variant>`, and sets the two fixed USB lines on the Arduino component. |
 | `main/CMakeLists.txt` | The `main` component: **each variant's sources and switches**. A variant lists exactly the `*_main.cpp` it links, so no variant can pick up another's `setup()`. The PlatformIO build excluded them instead, and the SLCAN transmitter's `slcan_main.cpp`, added 2026-09-29 without updating the others, stopped the bridge linking at all until 2026-10-03. |
-| `main/idf_component.yml`, `dependencies.lock` | The dependencies: arduino-esp32 3.2.1 from the Component Manager, five of its own dependencies held at the baseline's versions, the three shared components from git at one `shared/main` tag (2026.11.08 since port step 2b: the board `vtrux/x2`, the CAN port interface `vtrux/can_port` and the vehicle port's driver `vtrux/twai_port`; spec 2.4), the diag frames' packer and build-id read `vtrux/diag` at its own tag (2026.11.23.5, from diag schema 5 and the fit checks; spec 8.2, shared/diag D2-D4 and D6), ESP-IDF v5.4.2 exactly. The lock records what they resolved to. |
+| `main/idf_component.yml`, `dependencies.lock` | The dependencies: arduino-esp32 3.2.1 from the Component Manager, five of its own dependencies held at the baseline's versions, four shared components from git at one `shared/main` tag (2026.11.27.2 from stage (b) batch 1: the board `vtrux/x2`, the CAN port interface `vtrux/can_port`, the vehicle port's driver `vtrux/twai_port`, and `vtrux/restart_guard` in every variant, which until T19's measurement passes only writes its record at a restart, since the S3's TWAI stop answers "not supported" outside `s3probe`; spec 2.4), the diag frames' packer and build-id read `vtrux/diag` at its own tag (2026.11.23.5, from diag schema 5 and the fit checks; spec 8.2, shared/diag D2-D4 and D6), ESP-IDF v5.4.2 exactly. The lock records what they resolved to. |
 | `sdkconfig` | The one configuration every variant builds from (spec 9's settings, 8.3's log levels, the X2's fixed values). Committed. |
 | `shared_pins.json`, `vtrux_build.json` | The pins of the shared code, and the project's name, shared components and dev-build variants for the shared build tooling (`shared/tools/SPEC.md`; the variants are R31's, each with the `-D INTP_VARIANT` it is configured with). |
 | `main/board_ports.h` | Each port's pins from the board layer (`vtrux/x2`, shared/boards B5), never constants: CAN1 from `board_twai_pins(0)`, CAN2 from `board_spi_can(1)`. A board that does not describe a port as expected makes that port fail to start, which is spec 8.2's bridge-down path, never an abort. |
@@ -49,6 +49,7 @@ bench artifacts stayed there when this folder moved into
 | `main/main.cpp` | Wiring only. Moves frames, reports losses. Owns spec 2.3's two caller duties: the one round of status frames at power-up, and applying the core's `vehicleListenOnly()` to the port BEFORE dispatching that pass's frames. The build id is shared/diag's `diag_build_id()` (D2) from diag schema 5, printed on the serial `diag` line as `build=%08x` (spec 8.3). |
 | `main/selftest_main.cpp` | Stage 0. Cross-port identity, DLC and throughput over the loopback jumpers. |
 | `main/diag_main.cpp` | Stage 0a. Controller internal loopback + physical-layer probes. Flash this when Stage 0 fails and the cause could be either wiring or driver. |
+| `main/s3probe_main.cpp` | The `s3probe` test image: reads serial lines (CR or LF ends one, 255 characters at most, a longer one refused whole) and hands each to shared/twai_port's T19 app, `twai_port_t19_line()`, on the Arduino loop task, the core that installs the TWAI driver. Prints shared/restart_guard's record (G4) for the app's `g4` command. |
 | `main/boot_partitions.c` | In every variant: reads the partition table in ESP-IDF's core startup stage, on core 0 at priority 150, after `init_flash` (130) and while core 1 is still held, so the core dump setup in the secondary stage reads no flash (spec 9, the X2 settings, core dumps; user, 2026-11-18). Before the scheduler starts, ESP-IDF v5.4.2 turns the cache off on both cores whenever core 0 touches flash, assuming core 1 waits in IRAM, but in the secondary stage core 1 runs `do_system_init_fn` from flash; with the dump checked at boot, core 1 panicked on almost every chip reset 0x15. Nothing calls it: `main/CMakeLists.txt` keeps it in the link with `-u intp_boot_partitions_include`. If the table cannot be read it prints one line (not in `truck`), and the core dump setup reads the table itself. `../coredump_config_check.py` checks, after a dev build of every variant, that the committed `sdkconfig` and each variant's generated configuration have core dumps to flash with `CONFIG_ESP_COREDUMP_CHECK_BOOT` and `CONFIG_ESP_COREDUMP_FLASH_NO_OVERWRITE` not set, and that each variant's link map has this file's init function; `--can-fail` shows each rule failing. |
 | `datasheets/` | **Not in this repo.** The vendor data sheets (MCP2515 DS20001801J) were deliberately left out of the move and stay in the reverse-it project, at `projects/vtrux/tools/interposer/firmware/datasheets/`. Findings taken from them need both text extraction and the rendered page -- see that folder's `README.md`. |
 | `../fw_harness/host_diff/make_golden.py` | The tester's. Freezes what `machine.py` does over a real capture into a trace + golden pair. |
@@ -62,7 +63,7 @@ An ESP-IDF project since port step 2a: ESP-IDF **v5.4.2** with the Arduino
 core, arduino-esp32 3.2.1, as a component of `main` (user, 2026-11-03:
 arduino-esp32 3.2.1 does not compile on v5.4.1, gen-inhibit's IDF, so this
 project has its own install; `main/idf_component.yml` requires 5.4.2
-exactly). Five variants, each a value of the CMake option `INTP_VARIANT`,
+exactly). Six variants, each a value of the CMake option `INTP_VARIANT`,
 each in its own build folder, all from the one committed `sdkconfig`.
 
 | Variant | What it is |
@@ -72,6 +73,7 @@ each in its own build folder, all from the one committed `sdkconfig`.
 | `witness` | **Bench only.** The bridge plus the completion-order witness (`INTP_ORDER_WITNESS`). Keeps serial, because dumping the witness is the point. |
 | `selftest` | Stage 0 board self-test (needs jumpers). |
 | `diag` | Stage 0a fault-isolation build. |
+| `s3probe` | **Test image, never released.** shared/twai_port's T19 measurement app on the S3's TWAI (board port 0), driven by serial commands (shared/twai_port `test_app/README.md`, "The T19 app on the S3: serial commands"). Sets `TWAI_PORT_TXABORT_PROBE` and `TWAI_PORT_S3_PROBE`; runs no bridge and never sets up the MCP2515 (the charge-interposer reviewer, 2026-11-27). |
 
 The SLCAN transmitter on CAN1, a sixth variant `slcan` until 2026-11-13, is
 no longer built here: it is test equipment, and its source is
@@ -142,7 +144,7 @@ py -3.14 -B charge-interposer/vtrux_tools.py image charge-interposer/firmware/bu
 `idf.py -B build/<variant> -D INTP_VARIANT=<variant> reconfigure`, then
 ninja in that folder, in the caller's environment, adding nothing. The
 variants and their `-D` options are `vtrux_build.json`'s `variants`; the
-`INTP_VARIANTS` line in `CMakeLists.txt` names the same five, and
+`INTP_VARIANTS` line in `CMakeLists.txt` names the same six, and
 `../test_vtrux_tools.py` checks that the two agree. Any failure, including
 a failed `idf.py` or ninja, exits 1, and only a finished build prints
 `BUILT`. `release` and `build` first run the R32 check, and refuse a shell
