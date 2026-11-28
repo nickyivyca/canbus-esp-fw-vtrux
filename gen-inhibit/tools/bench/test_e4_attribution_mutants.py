@@ -42,6 +42,15 @@ MUTANTS = [
     ("attach_provenance voids on an agreement too",
      "        why = AV.attribution_reason(att)\n",
      "        why = AV.attribution_reason(att) or (att and \"x\")\n"),
+    # F4 (2026-11-27): rx_missed and ctr_bad over time from a POST
+    ("the Hammer row drops ctr_bad",
+     "                                   + page_counter_fields(txt))\n", "                                   )\n"),
+    ("page_counter_fields reads ctr_ok for ctr_bad",
+     "        return [d.get(\"ctr_bad\")]\n", "        return [d.get(\"ctr_ok\")]\n"),
+    ("the Hammer row's time is taken after the answer",
+     "                self.n += 1\n", "                self.n += 1\n                t0 = time.perf_counter()\n"),
+    ("perf_base is the epoch base, not the perf one",
+     "        \"perf_base\": round(base, 4),\n", "        \"perf_base\": round(base_epoch, 4),\n"),
 ]
 
 

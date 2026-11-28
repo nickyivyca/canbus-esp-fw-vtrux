@@ -138,6 +138,19 @@ void ft_deliver_at_count(uint32_t id, const uint8_t *data, uint8_t dlc);
 int  ft_delivered_at_count(void);
 void ft_deliver_at_count_reset(void);
 
+/*
+ * Every twai_port_abort_if_awaiting() call the firmware made since
+ * ft_abort_reads_reset(): how many, and each one's virtual time and the state
+ * it returned (twai_port_buf_t; -1 out of range). Logs the first 8192 and
+ * counts them all. In abort_reads.c, linked only by this folder's Makefile, for
+ * the reason deliver_at_count.c is. ft_ll_aborts() counts only the reads that
+ * issued the command.
+ */
+void    ft_abort_reads_reset(void);
+int     ft_abort_reads(void);
+int64_t ft_abort_read_at(int i);
+int     ft_abort_read_state(int i);
+
 /* Make the next `n` twai_receive() calls fail with a hard error. */
 void ft_rx_error_next(int n);
 

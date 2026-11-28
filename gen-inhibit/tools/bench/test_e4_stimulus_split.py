@@ -49,6 +49,43 @@ def poll_rate_ok():
     return 5 <= light[0] <= 7 and light[1] == light[0] and light[2] == light[0] and flood > 50
 
 
+def hammer_row_fields():
+    """F4 (2026-11-27): one Hammer poll against a fake page records [perf time, msgs_to_rx,
+    rx_missed, mode, self_off, ctr_bad], the time being the request's send."""
+    import time
+    seen = []
+
+    def fake_gi(path, method="GET", timeout=6.0):
+        seen.append(time.perf_counter())
+        time.sleep(0.02)          # the answer comes 20 ms after the send
+        return 200, '{"mode":2,"self_off":null,"ctr_bad":3,"drv":{"msgs_to_rx":4,"rx_missed":17}}'
+    real = E.gi
+    E.gi = fake_gi
+    try:
+        h = E.Hammer(period=0.5)
+        t_before = time.perf_counter()
+        h.start()
+        time.sleep(0.2)
+        h.stop.set()
+        h.join(2)
+    finally:
+        E.gi = real
+    if not h.series or not seen:
+        return False
+    row = h.series[0]
+    return (len(row) == 6 and row[1:] == [4, 17, 2, None, 3]
+            and t_before <= row[0] <= seen[0] + 1e-3)
+
+
+def run_arm_records_perf_base():
+    """The arm record carries the replay's base on the perf clock, the same base the POSTs are
+    timed from (F4, 2026-11-27). Read from the source: run_arm needs the bench."""
+    import inspect
+    src = inspect.getsource(E.run_arm)
+    return ('"perf_base": round(base, 4),' in src and "    base = perf()\n" in src
+            and "poster.base = base\n" in src)
+
+
 def attach_failure_recorded():
     """A run record whose capture cannot be loaded: the arm must say NOT RUN, why, and
     still carry the superseded note. Writes a scratch record in runs/ and removes it."""
@@ -150,6 +187,12 @@ def main():
          E.page_queue_fields('{"drv":null}') == [None, None]
          and E.page_queue_fields('{"drv":{"msgs_to') == [None, None]),
         ("a 1 Hz Hammer polls about once a second and records each answer", poll_rate_ok()),
+        # F4 (2026-11-27): rx_missed and ctr_bad over time from a POST
+        ("page_counter_fields reads ctr_bad; a page without it, or a cut page -> [None], no exception",
+         E.page_counter_fields('{"ctr_ok":9,"ctr_bad":2}') == [2]
+         and E.page_counter_fields('{"ctr_ok":9}') == [None] and E.page_counter_fields('{"ctr_b') == [None]),
+        ("a Hammer row is [send time, msgs_to_rx, rx_missed, mode, self_off, ctr_bad]", hammer_row_fields()),
+        ("the arm record carries perf_base, the replay's base on the perf clock", run_arm_records_perf_base()),
         ("provenance that cannot run is recorded NOT RUN with the reason, old figures marked "
          "superseded", attach_failure_recorded()),
         # the old trail-window count voids nothing (gen-inhibit reviewer, 2026-10-29)

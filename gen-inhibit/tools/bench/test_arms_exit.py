@@ -16,6 +16,7 @@ the script exit 1 once the rest have run, and every arm still runs.
   baseline_b_noX2.sh B11rawquiet  6 quiet arms (topic (E)): arm 2 failing -> exit 1
   baseline_b_noX2.sh B4       not an arm: B4's own exit is judged from its output, not counted
   baseline_b_hand.sh B2app    3 arms: all 0 -> exit 0; arm 2 fails -> exit 1
+  baseline_b_hand.sh F4       9 arms (2026-11-27): all 0 -> exit 0; arm 5 fails -> exit 1
 
 The fakes are test_baseline_capture_stop.py's (a fake `py` first on PATH, a fake dumpcap
 through GI_DUMPCAP_PRE), with the e4 fake failing on the call FAKE_E4_FAIL_AT names and
@@ -37,6 +38,7 @@ import test_baseline_capture_stop as T       # noqa: E402  its fakes, env and ba
 
 E4_OLD = """  e4_device_calibration.py) sleep 1; echo '{}' > "$(arg --out "$@")" ;;"""
 E4_NEW = """  e4_device_calibration.py) n=$(( $(cat "$FAKE_E4_COUNT" 2>/dev/null || echo 0) + 1 )); echo $n > "$FAKE_E4_COUNT"
+    [ -z "${FAKE_E4_ARGS:-}" ] || echo "$*" >> "$FAKE_E4_ARGS"
     echo '{}' > "$(arg --out "$@")"; [ "$n" = "${FAKE_E4_FAIL_AT:-0}" ] && exit 2; exit 0 ;;
   skip_method_bench.py) exit "${FAKE_B4_RC:-0}" ;;"""
 assert T.FAKE_PY.count(E4_OLD) == 1
@@ -86,13 +88,31 @@ def main():
                 ("B13", "baseline_b_noX2.sh", ["B13"], 8, 1),
                 ("B11raw", "baseline_b_noX2.sh", ["B11raw"], 6, 4),
                 ("B11rawquiet", "baseline_b_noX2.sh", ["B11rawquiet"], 6, 2),
-                ("B2app", "baseline_b_hand.sh", ["B2app"], 3, 2)]:
+                ("B2app", "baseline_b_hand.sh", ["B2app"], 3, 2),
+                ("F4", "baseline_b_hand.sh", ["F4"], 9, 5)]:
             rc, n, text = case(tmp, label, script, args, arms)
             check("%s: every arm exits 0 -> exit 0 (%d arms)" % (label, n), rc == 0 and n == arms, (rc, n, text))
             rc, n, text = case(tmp, label, script, args, arms, fail_at=bad)
             check("%s: arm %d exits 2 -> exit 1" % (label, bad), rc == 1, (rc, text))
             check("%s: every arm still runs after the failing one" % label, n == arms, (n, text))
             check("%s: the failure is said" % label, "exited non-zero" in text, text)
+        # F4's arms as specified for the measurement (2026-11-27): RESPOND POSTed 5 s into the replay,
+        # scottsvalley_armable_300s.log from 20 s for 65 s; arms 1, 2, 4, 5, 7 and 8 polled at 2 Hz, 3, 6
+        # and 9 unpolled; each its own record
+        argf = os.path.join(tmp, "f4_args")
+        rc, n, text = case(tmp, "F4 args", "baseline_b_hand.sh", ["F4"], 9, FAKE_E4_ARGS=T.fw(argf))
+        lines = open(argf).read().splitlines() if os.path.exists(argf) else []
+        polled = [("--poll-hz 2" in l) for l in lines]
+        common = all("--mode respond --arm-after 5" in l and "--window-start 20 --seconds 65" in l
+                     and "/runs/scottsvalley_armable_300s.log" in l and "--offset-us 500" in l for l in lines)
+        outs = [l.split("--out ")[-1].split()[0].rsplit("/", 1)[-1] for l in lines]
+        want = ["F4_e4_respond_entry_e3d9437_%s_arm%d.json" % (v, k) for k in (1, 2, 3)
+                for v in ("p2hz_a", "p2hz_b", "unpolled")]
+        check("F4: nine RESPOND arms POSTed 5 s into scottsvalley 20-85 s, offset 500",
+              rc == 0 and len(lines) == 9 and common, (rc, lines[:2]))
+        check("F4: arms 1, 2, 4, 5, 7, 8 polled at 2 Hz; 3, 6, 9 unpolled",
+              polled == [True, True, False] * 3, polled)
+        check("F4: each arm its own record, named by variant and round", outs == want, outs)
         rc, n, text = case(tmp, "B4", "baseline_b_noX2.sh", ["B4"], 0, FAKE_B4_RC="1")
         check("B4: its own exit 1 is not an arm's -> exit 0", rc == 0 and "B4 exit 1" in text, (rc, text))
     finally:

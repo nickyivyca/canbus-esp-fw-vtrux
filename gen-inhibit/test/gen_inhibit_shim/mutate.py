@@ -61,6 +61,10 @@ exact defect it was written to catch.
   T5  the wait keys on the inhibit class, not the arm's timed class, so the
       probe leaves the inhibit's path (spec 11, user 2026-11-23). Case 67
   T6  the worker never reports a dequeue to the scheduler. Cases 62-64
+  L1  a trip gi_tick() latches is withdrawn on the next pass, not its own
+      (spec 5.2 item 5, reviewer ruling 2026-11-27). Case 69 kills it
+  L2  the same for a gi_on_frame() latch. SURVIVES, as an equivalent mutant:
+      the loop top's sched_advance() withdraws a few microseconds later
   K06 an explicit re-arm no longer clears the section 7 abort latch
   K08 the key-on clear no longer resets rpm_ever -- the BUG 2 class
   K17 the SoC threshold becomes <=, moving the 21.00 % boundary by one count
@@ -89,10 +93,10 @@ N6. That is the pattern worth noticing -- each round of "all mutations caught"
 has been followed by a round that found more, so a green mutation run means
 "nothing in THIS set survives", never "the suite is adequate".
 
-N3, K21, V08 and V09 are EXPECTED to survive, each for the reason at its
+N3, K21, V08, V09 and L2 are EXPECTED to survive, each for the reason at its
 entry (N3's measured on the 1b code, 2026-11-01). Every other mutation must
 come back rc=1, M7 included since case 61 (2026-11-01), and a survivor that is
-not one of those four is a finding.
+not one of those five is a finding.
 
 RETIRED (gen-inhibit implementor, port step 1b, 2026-11-01; reviewer
 2026-10-31: CAN-side mutants of can_port and twai_port belong in those
@@ -216,6 +220,24 @@ MUT = {
  "T6_dequeue_never_reported": ("firmware/main/gen_inhibit.c", [(
   "            gs_rx_dequeued(&s_sched, rx.identifier == GI_VCM_ID, rx_waiting);",
   "            (void)rx_waiting;")]),
+ # Spec 5.2 item 5, the withdrawal at the latch (reviewer ruling, 2026-11-27).
+ # L1 drops the falling-edge check after gi_tick()'s dispatch_emits(), which
+ # puts back 3d6e36cf's next-pass withdrawal; case 69 kills it. L2 drops the
+ # one after gi_on_frame()'s and SURVIVES, as an equivalent mutant: the loop
+ # top's sched_advance() runs its own check a few microseconds later, with
+ # nothing blocking in between. Kept as a tripwire on that order, as V08 is.
+ "L1_tick_latch_withdrawn_next_pass": ("firmware/main/gen_inhibit.c", [(
+  "             * receive below (spec 5.2 item 5; live_fell()).\n"
+  "             */\n"
+  "            if (live_fell())",
+  "             * receive below (spec 5.2 item 5; live_fell()).\n"
+  "             */\n"
+  "            if (0)")]),
+ "L2_frame_latch_withdrawn_at_loop_top": ("firmware/main/gen_inhibit.c", [(
+  "            /* The same for a release or a trip gi_on_frame() latched. */\n"
+  "            if (live_fell())",
+  "            /* The same for a release or a trip gi_on_frame() latched. */\n"
+  "            if (0)")]),
  # Round 3 (reviewing session, 2026-09-25) mutated the CORE. These four were
  # real survivors and now have scenarios; K01 and K12 were judged equivalent and
  # are not here -- K01's reasoning is recorded in bus_alive_since()'s comment.

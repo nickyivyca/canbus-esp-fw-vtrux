@@ -112,6 +112,18 @@ typedef struct
      */
     uint32_t (*rx_waiting)(void *ctx);
 
+    /*
+     * THE RE-READ PAST THE BOUND's clock and busy-wait (spec 5.2 item 5, user
+     * 2026-11-27; gi_sched.c reread_past_bound()). Used only while a withdrawn
+     * inhibit is held past item 4's 1 ms bound.
+     *   now_us:  microseconds, monotonic. On the device esp_timer.
+     *   spin_us: wait `us` microseconds without blocking, so no other task
+     *            runs between two reads. On the device esp_rom_delay_us().
+     * Through the HAL so that a host build times them on its own clock.
+     */
+    int64_t  (*now_us)(void *ctx);
+    void     (*spin_us)(void *ctx, uint32_t us);
+
     void *ctx;
 } gs_hal_t;
 
@@ -483,8 +495,10 @@ typedef struct
      * A WITHDRAWN INHIBIT OUTLIVED THE 1 MS BOUND (spec 5.2 item 5, user
      * 2026-11-26). The bound has been counted once for this abort; the loop
      * stays open and turns on every later pass until the buffer is free, with
-     * nothing handed over behind it. See gs_tick() step 3. Cleared by
-     * begin_abort().
+     * nothing handed over behind it. Set by abort_step() on the pass that
+     * reaches the bound; that pass and each later one re-reads the buffer for
+     * up to 1 ms (2026-11-27). See abort_step(), gs_tick() step 3 and
+     * reread_past_bound(). Cleared by begin_abort().
      */
     bool       abort_past_bound;
 

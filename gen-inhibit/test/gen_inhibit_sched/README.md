@@ -214,9 +214,10 @@ stale, when a node came back.
 
 `fake_buf` has a mode for it, `fb_set_unacked()`: the frame is retried with a
 gap between retries, TRANSMITTING during each retry and AWAITING in the gap.
-**The gap is not calibrated**: the bench measured the retry period (262-274 us),
+**The gap was not calibrated then**: the bench measured the retry period (262-274 us),
 not how long TS reads 0. The cases place each pass on a retry or in a gap on
-purpose, so the gap's length decides nothing they assert. `fb_abort_reads()`
+purpose, so the gap's length decides nothing they assert. (2026-11-27: the C3
+has since been measured; see the 2026-11-27 section below.) `fb_abort_reads()`
 counts the loop's reads of the buffer.
 
 * `case_standdown_held_past_bound` -- the stand-down route. The bound is
@@ -250,3 +251,106 @@ no effect (`fb_race_next()`), and the page retries unacknowledged
 (`fb_set_unacked()`) until the pass at the bound lands in a gap. It fails on
 a0c19825's `gi_sched.c` (4 assertions), and the mutant that ends the loop on
 that read again is caught.
+
+### 2026-11-27: the re-read for up to 1 ms on each pass (tracker F5, option A)
+
+Spec 5.2 item 5's new last sentence (user, 2026-11-27; gen-inhibit/main
+e9bfa300): "On each such pass, the scheduler must re-read the controller
+about every 2 us, for up to 1 ms, and issue the abort at the first read with
+TS = 0." On each pass past the bound, a withdrawn inhibit's loop reads the
+buffer through `abort_if_awaiting()` every 2 us for up to 1 ms, and stops at
+the first read that is not TRANSMITTING. A read that issued the command ends
+the pass, and the next pass reads the result (F7). The wait and the clock are
+two new HAL calls, `spin_us` and `now_us`. In `fake_buf` they move and read
+the model's time (`fb_spins()`, `fb_spin_us_total()`, `fb_clock_reads()`).
+
+`fb_set_unacked()` now follows the C3's measurement (VALIDATION.md 5.2): gap 0
+is error active, where TS never reads 0, and gap 16 is error passive.
+`fb_last_cmd_at()` and `fb_gap_began_at()` place the command in the gap.
+
+- `case_standdown_held_past_bound` and `case_deadline_skip_held_past_bound`:
+  their passes past the bound run in error active. Each one re-reads for
+  exactly 1 ms, 501 reads, and issues no abort. On 709b69ff the pass that
+  reached the bound read once (corrected below). Then one pass in error passive meets a gap inside its
+  1 ms, issues the abort at the first read in it and ends there. The next
+  pass books the frame `withdrawn`.
+- `case_reread_bounded_by_the_span`: resends 1.5 ms apart. A pass that starts
+  as a resend begins stops at 1 ms with no abort. One that starts 600 us in
+  issues the abort 900 us in.
+- `case_abort_bound_is_reached`: a page held past the bound is never re-read,
+  and the HAL's clock is not read.
+
+The cases fail on e9bfa300's `gi_sched.c` (38 assertions). Eight mutants
+break the re-read, each caught: no re-read, a re-read for every class, a
+re-read before the bound, a span of 2 ms, a span of 0.5 ms, reads 8 us
+apart, reads 4 us apart, and a re-read that goes on after the read that
+issued the command.
+
+### 2026-11-27: the re-read on the pass that reaches the bound (tracker F5)
+
+Spec 5.2 item 5 reads the limit as a time: every pass that starts more than
+1 ms after the withdrawal re-reads, while the frame is held (reviewer,
+2026-11-27, from the tester's emulation). On 709b69ff the pass that reached
+the bound read once, and only set the past-bound state. On a quiet bus that
+pass comes 200 ms after the withdrawal, so the re-read began at 400 ms.
+`abort_step()` now checks the bound at the pass's first read, when it is
+TRANSMITTING. For a withdrawn inhibit it sets the past-bound state and
+re-reads on that same pass. A lower class still ends the loop at the bound.
+
+- `bound_reached_on_a_retry()`: a pass before the bound reads once. The pass
+  that reaches the bound re-reads for 1 ms, 501 reads, and in error active
+  issues nothing.
+- `case_first_pass_past_bound_rereads`: the tester's emulation. Error passive;
+  the withdrawal's own pass does not re-read. The next pass, 200 ms on,
+  reaches the bound, re-reads and issues the abort at the first read in a gap.
+  The pass after it books the frame `withdrawn`.
+
+The cases fail on 709b69ff's `gi_sched.c` (14 assertions). New mutants, each
+caught: the pass that reaches the bound does not re-read, and the bound
+checked on a read that issued the command (F7). The F7 mutant that removed
+the AWAITING branch's `return false` is now equivalent, so this one replaces
+it. The "loop ends at the bound" mutant now targets `abort_step()`. Step 3's
+inhibit branch is reached only when the buffer reads EMPTY before the
+driver's count falls, which `fake_buf` did not model then (see below).
+
+### 2026-11-27: the driver's count lags the buffer (tracker F5)
+
+On the device the abort reads the controller's registers, and `outstanding()`
+reads the driver's `tx_pending`, which falls only when the transmit interrupt
+has run. A pass in between sees the buffer EMPTY while the frame is still
+counted. For a withdrawn inhibit, `gs_tick()` step 3 keeps the loop open then.
+Without that branch, step 1 would book the frame `sent` on the next pass.
+
+`fb_set_count_lag(us)` models it (reviewer, 2026-11-27): each time the buffer
+frees, `outstanding()` stays true for `us` more. `fb_counted_now()` reads that
+value with no side effects; `fb_outstanding_now()` still reads the buffer only.
+
+`case_withdrawn_inhibit_count_lag`: a contended bus, so the answer waits
+AWAITING. The withdrawal's abort frees the buffer, and a pass inside the
+50 us lag keeps the frame held, books nothing and hands over nothing. The next
+pass books it `withdrawn`, never `sent`, and the page queued behind it goes
+out. The mutant that removes step 3's inhibit branch is caught.
+
+### 2026-11-28: the withdrawal at the latch (spec 5.2 item 5)
+
+A release or trip withdraws the answer on the latch's own pass (reviewer
+ruling, 2026-11-27). `gen_inhibit.c` now calls `gs_withdraw_inhibits()` on
+that pass, and its shim cases 69 and 70 check it (`../gen_inhibit_shim/`).
+`case_withdrawal_reads_at_the_call` is the scheduler's half: the call itself
+makes the first abort-if-awaiting read, with no wait and no `gs_tick()`.
+- With the answer TRANSMITTING (error active), the read issues nothing, and
+  the 1 ms bound counts from it. A pass 999 us later does not reach the bound;
+  a pass 1000 us later reaches it and re-reads.
+- With the answer AWAITING (contended bus), the read issues the abort at the
+  call. The frame is booked `withdrawn` and never reaches the wire.
+
+The mutant that removes `begin_abort()`'s read is caught.
+
+A correction to the 2026-11-27 section above: in the tester's emulation
+(gen-inhibit/tester/sl-retry-c3 11004015), the dense re-read at 400 ms after
+the latch had another cause. The emulation shows the same 400 ms on 709b69ff
+and on 3d6e36cf, whose scheduler is 03a90fd0's. The withdrawal came a pass late, 200 ms after the latch. On
+709b69ff, the pass that reached the bound was followed 3 us later by
+`dispatch_emits()`'s tick for that pass's page, and that tick re-read. The
+unit model has no such tick, so there the re-read on 709b69ff began a pass
+later.
