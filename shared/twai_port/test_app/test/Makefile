@@ -13,7 +13,20 @@ CFLAGS ?= -std=c11 -O1 -g -Wall -Wextra -Werror -Imock
 PYTHON ?= python3
 
 BINS := $(OUT)/test_unacked $(OUT)/test_probe_ll_c3 $(OUT)/test_probe_ll_s3 \
-        $(OUT)/test_probe_ll_unsupported $(OUT)/test_t19_parse
+        $(OUT)/test_probe_ll_unsupported $(OUT)/test_t19_parse $(OUT)/test_t19
+
+# The T19 app's switch commands (test_t19.c): the app whole, with
+# shared/can_port's real dispatch, over a fake port. Its headers come first
+# from mock_t19/, then the unit tests' mock/ (../../unit/mock, the driver and
+# FreeRTOS twai_port.c compiles against), then the real can.h, then this
+# folder's mock/. CFLAGS's own -Imock goes last for it.
+T19_CFLAGS = $(filter-out -Imock,$(CFLAGS)) -DTWAI_PORT_S3_PROBE=1 -Imock_t19 \
+             -I../../unit/mock -I../../../can_port/include -Imock -I../include -I.. \
+             -I../../include
+T19_DEPS := ../twai_port_t19.c ../twai_port_t19_parse.c ../twai_port_t19_parse.h \
+            ../twai_port_t19_ll.h ../include/twai_port_t19.h ../../include/twai_port.h \
+            ../../twai_port_ll.h ../../../can_port/can_port.c \
+            ../../../can_port/include/can_port.h $(wildcard mock_t19/*.h mock_t19/*/*.h)
 
 # The probe's call path from the URI handler, for test_stack.py: gcc's
 # -fcallgraph-info=su (frames and calls) of the handler, the run and m1-m3's
@@ -43,6 +56,11 @@ $(OUT)/test_t19_parse: test_t19_parse.c ../twai_port_t19_parse.c ../twai_port_t1
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -o $@ test_t19_parse.c ../twai_port_t19_parse.c
 
+$(OUT)/test_t19: test_t19.c $(T19_DEPS)
+	mkdir -p $(OUT)
+	$(CC) $(T19_CFLAGS) -o $@ test_t19.c ../twai_port_t19.c ../twai_port_t19_parse.c \
+	    ../../../can_port/can_port.c
+
 $(OUT)/test_unacked: test_unacked.c ../twai_port_unacked.c ../twai_port_unacked.h ../twai_port_probe_ll.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -Wno-missing-field-initializers -o $@ test_unacked.c ../twai_port_unacked.c
@@ -70,6 +88,7 @@ run: all
 	$(OUT)/test_probe_ll_s3
 	$(OUT)/test_probe_ll_unsupported
 	$(OUT)/test_t19_parse
+	$(OUT)/test_t19
 	$(PYTHON) -B test_stack.py $(STACK)
 
 clean:

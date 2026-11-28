@@ -237,6 +237,14 @@ all, RX queue 64, TX queue 32. Nothing is installed at boot. Each command
 brings the bus up in normal mode when it needs it. `resetprobe` takes it
 down at its end.
 
+**A mode change with the bus up is `can_port_set_mode(0, ...)`**, can_port's
+"set the mode" (can_port C2). It reaches `twai_port_set_mode()` through the
+backend table, as a project's own switch does. The stock `can_set_silent()`
+is ignored while the bus is on, so the app never switches through it. At
+tag 2026.11.27.6 it did, and no switch ran (`../VERIFICATION.md`, T19 run
+`bench_t19_1d4221c9`). The mode the app reads is the port's,
+`twai_port_mode()`.
+
 ### The line and the answer
 
     <command> [<key>=<value> ...]
@@ -249,7 +257,11 @@ with 400. Every answer is one JSON line:
     {"cmd":"<the line>","core":N,"t0_us":T,"status":200, ... ,"t1_us":T}
 
 `core` is the core the command ran on, and `t0_us` and `t1_us` are
-`esp_timer` at its start and end. A refusal has `"status"` 400, 500 or 501
+`esp_timer` at its start and end. **The answer is sent in pieces as the
+command runs:** its start (`cmd`, `core`, `t0_us`) goes out before the
+command's work, and the rest after it. So a reader must read to the newline,
+however long the command takes: `switchloop` is silent for `k` x
+`period_ms` after its start. A refusal has `"status"` 400, 500 or 501
 and `"error"`. Statuses and times are numbers; status registers are the
 chip's bits, as in the probe's `st_*` fields (TBS 4, TCS 8, RS 16, TS 32,
 ES 64, BS 128).
@@ -261,8 +273,8 @@ ES 64, BS 128).
 | `info` | none | `build` (the app version), `idf`, `port_core` (the core the driver was installed on, -1 while not installed), `installed`, `mode`, `reset_reason`; with the clock on: `btr0`, `btr1` and their fields `brp`, `sjw`, `tseg1`, `tseg2`, `sam`, and `tec`, `rec`. `clock` false: the controller's registers were not read |
 | `regs` | none | changes nothing. `st` and its bits `tbs`, `tcs`, `rs`, `ts`, `es`, `bs`; `mode_reg` and `rm`, `lom`, `stm`; `tec`, `rec`; `drv` the driver's `state`, `mtx` (msgs_to_tx) and `mrx` (msgs_to_rx), or null when not installed |
 | `txabort` | the URI's query arguments, as key=value | the probe, every phase (abort, control, noabort, m1-m3), with the URI's arguments, refusals (status and body) and answer, which is in `"answer"`. The project owns nothing, so the probe never refuses for that |
-| `switch` | `to=lom\|normal`, `n=0..32` (default 0) | one kept-driver switch, through the stock call. With `n`, that many frames are queued first with `twai_port_send_tagged()`: ID 0x7FD, data `i 0 AB 7D`, tag 0x7100 + i. Answers `queued`, `queue_refused`, `switch_us` (the whole switch), `mode`, `report` (every field of `twai_port_last_switch()`), `hook` (the T17 hook's frames in order, each `[id, tag]`), `hook_lost` (beyond 64), `st_after`, `mtx_after`, `tx_discarded_switch`, `tx_failed`. The port gives no time per step inside the switch: `report.abort_wait_us` is the only inner time |
-| `switchloop` | `k=1..200` (10), `period_ms=1..10000` (100) | from normal, `k` switches, listen-only then normal by turns, one every `period_ms`, receiving between them. `switches`: one `[t_us, to_lom, switch_us, result, held, rec_read_back, status_at_reset, head_aborted, driver_tx_stuck]` per switch, `t_us` from the start. `rx_windows`: frames received in each of the `k` + 1 windows. Then the port's deltas over the run: `rx_frames`, `rx_lost`, `rx_lost_queue_full`, `rx_lost_overrun`, `rx_lost_restart`, `bus_errors`, `tx_discarded_switch`. An odd `k` is switched back to normal at the end |
+| `switch` | `to=lom\|normal`, `n=0..32` (default 0) | one kept-driver switch, through `can_port_set_mode(0, ...)`. With `n`, that many frames are queued first with `twai_port_send_tagged()`: ID 0x7FD, data `i 0 AB 7D`, tag 0x7100 + i. Answers `queued`, `queue_refused`, `switch_us` (the whole switch), `set_mode` (what the call returned, an `esp_err_t`), `mode` (the port's after it), `report` (every field of `twai_port_last_switch()`), `hook` (the T17 hook's frames in order, each `[id, tag]`), `hook_lost` (beyond 64), `st_after`, `mtx_after`, `tx_discarded_switch`, `tx_failed`. The port gives no time per step inside the switch: `report.abort_wait_us` is the only inner time |
+| `switchloop` | `k=1..200` (10), `period_ms=1..10000` (100) | from normal, `k` switches, listen-only then normal by turns, one every `period_ms`, receiving between them. `switches`: one `[t_us, to_lom, switch_us, result, held, rec_read_back, status_at_reset, head_aborted, driver_tx_stuck]` per switch, `t_us` from the start. A call that ran no switch (the report's `seq` did not move) gives zeros, with the call's return as `result`. `rx_windows`: frames received in each of the `k` + 1 windows. Then the port's deltas over the run: `rx_frames`, `rx_lost`, `rx_lost_queue_full`, `rx_lost_overrun`, `rx_lost_restart`, `bus_errors`, `tx_discarded_switch`. An odd `k` is switched back to normal at the end |
 | `resetprobe` | `at=ts0\|ts1` (ts0), `att=1..255` (1), `delay_us=0..5000` (0, ts1 only), `leave=normal\|lom` (normal), `wait_us=0..100000` (1000), `abort=0\|1` (0, lom only), `window_us=100..50000` (10000) | reset mode on a frame left in the buffer, apart from the port's switch. Sends one frame (ID 0x7FC, data `0 0 AB 7C`) on a bus where no node acknowledges, counts attempts by TS rises, and enters reset mode: `ts0` at the first read with TS = 0 and TBS = 0 from attempt `att`, in one critical section; `ts1` `delay_us` after attempt `att`'s TS rise. In reset mode: `st_reset`, `mtx_reset`. Then the mode is set and reset mode is left; with `abort=1`, an abort (`ab_st_before`, `ab_st_after`). After `wait_us`: `st_wait`, `mtx_wait`, `tx_alerts` (success, failed, both, none) and `alerts_wait`. Then a second frame (data `1 0 AB 7B`) with `twai_transmit()` and a 10 ms wait: `second_tx_err` and `second` within 10 ms, `alerts_second`. Also `attempts`, `entered`, `freed_before`, `wait_timeout`, `enter_us`, `st_before` and `st_after_enter`. The bus is taken down at the end (`cleanup`) |
 | `restart` | `how=restart\|panic`, `load=idle\|noack\|queued\|flood\|core` (idle), `n=1..32` (queued only, 4), `period_us=50..100000` (core only, 1000) | brings the bus up in normal mode and sets the load: `noack` one frame (ID 0x7FA) for a bus where no node acknowledges, `queued` `n` frames, `flood` nothing (the bench floods), `core` a task pinned to the other core sending a frame (ID 0x7FB) every `period_us`, running 50 ms first. Answers `how`, `load`, `port_core` and `restart_at_us` (`esp_timer` just before the call), sends the line, then calls `esp_restart()` or `abort()` (a panic) |
 | `g4` | `clear=0\|1` (0) | after a restart: `reset_reason`; `g4`, the guard's record (`shared/restart_guard` G4) as the project gives it, or null; `stall`, the S3 stop's record of the other core (`valid`, `core`, `other`, `options0`, `sw_cpu_stall`, `stalled_at_entry`, `stall_called`, `entered_reset`; twai_port_ll.h). `clear=1` clears the stall record after the answer |

@@ -14,6 +14,15 @@
  * The bus is can_port's port 0 through the stock CAN calls (can.h), as the
  * probe drives it, so the probe's phases run here unchanged. The port is
  * twai_port with the kept-driver switch (T14), installed in normal mode.
+ *
+ * A MODE CHANGE WITH THE PORT UP IS can_port_set_mode(0, ...), can_port's
+ * "set the mode" (can_port C2), which reaches twai_port_set_mode() through
+ * the backend table, as a project's own switch does. The stock
+ * can_set_silent() is ignored while the bus is on (can_stock.c, today's
+ * WiCAN behaviour) and only records the mode for the next can_enable(): at
+ * tag 2026.11.27.6 the app switched through it, so no switch ever ran
+ * (VERIFICATION.md, T19 run bench_t19_1d4221c9). The stock silent flag is
+ * never set here; the port's own mode, twai_port_mode(), is the one read.
  */
 #include "twai_port_t19.h"
 
@@ -123,11 +132,11 @@ static int bus_normal(char *err, size_t errn)
     {
         return refuse(err, errn, 500, "CAN bus would not come up");
     }
-    if (can_is_silent())
+    if (twai_port_mode() == CAN_PORT_MODE_LISTEN_ONLY)
     {
-        can_set_silent(0);
+        (void)can_port_set_mode(0, CAN_PORT_MODE_NORMAL);
     }
-    if (can_is_silent() || twai_port_mode() != CAN_PORT_MODE_NORMAL)
+    if (twai_port_mode() != CAN_PORT_MODE_NORMAL)
     {
         return refuse(err, errn, 500, "the port would not go to normal mode");
     }
@@ -321,13 +330,15 @@ static void out_report(const twai_port_switch_report_t *r)
          (unsigned long)r->rec_read_back, (unsigned long)r->tec_read_back);
 }
 
-/* One kept-driver switch through the stock call, timed. */
-static int64_t do_switch(bool to_lom)
+/* One kept-driver switch through can_port's set-mode call (C2), timed; what
+ * the call returned in *err. */
+static int64_t do_switch(bool to_lom, esp_err_t *err)
 {
     s_hook_n = 0;
     s_hook_lost = 0;
     const int64_t t0 = esp_timer_get_time();
-    can_set_silent(to_lom ? 1 : 0);
+    *err = can_port_set_mode(0, to_lom ? CAN_PORT_MODE_LISTEN_ONLY
+                                       : CAN_PORT_MODE_NORMAL);
     return esp_timer_get_time() - t0;
 }
 
@@ -351,7 +362,8 @@ static int cmd_switch(const t19_line_t *l, char *err, size_t errn)
     {
         return refuse(err, errn, 400, "n must be 0..32");
     }
-    if (!can_is_enabled() || (!to_lom && !can_is_silent()))
+    if (!can_is_enabled()
+        || (!to_lom && twai_port_mode() != CAN_PORT_MODE_LISTEN_ONLY))
     {
         const int b = bus_normal(err, errn);   /* from listen-only: stays */
         if (b != 200)
@@ -375,7 +387,8 @@ static int cmd_switch(const t19_line_t *l, char *err, size_t errn)
         }
     }
 
-    const int64_t sw_us = do_switch(to_lom);
+    esp_err_t sw_err;
+    const int64_t sw_us = do_switch(to_lom, &sw_err);
     twai_port_switch_report_t r;
     const bool have = twai_port_last_switch(&r) == ESP_OK;
     const uint32_t st_after = t19_ll_clock_on() ? t19_ll_status() : 0;
@@ -385,8 +398,8 @@ static int cmd_switch(const t19_line_t *l, char *err, size_t errn)
     const bool have_ps = twai_port_status(&ps) == ESP_OK;
 
     outf(",\"status\":200,\"queued\":%d,\"queue_refused\":%d,\"switch_us\":%lld,"
-         "\"mode\":\"%s\",\"report\":", queued, refused, (long long)sw_us,
-         mode_name(twai_port_mode()));
+         "\"set_mode\":%d,\"mode\":\"%s\",\"report\":", queued, refused,
+         (long long)sw_us, (int)sw_err, mode_name(twai_port_mode()));
     if (have)
     {
         out_report(&r);
@@ -460,16 +473,24 @@ static int cmd_switchloop(const t19_line_t *l, char *err, size_t errn)
     can_port_status_t p0;
     const bool have_p0 = twai_port_status(&p0) == ESP_OK;
 
+    twai_port_switch_report_t r0;
+    uint32_t seq = (twai_port_last_switch(&r0) == ESP_OK) ? r0.seq : 0;
     const int64_t t_start = esp_timer_get_time();
     for (long i = 0; i < k; i++)
     {
+        esp_err_t e;
         s_rx_win[i] = rx_window(t_start + (int64_t)(i + 1) * period * 1000);
         s_loop[i].t_us = esp_timer_get_time() - t_start;
-        s_loop[i].sw_us = do_switch((i % 2) == 0);
-        if (twai_port_last_switch(&s_loop[i].r) != ESP_OK)
+        s_loop[i].sw_us = do_switch((i % 2) == 0, &e);
+        /* A call that ran no switch leaves the last report as it was: its
+         * entry is zeros with the call's return as the result. */
+        if (twai_port_last_switch(&s_loop[i].r) != ESP_OK
+            || s_loop[i].r.seq == seq)
         {
             memset(&s_loop[i].r, 0, sizeof(s_loop[i].r));
+            s_loop[i].r.result = e;
         }
+        seq = s_loop[i].r.seq ? s_loop[i].r.seq : seq;
     }
     s_rx_win[k] = rx_window(t_start + (int64_t)(k + 1) * period * 1000);
     can_port_status_t p1;
@@ -504,9 +525,10 @@ static int cmd_switchloop(const t19_line_t *l, char *err, size_t errn)
              (unsigned long)(p1.bus_errors - p0.bus_errors),
              (unsigned long)(p1.tx_discarded_switch - p0.tx_discarded_switch));
     }
-    if (can_is_silent())
+    if (twai_port_mode() == CAN_PORT_MODE_LISTEN_ONLY)
     {
-        can_set_silent(0);  /* an odd k ends in listen-only: back to normal */
+        /* an odd k ends in listen-only: back to normal */
+        (void)can_port_set_mode(0, CAN_PORT_MODE_NORMAL);
     }
     return 200;
 }
