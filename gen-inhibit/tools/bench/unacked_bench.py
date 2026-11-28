@@ -42,8 +42,11 @@ RESTART_SLACK_MS below the last read's uptime plus the time between). The plan s
 MAX_FAILED_CALLS calls with no answer (`stopped`, exit 1).
 
 THE HOLD (README step 9; the reviewer's answer (b)). hold_ms=HOLD_MS. The POST is sent from a
-thread; canmain opens NODE_UP_S after the POST's send and closes NODE_DOWN_S after it. The open's
-call time and the close's return time bound the node's window, put on the witness clock by the
+thread; canmain's open is called NODE_UP_S after the POST's send. The open takes up to NODE_OPEN_S
+(0.73-1.20 s in bench run f8d5, where the node was planned up at 0.5 s and was up only from about
+1.36 s), so canmain closes NODE_MIN_UP_S after its open returns, and not before NODE_DOWN_S after the
+send; a trial whose node was up less than NODE_MIN_UP_S is void. The open's call time and the
+close's return time bound the node's window, put on the witness clock by the
 PCAN's stamps (host receipt minus witness stamp, the median over the call). unacked_analysis.hold_check
 voids a trial when the node came up before its trace ended, and this driver voids one when the
 node was still up after the hold ended (the cleanup would then let a held frame out).
@@ -72,9 +75,11 @@ HOST = "192.168.80.1"
 TRIAL_ID = 0x7FE
 TAG = "ab7e"                 # bytes 2-3 of the trial frame (README step 3)
 QUIET_S = 1.0
-HOLD_MS = 1500
-NODE_UP_S = 0.5              # from the POST's send
-NODE_DOWN_S = 1.2
+HOLD_MS = 2000               # the probe's limit
+NODE_UP_S = 0.25             # canmain's open is called this long after the POST's send
+NODE_OPEN_S = 1.2            # canmain's open took 0.73-1.20 s from its call (bench run f8d5, 2026-11-27)
+NODE_MIN_UP_S = 0.3          # it stays up at least this long after its open returns
+NODE_DOWN_S = 1.6            # and is not closed before this long after the POST's send
 CALL_TIMEOUT_S = 10.0       # a call answers in about 2 s with the hold
 MAX_FAILED_CALLS = 10        # the plan stops after this many calls with no answer
 RESTART_SLACK_MS = 5000      # an uptime this far below the elapsed time is a restart
@@ -171,6 +176,18 @@ def clock_offset(msgs):
     return statistics.median(d) if d else None
 
 
+def node_down_at(t_send, opened):
+    """When canmain closes (host perf s): NODE_MIN_UP_S after its open returned, and not before NODE_DOWN_S
+    after the POST's send."""
+    return max(t_send + NODE_DOWN_S, opened + NODE_MIN_UP_S)
+
+
+def node_short(node):
+    """The node's time up, from its open's return to its close, when shorter than NODE_MIN_UP_S; else None."""
+    up = node["closed"] - node["opened"]
+    return up if up < NODE_MIN_UP_S else None
+
+
 def node_window_w(node, off_s):
     """The node's window and its frames on the witness clock (us), from host perf times."""
     if node is None or off_s is None:
@@ -205,6 +222,9 @@ def process_call(call, ans, msgs, node):
                 h["hold_end_us"] = round(hold_end_w, 3)
                 if nw["down_us"] >= hold_end_w:
                     h["void"] = "the node was still up %.1f us after the hold ended" % (nw["down_us"] - hold_end_w)
+            short = node_short(node)
+            if h["void"] is None and short is not None:
+                h["void"] = "the node was up only %.3f s from its open's return" % short
             row["hold"] = h
     return row
 
@@ -308,7 +328,7 @@ def run_call(call, wit, inno):
         time.sleep(max(0.0, t_send + NODE_UP_S - time.perf_counter()))
         n = Node(inno)
         n.up()
-        time.sleep(max(0.0, t_send + NODE_DOWN_S - time.perf_counter()))
+        time.sleep(max(0.0, node_down_at(t_send, n.opened) - time.perf_counter()))
         node = n.down()
     th.join(CALL_TIMEOUT_S + 5)
     time.sleep(0.05)                     # the witness's last frames
@@ -340,7 +360,8 @@ def main():
                      "canmain": "CAN1's Innomaker, held for libusb; opened only inside each hold (the ACKing node)",
                      "Kvaser": "CAN1, link down (kvaser_link_start)", "PCAN": "CAN1, PASSIVE, the witness",
                      "X2": "CAN1, held in ROM (x2_pins_start, x2_pins_end)", "canchg": "the X2's CAN2; never opened"},
-           "hold": {"hold_ms": HOLD_MS, "node_up_s": NODE_UP_S, "node_down_s": NODE_DOWN_S},
+           "hold": {"hold_ms": HOLD_MS, "node_up_s": NODE_UP_S, "node_open_s": NODE_OPEN_S,
+                    "node_min_up_s": NODE_MIN_UP_S, "node_down_s": NODE_DOWN_S},
            "x2_pins_start": NB.x2_pins(runs), "rows": []}
     try:    # canctl down, read back not up; it raises otherwise
         rec["kvaser_link_start"] = {"down": True, "readback": str(KB.link_down())}

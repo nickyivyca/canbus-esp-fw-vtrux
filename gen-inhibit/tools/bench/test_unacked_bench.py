@@ -97,6 +97,13 @@ def main():
     check("one fresh trial per call", all(x["reps"] == 1 and x["fresh"] == 1 for x in calls), "reps/fresh")
     check("the node's window inside the hold", 0 < B.NODE_UP_S < B.NODE_DOWN_S < B.HOLD_MS / 1000.0,
           (B.NODE_UP_S, B.NODE_DOWN_S, B.HOLD_MS))
+    check("the slowest open measured (1.2 s) plus the time up fits the hold, with 0.1 s for the POST's way",
+          B.NODE_OPEN_S >= 1.2 and B.NODE_UP_S + B.NODE_OPEN_S + B.NODE_MIN_UP_S <= B.HOLD_MS / 1000.0 - 0.1,
+          (B.NODE_UP_S, B.NODE_OPEN_S, B.NODE_MIN_UP_S, B.HOLD_MS))
+    check("an open back early: the close at the send plus NODE_DOWN_S",
+          abs(B.node_down_at(10.0, 10.5) - (10.0 + B.NODE_DOWN_S)) < 1e-9, B.node_down_at(10.0, 10.5))
+    check("an open back late: the close NODE_MIN_UP_S after it",
+          abs(B.node_down_at(10.0, 11.45) - (11.45 + B.NODE_MIN_UP_S)) < 1e-9, B.node_down_at(10.0, 11.45))
     k2 = lambda x: (x["kind"], x["state"] if x["kind"] in ("M2", "M3") else x["irq"], x.get("delay_us"))  # noqa: E731
     kinds10 = {k2(x) for x in calls[7:17]}
     check("shuffled: the ten calls after the first seven are of at least four kinds", len(kinds10) >= 4, kinds10)
@@ -166,6 +173,10 @@ def main():
                                                               [end_w + 400_300]))
     h2 = row2.get("hold") or {}
     check("the node still up after the hold ended: void", "after the hold ended" in str(h2.get("void")), h2)
+    short_node = node_at(end_w + 400_000, end_w + 1_100_000, [end_w + 1_099_000])
+    short_node["opened"] = short_node["closed"] - 0.05      # the open came back 50 ms before the close
+    h5 = B.process_call(ctl, {"trials": [t]}, msgs, short_node).get("hold") or {}
+    check("the node up only 50 ms from its open's return: void", "up only" in str(h5.get("void")), h5)
     row3 = B.process_call(ctl, {"trials": [t, t]}, msgs, None)
     check("an answer of two trials is an error", "error" in row3, row3)
     row4 = B.process_call(ctl, {"trials": [t]}, msgs, node_at(end_w + 400_000, end_w + 1_100_000, []))
@@ -209,7 +220,13 @@ MUTANTS = [
     ("the control with no hold", '        calls.append(dict(base, phase="m1", irq="off", hold_ms=HOLD_MS, kind="control"',
      '        calls.append(dict(base, phase="m1", irq="off", kind="control"'),
     ("not shuffled", "    random.Random(seed).shuffle(calls)\n", ""),
-    ("the node down after the hold", "NODE_DOWN_S = 1.2\n", "NODE_DOWN_S = 1.6\n"),
+    ("the node down after the hold", "NODE_DOWN_S = 1.6 ", "NODE_DOWN_S = 2.1 "),
+    ("the hold of run f8d5 (1500 ms)", "HOLD_MS = 2000 ", "HOLD_MS = 1500 "),
+    ("the open's time taken as fast", "NODE_OPEN_S = 1.2 ", "NODE_OPEN_S = 0.1 "),
+    ("the close not waiting for the open", "    return max(t_send + NODE_DOWN_S, opened + NODE_MIN_UP_S)\n",
+     "    return t_send + NODE_DOWN_S\n"),
+    ("a short node window not voided", "            if h[\"void\"] is None and short is not None:\n",
+     "            if False:\n"),
     ("the hold not echoed", 'ECHO = ("phase", "reps", "settle", "fresh", "irq", "window_us", "wait_att", "delay_us", "hold_ms")',
      'ECHO = ("phase", "reps", "settle", "fresh", "irq", "window_us", "wait_att", "delay_us")'),
     ("the label not checked", '    if ans.get("label") != call["label"]:\n', "    if False:\n"),
